@@ -638,12 +638,6 @@ class RoundInputs:
             self._missed.add((case, slot))
             self.missing[case] += 1
 
-    def carriers(self, gun: str | None, te: float) -> set[int]:
-        """Slots with a recorded shot of `gun` at or before te this round; none for an unrecorded gun."""
-        if gun is None:
-            return set()
-        return {by for t, by, g in self.shots if g == gun and t <= te}
-
     def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
         """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
         `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun)."""
@@ -2472,15 +2466,14 @@ class Unknown:
         return False
 
     @staticmethod
-    def _attributable(rnd, side: str, slot: int, te: float, spotted: set, gun=None, gunfire: bool = False) -> bool:
+    def _attributable(rnd, side: str, slot: int, te: float, spotted: set) -> bool:
         """R1/R2: whether a heard sound may name `slot`: only one enemy could have made it. True when no other
-        enemy is alive at te, or every other living enemy is in the team's live sight now (`spotted`), or, for
-        gunfire, `slot` is the only living enemy with a recorded shot of that gun at or before te. For gunfire, live sight (`spotted`) is the tick's, not the shot's own moment, so it can be
-        up to one tick off."""
+        enemy is alive at te, or every other living enemy is in the team's live sight now (`spotted`). The gun
+        heard is no clue (D2, 2026-10-14 review): the replay records no loadouts, so "only one has fired that
+        gun" names the wrong enemy too often. For gunfire, live sight (`spotted`) is the tick's, not the shot's
+        own moment, so it can be up to one tick off."""
         others = {s for s, tm in rnd.team.items() if tm != side and s != slot and rnd.alive(s, te)}
-        if not others or others <= spotted:
-            return True
-        return bool(gunfire and gun is not None and rnd.carriers(gun, te) & (others | {slot}) == {slot})
+        return not others or others <= spotted
 
     def _locating(self, rnd, side: str, slot: int, since: float, t: float, spotted: set = frozenset()
                   ) -> list[tuple[float, str, float, int, float, float]]:
@@ -2500,7 +2493,7 @@ class Unknown:
                 rnd.miss("locating event without a position", slot)
                 continue
             if kind == "gunfire":
-                if not self._attributable(rnd, side, slot, te, spotted, detail, True):
+                if not self._attributable(rnd, side, slot, te, spotted):
                     continue
                 if detail is None:     # no gun recorded: the longest hearing range in the table (spec)
                     rng = max(GUN_HEARING_M.values(), default=GUN_HEARING_DEFAULT_M)

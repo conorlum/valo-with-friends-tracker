@@ -1,6 +1,6 @@
 """R1/R2 (2026-10-14): a heard footstep or shot names no enemy unless only one enemy could have made it
-(the only one alive, every other living enemy in the team's live sight, or, for gunfire, the only living
-enemy carrying that gun). Kills, the plant and gun damage still name the enemy. Toy rounds, real engine."""
+(the only one alive, or every other living enemy in the team's live sight). The gun heard is no clue (D2,
+2026-10-14 review). Kills, the plant and gun damage still name the enemy. Toy rounds, real engine."""
 
 import numpy as np
 import pytest
@@ -64,34 +64,19 @@ def _gunfire(shots, deaths=None):
     return blob(_players(), t_end=10.0, util=shots, deaths=deaths)
 
 
-def test_gunfire_only_one_enemy_carried_by_then_names_the_shooter(monkeypatch):
-    assert _run(_gunfire([_shot(6.0, 5, "Vandal")]), 6.5, monkeypatch)[5] == pytest.approx(6.0)
+def test_gunfire_the_only_one_to_fire_that_gun_still_names_nobody(monkeypatch):
+    # D2 (2026-10-14 review): the gun is no clue; the other enemy may carry a Vandal he hasn't fired
+    assert 5 not in _run(_gunfire([_shot(6.0, 5, "Vandal")]), 6.5, monkeypatch)
 
 
-def test_gunfire_both_carrying_the_gun_names_nobody(monkeypatch):
-    located = _run(_gunfire([_shot(5.0, 6, "Vandal"), _shot(6.0, 5, "Vandal")]), 6.5, monkeypatch)
+def test_gunfire_the_other_carrying_another_gun_still_names_nobody(monkeypatch):
+    located = _run(_gunfire([_shot(5.0, 6, "Phantom"), _shot(6.0, 5, "Vandal")]), 6.5, monkeypatch)
     assert 5 not in located
 
 
-def test_gunfire_the_other_firing_it_only_after_names_the_shooter(monkeypatch):
-    located = _run(_gunfire([_shot(6.0, 5, "Vandal"), _shot(7.0, 6, "Vandal")]), 7.5, monkeypatch)
+def test_gunfire_with_the_other_dead_names_the_shooter_whatever_the_gun(monkeypatch):
+    located = _run(_gunfire([_shot(2.0, 6, "Vandal"), _shot(6.0, 5, "Vandal")], deaths={6: 3.0}), 6.5, monkeypatch)
     assert located[5] == pytest.approx(6.0)
-
-
-def test_gunfire_the_other_carrying_another_gun_names_the_shooter(monkeypatch):
-    located = _run(_gunfire([_shot(5.0, 6, "Phantom"), _shot(6.0, 5, "Vandal")]), 6.5, monkeypatch)
-    assert located[5] == pytest.approx(6.0)
-
-
-def test_gunfire_a_dead_carrier_does_not_count(monkeypatch):
-    players = {**_players(), 7: ("B", [(0.0, 400, 320, 180)])}
-    data = blob(players, t_end=10.0, util=[_shot(2.0, 7, "Vandal"), _shot(6.0, 5, "Vandal")], deaths={7: 3.0})
-    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
-
-
-def test_gunfire_a_carrier_on_the_listening_team_does_not_count(monkeypatch):
-    data = _gunfire([_shot(2.0, 0, "Vandal"), _shot(6.0, 5, "Vandal")])
-    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
 
 
 def test_gunfire_with_no_gun_and_the_other_unseen_names_nobody(monkeypatch):
@@ -107,12 +92,3 @@ def test_a_kill_still_names_the_killer_with_the_other_unseen(monkeypatch):
     data = blob({**_players(), 1: ("A", [(0.0, 200, 120, 180)])}, t_end=12.0, deaths={1: 8.0})
     data["kills"] = [{"i": 0, "t": 8.0, "killer": 5, "victim": 1, "u": uv(200, 120)[0], "v": uv(200, 120)[1]}]
     assert _run(data, 8.5, monkeypatch)[5] == pytest.approx(8.0)
-
-
-def test_carriers_are_slots_with_a_shot_of_the_gun_at_or_before_te():
-    rnd = ce.RoundInputs(_gunfire([_shot(5.0, 6, "Vandal"), _shot(6.0, 5, "Vandal"), _shot(6.0, 5, "Phantom")]),
-                         open_hall())
-    assert rnd.carriers("Vandal", 5.0) == {6}
-    assert rnd.carriers("Vandal", 6.0) == {5, 6}
-    assert rnd.carriers("Phantom", 5.5) == set()
-    assert rnd.carriers(None, 9.0) == set()
