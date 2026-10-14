@@ -83,6 +83,17 @@ def test_gunfire_the_other_carrying_another_gun_names_the_shooter(monkeypatch):
     assert located[5] == pytest.approx(6.0)
 
 
+def test_gunfire_a_dead_carrier_does_not_count(monkeypatch):
+    players = {**_players(), 7: ("B", [(0.0, 400, 320, 180)])}
+    data = blob(players, t_end=10.0, util=[_shot(2.0, 7, "Vandal"), _shot(6.0, 5, "Vandal")], deaths={7: 3.0})
+    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
+
+
+def test_gunfire_a_carrier_on_the_listening_team_does_not_count(monkeypatch):
+    data = _gunfire([_shot(2.0, 0, "Vandal"), _shot(6.0, 5, "Vandal")])
+    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
+
+
 def test_gunfire_with_no_gun_and_the_other_unseen_names_nobody(monkeypatch):
     assert 5 not in _run(_gunfire([_shot(6.0, 5)]), 6.5, monkeypatch)
 

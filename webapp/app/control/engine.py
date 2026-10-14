@@ -41,9 +41,10 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   that is at most DROP_PIECE_CELLS, or one cell wide all along (NARROW_ROOM_CELLS), is dropped. It is kept per
   enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
   also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
-  damage (the timing-gaps spec, section 4); but heard footsteps and gunfire name an enemy only when just one enemy could
-  have made them (R1/R2, 2026-10-14): the only one alive, every other living enemy in the team's live sight, or, for
-  gunfire, the only living enemy with a recorded shot of that gun by then; otherwise they change no one's unknown. A revived enemy restarts where they stand.
+  damage (the timing-gaps spec, section 4); but heard footsteps and gunfire name an enemy only when just one
+  enemy could have made them (R1/R2, 2026-10-14): the only one alive, every other living enemy in the team's
+  live sight, or, for gunfire, the only living enemy with a recorded shot of that gun by then; otherwise they
+  change no one's unknown. A revived enemy restarts where they stand.
 - **Mollies (P07a; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 5).** A team's burning
   damaging molly (app/control/mollies.py: which rows, `[t, min(t + seconds, row end))`) is ground its enemy can't
   walk into, across or diagonally past while it burns, in the team's unknown, its counterfactual and its knowledge
@@ -2454,7 +2455,8 @@ class Unknown:
     def _attributable(rnd, side: str, slot: int, te: float, spotted: set, gun=None, gunfire: bool = False) -> bool:
         """R1/R2: whether a heard sound may name `slot`: only one enemy could have made it. True when no other
         enemy is alive at te, or every other living enemy is in the team's live sight now (`spotted`), or, for
-        gunfire, `slot` is the only living enemy with a recorded shot of that gun at or before te."""
+        gunfire, `slot` is the only living enemy with a recorded shot of that gun at or before te. For gunfire, live sight (`spotted`) is the tick's, not the shot's own moment, so it can be
+        up to one tick off."""
         others = {s for s, tm in rnd.team.items() if tm != side and s != slot and rnd.alive(s, te)}
         if not others or others <= spotted:
             return True
