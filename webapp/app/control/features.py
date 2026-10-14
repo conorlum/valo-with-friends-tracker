@@ -106,6 +106,35 @@ def raster(geometry: dict | None) -> np.ndarray:
     raise ValueError(f"unknown geometry type {kind!r}")
 
 
+def raster_touched(geometry: dict | None) -> np.ndarray:
+    """`raster`, plus for a polygon every cell an edge passes through (D5 B, 2026-10-14 review): the mask a
+    sight occluder blocks with. The centre test leaves a cell open where a door's edge crosses it off-centre, so
+    a closed door left 2-3 px slits against the doorway's walls (Sunset's, Lotus feature-2, Abyss feature-1).
+    Engine-only: the tagger's twin (`Features.raster`) and every placement check keep the centre test."""
+    out = raster(geometry)
+    if not geometry or geometry.get("type") != "polygon":
+        return out
+    i = np.arange(P, dtype=np.float64)
+    lo, hi = i * CELL_UV, (i + 1) * CELL_UV          # each cell's [lo, hi] in u (cols) and v (rows)
+    pts = geometry["uv"]
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+        # only the cells the edge's bounding box overlaps, strictly (an edge along a cell border touches neither side)
+        cols = np.flatnonzero((hi > min(ax, bx)) & (lo < max(ax, bx)) | ((ax == bx) & (lo < ax) & (hi > ax)))
+        rows = np.flatnonzero((hi > min(ay, by)) & (lo < max(ay, by)) | ((ay == by) & (lo < ay) & (hi > ay)))
+        if not len(cols) or not len(rows):
+            continue
+        # the edge's line passes through a cell when its four corners aren't all strictly on one side
+        u0, u1 = lo[cols][None, :], hi[cols][None, :]
+        v0, v1 = lo[rows][:, None], hi[rows][:, None]
+        dx, dy = bx - ax, by - ay
+        side = [dx * (v - ay) - dy * (u - ax) for u, v in ((u0, v0), (u1, v0), (u0, v1), (u1, v1))]
+        pos = np.logical_or.reduce([s > 0 for s in side])
+        neg = np.logical_or.reduce([s < 0 for s in side])
+        out[np.ix_(rows, cols)] |= pos & neg
+    return out
+
+
 def to_px(cells: np.ndarray) -> np.ndarray:
     """P x P cells as a PX x PX pixel mask (the tagger's paint scale)."""
     return cells.repeat(PX_PER_PAINT, 0).repeat(PX_PER_PAINT, 1)
@@ -621,7 +650,7 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
         if s.get("footprint") is not None:
             entries.append({"geometry": s["footprint"], "bounds": s.get("sight_bounds") or {"ref": "unresolved"}})
         for occ in entries:
-            mask = to_px(raster(occ.get("geometry")))
+            mask = to_px(raster_touched(occ.get("geometry")))
             o, why = resolve_bounds(geo, mf, occ, mask, f.get("id"))
             if o is None:
                 pending.append(why)

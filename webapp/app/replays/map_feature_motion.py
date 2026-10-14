@@ -231,8 +231,9 @@ def sample_effects(geo, mf: dict, feature: dict, closure: float):
         effects.pending += bound.pending
     if not closed.get("blocks_sight"):
         return effects, []
+    sight_cells = cf.raster_touched(pose(feature, closure)) & cf.raster_touched(closed["footprint"])
     occluder, why = cf.resolve_bounds(geo, mf, {"bounds": closed.get("sight_bounds")},
-                                     cf.to_px(cells), feature.get("id"))
+                                     cf.to_px(sight_cells), feature.get("id"))
     if why:
         effects.pending.append(why)
     return effects, [occluder] if occluder else []
@@ -271,7 +272,7 @@ def _vertical_effects(geo, mf, feature, closure, effects):
         sampled = vertical_bounds(feature, closure, entry['bounds'])
         if fs_known_metres(sampled['bottom']) >= fs_known_metres(sampled['top']):
             continue
-        occluder, why = cf.resolve_bounds(geo, mf, {'bounds': sampled}, cf.to_px(cf.raster(entry['geometry'])), feature.get('id'))
+        occluder, why = cf.resolve_bounds(geo, mf, {'bounds': sampled}, cf.to_px(cf.raster_touched(entry['geometry'])), feature.get('id'))
         if why:
             effects.pending.append(why)
         elif occluder:
