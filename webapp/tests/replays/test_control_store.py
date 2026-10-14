@@ -35,8 +35,23 @@ from app.services import replays as service  # noqa: E402
 CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__]
 
 
+def feature_free_source(monkeypatch):
+    """Legacy made-up rows use feature-free inputs; tagged fixtures override this snapshot."""
+    original = rc._current_snapshot
+
+    def snapshot():
+        index, _, maps, raw = original()
+        source = json.loads(raw)
+        for entry in source['maps'].values():
+            entry.pop('map_features', None)
+        return index, source['maps'], maps, json.dumps(source).encode()
+
+    monkeypatch.setattr(rc, '_current_snapshot', snapshot)
+
+
 @pytest.fixture
 def factory(monkeypatch):
+    feature_free_source(monkeypatch)
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=CONTROL_TABLES)
@@ -176,11 +191,11 @@ def test_the_plan_finds_missing_stale_and_failed_rounds(db, linked):
 
 
 def test_rounds_that_cannot_be_computed_are_listed_not_planned(db, linked, monkeypatch):
-    monkeypatch.setattr(rc, "map_layer", lambda name: None)
-    planned = rc.plan(db)
-    assert {p.reason for p in planned} == {"no_map"} and not any(p.computable for p in planned)
-    assert rc.nudge(db) is None
-    monkeypatch.undo()
+    with monkeypatch.context() as layer_patch:
+        layer_patch.setattr(rc, "map_layer", lambda name: None)
+        planned = rc.plan(db)
+        assert {p.reason for p in planned} == {"no_map"} and not any(p.computable for p in planned)
+        assert rc.nudge(db) is None
     linked.recipe = linked.recipe.replace(f".c{rc.condense_revision(linked.recipe)}.", ".c9.")
     db.commit()
     assert {p.reason for p in rc.plan(db)} == {"old_blob"}

@@ -18,7 +18,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[0]))
 sys.path.insert(0, str(HERE.parents[1] / "scripts"))
 
-from test_control_store import put_row  # noqa: E402
+from test_control_store import put_row, feature_free_source  # noqa: E402
 from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import settings  # noqa: E402
@@ -36,6 +36,7 @@ from app.services.replay_gaps_store import store_gaps  # noqa: E402
 
 @pytest.fixture
 def session_factory(monkeypatch):
+    feature_free_source(monkeypatch)
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__])
