@@ -257,7 +257,8 @@ def test_the_collapse_rule():
     state[other_on] = ce.A_ACTIVE
     assert ce.collapse_states(geo, state)[other_under] == ce.CONTESTED_ACTIVE, "any floor active"
     state[other_on], state[other_under] = ce.NONE, ce.B_SAFE
-    assert ce.collapse_states(geo, state)[other_under] == ce.CONTESTED, "nobody's against held: they disagree"
+    # 2026-10-14 run: one team's nodes are that team's; contested needs both sides
+    assert ce.collapse_states(geo, state)[other_under] == ce.B_SAFE, "nobody's against held: the held claim"
     state[geo.cell_of_px(350, Y)] = ce.B_ACTIVE
     assert ce.collapse_states(geo, state)[geo.cell_of_px(350, Y)] == ce.B_ACTIVE, "one floor: that floor's"
 
@@ -269,7 +270,8 @@ def test_three_floors_collapse_by_the_same_rule():
     state[[low, mid, top]] = ce.B_SAFE
     assert ce.collapse_states(geo, state)[low] == ce.B_SAFE
     state[mid] = ce.B_PASSIVE
-    assert ce.collapse_states(geo, state)[low] == ce.CONTESTED, "two agree, one doesn't"
+    # 2026-10-14 run: one team's nodes are that team's; contested needs both sides
+    assert ce.collapse_states(geo, state)[low] == ce.B_SAFE, "two agree, one doesn't: the strongest of the team"
 
 
 def test_a_round_on_a_height_map_is_stored_per_walkable_cell():

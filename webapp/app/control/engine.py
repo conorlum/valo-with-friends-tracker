@@ -1241,33 +1241,55 @@ def _every_floor(geo: Geometry, cells: np.ndarray) -> np.ndarray:
 
 
 def collapse_states(geo: Geometry, state: np.ndarray) -> np.ndarray:
-    """A tick's node states as cell states, for the stored picture (the spec's two-floor rule): a cell
-    whose floors all agree has that state; otherwise it is contested, CONTESTED_ACTIVE when any of its
-    floors is active for either team (or contested-active). Nobody's against held counts as disagreeing.
+    """A tick's node states as cell states, for the stored picture (the spec's two-floor rule; adaptive
+    sub-cells follow the same rule). 2026-10-14 run: one team's nodes are that team's. Such nodes collapse to
+    that team's strongest state (passive < safe < active); a node nobody holds adds nothing. A cell is
+    contested only when both teams hold a node in it, or one node is already contested; it is
+    CONTESTED_ACTIVE when any of its nodes is active for either team (or contested-active).
     A flat map's states are returned as they are."""
     if geo.n == GRID * GRID:
         return state
     if geo.adaptive:
-        out = np.full(GRID * GRID, NONE, state.dtype)
-        lo = np.full(GRID * GRID, N_STATES, state.dtype)
-        hi = np.zeros(GRID * GRID, state.dtype)
-        walk = geo.walk_n
-        np.minimum.at(lo, geo.node_cell[walk], state[walk])
-        np.maximum.at(hi, geo.node_cell[walk], state[walk])
-        valid = lo < N_STATES
-        out[valid] = lo[valid]
-        disagree = valid & (lo != hi)
-        active = geo.to_cells(np.isin(state, (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE)))
-        out[disagree] = np.where(active[disagree], CONTESTED_ACTIVE, CONTESTED)
+        walk = np.flatnonzero(geo.walk_n)
+        out, present = _collapse_nodes(state, walk, geo.node_cell[walk], GRID * GRID)
+        out[~present] = NONE
         return out
     out = state[: GRID * GRID].copy()
-    cells = geo.node_cell[GRID * GRID:]
-    upper = state[GRID * GRID:]
-    differs = np.zeros(GRID * GRID, bool)
-    differs[cells[upper != out[cells]]] = True
-    active = np.isin(state, (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE))
-    out[differs] = np.where(geo.to_cells(active)[differs], CONTESTED_ACTIVE, CONTESTED)
+    every = np.arange(len(state))
+    collapsed, present = _collapse_nodes(state, every, geo.node_cell, GRID * GRID)
+    out[present] = collapsed[present]
     return out
+
+
+def _collapse_nodes(state: np.ndarray, nodes: np.ndarray, groups: np.ndarray, n_groups: int):
+    """`state` of `nodes` collapsed per group (`groups`, aligned with `nodes`): (codes, present), `present`
+    marking groups that have a node (an empty group's code is NONE). The rule is `collapse_states`'s.
+    Codes: A is 1-3 and B is 4-6, each passive < safe < active, so the numeric max is the strongest."""
+    s = state[nodes]
+    is_a = (s >= A_PASSIVE) & (s <= A_ACTIVE)
+    is_b = (s >= B_PASSIVE) & (s <= B_ACTIVE)
+    hi_a = np.zeros(n_groups, state.dtype)
+    hi_b = np.zeros(n_groups, state.dtype)
+    np.maximum.at(hi_a, groups[is_a], s[is_a])
+    np.maximum.at(hi_b, groups[is_b], s[is_b])
+    contested = np.zeros(n_groups, bool)
+    active = np.zeros(n_groups, bool)
+    present = np.zeros(n_groups, bool)
+    both = (s == CONTESTED) | (s == CONTESTED_ACTIVE)
+    contested[groups[both]] = True
+    active[groups[np.isin(s, (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE))]] = True
+    present[groups] = True
+    clash = contested | ((hi_a > 0) & (hi_b > 0))
+    out = np.where(hi_a > 0, hi_a, hi_b).astype(state.dtype)   # one team (or neither: NONE)
+    out[clash] = np.where(active[clash], CONTESTED_ACTIVE, CONTESTED)
+    return out, present
+
+
+def space_codes(geo: Geometry, state: np.ndarray) -> np.ndarray:
+    """The section totals' per-leaf state codes (adaptive maps), by the same rule as `collapse_states`."""
+    walk = np.flatnonzero(geo.walk_n)
+    code, _ = _collapse_nodes(state, walk, geo.node_space[walk], len(geo.space_walk))
+    return code
 
 
 class Tick:
@@ -3101,14 +3123,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                     sec.seconds += overlap
                     if geo.adaptive:
                         # Pictures keep their parent projection; section totals retain each leaf's area.
-                        low_state = np.full(len(geo.space_walk), N_STATES, np.uint8)
-                        high_state = np.zeros(len(geo.space_walk), np.uint8)
-                        active = np.zeros(len(geo.space_walk), bool)
-                        walk = geo.walk_n
-                        np.minimum.at(low_state, geo.node_space[walk], state[walk])
-                        np.maximum.at(high_state, geo.node_space[walk], state[walk])
-                        np.logical_or.at(active, geo.node_space[walk], np.isin(state[walk], (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE)))
-                        code = np.where(low_state == high_state, low_state, np.where(active, CONTESTED_ACTIVE, CONTESTED))
+                        code = space_codes(geo, state)
                         grid = geo.space_grid
                         selected = geo.space_walk[grid]
                         parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
