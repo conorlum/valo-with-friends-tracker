@@ -4,8 +4,8 @@
 {% block content %}
 <h1>Replay upload</h1>
 <div class="card">
-  <p data-upload-status aria-live="polite">{% if job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
-  {% if job.status not in ("stored", "failed") %}
+  <p data-upload-status aria-live="polite">{% if job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% elif job.status == "held" %}Waiting for a parser update: {{ job.error }}. You don't need to upload it again.{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
+  {% if job.status not in ("stored", "failed", "held") %}
   <div class="upload-progress" data-parse-progress>
     <progress></progress>
     <p class="page-meta" data-parse-elapsed></p>
@@ -17,7 +17,7 @@
 <script>
   (function () {
     var status = document.querySelector("[data-upload-status]"), link = document.querySelector("[data-upload-link]");
-    var done = {{ (job.status in ("stored", "failed")) | tojson }};
+    var done = {{ (job.status in ("stored", "failed", "held")) | tojson }};
     // The parser reports no progress of its own, so show the time since the upload was made.
     var progress = document.querySelector("[data-parse-progress]"), elapsed = document.querySelector("[data-parse-elapsed]");
     var since = Date.now() - 1000 * {{ elapsed_seconds | tojson }}, ticker = null;
@@ -27,7 +27,7 @@
     }
     if (progress) { tick(); ticker = setInterval(tick, 1000); }
     function show(body) {
-      var finished = body.status === "stored" || body.status === "failed";
+      var finished = body.status === "stored" || body.status === "failed" || body.status === "held";
       if (finished && progress) { clearInterval(ticker); progress.hidden = true; }
       if (body.status === "stored") {
         status.textContent = body.linked ? "Stored and linked to its match." : "Stored. It isn't linked to a match on this site yet (it links after the match is crawled)." + (body.error ? " " + body.error : "");
@@ -35,6 +35,11 @@
         return true;
       }
       if (body.status === "failed") { status.textContent = "Failed: " + (body.error || "unknown error"); return true; }
+      if (body.status === "held") {
+        status.textContent = "Waiting for a parser update: " + (body.error || "this game version isn't supported yet") +
+          ". You don't need to upload it again.";
+        return true;
+      }
       return false;
     }
     function poll() {

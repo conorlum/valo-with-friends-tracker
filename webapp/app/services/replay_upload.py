@@ -9,7 +9,9 @@
 - `refresh_job`: the job page's status poll. It asks the worker; when the job is done it stores
   the result with the same `store_replay` as local ingest (one locked transaction, the dedupe rule,
   the link), and marks the upload `stored` or `failed` with a plain reason. A job still parsing
-  after STUCK_AFTER (or still queued after QUEUED_STUCK_AFTER) becomes `failed: please re-upload`.
+  after STUCK_AFTER (or still queued after QUEUED_STUCK_AFTER) becomes `failed: please re-upload`. An
+  upload the worker holds for an unsupported game version is `held`: polled with no time limit and not counted
+  in a batch, and stored like any other once the worker parses it (replay_worker/README.md, "held uploads").
 - `collect_unfinished`: the same poll for every unfinished upload, from the archive sync thread, so a
   result is stored when its page was closed.
 - `collect_auto`: the one collector of an automatic re-parse attempt (a row tagged AUTO_PREFIX), whoever
@@ -57,13 +59,26 @@ QUEUED_STUCK_AFTER = timedelta(minutes=60)
 WORKER_TIMEOUT_S = 30
 ACK_TIMEOUT_S = 5  # the ack is sent inside the uploader's status poll; a slow worker is retried later
 UNFINISHED = ("queued", "parsing")
+# A game build the worker's parser doesn't support yet: the worker keeps the file and parses it once the parser is
+# updated, which can be weeks. Polled like an unfinished upload, but never timed out and never counted in a batch.
+HELD = "held"
+POLLED = UNFINISHED + (HELD,)
 MAX_UNFINISHED = 5  # a batch: one session's uploads in progress at once, the worker's own queue size
 RECENT_LISTED = timedelta(hours=24)  # the upload page lists this session's uploads from this long ago
 
 REASONS = {
     "parse timed out": "parse timed out: please try again",
-    "parse failed": "parse failed (this patch may not be supported yet)",
+    "parse failed": "parse failed",
 }
+GONE_WHILE_HELD = "the replay worker no longer has this file: please upload it again"
+RELEASED = "the replay parser supports this game version now: parsing"
+
+
+def failure_text(job: dict) -> str:
+    """A failed job's reason as the uploader reads it, with the parser's own last lines when it left any."""
+    reason = job.get("error") or "parse failed"
+    text = REASONS.get(reason, reason)
+    return f"{text} (the parser said: {job['detail']})" if job.get("detail") else text
 
 # The automatic re-parse queue (docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md). An attempt is a
 # `replay_uploads` row whose `session_key` is this prefix plus the recipe it aims for, whose id is the attempt
@@ -330,17 +345,21 @@ def condensed_from_result(result: dict) -> CondensedReplay:
 
 
 def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | None = None) -> ReplayUpload:
-    """One status poll: ask the worker, store a finished result, fail a stuck job."""
+    """One status poll: ask the worker, store a finished result, fail a stuck job. A held upload is never stuck:
+    it stays held (its note says when the worker has started parsing it) until the worker says done or failed."""
     now = now or datetime.now(timezone.utc)
-    if upload.status not in UNFINISHED:
+    if upload.status not in POLLED:
         return upload
     if is_auto(upload):  # never the path below: an automatic attempt is collected only through its guards
         upload_id = upload.id
         collect_auto(db, upload_id, worker, now)
         return db.get(ReplayUpload, upload_id)
     created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(tzinfo=timezone.utc)
+    was_held = upload.status == HELD
     try:
         job = worker.job(upload.worker_job_id) if upload.worker_job_id else {"status": "failed"}
+    except WorkerRefused:
+        job = {"status": "gone" if was_held else "unknown"}
     except WorkerError:
         job = {"status": "unknown"}
     status = job.get("status")
@@ -369,8 +388,15 @@ def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | 
         send_ack(db, upload, worker)
         return upload
     if status == "failed":
-        reason = job.get("error") or "parse failed"
-        return _finish(db, upload, "failed", REASONS.get(reason, reason))
+        return _finish(db, upload, "failed", failure_text(job))
+    if status == "gone":
+        return _finish(db, upload, "failed", GONE_WHILE_HELD)
+    if status == HELD or was_held:
+        note = job.get("error") if status == HELD else RELEASED if status in UNFINISHED else upload.error
+        if (upload.status, upload.error) != (HELD, note):
+            upload.status, upload.error = HELD, note
+            db.commit()
+        return upload
     if now - created > (QUEUED_STUCK_AFTER if status == "queued" else STUCK_AFTER):
         return _finish(db, upload, "failed", "failed: please re-upload")
     return upload
@@ -391,7 +417,7 @@ def collect_unfinished(session_factory, worker: WorkerClient, now: datetime | No
     finished = 0
     try:
         rows = [(upload_id, key or "") for upload_id, key in
-                session.query(ReplayUpload.id, ReplayUpload.session_key).filter(ReplayUpload.status.in_(UNFINISHED))
+                session.query(ReplayUpload.id, ReplayUpload.session_key).filter(ReplayUpload.status.in_(POLLED))
                 .order_by(ReplayUpload.created_at)]
         session.rollback()
         for upload_id, key in rows:
@@ -405,7 +431,7 @@ def collect_unfinished(session_factory, worker: WorkerClient, now: datetime | No
             if session.get_bind().dialect.name == "postgresql":
                 query = query.with_for_update()
             upload = query.one_or_none()
-            if upload is None or upload.status not in UNFINISHED:
+            if upload is None or upload.status not in POLLED:
                 session.rollback()
                 continue
             if upload.worker_job_id is None:
@@ -560,8 +586,7 @@ def collect_auto(db, upload_id: str, worker: WorkerClient, now: datetime | None 
         return "pending"
     status = job.get("status")
     if status == "failed":
-        reason = job.get("error") or "parse failed"
-        settle_auto(db, upload_id, "failed", REASONS.get(reason, reason), now=now)
+        settle_auto(db, upload_id, "failed", failure_text(job), now=now)
         return "finished"
     if status != "done":
         return "pending"  # queued or parsing: an accepted job is waited for, however long it takes

@@ -128,7 +128,8 @@
 
     function mb(bytes) { return (bytes / 1e6).toFixed(1) + " MB"; }
     function setStatus(row, text) { row.querySelector("[data-row-status]").textContent = text; }
-    function finished(body) { return body.status === "stored" || body.status === "failed"; }
+    // A held file waits for a parser update (days or weeks): not polled from this page; the site stores it by itself.
+    function finished(body) { return body.status === "stored" || body.status === "failed" || body.status === "held"; }
 
     function showJob(row, body) {
       var link = row.querySelector("[data-row-link]");
@@ -138,6 +139,9 @@
         if (body.replay_url) { link.hidden = false; link.href = body.replay_url; }
       } else if (body.status === "failed") {
         setStatus(row, "Failed: " + (body.error || "unknown error"));
+      } else if (body.status === "held") {
+        setStatus(row, "Waiting for a parser update: " + (body.error || "this game version isn't supported yet") +
+          ". You don't need to upload it again.");
       } else {
         setStatus(row, "Parsing… usually one to three minutes, longer while earlier files are parsed.");
       }
