@@ -1,0 +1,301 @@
+===History===
+{| class="wikitable sortable" style="display:inline-table; text-align: center;"
+!rowspan=2|Maps
+!rowspan=2|Release<br>Patch
+!colspan=100|Starting Patch
+|-
+!{{patch|5.0}}
+!{{patch|6.0}}
+!{{patch|6.08}}
+!{{patch|7.04}}
+!{{patch|8.0}}
+!{{patch|8.11}}
+!{{patch|9.08}}
+!{{patch|10.00}}
+!{{patch|10.04}}
+!{{patch|10.08}}
+!{{patch|11.00}}
+!{{patch|11.04}}
+!{{patch|11.08}}
+!{{patch|12.00}}
+!{{patch|12.05}}
+!style=background:#<!--c1e6f5-->7ecc7e|{{patch|12.08}}
+|13.00
+|13.04
+|13.08
+|-
+|style=text-align:left;font-weight:bold|[[Abyss]]
+|style=text-align:left|{{patch|8.11}}
+|colspan=5; style=background:gray; data-sort-value=3|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}{{#tag:ref|Abyss was only added to [[Competitive]] map pool in {{patchv|9.0}} and [[Premier]] in v9.02.|group="ro"}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|265 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|167 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|211 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Ascent]]
+|style=text-align:left|{{patch|1.0}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|929 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}} 55 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|223 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|197 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Bind]]
+|data-sort-value=0; style=text-align:left|[[Closed Beta|Beta]]
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|201 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|678 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|111 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|309 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Breeze]]
+|style=text-align:left|{{patch|2.08}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|201 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|230 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|286 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|575 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Corrode]]
+|style=text-align:left|{{patch|11.00}}
+|colspan=10; style=background:gray; data-sort-value=3|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|267 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Fracture]]
+|style=text-align:left|{{patch|3.05}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|432 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|496 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|111 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|323 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Haven]]
+|data-sort-value=0; style=text-align:left|[[Closed Beta|Beta]]
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|565 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}} 153 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Icebox]]
+|style=text-align:left|{{patch|1.10}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|306 days*
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|258 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|286 days<ref name="9.0" group="ro">Icebox and Lotus were added to Competitive and Deathmatch map pool on Console in {{patchv|9.01}} and {{patchv|9.02}} respectively.</ref>
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|132 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{#tag:ref|Icebox was removed from the Deathmatch map pool in {{patchv|10.09}} (mentioned in {{patchv|10.10}}) due to spawn-related issues. It was added back in {{patchv|11.00}}.|group="ro"}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|167 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Lotus]]
+|style=text-align:left|{{patch|6.0}}
+|style=background:gray; data-sort-value=3|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}{{#tag:ref|Lotus was only added to Unrated and Competitive map pool in {{patchv|6.01}}.|group="ro"}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|650 days<ref name="9.0" group="ro"/>
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}} 76 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|279 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|155 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Pearl]]
+|style=text-align:left|{{patch|5.0}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}{{#tag:ref|Pearl was only available in Unrated. Added to Competitive map pool 2 weeks later.|group="ro"}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|432 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|419 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|244 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|111 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|
+|-
+|style=text-align:left;font-weight:bold|[[Split]]
+|data-sort-value=0; style=text-align:left|[[Closed Beta|Beta]]
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}} 202 days*
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|517 days{{#tag:ref|Split was removed from the map pool mid-{{patchv|8.07}} due to [https://x.com/valorant/status/1782933551178199524 an exploit]. It was added back in {{patchv|8.08}}. The day calculation does not exclude the amount of days it was removed.|group="ro"}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}} 133 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|244 days
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|{{ui|Removed}}
+|style="background:#ffc7c7; color:black; font-size:small"; data-sort-value=2|111 days
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|{{ui|Added}}
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|style="background:#9eff9e; color:black; font-size:small"; data-sort-value=1|
+|
+|
+|
+|-
+|Summit
+|13.0
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+| +
+|
+|
+|-
+| style="text-align:left;font-weight:bold" |[[Sunset]]
+| style="text-align:left" |{{patch|7.04}}
+| colspan="3;" style="background:gray;" data-sort-value="3" |
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |{{ui|Added}}{{#tag:ref|Sunset was only available in Unrated. Added to Competitive map pool in {{patchv|7.05}}.|group="ro"}}
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |496 days
+| style="background:#ffc7c7; color:black; font-size:small" data-sort-value="2" ; |{{ui|Removed}}
+| style="background:#ffc7c7; color:black; font-size:small" data-sort-value="2" ; |111 days
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |{{ui|Added}}
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |
+| style="background:#9eff9e; color:black; font-size:small" data-sort-value="1" ; |253 days
+| style="background:#ffc7c7; color:black; font-size:small" data-sort-value="2" ; |{{ui|Removed}}
+| style="background:#ffc7c7; color:black; font-size:small" data-sort-value="2" ; |
+| style="background:#ffc7c7; color:black; font-size:small" data-sort-value="2" ; |
+|
+|
+|
+|-class=sortbottom
+|colspan=100; style=text-align:left;font-size:small|'''Notes:<br>
+<div style="text-align:center"><span style="background:#7ecc7e; padding-left: 0.5em; padding-right: 0.5em"></span>&nbsp;current patch {{*}} <span style="background:#c1e6f5; padding-left: 0.5em; padding-right: 0.5em"></span>&nbsp;upcoming patch<br><span style="background:#9eff9e; padding-left: 0.5em; padding-right: 0.5em"></span>&nbsp;map in rotation {{*}} <span style="background:#ffc7c7; padding-left: 0.5em; padding-right: 0.5em"></span>&nbsp;map out of rotation {{*}} <span style="background:gray; padding-left: 0.5em; padding-right: 0.5em"></span>&nbsp;map unavailable</div>
+: * Day calculation starting from the day map rotation was introduced (i.e. patch v5.0)
+<references group="ro"/>
+|}
