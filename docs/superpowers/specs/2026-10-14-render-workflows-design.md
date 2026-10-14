@@ -64,10 +64,10 @@ site ──HTTP (unchanged)──> replay-worker (disk: archive, jobs, control_c
 
 ### The worker
 
-- **Runner**: one small class per mode with the interface "run this child's input, give me its output or a
-  failure". `LocalRunner` is today's `subprocess` code moved behind it. `WorkflowRunner` writes the input under
-  `jobs/` (parse) or `<temp>/runs/<job_id>/` (control, heights), records the run (job id, token, Render run id,
-  deadline) **before** it returns, starts the run, and waits on an event the result route sets.
+- **Runner**: at each place a child starts today (`Worker._process`, `ControlRunner._run`), a branch on the
+  kind's switch: `local` keeps today's code untouched; `workflow` opens a run in the run table
+  (`replay_worker/runs.py`: job id, token, Render run id, deadline), registers its input files, starts it and
+  waits for the result route to settle it. A parse records the run's id in `job.json` before it waits.
 - **Run routes** (private, like every route there): `GET /runs/{id}/input[/{name}]`, `POST /runs/{id}/result`
   (header `X-Run-Token`), `GET /control_cache/{map}` (a list) and `/control_cache/{map}/{file}`,
   `POST /control_cache/{map}/{file}`. A result with a wrong token, for an unknown run or for a run already
@@ -104,20 +104,21 @@ site ──HTTP (unchanged)──> replay-worker (disk: archive, jobs, control_c
 
 | Step | What | Done when |
 | --- | --- | --- |
-| 1 | **Foundation.** The `replay-tasks` image and entry point with the three tasks; the worker's runner interface (`LocalRunner` only wired), the run routes, the Render REST client, start pacing, reconciliation, settings, health. Every switch stays `local`. Confirm the REST endpoints and the private-network reach with one no-op `ping` task. | Deployed; `ping` round-trips worker → run → worker on Render; nothing else changed. |
+| 1 | **Foundation.** The `replay-tasks` entry point with a `ping` task (each later step adds its task); the run table, the run routes, the Render REST client, start pacing, reconciliation, settings, health. Every switch stays `local`. Confirm the REST endpoints and the private-network reach with one no-op `ping` task. | Deployed; `ping` round-trips worker → run → worker on Render; nothing else changed. |
 | 2 | **Map control on Workflows.** `WorkflowRunner` for control; visibility caches on the disk; the site's two limits. | `REPLAY_CONTROL_RUNNER=workflow` on Render; a new match's rounds computed with byte-identical results to local for a sample; the switch back to `local` still works. |
 | 3 | **Parsing on Workflows.** `WorkflowRunner` for parse with re-attach on restart; the deploy-skew refusal; uploads and automatic re-parses unchanged on the site. | `REPLAY_PARSE_RUNNER=workflow`; five uploads parse in parallel; a restart mid-parse re-attaches; `parse_seconds` compared with today's (D7). |
 | 4 | **Height builds on Workflows.** The spool served as a tar; `WorkflowRunner` for heights. | `REPLAY_HEIGHTS_RUNNER=workflow`; one rebuild accepted by the site's checks. |
-| 5 | **Slim the worker.** Remove `LocalRunner` for parse, control and heights, the preemption and idle code, and the .NET parser from the worker image; `POST /jobs` streams the upload to disk instead of reading it whole;
+| 5 | **Slim the worker** (two PRs: 5a gives the workflow its own `replay_tasks/Dockerfile`, 5b the rest). Remove the local child paths for parse, control and heights, the preemption and idle code, and the .NET parser from the worker image; `POST /jobs` streams the upload to disk instead of reading it whole;
 1 CPU / 2 GB plan. Keep the control venv for feature verification (D14). | The worker image has no parser; all three kinds run on Workflows only; the plan in `render.yaml` is smaller. |
 
 Each step is its own PR and its own plan. Steps 2-4 merge with their switch `local`; the owner flips it on Render.
 
 ## Testing
 
-- Worker: stub-runner tests for `WorkflowRunner` against a fake Render API (start, result push, wrong and
+- Worker: tests of the workflow path against a fake Render API (start, result push, wrong and
   repeated tokens, reconciliation of a failed run with no result, deadline cancel, 429 pacing, restart
-  re-attach for parse). The existing `LocalRunner` tests stay green unchanged (the refactor in step 1 is pure).
+  re-attach for parse). The existing local-mode tests stay green unchanged through step 4; step 5 moves them onto a
+  fake-Render harness.
 - Tasks: each wrapper run in-process against a fake worker gives the same bytes as running the child directly.
 - Site: `_send` respects both limits (one replay at a time; 40 rounds; a long overtime replay stops at 40).
 - On Render: one kind at a time, by flipping its switch; compare outputs and times with the `local` runner.
