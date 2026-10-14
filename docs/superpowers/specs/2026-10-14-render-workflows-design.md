@@ -13,6 +13,8 @@ Render's docs: https://render.com/docs/workflows (and `-defining`, `-running`, `
 | O1 | Move upload parsing, map control and height builds to Render Workflows, for speed. |
 | O2 | The number of map-control runs is tunable. For now: one match at a time, and at most 40 runs. |
 | O3 | Keep the replay worker's disk rather than adding object storage (no outside account, no early-access product). |
+| O4 | Up to 15 parses at once. |
+| O5 | A map's height build starts as soon as it is due (no waiting for the worker to be idle); the limit is how many builds run at once. |
 
 ## Decisions
 
@@ -31,6 +33,8 @@ Render's docs: https://render.com/docs/workflows (and `-defining`, `-running`, `
 | D11 | **Deploy skew**: the worker passes its parser recipe to every parse run (control results already carry revisions the site checks). A parse run whose image has another recipe refuses with `error_kind: "deploy"`; the worker puts the job back and tries again after 60 s, within the job's existing stuck deadline. | The worker and the workflow deploy separately. |
 | D12 | **Runs never touch the database.** The workflow service gets only the worker's address. | The worker was designed with no DB credentials; keep it. |
 | D13 | **The worker calls Render's REST API with the standard library** (`urllib`), like the rest of `server.py`. The workflow image uses the `render` SDK (`render>=1.0.1`) for task definitions only. | `server.py` is standard library only. |
+| D15 | **Parses: 15 at once** (`REPLAY_PARSE_PARALLEL=15`, and the worker's queue `REPLAY_QUEUE_SIZE=15` so it admits that many). The site's per-uploader batch (`MAX_UNFINISHED`, 5) is unchanged: 15 is reached by several friends uploading together. | O4. |
+| D16 | **Height builds: the unit is one map** (all of that map's stored rounds → its heights). On the site, `HeightState.build` becomes `builds` (one per map, keyed by input manifest), and `HEIGHTS_MAX_BUILDS` (4) caps how many are open at once; a due map starts as soon as there is room. On the worker, `HEIGHT_COLLECTING_MAX` becomes `REPLAY_HEIGHT_BUILDS_MAX` (4) and the spool cap `REPLAY_HEIGHT_SPOOL_BYTES` (2 GiB), with the spool on the disk inside the reserve. With builds on Workflows, `/health`'s `idle` reads true, so nothing waits for parses. | O5. A map is due only after 5 new matches, so usually 0-1 are due; a rules or masks change makes every map due at once, and the cap keeps that from opening a dozen spools. |
 | D14 | **Step 5 slims the worker** but keeps the control venv for feature verification (`verify_feature_upload`, a short synchronous child). Moving that to a task is out of scope. | Keep step 5 small. |
 
 ## How the pieces fit
@@ -106,8 +110,8 @@ site ──HTTP (unchanged)──> replay-worker (disk: archive, jobs, control_c
 | --- | --- | --- |
 | 1 | **Foundation.** The `replay-tasks` entry point with a `ping` task (each later step adds its task); the run table, the run routes, the Render REST client, start pacing, reconciliation, settings, health. Every switch stays `local`. Confirm the REST endpoints and the private-network reach with one no-op `ping` task. | Deployed; `ping` round-trips worker → run → worker on Render; nothing else changed. |
 | 2 | **Map control on Workflows.** `WorkflowRunner` for control; visibility caches on the disk; the site's two limits. | `REPLAY_CONTROL_RUNNER=workflow` on Render; a new match's rounds computed with byte-identical results to local for a sample; the switch back to `local` still works. |
-| 3 | **Parsing on Workflows.** `WorkflowRunner` for parse with re-attach on restart; the deploy-skew refusal; uploads and automatic re-parses unchanged on the site. | `REPLAY_PARSE_RUNNER=workflow`; five uploads parse in parallel; a restart mid-parse re-attaches; `parse_seconds` compared with today's (D7). |
-| 4 | **Height builds on Workflows.** The spool served as a tar; `WorkflowRunner` for heights. | `REPLAY_HEIGHTS_RUNNER=workflow`; one rebuild accepted by the site's checks. |
+| 3 | **Parsing on Workflows.** Parse runs, up to 15 at once (D15), with re-attach on restart; the deploy-skew refusal; uploads and automatic re-parses unchanged on the site. | `REPLAY_PARSE_RUNNER=workflow`; many uploads parse in parallel; a restart mid-parse re-attaches; `parse_seconds` compared with today's (D7). |
+| 4 | **Height builds on Workflows.** The spool served as a tar; build runs; several maps' builds at once (D16). | `REPLAY_HEIGHTS_RUNNER=workflow`; rebuilds of two maps run together and are accepted by the site's checks. |
 | 5 | **Slim the worker** (two PRs: 5a gives the workflow its own `replay_tasks/Dockerfile`, 5b the rest). Remove the local child paths for parse, control and heights, the preemption and idle code, and the .NET parser from the worker image; `POST /jobs` streams the upload to disk instead of reading it whole;
 1 CPU / 2 GB plan. Keep the control venv for feature verification (D14). | The worker image has no parser; all three kinds run on Workflows only; the plan in `render.yaml` is smaller. |
 

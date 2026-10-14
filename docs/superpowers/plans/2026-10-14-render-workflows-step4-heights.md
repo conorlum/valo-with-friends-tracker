@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** With `REPLAY_HEIGHTS_RUNNER=workflow`, a map's height build runs as one Workflow run instead of a child that must wait for the worker to be idle, and it no longer holds up map control.
+**Goal:** With `REPLAY_HEIGHTS_RUNNER=workflow`, a map's height build runs as one Workflow run as soon as it is due, instead of a child that must wait for the worker to be idle, and up to `HEIGHTS_MAX_BUILDS` maps build at once.
 
 **Architecture:** The site still opens a build, sends its rounds in batches and starts it (`HeightBuilds`, unchanged). When the build starts, `ControlRunner` packs the spooled rounds into one tar and runs the build as a `heights` run, the same way step 2 runs a control round: the task and the map's cached files are inputs, the run unpacks the tar, runs today's `height_job` child, posts any cache it built and then its answer.
 
@@ -17,6 +17,7 @@
 - The `heights` task: plan `flex` (D7), `timeout_seconds=3600` (`REPLAY_HEIGHT_TIMEOUT_S`, D8), `Retry(max_retries=0)` (D9: the site resends builds).
 - The build's answer is today's `height_job` answer, unchanged; the site checks it as today (`replay_heights_remote.py`).
 - A workflow build neither waits for the worker to be idle nor runs alone, and a parse never preempts it.
+- The unit is one map (spec D16). Site: `HEIGHTS_MAX_BUILDS` = 4 builds open at once, one per map. Worker: `REPLAY_HEIGHT_BUILDS_MAX` = 4 collecting at once (today's `HEIGHT_COLLECTING_MAX = 2` stays the default for local), `REPLAY_HEIGHT_SPOOL_BYTES` = 2 GiB for every build's rounds together.
 - `REPLAY_HEIGHTS_RUNNER` stays `local` in `render.yaml` at merge.
 - Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
 
@@ -27,6 +28,8 @@
 - A remote build must not block local control rounds from starting (today's "a build runs alone" rule is for a child on this machine).
 - A build whose rounds are missing from the spool when it starts must fail with today's `inputs` answer, not a crash in packing.
 - While a parse runs, `/health` must still read `idle: true` when builds are remote, or the site never opens a build (it waits for idle).
+- One map's build failing (or going stale) must drop only that build and spend only its manifest's try; the other maps' builds carry on.
+- When every map becomes due at once (a rules change), only `HEIGHTS_MAX_BUILDS` open; the next starts when one finishes, and every due map's rounds stay held until its own build ends.
 - The `previous` height asset must reach the run when the worker has it (the report compares against it), and be absent otherwise.
 
 ---
@@ -38,6 +41,8 @@
 | `replay_worker/control_cache.py` (modify) | `pack(folder, dest)`; `unpack(tar, dest)` |
 | `replay_worker/server.py` (modify) | `ControlRunner.remote`, `_next`, `preempt`, `_run_remote` for builds; the cache route accepts `heights` runs |
 | `replay_tasks/tasks.py`, `replay_tasks/main.py` (modify) | the `heights` task |
+| `webapp/app/services/replay_heights_remote.py`, `webapp/app/config.py` (modify) | several builds at once, one per map, capped by `HEIGHTS_MAX_BUILDS` |
+| `replay_worker/server.py` `Settings`/`HeightBuilds` (modify) | `REPLAY_HEIGHT_BUILDS_MAX`, `REPLAY_HEIGHT_SPOOL_BYTES` |
 | tests | `test_replay_worker_heights_workflow.py` (new), `test_replay_worker_control_cache.py` (modify) |
 | `render.yaml`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md` | the switch-over |
 
@@ -504,10 +509,278 @@ git commit -m "replay worker: height builds as workflow runs"
 
 ---
 
-### Task 4: The switch-over
+### Task 4: Several maps' builds at once
 
 **Files:**
-- Modify: `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md`
+- Modify: `replay_worker/server.py` (`Settings`, `from_env`, `HeightBuilds.open`, `main`)
+- Modify: `webapp/app/config.py`
+- Modify: `webapp/app/services/replay_heights_remote.py` (`HeightState`, `step`, the module docstring's "Sent, resumably")
+- Test: `webapp/tests/replays/test_replay_worker_heights.py`, `webapp/tests/replays/test_heights_remote.py`
+
+**Interfaces:**
+- Produces (worker): `Settings.height_builds_max: int` (2; `REPLAY_HEIGHT_BUILDS_MAX`), `Settings.height_spool_bytes` read from `REPLAY_HEIGHT_SPOOL_BYTES`.
+- Produces (site): `settings.heights_max_builds: int = 4`; `HeightState.builds: dict[str, Build]` (manifest key → build); `HeightState.build` (read-only: the only build when there is exactly one, else `None`, so the existing tests read as before); `MAX_BUILDS = settings.heights_max_builds`; `_try_build(session_factory, session, client, hstate, build, due, now, counts, held) -> None`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Worker, in `test_replay_worker_heights.py` (its `worker` fixture takes `Settings` overrides):
+
+```python
+def test_collecting_builds_are_capped_by_the_setting(worker):
+    control, builds, _ = worker(height_builds_max=3)
+    for i, name in enumerate(("Ascent", "Bind", "Haven")):
+        builds.open(f"k{i}", name, 1, MANIFEST)
+    with pytest.raises(OverflowError):
+        builds.open("k3", "Lotus", 1, MANIFEST)
+
+
+def test_spool_bytes_come_from_the_environment():
+    assert server.Settings.from_env({"REPLAY_HEIGHT_SPOOL_BYTES": "2147483648"}).height_spool_bytes == 2 ** 31
+    assert server.Settings.from_env({"REPLAY_HEIGHT_BUILDS_MAX": "4"}).height_builds_max == 4
+```
+
+`HeightBuilds.open` checks only the map name's shape and that the manifest is a dict, so one `MANIFEST` serves every map.
+
+Site, in `test_heights_remote.py`. Its `on` fixture gives two maps geometry (Ascent, the `linked` replay's map, and Bind). `clone` adds replays of a map, and two replays make a map's first build due (`FIRST_BUILD_MATCHES`):
+
+```python
+def second_map(db, replay, name="Bind", count=2):
+    """`count` valid replays of another map with geometry (the `on` fixture's Bind), so two maps are due."""
+    made = clone(db, replay, count)
+    for copy in made:
+        copy.map_name = name
+    db.commit()
+    return made
+
+
+def test_two_due_maps_build_at_once(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    assert {b.map_name for b in rig.state.heights.builds.values()} == {linked.map_name, "Bind"}
+    rig.until(factory, lambda s: total(s, "heights_live") == 2, cycles=100, step_s=1)
+    assert db.query(ControlHeight).count() == 2
+
+
+def test_the_cap_opens_one_and_holds_both(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 1)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    session = factory()
+    try:
+        held = hr.step(factory, session, rig.client, rig.state.heights, 1.0, {})
+    finally:
+        session.close()
+    assert len(rig.state.heights.builds) == 1
+    assert held == {linked.map_name, "Bind"}         # one building, one waiting its turn: both maps' rounds wait
+
+
+def test_one_maps_failure_leaves_the_other_building(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    one_round_batches(db, monkeypatch)               # both builds stay collecting for several cycles
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    builds = {b.map_name: b for b in rig.state.heights.builds.values()}
+    builds["Bind"].opened_at = -10_000               # Bind's collecting is past COLLECT_STALE_S: its try fails
+    counts = rig.cycle(factory, step_s=1)
+    assert counts["heights_failed"] == 1
+    assert [b.map_name for b in rig.state.heights.builds.values()] == [linked.map_name]
+```
+
+(`rig.settings` is the worker's live `Settings` object, so setting `height_builds_max` on it takes effect for the next `open`.)
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_heights.py tests/replays/test_heights_remote.py -v`
+Expected: the new tests FAIL (`height_builds_max` unknown; `HeightState` has no `builds`).
+
+- [ ] **Step 3: The worker**
+
+`Settings`: `height_builds_max: int = 2` beside `height_spool_bytes`. `from_env`:
+
+```python
+        settings.height_builds_max = max(1, int(env.get("REPLAY_HEIGHT_BUILDS_MAX", settings.height_builds_max)))
+        settings.height_spool_bytes = int(env.get("REPLAY_HEIGHT_SPOOL_BYTES", settings.height_spool_bytes))
+```
+
+`HeightBuilds.open`: replace `>= HEIGHT_COLLECTING_MAX` with `>= self.settings.height_builds_max`, and delete the constant (update the class docstring's "at most HEIGHT_COLLECTING_MAX builds collect at once" to name the setting).
+
+`main()`: when the spool (`settings.temp_root`) is on the archive disk, its cap joins the reserve:
+
+```python
+    if worker.archive is not None and settings.temp_root.resolve().is_relative_to(worker.archive.root.resolve()):
+        worker.archive.cache_reserve += settings.height_spool_bytes
+```
+
+- [ ] **Step 4: The site**
+
+`config.py`, beside `control_max_matches`:
+
+```python
+    # Height rebuilds open at once, one per map (spec 2026-10-14, D16); the worker's REPLAY_HEIGHT_BUILDS_MAX
+    # must be at least this.
+    heights_max_builds: int = 4
+```
+
+`replay_heights_remote.py`:
+
+```python
+MAX_BUILDS = settings.heights_max_builds     # maps whose rebuild is open at once (HEIGHTS_MAX_BUILDS)
+
+
+@dataclass
+class HeightState:
+    builds: dict = field(default_factory=dict)     # manifest key -> Build, one per map, at most MAX_BUILDS
+    tries: dict = field(default_factory=dict)       # manifest key -> (failures, last)
+
+    @property
+    def build(self) -> Build | None:
+        """The only build, when exactly one is open (tests and logs)."""
+        return next(iter(self.builds.values())) if len(self.builds) == 1 else None
+    # failed / may_try / spent unchanged
+```
+
+Rewrite `step` around a per-build helper that holds today's `try`/`except` unchanged in substance:
+
+```python
+def _try_build(session_factory, session, client, hstate: HeightState, build: Build, due: dict, now: float,
+               counts: dict, held: set) -> None:
+    """One look at one map's build; its failure drops only it and spends only its manifest's try."""
+    from app.services.replay_control_remote import Conflict, Unreachable, WorkerBusy
+
+    try:
+        if _advance(session_factory, session, client, build, now, counts):
+            hstate.builds.pop(build.key, None)
+            held.discard(build.map_name)
+    except (Unreachable, WorkerBusy):
+        counts["unreachable"] = counts.get("unreachable", 0) + 1
+    except _Stale as stale:
+        log.info("heights: %s build dropped: %s", build.map_name, stale)
+        _cancel(client, build)
+        hstate.builds.pop(build.key, None)
+        counts["heights_stale"] += 1
+    except (BuildFailed, Conflict, AttributeError, KeyError, TypeError, ValueError) as error:
+        # The last four: a worker's answer that isn't shaped as the protocol says (`state.get` on a list, a
+        # missing field). Handled here, where the build can be dropped; left to `cycle`'s catch-all the build
+        # would stay and meet the same answer every cycle without spending a try. A database error is none of
+        # these and still reaches `cycle`, which rolls back and takes its lock again.
+        log.warning("heights: %s build failed: %s: %s", build.map_name, type(error).__name__, error)
+        _cancel(client, build)
+        hstate.builds.pop(build.key, None)
+        hstate.failed(build.key, now)
+        if hstate.spent(build.key):
+            _retire_spent_evidence(session_factory, due[build.key], counts)
+            held.discard(due[build.key].map_name)
+        counts["heights_failed"] += 1
+
+
+def step(session_factory, session, client, hstate: HeightState, now: float, counts: dict) -> set[str]:
+    """One cycle's work on height rebuilds. Returns the maps whose rounds are held."""
+    from app.services.replay_control_remote import Unreachable, WorkerBusy
+
+    for key in COUNTS:
+        counts.setdefault(key, 0)
+    plan = plan_maps(session)
+    for name in plan.off:
+        if _turn_off(session_factory, name):
+            counts["heights_off"] += 1
+            log.info("heights: %s off: what its heights were built from is gone", name)
+    due = {hi.key(d.manifest): d for d in plan.due}
+    for key, d in due.items():
+        if hstate.spent(key):
+            _retire_spent_evidence(session_factory, d, counts)
+    held = {d.map_name for key, d in due.items() if not hstate.spent(key)}
+    for key, build in list(hstate.builds.items()):
+        if key not in due:
+            _cancel(client, build)                    # its inputs are no longer the map's
+            del hstate.builds[key]
+            counts["heights_stale"] += 1
+    for build in list(hstate.builds.values()):
+        _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
+    building = {b.map_name for b in hstate.builds.values()}
+    ready = [d for key, d in due.items()
+             if key not in hstate.builds and d.map_name not in building and hstate.may_try(key, now)]
+    room = MAX_BUILDS - len(hstate.builds)
+    if not ready or room <= 0:
+        return held
+    try:
+        answer = client.health()
+        if _other_deploy(answer):
+            return {b.map_name for b in hstate.builds.values()}   # the deploy gap: open nothing, hold only what runs
+        if not _idle(client, answer):
+            return held
+    except (Unreachable, WorkerBusy):
+        counts["unreachable"] = counts.get("unreachable", 0) + 1
+        return held
+    except BuildFailed as error:                      # no boolean idle field: as today, a failed try for the first ready map
+        log.warning("heights: %s build failed: %s", ready[0].map_name, error)
+        hstate.failed(hi.key(ready[0].manifest), now)
+        counts["heights_failed"] += 1
+        return held
+    actives = control_heights.active_digests(session)
+    for d in ready[:room]:
+        rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
+        build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,
+                      previous=actives.get(d.map_name))
+        hstate.builds[build.key] = build
+        log.info("heights: %s rebuild (%s), %d rounds", d.map_name, d.why, len(rounds))
+        _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
+    return held
+```
+
+Two behaviours differ from today and are intended:
+- With builds open, the deploy gap holds those builds' maps rather than nothing. Today nothing could be open at that point, so the old `return set()` held nothing.
+- A missing `idle` field fails the first ready map's try, as today's `_idle` raising inside the old `try` did.
+
+Read the old `step` side by side with this one. Every other branch maps one-to-one.
+
+Find every other reader of `hstate.build` with `rg -n "heights\.build\b|hstate\.build\b" webapp/app` (the dispatcher's status page or logs, if any) and move it to `builds`.
+
+The module docstring's "Sent, resumably. One build at a time, opened only while the worker reports idle" becomes "Sent, resumably. Up to MAX_BUILDS builds at once, one per map, opened only while the worker reports idle (always, once builds run as Workflow runs)".
+
+- [ ] **Step 5: Run the tests**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_heights_remote.py tests/replays/test_replay_worker_heights.py tests/replays/test_control_remote.py -v`
+Expected: all pass, including every existing test (they see one build through `HeightState.build`).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add replay_worker/server.py webapp/app/config.py webapp/app/services/replay_heights_remote.py webapp/tests/replays/test_heights_remote.py webapp/tests/replays/test_replay_worker_heights.py
+git commit -m "heights: several maps' rebuilds at once, capped by HEIGHTS_MAX_BUILDS"
+```
+
+---
+
+### Task 5: The switch-over
+
+**Files:**
+- Modify: `render.yaml`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md`
+
+- [ ] **Step 0: `render.yaml`**
+
+On `valowithfriendstracker`:
+
+```yaml
+      # Height rebuilds open at once, one per map (spec 2026-10-14, D16).
+      - key: HEIGHTS_MAX_BUILDS
+        value: "4"
+```
+
+On `replay-worker`:
+
+```yaml
+      - key: REPLAY_HEIGHT_BUILDS_MAX
+        value: "4"
+      - key: REPLAY_HEIGHT_SPOOL_BYTES
+        value: "2147483648"
+```
+
+With heights still `local`, these let up to 4 builds collect while each still waits its turn to run alone, as today.
 
 - [ ] **Step 1: Docs**
 
@@ -517,10 +790,12 @@ git commit -m "replay worker: height builds as workflow runs"
 ### Height builds on Workflows (step 4)
 
 1. `replay-worker` → Environment → `REPLAY_HEIGHTS_RUNNER=workflow` → save.
-2. The next due rebuild (every 5 new matches of a map) shows as a `heights` run on the workflow's Runs page.
-   To see one sooner: `scripts/control_heights.py list` shows which map is due.
-3. Done when the site accepts it (`heights_live` in the dispatcher's counts, or `control_heights.py list`).
-4. Roll back: `REPLAY_HEIGHTS_RUNNER=local`.
+2. Each due map (5 new matches since its last build) shows as a `heights` run on the workflow's Runs page as soon
+   as it is due, up to `HEIGHTS_MAX_BUILDS` at once. `scripts/control_heights.py list` shows which maps are due.
+3. Done when the site accepts a rebuild (`heights_live` in the dispatcher's counts, or `control_heights.py list`).
+4. Tune with `HEIGHTS_MAX_BUILDS` (site); keep the worker's `REPLAY_HEIGHT_BUILDS_MAX` at least as large, and raise
+   `REPLAY_HEIGHT_SPOOL_BYTES` if the worker answers "the spool is full".
+5. Roll back: `REPLAY_HEIGHTS_RUNNER=local`.
 ```
 
 `replay_worker/README.md`, "Height builds": with `REPLAY_HEIGHTS_RUNNER=workflow` a build is one Workflow run that neither waits for idle nor runs alone; the spool goes to it as one tar.
@@ -531,10 +806,11 @@ Run: `.\.venv\Scripts\python.exe -m pytest tests/replays -q`
 Expected: all pass.
 
 ```bash
-git add replay_worker/README.md webapp/RENDER_DEPLOY.md
-git commit -m "height builds on workflows: the switch-over notes"
+git add render.yaml replay_worker/README.md webapp/RENDER_DEPLOY.md
+git commit -m "height builds on workflows: settings and the switch-over notes"
 ```
 
 - [ ] **Step 3: On Render (the owner)**
 
-Follow "Height builds on Workflows". Done when one rebuild is accepted.
+Follow "Height builds on Workflows". Done when one rebuild is accepted. When two maps are due together, both
+should show as running at once.

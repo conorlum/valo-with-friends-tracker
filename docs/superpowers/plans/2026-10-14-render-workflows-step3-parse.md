@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** With `REPLAY_PARSE_RUNNER=workflow`, each upload and re-parse is parsed and condensed in its own Workflow run, up to 5 at once, and a worker restart reconnects to a parse that is still running instead of starting another.
+**Goal:** With `REPLAY_PARSE_RUNNER=workflow`, each upload and re-parse is parsed and condensed in its own Workflow run, up to 15 at once, and a worker restart reconnects to a parse that is still running instead of starting another.
 
 **Architecture:** The parse-and-condense code in `Worker._process` moves to `replay_worker/parse_job.py`, used both by the local path and by the new `parse` task. The worker keeps its queues, job records, held uploads, archive and receipts; in workflow mode it runs `REPLAY_PARSE_PARALLEL` parse threads, and each opens a run with the job's `.vrf` as input, records the run's Render id and token in `job.json` before waiting, and maps the run's answer onto today's job outcomes.
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - The `parse` task: plan `flex` (D7), `Retry(max_retries=0)` (D9). The parser keeps its own 240 s timeout (`REPLAY_TIMEOUT_S`) inside the run; the run as a whole (download, parse, condense, post) gets `REPLAY_PARSE_RUN_TIMEOUT_S` = 1200 s, the site's `STUCK_AFTER` (20 min). The task's `timeout_seconds` is 1260.
-- `REPLAY_PARSE_PARALLEL` = 5 (the worker's queue size, and the site's `MAX_UNFINISHED`).
+- `REPLAY_PARSE_PARALLEL` = 15 and `REPLAY_QUEUE_SIZE` = 15 (spec D15), so the worker admits and runs 15 at once. The site's per-uploader `MAX_UNFINISHED` (5) is unchanged. With 15 parses and 40 control rounds wanting to start together, the 40/min start limit spreads them over about a minute and a half.
 - Deploy skew (D11): a run whose `current_recipe()` differs from the worker's answers `error_kind: "deploy"`; the worker waits 60 s and starts a new run, at most 10 times.
 - The site, the receipts and the archive behave exactly as today; a job's outcomes and user-facing reasons are unchanged (`parse timed out`, `parse failed`, `not condensable: <reason>`, `the archived file is another match`).
 - `REPLAY_PARSE_RUNNER` stays `local` in `render.yaml` at merge.
@@ -403,7 +403,7 @@ git commit -m "replay tasks: the parse task"
 
 **Interfaces:**
 - Consumes: `runs.Runs` (step 1), `tasks.parse` (Task 2), `_accept_result` (Task 1).
-- Produces: `Settings.parse_parallel: int` (5, `REPLAY_PARSE_PARALLEL`), `Settings.parse_run_timeout_s: float` (1200, `REPLAY_PARSE_RUN_TIMEOUT_S`); `Job.run_id: str | None`, `Job.run_token: str | None` (saved in `job.json` as `run_id`, `run_token`); `Worker(settings, on_parse=None, runs_table=None)`; `Worker.parsing` (a read-only property: any parse running); `DEPLOY_RETRIES = 10`, `DEPLOY_WAIT_S = 60`.
+- Produces: `Settings.parse_parallel: int` (15, `REPLAY_PARSE_PARALLEL`), `Settings.parse_run_timeout_s: float` (1200, `REPLAY_PARSE_RUN_TIMEOUT_S`); `Job.run_id: str | None`, `Job.run_token: str | None` (saved in `job.json` as `run_id`, `run_token`); `Worker(settings, on_parse=None, runs_table=None)`; `Worker.parsing` (a read-only property: any parse running); `DEPLOY_RETRIES = 10`, `DEPLOY_WAIT_S = 60`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -547,7 +547,7 @@ Expected: the new tests FAIL (`Settings` has no `parse_parallel`; `Worker` takes
 `Settings`:
 
 ```python
-    parse_parallel: int = 5                      # parse runs at once with REPLAY_PARSE_RUNNER=workflow
+    parse_parallel: int = 15                     # parse runs at once with REPLAY_PARSE_RUNNER=workflow (spec D15)
     parse_run_timeout_s: float = 1200.0          # one parse run: download, parse, condense, post
 ```
 
@@ -707,8 +707,15 @@ git commit -m "replay worker: parses as workflow runs, five at once, reconnectin
 
 ```yaml
       - key: REPLAY_PARSE_PARALLEL
-        value: "5"
+        value: "15"
+      # Admits 15 waiting/running jobs (spec D15). The archive's parse reserve grows by 10 x the 200 MB cap
+      # (replay_worker/archive.py parse_reserve), about 2 GB less archive.
+      - key: REPLAY_QUEUE_SIZE
+        value: "15"
 ```
+
+`REPLAY_QUEUE_SIZE` also takes effect while parsing is still `local`: the worker then queues up to 15 and parses
+them one at a time, as today, which the site already tolerates (its `QUEUED_STUCK_AFTER` is 60 minutes).
 
 - [ ] **Step 2: Docs**
 
@@ -719,7 +726,8 @@ git commit -m "replay worker: parses as workflow runs, five at once, reconnectin
 
 1. Note today's `parse_seconds` for three recent uploads (the job page's report, or `/admin` → replays).
 2. `replay-worker` → Environment → `REPLAY_PARSE_RUNNER=workflow` → save.
-3. Upload five replays at once: the workflow's Runs page shows five `parse` runs running together.
+3. Upload several replays at once (up to 15, from more than one browser session: one session's batch is 5): the
+   workflow's Runs page shows that many `parse` runs running together.
 4. Restart test: upload one, and while its run is running, `replay-worker` → Manual Deploy → Restart. The upload
    still finishes, and the Runs page shows one `parse` run for it, not two.
 5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in
@@ -741,5 +749,5 @@ git commit -m "parsing on workflows: settings and the switch-over notes"
 
 - [ ] **Step 4: On Render (the owner)**
 
-Follow "Parsing on Workflows". Done when five uploads parse together, the restart test leaves one run, and the
+Follow "Parsing on Workflows". Done when several uploads parse together, the restart test leaves one run, and the
 `parse_seconds` comparison is noted (D7's decision on the plan size).
