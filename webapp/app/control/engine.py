@@ -41,7 +41,9 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   that is at most DROP_PIECE_CELLS, or one cell wide all along (NARROW_ROOM_CELLS), is dropped. It is kept per
   enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
   also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
-  damage (the timing-gaps spec, section 4); a revived enemy restarts where they stand.
+  damage (the timing-gaps spec, section 4); but heard footsteps and gunfire name an enemy only when just one enemy could
+  have made them (R1/R2, 2026-10-14): the only one alive, every other living enemy in the team's live sight, or, for
+  gunfire, the only living enemy with a recorded shot of that gun by then; otherwise they change no one's unknown. A revived enemy restarts where they stand.
 - **Mollies (P07a; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 5).** A team's burning
   damaging molly (app/control/mollies.py: which rows, `[t, min(t + seconds, row end))`) is ground its enemy can't
   walk into, across or diagonally past while it burns, in the team's unknown, its counterfactual and its knowledge
@@ -634,6 +636,12 @@ class RoundInputs:
         if (case, slot) not in self._missed:
             self._missed.add((case, slot))
             self.missing[case] += 1
+
+    def carriers(self, gun: str | None, te: float) -> set[int]:
+        """Slots with a recorded shot of `gun` at or before te this round; none for an unrecorded gun."""
+        if gun is None:
+            return set()
+        return {by for t, by, g in self.shots if g == gun and t <= te}
 
     def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
         """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
@@ -2238,6 +2246,11 @@ class Unknown:
                 free = np.where(room & ~self._room[side], t, free)   # freed since the last tick: from now
             self.free_since[side], self._room[side] = free, room
             cells = np.zeros(n, bool)
+            # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
+            in_cone = {target for (viewer, target), active in getattr(tick, "direct", {}).items()
+                       if active and viewer in tick.holders and tick.holders[viewer].team == side}
+            spotted = {s for s in enemies if tick.holders.get(s) is not None
+                       and (spots[tick.holders[s].cell] or s in in_cone)}
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
                 before = np.full(n, np.inf) if reached is None else reached.copy()
@@ -2262,7 +2275,7 @@ class Unknown:
                         tb, x, y = back
                         hits.append((tb, "revived", 0.0, rnd.node(slot, tb, x, y), x, y))
                 if locates:
-                    hits += self._locating(rnd, side, slot, since, t)
+                    hits += self._locating(rnd, side, slot, since, t, spotted)
                 if hits:
                     # every event is recorded, in time order; the region collapses round the latest (on a tie,
                     # the smaller area)
@@ -2283,10 +2296,7 @@ class Unknown:
                 if mine or slot in self.paused[side]:
                     reached, before, sources, area, centre = self._operate(
                         side, slot, mine, reached, before, sources, area, centre, since, t, rnd)
-                # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
-                in_cone = any(active and target == slot and viewer in tick.holders and tick.holders[viewer].team == side
-                              for (viewer, target), active in getattr(tick, "direct", {}).items())
-                if h is not None and (spots[h.cell] or in_cone):
+                if h is not None and slot in spotted:
                     reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
                     self._seen_entry[side][slot] = self.log[side].add(h.cell, t, -1, int(self.chokes[h.cell]))
@@ -2440,13 +2450,24 @@ class Unknown:
                 return True
         return False
 
-    def _locating(self, rnd, side: str, slot: int, since: float, t: float
+    @staticmethod
+    def _attributable(rnd, side: str, slot: int, te: float, spotted: set, gun=None, gunfire: bool = False) -> bool:
+        """R1/R2: whether a heard sound may name `slot`: only one enemy could have made it. True when no other
+        enemy is alive at te, or every other living enemy is in the team's live sight now (`spotted`), or, for
+        gunfire, `slot` is the only living enemy with a recorded shot of that gun at or before te."""
+        others = {s for s, tm in rnd.team.items() if tm != side and s != slot and rnd.alive(s, te)}
+        if not others or others <= spotted:
+            return True
+        return bool(gunfire and gun is not None and rnd.carriers(gun, te) & (others | {slot}) == {slot})
+
+    def _locating(self, rnd, side: str, slot: int, since: float, t: float, spotted: set = frozenset()
                   ) -> list[tuple[float, str, float, int, float, float]]:
         """Every event in (since, t] that locates enemy `slot` for `side` (R8), as (time, kind, area radius
         m, node, x px, y px) at the event's own time and the enemy's position then: a kill of one of the
         team, the plant, gun damage to one of the team (heard or not), gunfire within that gun's hearing of
         a live player of the team, and, at t, moving faster than AUDIBLE_MPS within FOOTSTEP_RANGE_M of one.
-        An event without a position for the enemy locates nothing and is counted (R20)."""
+        Heard footsteps and gunfire name the enemy only when `_attributable` (R1/R2); otherwise they locate
+        no one and add nothing. An event without a position for the enemy locates nothing and is counted (R20)."""
         out = []
         times, rows = rnd.locating_rows(slot)
         for te, kind, detail in rows[bisect.bisect_right(times, since):bisect.bisect_right(times, t)]:
@@ -2457,7 +2478,9 @@ class Unknown:
                 rnd.miss("locating event without a position", slot)
                 continue
             if kind == "gunfire":
-                if detail is None:      # no gun recorded: the longest hearing range in the table (spec)
+                if not self._attributable(rnd, side, slot, te, spotted, detail, True):
+                    continue
+                if detail is None:     # no gun recorded: the longest hearing range in the table (spec)
                     rng = max(GUN_HEARING_M.values(), default=GUN_HEARING_DEFAULT_M)
                 else:
                     rng = GUN_HEARING_M.get(detail, GUN_HEARING_DEFAULT_M)
@@ -2473,7 +2496,7 @@ class Unknown:
                 rnd.miss("speed across a track break or missing sample", slot)
         elif v > AUDIBLE_MPS:
             p = rnd.pos(slot, t)
-            if self._heard_by(rnd, side, t, p[0], p[1], FOOTSTEP_RANGE_M):
+            if self._attributable(rnd, side, slot, t, spotted) and self._heard_by(rnd, side, t, p[0], p[1], FOOTSTEP_RANGE_M):
                 out.append((t, "footsteps", FOOTSTEP_AREA_M, rnd.node(slot, t, p[0], p[1]), p[0], p[1]))
         return out
 
