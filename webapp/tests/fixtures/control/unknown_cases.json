@@ -56,6 +56,16 @@
    "match": "2db387cd-f254-4f42-bb56-319c08ababe0", "map": "Summit", "round": 7, "t": 25.073,
    "side": "A", "expect": "clear", "local": true,
    "cells": [[580, 108], [732, 260], [836, 340], [764, 388], [748, 444], [812, 532]],
-   "source": "the 2026-10-05 control review, item 9 (Neural Theft locates every living enemy at each ping). Summit round 7: the first ping is at 25.007 s. Needs the round as re-condensed locally (revision 13) and its link data: run with --inputs."}
+   "source": "the 2026-10-05 control review, item 9 (Neural Theft locates every living enemy at each ping). Summit round 7: the first ping is at 25.007 s. Needs the round as re-condensed locally (revision 13) and its link data: run with --inputs."},
+  {"id": "sunset-r13-footsteps-name-nobody",
+   "match": "3b29b5e9-ba26-4b0b-bca3-8eda8d150215", "map": "Sunset", "round": 13, "t": 27.5,
+   "side": "A", "expect": "unknown",
+   "cells": [[812, 340], [844, 388], [876, 420], [980, 380], [972, 508], [820, 540]],
+   "source": "the owner, 2026-10-14 (bug 4): hearing footsteps wiped the unknown on the right (B) side. Footsteps of slots 9 (27.188 s) and 3 (27.5 s) named them and collapsed their regions; at every footstep in 26-28 s five enemies were alive and none in A's live sight, so R1 names nobody. Before the fix A's unknown in x 640-1024, y 120-720 px fell from 1670 cells to 120; without the attribution it stays at 1611. Runs flat locally."},
+  {"id": "sunset-r13-blue-room-not-contested",
+   "match": "3b29b5e9-ba26-4b0b-bca3-8eda8d150215", "map": "Sunset", "round": 13, "t": 11.2,
+   "side": "B", "expect": "state", "states": ["b_passive", "b_safe", "b_active"],
+   "cells": [[52, 388], [60, 388], [68, 388], [100, 388]],
+   "source": "the owner, 2026-10-14 (bug 3): a room marked contested with no orange claim. Stored cells were contested_active, covered only by Chamber (slot 7, B): collapse_states called a cell contested when blue nodes disagreed (b_active beside b_safe). Passes flat even on base (a flat map has one node per cell); its bite is test_control_collapse.py."}
  ]
 }
