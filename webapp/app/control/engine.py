@@ -1251,9 +1251,7 @@ def collapse_states(geo: Geometry, state: np.ndarray) -> np.ndarray:
         return state
     if geo.adaptive:
         walk = np.flatnonzero(geo.walk_n)
-        out, present = _collapse_nodes(state, walk, geo.node_cell[walk], GRID * GRID)
-        out[~present] = NONE
-        return out
+        return _collapse_nodes(state, walk, geo.node_cell[walk], GRID * GRID)[0]   # an empty cell is NONE
     out = state[: GRID * GRID].copy()
     every = np.arange(len(state))
     collapsed, present = _collapse_nodes(state, every, geo.node_cell, GRID * GRID)
