@@ -54,10 +54,13 @@ events add ticks) before it: they are judged with the same tick's sight. Agent's
 decisions log.
 
 **Alive** for case 1 and 2 means alive at te (`rnd.alive`), so an enemy killed between te and t still counts as
-someone who could have made the sound.
+someone who could have made the sound; having no holder at t, they count as unseen, which errs toward naming
+nobody. On a round's first tick (`since = -inf`) gunfire can sit more than one step before the tick; the same
+rule applies. A sound with no gun recorded gets no gun clue, but cases 1 and 2 still apply.
 
 **Carries that gun** (case 3): the replay records no loadout, only each shot's gun (`util` rows `k == "shot"`,
-`gun`). An enemy carries gun G in a round when any of their shots in that round is a G shot (`RoundInputs.shots`).
+`gun`). An enemy carries gun G at te when one of their shots at or before te in that round is a G shot
+(`RoundInputs.shots`; R2's "at that time": a gun picked up later doesn't count before it is fired).
 A shot with no gun recorded (`gun is None`) gives no clue. A gun carried but never fired is invisible to this
 reading, so attribution by gun can be wrong when a second enemy holds the same gun and never fires it (most likely
 for the free sidearm). This is a reading of R2 the owner may want a say in: it goes on the grouped card.
@@ -72,8 +75,11 @@ for the free sidearm). This is a reading of R2 the owner may want a say in: it g
 - `Unknown._locating(rnd, side, slot, since, t, spotted)` keeps the kill, plant and damage rows as they are, and
   for `footsteps` and `gunfire` calls `_attributable(rnd, side, slot, te, spotted, gun=...)`, which implements 3.1.
   A dropped sound adds nothing to `hits`.
-- No new constant, no new switch. `CONTROL_REVISION` 15 -> 16 (`app/replays/control_format.py:47`), once, in the
-  last engine item, with its history line.
+- The engine header's unknown rule (`engine.py:36-44`) and `_locating`'s docstring say who a sound names.
+- No new constant, no new switch. `CONTROL_REVISION` 15 -> 16 (`app/replays/control_format.py:47`), once, after
+  every engine change (hearing and bug 3), with its history line. Its pins: `tests/replays/test_control_figures.py:91`
+  (`(18, 15)` -> `(18, 16)`) and `tests/replays/test_control_format.py:42-61` (add `16` with the unchanged digest,
+  as 5 and 6 do).
 
 ### 3.3 The "why the unknown changed" list
 
@@ -86,16 +92,25 @@ changed nothing"). An attributed sound keeps today's reason. Site copy, tier 1.
 `app/gaps/detect.py` reads the engine's locating events per tick (`rec.events`, `detect.py:276-303`) and its
 `LEGACY_EVENTS` still name `footsteps` and `gunfire`. It has no attribution of its own, so it follows the engine
 with no code change: a dropped sound no longer resets an enemy's unseen clock (`wait_over`). That can change what
-the Gaps tab shows (more gaps, since an enemy stays unlocated longer). `app/services/replay_gaps.py` only reads
-the hearing table. Whether the Gaps change is right goes on a card with a before/after count from the judged
-round.
+the Gaps tab shows (more gaps, since an enemy stays unlocated longer), and the back-shots too
+(`app/gaps/backshots.py:130,136` read `wait_over`/`last_located`). The coach's knowledge events
+(`app/control/encode.py:95,156` -> `app/coach/knowledge.py`) lose the dropped sounds the same way.
+`app/services/replay_gaps.py` only reads the hearing table. Whether the Gaps change is right goes on a card with a
+before/after count of gaps and back-shots from the judged round.
 
 ### 3.5 Tests
 
-- Unit tests on a small synthetic round (the existing `tests/control` fixtures for `_locating`): a footstep with
-  two enemies alive and the other unseen collapses nothing; with the other in live sight it collapses; with the
-  other dead it collapses; gunfire with a gun only X has fired collapses; with a gun both fired, nothing; with no
-  gun recorded, nothing. Red first.
+- Unit tests on a small synthetic round (patterns in `tests/replays/test_control_unknown.py` and
+  `test_control_reasons.py`): a footstep with two enemies alive and the other unseen collapses nothing; with the
+  other in live sight it collapses; with the other dead it collapses; gunfire with a gun only X has fired by then
+  collapses; with a gun both have fired, nothing; a gun the other fires only later still collapses; no gun
+  recorded with the other unseen, nothing; no gun with the other dead, collapses. Red first.
+- Bug 3: red-first unit tests for both `collapse_states` branches (a toy adaptive geometry and the floors toy) and
+  the section totals; the old pins at `test_control_floors.py:265-272` re-recorded with a comment citing this run.
+- Bug 1: a test that rasterises the closed Sunset door on the committed Sunset masks and finds no open 8-connected
+  path across the doorway, and that bundle-5 stays publishable.
+- Pictures for the cards: local `scripts/preview_control_live.py` before/after images at bug 4 (round 13, 27.5 s)
+  and bug 3 (round 13, 11.2 s), a Gaps before/after count for round 13, and bug 1's raster before/after.
 - Kills, plant and damage still locate (an existing test, kept).
 - The judged real-round case: bug 4, round 13 at 27.5 s, the right side stays in blue's unknown
   (`tests/fixtures/control/unknown_cases.json`, `scripts/control_cases.py`).
@@ -122,8 +137,18 @@ at both ends (top edge to uv y <= ~4340 at x 4028-4061, bottom edge to uv y >= ~
 loads the Sunset masks, rasterises the closed footprint and asserts that no 8-connected open path crosses the
 doorway (west (400,465) to east (420,465) inside x 396-431, y 430-500). Data, not code: the general fix (a
 "touched" raster for closed door masks, `map_feature_motion.py:274`) also moves Ascent's doors and is left as a
-note on the card. P3 must find how a `tags.json` change reaches production (the feature artifact is compiled
-against the height build on the worker): if it needs an owner step, the card gives it.
+note on the card.
+
+**How it ships (P2 review, checked in code).** No owner step. The edit changes the feature key's tags digest, so
+`resolve_current_geometry` reports `features_pending` (`app/services/replay_control.py:211-213`); the web service's
+control dispatcher compiles the artifact on its next pass against the active Sunset height row
+(`app/services/replay_control_remote.py:640` -> `app/services/control_feature_artifacts.py:151-162`, retried every
+300 s) and pushes it to the worker (`replay_control_remote.py:533`). Heights don't read tags, so no height rebuild.
+The stored editorial `runtime_digest` (`tags.json` ~54599) is re-derived with `ms.runtime_digest`. Risk: a
+footprint pushed into the doorway's walls can fail `bundle_status`'s overlap or outside-bundle checks
+(`features.py:1107-1120`), and bundle-5 would silently stop publishing (the door vanishes). The test therefore
+also asserts bundle-5 stays publishable on Sunset. The same leak sweep runs read-only over the other published
+door bundles (Summit, Abyss, Lotus) and its counts go on the card; they are not fixed in this run (one case).
 
 ### 4.2 Bug 2: Clove's sight through a wall corner (round 7, 33.2 s)
 
@@ -147,12 +172,17 @@ one stored state and calls the cell contested whenever the codes differ, even wh
 `b_active` on the edge of Chamber's cone, `b_safe` beside it). 884 such cell-frames in round 13 alone. The local
 flat engine can't show it (no Sunset height asset locally).
 
-**Fix (tier 2, contained).** In both branches of `collapse_states`, a cell whose nodes all belong to one team takes
-the highest of their states (the same max rule `compose` uses for a team's level); nodes of both teams, or a
-contested node, or nobody's against held stay contested as today. This changes a rule pinned by
-`test_control_floors.py:271-272` ("two agree, one doesn't" -> contested, from the heights spec's two-floor rule,
-`2026-10-01-control-heights-design.md:464`, marked proposed). It follows D5 (contested needs a claim from both
-sides). Card as built.
+**Fix (tier 2, contained).** One helper, used by every place that turns a cell's nodes into one state: both
+branches of `collapse_states` and the section-totals copy of the rule (`engine.py:3079-3091`), so the stored
+picture, `knew_states` (`engine.py:3019`), `cells_now` (3072) and the section totals agree. The rule: a cell is
+contested only when its nodes hold claims of both teams or a contested node (CONTESTED_ACTIVE when any node is
+active, as today); otherwise it takes the highest state among its nodes, so one team's nodes, with or without
+nobody's nodes beside them, give that team's highest state, and all nobody's gives nobody's. Contested means
+claims from both sides, so one team plus nobody isn't a contest. This changes a rule pinned by
+`test_control_floors.py:265-272` ("nobody's against held: they disagree", "two agree, one doesn't"), from the
+heights spec's two-floor proposal (`2026-10-01-control-heights-design.md:464`, marked proposed, whose "one floor
+unknown -> unknown" was never built). The card gives how many of round 13's 884 blue-only contested cell-frames
+each variant clears (same-team only; same-team plus nobody's) and a before/after picture. Card as built.
 
 ## 5. Decisions
 
@@ -160,13 +190,22 @@ sides). Card as built.
 | --- | --- | --- | --- |
 | 1 | Live sight test | The engine's spotted test, at the tick | R1 says live sight; the engine already has one test for it |
 | 2 | Gunfire judged at which tick | The tick that applies it (<= 0.5 s later) | Events are applied per tick; no per-event sight exists |
-| 3 | "Carries" a gun | Fired it at any time in the round | No loadout in the replay; card |
+| 3 | "Carries" a gun | Fired it at or before te in the round | No loadout in the replay; R2's "at that time"; card |
 | 4 | Reason for a dropped sound | None | It changed nothing |
 | 5 | Gaps detector | No code change, follows the engine | It reads the engine's events; card on the Gaps change |
 | 6 | Bug 1 | Data fix to the closed door's footprint, provisional | Cause clear; edits reviewed geometry, so a card |
 | 7 | Bug 2 | Nothing built; a question card | It is the memory/backfill rule, the owner's |
-| 8 | Bug 3 | Same-team nodes collapse to the highest state, provisional | Follows D5; reverses a proposed pin, so a card |
-| 9 | Judged cases | Bug 4 (unknown, side A, 6 cells) and bug 3 (state, 4 cells) into `unknown_cases.json` | R6. Bug 3's passes locally even today (flat map); bug 1's needs the feature artifact, so its check is the raster test |
+| 8 | Bug 3 | One team's nodes (with or without nobody's) collapse to its highest state, in one helper used by all three places, provisional | Contested is two sides' claims; reverses a proposed pin, so a card |
+| 9 | Judged cases | Bug 4 (unknown, side A, 6 cells) and bug 3 (state, 4 cells) into `unknown_cases.json` | R6. Both run flat locally (no Sunset height asset), so bug 3's passes even today: its bite is the unit tests; bug 1's check is the raster test |
+
+## 7. P2 review (2026-10-14, afk-reviewer)
+
+No blockers. All nine should-fixes applied above: the section-totals copy of the collapse rule (4.3); nobody's
+beside one team is no contest (4.3); red-first bug 3 tests and the re-pinned floors test (3.5); the revision pins
+and the bump after every engine change (3.2); back-shots and the coach's knowledge events as consumers (3.4);
+"carries" at or before te (3.1); no-gun gunfire still under cases 1-2 (3.1, 3.5); how the door fix ships, with the
+publishability check and the other doors' sweep (4.1); pictures for every card (3.5). Nits applied: test file
+names; dead-before-t and first-tick notes (3.1); the flat-run note on the cases (decision 9).
 
 ## 6. Risks
 
