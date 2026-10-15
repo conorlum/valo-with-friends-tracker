@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import tarfile
 import threading
 from pathlib import Path
 
@@ -102,3 +103,30 @@ def clear_incoming(cache_dir: Path) -> None:
     """Part files a restart left behind."""
     shutil.rmtree(Path(cache_dir) / ".incoming", ignore_errors=True)
     (Path(cache_dir) / ".incoming").mkdir(parents=True, exist_ok=True)
+
+
+def pack(folder: Path, dest: Path) -> Path:
+    """A height build's spooled rounds as one tar for its run (uncompressed: the blobs are gzip already)."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise ValueError(f"no rounds at {folder}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(dest, "w") as tar:
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                tar.add(path, arcname=path.relative_to(folder).as_posix(), recursive=False)
+    return dest
+
+
+def unpack(tar_path: Path, dest: Path) -> Path:
+    """Unpacks a pack() tar; any entry that isn't a plain file or folder inside `dest` is refused."""
+    dest = Path(dest).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tar_path, "r") as tar:
+        members = tar.getmembers()
+        for member in members:
+            target = (dest / member.name).resolve()
+            if not (member.isfile() or member.isdir()) or not target.is_relative_to(dest) or target == dest:
+                raise ValueError(f"refused tar entry {member.name!r}")
+        tar.extractall(dest, members=members, filter="data")
+    return dest

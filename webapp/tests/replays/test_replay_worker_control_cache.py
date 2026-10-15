@@ -98,3 +98,44 @@ def test_archive_budget_leaves_the_cache_reserve(tmp_path):
     before = a.budget()
     a.cache_reserve = control_cache.RESERVE
     assert before - a.budget() == control_cache.RESERVE
+
+
+import io  # noqa: E402
+import tarfile  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def test_pack_and_unpack_round_trip(tmp_path):
+    spool = tmp_path / "spool"
+    (spool / "m1").mkdir(parents=True)
+    (spool / "m1" / "1.json.gz").write_bytes(b"one")
+    (spool / "m2").mkdir()
+    (spool / "m2" / "12.json.gz").write_bytes(b"twelve")
+    tar = control_cache.pack(spool, tmp_path / "rounds.tar")
+    out = control_cache.unpack(tar, tmp_path / "out")
+    assert (out / "m1" / "1.json.gz").read_bytes() == b"one"
+    assert (out / "m2" / "12.json.gz").read_bytes() == b"twelve"
+
+
+@pytest.mark.parametrize("name,kind", [("../evil", tarfile.REGTYPE), ("/abs/evil", tarfile.REGTYPE),
+                                       ("m1/link", tarfile.SYMTYPE)])
+def test_unpack_refuses_entries_outside_the_folder(tmp_path, name, kind):
+    tar_path = tmp_path / "bad.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        info = tarfile.TarInfo(name)
+        info.type = kind
+        if kind == tarfile.SYMTYPE:
+            info.linkname = "/etc/passwd"
+            tar.addfile(info)
+        else:
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    with pytest.raises(ValueError):
+        control_cache.unpack(tar_path, tmp_path / "out")
+    assert not (tmp_path / "evil").exists()
+
+
+def test_pack_of_a_missing_folder_is_value_error(tmp_path):
+    with pytest.raises(ValueError):
+        control_cache.pack(tmp_path / "nope", tmp_path / "rounds.tar")
