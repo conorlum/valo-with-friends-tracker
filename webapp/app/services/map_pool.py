@@ -169,6 +169,25 @@ def seed_history() -> PoolHistory:
     return _seed_cache
 
 
+_seed_newest: datetime | None = None
+_seed_newest_read = False
+
+
+def seed_newest_published_at() -> datetime | None:
+    """The newest patch-notes `published_at` in the seed (read once per process); None when it has none."""
+    global _seed_newest, _seed_newest_read
+    if not _seed_newest_read:
+        data = json.loads(SEED_PATH.read_text(encoding="utf-8"))
+        times = [
+            datetime.fromisoformat(p["published_at"].replace("Z", "+00:00"))
+            for p in data.get("patch_notes", [])
+            if p.get("published_at")
+        ]
+        _seed_newest = max(_utc(t) for t in times) if times else None
+        _seed_newest_read = True
+    return _seed_newest
+
+
 def clear_pool_cache() -> None:
     global _pool_cache
     with _pool_lock:
