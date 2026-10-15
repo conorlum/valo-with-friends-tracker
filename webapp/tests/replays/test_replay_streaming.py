@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from replay_synthetic import DEFAULT_KILLS, MATCH_UUID, SyntheticMatch  # noqa: E402
+from replay_synthetic import DEFAULT_KILLS, MATCH_UUID, SyntheticMatch, fixture_pin  # noqa: E402
 
 from app.replays import condense as cd  # noqa: E402
 from app.replays import contract  # noqa: E402
@@ -125,4 +125,4 @@ def test_parity_with_health_and_spike_records(tmp_path):
 
 @pytest.mark.skipif(not REAL_FIXTURE.exists(), reason="no Swiftplay fixture")
 def test_parity_on_the_committed_real_fixture():
-    assert_parity(*both(REAL_FIXTURE, source_sha256=None))
+    assert_parity(*both(REAL_FIXTURE, source_sha256=None, pin=fixture_pin(REAL_FIXTURE)))

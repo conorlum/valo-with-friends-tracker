@@ -22,11 +22,21 @@ import hashlib
 import json
 import math
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-PIN_COMMIT = "2b66c65a7b116154e18ebb84d9f6795f2b080233"
+PIN_COMMIT = "e86ec408f2b89ea7ddca88ffae03113781d7c482"
 BUILD = "++Ares-Core+release-13.06"
+
+
+def fixture_pin(directory: Path):
+    """The current pin with the commit that made a committed real fixture (its manifest's `parser_version`).
+    Those fixtures test the condenser on real rows, which a parser bump doesn't change; regenerate them
+    (scripts/make_replay_fixture.py) from the source `.vrf` to retire this."""
+    from app.replays.contract import load_pin
+
+    version = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["parser_version"]
+    return replace(load_pin(), commit=version.rsplit("+", 1)[1])
 MATCH_UUID = "00000000-0000-4000-8000-00000000abcd"
 AGENT_CODES = ["Wushu", "Sarge", "Thorne", "Hunter", "Grenadier", "Vampire", "Wraith", "Clay", "Gumshoe", "Rift"]
 AGENT_NAMES = ["Jett", "Brimstone", "Sage", "Sova", "KAY/O", "Reyna", "Omen", "Raze", "Cypher", "Astra"]
