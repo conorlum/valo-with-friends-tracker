@@ -34,10 +34,11 @@ async def lifespan(_app: FastAPI):
     # (app/services/replay_archive_sync.py); it does nothing while the worker's archive is off.
     from app.db import SessionLocal
     # The Competitive map pool's daily patch-notes check (app/services/map_pool_refresh.py); off unless MAP_POOL_AUTO.
-    from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote
+    # The per-match state table the match lists read (app/services/replay_match_states.py): on whenever not in demo mode.
+    from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states
 
     stops = [replay_control_remote.start(SessionLocal), replay_archive_sync.start(SessionLocal),
-             map_pool_refresh.start(SessionLocal)]
+             map_pool_refresh.start(SessionLocal), replay_match_states.start(SessionLocal)]
     yield
     for stop in stops:
         if stop is not None:

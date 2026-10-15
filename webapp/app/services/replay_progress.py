@@ -134,22 +134,56 @@ def cached(db, now: float | None = None) -> dict:
         return _cached[1]
 
 
+def seed(result: dict, started: float) -> None:
+    """Hand `cached` a `compute()` result made elsewhere (the match-state refresher), stamped with the
+    `time.monotonic()` at which that computation started."""
+    global _cached
+    with _lock:
+        _cached = (started, result)
+
+
 def match_states(db, external_ids) -> dict[str, dict]:
     """The match lists' "Up to date" column: per lower-cased external ID (= match UUID) with a stored replay,
     `{"done", "total", "label", "automatic"}`; `label` is its earliest stuck step, None when every round is
-    done. From the panel's shared count, so it is as old as that. Best-effort: a list page never fails on it."""
+    done. Read from the stored `replay_match_states` rows (written by the refresher), never planned here; a row
+    judged under another recipe or revision, or older than `STALE_S`, counts as absent. Best-effort: a list
+    page never fails on it."""
     if settings.demo_mode:
         return {}
-    wanted = {str(e).lower() for e in external_ids if e}
+    from datetime import timedelta
+    from uuid import UUID
+
+    from app.models.replay import ReplayMatchState
+    from app.services.replay_match_states import STALE_S
+
+    wanted = set()
+    for e in external_ids:
+        try:
+            wanted.add(str(UUID(str(e).strip())))
+        except (ValueError, AttributeError):
+            continue
+    if not wanted:
+        return {}
+    recipe, control, gaps = uploads.site_recipe(), cf.CONTROL_REVISION, replay_gaps.GAPS_REVISION
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=STALE_S)
+    ids = sorted(wanted)
+    out = {}
     try:
-        matches = cached(db)["matches"] if wanted else {}
+        for i in range(0, len(ids), 900):
+            query = db.query(ReplayMatchState).filter(
+                ReplayMatchState.match_uuid.in_(ids[i:i + 900]),
+                ReplayMatchState.recipe == recipe,
+                ReplayMatchState.control_revision == control,
+                ReplayMatchState.gaps_revision == gaps,
+                ReplayMatchState.checked_at >= cutoff)
+            for row in query:
+                if row.first_step is not None and row.first_step not in _LABELS:
+                    continue
+                label, automatic = _LABELS.get(row.first_step, (None, None))
+                out[str(row.match_uuid).lower()] = {"done": row.done, "total": row.total, "label": label,
+                                                    "automatic": automatic}
     except Exception:
-        log.exception("replay progress could not be computed for a match list")
+        log.exception("stored replay match states could not be read for a match list")
         db.rollback()
         return {}
-    out = {}
-    for uuid in wanted & matches.keys():
-        row = matches[uuid]
-        label, automatic = _LABELS.get(row["first"], (None, None))
-        out[uuid] = {"done": row["done"], "total": row["total"], "label": label, "automatic": automatic}
     return out
