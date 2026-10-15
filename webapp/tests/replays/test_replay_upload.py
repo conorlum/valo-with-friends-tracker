@@ -7,6 +7,7 @@ import json
 import sys
 import threading
 import time
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -128,17 +129,58 @@ def test_many_finished_uploads_are_fine_but_a_sixth_unfinished_one_is_refused(db
                             client_ip="ip", created_at=now - timedelta(minutes=5)))
     db.commit()
     uploads.check_limits(db, "s")
-    # A batch: up to MAX_UNFINISHED of one session's uploads may be in progress at once.
+    # A batch: up to MAX_UNFINISHED of one session's uploads may be in progress at once (parsing on Workflows).
     for i in range(uploads.MAX_UNFINISHED - 1):
         db.add(ReplayUpload(id=f"00000000-0000-4000-8000-0000000ff{i:03d}", status="parsing", session_key="t",
                             client_ip=f"x{i}", created_at=now - timedelta(hours=3)))
     db.commit()
-    uploads.check_limits(db, "t")
+    uploads.check_limits(db, "t", uploads.MAX_UNFINISHED)
     db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000ffff", status="queued", session_key="t",
                         client_ip="x", created_at=now - timedelta(hours=3)))
     db.commit()
     with pytest.raises(uploads.LimitExceeded, match=f"{uploads.MAX_UNFINISHED} uploads at a time"):
-        uploads.check_limits(db, "t")
+        uploads.check_limits(db, "t", uploads.MAX_UNFINISHED)
+
+
+class HealthOnly:
+    def __init__(self, answer):
+        self.base, self.answer, self.asked = f"http://{uuid.uuid4().hex}", answer, 0
+
+    def health(self, timeout=None):
+        self.asked += 1
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def test_the_batch_is_ten_only_while_the_worker_parses_on_workflows():
+    """A local worker parses one at a time: a 10-file batch's last uploads would start parsing past STUCK_AFTER
+    and be failed (spec D15's 10 is for Workflow parsing)."""
+    assert uploads.batch_limit(HealthOnly({"runners": {"parse": "workflow"}})) == uploads.MAX_UNFINISHED == 10
+    assert uploads.batch_limit(HealthOnly({"runners": {"parse": "local"}})) == uploads.LOCAL_BATCH == 5
+    assert uploads.batch_limit(HealthOnly({"ok": True})) == 5                  # a worker from before step 3
+    assert uploads.batch_limit(HealthOnly(uploads.WorkerError("down"))) == 5
+
+
+def test_the_batch_limit_is_asked_once_a_minute_and_a_failure_is_not_kept():
+    worker = HealthOnly({"runners": {"parse": "workflow"}})
+    assert uploads.batch_limit(worker, now=lambda: 100.0) == 10
+    assert uploads.batch_limit(worker, now=lambda: 150.0) == 10 and worker.asked == 1
+    assert uploads.batch_limit(worker, now=lambda: 161.0) == 10 and worker.asked == 2
+    down = HealthOnly(uploads.WorkerError("down"))
+    uploads.batch_limit(down, now=lambda: 100.0)
+    uploads.batch_limit(down, now=lambda: 101.0)
+    assert down.asked == 2
+
+
+def test_a_sixth_upload_is_refused_while_parsing_is_local(db):
+    now = datetime.now(timezone.utc)
+    for i in range(uploads.LOCAL_BATCH):
+        db.add(ReplayUpload(id=f"00000000-0000-4000-8000-0000000ee{i:03d}", status="queued", session_key="u",
+                            client_ip=f"x{i}", created_at=now))
+    db.commit()
+    with pytest.raises(uploads.LimitExceeded, match="5 uploads at a time"):
+        uploads.check_limits(db, "u")
 
 
 def test_an_upload_parses_on_the_worker_and_is_stored_unlinked(db, tmp_path, stub):  # noqa: F811

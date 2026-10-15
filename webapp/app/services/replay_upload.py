@@ -2,8 +2,8 @@
 
 - `upload_enabled`: both `REPLAY_UPLOAD_CODE` and `REPLAY_WORKER_URL` set, and not demo mode.
 - `code_matches`: a constant-time compare of the invite code (the site's only gate).
-- `check_limits`: at most MAX_UNFINISHED unfinished jobs per session (a batch), counted from
-  `replay_uploads`. There is no hourly cap: the batch limit already protects the worker.
+- `check_limits`: at most `batch_limit` unfinished jobs per session (a batch: MAX_UNFINISHED while the worker
+  parses on Workflows, LOCAL_BATCH otherwise), counted from `replay_uploads`. There is no hourly cap: the batch limit already protects the worker.
 - `WorkerClient`: the private worker over `urllib` (standard library only): stream the file to
   `POST /jobs`, read `GET /jobs/{id}`.
 - `refresh_job`: the job page's status poll. It asks the worker; when the job is done it stores
@@ -37,6 +37,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -64,6 +65,11 @@ UNFINISHED = ("queued", "parsing")
 HELD = "held"
 POLLED = UNFINISHED + (HELD,)
 MAX_UNFINISHED = 10  # a batch: one session's uploads in progress at once (spec 2026-10-14, D15); the worker admits 15
+# The batch while the worker parses locally, one at a time: at ~3 min a parse, a 10-file batch's eighth upload would
+# start parsing past STUCK_AFTER (counted from its upload) and be failed. `batch_limit` picks between the two.
+LOCAL_BATCH = 5
+BATCH_ASKED_EVERY_S = 60
+_batch_seen: dict[str, tuple[float, int]] = {}
 RECENT_LISTED = timedelta(hours=24)  # the upload page lists this session's uploads from this long ago
 
 REASONS = {
@@ -182,10 +188,27 @@ class LimitExceeded(Exception):
     pass
 
 
-def check_limits(db, session_key: str) -> None:
+def check_limits(db, session_key: str, limit: int = LOCAL_BATCH) -> None:
     if db.query(ReplayUpload).filter(ReplayUpload.session_key == session_key,
-                                     ReplayUpload.status.in_(UNFINISHED)).count() >= MAX_UNFINISHED:
-        raise LimitExceeded(f"{MAX_UNFINISHED} uploads at a time: wait for one to finish")
+                                     ReplayUpload.status.in_(UNFINISHED)).count() >= limit:
+        raise LimitExceeded(f"{limit} uploads at a time: wait for one to finish")
+
+
+def batch_limit(worker, now=time.monotonic) -> int:
+    """MAX_UNFINISHED while the worker's /health says it parses on Workflows, else LOCAL_BATCH (a local runner, a
+    worker from before the switch existed, or one that can't be asked). Asked at most once a minute per worker;
+    a failed ask isn't kept."""
+    key, at = getattr(worker, "base", ""), now()
+    seen = _batch_seen.get(key)
+    if seen is not None and 0 <= at - seen[0] < BATCH_ASKED_EVERY_S:
+        return seen[1]
+    try:
+        runners = (worker.health(timeout=ACK_TIMEOUT_S) or {}).get("runners") or {}
+    except Exception:  # noqa: BLE001 - a worker that can't be asked never blocks an upload; submit says why
+        return LOCAL_BATCH
+    limit = MAX_UNFINISHED if isinstance(runners, dict) and runners.get("parse") == "workflow" else LOCAL_BATCH
+    _batch_seen[key] = (at, limit)
+    return limit
 
 
 class WorkerError(Exception):
@@ -216,8 +239,8 @@ class WorkerClient:
     def job(self, job_id: str) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/jobs/{job_id}"))
 
-    def health(self) -> dict:
-        return self._call(urllib.request.Request(f"{self.base}/health"))
+    def health(self, timeout: float | None = None) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/health"), timeout)
 
     def archive(self) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/archive"))
@@ -316,7 +339,7 @@ def create_upload(db, stream, session_key: str, client_ip: str | None, worker: W
         raise ValueError(f"the file is over the {settings.replay_upload_max_bytes // 1_000_000} MB limit")
     if head != VRF_MAGIC:
         raise ValueError("not a Valorant replay")
-    check_limits(db, session_key)
+    check_limits(db, session_key, batch_limit(worker))
     upload = ReplayUpload(id=str(uuid.uuid4()), status="queued", source_sha256=sha, size_bytes=size,
                           session_key=session_key, client_ip=client_ip,
                           created_at=datetime.now(timezone.utc))

@@ -121,7 +121,8 @@ services:
       - key: REPLAY_PARSE_PARALLEL
         value: "15"
       # Admits 15 waiting/running jobs (spec D15). The archive's parse reserve grows by 10 x the 200 MB cap
-      # (replay_worker/archive.py parse_reserve), about 2 GB less archive.
+      # (replay_worker/archive.py parse_reserve), about 2 GB less archive. Only while REPLAY_PARSE_RUNNER is
+      # workflow: a local parser keeps the image's 5 (server.py keep_local_sizing), and the site its batch of 5.
       - key: REPLAY_QUEUE_SIZE
         value: "15"
       # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6). Used only

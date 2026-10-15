@@ -20,6 +20,9 @@ class FakeRender:
         self.rate_limit_next = 0
         self.finish = True              # False: a started run stays "running" until a test sets its status
         self.runner = runner or (lambda kind, args: None)
+        # Called inside the start request, before Render answers with the run's id: the moment a test checks what
+        # the worker already saved before it knew the id.
+        self.on_start = lambda run_id, args: None
         ids = itertools.count(1)
         fake = self
 
@@ -41,6 +44,7 @@ class FakeRender:
                     fake.rate_limit_next -= 1
                     return self._send(429, {"message": "slow down"})
                 run_id = f"trn-{next(ids)}"
+                fake.on_start(run_id, body["input"][0])
                 kind = body["task"].split("/", 1)[1]
                 fake.started.append({"id": run_id, "task": body["task"], "input": body["input"]})
                 fake.slug_of[run_id] = body["task"]

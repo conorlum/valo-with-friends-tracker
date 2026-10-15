@@ -321,6 +321,9 @@ def make_runs(settings: Settings):
                          settings.temp_root / "runs")
 
 
+LOCAL_QUEUE_SIZE = 5        # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
+
+
 def keep_local_sizing(settings: Settings) -> None:
     """A kind still on its local runner keeps today's sizing (spec D2: local is today's child processes, and
     rollback is one env var). render.yaml sets the Workflow sizing for every deploy, so it only takes effect for a
@@ -328,6 +331,9 @@ def keep_local_sizing(settings: Settings) -> None:
     if settings.control_runner != "workflow" and settings.archive_dir is not None and \
             settings.control_cache_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
         settings.control_cache_dir = settings.temp_root / "control_cache"     # the image's own, as before
+    if settings.parse_runner != "workflow":
+        # One parse at a time: today's waiting line, and the archive's parse reserve that goes with it.
+        settings.queue_size = min(settings.queue_size, LOCAL_QUEUE_SIZE)
 
 
 @dataclass

@@ -151,6 +151,20 @@ def record_of(rig, job_id):
     return json.loads((rig.disk / "jobs" / job_id / "job.json").read_text(encoding="utf-8"))
 
 
+def test_local_parsing_keeps_todays_queue_and_archive_reserve(tmp_path):
+    """render.yaml's REPLAY_QUEUE_SIZE=15 is for Workflow parsing (D15); a local parser keeps the image's 5, so the
+    archive's parse reserve doesn't grow by 10 x the upload cap for nothing (spec D2)."""
+    local = server.Settings(temp_root=tmp_path, parse_runner="local", queue_size=15)
+    server.keep_local_sizing(local)
+    assert local.queue_size == server.LOCAL_QUEUE_SIZE == 5
+    remote = server.Settings(temp_root=tmp_path, parse_runner="workflow", queue_size=15)
+    server.keep_local_sizing(remote)
+    assert remote.queue_size == 15
+    small = server.Settings(temp_root=tmp_path, parse_runner="local", queue_size=3)
+    server.keep_local_sizing(small)
+    assert small.queue_size == 3
+
+
 def test_fifteen_uploads_parse_at_once(rig):
     worker = rig.start()
     rig.gate.clear()
@@ -165,17 +179,23 @@ def test_fifteen_uploads_parse_at_once(rig):
 
 
 def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig):
+    at_start = []
+    rig.render.on_start = lambda run_id, args: at_start.append(record_of(rig, args["job_id"]))
     worker = rig.start()
     rig.gate.clear()
     job = worker.submit(VRF + b"a")
     wait_for(lambda: record_of(rig, job.id).get("run_id") == "trn-1")      # the durable record itself
+    # Saved before the start request: a crash before Render answers still finds the token and deadline.
+    [before] = at_start
+    assert before["run_token"] and before["run_deadline"] > time.time() and "run_id" not in before
     record = record_of(rig, job.id)
-    assert record["status"] == "parsing" and record["run_token"] and record["run_deadline"] > time.time()
+    assert record["status"] == "parsing" and record["run_token"] == before["run_token"]
     assert rig.render.started[0]["input"][0]["token"] == record["run_token"]
     rig.gate.set()
     wait_jobs(worker, [job.id])
+    wait_for(lambda: record_of(rig, job.id)["status"] == "done")      # the final save follows the in-memory one
     final = record_of(rig, job.id)
-    assert final["status"] == "done" and "run_id" not in final and "run_token" not in final
+    assert "run_id" not in final and "run_token" not in final
 
 
 def test_a_restart_reconnects_to_a_saved_run_and_starts_nothing(rig):
@@ -322,10 +342,11 @@ def test_a_deploy_refusal_saves_the_cleared_run_id(tmp_path, monkeypatch):
         answers = iter([{"status": "failed", "error_kind": "deploy", "error": "recipe"}])
 
         def runner(kind, args):
-            seen.append(record_of(rig, args["job_id"]).get("run_id"))
             rig.link(args).post_result(next(answers, {
                 "status": "ok", "parse_seconds": 2.0, "result": {"match_uuid": "m", "map_name": "Ascent"}}))
         rig.render.runner = runner
+        # What the disk says while each start is in flight: never the new run's id, which isn't known yet.
+        rig.render.on_start = lambda run_id, args: seen.append(record_of(rig, args["job_id"]).get("run_id"))
         worker = rig.start()
         wait_jobs(worker, [worker.submit(VRF + b"q").id])
         assert len(rig.render.started) == 2 and seen[1] is None     # the stale id was not left on the disk
