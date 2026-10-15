@@ -1,4 +1,5 @@
 {# The match lists' "Up to date" cell (app/services/replay_progress.py `match_states`): whether every round of
-   the match's replay is computed under the site's current parser, rules, heights and figures. #}
+   the match's replay is computed under the site's current parser, rules, heights and figures. A watchable match
+   with no usable stored state is "not checked yet"; any other match has no replay. #}
 {% set s = (replay_states or {}).get(match.external_id.lower()) if match.external_id and replay_states is defined else none %}
-<td class="watch-cell">{% if not s %}<span class="muted" title="No replay for this match">&mdash;</span>{% elif s.done == s.total %}<span title="All {{ s.total }} rounds are computed under the site's current rules">&#10003; Yes</span>{% else %}<span class="muted" title="{{ s.label }} &middot; {{ 'the worker will do it' if s.automatic else 'needs a person' }}">{{ s.done }}/{{ s.total }} rounds</span>{% endif %}</td>
+<td class="watch-cell">{% if not s %}{% if match.external_id and watchable is defined and match.external_id.lower() in watchable %}<span class="muted" title="Not checked yet">&hellip;</span>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}{% elif s.done == s.total %}<span title="All {{ s.total }} rounds are computed under the site's current rules">&#10003; Yes</span>{% else %}<span class="muted" title="{{ s.label }} &middot; {{ 'the worker will do it' if s.automatic else 'needs a person' }}">{{ s.done }}/{{ s.total }} rounds</span>{% endif %}</td>

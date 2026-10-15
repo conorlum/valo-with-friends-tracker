@@ -11,7 +11,10 @@ Re-recorded 2026-10-09 for CONTROL_REVISION 9 (P07, the blind rule and exact fla
 `midwall` moved, data 21e83b2894f012c6 -> 33a55d33f36e2564, summary 9874c72c92ee818d -> 2ad11a1afe23dae6; the two
 midwall tests below prove the move is that rule's and nothing else's. Re-recorded 2026-10-09 again for P07a (the
 same revision, unreleased: an enemy's damaging molly holds the unknown): only `midwall`, whose Phoenix molly burns
-over 3.0-7.0, moved, data 33a55d33f36e2564 -> 12c79de24d1d2ba6, summary 2ad11a1afe23dae6 -> a5741819229a66d0."""
+over 3.0-7.0, moved, data 33a55d33f36e2564 -> 12c79de24d1d2ba6, summary 2ad11a1afe23dae6 -> a5741819229a66d0.
+Re-recorded 2026-10-14 for CONTROL_REVISION 16: a heard sound names nobody unless only one enemy could have made it
+(R1/R2): only `midwall` moved, data 29904050ccedd810 -> 15ec9ad176eb5c7d, summary 949b2b794d21bd4b ->
+c37f692a8644741a; the old-rule tests below patch `Unknown._attributable` to True."""
 
 import json
 import sys
@@ -146,7 +149,7 @@ def test_midwall_without_the_molly_rule_is_its_p07_reference(monkeypatch):
     """The second move is P07a's and nothing else's: with the round's molly read as nothing, the engine gives W9's
     bytes again."""
     monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
-    _pre_d11_nearsight(monkeypatch)
+    _pre_d11_nearsight(monkeypatch)     # also patches Unknown._attributable (the old rule)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_P07A
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_P07A
@@ -159,9 +162,11 @@ MIDWALL_BEFORE_D11 = {"data": "12c79de24d1d2ba6", "summary": "a5741819229a66d0"}
 
 
 def _pre_d11_nearsight(monkeypatch):
-    """Nearsight as it was before the owner's D11 change: a 4 m bubble, and the nearsighted still hear."""
+    """Nearsight as it was before the owner's D11 change: a 4 m bubble, and the nearsighted still hear.
+    Also the attribution rule as it was before R1/R2 (2026-10-14): any heard sound names its maker."""
     from app.control import utility
 
+    monkeypatch.setattr(ce.Unknown, "_attributable", lambda *a, **k: True)
     monkeypatch.setattr(ce, "NEARSIGHT_RADIUS_M", 4.0)
     monkeypatch.setattr(utility, "listens", lambda rnd, s, t: rnd.alive(s, t))
 
@@ -173,6 +178,21 @@ def test_midwall_without_the_nearsight_change_is_its_p07a_reference(monkeypatch)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_D11
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_D11
+
+
+# ---------------------------------------------------------------- the midwall move for R1/R2 (2026-10-14)
+
+# `midwall`'s digests after D11 and before a heard sound named nobody unless one enemy could have made it.
+MIDWALL_BEFORE_R1 = {"data": "29904050ccedd810", "summary": "949b2b794d21bd4b"}
+
+
+def test_midwall_with_every_heard_sound_naming_its_maker_is_its_pre_r1_reference(monkeypatch):
+    """The move is R1/R2's and nothing else's: with attribution always allowed (the old rule), the engine gives
+    the pre-R1 bytes again."""
+    monkeypatch.setattr(ce.Unknown, "_attributable", lambda *a, **k: True)
+    geo, blob, link = reference_rounds()["midwall"]
+    assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_R1
+    assert REFERENCE["midwall"] != MIDWALL_BEFORE_R1
 
 
 def test_midwall_molly_changes_nothing_before_it_burns(monkeypatch):

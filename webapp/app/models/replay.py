@@ -174,6 +174,23 @@ class ReplayRoundGapRun(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ReplayMatchState(Base):
+    """What `replay_progress.compute` says of one match with a stored replay (migration 0024;
+    docs/superpowers/specs/2026-10-14-match-list-speed-design.md, section 2). Written only by
+    app/services/replay_match_states.py. No foreign keys: deleting a replay never blocks on it."""
+
+    __tablename__ = "replay_match_states"
+
+    match_uuid: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    done: Mapped[int] = mapped_column(Integer, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_step: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recipe: Mapped[str] = mapped_column(Text, nullable=False)
+    control_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    gaps_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ReplayGap(Base):
     """One predicted gap or back-shot (section 7 of the timing-gaps spec). Slots, never player ids: the
     pattern page joins slots to players through replay_players at query time."""

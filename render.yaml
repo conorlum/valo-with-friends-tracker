@@ -59,6 +59,11 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: REPLAY_HEIGHTS_AUTO
         value: "true"
+      # Map pool: a daily check of playvalorant.com patch notes for Competitive pool changes
+      # (app/services/map_pool_refresh.py), on from the merge. Without it the committed seed alone is the pool.
+      # Never set it on valomaths (demo mode turns it off anyway).
+      - key: MAP_POOL_AUTO
+        value: "true"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv
