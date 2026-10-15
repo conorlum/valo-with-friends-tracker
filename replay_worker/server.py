@@ -329,6 +329,7 @@ def make_runs(settings: Settings):
 
 
 LOCAL_QUEUE_SIZE = 5        # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
+LOCAL_SPOOL_BYTES = 512 * 1024 * 1024      # Settings.height_spool_bytes' default before Workflows
 
 
 def keep_local_sizing(settings: Settings) -> None:
@@ -341,6 +342,10 @@ def keep_local_sizing(settings: Settings) -> None:
     if settings.parse_runner != "workflow":
         # One parse at a time: today's waiting line, and the archive's parse reserve that goes with it.
         settings.queue_size = min(settings.queue_size, LOCAL_QUEUE_SIZE)
+    if settings.heights_runner != "workflow":
+        # One local build at a time: today's spool in the temp folder, so the archive doesn't reserve 4 GiB for it.
+        settings.height_spool_dir = None
+        settings.height_spool_bytes = min(settings.height_spool_bytes, LOCAL_SPOOL_BYTES)
 
 
 @dataclass
@@ -1337,11 +1342,9 @@ class ControlRunner:
             limit = self.settings.control_runs
         else:
             limit = self.settings.control_workers if idle else 1
-        counted = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
-        if len(counted) >= limit:
-            return None
         if any(self.jobs[j].kind == "heights" and not self.remote(self.jobs[j]) for j in self.running):
             return None                              # a local build runs alone
+        # Before the control limit: remote rounds take no CPU here, so a full remote pool never holds a local build.
         local_running = [j for j in self.running if not self.remote(self.jobs[j])]
         for job_id in self.pending:
             if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
@@ -1350,6 +1353,9 @@ class ControlRunner:
                 if idle:
                     return (self.jobs[job_id], False) if not local_running else None
                 break
+        counted = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        if len(counted) >= limit:
+            return None
         # A remote height build takes no CPU here and writes nothing a cold round reads: it holds no map.
         held = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
         busy_maps = {self.jobs[j].map for j in held}

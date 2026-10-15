@@ -139,5 +139,7 @@ services:
       - key: REPLAY_HEIGHT_SPOOL_BYTES
         value: "2147483648"
       # The spool on the disk, inside the archive's reserve (spec D16); packed tars go beside it in height_runs/.
+      # Both spool settings apply only while REPLAY_HEIGHTS_RUNNER is workflow: a local runner keeps today's 512 MB
+      # spool in /jobs and the archive's whole budget (server.py keep_local_sizing).
       - key: REPLAY_HEIGHT_SPOOL_DIR
         value: /var/replay/height_builds

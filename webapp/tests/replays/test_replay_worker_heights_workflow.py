@@ -240,6 +240,42 @@ def test_a_remote_height_build_does_not_hold_its_map_against_a_cold_round(remote
             del control.jobs["b1"], control.jobs["r1"]
 
 
+def test_a_full_remote_control_pool_does_not_hold_back_a_local_build(tmp_path):
+    """Control on Workflows, heights local: remote rounds take no CPU here, so a waiting local build starts when
+    the worker is idle even with every remote slot taken (else the site times it out and spends a try)."""
+    render = FakeRender()
+    try:
+        settings = server.Settings(temp_root=tmp_path, control_runner="workflow", heights_runner="local",
+                                   control_runs=2, workflow_slug="w", render_api_key="k",
+                                   render_api_base=render.url)
+        control = server.ControlRunner(settings, runs_table=server.make_runs(settings))
+        control.idle = lambda: True
+        with control.lock:
+            for i in range(2):
+                control.jobs[f"r{i}"] = server.ControlJob(f"r{i}", f"k{i}", "Ascent", b"{}")
+                control.running[f"r{i}"] = False
+            control.jobs["b"] = server.ControlJob("b", "kb", "Haven", b"{}", kind="heights")
+            control.jobs["r9"] = server.ControlJob("r9", "k9", "Ascent", b"{}")
+            control.pending = ["r9", "b"]
+            assert control._next() == (control.jobs["b"], False)
+            control.idle = lambda: False                     # beside a parse the local build still waits
+            assert control._next() is None
+    finally:
+        render.close()
+
+
+def test_local_heights_keep_todays_spool_off_the_archive_disk(tmp_path):
+    disk = tmp_path / "disk"
+    local = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, heights_runner="local",
+                            height_spool_dir=disk / "height_builds", height_spool_bytes=2 * 1024 ** 3)
+    server.keep_local_sizing(local)
+    assert local.height_spool_dir is None and local.height_spool_bytes == server.LOCAL_SPOOL_BYTES == 512 * 1024 ** 2
+    remote = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, heights_runner="workflow",
+                             height_spool_dir=disk / "height_builds", height_spool_bytes=2 * 1024 ** 3)
+    server.keep_local_sizing(remote)
+    assert remote.height_spool_dir == disk / "height_builds" and remote.height_spool_bytes == 2 * 1024 ** 3
+
+
 def test_a_local_build_that_times_out_says_height_build_and_a_round_says_control(tmp_path):
     settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
                                height_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
