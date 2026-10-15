@@ -1,14 +1,14 @@
 """replay_match_states: what the upload panel's count says of each match with a stored replay, kept so the match
 lists read it with one indexed lookup. Additive: a new table, no foreign keys, no change to an existing table.
 
-Revision ID: 0023
-Revises: 0022
+Revision ID: 0024
+Revises: 0023
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = '0023'
-down_revision = '0022'
+revision = '0024'
+down_revision = '0023'
 branch_labels = None
 depends_on = None
 

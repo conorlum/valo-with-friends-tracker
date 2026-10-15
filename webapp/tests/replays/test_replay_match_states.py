@@ -1,4 +1,4 @@
-"""The per-match state table (app/services/replay_match_states.py, migration 0023): `refresh` writes exactly what
+"""The per-match state table (app/services/replay_match_states.py, migration 0024): `refresh` writes exactly what
 `replay_progress.compute` says per match (R4), and hands that result to the panel's cache. SQLite fixtures, plus
 PostgreSQL tests that skip without VALO_TEST_DATABASE_URL."""
 
@@ -162,7 +162,7 @@ def test_pg_a_held_lock_locks_the_refresh_out():
         engine.dispose()
 
 
-def test_pg_migration_0023_creates_and_drops_the_table():
+def test_pg_migration_0024_creates_and_drops_the_table():
     import importlib.util
 
     from alembic.migration import MigrationContext
@@ -171,11 +171,11 @@ def test_pg_migration_0023_creates_and_drops_the_table():
 
     from _postgres import postgres_url_or_skip
 
-    path = HERE.parents[1] / "alembic" / "versions" / "0023_replay_match_states.py"
-    spec = importlib.util.spec_from_file_location("migration_0023", path)
+    path = HERE.parents[1] / "alembic" / "versions" / "0024_replay_match_states.py"
+    spec = importlib.util.spec_from_file_location("migration_0024", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
-    assert (migration.revision, migration.down_revision) == ("0023", "0022")
+    assert (migration.revision, migration.down_revision) == ("0024", "0023")
 
     engine = create_engine(postgres_url_or_skip(writes=True))
     with engine.connect() as connection:

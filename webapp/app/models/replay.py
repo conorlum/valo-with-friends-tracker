@@ -175,7 +175,7 @@ class ReplayRoundGapRun(Base):
 
 
 class ReplayMatchState(Base):
-    """What `replay_progress.compute` says of one match with a stored replay (migration 0023;
+    """What `replay_progress.compute` says of one match with a stored replay (migration 0024;
     docs/superpowers/specs/2026-10-14-match-list-speed-design.md, section 2). Written only by
     app/services/replay_match_states.py. No foreign keys: deleting a replay never blocks on it."""
 

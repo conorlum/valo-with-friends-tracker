@@ -1,4 +1,4 @@
-"""The stored per-match state (table `replay_match_states`, migration 0023): what `replay_progress.compute` says of
+"""The stored per-match state (table `replay_match_states`, migration 0024): what `replay_progress.compute` says of
 each match with a replay, written by `refresh` (R4: the same done, total and first stuck step, from the same
 computation, never the dispatcher's own plans).
 
