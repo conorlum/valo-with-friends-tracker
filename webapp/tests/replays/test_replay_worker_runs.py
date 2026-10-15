@@ -98,3 +98,168 @@ def test_pacer_gives_up_when_told_to_stop():
     pacer.take()
     assert pacer.take(stop=lambda: clock.now >= 5.0) is False      # the next slot is 60 s away
     assert clock.now < 60.0
+
+
+import json
+import threading
+import time
+
+
+def make_runs(render, tmp_path, clock=time.time):
+    return runs.Runs(runs.RenderApi("k", base=render.url), "replay-tasks", runs.Pacer(1000), tmp_path / "runs",
+                     clock=clock)
+
+
+def write(path, data):
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_first_valid_result_wins(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    run = table.open("ping", "j1", {"ping": write(tmp_path / "p.txt", "x")}, timeout_s=30)
+    table.start(run, {"hello": 1})
+    assert render.started[0]["task"] == "replay-tasks/ping"
+    assert render.started[0]["input"][0] == {"hello": 1, "job_id": "j1", "token": run.token}
+    assert table.deliver("j1", "wrong", write(tmp_path / "a.json", {"status": "ok", "n": 0})) == 409
+    assert table.deliver("j1", run.token, write(tmp_path / "b.json", {"status": "ok", "n": 1})) == 200
+    assert table.deliver("j1", run.token, write(tmp_path / "c.json", {"status": "ok", "n": 2})) == 409
+    assert table.wait(run) == {"status": "ok", "n": 1}
+    assert table.deliver("j1", run.token, write(tmp_path / "d.json", {"status": "ok"})) == 409  # closed
+
+
+def test_a_result_that_is_not_a_json_object_is_400(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    run = table.open("ping", "j1", {}, timeout_s=30)
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1, 2", encoding="utf-8")
+    assert table.deliver("j1", run.token, bad) == 400
+    assert table.deliver("j1", run.token, write(tmp_path / "list.json", [1])) == 400
+    assert not run.done.is_set()
+
+
+def test_files_only_by_name_and_token(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    f = write(tmp_path / "p.txt", "x")
+    run = table.open("ping", "j1", {"ping": f}, timeout_s=30)
+    assert table.file("j1", "ping", run.token) == f
+    assert table.file("j1", "ping", "nope") is None
+    assert table.file("j1", "../p.txt", run.token) is None
+    assert table.file("j2", "ping", run.token) is None
+
+
+def test_one_open_run_per_job(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    table.open("ping", "j1", {}, timeout_s=30)
+    with pytest.raises(ValueError):
+        table.open("ping", "j1", {}, timeout_s=30)
+
+
+class SharedClock:
+    """One fake clock for the table and its pacer: sleeping advances it."""
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_429_waits_then_starts(render, tmp_path):
+    clock = SharedClock()
+    table = make_runs(render, tmp_path, clock=clock)
+    table.pacer = runs.Pacer(1000, clock=clock, sleep=clock.sleep)
+    render.rate_limit_next = 2
+    run = table.open("ping", "j1", {}, timeout_s=60)
+    table.start(run, {})
+    assert run.render_id == "trn-1" and not run.done.is_set()
+    assert clock.now >= 1000.0 + 2 * runs.RATE_LIMIT_WAIT_S        # two holds, on the fake clock
+
+
+def test_no_start_after_the_deadline(render, tmp_path):
+    clock = SharedClock()
+    table = make_runs(render, tmp_path, clock=clock)
+    table.pacer = runs.Pacer(1000, clock=clock, sleep=clock.sleep)
+    render.rate_limit_next = 100                                  # Render keeps saying 429
+    run = table.open("ping", "j1", {}, timeout_s=25)
+    table.start(run, {})
+    assert run.render_id is None and run.result["error_kind"] == "infra"
+    assert clock.now < 1000.0 + 25 + runs.RATE_LIMIT_WAIT_S + 1     # it stopped at the deadline
+
+
+def test_render_down_settles_infra(tmp_path):
+    table = runs.Runs(runs.RenderApi("k", base=f"http://127.0.0.1:{closed_port()}/v1", timeout_s=1), "w",
+                      runs.Pacer(1000), tmp_path / "runs")
+    run = table.open("ping", "j1", {}, timeout_s=30)
+    table.start(run, {})
+    assert table.wait(run)["error_kind"] == "infra"
+
+
+def test_on_started_gets_the_render_id_before_start_returns(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    seen = []
+    run = table.open("ping", "j1", {}, timeout_s=30)
+    table.start(run, {}, on_started=seen.append)
+    assert seen == ["trn-1"]
+
+
+def test_deadline_cancels_and_settles_timeout(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    run = table.open("ping", "j1", {}, timeout_s=0.3)
+    table.start(run, {})
+    answer = table.wait(run)
+    assert answer["error_kind"] == "timeout" and render.cancelled == ["trn-1"]
+
+
+def test_reconcile_settles_a_run_that_ended_without_a_result_after_grace(render, tmp_path):
+    render.finish = False                         # statuses change only when this test says so
+    now = [1000.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    run = table.open("ping", "j1", {}, timeout_s=3600)
+    table.start(run, {})
+    render.status["trn-1"] = "failed"
+    table.reconcile()
+    assert not run.done.is_set()                  # within grace: its result may still be on the way
+    now[0] += runs.GRACE_S
+    table.reconcile()
+    assert run.result["error_kind"] == "infra" and "failed" in run.result["error"]
+
+
+def test_reconcile_leaves_running_runs_and_a_result_in_grace_wins(render, tmp_path):
+    render.finish = False
+    now = [1000.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    run = table.open("ping", "j1", {}, timeout_s=3600)
+    table.start(run, {})
+    table.reconcile()
+    assert render.status["trn-1"] == "running" and not run.done.is_set()
+    render.status["trn-1"] = "completed"
+    table.reconcile()
+    assert table.deliver("j1", run.token, write(tmp_path / "r.json", {"status": "ok"})) == 200
+    now[0] += runs.GRACE_S
+    table.reconcile()
+    assert run.result == {"status": "ok"}
+
+
+def test_reconcile_finds_an_old_run_by_paging_in_one_list(render, tmp_path, monkeypatch):
+    render.finish = False
+    monkeypatch.setattr(runs, "RECONCILE_PAGE_SIZE", 10)
+    now = [1000.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    old = table.open("heights", "old", {}, timeout_s=3600)
+    table.start(old, {})
+    api = runs.RenderApi("k", base=render.url)
+    for _ in range(25):                     # 25 newer builds (not this table's) push it to the third page
+        api.start("replay-tasks/heights", {})
+    render.status[old.render_id] = "failed"
+    table.reconcile()
+    assert len(render.list_calls) == 3 and render.get_calls == []
+    assert all("taskSlug=replay-tasks%2Fheights" in call for call in render.list_calls)
+
+
+def test_status_counts_open_runs(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    table.open("ping", "j1", {}, timeout_s=30)
+    assert table.status()["open"] == 1
