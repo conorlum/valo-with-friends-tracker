@@ -245,6 +245,8 @@ class Settings:
     height_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.height_job"])
     height_timeout_s: float = 3600.0
     height_spool_bytes: int = 512 * 1024 * 1024      # every build's rounds together
+    height_builds_max: int = 2                       # unfinished builds (collecting, queued or running), one per map
+    height_spool_dir: Path | None = None             # None keeps `temp_root/height_builds`
     height_collect_ttl_s: float = 3600.0             # a build nobody has sent a round to for this long is dropped
     # The .vrf archive (replay_worker/archive.py): off unless the directory is a mounted, writable disk.
     archive_dir: Path | None = None
@@ -295,6 +297,10 @@ class Settings:
         if env.get("REPLAY_HEIGHT_CMD"):
             settings.height_cmd = json.loads(env["REPLAY_HEIGHT_CMD"])
         settings.height_timeout_s = float(env.get("REPLAY_HEIGHT_TIMEOUT_S", settings.height_timeout_s))
+        settings.height_builds_max = max(1, int(env.get("REPLAY_HEIGHT_BUILDS_MAX", settings.height_builds_max)))
+        settings.height_spool_bytes = int(env.get("REPLAY_HEIGHT_SPOOL_BYTES", settings.height_spool_bytes))
+        if env.get("REPLAY_HEIGHT_SPOOL_DIR"):
+            settings.height_spool_dir = Path(env["REPLAY_HEIGHT_SPOOL_DIR"])
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
@@ -1499,7 +1505,6 @@ class ControlRunner:
 
 
 MATCH_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
-HEIGHT_COLLECTING_MAX = 2        # builds collecting rounds at once (the web app sends one at a time)
 HEIGHT_BUILDS_KEPT = 8           # ended builds whose answer stays readable (the newest)
 ROUNDS_PER_MATCH_MAX = 99
 
@@ -1522,7 +1527,7 @@ class HeightBuilds:
     - **Uploads are immutable.** A round is kept by its sha256: the same bytes again are acknowledged and cost
       nothing; other bytes for a round already received are a conflict and change nothing.
     - **Bounded.** The spool of all builds together stays under `height_spool_bytes`; at most
-      HEIGHT_COLLECTING_MAX builds collect at once; opening a build for a map drops any other still collecting
+      `height_builds_max` builds are unfinished at once, one per map; opening a build for a map drops any other still collecting
       for it (its inputs are out of date); a collector nobody feeds for `height_collect_ttl_s` is dropped; of
       the builds that ended, the newest HEIGHT_BUILDS_KEPT keep their answer.
     - **Nothing is left behind**: a build's folder goes when it ends, is cancelled, expires or is replaced, and
@@ -1530,7 +1535,7 @@ class HeightBuilds:
 
     def __init__(self, settings: Settings, control: ControlRunner):
         self.settings, self.control = settings, control
-        self.root = settings.temp_root / "height_builds"
+        self.root = settings.height_spool_dir or settings.temp_root / "height_builds"
         shutil.rmtree(self.root, ignore_errors=True)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
@@ -1551,8 +1556,13 @@ class HeightBuilds:
                     self._drop(build)                    # it failed: the web app is trying again, from nothing
             for other in [b for b in self.builds.values() if b["map"] == map_name and b["job"] is None]:
                 self._drop(other)                        # other inputs for this map, never started
-            if sum(1 for b in self.builds.values() if b["job"] is None) >= HEIGHT_COLLECTING_MAX:
-                raise OverflowError("too many builds are collecting")
+            unfinished = [b for b in self.builds.values() if self._state(b) not in ("done", "failed")]
+            if any(b["map"] == map_name for b in unfinished):
+                # Its old build is still queued or running (on Workflows it can't be cancelled after start):
+                # one unfinished build per map. 503 to the site: busy, ask again later, no try spent.
+                raise OverflowError("a build of this map is still running")
+            if len(unfinished) >= self.settings.height_builds_max:
+                raise OverflowError("too many unfinished builds")
             build = {"id": uuid.uuid4().hex, "key": key, "map": map_name, "expected": rounds, "manifest": manifest,
                      "received": {}, "job": None, "touched": time.time(), "ended": None}
             if diagnostic is not None:
@@ -2162,6 +2172,9 @@ def main() -> None:
     if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
             settings.archive_dir.resolve()):
         settings.archive_extra_reserve += control_cache.RESERVE
+    if settings.archive_dir is not None and settings.height_spool_dir is not None and \
+            settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)
     control_cache.clear_incoming(settings.control_cache_dir)
     control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
     # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;

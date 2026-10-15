@@ -812,3 +812,68 @@ def test_it_is_off_by_default_and_in_demo_mode(rig, factory, db, linked, monkeyp
     monkeypatch.setattr(settings, "replay_heights_auto", True)
     monkeypatch.setattr(settings, "demo_mode", True)
     assert hr.enabled() is False
+
+
+def second_map(db, replay, name="Bind", count=2):
+    """`count` valid replays of another map with geometry (the `on` fixture's Bind), so two maps are due."""
+    made = clone(db, replay, count)
+    for copy in made:
+        copy.map_name = name
+    db.commit()
+    return made
+
+
+def test_two_due_maps_build_at_once(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    assert {b.map_name for b in rig.state.heights.builds.values()} == {linked.map_name, "Bind"}
+    rig.until(factory, lambda s: total(s, "heights_live") == 2, cycles=100, step_s=1)
+    assert db.query(ControlHeight).count() == 2
+
+
+def test_the_cap_opens_one_and_holds_both(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 1)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    session = factory()
+    try:
+        held = hr.step(factory, session, rig.client, rig.state.heights, 1.0, {})
+    finally:
+        session.close()
+    assert len(rig.state.heights.builds) == 1
+    assert held == {linked.map_name, "Bind"}         # one building, one waiting its turn: both maps' rounds wait
+
+
+def test_one_maps_failure_leaves_the_other_building(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    one_round_batches(db, monkeypatch)               # both builds stay collecting for several cycles
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    builds = {b.map_name: b for b in rig.state.heights.builds.values()}
+    builds["Bind"].opened_at = -10_000               # Bind's collecting is past COLLECT_STALE_S: its try fails
+    counts = rig.cycle(factory, step_s=1)
+    assert counts["heights_failed"] == 1
+    assert [b.map_name for b in rig.state.heights.builds.values()] == [linked.map_name]
+
+
+def test_a_collected_build_is_not_reopened_in_the_same_cycle(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    clone(db, linked, 1)
+    opened, opens_at_finish = [], []
+    real_open, real_finish = rig.client.open_build, hr._finish
+
+    def finish(*a, **k):
+        opens_at_finish.append(len(opened))
+        return real_finish(*a, **k)
+    monkeypatch.setattr(rig.client, "open_build", lambda *a, **k: opened.append(a[0]) or real_open(*a, **k))
+    monkeypatch.setattr(hr, "_finish", finish)
+    seen = rig.until(factory, lambda s: total(s, "heights_live") == 1, cycles=100, step_s=1)
+    assert len(opens_at_finish) == 1                         # collected and stored once
+    assert len(opened) == opens_at_finish[0]                 # nothing opened after it in that cycle
+    rig.cycle(factory, step_s=1)
+    assert len(opened) == opens_at_finish[0] and total(seen, "heights_live") == 1   # nor in the next
