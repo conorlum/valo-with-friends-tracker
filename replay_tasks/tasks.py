@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -67,4 +69,89 @@ def ping(args: dict, link: WorkerLink) -> None:
     link.post_result({"status": "ok", "echo": link.fetch_text("ping")})
 
 
-TASKS = {"ping": ping}
+REPO = Path(__file__).resolve().parents[1]
+WEBAPP = REPO / "webapp"
+
+
+def _child_env(cache: Path) -> dict:
+    from replay_worker.server import CHILD_THREADS
+
+    env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache)}
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(REPO), env.get("PYTHONPATH")) if p)
+    return env
+
+
+def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path) -> dict:
+    """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer."""
+    from replay_worker.server import _child_setup
+
+    command = json.loads(os.environ[command_env]) if os.environ.get(command_env) else default
+    kwargs = {"input": stdin, "capture_output": True, "env": _child_env(cache), "cwd": str(REPO)}
+    if os.name != "nt":
+        kwargs["preexec_fn"] = _child_setup(int(os.environ.get("REPLAY_CONTROL_MEMORY_MB", "2048")))
+    done = subprocess.run(command, **kwargs)
+    try:
+        answer = json.loads(done.stdout or b"")
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        return {"status": "failed", "error_kind": "infra",
+                "error": f"control child exited {done.returncode} without an answer"}
+    return answer
+
+
+def _cache_files(cache: Path) -> dict[str, str]:
+    """Every .npz under the run's cache folder, by relative name, with a hash of its bytes: feature-row caches are
+    rewritten in place under the same name (app/control/feature_visibility.py, persist), so a name isn't enough."""
+    import hashlib
+
+    out = {}
+    for path in cache.rglob("*.npz"):
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(CHUNK), b""):
+                digest.update(chunk)
+        out[path.relative_to(cache).as_posix()] = digest.hexdigest()
+    return out
+
+
+def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path) -> None:
+    """The worker's cached files for this run. One that can't be fetched (pruned since the run was opened) is
+    skipped: the child rebuilds what it needs (spec D6)."""
+    for name in names:
+        try:
+            link.fetch(name, cache / name)
+        except OSError:
+            (cache / name).unlink(missing_ok=True)
+
+
+def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> None:
+    """Every cache file the child created or changed, before the result: once the result is in, the worker
+    closes the run and refuses anything else from it."""
+    from replay_worker import control_cache
+
+    after = _cache_files(cache)
+    for name in sorted(n for n, digest in after.items() if before.get(n) != digest):
+        if control_cache.valid(name, map_name):
+            try:
+                link.post_file(f"cache/{urllib.parse.quote(name, safe='')}", cache / name)
+            except OSError:
+                pass     # the worker then doesn't count the map as warm (D6); the next run rebuilds
+
+
+def control(args: dict, link: WorkerLink) -> None:
+    work = Path(tempfile.mkdtemp(prefix="control-"))
+    try:
+        cache = work / "cache"
+        cache.mkdir()
+        _fetch_inputs(link, args.get("files", []), cache)
+        before = _cache_files(cache)
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
+        _post_caches(link, cache, before, args["map"])
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+TASKS = {"ping": ping, "control": control}

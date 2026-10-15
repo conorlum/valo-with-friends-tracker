@@ -18,6 +18,12 @@ def ping(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
+@app.task(name="control", timeout_seconds=1800, retry=Retry(max_retries=1, wait_duration_ms=5000))
+def control(ctx: TaskContext, args: dict) -> dict:
+    tasks.control(args, tasks.link_for(args))
+    return {"ok": True}
+
+
 # Later steps add their @app.task blocks HERE, above this line: app.start() registers the tasks defined when it
 # runs (render/workflows/app.py, start), so a block below it would never be registered.
 
