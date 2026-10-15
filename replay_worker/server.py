@@ -186,8 +186,12 @@ DEFAULT_PARSER_CMD = ["CliReader", "export", "{vrf}", "--output", "{out}"]
 FINISHED_KEPT = 50  # finished jobs whose results stay readable (oldest dropped first)
 
 # User-facing reasons (the web service shows them as they are).
-REASON_TIMEOUT = "parse timed out"
-REASON_PARSE = "parse failed"
+try:
+    from replay_worker.parse_job import (REASON_PARSE, REASON_TIMEOUT, ParseFailed, kill_tree,  # noqa: E402
+                                         limit_memory as _limit_memory, parse_file, parser_detail)
+except ImportError:  # pragma: no cover
+    from parse_job import (REASON_PARSE, REASON_TIMEOUT, ParseFailed, kill_tree,  # type: ignore  # noqa: E402
+                           limit_memory as _limit_memory, parse_file, parser_detail)
 
 # An upload recorded on a game build the pinned parser doesn't list (replay_parser.json) is never parsed: with the
 # archive on it is held on the disk as status "held" under the same job id, and parsed once an image whose parser
@@ -195,7 +199,6 @@ REASON_PARSE = "parse failed"
 # at once. Held files count against the archive's budget and are capped here.
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
-DETAIL_MAX_CHARS = 300   # the parser's last words on a failed parse, kept as the job's `detail`
 
 
 def _version(build: str) -> str:
@@ -206,20 +209,6 @@ def _version(build: str) -> str:
 def held_reason(build: str) -> str:
     return (f"recorded on game version {_version(build)}, which the replay parser doesn't support yet: the file is "
             f"kept and will be parsed when the parser is updated")
-
-
-def parser_detail(log: Path) -> str | None:
-    """The last few lines the parser wrote, without stack frames, for a failed parse: None when it wrote nothing."""
-    try:
-        with log.open("rb") as handle:
-            handle.seek(max(0, log.stat().st_size - 8192))
-            text = handle.read().decode("utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = [re.sub(r"\x1b\[[0-9;]*m", "", line).strip() for line in text.splitlines()]
-    lines = [line for line in lines if line and not line.startswith(("at ", "---"))]
-    detail = " | ".join(lines[-3:])
-    return detail[-DETAIL_MAX_CHARS:] or None
 
 
 @dataclass
@@ -360,38 +349,6 @@ class Job:
         if self.parse_seconds is not None:
             body["parse_seconds"] = self.parse_seconds
         return body
-
-
-def kill_tree(process: subprocess.Popen) -> None:
-    """Kill a child and everything it started; every wait is bounded. On Linux the child leads its own
-    process group (setsid), so the group is killed even when the leader has already exited."""
-    if os.name == "nt":
-        if process.poll() is None:
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True,
-                               check=False, timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-
-
-def _limit_memory(cap_mb: int):
-    """A preexec hook that caps the parser's address space (Linux; `resource` isn't on Windows)."""
-    def apply() -> None:
-        os.setsid()
-        if cap_mb:
-            import resource
-            limit = cap_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-    return apply
 
 
 class NoSpace(Exception):
@@ -870,53 +827,23 @@ class Worker:
             traceback.print_exc()
 
     def _process(self, job: Job) -> dict:
-        vrf = job.folder / "upload.vrf"
-        out = job.folder / "export"
-        command = [part.replace("{vrf}", str(vrf)).replace("{out}", str(out)) for part in self.settings.parser_cmd]
-        started = time.perf_counter()
-        # The parser's own output goes to a file in the job folder, read back only if the parse fails.
-        log = job.folder / "parser.log"
         try:
-            with log.open("wb") as output:
-                kwargs = {"stdout": output, "stderr": subprocess.STDOUT, "cwd": str(job.folder),
-                          "env": {**os.environ, "VALO_MAP_AUDIT_RAW": "1"}}
-                if os.name == "nt":
-                    kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-                else:
-                    kwargs["preexec_fn"] = _limit_memory(self.settings.memory_cap_mb)
-                process = subprocess.Popen(command, **kwargs)
-                try:
-                    code = process.wait(timeout=self.settings.timeout_s)
-                except subprocess.TimeoutExpired:
-                    kill_tree(process)
-                    raise _JobFailed(REASON_TIMEOUT)
-            job.parse_seconds = round(time.perf_counter() - started, 1)
-            if code != 0 or not (out / "manifest.json").exists():
-                job.detail = parser_detail(log)
-                raise _JobFailed(REASON_PARSE)
-        finally:
-            log.unlink(missing_ok=True)
-        build = None
-        if self.settings.parser_build is not None:
-            build = json.loads(self.settings.parser_build.read_text(encoding="utf-8-sig"))
-        # The match UUID comes from the file's own header, never its name (check_file_name=False).
-        replay = condense_export_dir(out, source_sha256=job.sha256, build=build, vrf_path=vrf, check_file_name=False)
-        if self.archive is not None:
-            shutil.rmtree(out, ignore_errors=True)  # the export is ~65x the file; the result is all we need
-            if job.kind == "reparse" and replay.match_uuid.lower() != job.match_uuid:
-                raise _JobFailed("the archived file is another match")
-        job.match_uuid, job.map = replay.match_uuid.lower(), replay.map_name
-        return {
-            "match_uuid": replay.match_uuid, "map_name": replay.map_name, "game_branch": replay.game_branch,
-            "source_sha256": replay.source_sha256, "recipe": replay.recipe, "hz": replay.hz,
-            "round_count": replay.round_count,
-            "rounds": {str(n): base64.b64encode(data).decode("ascii") for n, data in replay.encoded_rounds().items()},
-            "players": replay.players, "link_inputs": replay.link_inputs,
-            # The web service stores this (app/replays/store.py): dropped_final_round goes into
-            # link_inputs, and the rest is a small summary for the job page.
-            "report": {k: replay.report.get(k) for k in ("rounds", "hz", "kills", "sizes", "lifecycle", "sides",
-                                                          "dropped_final_round", "extras")},
-        }
+            result, job.parse_seconds = parse_file(
+                job.folder / "upload.vrf", job.folder, job.sha256, parser_cmd=self.settings.parser_cmd,
+                timeout_s=self.settings.timeout_s, memory_cap_mb=self.settings.memory_cap_mb,
+                parser_build=self.settings.parser_build)
+        except ParseFailed as failed:
+            job.detail, job.parse_seconds = failed.detail, failed.seconds
+            raise _JobFailed(failed.reason)
+        return self._accept_result(job, result)
+
+    def _accept_result(self, job: Job, result: dict) -> dict:
+        """Today's checks on a parse's result, wherever it ran."""
+        match_uuid = str(result["match_uuid"]).lower()
+        if self.archive is not None and job.kind == "reparse" and match_uuid != job.match_uuid:
+            raise _JobFailed("the archived file is another match")
+        job.match_uuid, job.map = match_uuid, result["map_name"]
+        return result
 
     def _forget_old(self) -> None:
         with self.lock:
