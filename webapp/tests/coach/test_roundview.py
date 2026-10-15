@@ -112,3 +112,30 @@ def test_r_f10_a_gap_mid_life_is_unknown_inside_the_gap():
     assert v.position(0, 9.5)["area"]["name"] == "A Site"
     assert v.position(0, 15.0) == {"alive": True, "u": None, "v": None, "area": None, "position": "unknown"}
     assert v.position(0, 20.5)["u"] == 2000
+
+
+SMOKE = {"k": "ability", "kind": "GameObject", "name": "E_Smoke", "t": 10.0, "t1": 28.0, "by": 5, "u": 2000, "v": 2280}
+THROW = {"k": "ability", "kind": "Projectile", "name": "E_Smoke", "t": 9.0, "t1": 10.0, "by": 5, "u": 8000, "v": 8000}
+TRIP = {"k": "ability", "kind": "GameObject", "name": "4_TripWire", "t": 0.0, "t1": None, "by": 1, "u": 8000, "v": 8070}
+SHOTS = [{"k": "shot", "t": 30.0, "by": 5, "gun": "Spectre", "n": 1}, {"k": "shot", "t": 12.0, "by": 5, "gun": "Spectre", "n": 1},
+         {"k": "shot", "t": 40.0, "by": 5, "gun": "Phantom", "n": 1}]
+
+
+def test_placed_utility_carries_where_it_landed_and_until_when():
+    v = view(toys.round_blob(toys.ten(), util=[THROW, SMOKE]))
+    throw, smoke = v.utility()
+    assert smoke["area"] == {"name": "A Site", "super": "A"} and smoke["until"] == 28.0
+    assert "area" not in throw and "until" not in throw        # a throw starts at the thrower: that is their place
+
+
+def test_placed_util_is_what_is_standing_at_a_time():
+    v = view(toys.round_blob(toys.ten(), util=[THROW, SMOKE, TRIP]))
+    assert [e["name"] for e in v.placed_util(5.0)] == ["4_TripWire"]             # no end stored: up to the round's end
+    assert [e["name"] for e in v.placed_util(20.0)] == ["E_Smoke", "4_TripWire"]
+    assert [e["name"] for e in v.placed_util(28.0)] == ["4_TripWire"]
+
+
+def test_guns_are_each_gun_a_player_fired_with_its_first_shot():
+    v = view(toys.round_blob(toys.ten(), util=SHOTS))
+    assert v.guns(5) == [{"gun": "Spectre", "first_shot": 12.0}, {"gun": "Phantom", "first_shot": 40.0}]
+    assert v.guns(0) == []

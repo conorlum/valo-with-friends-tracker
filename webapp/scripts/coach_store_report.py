@@ -35,6 +35,15 @@ def resolve(db, match_uuid: str, player: str) -> tuple[int, int]:
     return replay.match_id, found[0]
 
 
+ROSTER = WEBAPP_ROOT / "scripts" / "tracked_players.json"
+
+
+def on_roster(name: str) -> bool:
+    """Whether the coach may be run for this player: only the owner's roster, never a random in the match."""
+    roster = {str(entry).strip().lower() for entry in json.loads(ROSTER.read_text(encoding="utf-8"))}
+    return name.strip().lower() in roster
+
+
 def team_names(db, match_uuid: str, player: str) -> list[str]:
     """The display names of that player's team in the match, the player first."""
     from app.models import MatchPlayer, Player

@@ -18,7 +18,8 @@ TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, che
 
 # The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
 # is an identifier or a coordinate and grounds nothing.
-_TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at"})
+_TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at", "since", "until",
+                        "first_shot"})
 _SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
 _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",

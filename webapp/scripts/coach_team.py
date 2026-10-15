@@ -1,4 +1,5 @@
-"""Writes and publishes a coaching report for every player on one player's team: one coach_report.py run each.
+"""Writes and publishes a coaching report for every player on one player's team who is on the roster
+(scripts/tracked_players.json): one coach_report.py run each. A teammate off the roster gets no run.
 
     $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_team.py <match uuid> "<player>" [--model <name>] [--dry-run | --prompt-only]
 
@@ -45,7 +46,7 @@ def main() -> int:
     mode.add_argument("--prompt-only", action="store_const", const="--prompt-only", dest="mode")
     args = parser.parse_args()
     from app.db import SessionLocal
-    from scripts.coach_store_report import team_names
+    from scripts.coach_store_report import on_roster, team_names
 
     with SessionLocal() as db:
         try:
@@ -53,6 +54,13 @@ def main() -> int:
         except ValueError as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
+    skipped = [name for name in names if not on_roster(name)]
+    names = [name for name in names if name not in skipped]
+    if skipped:
+        print(f"not on the roster, no run: {', '.join(skipped)}", flush=True)
+    if not names:
+        print("refused: nobody on that team is on the roster (scripts/tracked_players.json)", file=sys.stderr)
+        return 2
     print(f"coaching {len(names)} players, one at a time: {', '.join(names)}", flush=True)
     failed = []
     for at, name in enumerate(names, start=1):

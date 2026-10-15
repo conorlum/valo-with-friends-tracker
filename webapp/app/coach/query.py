@@ -5,6 +5,7 @@ evidence cites those ids, which is how a claim is checked (app/coach/checker.py,
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -65,10 +66,28 @@ def _health(view, slot: int, t: float) -> str | None:
     return "healthy" if pct > 50 else "hurt" if pct > 25 else "low"
 
 
+UTIL_NEAR_M = 8.0       # a smoke is about 4 to 5 m across its radius: this reaches a player at its edge
+
+
+def _util_near(snap, view, standing: list[dict], position: dict) -> list[dict]:
+    if position.get("u") is None:
+        return []
+    out = []
+    for e in standing:
+        metres = view.metres(math.hypot(position["u"] - e["u"], position["v"] - e["v"]))
+        if metres <= UTIL_NEAR_M:
+            row = {"ability": e.get("name") or e.get("code"), "by": snap.names.get(e.get("by")),
+                   "metres": round(metres, 1), "since": e["t"]}
+            if e.get("t1") is not None:
+                row["until"] = e["t1"]
+            out.append(row)
+    return out
+
+
 def where(snap, n, t) -> dict:
     t = float(t)
     view = _view(snap, n, t)
-    players = []
+    players, standing = [], view.placed_util(t)
     for s in view.slots:
         position = view.position(s, t)
         if position["alive"] and position.get("u") is None:       # alive, no usable sample: alive with no place
@@ -76,11 +95,16 @@ def where(snap, n, t) -> dict:
         row = {"slot": s, "name": snap.names.get(s), "side": view.side(s), "role": snap.role(int(n), s), **position}
         if row["alive"]:
             row["health"] = _health(view, s, t)
+            row["util_near"] = _util_near(snap, view, standing, position)
+        row["guns"] = view.guns(s)
         players.append(row)
     return {"round": int(n), "t": t, "players": players,
             "note": "health is a word (healthy, hurt, low) after the player's last recorded hit; null means no hit "
                     "is recorded so far, not full health; heals are not recorded; a living player with no u/v has "
-                    "no usable position at that time"}
+                    "no usable position at that time. util_near: placed util (a smoke, a wall, a trip, a camera) "
+                    f"standing at t within {UTIL_NEAR_M:g} m of the player, with metres to its centre, not its "
+                    "edge, and the span it stood. guns: each gun the player fired in the whole round and the time "
+                    "of its first shot; a player who never fired has none listed"}
 
 
 def knew(snap, n, t, side) -> dict:

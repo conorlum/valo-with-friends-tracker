@@ -93,3 +93,20 @@ def test_read_refuses_an_unlinked_replay(monkeypatch):
     monkeypatch.setattr(snapshot.replays, "find_replay", lambda db, uuid: None)
     with pytest.raises(snapshot.SnapshotError, match="no replay"):
         snapshot.read(None, "u-1")
+
+
+def test_enemies_are_named_by_agent_and_teammates_keep_their_names(tmp_path):
+    data = built()
+    data["context"] = {**CONTEXT, "players": {s: dict(p) for s, p in CONTEXT["players"].items()}}
+    data["context"]["players"]["5"]["agent"] = "Reyna"
+    snapshot.hide_enemy_names(data, "P1#T1")
+    snapshot.save(data, tmp_path)
+    snap = snapshot.load(tmp_path)
+    assert snap.names[0] == "P0#T0" and snap.names[5] == "enemy Reyna"
+    assert snap.names[6] == "enemy Jett" and snap.names[7] == "enemy Jett 2"
+    assert snap.slot_of("enemy Reyna") == 5 and CONTEXT["players"]["5"]["name"] == "P5#T5"
+
+
+def test_hiding_names_refuses_a_player_not_in_the_match():
+    with pytest.raises(snapshot.SnapshotError):
+        snapshot.hide_enemy_names(built(), "Nobody#NA1")
