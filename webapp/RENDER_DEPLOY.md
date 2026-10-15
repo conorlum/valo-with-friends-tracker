@@ -294,3 +294,26 @@ Each kind (parse, control, heights) moves with its own switch on `replay-worker`
 `REPLAY_<KIND>_RUNNER=workflow`; set it back to `local` to roll back. The switches are `sync: false` in
 `render.yaml`: the dashboard is where they live, and a Blueprint sync leaves them alone. After every later
 merge, check `/health`'s `runners` still shows the kinds already moved.
+
+### Map control on Workflows (step 2)
+
+The worker now keeps 2 GiB of its disk for the control caches and empties `<cache>/.incoming` on start, whichever runner is set.
+
+1. Merge; let both services deploy. The worker's control is still local; the site now sends one match at a time.
+2. `replay-worker` → Environment → `REPLAY_CONTROL_RUNNER=workflow` → save (redeploys).
+3. Check `/health` through the site's admin page or the worker's shell (`curl localhost:8080/health`):
+   `runners.control` is `workflow`, `workflow.last_error` is null.
+4. Watch the next match: the workflow's Runs page shows its rounds; the first round of a map runs alone.
+5. Compare one round with a local computation. Pull Render down to local ("Pulling Render down to local" above),
+   pick a match whose rounds the workflow computed (its `match_uuid` and a round `N`), then in `webapp\`:
+   - record the workflow's bytes:
+     `docker exec -i <local postgres container> psql -U <user> -d <db> -c "SELECT encode(sha256(c.data), 'hex')
+     FROM replay_round_control c JOIN replays r ON r.id = c.replay_id WHERE r.match_uuid = '<uuid>' AND
+     c.round_number = <N>"` (or the same query in any SQL client on the local DB);
+   - recompute that one round locally: `.\.venv\Scripts\python.exe scripts\compute_control.py --match <uuid>
+     --round <N> --force --workers 1`;
+   - run the query again. The two hashes must be equal. (This overwrites only the local copy; Render is untouched.)
+6. Roll back: `REPLAY_CONTROL_RUNNER=local`.
+
+Tune with `CONTROL_MAX_RUNS` / `CONTROL_MAX_MATCHES` (site) and `REPLAY_CONTROL_RUNS` (worker); keep the
+worker's at least the site's. After every later merge, check `/health`'s `runners.control` is still `workflow`.

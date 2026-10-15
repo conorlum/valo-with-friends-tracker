@@ -198,6 +198,16 @@ Settings: `RENDER_API_KEY`, `REPLAY_WORKFLOW_SLUG` (`replay-tasks`), `REPLAY_TAS
 `REPLAY_PARSE_RUNNER` / `REPLAY_CONTROL_RUNNER` / `REPLAY_HEIGHTS_RUNNER` (`local` by default, or `workflow`).
 `python3 -m replay_worker.runs ping` calls the ping route from the worker's shell.
 
+### Map control on Workflows
+
+With `REPLAY_CONTROL_RUNNER=workflow` each round is one Workflow run (`ControlRunner`). `control_cache.py` decides
+which cache files a run gets: the newest 3 per map per folder, and the worker keeps a 2 GiB reserve of its disk
+for them (it also empties `<cache>/.incoming` on start, whichever runner is set). A run posts every cache it
+created or changed to `POST /runs/{job}/cache/{name}` (header `X-Run-Token`) before it posts its result; if the
+answer carries `cache_unsent`, some file did not arrive and the map stays cold, so the next round of it runs
+alone. `REPLAY_CONTROL_RUNS` (40 on Render) is how many runs go at once in workflow mode;
+`REPLAY_CONTROL_WORKERS` stays the local pool's size. Setup and switch-over: `webapp/RENDER_DEPLOY.md`.
+
 ## Running it locally
 
 From the repository root, with the local parser build (`webapp\scripts\build_replay_parser.ps1`):

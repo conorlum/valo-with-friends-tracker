@@ -59,6 +59,11 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: REPLAY_HEIGHTS_AUTO
         value: "true"
+      # Map control limits (spec 2026-10-14, D5): rounds in flight, and from how many replays.
+      - key: CONTROL_MAX_RUNS
+        value: "40"
+      - key: CONTROL_MAX_MATCHES
+        value: "1"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv
@@ -104,3 +109,10 @@ services:
         sync: false
       - key: REPLAY_HEIGHTS_RUNNER
         sync: false
+      - key: REPLAY_CONTROL_RUNS
+        value: "40"
+      - key: REPLAY_CONTROL_QUEUE
+        value: "64"
+      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6).
+      - key: CONTROL_CACHE_DIR
+        value: /var/replay/control_cache
