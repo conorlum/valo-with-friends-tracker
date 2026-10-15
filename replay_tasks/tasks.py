@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
@@ -81,7 +82,7 @@ def _child_env(cache: Path) -> dict:
     return env
 
 
-def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path) -> dict:
+def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path, what: str = "control child") -> dict:
     """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer."""
     from replay_worker.server import _child_setup
 
@@ -96,7 +97,7 @@ def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path) 
         answer = None
     if not isinstance(answer, dict):
         return {"status": "failed", "error_kind": "infra",
-                "error": f"control child exited {done.returncode} without an answer"}
+                "error": f"{what} exited {done.returncode} without an answer"}
     return answer
 
 
@@ -202,4 +203,30 @@ def parse(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control, "parse": parse}
+def heights(args: dict, link: WorkerLink) -> None:
+    """One map's height build: today's height_job child on the build's rounds, unpacked from the worker's spool."""
+    from replay_worker import control_cache
+
+    work = Path(tempfile.mkdtemp(prefix="heights-"))
+    try:
+        cache = work / "cache"
+        cache.mkdir()
+        _fetch_inputs(link, args.get("files", []), cache)          # step 2: a file it can't fetch is skipped
+        before = _cache_files(cache)
+        task = json.loads(link.fetch("task", work / "task.json").read_text(encoding="utf-8"))
+        try:
+            rounds = control_cache.unpack(link.fetch("rounds", work / "rounds.tar"), work / "rounds")
+        except (ValueError, OSError, tarfile.TarError) as error:
+            link.post_result({"status": "failed", "error_kind": "infra", "key": task.get("key"),
+                              "error": f"the build's rounds could not be unpacked: {error}"})
+            return
+        task["dir"] = str(rounds)
+        answer = _run_child("REPLAY_HEIGHT_CMD", [sys.executable, "-m", "replay_worker.height_job"],
+                            json.dumps(task).encode("utf-8"), cache, what="height child")
+        _post_caches(link, cache, before, args["map"])               # step 2: new or changed, before the result
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights}

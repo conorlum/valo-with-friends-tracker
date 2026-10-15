@@ -30,6 +30,12 @@ def parse(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
+@app.task(name="heights", timeout_seconds=3600, retry=NO_RETRY)
+def heights(ctx: TaskContext, args: dict) -> dict:
+    tasks.heights(args, tasks.link_for(args))
+    return {"ok": True}
+
+
 # Later steps add their @app.task blocks HERE, above this line: app.start() registers the tasks defined when it
 # runs (render/workflows/app.py, start), so a block below it would never be registered.
 
