@@ -79,6 +79,31 @@ def test_partly_computed_with_gap_runs_a_failed_row_and_an_older_recipe(factory,
     assert next(iter(rows(db).values())).first_step == "reparse_local"
 
 
+def test_a_refresh_is_committed(db, linked):
+    states.refresh(db, now=NOW)
+    db.rollback()                       # an uncommitted write would vanish here
+    assert len(rows(db)) == 1
+    later = NOW + timedelta(seconds=60)
+    states.refresh(db, now=later)
+    db.rollback()
+    assert naive(next(iter(rows(db).values())).checked_at) == naive(later)
+
+
+def test_a_failure_after_the_flush_rolls_the_pass_back(db, linked, monkeypatch):
+    states.refresh(db, now=NOW)
+    linked.recipe = "000000000000.c9.f1.000000000"
+    db.commit()
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected after the flush")
+
+    monkeypatch.setattr(states, "update", fail)
+    with pytest.raises(RuntimeError):
+        states.refresh(db, now=NOW + timedelta(seconds=60))
+    row = next(iter(rows(db).values()))
+    assert row.first_step == "control_missing" and naive(row.checked_at) == naive(NOW)
+
+
 def test_a_second_refresh_writes_nothing_and_moves_checked_at(db, linked):
     states.refresh(db, now=NOW)
     later = NOW + timedelta(seconds=60)

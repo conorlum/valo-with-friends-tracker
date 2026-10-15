@@ -141,6 +141,7 @@ def _evict():
 
 
 def base_snapshot(map_name, folder, entry, scale):
+    entry, scale = _copy(entry), _copy(scale)     # the stored decode must not alias the caller's objects
     raws = _read_raws(map_name, folder)
     key = _key(map_name, raws, entry, scale)
     with _locked():

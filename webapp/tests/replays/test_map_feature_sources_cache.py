@@ -58,6 +58,17 @@ def test_miss_then_hit_equal_uncached(tmp_path):
     assert mfs.base_snapshot.cache_info() == {'hits': 1, 'misses': 1, 'size': 1}
 
 
+def test_mutating_the_input_entry_after_a_miss_leaves_the_cache_alone(tmp_path):
+    folder = _copy_map(tmp_path, MAP_A)
+    entry = _entry()
+    expected = mfs._base_snapshot(MAP_A, folder, _entry(), 1.5)
+    mfs.base_snapshot(MAP_A, folder, entry, 1.5)                # a miss: stores the decode
+    entry['specials'][0]['at'][0] = 999
+    entry['specials'].append('junk')
+    assert mfs.base_snapshot(MAP_A, folder, _entry(), 1.5) == expected     # a hit on the original key
+    assert mfs.base_snapshot.cache_info()['hits'] == 1
+
+
 def test_returned_value_is_a_copy(tmp_path):
     folder = _copy_map(tmp_path, MAP_A)
     entry = _entry()
