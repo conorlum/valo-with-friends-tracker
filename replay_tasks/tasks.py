@@ -158,4 +158,44 @@ def control(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control}
+def _recipe() -> str:
+    from app.replays.contract import current_recipe
+    return current_recipe()
+
+
+def parse(args: dict, link: WorkerLink) -> None:
+    """One upload or re-parse: the same parse and condense the worker runs locally (replay_worker/parse_job.py)."""
+    for folder in (str(WEBAPP), str(REPO)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+    from app.replays.contract import ContractError
+    from replay_worker import parse_job
+    from replay_worker.server import Settings
+
+    mine = _recipe()
+    if mine != args["recipe"]:
+        link.post_result({"status": "failed", "error_kind": "deploy",
+                          "error": f"this run has recipe {mine}, the worker {args['recipe']}"})
+        return
+    settings = Settings.from_env()
+    work = Path(tempfile.mkdtemp(prefix="parse-"))
+    try:
+        vrf = link.fetch("vrf", work / "upload.vrf")
+        try:
+            result, seconds = parse_job.parse_file(vrf, work, args["sha256"], parser_cmd=settings.parser_cmd,
+                                                   timeout_s=settings.timeout_s, memory_cap_mb=settings.memory_cap_mb,
+                                                   parser_build=settings.parser_build)
+            answer = {"status": "ok", "result": result, "parse_seconds": seconds}
+        except parse_job.ParseFailed as failed:
+            answer = {"status": "failed", "error_kind": "parse", "error": failed.reason, "detail": failed.detail,
+                      "parse_seconds": failed.seconds}
+        except ContractError as refused:
+            answer = {"status": "failed", "error_kind": "contract", "error": f"not condensable: {refused.reason}"}
+        except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
+            answer = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+TASKS = {"ping": ping, "control": control, "parse": parse}
