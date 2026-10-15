@@ -47,7 +47,10 @@ file (`app/replays/header.py`, `game_build`), so the worker reads it before any 
 
 ## Behaviour
 
-- One job runs at a time; `REPLAY_QUEUE_SIZE` more wait, and the next upload gets `503`.
+- One job runs at a time; `REPLAY_QUEUE_SIZE` more wait, and the next upload gets `503`. With
+  `REPLAY_PARSE_RUNNER=workflow`, up to `REPLAY_PARSE_PARALLEL` parses run at once, each as a Workflow run; the
+  job record carries `run_id`, `run_token` and `run_deadline` while one is going, and jobs recovered after a
+  restart are worked first, outside the queue.
 - Each job has its own temp folder (the upload plus the export, about 65 times the file). With the archive
   off it is deleted when the job ends, whatever happened, **before** the job reads as finished. With it on,
   see "The .vrf archive" below.

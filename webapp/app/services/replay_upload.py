@@ -63,7 +63,7 @@ UNFINISHED = ("queued", "parsing")
 # updated, which can be weeks. Polled like an unfinished upload, but never timed out and never counted in a batch.
 HELD = "held"
 POLLED = UNFINISHED + (HELD,)
-MAX_UNFINISHED = 5  # a batch: one session's uploads in progress at once, the worker's own queue size
+MAX_UNFINISHED = 10  # a batch: one session's uploads in progress at once (spec 2026-10-14, D15); the worker admits 15
 RECENT_LISTED = timedelta(hours=24)  # the upload page lists this session's uploads from this long ago
 
 REASONS = {

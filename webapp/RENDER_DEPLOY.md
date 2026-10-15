@@ -317,3 +317,19 @@ The worker now keeps 2 GiB of its disk for the control caches and empties `<cach
 
 Tune with `CONTROL_MAX_RUNS` / `CONTROL_MAX_MATCHES` (site) and `REPLAY_CONTROL_RUNS` (worker); keep the
 worker's at least the site's. After every later merge, check `/health`'s `runners.control` is still `workflow`.
+
+### Parsing on Workflows (step 3)
+
+1. Note today's `parse_seconds` for three recent uploads (the job page's report, or `/admin` → replays).
+2. `replay-worker` → Environment → `REPLAY_PARSE_RUNNER=workflow` → save.
+3. Upload 10 replays at once from one browser session (its batch), and a few more from a second one: the
+   workflow's Runs page shows up to 15 `parse` runs running together.
+4. Restart test: upload one, and while its run is running, `replay-worker` → Manual Deploy → Restart. The upload
+   still finishes, and the Runs page shows one `parse` run for it (the worker reconnected). If the restart landed
+   in the instant between starting the run and saving its id, a second run appears and the first result wins:
+   that is the accepted rule (spec D9).
+5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in
+   `replay_tasks/main.py` (spec D7) and redeploy the workflow.
+6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
+   largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
+7. Roll back: `REPLAY_PARSE_RUNNER=local`.

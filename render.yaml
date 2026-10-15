@@ -113,6 +113,12 @@ services:
         value: "40"
       - key: REPLAY_CONTROL_QUEUE
         value: "64"
+      - key: REPLAY_PARSE_PARALLEL
+        value: "15"
+      # Admits 15 waiting/running jobs (spec D15). The archive's parse reserve grows by 10 x the 200 MB cap
+      # (replay_worker/archive.py parse_reserve), about 2 GB less archive.
+      - key: REPLAY_QUEUE_SIZE
+        value: "15"
       # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache
