@@ -26,6 +26,12 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
                       cache for the rounds that name it. 200 {"stored": true}, 400 not one, 404 control is off,
                       413 too large.
 
+    GET  /runs/{job}/input/{name}   (header X-Run-Token) a Workflow run's input file, streamed; 404 otherwise.
+    POST /runs/{job}/result         (header X-Run-Token) the run's JSON answer: 200 taken, 409 refused (wrong
+                                    token, unknown or already settled run), 413, 400.
+    POST /runs/ping                 starts a ping run and waits for it: {"ok", "answer", "seconds"}.
+These exist only when RENDER_API_KEY and REPLAY_WORKFLOW_SLUG are set (replay_worker/runs.py).
+
 Height builds (HeightBuilds; docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): a map's heights
 built here from its stored rounds, by one more control child (`python -m replay_worker.height_job`) that runs
 alone and ahead of every control round, and that a parse preempts like one. Off with map control.
@@ -127,6 +133,10 @@ Configuration (environment, all optional):
     REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
     REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
+    REPLAY_PARSE_RUNNER / REPLAY_CONTROL_RUNNER / REPLAY_HEIGHTS_RUNNER   "local" (default) or "workflow"
+    REPLAY_WORKFLOW_SLUG     the workflow service's slug (e.g. replay-tasks)
+    RENDER_API_KEY           a Render API key (set by hand in the dashboard, never in render.yaml)
+    REPLAY_TASK_STARTS_PER_MIN  run starts per minute (default 1000: a safety valve; a 429 waits and retries)
 """
 
 from __future__ import annotations
@@ -145,6 +155,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -161,8 +172,10 @@ from app.replays.header import game_build  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
     from replay_worker import archive as archive_store  # noqa: E402
+    from replay_worker import runs as runs_mod  # noqa: E402
 except ImportError:  # pragma: no cover - run as a plain script from its folder
     import archive as archive_store  # type: ignore[no-redef]  # noqa: E402
+    import runs as runs_mod  # type: ignore[no-redef]  # noqa: E402
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
 DEFAULT_PARSER_CMD = ["CliReader", "export", "{vrf}", "--output", "{out}"]
@@ -237,6 +250,19 @@ class Settings:
     archive_require_mount: bool = True
     archive_total_bytes: int | None = None  # tests only; the disk's own size otherwise
     supported_builds: frozenset | None = None  # tests only; the pin's supported_replay_builds otherwise
+    # Render Workflows (docs/superpowers/specs/2026-10-14-render-workflows-design.md): which kind of work runs as
+    # a Workflow run instead of a child here. "local" (default) is today's child process.
+    parse_runner: str = "local"
+    control_runner: str = "local"
+    heights_runner: str = "local"
+    workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
+    render_api_key: str | None = None
+    render_api_base: str = runs_mod.API
+    task_starts_per_min: int = 1000               # a safety valve only (spec D10)
+    run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
+
+    def workflow_wanted(self) -> bool:
+        return "workflow" in (self.parse_runner, self.control_runner, self.heights_runner)
 
     @classmethod
     def from_env(cls, env=os.environ) -> "Settings":
@@ -268,7 +294,28 @@ class Settings:
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
+        for name in ("parse", "control", "heights"):
+            value = env.get(f"REPLAY_{name.upper()}_RUNNER", "local")
+            if value not in ("local", "workflow"):
+                raise ValueError(f"REPLAY_{name.upper()}_RUNNER must be local or workflow, not {value!r}")
+            setattr(settings, f"{name}_runner", value)
+        settings.workflow_slug = env.get("REPLAY_WORKFLOW_SLUG") or None
+        settings.render_api_key = env.get("RENDER_API_KEY") or None
+        settings.render_api_base = env.get("REPLAY_RENDER_API", settings.render_api_base)
+        settings.task_starts_per_min = int(env.get("REPLAY_TASK_STARTS_PER_MIN", settings.task_starts_per_min))
         return settings
+
+
+def make_runs(settings: Settings):
+    """The run table, or None when no Render key and slug are set. A runner set to `workflow` without them stops
+    the worker here, at startup, rather than failing every job later."""
+    if not (settings.render_api_key and settings.workflow_slug):
+        if settings.workflow_wanted():
+            raise SystemExit("a REPLAY_*_RUNNER is 'workflow' but RENDER_API_KEY or REPLAY_WORKFLOW_SLUG is not set")
+        return None
+    api = runs_mod.RenderApi(settings.render_api_key, base=settings.render_api_base)
+    return runs_mod.Runs(api, settings.workflow_slug, runs_mod.Pacer(settings.task_starts_per_min),
+                         settings.temp_root / "runs")
 
 
 @dataclass
@@ -1553,7 +1600,8 @@ class _JobFailed(Exception):
 # ---------------------------------------------------------------- HTTP
 
 
-def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None):
+def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None,
+                 runs_table=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "replay-worker"
 
@@ -1592,7 +1640,97 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 self.connection.settimeout(timeout)
             return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
 
+        def _run_input(self):
+            parts = self.path.split("/")          # ["", "runs", job, "input", name]
+            name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
+            path = runs_table.file(parts[2], name, self.headers.get("X-Run-Token")) if name else None
+            if path is None or not path.is_file():
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "no such input"})
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.end_headers()
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
+
+        def _length(self, low: int, high: int) -> int | None:
+            """The request's Content-Length when it is a decimal integer in [low, high]; otherwise sends 411, 400
+            or 413, marks the connection to close, and returns None. Nothing has been read or written yet."""
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                self.close_connection = True
+                self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
+                return None
+            if not raw.strip().isdigit():
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is not a positive number"})
+                return None
+            size = int(raw)
+            if size < low:
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "the body is empty or too short"})
+                return None
+            if size > high:
+                self.close_connection = True
+                self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "the body is too large"})
+                return None
+            return size
+
+        def _run_result(self):
+            parts = self.path.split("/")          # ["", "runs", job, "result"]
+            token = self.headers.get("X-Run-Token")
+            run = runs_table.accepts(parts[2], token) if len(parts) == 4 else None
+            if run is None:
+                self.close_connection = True
+                # Read a small refused body first: closing with it unread can reset the client's connection
+                # before it sees the 409. A large one is not read (the connection is closed on it).
+                try:
+                    unread = int(self.headers.get("Content-Length") or 0)
+                    if 0 < unread <= runs_mod.CHUNK:
+                        self.rfile.read(unread)
+                except (ValueError, OSError):
+                    pass
+                return self._send(HTTPStatus.CONFLICT, {"error": "no open run takes this result"})
+            size = self._length(1, worker.settings.run_result_max_bytes)
+            if size is None:
+                return None
+            target = run.folder / f"result-{uuid.uuid4().hex}.json"
+            with target.open("wb") as sink:
+                remaining = size
+                while remaining:
+                    chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                    if not chunk:
+                        break
+                    sink.write(chunk)
+                    remaining -= len(chunk)
+            if remaining:
+                target.unlink(missing_ok=True)
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "result cut short"})
+            code = runs_table.deliver(parts[2], token, target)
+            target.unlink(missing_ok=True)
+            # The sizes step 3 reads before step 5 shrinks the worker (spec D18).
+            sys.stderr.write(f"run result {parts[2]} {run.kind} {size} bytes -> {code}\n")
+            return self._send(code, {"accepted": code == 200})
+
+        def _run_ping(self):
+            text = uuid.uuid4().hex
+            job_id = f"ping{text[:12]}"
+            source = worker.settings.temp_root / "runs" / f"{job_id}.txt"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(text, encoding="utf-8")
+            started = time.monotonic()
+            try:
+                run = runs_table.open("ping", job_id, {"ping": source}, timeout_s=300)
+                runs_table.start(run, {})
+                answer = runs_table.wait(run)
+            finally:
+                source.unlink(missing_ok=True)
+            return self._send(HTTPStatus.OK, {"ok": answer.get("echo") == text, "answer": answer,
+                                              "seconds": round(time.monotonic() - started, 1)})
+
         def do_GET(self):  # noqa: N802
+            if runs_table is not None and self.path.startswith("/runs/") and "/input/" in self.path:
+                return self._run_input()
             if self.path == "/health":
                 body = {"ok": True, "queued": worker.queue.qsize(),
                         "limits": {"timeout_s": worker.settings.timeout_s, "max_bytes": worker.settings.max_bytes,
@@ -1605,6 +1743,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["idle"] = worker.idle()
                 body["heights"] = heights.status() if heights else {"collecting": [], "queued": [], "running": [],
                                                                     "spool_bytes": 0}
+                body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
+                                   "heights": worker.settings.heights_runner}
+                body["workflow"] = runs_table.status() if runs_table is not None else None
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -1635,6 +1776,11 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if runs_table is not None and self.path.startswith("/runs/"):
+                if self.path == "/runs/ping":
+                    return self._run_ping()
+                if self.path.endswith("/result"):
+                    return self._run_result()
             if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
                 return self._height_build()
             if self.path == "/heights":
@@ -1842,12 +1988,17 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
 
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
-                control: ControlRunner | None = None, heights: HeightBuilds | None = None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights))
+                control: ControlRunner | None = None, heights: HeightBuilds | None = None,
+                runs_table=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table))
 
 
 def main() -> None:
     settings = Settings.from_env()
+    runs_table = make_runs(settings)
+    if runs_table is not None:
+        threading.Thread(target=runs_table.reconcile_forever, args=(threading.Event(),), name="runs-reconcile",
+                         daemon=True).start()
     control = ControlRunner(settings) if settings.control_enabled else None
     worker = Worker(settings, on_parse=control.preempt if control else None)
     if control is not None:
@@ -1856,7 +2007,8 @@ def main() -> None:
         control.idle = worker.idle
     heights = HeightBuilds(settings, control) if control is not None else None
     server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
-                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights)
+                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights,
+                         runs_table=runs_table)
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)
     server.serve_forever()

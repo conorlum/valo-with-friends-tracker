@@ -263,3 +263,100 @@ def test_status_counts_open_runs(render, tmp_path):
     table = make_runs(render, tmp_path)
     table.open("ping", "j1", {}, timeout_s=30)
     assert table.status()["open"] == 1
+
+
+import urllib.error
+import urllib.request
+
+from replay_worker import server  # noqa: E402
+
+
+def test_settings_from_env_defaults_local():
+    s = server.Settings.from_env({})
+    assert (s.parse_runner, s.control_runner, s.heights_runner) == ("local", "local", "local")
+    assert s.task_starts_per_min == 1000 and not s.workflow_wanted()
+
+
+def test_settings_refuse_an_unknown_runner():
+    with pytest.raises(ValueError):
+        server.Settings.from_env({"REPLAY_CONTROL_RUNNER": "cloud"})
+
+
+def test_workflow_runner_without_key_or_slug_stops_startup():
+    with pytest.raises(SystemExit):
+        server.make_runs(server.Settings.from_env({"REPLAY_CONTROL_RUNNER": "workflow"}))
+
+
+def test_no_key_means_no_run_table():
+    assert server.make_runs(server.Settings.from_env({})) is None
+
+
+@pytest.fixture
+def live(render, tmp_path):
+    """A worker server with a run table pointed at the fake Render."""
+    settings = server.Settings(temp_root=tmp_path, workflow_slug="replay-tasks", render_api_key="k",
+                               render_api_base=render.url)
+    table = server.make_runs(settings)
+    worker = server.Worker(settings)
+    httpd = server.make_server(worker, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}", table
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def call(url, method="GET", data=None, token=None, headers=None):
+    headers = {**({"X-Run-Token": token} if token else {}), **(headers or {})}
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+
+def test_input_route_streams_the_named_file_only(live, tmp_path):
+    base, table = live
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"a" * (3 * runs.CHUNK + 5))
+    run = table.open("ping", "j1", {"vrf": big}, timeout_s=30)
+    status, body = call(f"{base}/runs/j1/input/vrf", token=run.token)
+    assert status == 200 and len(body) == 3 * runs.CHUNK + 5
+    assert call(f"{base}/runs/j1/input/vrf", token="bad")[0] == 404
+    assert call(f"{base}/runs/j1/input/..%2Fjob.json", token=run.token)[0] == 404
+
+
+def test_result_route_takes_the_first_valid_post(live):
+    base, table = live
+    run = table.open("ping", "j1", {}, timeout_s=30)
+    assert call(f"{base}/runs/j1/result", "POST", b'{"status": "ok"}', token="bad")[0] == 409
+    assert call(f"{base}/runs/j1/result", "POST", b'{"status": "ok"}', token=run.token)[0] == 200
+    assert call(f"{base}/runs/j1/result", "POST", b'{"status": "no"}', token=run.token)[0] == 409
+    assert run.result == {"status": "ok"}
+
+
+def test_result_route_refuses_bad_lengths_before_writing(live):
+    import http.client
+    base, table = live
+    run = table.open("ping", "j2", {}, timeout_s=30)
+    host, port = base.replace("http://", "").split(":")
+    for length in ("0", "-5", "abc", str(server.Settings().run_result_max_bytes + 1)):
+        conn = http.client.HTTPConnection(host, int(port), timeout=10)
+        try:
+            conn.putrequest("POST", "/runs/j2/result")
+            conn.putheader("X-Run-Token", run.token)
+            conn.putheader("Content-Length", length)
+            conn.endheaders()
+            assert conn.getresponse().status in (400, 413), length
+        finally:
+            conn.close()
+    assert not any(run.folder.glob("result-*")) and not run.done.is_set()
+
+
+def test_health_names_the_runners_and_the_workflow(live):
+    base, _ = live
+    body = json.loads(call(f"{base}/health")[1])
+    assert body["runners"] == {"parse": "local", "control": "local", "heights": "local"}
+    assert body["workflow"]["open"] == 0

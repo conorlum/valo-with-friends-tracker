@@ -271,7 +271,7 @@ def test_the_worker_wires_its_parse_hook_to_control(monkeypatch):
 
         def serve_forever(self):
             pass
-    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control, heights=None: made.update(
+    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control, heights=None, runs_table=None: made.update(
         worker=worker, control=control) or Fake())
     monkeypatch.setattr(server.Settings, "from_env", classmethod(lambda cls, env=None: cls(control_cmd=["true"])))
     server.main()
