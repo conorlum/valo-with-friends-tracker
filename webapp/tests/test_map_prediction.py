@@ -1,5 +1,6 @@
 """get_current_map_pool on the real pool (R3, D7): pool from load_pool_history, weights since the
-latest official change, add-one smoothing."""
+latest official change, each pool map starting at 1 and each map that entered at that change at
+NEW_MAP_PRIOR (D7: right after a patch the game mostly gives a map that just entered)."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -48,30 +49,36 @@ def _matches(db, map_name, n, start):
     db.commit()
 
 
-def test_pool_is_the_real_pool_with_add_one_weights(db):
+def test_pool_is_the_real_pool_with_a_head_start_for_new_maps(db):
     after = CHANGE + timedelta(days=1)
     _matches(db, "Ascent", 3, after)
     _matches(db, "Bind", 1, after)
     pool = map_prediction.get_current_map_pool(db)
     assert set(pool) == {"Ascent", "Bind", "Haven"}
-    # (3+1) / (4+2+1), (1+1) / 7, (0+1) / 7
-    assert pool["Ascent"] == pytest.approx(4 / 7)
-    assert pool["Bind"] == pytest.approx(2 / 7)
-    assert pool["Haven"] == pytest.approx(1 / 7)
+    # Haven entered at the latest change: (3+1) / (4+2+5), (1+1) / 11, (0+5) / 11
+    assert pool["Ascent"] == pytest.approx(4 / 11)
+    assert pool["Bind"] == pytest.approx(2 / 11)
+    assert pool["Haven"] == pytest.approx(5 / 11)
     assert sum(pool.values()) == pytest.approx(1.0)
+
+
+def test_a_map_that_just_entered_leads_before_any_matches(db):
+    pool = map_prediction.get_current_map_pool(db)
+    assert max(pool, key=pool.get) == "Haven"
+    assert pool["Haven"] == pytest.approx(map_prediction.NEW_MAP_PRIOR / (map_prediction.NEW_MAP_PRIOR + 2))
 
 
 def test_non_pool_map_gets_nothing_even_with_matches(db):
     _matches(db, "Split", 5, CHANGE + timedelta(days=1))
     pool = map_prediction.get_current_map_pool(db)
     assert "Split" not in pool
-    assert pool["Ascent"] == pytest.approx(1 / 3)
+    assert pool["Ascent"] == pytest.approx(1 / 7)
 
 
 def test_matches_before_the_latest_change_are_not_counted(db):
     _matches(db, "Ascent", 10, CHANGE - timedelta(days=10))
     pool = map_prediction.get_current_map_pool(db)
-    assert pool["Ascent"] == pytest.approx(1 / 3)
+    assert pool["Ascent"] == pytest.approx(1 / 7)
 
 
 def test_safety_net_changes_do_not_start_the_weight_window(db, monkeypatch):
@@ -83,7 +90,9 @@ def test_safety_net_changes_do_not_start_the_weight_window(db, monkeypatch):
     monkeypatch.setattr(map_prediction, "load_pool_history", lambda db: history)
     _matches(db, "Ascent", 2, CHANGE + timedelta(days=5))
     pool = map_prediction.get_current_map_pool(db)
-    assert pool["Ascent"] == pytest.approx(3 / 5)
+    # Bind entered at the latest official change; the safety net's Split is not new: (2+1) / (3+5+1)
+    assert pool["Ascent"] == pytest.approx(3 / 9)
+    assert pool["Split"] == pytest.approx(1 / 9)
 
 
 def test_predictions_sum_to_one_over_pool_maps(db):

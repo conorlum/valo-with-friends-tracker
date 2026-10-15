@@ -5,6 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Match, MatchPlayer, Player
+from app.services import map_pool
 from app.services.map_pool import load_pool_history
 
 # See scripts/analyze_map_diversity.py + scripts/analyze_session_map_patterns.py
@@ -24,6 +25,10 @@ from app.services.map_pool import load_pool_history
 #     other -- so this is one flat tier, not scaled further by exact count)
 INDIVIDUAL_COOLDOWN_WEIGHT = 0.47
 GROUP_COOLDOWN_WEIGHT = 0.2
+# Right after a pool change the game mostly gives a map that just entered (the owner's experience, D7;
+# not fitted). Each such map starts at this many matches, every other pool map at 1, and real matches
+# since the change take over as they come in.
+NEW_MAP_PRIOR = 5
 
 
 @dataclass
@@ -34,8 +39,8 @@ class MapPrediction:
 
 def get_current_map_pool(db: Session) -> dict[str, float]:
     """The current map pool (app.services.map_pool) with popularity weights: each pool map's share of
-    our matches since the current pool began (the latest official pool change), with add-one smoothing
-    so a map just added, with no matches yet, still gets a small weight."""
+    our matches since the current pool began (the latest official pool change), each map starting at 1
+    match and each map that entered at that change at NEW_MAP_PRIOR."""
     history = load_pool_history(db)
     pool = history.current_pool()
     if not pool:
@@ -45,8 +50,12 @@ def get_current_map_pool(db: Session) -> dict[str, float]:
     if start is not None:
         query = query.filter(Match.played_at >= start)
     counts = {m: c for m, c in query.group_by(Match.map_name).all() if m in pool}
-    # PROVISIONAL(D7): add-one smoothing over the pool maps.
-    smoothed = {m: counts.get(m, 0) + 1 for m in sorted(pool)}
+    new_maps = {
+        c.map_name
+        for c in history.changes
+        if c.in_pool and c.effective_at == start and c.source != map_pool.SAFETY_NET_SOURCE
+    }
+    smoothed = {m: counts.get(m, 0) + (NEW_MAP_PRIOR if m in new_maps else 1) for m in sorted(pool)}
     total = sum(smoothed.values())
     return {m: c / total for m, c in smoothed.items()}
 
