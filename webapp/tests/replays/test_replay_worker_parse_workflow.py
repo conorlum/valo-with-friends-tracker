@@ -160,7 +160,7 @@ def test_fifteen_uploads_parse_at_once(rig):
     rig.gate.set()
     done = wait_jobs(worker, [j.id for j in jobs])
     assert all(j.status == "done" and j.parse_seconds == 1.0 for j in done)
-    assert worker.parse_count == 0
+    wait_for(lambda: worker.parse_count == 0)   # a job reads done just before its thread lowers the count
     assert {s["task"] for s in rig.render.started} == {"replay-tasks/parse"}
 
 
