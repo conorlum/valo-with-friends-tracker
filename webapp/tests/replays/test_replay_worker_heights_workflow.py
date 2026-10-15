@@ -98,9 +98,9 @@ def remote(tmp_path, stub):
 MATCH = "0123abcd-0000-0000-0000-000000000001"     # HeightBuilds.add accepts hex match ids only (MATCH_ID)
 
 
-def open_and_fill(builds, map_name="Ascent"):
+def open_and_fill(builds, map_name="Ascent", key="key-1"):
     manifest = {"map": map_name, "replays": [[MATCH, 1, "sha", 2]], "refinement_history": []}
-    build = builds.open("key-1", map_name, 2, manifest)
+    build = builds.open(key,map_name, 2, manifest)
     blob = base64.b64encode(b"round").decode()
     builds.add(build["id"], [{"match": MATCH, "n": 1, "blob": blob}, {"match": MATCH, "n": 2, "blob": blob}])
     return build
@@ -197,3 +197,62 @@ def test_a_parse_does_not_mark_a_remote_build_when_control_is_local(remote, monk
     wait_for(lambda: builds.get(build["id"])["status"] == "running")
     assert control.preempt() == 0 and not control.preempted
     assert wait_build(builds, build["id"])["status"] == "done"
+
+
+def tars(settings):
+    return list((settings.temp_root / "height_runs").glob("*.tar"))
+
+
+def test_no_packed_tar_is_left_after_a_done_build_or_a_failed_one(remote):
+    import shutil
+    _, builds, render, settings, _, _ = remote
+    build = open_and_fill(builds)
+    builds.start(build["id"], None)
+    assert wait_build(builds, build["id"])["status"] == "done" and not tars(settings)
+    gone = open_and_fill(builds, "Bind", "key-2")
+    shutil.rmtree(builds.root / gone["id"])
+    builds.start(gone["id"], None)
+    assert wait_build(builds, gone["id"])["status"] == "failed" and not tars(settings)
+
+
+def test_a_tar_a_crash_left_is_removed_when_the_builds_start(remote):
+    control, _, _, settings, _, _ = remote
+    runs = settings.temp_root / "height_runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "old.tar").write_bytes(b"x")
+    server.HeightBuilds(settings, control)
+    assert not tars(settings)
+
+
+def test_a_remote_height_build_does_not_hold_its_map_against_a_cold_round(remote):
+    control, _, _, _, _, _ = remote
+    build = server.ControlJob("b1", "bk", "Ascent", b"{}", kind="heights")
+    cold = server.ControlJob("r1", "rk", "Ascent", b"{}")
+    with control.lock:
+        control.jobs.update({"b1": build, "r1": cold})
+        control.running["b1"] = False
+        control.pending.append("r1")
+        try:
+            assert control._next() == (cold, True)
+        finally:
+            control.pending.remove("r1")
+            control.running.pop("b1")
+            del control.jobs["b1"], control.jobs["r1"]
+
+
+def test_a_local_build_that_times_out_says_height_build_and_a_round_says_control(tmp_path):
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               height_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+                               control_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+                               height_timeout_s=0.3, control_timeout_s=0.3, control_warm_timeout_s=0.3)
+    control = server.ControlRunner(settings)
+    texts = {}
+    for kind in ("heights", "control"):
+        job = server.ControlJob(kind, kind, "Ascent", b"{}", kind=kind)
+        with control.lock:
+            control.jobs[kind] = job
+            control.running[kind] = False
+        control._run(job, False)
+        texts[kind] = job.error
+    assert texts["heights"].startswith("height build timed out after")
+    assert texts["control"].startswith("control timed out after")

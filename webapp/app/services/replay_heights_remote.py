@@ -338,6 +338,7 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             build.job_id = state.get("id")
             build.queued_since = build.running_since = None
             if state.get("status") == "collecting":
+                build.opened_at = now                 # the clock for sending starts when the worker accepts it, not at a 503
                 build.todo = list(build.rounds)       # immutable uploads: what it already has is acknowledged for free
             else:
                 build.todo = []
@@ -377,12 +378,14 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             return False
         if status == "queued":
             build.running_since = None
-            if _idle(client):
+            answer = client.health()
+            others = (answer.get("heights") or {}).get("running") if isinstance(answer, dict) else None
+            if _idle(client, answer) and not others:
                 build.queued_since = now if build.queued_since is None else build.queued_since
                 if now - build.queued_since > QUEUED_STALE_S:
                     raise BuildFailed("it sat queued on an idle worker and never started")
             else:
-                build.queued_since = None             # waiting behind a parse is never a failure
+                build.queued_since = None             # waiting behind a parse or another build is never a failure
             return False
         if status == "running":
             build.queued_since = None
@@ -467,14 +470,18 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     ready = [d for key, d in due.items()
              if key not in attempted and key not in hstate.builds and d.map_name not in building
              and hstate.may_try(key, now)]
-    room = MAX_BUILDS - len(hstate.builds)
-    if not ready or room <= 0:
+    if not ready or len(hstate.builds) >= MAX_BUILDS:
         return held
     try:
         answer = client.health()
         if _other_deploy(answer):
             return {b.map_name for b in hstate.builds.values()}   # the deploy gap: open nothing, hold only what runs
         if not _idle(client, answer):
+            return held
+        # A worker whose heights runner is local runs one build at a time; the rest would only sit queued.
+        runners = answer.get("runners") if isinstance(answer.get("runners"), dict) else {}
+        room = (MAX_BUILDS if runners.get("heights") == "workflow" else 1) - len(hstate.builds)
+        if room <= 0:
             return held
     except (Unreachable, WorkerBusy):
         counts["unreachable"] = counts.get("unreachable", 0) + 1

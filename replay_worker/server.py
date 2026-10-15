@@ -1335,8 +1335,10 @@ class ControlRunner:
                 if idle:
                     return (self.jobs[job_id], False) if not local_running else None
                 break
-        busy_maps = {self.jobs[j].map for j in self.running}
-        warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
+        # A remote height build takes no CPU here and writes nothing a cold round reads: it holds no map.
+        held = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        busy_maps = {self.jobs[j].map for j in held}
+        warming_maps = {self.jobs[j].map for j in held if self.running[j]}
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights":
@@ -1368,6 +1370,7 @@ class ControlRunner:
     def _run(self, job: ControlJob, warming: bool) -> None:
         settings = self.settings
         build = job.kind == "heights"
+        what = "height build" if build else "control"
         timeout = settings.height_timeout_s if build else \
             settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env ={**os.environ, **CHILD_THREADS}
@@ -1401,12 +1404,12 @@ class ControlRunner:
                 kind = answer.get("error_kind") or "infra"
                 error_code = answer.get('error_code')
         except subprocess.TimeoutExpired:
-            error = f"control timed out after {timeout:g} s"
+            error = f"{what} timed out after {timeout:g} s"
         except (OSError, ValueError) as failure:
-            error = f"control child failed: {failure}"
+            error = f"{what} child failed: {failure}"
         except Exception:  # noqa: BLE001 - one bad round must not stop the runner
             traceback.print_exc()
-            error = "control child failed"
+            error = f"{what} child failed"
         finally:
             # A timeout leaves the child running: kill it, and close the pipes rather than drain them, so
             # a descendant holding one can't hang this thread.
@@ -1476,6 +1479,8 @@ class ControlRunner:
                 runs_dir = Path(task["dir"]).parent.parent / "height_runs"
                 tar_path = runs_dir / f"{job.id}.tar"
                 try:
+                    # Only a ValueError from packing (rounds gone or unreadable) is an `inputs` failure; an
+                    # OSError (disk, permissions) is infra and falls to `_run`'s handler.
                     files["rounds"] = control_cache.pack(Path(task["dir"]), tar_path)
                 except ValueError as missing:
                     return {"status": "failed", "error_kind": "inputs", "error": str(missing), "key": task.get("key")}
@@ -1537,6 +1542,7 @@ class HeightBuilds:
         self.settings, self.control = settings, control
         self.root = settings.height_spool_dir or settings.temp_root / "height_builds"
         shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.root.parent / "height_runs", ignore_errors=True)   # packed tars a crash left (see `_run_remote`)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         # id -> {id, key, map, expected, manifest, received {(match, n): (sha256, size)}, job, touched, ended}
