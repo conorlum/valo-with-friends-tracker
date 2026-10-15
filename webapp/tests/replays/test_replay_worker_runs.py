@@ -360,3 +360,22 @@ def test_health_names_the_runners_and_the_workflow(live):
     body = json.loads(call(f"{base}/health")[1])
     assert body["runners"] == {"parse": "local", "control": "local", "heights": "local"}
     assert body["workflow"]["open"] == 0
+
+
+from replay_tasks import tasks as task_bodies  # noqa: E402
+
+
+def test_ping_end_to_end(render, live):
+    base, _ = live
+    render.runner = lambda kind, args: task_bodies.TASKS[kind](
+        args, task_bodies.WorkerLink(base, args["job_id"], args["token"]))
+    status, body = call(f"{base}/runs/ping", "POST", b"")
+    answer = json.loads(body)
+    assert status == 200 and answer["ok"] is True
+    assert render.started[0]["task"] == "replay-tasks/ping"
+
+
+def test_worker_link_accepts_a_bare_host_port(monkeypatch):
+    monkeypatch.setenv("REPLAY_WORKER_URL", "replay-worker-abc:8080")
+    link = task_bodies.link_for({"job_id": "j", "token": "t"})
+    assert link.base == "http://replay-worker-abc:8080"
