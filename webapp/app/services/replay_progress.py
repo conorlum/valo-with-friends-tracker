@@ -134,6 +134,14 @@ def cached(db, now: float | None = None) -> dict:
         return _cached[1]
 
 
+def seed(result: dict, started: float) -> None:
+    """Hand `cached` a `compute()` result made elsewhere (the match-state refresher), stamped with the
+    `time.monotonic()` at which that computation started."""
+    global _cached
+    with _lock:
+        _cached = (started, result)
+
+
 def match_states(db, external_ids) -> dict[str, dict]:
     """The match lists' "Up to date" column: per lower-cased external ID (= match UUID) with a stored replay,
     `{"done", "total", "label", "automatic"}`; `label` is its earliest stuck step, None when every round is
