@@ -1,6 +1,6 @@
 """load_pool_history: seed + fetched rows + safety net, SAVEPOINT fallback, process memo."""
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -45,6 +45,12 @@ def _add_change(db, name, in_pool, when, source="patch_notes", patch="13.12"):
     db.commit()
 
 
+def _out_map_and_time(seed):
+    """A current-pool map (fixed, not set order) and a time after every seed change."""
+    last = max(c.effective_at for c in seed.changes)
+    return sorted(seed.current_pool())[0], last + timedelta(days=1)
+
+
 def _count_queries(engine):
     n = {"n": 0}
 
@@ -64,8 +70,8 @@ def test_seed_history_is_nonempty_and_cached():
 
 def test_fetched_row_folds_into_current_pool(db):
     seed = map_pool.seed_history()
-    out_map = next(iter(seed.current_pool()))
-    _add_change(db, out_map, False, datetime(2026, 1, 1, tzinfo=UTC))
+    out_map, when = _out_map_and_time(seed)
+    _add_change(db, out_map, False, when)
     h = map_pool.load_pool_history(db)
     assert out_map not in h.current_pool()
     assert out_map in seed.current_pool()
@@ -73,30 +79,32 @@ def test_fetched_row_folds_into_current_pool(db):
 
 def test_naive_database_times_are_utc(db):
     seed = map_pool.seed_history()
-    out_map = next(iter(seed.current_pool()))
-    _add_change(db, out_map, False, datetime(2026, 1, 1))
+    out_map, when = _out_map_and_time(seed)
+    assert out_map in seed.pool_at(when + timedelta(days=1))
+    _add_change(db, out_map, False, when.replace(tzinfo=None))
     h = map_pool.load_pool_history(db)
-    assert out_map not in h.pool_at(datetime(2026, 1, 2, tzinfo=UTC))
+    assert out_map not in h.pool_at(when + timedelta(days=1))
 
 
 def test_seed_rows_in_the_database_are_ignored(db):
     seed = map_pool.seed_history()
-    out_map = next(iter(seed.current_pool()))
-    _add_change(db, out_map, False, datetime(2026, 1, 1), source="seed")
+    out_map, when = _out_map_and_time(seed)
+    _add_change(db, out_map, False, when.replace(tzinfo=None), source="seed")
     h = map_pool.load_pool_history(db)
     assert h.current_pool() == seed.current_pool()
 
 
 def test_safety_net_uses_all_matches(db):
     seed = map_pool.seed_history()
-    out_map = next(iter(seed.current_pool()))
-    _add_change(db, out_map, False, datetime(2026, 1, 1, tzinfo=UTC))
+    out_map, when = _out_map_and_time(seed)
+    _add_change(db, out_map, False, when)
     for i in range(3):
         db.add(Match(external_id=f"m{i}", source=MatchSource.SCRAPED, map_name=out_map,
-                     played_at=datetime(2026, 3, 1 + i, tzinfo=UTC)))
+                     played_at=when + timedelta(days=30 + i)))
     db.commit()
     h = map_pool.load_pool_history(db)
-    assert out_map in h.current_pool()
+    assert out_map not in h.pool_at(when + timedelta(days=29))
+    assert out_map in h.pool_at(when + timedelta(days=40))
 
 
 def test_missing_tables_fall_back_to_seed_and_session_stays_usable(tmp_path):
