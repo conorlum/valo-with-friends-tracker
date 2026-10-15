@@ -137,6 +137,9 @@ web app sends one round at a time and stores the result; the worker has no datab
 and `docs/map-control-worker-plan.md`, "Height rebuilds". The web app sends a map's stored rounds in batches and
 the worker builds the map's heights from them, with the kill-line and must-block checks; the web app checks the
 result and decides whether it goes live (`webapp/app/services/replay_heights_remote.py`). Off with map control.
+With `REPLAY_HEIGHTS_RUNNER=workflow` a build is one Workflow run that neither waits for idle nor runs alone; the
+spool goes to it as one tar (`<spool>/../height_runs/<job>.tar`, removed when the run ends and at start). Only
+then does the site open more than one map's build at once (`HEIGHTS_MAX_BUILDS`, worker `REPLAY_HEIGHT_BUILDS_MAX`).
 
 - **The child** is one more control child, `python -m replay_worker.height_job` (`REPLAY_HEIGHT_CMD`, the control
   venv's interpreter in the image), niced, memory-capped and timed out after `REPLAY_HEIGHT_TIMEOUT_S` (3600). It

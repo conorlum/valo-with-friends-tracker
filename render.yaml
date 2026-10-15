@@ -64,6 +64,10 @@ services:
         value: "40"
       - key: CONTROL_MAX_MATCHES
         value: "1"
+      # Height rebuilds open at once, one per map (spec 2026-10-14, D16). The site opens more than one only
+      # while the worker's heights runner is workflow; a local runner gets one at a time, as before.
+      - key: HEIGHTS_MAX_BUILDS
+        value: "4"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv
@@ -122,3 +126,10 @@ services:
       # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache
+      - key: REPLAY_HEIGHT_BUILDS_MAX
+        value: "4"
+      - key: REPLAY_HEIGHT_SPOOL_BYTES
+        value: "2147483648"
+      # The spool on the disk, inside the archive's reserve (spec D16); packed tars go beside it in height_runs/.
+      - key: REPLAY_HEIGHT_SPOOL_DIR
+        value: /var/replay/height_builds

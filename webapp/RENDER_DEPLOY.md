@@ -333,3 +333,14 @@ worker's at least the site's. After every later merge, check `/health`'s `runner
 6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
    largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
 7. Roll back: `REPLAY_PARSE_RUNNER=local`.
+
+### Height builds on Workflows (step 4)
+
+1. `replay-worker` → Environment → `REPLAY_HEIGHTS_RUNNER=workflow` → save.
+2. Each due map (5 new matches since its last build) shows as a `heights` run on the workflow's Runs page as soon
+   as it is due, up to `HEIGHTS_MAX_BUILDS` at once. `scripts/control_heights.py list` shows which maps are due.
+   While the runner is `local` the site opens one build at a time, as before.
+3. Done when the site accepts a rebuild (`heights_live` in the dispatcher's counts, or `control_heights.py list`).
+4. Tune with `HEIGHTS_MAX_BUILDS` (site); keep the worker's `REPLAY_HEIGHT_BUILDS_MAX` at least as large, and raise
+   `REPLAY_HEIGHT_SPOOL_BYTES` if the worker answers "the spool is full".
+5. Roll back: `REPLAY_HEIGHTS_RUNNER=local`.
