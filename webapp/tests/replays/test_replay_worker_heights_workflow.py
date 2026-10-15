@@ -71,3 +71,129 @@ def test_heights_task_refuses_a_bad_tar_as_infra(tmp_path, stub):
     link = FakeLink({"task": b'{"key": "k", "map": "Ascent"}', "rounds": b"not a tar"})
     tasks.heights({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
     assert link.result["status"] == "failed" and link.result["error_kind"] == "infra"
+
+
+@pytest.fixture
+def remote(tmp_path, stub):
+    render = FakeRender()
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               heights_runner="workflow", workflow_slug="replay-tasks", render_api_key="k",
+                               render_api_base=render.url)
+    table = server.make_runs(settings)
+    control = server.ControlRunner(settings, runs_table=table)
+    builds = server.HeightBuilds(settings, control)
+    worker = server.Worker(settings)
+    httpd = server.make_server(worker, control=control, heights=builds, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
+    try:
+        yield control, builds, render, settings, worker, base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
+
+
+MATCH = "0123abcd-0000-0000-0000-000000000001"     # HeightBuilds.add accepts hex match ids only (MATCH_ID)
+
+
+def open_and_fill(builds, map_name="Ascent"):
+    manifest = {"map": map_name, "replays": [[MATCH, 1, "sha", 2]], "refinement_history": []}
+    build = builds.open("key-1", map_name, 2, manifest)
+    blob = base64.b64encode(b"round").decode()
+    builds.add(build["id"], [{"match": MATCH, "n": 1, "blob": blob}, {"match": MATCH, "n": 2, "blob": blob}])
+    return build
+
+
+def wait_build(builds, build_id, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        body = builds.get(build_id)
+        if body["status"] in ("done", "failed"):
+            return body
+        time.sleep(0.05)
+    raise AssertionError("build didn't finish")
+
+
+def wait_for(check, timeout=15):
+    end = time.time() + timeout
+    while time.time() < end:
+        if check():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+
+
+def test_a_build_runs_as_a_workflow_run(remote):
+    control, builds, render, _, _, _ = remote
+    build = open_and_fill(builds)
+    builds.start(build["id"], None)
+    body = wait_build(builds, build["id"])
+    assert body["status"] == "done"
+    assert body["result"]["rounds_seen"] == [f"{MATCH}/1.json.gz", f"{MATCH}/2.json.gz"]
+    assert [s["task"] for s in render.started] == ["replay-tasks/heights"]
+
+
+def test_a_remote_build_does_not_block_control_or_get_preempted(remote, monkeypatch):
+    control, builds, _, settings, _, _ = remote
+    monkeypatch.setenv("HEIGHT_STUB_SLEEP", "2")                      # the build stays running for a while
+    settings.control_cmd = [sys.executable, "-c",
+                            "import sys, json; sys.stdin.read(); print(json.dumps({'status': 'ok'}))"]
+    build = open_and_fill(builds)
+    builds.start(build["id"], None)
+    wait_for(lambda: builds.get(build["id"])["status"] == "running")
+    round_job = control.submit({"key": "r1", "map": "Bind", "blob": "", "link": {"sides": {}, "db_deaths": []}})
+    wait_for(lambda: control.get(round_job.id).status == "done")     # a local round ran beside the remote build
+    assert builds.get(build["id"])["status"] == "running"
+    assert control.preempt() == 0 and not control.preempted
+    assert wait_build(builds, build["id"])["status"] == "done"
+
+
+def test_health_reads_idle_during_a_parse_when_builds_are_remote(remote, monkeypatch):
+    import urllib.request
+    _, _, _, _, worker, base = remote
+    monkeypatch.setattr(worker, "idle", lambda: False)          # a parse is running
+    with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+        assert json.loads(response.read())["idle"] is True
+
+
+def test_a_build_whose_rounds_are_gone_fails_as_inputs(remote):
+    import shutil
+    control, builds, render, _, _, _ = remote
+    build = open_and_fill(builds)
+    shutil.rmtree(builds.root / build["id"])
+    builds.start(build["id"], None)
+    body = wait_build(builds, build["id"])
+    assert body["status"] == "failed" and not render.started
+    job = control.get(builds.builds[build["id"]]["job"])
+    assert job.error_kind == "inputs"
+
+
+def test_the_previous_asset_reaches_the_run_only_when_the_worker_has_it(remote):
+    _, builds, _, settings, _, _ = remote
+    previous = "0123456789ab"
+    heights = settings.control_cache_dir / "heights"
+    heights.mkdir(parents=True)
+    (heights / f"Ascent.{previous}.height.npz").write_bytes(b"p")
+    build = open_and_fill(builds)
+    builds.start(build["id"], previous)
+    assert wait_build(builds, build["id"])["result"]["had_previous"] is True
+
+
+def test_no_previous_asset_when_the_worker_lacks_it(remote):
+    _, builds, _, _, _, _ = remote
+    build = open_and_fill(builds)
+    builds.start(build["id"], "0123456789ab")
+    assert wait_build(builds, build["id"])["result"]["had_previous"] is False
+
+
+def test_a_parse_does_not_mark_a_remote_build_when_control_is_local(remote, monkeypatch):
+    control, builds, _, settings, _, _ = remote
+    monkeypatch.setenv("HEIGHT_STUB_SLEEP", "2")
+    assert settings.control_runner != "workflow"                      # control local, heights workflow
+    build = open_and_fill(builds)
+    builds.start(build["id"], None)
+    wait_for(lambda: builds.get(build["id"])["status"] == "running")
+    assert control.preempt() == 0 and not control.preempted
+    assert wait_build(builds, build["id"])["status"] == "done"

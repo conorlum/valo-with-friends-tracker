@@ -14,7 +14,8 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
                        "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
-                       "idle" (no parse running or waiting),
+                       "idle" (a height build may start: no parse
+                       running or waiting, or builds run as Workflow runs),
                        "heights": {"collecting", "queued", "running" (map names), "spool_bytes"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
@@ -1226,7 +1227,11 @@ class ControlRunner:
 
     def remote(self, job: ControlJob) -> bool:
         """This job runs as a Workflow run (spec 2026-10-14) rather than a child here."""
-        return self.runs is not None and job.kind == "control" and self.settings.control_runner == "workflow"
+        if self.runs is None:
+            return False
+        if job.kind == "heights":
+            return self.settings.heights_runner == "workflow"
+        return job.kind == "control" and self.settings.control_runner == "workflow"
 
     def submit(self, task: dict) -> ControlJob:
         """Raises queue.Full when the queue is full."""
@@ -1301,22 +1306,28 @@ class ControlRunner:
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
+        for job_id in self.pending:
+            job = self.jobs[job_id]
+            if job.kind == "heights" and self.remote(job):
+                return job, False                    # another machine: it neither waits for idle nor runs alone
         # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
         idle = self.idle()
         if self.settings.control_runner == "workflow" and self.runs is not None:
             limit = self.settings.control_runs
         else:
             limit = self.settings.control_workers if idle else 1
-        if len(self.running) >= limit:
+        counted = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        if len(counted) >= limit:
             return None
-        if any(self.jobs[j].kind == "heights" for j in self.running):
-            return None                              # a build runs alone
+        if any(self.jobs[j].kind == "heights" and not self.remote(self.jobs[j]) for j in self.running):
+            return None                              # a local build runs alone
+        local_running = [j for j in self.running if not self.remote(self.jobs[j])]
         for job_id in self.pending:
-            if self.jobs[job_id].kind == "heights":
-                # Idle, drain running control before starting the build ahead of queued rounds.
+            if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
+                # Idle, drain the running local children before starting the build ahead of queued rounds.
                 # Beside a parse, the build waits while the one control slot keeps working.
                 if idle:
-                    return (self.jobs[job_id], False) if not self.running else None
+                    return (self.jobs[job_id], False) if not local_running else None
                 break
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
@@ -1453,18 +1464,37 @@ class ControlRunner:
         folder.mkdir(parents=True, exist_ok=True)
         try:
             (folder / "task.json").write_bytes(job.task)
-            files = {"task": folder / "task.json", **control_cache.inputs(self.settings.control_cache_dir, task)}
-            run = self.runs.open("control", job.id, files, timeout)
+            files = {"task": folder / "task.json"}
+            if job.kind == "heights":
+                # The packed tar goes beside the spool (`<spool>/../height_runs`), not inside a build's folder.
+                runs_dir = Path(task["dir"]).parent.parent / "height_runs"
+                tar_path = runs_dir / f"{job.id}.tar"
+                try:
+                    files["rounds"] = control_cache.pack(Path(task["dir"]), tar_path)
+                except ValueError as missing:
+                    return {"status": "failed", "error_kind": "inputs", "error": str(missing), "key": task.get("key")}
+                files.update(control_cache.inputs(self.settings.control_cache_dir,
+                                                  {"map": job.map, "height": task.get("previous")}))
+            else:
+                files.update(control_cache.inputs(self.settings.control_cache_dir, task))
+            run = self.runs.open(job.kind, job.id, files, timeout)
             try:
-                self.runs.start(run, {"map": job.map, "files": sorted(n for n in files if n != "task")})
+                self.runs.start(run, {"map": job.map,
+                                      "files": sorted(n for n in files if n not in ("task", "rounds"))})
                 answer = self.runs.wait(run)
             except BaseException:
                 self.runs.close(run)              # wait closes it itself; a failure before that must not leak it
                 raise
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+            if job.kind == "heights":
+                try:
+                    (Path(task["dir"]).parent.parent / "height_runs" / f"{job.id}.tar").unlink(missing_ok=True)
+                except OSError:
+                    pass
         if answer.get("error_kind") == "timeout":
-            answer = {**answer, "error_kind": "infra", "error": f"control timed out after {timeout:g} s"}
+            what = "height build" if job.kind == "heights" else "control"
+            answer = {**answer, "error_kind": "infra", "error": f"{what} timed out after {timeout:g} s"}
         return answer
 
 
@@ -1762,7 +1792,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
             run = runs_table.accepts(parts[2], self.headers.get("X-Run-Token"))
             job = control.get(parts[2]) if control is not None and run is not None else None
-            if run is None or job is None or run.kind != "control" or not control_cache.valid(name, job.map):
+            if run is None or job is None or run.kind not in ("control", "heights") \
+                    or not control_cache.valid(name, job.map):
                 self.close_connection = True
                 # Read a small refused body first (as _run_result does): closing with it unread can reset the
                 # client's connection before it sees the answer.
@@ -1772,7 +1803,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                         self.rfile.read(unread)
                 except (ValueError, OSError):
                     pass
-            if run is None or job is None or run.kind != "control":
+            if run is None or job is None or run.kind not in ("control", "heights"):
                 return self._send(HTTPStatus.CONFLICT, {"error": "no open control run takes this file"})
             if not control_cache.valid(name, job.map):
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cache file of this map"})
@@ -1863,7 +1894,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
-                body["idle"] = worker.idle()
+                # "A height build may start now" (app/services/replay_heights_remote.py). A Workflow build runs on
+                # another machine, so a parse here never holds it back.
+                remote_builds = runs_table is not None and worker.settings.heights_runner == "workflow"
+                body["idle"] = True if remote_builds else worker.idle()
                 body["heights"] = heights.status() if heights else {"collecting": [], "queued": [], "running": [],
                                                                     "spool_bytes": 0}
                 body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
