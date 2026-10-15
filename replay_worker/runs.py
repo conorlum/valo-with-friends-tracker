@@ -284,3 +284,19 @@ class Runs:
             run.result = result
             run.done.set()
             return True
+
+
+def _ping_cli() -> int:
+    port = os.environ.get("REPLAY_WORKER_PORT", "8080")
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/runs/ping", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=330) as response:
+            print(response.read().decode("utf-8"))
+            return 0
+    except urllib.error.HTTPError as error:
+        print(f"HTTP {error.code}: {error.read().decode('utf-8', 'replace')}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(_ping_cli() if sys.argv[1:] == ["ping"] else 2)

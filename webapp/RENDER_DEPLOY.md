@@ -276,3 +276,21 @@ app restarts: deploy the other service from the same commit.
 
 A rebuild that goes live makes every stored round of its map stale; the pages keep showing them, marked out of
 date, while the worker recomputes them when it is idle. Watch the worker's memory on the first build.
+
+## Render Workflows (`replay-tasks`)
+
+Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`. One-time setup:
+
+1. Dashboard → New → Workflow. Repo: this one. Language: Docker. Dockerfile path: `replay_worker/Dockerfile`,
+   context: repo root. Region: the same as `replay-worker`. Name/slug: `replay-tasks`.
+   Start command: `sh /srv/replay_worker/entrypoint.sh /opt/control-venv/bin/python -m replay_tasks.main`.
+2. Its env: `REPLAY_WORKER_URL` = the worker's private address (`replay-worker`'s "Internal address",
+   host:port, e.g. `replay-worker-xxxx:8080`).
+3. Dashboard → Account settings → API keys → create one; put it in `replay-worker`'s `RENDER_API_KEY`.
+4. After both deploy: `replay-worker` → Shell → `python3 -m replay_worker.runs ping`. Expect
+   `{"ok": true, ...}`. The workflow's Runs page shows one `ping` run.
+
+Each kind (parse, control, heights) moves with its own switch on `replay-worker`:
+`REPLAY_<KIND>_RUNNER=workflow`; set it back to `local` to roll back. The switches are `sync: false` in
+`render.yaml`: the dashboard is where they live, and a Blueprint sync leaves them alone. After every later
+merge, check `/health`'s `runners` still shows the kinds already moved.

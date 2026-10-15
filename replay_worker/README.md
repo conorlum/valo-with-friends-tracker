@@ -183,6 +183,21 @@ against the pin; unset in the image, which is built from the pin itself), `REPLA
 `REPLAY_ARCHIVE_REQUIRE_MOUNT` (1), `REPLAY_HEIGHT_CMD` (JSON list: the height-build child; default this Python,
 `-m replay_worker.height_job`; the image sets the control venv's), `REPLAY_HEIGHT_TIMEOUT_S` (3600).
 
+### Render Workflows (run routes and settings)
+
+Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`; setup: `webapp/RENDER_DEPLOY.md`.
+The run routes exist only when `RENDER_API_KEY` and `REPLAY_WORKFLOW_SLUG` are set.
+
+| Request | Answer |
+| --- | --- |
+| `GET /runs/{job}/input/{name}` (header `X-Run-Token`) | a Workflow run's input file, streamed; `404` otherwise |
+| `POST /runs/{job}/result` (header `X-Run-Token`) | the run's JSON answer: `200` taken, `409` refused |
+| `POST /runs/ping` | starts a ping run and waits for it: `{"ok", "answer", "seconds"}` |
+
+Settings: `RENDER_API_KEY`, `REPLAY_WORKFLOW_SLUG` (`replay-tasks`), `REPLAY_TASK_STARTS_PER_MIN` (1000), and
+`REPLAY_PARSE_RUNNER` / `REPLAY_CONTROL_RUNNER` / `REPLAY_HEIGHTS_RUNNER` (`local` by default, or `workflow`).
+`python3 -m replay_worker.runs ping` calls the ping route from the worker's shell.
+
 ## Running it locally
 
 From the repository root, with the local parser build (`webapp\scripts\build_replay_parser.ps1`):

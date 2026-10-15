@@ -87,3 +87,20 @@ services:
       # it the worker parses and deletes, and the site's re-parse queue stops.
       - key: REPLAY_ARCHIVE_DIR
         value: /var/replay
+      # Render Workflows (docs/superpowers/specs/2026-10-14-render-workflows-design.md). The workflow service
+      # (replay-tasks) is created by hand in the dashboard: Render can't create a Docker workflow from a
+      # Blueprint.
+      - key: RENDER_API_KEY
+        sync: false
+      - key: REPLAY_WORKFLOW_SLUG
+        value: replay-tasks
+      - key: REPLAY_TASK_STARTS_PER_MIN
+        value: "1000"
+      # The three switches are the owner's, set in the dashboard (spec D2): `sync: false`, so a Blueprint sync
+      # never resets one that was flipped to workflow. Unset, each is "local" (server.py's default).
+      - key: REPLAY_PARSE_RUNNER
+        sync: false
+      - key: REPLAY_CONTROL_RUNNER
+        sync: false
+      - key: REPLAY_HEIGHTS_RUNNER
+        sync: false
