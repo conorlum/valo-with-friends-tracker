@@ -144,11 +144,13 @@ Configuration (environment, all optional):
 from __future__ import annotations
 
 import base64
+import collections
 import hashlib
 import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -199,6 +201,7 @@ except ImportError:  # pragma: no cover
 # at once. Held files count against the archive's budget and are capped here.
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
+DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
 
 
 def _version(build: str) -> str:
@@ -219,6 +222,8 @@ class Settings:
     timeout_s: float = 180.0
     max_bytes: int = 80 * 1024 * 1024
     queue_size: int = 5
+    parse_parallel: int = 15                     # parse runs at once with REPLAY_PARSE_RUNNER=workflow (spec D15)
+    parse_run_timeout_s: float = 1200.0          # one parse run: download, parse, condense, post
     memory_cap_mb: int = 0
     # Map control (docs/map-control-worker-plan.md): its own queue, a fixed pool of child processes.
     control_enabled: bool = True
@@ -277,6 +282,8 @@ class Settings:
             settings.control_cmd = json.loads(env["REPLAY_CONTROL_CMD"])
         settings.control_workers = max(1, int(env.get("REPLAY_CONTROL_WORKERS", settings.control_workers)))
         settings.control_runs = max(1, int(env.get("REPLAY_CONTROL_RUNS", settings.control_runs)))
+        settings.parse_parallel = max(1, int(env.get("REPLAY_PARSE_PARALLEL", settings.parse_parallel)))
+        settings.parse_run_timeout_s = float(env.get("REPLAY_PARSE_RUN_TIMEOUT_S", settings.parse_run_timeout_s))
         settings.control_queue = int(env.get("REPLAY_CONTROL_QUEUE", settings.control_queue))
         settings.control_timeout_s = float(env.get("REPLAY_CONTROL_TIMEOUT_S", settings.control_timeout_s))
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
@@ -333,6 +340,9 @@ class Job:
     game_build: str | None = None   # set only for an upload from a build the parser doesn't support (held)
     detail: str | None = None       # the parser's own last lines when a parse failed
     released: bool = False          # a held job taken straight to the parse thread, not from a queue (not saved)
+    run_id: str | None = None
+    run_token: str | None = None
+    run_deadline: float | None = None
 
     def public(self) -> dict:
         body = {"id": self.id, "status": self.status}
@@ -361,10 +371,13 @@ class Worker:
 
     SWEEP_EVERY_S = 3600
 
-    def __init__(self, settings: Settings, on_parse=None):
+    def __init__(self, settings: Settings, on_parse=None, runs_table=None):
         self.settings = settings
+        self.runs = runs_table
         self.on_parse = on_parse or (lambda: None)   # map control's preempt (D4); always called outside self.lock
-        self.parsing = False
+        self.parse_count = 0
+        self.sweep_lock = threading.Lock()
+        self.recovered: collections.deque[Job] = collections.deque()
         self.queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
@@ -400,8 +413,25 @@ class Worker:
         if self.archive is not None:
             self._recover()
             self._recover_attempts()
-        self.thread = threading.Thread(target=self._run, name="replay-worker", daemon=True)
-        self.thread.start()
+        threads = self.settings.parse_parallel if (self.runs is not None and
+                                                   self.settings.parse_runner == "workflow") else 1
+        self.threads = [threading.Thread(target=self._run, name=f"replay-worker-{i}", daemon=True)
+                        for i in range(threads)]
+        for thread in self.threads:
+            thread.start()
+        self.thread = self.threads[0]
+
+    @property
+    def parsing(self) -> bool:
+        return self.parse_count > 0
+
+    def _parse_started(self) -> None:
+        with self.lock:
+            self.parse_count += 1
+
+    def _parse_ended(self) -> None:
+        with self.lock:
+            self.parse_count -= 1
 
     @property
     def memory_cap(self) -> str:
@@ -426,7 +456,8 @@ class Worker:
         Between a queue's `get` and `parsing = True` this reads True for a few bytecodes; a second child
         started in that gap is killed by the `on_parse()` call at the top of `_run`
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
-        return not self.parsing and self.queue.empty() and self.reparse_queue.empty()
+        return (not self.parsing and not self.recovered and self.queue.empty()
+                and self.reparse_queue.empty())
 
     def _parse_coming(self) -> None:
         """Tells map control a parse is waiting or starting. A failing hook must never stop a parse."""
@@ -744,22 +775,31 @@ class Worker:
         exactly the old blocking get."""
         if self.archive is None:
             job = self.queue.get()
-            self.parsing = True
+            self._parse_started()
             return job
         while True:
+            try:
+                job = self.recovered.popleft()
+                self._parse_started()
+                return job
+            except IndexError:
+                pass
             for source in (self.queue, self.reparse_queue):
                 try:
                     job = source.get_nowait()
-                    self.parsing = True
+                    self._parse_started()
                     return job
                 except queue.Empty:
                     pass
             job = self._release_held()
             if job is not None:
-                self.parsing = True
+                self._parse_started()
                 return job
-            if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
-                self._sweep()
+            if time.time() - self.last_sweep > self.SWEEP_EVERY_S and self.sweep_lock.acquire(blocking=False):
+                try:
+                    self._sweep()
+                finally:
+                    self.sweep_lock.release()
             self.wake.wait(timeout=1.0)
             self.wake.clear()
 
@@ -770,10 +810,10 @@ class Worker:
             ready = sorted((j for j in self.jobs.values()
                             if j.status == "held" and j.game_build in (self.supported_builds or ())),
                            key=lambda j: j.created)
-        if not ready:
-            return None
-        job = ready[0]
-        job.status, job.error, job.released = "queued", None, True
+            if not ready:
+                return None
+            job = ready[0]
+            job.status, job.error, job.released = "queued", None, True
         self._save(job)
         _log(f"job {job.id} released: the parser now supports {job.game_build}")
         return job
@@ -803,13 +843,14 @@ class Worker:
                     shutil.rmtree(job.folder, ignore_errors=True)
                 else:
                     self._settle(job, status, result)
+                job.run_id = job.run_token = job.run_deadline = None
                 job.result, job.error, job.finished = result, error, time.time()
                 job.status = status
                 self._save(job)
                 self._forget_old()
                 if not job.released:
                     (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
-                self.parsing = False
+                self._parse_ended()
 
     def _settle(self, job: Job, status: str, result: dict | None) -> None:
         """Archive on: the export goes, the result is written, a parsed upload waits in pending/ for its
@@ -827,6 +868,8 @@ class Worker:
             traceback.print_exc()
 
     def _process(self, job: Job) -> dict:
+        if self.settings.parse_runner == "workflow" and self.runs is not None:
+            return self._process_remote(job)
         try:
             result, job.parse_seconds = parse_file(
                 job.folder / "upload.vrf", job.folder, job.sha256, parser_cmd=self.settings.parser_cmd,
@@ -836,6 +879,51 @@ class Worker:
             job.detail, job.parse_seconds = failed.detail, failed.seconds
             raise _JobFailed(failed.reason)
         return self._accept_result(job, result)
+
+    def _process_remote(self, job: Job) -> dict:
+        """The parse as Workflow runs, under the job's one deadline (spec D8) and today's restart rule (D9):
+        the token and deadline are saved before a run starts and the Render id as soon as there is one; a job
+        recovered with a saved id reconnects to that run, and one without starts over with its saved token. The
+        identity stays in job.json until `_run` settles the job."""
+        files = {"vrf": job.folder / "upload.vrf"}
+        if job.run_deadline is None or job.run_token is None:
+            job.run_deadline = time.time() + self.settings.parse_run_timeout_s
+            job.run_token = secrets.token_hex(16)
+            self._save(job, strict=True)
+        reconnect = job.run_id is not None
+        while True:
+            if time.time() >= job.run_deadline:
+                raise _JobFailed(REASON_TIMEOUT)
+            run = self.runs.open("parse", job.id, files, 0, token=job.run_token,
+                                 render_id=job.run_id if reconnect else None, deadline=job.run_deadline)
+            if not reconnect:
+                def started(render_id, job=job):
+                    job.run_id = render_id
+                    self._save(job, strict=True)
+                self.runs.start(run, {"recipe": self.recipe, "sha256": job.sha256}, on_started=started)
+            answer = self.runs.wait(run)
+            kind = answer.get("error_kind")
+            if answer.get("status") == "ok":
+                job.parse_seconds = answer.get("parse_seconds")
+                return self._accept_result(job, answer["result"])
+            if kind == "deploy":
+                # This run's image has another recipe: nothing was parsed. Wait, then a fresh run, within the
+                # deadline (the loop's first check ends it).
+                time.sleep(max(0.0, min(DEPLOY_WAIT_S, job.run_deadline - time.time())))
+                job.run_id, reconnect = None, False
+                continue
+            if kind == "infra" and reconnect:
+                # The run we reconnected to ended without an answer: start over, as a restart does today.
+                job.run_id, reconnect = None, False
+                continue
+            if kind == "timeout":
+                raise _JobFailed(REASON_TIMEOUT)
+            if kind == "parse":
+                job.detail, job.parse_seconds = answer.get("detail"), answer.get("parse_seconds")
+                raise _JobFailed(answer.get("error") or REASON_PARSE)
+            if kind == "contract":
+                raise _JobFailed(answer.get("error") or REASON_PARSE)
+            raise _JobFailed(REASON_PARSE)
 
     def _accept_result(self, job: Job, result: dict) -> dict:
         """Today's checks on a parse's result, wherever it ran."""
@@ -881,7 +969,7 @@ class Worker:
                   "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
         if job.attempt_id:
             record["attempt_id"] = job.attempt_id
-        for key in ("game_build", "detail"):
+        for key in ("game_build", "detail", "run_id", "run_token", "run_deadline"):
             if getattr(job, key):
                 record[key] = getattr(job, key)
         try:
@@ -916,7 +1004,8 @@ class Worker:
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
                       kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
                       attempt_id=record.get("attempt_id"), game_build=record.get("game_build"),
-                      detail=record.get("detail"))
+                      detail=record.get("detail"), run_id=record.get("run_id"),
+                      run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
             if job.status == "held":
                 if not (folder / "upload.vrf").exists():
@@ -928,15 +1017,13 @@ class Worker:
                 job.status, job.error = "held", held_reason(job.game_build)
                 self._save(job)
             elif job.status in ("queued", "parsing"):
-                job.status = "queued"
-                target = self.queue if job.kind == "upload" else self.reparse_queue
-                try:
-                    if not (folder / "upload.vrf").exists():
-                        raise queue.Full
-                    target.put_nowait(job)
-                except queue.Full:
+                if (folder / "upload.vrf").exists():
+                    # Accepted before the restart: worked first, never through the bounded queue, so a restart
+                    # can't fail it for want of room (spec D15). `released` marks a job not taken from a queue.
+                    job.status, job.released = "queued", True
+                    self.recovered.append(job)
+                else:
                     job.status, job.error, job.finished = "failed", "the worker restarted: please re-upload", time.time()
-                    (folder / "upload.vrf").unlink(missing_ok=True)
                 self._save(job)
             elif job.status == "done":
                 job.result = archive_store.read_json(folder / "result.json", None)
@@ -946,8 +1033,8 @@ class Worker:
                 self.jobs[job.id] = job
         with self.lock:
             held = sum(j.status == "held" for j in self.jobs.values())
-        _log(f"archive on: recovered {len(records)} job(s); {self.queue.qsize()} upload(s) and "
-             f"{self.reparse_queue.qsize()} reparse(s) queued again, {held} held for an unsupported game build")
+        _log(f"archive on: recovered {len(records)} job(s); {len(self.recovered)} "
+             f"queued again, {held} held for an unsupported game build")
         self._sweep()
 
     def _sweep(self) -> None:
@@ -957,7 +1044,10 @@ class Worker:
             self.archive.sweep()
             with self.lock:
                 expired = [j for j in self.jobs.values() if j.status == "held" and j.created < time.time() - HELD_TTL_S]
+                for job in expired:
+                    job.status = "expiring"                 # claimed: _release_held skips it
             for job in expired:
+                self._save(job)
                 (job.folder / "upload.vrf").unlink(missing_ok=True)
                 job.status, job.finished = "failed", time.time()
                 job.error = (f"recorded on game version {_version(job.game_build)}: the replay parser still didn't "
@@ -2030,7 +2120,8 @@ def main() -> None:
     # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
     # ControlRunner.preempt itself never touches a Workflow run.
     local_parse = settings.parse_runner == "local" or runs_table is None
-    worker = Worker(settings, on_parse=control.preempt if (control is not None and local_parse) else None)
+    worker = Worker(settings, on_parse=control.preempt if (control is not None and local_parse) else None,
+                    runs_table=runs_table)
     if control is not None:
         # Wired after the Worker exists. Until then idle() reads True, but the control queue is empty: the
         # web app hasn't sent anything to a server that isn't listening yet.
