@@ -19,6 +19,7 @@ from app.models.replay import (
     ReplayUpload,
 )
 from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
+from app.models.map_pool import MapPoolChange, MapPoolPatchNotes
 
 __all__ = [
     "Player",
@@ -42,4 +43,5 @@ __all__ = [
     "ReplayUpload",
     "ReplayDeletion",
     "CoachReport", "CoachPoint", "CoachFeedback", "CoachNote",
+    "MapPoolChange", "MapPoolPatchNotes",
 ]

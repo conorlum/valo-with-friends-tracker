@@ -33,9 +33,11 @@ async def lifespan(_app: FastAPI):
     # The .vrf archive's sync (acks re-sent, tombstones pushed): on whenever uploads are
     # (app/services/replay_archive_sync.py); it does nothing while the worker's archive is off.
     from app.db import SessionLocal
-    from app.services import replay_archive_sync, replay_control_remote
+    # The Competitive map pool's daily patch-notes check (app/services/map_pool_refresh.py); off unless MAP_POOL_AUTO.
+    from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote
 
-    stops = [replay_control_remote.start(SessionLocal), replay_archive_sync.start(SessionLocal)]
+    stops = [replay_control_remote.start(SessionLocal), replay_archive_sync.start(SessionLocal),
+             map_pool_refresh.start(SessionLocal)]
     yield
     for stop in stops:
         if stop is not None:
