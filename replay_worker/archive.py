@@ -158,6 +158,7 @@ class Archive:
         self.lock = threading.RLock()
         self.boot_id = uuid.uuid4().hex
         self.held_bytes = lambda: 0   # the server's held uploads (in jobs/), which the archive must leave room for
+        self.cache_reserve = 0        # map control's caches on this disk (replay_worker/control_cache.py)
         self.jobs = self.root / "jobs"
         self.pending = self.root / "pending"
         self.files = self.root / "archive"
@@ -198,13 +199,13 @@ class Archive:
 
     def budget(self) -> int:
         return (self.total - self.parse_reserve - ARCHIVE_SLACK - self.pending_bytes() - self.receipt_bytes()
-                - self.held_bytes())
+                - self.held_bytes() - self.cache_reserve)
 
     def intake_ok(self, size: int) -> bool:
         """Room for one more upload: what jobs/, pending/ and attempts/ hold plus it must leave the running
         parse's reserve and the slack free, with the archive evicted to nothing if need be."""
         held = _tree_bytes(self.jobs) + self.pending_bytes() + self.receipt_bytes()
-        return held + size <= self.total - ARCHIVE_SLACK - PARSE_RESERVE_FACTOR * self.max_bytes
+        return held + size <= self.total - ARCHIVE_SLACK - PARSE_RESERVE_FACTOR * self.max_bytes - self.cache_reserve
 
     def evict(self) -> list[str]:
         """Earliest-played match first, until the archive fits its budget. Never touches jobs/ or pending/."""
