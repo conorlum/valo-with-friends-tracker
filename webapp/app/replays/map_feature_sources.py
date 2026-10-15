@@ -1,6 +1,11 @@
 """Parent-safe snapshots of the existing monochrome control mask assets."""
 import base64
+import collections
+import copy
+import hashlib
+import json
 import struct
+import threading
 import zlib
 
 from app.replays.map_feature_artifacts import pack_mask
@@ -68,12 +73,22 @@ def descriptor_digest(descriptor):
     return hashlib.sha256(packed.translate(reverse)).hexdigest()[:12]
 
 
-def base_snapshot(map_name, folder, entry, scale):
-    masks = {kind: png_mask((folder / f'{map_name}.{kind}.png').read_bytes()) for kind in ('sight', 'walk')}
+def _read_raws(map_name, folder):
+    sight = (folder / f'{map_name}.sight.png').read_bytes()
+    walk = (folder / f'{map_name}.walk.png').read_bytes()
     barrier_path = folder / f'{map_name}.barrier.png'
+    return sight, walk, (barrier_path.read_bytes() if barrier_path.is_file() else None)
+
+
+def _base_snapshot(map_name, folder, entry, scale):
+    return _decode(map_name, _read_raws(map_name, folder), entry, scale)
+
+
+def _decode(map_name, raws, entry, scale):
+    masks = {'sight': png_mask(raws[0]), 'walk': png_mask(raws[1])}
     barrier, barrier_sha = None, None
-    if barrier_path.is_file():
-        pixels = png_mask(barrier_path.read_bytes())
+    if raws[2] is not None:
+        pixels = png_mask(raws[2])
         barrier_sha = descriptor_digest(pack_mask(pixels, [1024, 1024]))
         barrier = bytes(int(any(pixels[(r * 8 + y) * 1024 + c * 8 + x] for y in range(8) for x in range(8)))
                         for r in range(128) for c in range(128))
@@ -90,3 +105,66 @@ def base_snapshot(map_name, folder, entry, scale):
             'barrier': None if barrier is None else pack_mask(barrier, [128, 128]),
             'barrier_sha': barrier_sha,
             'scale': scale, 'specials': entry.get('specials') or [], 'legacy': legacy}
+
+
+# The decode cache: keyed on the asset files' bytes (an edited file is decoded afresh), never on paths or times.
+_CACHE_MAX = 32
+_cache = collections.OrderedDict()
+_counts = {'hits': 0, 'misses': 0}
+_cache_lock = threading.Lock()
+
+
+def _locked():
+    return _cache_lock
+
+
+def _copy(value):
+    return copy.deepcopy(value)
+
+
+def _raw_digests(raws):
+    return tuple(None if raw is None else hashlib.sha256(raw).hexdigest() for raw in raws)
+
+
+def _entry_digest(entry):
+    part = {k: entry.get(k) for k in ('cover_paint', 'cant_walk_paint', 'specials')}
+    return hashlib.sha256(json.dumps(part, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _key(map_name, raws, entry, scale):
+    return (map_name, _raw_digests(raws), _entry_digest(entry), repr(scale))
+
+
+def _evict():
+    while len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
+
+
+def base_snapshot(map_name, folder, entry, scale):
+    raws = _read_raws(map_name, folder)
+    key = _key(map_name, raws, entry, scale)
+    with _locked():
+        if key in _cache:
+            _cache.move_to_end(key)
+            _counts['hits'] += 1
+            return _copy(_cache[key])
+        value = _decode(map_name, raws, entry, scale)
+        _cache[key] = value
+        _counts['misses'] += 1
+        _evict()
+        return _copy(value)
+
+
+def _cache_clear():
+    with _cache_lock:
+        _cache.clear()
+        _counts.update(hits=0, misses=0)
+
+
+def _cache_info():
+    with _cache_lock:
+        return {'hits': _counts['hits'], 'misses': _counts['misses'], 'size': len(_cache)}
+
+
+base_snapshot.cache_clear = _cache_clear
+base_snapshot.cache_info = _cache_info
