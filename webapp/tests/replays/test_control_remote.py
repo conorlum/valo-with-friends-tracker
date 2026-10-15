@@ -28,6 +28,13 @@ from app.services import replay_control_remote as remote  # noqa: E402
 from app.services import replay_gaps  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def old_limits(monkeypatch):
+    """These tests were written for 8 rounds from any replays; the match limit has its own tests below."""
+    monkeypatch.setattr(remote, "IN_FLIGHT", 8)
+    monkeypatch.setattr(remote, "MAX_MATCHES", 1000)
+
+
 GAP_ROW = {"seq": 0, "kind": "predicted", "map": "Toy", "victim_slot": 0, "victim_side": None, "t_open": 1.0,
            "t_last_exposed": 2.0, "t_close": 7.0, "spot_cell": 5, "victim_cell": 6, "distance_m": 3.0,
            "angle_deg": 170.0, "qualified_s": 2.0, "flicker": False, "cause": "open_timing", "cause_detail": {1: 2.5},
@@ -908,3 +915,33 @@ def test_a_result_computed_with_other_heights_is_dropped(factory, db, linked):
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["skipped"] == remote.IN_FLIGHT and counts["stored"] == 0
     assert rows(db, linked) == {}
+
+
+def test_another_match_in_flight_holds_this_one_back(monkeypatch, factory, db, linked):
+    monkeypatch.setattr(remote, "IN_FLIGHT", 40)
+    monkeypatch.setattr(remote, "MAX_MATCHES", 1)
+    worker, state = FakeWorker(answer=lambda task: None), remote.State()     # every job stays running
+    worker.tasks["other"] = {"key": "999:1:fp", "map": linked.map_name}
+    state.in_flight["999:1:fp"] = remote.InFlight("other", 999, 1, "fp", linked.map_name, 0.0)
+    assert remote.cycle(factory, worker, state, now=0)["sent"] == 0
+    del state.in_flight["999:1:fp"]                                          # that match finished
+    assert remote.cycle(factory, worker, state, now=1)["sent"] == linked.round_count
+
+
+def test_the_runs_limit_caps_one_match(monkeypatch, factory, db, linked):
+    cap = linked.round_count - 2
+    monkeypatch.setattr(remote, "IN_FLIGHT", cap)
+    monkeypatch.setattr(remote, "MAX_MATCHES", 1)
+    worker, state = FakeWorker(), remote.State()
+    assert remote.cycle(factory, worker, state, now=0)["sent"] == cap
+    second = remote.cycle(factory, worker, state, now=1)       # the first `cap` come back and are stored
+    assert second["stored"] == cap and second["sent"] == 2
+
+
+def test_room_for(monkeypatch):
+    monkeypatch.setattr(remote, "IN_FLIGHT", 40)
+    monkeypatch.setattr(remote, "MAX_MATCHES", 1)
+    state = remote.State()
+    state.in_flight["a"] = remote.InFlight("j", 7, 1, "fp", "Ascent", 0.0)
+    assert remote.room_for(state, 7)
+    assert not remote.room_for(state, 8)

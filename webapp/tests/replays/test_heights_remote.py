@@ -176,6 +176,7 @@ def on(monkeypatch, tmp_path):
     checks.write_bytes(TEST_CHECK_BYTES)
     monkeypatch.setattr(hi, "CONTROL_DIR", directory)
     monkeypatch.setattr(hi, "MUST_BLOCK", checks)
+    monkeypatch.setattr(remote, "IN_FLIGHT", 8)               # written for 8 rounds in flight; the site's default is now 40
     monkeypatch.setattr(settings, "replay_heights_auto", True)
     monkeypatch.setattr(settings, "replay_control_remote", True)
     monkeypatch.setattr(settings, "replay_worker_url", "http://worker")
