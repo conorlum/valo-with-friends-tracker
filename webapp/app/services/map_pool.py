@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-BLEED_DAYS = 3  # PROVISIONAL(D3)
-SAFETY_NET_MIN_MATCHES = 3  # PROVISIONAL(D3)
+BLEED_DAYS = 3
+SAFETY_NET_MIN_MATCHES = 3
 
 SAFETY_NET_PATCH = "safety-net"
 SAFETY_NET_SOURCE = "safety_net"
