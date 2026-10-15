@@ -286,3 +286,87 @@ def test_lifespan_starts_the_refresher(monkeypatch):
 
     asyncio.run(go())
     mock.assert_called_once_with(SessionLocal)
+
+
+# ---- S4: the pages read the table --------------------------------------------------------------------------
+
+
+def _forbid(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("match_states must not plan or compute")
+    monkeypatch.setattr(progress, "compute", boom)
+    monkeypatch.setattr(progress, "cached", boom)
+    from app.services import replay_control, replay_gaps
+    monkeypatch.setattr(replay_control, "plan", boom)
+    monkeypatch.setattr(replay_gaps, "plan_gaps", boom)
+
+
+def test_match_states_reads_the_stored_rows_without_planning(db, linked, monkeypatch):
+    uuid = str(linked.match_uuid).lower()
+    states.refresh(db)
+    _forbid(monkeypatch)
+    out = progress.match_states(db, [uuid.upper()])
+    assert out == {uuid: {"done": 0, "total": linked.round_count, "label": "Map control never computed",
+                          "automatic": True}}
+
+
+def test_match_states_empty_table_and_demo_mode(db, linked, monkeypatch):
+    uuid = str(linked.match_uuid).lower()
+    _forbid(monkeypatch)
+    assert progress.match_states(db, [uuid]) == {}
+    assert progress.match_states(db, []) == {}
+    db.add(ReplayMatchState(match_uuid=uuid, done=0, total=1, first_step=None, checked_at=datetime.now(timezone.utc),
+                            recipe=progress.uploads.site_recipe(), control_revision=progress.cf.CONTROL_REVISION,
+                            gaps_revision=progress.replay_gaps.GAPS_REVISION))
+    db.commit()
+    assert uuid in progress.match_states(db, [uuid])
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert progress.match_states(db, [uuid]) == {}
+
+
+def test_match_states_survives_a_missing_table(db, linked):
+    uuid = str(linked.match_uuid).lower()
+    ReplayMatchState.__table__.drop(db.get_bind())
+    assert progress.match_states(db, [uuid]) == {}
+
+
+def test_match_states_ignores_a_non_uuid_id(db, linked):
+    uuid = str(linked.match_uuid).lower()
+    states.refresh(db)
+    assert list(progress.match_states(db, ["not-a-uuid", uuid, "", None])) == [uuid]
+
+
+@pytest.mark.parametrize("change", [
+    {"recipe": "other"}, {"control_revision": -1}, {"gaps_revision": -1}, {"first_step": "no_such_step"},
+    {"checked_at": datetime.now(timezone.utc) - timedelta(seconds=states.STALE_S + 30)},
+])
+def test_match_states_leaves_out_an_unusable_row(db, linked, change):
+    uuid = str(linked.match_uuid).lower()
+    states.refresh(db)
+    assert uuid in progress.match_states(db, [uuid])
+    row = db.query(ReplayMatchState).one()
+    for k, v in change.items():
+        setattr(row, k, v)
+    db.commit()
+    assert progress.match_states(db, [uuid]) == {}
+
+
+def test_the_cell_says_not_checked_yet_only_for_a_watchable_match():
+    from types import SimpleNamespace as NS
+
+    from app.templates import templates
+    uuid = "0f452716-1e90-4782-afba-29229fdab922"
+    match = NS(external_id=uuid, team1_rounds_won=13, team2_rounds_won=7, map_name="Sunset", played_at=None)
+
+    def page(watchable):
+        return templates.env.get_template("matches/list.html").render(
+            matches=[match], showing_own_matches=False, current_player=None, watchable=watchable, replay_states={})
+
+    assert 'title="Not checked yet"' in page({uuid})
+    assert 'title="Not checked yet"' not in page({"x"})
+    assert page({"x"}).count("No replay for this match") == 2
+
+
+def test_sessions_use_the_same_function():
+    from app.routers import sessions
+    assert sessions.match_states is progress.match_states
