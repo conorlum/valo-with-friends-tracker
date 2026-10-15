@@ -6,6 +6,8 @@ computation, never the dispatcher's own plans).
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -14,6 +16,8 @@ from sqlalchemy import text, update
 from app.config import settings
 from app.models.replay import ReplayMatchState
 from app.services import replay_progress
+
+log = logging.getLogger(__name__)
 
 REFRESH_S = 60
 STALE_S = 5 * REFRESH_S
@@ -65,3 +69,33 @@ def refresh(db, now: datetime | None = None) -> dict:
     replay_progress.seed(result, started)
     return _counts(written=written, deleted=len(gone), unchanged=unchanged,
                    seconds=round(time.monotonic() - started, 2))
+
+
+def run_forever(session_factory, stop: threading.Event, every_s: float = REFRESH_S) -> None:
+    """One pass at once, then one every `every_s` until `stop` is set. A failed pass is logged, never fatal."""
+    while True:
+        db = session_factory()
+        try:
+            counts = refresh(db)
+            log.info("replay states: written %d, deleted %d, unchanged %d in %.2fs",
+                     counts["written"], counts["deleted"], counts["unchanged"], counts["seconds"])
+        except Exception:  # noqa: BLE001 - the refresher must never take the site down
+            log.exception("replay states refresh failed")
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            db.close()
+        if stop.wait(every_s):
+            return
+
+
+def start(session_factory) -> threading.Event | None:
+    """Starts the refresher thread (not in demo mode; no other switch, R5); returns its stop event."""
+    if settings.demo_mode:
+        return None
+    stop = threading.Event()
+    threading.Thread(target=run_forever, args=(session_factory, stop), name="replay-states", daemon=True).start()
+    log.info("replay states refresher on: every %ss", REFRESH_S)
+    return stop

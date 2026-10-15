@@ -170,3 +170,119 @@ def test_pg_migration_0023_creates_and_drops_the_table():
         finally:
             transaction.rollback()
     engine.dispose()
+
+
+# --- S3: the refresher thread -------------------------------------------------------------------------------------
+
+class _Session:
+    def __init__(self):
+        self.closed = False
+        self.rolled_back = 0
+
+    def rollback(self):
+        self.rolled_back += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _Stop:
+    """A stop event whose wait() answers from a list, then True."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.waited = []
+
+    def wait(self, timeout=None):
+        self.waited.append(timeout)
+        return self.answers.pop(0) if self.answers else True
+
+
+def _factory(made):
+    def make():
+        made.append(_Session())
+        return made[-1]
+    return make
+
+
+def test_run_forever_one_pass_when_stop_is_already_set(monkeypatch, caplog):
+    import threading
+    calls = []
+    monkeypatch.setattr(states, "refresh", lambda db: calls.append(db) or states._counts(written=2, deleted=1, unchanged=3))
+    stop, made = threading.Event(), []
+    stop.set()
+    with caplog.at_level("INFO", logger=states.log.name):
+        states.run_forever(_factory(made), stop, every_s=0)
+    assert len(calls) == 1 and made[0].closed
+    assert "replay states: written 2, deleted 1, unchanged 3 in" in caplog.text
+
+
+def test_run_forever_survives_a_failing_refresh(monkeypatch, caplog):
+    calls = []
+
+    def refresh(db):
+        calls.append(db)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return states._counts()
+
+    monkeypatch.setattr(states, "refresh", refresh)
+    made = []
+    stop = _Stop(False, True)
+    with caplog.at_level("INFO", logger=states.log.name):
+        states.run_forever(_factory(made), stop, every_s=7)
+    assert len(calls) == 2 and all(s.closed for s in made) and made[0].rolled_back == 1
+    assert "boom" in caplog.text and stop.waited == [7, 7]
+
+
+def test_run_forever_logs_a_locked_out_pass_without_error(monkeypatch, caplog):
+    monkeypatch.setattr(states, "refresh", lambda db: states._counts(locked_out=1))
+    made = []
+    with caplog.at_level("INFO", logger=states.log.name):
+        states.run_forever(_factory(made), _Stop(True), every_s=0)
+    assert "written 0, deleted 0, unchanged 0" in caplog.text
+    assert not [r for r in caplog.records if r.levelname == "ERROR"] and made[0].closed
+
+
+def test_start_in_demo_mode_starts_nothing(monkeypatch):
+    import threading
+    monkeypatch.setattr(settings, "demo_mode", True)
+    before = {t.name for t in threading.enumerate()}
+    assert states.start(lambda: None) is None
+    assert {t.name for t in threading.enumerate()} == before
+
+
+def test_start_otherwise_starts_a_daemon_thread(monkeypatch):
+    import threading
+    import time
+    monkeypatch.setattr(settings, "demo_mode", False)
+    seen = []
+    monkeypatch.setattr(states, "run_forever", lambda *a, **k: seen.append(threading.current_thread()))
+    stop = states.start(lambda: None)
+    assert isinstance(stop, threading.Event)
+    for _ in range(100):
+        if seen:
+            break
+        time.sleep(0.01)
+    assert seen and seen[0].name == "replay-states" and seen[0].daemon
+
+
+def test_lifespan_starts_the_refresher(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app import main
+    from app.db import SessionLocal
+    from app.services import replay_archive_sync
+
+    monkeypatch.setattr(remote, "start", lambda factory: None)
+    monkeypatch.setattr(replay_archive_sync, "start", lambda factory: None)
+    mock = MagicMock(return_value=None)
+    monkeypatch.setattr(states, "start", mock)
+
+    async def go():
+        async with main.lifespan(main.app):
+            pass
+
+    asyncio.run(go())
+    mock.assert_called_once_with(SessionLocal)
