@@ -25,11 +25,12 @@ what should happen. Leads are guesses until checked.
   review's screenshot of round 7 at 33.2 s, x ~60-330, y ~560-700 px on the 1024 map). Re-investigate that area
   before any rule is chosen.
 
-### Lotus feature-2 still leaks past one end (found 2026-10-14)
+### Lotus feature-2's last slit (fixed 2026-10-14 review)
 
-With the touched raster (bug 1's fix), Lotus feature-2 (a rotating door) goes from 766 leaking cell pairs to
-30: its footprint stops a pixel short of the wall at one end, so no raster rule closes it. Fix the footprint in
-the tagger. Lotus feature-1 keeps a 2 px slit with no leaking pair.
+With the touched raster (bug 1's fix), Lotus feature-2 (a rotating door) went from 766 leaking cell pairs to
+30: its footprint stopped at px row 607 and the wall below starts at 609. Its bottom edge now reaches uv v 5945 in
+all four states: 0 pairs (`tests/replays/test_lotus_door_seals.py`). Lotus feature-1 keeps a 2 px slit with no
+leaking pair.
 
 ## Fixed (on branch `afk/2026-10-14-hearing-and-vision-bugs`, not yet merged; CONTROL_REVISION 16)
 
