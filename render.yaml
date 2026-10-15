@@ -118,6 +118,8 @@ services:
         value: "40"
       - key: REPLAY_CONTROL_QUEUE
         value: "64"
-      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6).
+      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6). Used only
+      # while REPLAY_CONTROL_RUNNER is workflow; a local runner keeps /jobs/control_cache and the archive's whole
+      # budget (server.py keep_local_sizing).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache
