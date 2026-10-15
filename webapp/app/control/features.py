@@ -587,24 +587,28 @@ def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False)
                           mask_digest=hashlib.sha256(mask.tobytes()).digest())
 
 
-def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str):
+def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str,
+                   bind_px: np.ndarray | None = None):
     """(BoundedOccluder, None) or (None, why it is pending). Ground-relative bounds stand on the bound floor's
     physical ground (its node z - STAND_M) under the occluder; world bounds convert through the height asset's
-    origin. A flat map has no heights: resolved bounds there block in 2D, like every wall."""
+    origin. A flat map has no heights: resolved bounds there block in 2D, like every wall. The floor is bound
+    under `bind_px` (default `mask_px`): a `raster_touched` sight mask binds from the authored footprint's
+    `raster`, so the edge cells it adds against a wall never make the occluder off_ground."""
     from app.control import heights as hc
 
+    bind = mask_px if bind_px is None else bind_px
     bounds = occ.get("bounds") or {}
-    cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
+    cells = bind.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
     feature = next((f for f in mf.get('features') or [] if f.get('id') == owner), None)
     if geo.adaptive:
-        touched = mask_px.reshape(256, 4, 256, 4).any((1, 3))
+        touched = bind.reshape(256, 4, 256, 4).any((1, 3))
         cells = np.zeros(len(geo.space_walk), bool)
         cells[np.unique(geo.space_grid[touched])] = True
-        cells = _panel_ground_cells(geo, cells, mask_px, feature)
+        cells = _panel_ground_cells(geo, cells, bind, feature)
         placed = _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(), 'sight bounds', feature)
         b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
     else:
-        cells = _panel_ground_cells(geo, cells, mask_px, feature)
+        cells = _panel_ground_cells(geo, cells, bind, feature)
         placed = _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(), 'sight bounds', feature)
         b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
     if b.pending or not len(b.nodes):
@@ -651,12 +655,19 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
             entries.append({"geometry": s["footprint"], "bounds": s.get("sight_bounds") or {"ref": "unresolved"}})
         for occ in entries:
             mask = to_px(raster_touched(occ.get("geometry")))
-            o, why = resolve_bounds(geo, mf, occ, mask, f.get("id"))
+            o, why = resolve_bounds(geo, mf, occ, mask, f.get("id"), bind_px=to_px(raster(occ.get("geometry"))))
             if o is None:
                 pending.append(why)
             else:
                 out.append(o)
     return out, pending
+
+
+def rotation_sight(geo: Geometry, mf: dict, feature: dict, panel: dict):
+    """A rotating panel's sight blocker at one pose (`rotation_pose`), as `resolve_bounds` returns it: it blocks
+    every cell the pose touches, like `sight_occluders`, and stands on the floor under the pose's centre raster."""
+    return resolve_bounds(geo, mf, {'bounds': feature['rotation']['sight_bounds']}, to_px(raster_touched(panel)),
+                          feature['id'], bind_px=to_px(raster(panel)))
 
 
 def _bounds_interval(a, b, bounds):

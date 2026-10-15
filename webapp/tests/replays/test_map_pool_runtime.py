@@ -119,8 +119,10 @@ def test_unchanged_panel_pose_reuses_sight_mask_without_changing_other_poses():
     for t in (0, 3, 6, 10, 11, 19):
         actual = runtime.sample(t)[1][0]
         panel = cf.rotation_pose(feature, rotation_fraction(feature, timeline, t))
+        # The pose blocks every cell it touches; its floor is bound under the centre raster (2026-10-14 review).
         expected, why = cf.resolve_bounds(geo, mf, {'bounds':feature['rotation']['sight_bounds']},
-                                         cf.to_px(cf.raster(panel)), feature['id'])
+                                         cf.to_px(cf.raster_touched(panel)), feature['id'],
+                                         bind_px=cf.to_px(cf.raster(panel)))
         assert why is None and np.array_equal(actual.mask, expected.mask)
         assert (actual.bottom, actual.top, actual.all_height) == (expected.bottom, expected.top, expected.all_height)
     closed = runtime.sample(11)[1][0]
