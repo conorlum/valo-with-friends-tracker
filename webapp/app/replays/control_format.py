@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 15    # combined player-state and map-feature runtime, including leaf motion fixes
+CONTROL_REVISION = 16    # 16: anonymous hearing (R1/R2) and one collapse rule per cell
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

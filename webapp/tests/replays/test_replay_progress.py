@@ -17,6 +17,7 @@ from test_replay_upload import request  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
+from app.services import replay_match_states  # noqa: E402
 from app.services import replay_progress as progress  # noqa: E402
 
 
@@ -73,17 +74,17 @@ def test_a_match_is_up_to_date_only_when_every_round_is_done(factory, db, linked
         if r > 1:
             _gap_run(factory, linked, r)
     db.expire_all()
-    monkeypatch.setattr(progress, "_cached", None)
+    replay_match_states.refresh(db)
     assert progress.match_states(db, [uuid.upper(), "other", None]) == {
         uuid: {"done": n - 1, "total": n, "label": "Timing gaps never computed", "automatic": True}}
     _gap_run(factory, linked, 1)
     db.expire_all()
-    monkeypatch.setattr(progress, "_cached", None)
+    replay_match_states.refresh(db)
     assert progress.match_states(db, [uuid]) == {uuid: {"done": n, "total": n, "label": None, "automatic": None}}
     put_row(db, linked, 2, status="failed")   # the earliest stuck step names the match, not the commonest
     linked.recipe = "000000000000.c9.f1.000000000"
     db.commit()
-    monkeypatch.setattr(progress, "_cached", None)
+    replay_match_states.refresh(db)
     assert progress.match_states(db, [uuid])[uuid]["label"] == "Needs a re-ingest (older condenser, local file)"
     monkeypatch.setattr(settings, "demo_mode", True)
     assert progress.match_states(db, [uuid]) == {}

@@ -49,7 +49,8 @@ class RenderApi:
     """The four task-run routes, over urllib."""
 
     def __init__(self, token: str, base: str = API, timeout_s: float = 30.0):
-        self.token, self.base, self.timeout_s = token, base.rstrip("/"), timeout_s
+        # A key pasted into the dashboard can carry a trailing newline.
+        self.token, self.base, self.timeout_s = token.strip(), base.rstrip("/"), timeout_s
 
     def start(self, slug: str, args: dict) -> dict:
         return self._call("POST", "/task-runs", {"task": slug, "input": [args]})
@@ -75,6 +76,9 @@ class RenderApi:
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        if not self.token.isprintable() or any(c.isspace() for c in self.token):
+            # http.client would refuse it with an error quoting the whole header, key included.
+            raise RenderError(f"{method} {path}: RENDER_API_KEY has characters a header can't carry")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
                 raw = response.read()
@@ -155,7 +159,12 @@ class Runs:
             if job_id in self.open_runs:
                 raise ValueError(f"a run for job {job_id} is already open")
             self.open_runs[job_id] = run
-        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            with self.lock:                  # the caller never gets the run, so it can't close it
+                self.open_runs.pop(job_id, None)
+            raise
         return run
 
     def start(self, run: Run, args: dict, on_started=None) -> None:
