@@ -24,6 +24,13 @@ what should happen. Leads are guesses until checked.
   The area the owner means is wider: the whole bottom-left corridor/room by the orange camera (circled in the
   review's screenshot of round 7 at 33.2 s, x ~60-330, y ~560-700 px on the 1024 map). Re-investigate that area
   before any rule is chosen.
+- **That area, checked (2026-10-14 review, this branch's engine):** the remembered strip and the backfilled
+  pocket are gone. With the hearing fix there is no blue Safe in the area at any time from 28 to 36 s (up to 51
+  cells under the old rule). What stays blue at 33.0 s is Clove's own live sight: 59 cells, 51 in her cone, in
+  the room's lower right. From her eye at (480, 773) px, 49 of them have a straight line that crosses no wall
+  pixel on the minimap: they come in through the opening where the thin wall on the room's right (x ~338-350)
+  ends above the corridor. 10 edge cells graze a wall corner (1-14 px). So the engine is right if that opening
+  is real in game; if something there blocks sight (a wall or prop the minimap doesn't draw), it needs tagging.
 
 ### Lotus feature-2's last slit (fixed 2026-10-14 review)
 
