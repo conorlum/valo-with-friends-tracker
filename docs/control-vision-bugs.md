@@ -31,6 +31,12 @@ what should happen. Leads are guesses until checked.
   pixel on the minimap: they come in through the opening where the thin wall on the room's right (x ~338-350)
   ends above the corridor. 10 edge cells graze a wall corner (1-14 px). So the engine is right if that opening
   is real in game; if something there blocks sight (a wall or prop the minimap doesn't draw), it needs tagging.
+- **Checked in game (owner, 2026-10-14):** Clove does see up that diagonal through the opening, but not past the
+  2-high box in the room (minimap candidate 23, px x 282-297, y 634-677), which the engine let sight through: no
+  Sunset box was tagged. **Fix:** candidate 23 is tagged `cover` (`tags.json`, rebuilt with
+  `scripts/build_control_geometry.py --map Sunset`): it blocks sight and walking. Kill lines unchanged (1/204
+  blocked), 12 cells fewer walkable, no height asset to rebuild. At 31.0 s Clove's band now stops at the box.
+  Sunset's other boxes are still untagged ("cover not reviewed").
 
 ### Lotus feature-2's last slit (fixed 2026-10-14 review)
 

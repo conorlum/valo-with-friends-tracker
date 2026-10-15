@@ -54597,7 +54597,21 @@
         "checklist": {},
         "image_sha": "1188642e2f94",
         "runtime_digest": "22fff5914b7aa450"
-      }
+      },
+      "tags": [
+        {
+          "id": 23,
+          "tag": "cover",
+          "kind": "closed",
+          "bbox": [
+            282,
+            634,
+            297,
+            677
+          ],
+          "px": 700
+        }
+      ]
     }
   }
 }
