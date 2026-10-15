@@ -256,8 +256,7 @@ class MapPoolRuntime:
                     self._rotation_masks[key] = rotation_effects(self.geo, mf, f, panel)
                 effects = self._rotation_masks[key]
                 if key not in self._rotation_sight:
-                    blocker, why = cf.resolve_bounds(self.geo, mf, {'bounds': f['rotation']['sight_bounds']},
-                                                     cf.to_px(cf.raster(panel)), f['id'])
+                    blocker, why = cf.rotation_sight(self.geo, mf, f, panel)
                     if why:
                         raise FeatureArtifactCorrupt(why)
                     if blocker is not None:

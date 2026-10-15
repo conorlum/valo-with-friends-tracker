@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from test_control_remote import FakeWorker, all_control, put_gap_run  # noqa: E402
-from test_control_store import CONTROL_TABLES, put_row  # noqa: E402
+from test_control_store import CONTROL_TABLES, feature_free_source, put_row  # noqa: E402
 from test_replay_store import add_match, condensed, pg  # noqa: E402,F401  (fixtures)
 from test_replay_upload import ATTEMPT, AutoWorker, make_stale, reserve, result_of  # noqa: E402
 
@@ -41,6 +41,9 @@ NOW = T0.timestamp()
 
 @pytest.fixture
 def db(monkeypatch):
+    # Made-up Ascent rounds: since 4dc8d55 Ascent has published features, which a worker without the
+    # features protocol (FakeWorker) holds back; these tests are about the re-parse hold, not that one.
+    feature_free_source(monkeypatch)
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[*CONTROL_TABLES, ReplayUpload.__table__])

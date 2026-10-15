@@ -14,6 +14,15 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# A `git apply --check` probe whose failure is an answer, not an error. Windows PowerShell 5.1 turns a
+# native command's stderr into a terminating error under 'Stop', even with 2>$null, so a fresh
+# checkout (where the reverse check fails) aborted the build; the preference is local to this function.
+function Test-GitApply([string[]]$ApplyArgs) {
+    $ErrorActionPreference = 'Continue'
+    git -C $ParserDir apply @ApplyArgs 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
 $pinFile = Join-Path $PSScriptRoot '..\replay_parser.json'
 $pin = Get-Content -Raw $pinFile | ConvertFrom-Json
 
@@ -58,8 +67,7 @@ foreach ($sourcePatch in $sourceStack) {
 [array]::Reverse($sourceStack)
 foreach ($sourcePatch in $sourceStack) {
     $sourcePath = Join-Path (Split-Path $pinFile) $sourcePatch.file
-    git -C $ParserDir apply --reverse --check $sourcePath 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-GitApply @('--reverse', '--check', $sourcePath)) {
         git -C $ParserDir apply --reverse $sourcePath
         if ($LASTEXITCODE -ne 0) { throw 'source patch reverse failed' }
     }
@@ -70,10 +78,12 @@ foreach ($sourcePatch in $pin.source_patches) {
     $sourceHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourceText)) | ForEach-Object { $_.ToString('x2') })
     if ($sourceHash -ne $sourcePatch.sha256) { throw 'source patch digest mismatch' }
     # An identical patch already applied on this pin needs no reset of the checkout.
-    git -C $ParserDir apply --reverse --check $sourcePath 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        git -C $ParserDir apply --check $sourcePath
-        if ($LASTEXITCODE -ne 0) { throw 'source patch does not apply cleanly; use a fresh parser checkout' }
+    if (-not (Test-GitApply @('--reverse', '--check', $sourcePath))) {
+        if (-not (Test-GitApply @('--check', $sourcePath))) {
+            $ErrorActionPreference = 'Continue'
+            $why = (git -C $ParserDir apply --check $sourcePath 2>&1 | Out-String).Trim()
+            throw "source patch $($sourcePatch.file) does not apply cleanly; use a fresh parser checkout. git: $why"
+        }
         git -C $ParserDir apply $sourcePath
         if ($LASTEXITCODE -ne 0) { throw 'source patch apply failed' }
     }

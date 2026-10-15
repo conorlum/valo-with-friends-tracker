@@ -57,6 +57,21 @@ def test_429_is_rate_limited_and_404_is_render_error(render):
         api.get("trn-404")
 
 
+def test_a_key_pasted_with_a_trailing_newline_is_trimmed(render):
+    runs.RenderApi(" k3y\n", base=render.url).start("w/ping", {})
+    assert render.auth[0] == "Bearer k3y"
+
+
+def test_a_key_a_header_cant_carry_never_reaches_the_error(render):
+    import traceback
+    api = runs.RenderApi("se\ncret-key", base=render.url)
+    with pytest.raises(runs.RenderError) as raised:
+        api.start("w/ping", {})
+    text = "".join(traceback.format_exception(raised.value))
+    assert "cret-key" not in text and "RENDER_API_KEY" in text
+    assert render.started == []
+
+
 def test_unreachable_is_render_error():
     api = runs.RenderApi("k", base=f"http://127.0.0.1:{closed_port()}/v1", timeout_s=1)
     with pytest.raises(runs.RenderError):
@@ -153,6 +168,14 @@ def test_one_open_run_per_job(render, tmp_path):
     table.open("ping", "j1", {}, timeout_s=30)
     with pytest.raises(ValueError):
         table.open("ping", "j1", {}, timeout_s=30)
+
+
+def test_a_run_whose_folder_cant_be_made_is_not_left_open(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    (tmp_path / "runs").write_text("a file where the folder goes", encoding="utf-8")
+    with pytest.raises(OSError):
+        table.open("ping", "j1", {}, timeout_s=30)
+    assert table.open_runs == {}
 
 
 class SharedClock:
