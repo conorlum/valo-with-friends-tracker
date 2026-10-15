@@ -109,3 +109,137 @@ def test_control_task_reports_a_child_that_prints_nothing_as_infra(tmp_path, mon
     link = FakeLink({"task": json.dumps(round_task()).encode()})
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
     assert link.result["status"] == "failed" and link.result["error_kind"] == "infra"
+
+
+@pytest.fixture
+def remote(tmp_path, stub):
+    """A ControlRunner in workflow mode, its server, and a fake Render that runs tasks.control."""
+    render = FakeRender()
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               control_runner="workflow", control_runs=40, workflow_slug="replay-tasks",
+                               render_api_key="k", render_api_base=render.url)
+    table = server.make_runs(settings)
+    control = server.ControlRunner(settings, runs_table=table)
+    worker = server.Worker(settings, on_parse=None)
+    httpd = server.make_server(worker, control=control, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
+    try:
+        yield control, render, settings, base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
+
+
+def wait_running(control, at_least, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        if control.counts()["running"] >= at_least:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"never {at_least} running at once")
+
+
+def wait_done(control, jobs, timeout=60):
+    end = time.time() + timeout
+    while time.time() < end:
+        if all(control.get(j.id).status in ("done", "failed") for j in jobs):
+            return [control.get(j.id) for j in jobs]
+        time.sleep(0.05)
+    raise AssertionError("rounds didn't finish")
+
+
+def test_rounds_run_as_workflow_runs_and_a_built_cache_lands_on_disk(remote):
+    control, render, settings, _ = remote
+    first = control.submit(round_task("k0", build=True))
+    wait_done(control, [first])
+    assert (settings.control_cache_dir / f"Ascent.{'c' * 16}.npz").read_bytes() == b"built"
+    rest = [control.submit(round_task(f"k{i}")) for i in range(1, 6)]
+    done = wait_done(control, rest)
+    assert all(j.status == "done" for j in done)
+    assert all(f"Ascent.{'c' * 16}.npz" in j.result["had"] for j in done)    # every later run got the cache
+    assert {s["task"] for s in render.started} == {"replay-tasks/control"}
+
+
+def test_engine_failure_settles_engine(remote):
+    control, _, _, _ = remote
+    job = control.submit(round_task("bad", mode="engine"))
+    assert wait_done(control, [job])[0].error_kind == "engine"
+
+
+def warm_up(control):
+    """A first round that builds Ascent's visibility cache, so later rounds run side by side."""
+    wait_done(control, [control.submit(round_task("warm", build=True))])
+
+
+def test_a_parse_does_not_preempt_workflow_runs(remote):
+    control, _, _, _ = remote
+    warm_up(control)
+    jobs = [control.submit(round_task(f"p{i}", mode="sleep:1.5")) for i in range(3)]
+    wait_running(control, 3)
+    assert control.preempt() == 0
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    assert control.counts()["preempted"] == 0
+
+
+def test_runs_ignore_the_local_pool_size(remote):
+    control, _, settings, _ = remote
+    assert settings.control_workers == 2
+    warm_up(control)
+    control.idle = lambda: False                     # a parse is on: local mode would allow only one
+    jobs = [control.submit(round_task(f"w{i}", mode="sleep:1.5")) for i in range(6)]
+    wait_running(control, 6)                         # all six at once: more than the local pool of 2
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+
+
+def test_a_local_parse_still_preempts_a_local_height_build(tmp_path, stub):
+    """Control on Workflows, heights still local (spec D17): the local build is a victim, as today."""
+    import subprocess
+    render = FakeRender()
+    try:
+        settings = server.Settings(temp_root=tmp_path, control_runner="workflow", workflow_slug="w",
+                                   render_api_key="k", render_api_base=render.url)
+        control = server.ControlRunner(settings, runs_table=server.make_runs(settings))
+        build = server.ControlJob("b1", "key", "Ascent", b"{}", kind="heights")
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        with control.lock:
+            control.jobs["b1"], control.running["b1"], control.procs["b1"] = build, False, process
+        assert control.preempt() == 1 and "b1" in control.preempted
+        assert process.wait(timeout=10) is not None
+    finally:
+        render.close()
+
+
+def test_a_map_is_not_warm_when_its_cache_never_reached_the_worker(remote, monkeypatch):
+    from replay_worker import control_cache
+    control, _, settings, _ = remote
+    monkeypatch.setattr(control_cache, "store", lambda *a, **k: False)     # the worker refuses every cache file
+    job = control.submit(round_task("w0", build=True))
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key not in control.warm
+    assert not control_cache.has_visibility(settings.control_cache_dir, "Ascent")
+
+
+def test_cache_route_refuses_other_maps_and_paths(remote, tmp_path):
+    import urllib.error
+    control, _, settings, base = remote
+    control.jobs["jid"] = server.ControlJob("jid", "key", "Ascent", b"{}")
+    run = control.runs.open("control", "jid", {}, timeout_s=30)
+    link = tasks.WorkerLink(base, "jid", run.token)
+    src = tmp_path / "x.npz"
+    for bad in ("cache/Haven.0123456789abcdef.npz", "cache/..%2F..%2Farchive%2Fx.npz"):
+        src.write_bytes(b"x")
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            link.post_file(bad, src)
+        assert refused.value.code == 400
+    src.write_bytes(b"x")
+    link.post_file("cache/Ascent.0123456789abcdef.npz", src)
+    assert (settings.control_cache_dir / "Ascent.0123456789abcdef.npz").read_bytes() == b"x"
+
+
+def test_local_mode_keeps_the_local_pool_even_with_control_runs_set(tmp_path, stub):
+    settings = server.Settings(temp_root=tmp_path, control_runs=40)
+    control = server.ControlRunner(settings)
+    assert not control.remote(server.ControlJob("j", "k", "Ascent", b"{}"))

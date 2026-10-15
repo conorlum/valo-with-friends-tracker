@@ -124,6 +124,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_WORKERS   children at once while no parse is on (default 2: the 2-CPU plan's two cores;
                              one beside a parse; never from the core count, which a container reports
                              for the host)
+    REPLAY_CONTROL_RUNS      runs at once with REPLAY_CONTROL_RUNNER=workflow (default 40);
+                             REPLAY_CONTROL_WORKERS is the local pool
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (1800) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
@@ -172,9 +174,11 @@ from app.replays.header import game_build  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
     from replay_worker import archive as archive_store  # noqa: E402
+    from replay_worker import control_cache  # noqa: E402
     from replay_worker import runs as runs_mod  # noqa: E402
 except ImportError:  # pragma: no cover - run as a plain script from its folder
     import archive as archive_store  # type: ignore[no-redef]  # noqa: E402
+    import control_cache  # type: ignore[no-redef]  # noqa: E402
     import runs as runs_mod  # type: ignore[no-redef]  # noqa: E402
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
@@ -231,6 +235,8 @@ class Settings:
     control_enabled: bool = True
     control_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.control_job"])
     control_workers: int = 2
+    control_runs: int = 40                  # runs at once with control_runner == "workflow"
+    archive_extra_reserve: int = 0          # bytes the archive leaves free for the control cache (main() sets it)
     control_queue: int = 32
     control_timeout_s: float = 1800.0
     control_warm_timeout_s: float = 1800.0
@@ -281,6 +287,7 @@ class Settings:
         if env.get("REPLAY_CONTROL_CMD"):
             settings.control_cmd = json.loads(env["REPLAY_CONTROL_CMD"])
         settings.control_workers = max(1, int(env.get("REPLAY_CONTROL_WORKERS", settings.control_workers)))
+        settings.control_runs = max(1, int(env.get("REPLAY_CONTROL_RUNS", settings.control_runs)))
         settings.control_queue = int(env.get("REPLAY_CONTROL_QUEUE", settings.control_queue))
         settings.control_timeout_s = float(env.get("REPLAY_CONTROL_TIMEOUT_S", settings.control_timeout_s))
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
@@ -431,6 +438,7 @@ class Worker:
                 _log(f"archive off: {self.archive_reason}")
             else:
                 self.archive.held_bytes = self.held_bytes
+                self.archive.cache_reserve = settings.archive_extra_reserve
         self.last_sweep = 0.0
         if self.archive is not None:
             self._recover()
@@ -1164,8 +1172,9 @@ class ControlRunner:
     map's visibility cache) and a map is warm, under one height digest, once one of its rounds gets past loading.
     A task's key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
 
-    def __init__(self, settings: Settings, idle=None):
+    def __init__(self, settings: Settings, idle=None, runs_table=None):
         self.settings = settings
+        self.runs = runs_table
         self.lock = threading.Lock()
         self.jobs: dict[str, ControlJob] = {}
         self.by_key: dict[str, str] = {}
@@ -1184,6 +1193,10 @@ class ControlRunner:
     @property
     def enabled(self) -> bool:
         return self.settings.control_enabled
+
+    def remote(self, job: ControlJob) -> bool:
+        """This job runs as a Workflow run (spec 2026-10-14) rather than a child here."""
+        return self.runs is not None and job.kind == "control" and self.settings.control_runner == "workflow"
 
     def submit(self, task: dict) -> ControlJob:
         """Raises queue.Full when the queue is full."""
@@ -1240,7 +1253,9 @@ class ControlRunner:
         `self.running` keeps start order. How each run ends is decided at settlement, under the lock, where a
         preempted mark wins over everything else."""
         with self.lock:
-            alive = [job_id for job_id in self.running if job_id not in self.preempted]
+            # Only children on this machine: a Workflow run takes no CPU from a parse (spec D17).
+            alive = [job_id for job_id in self.running
+                     if job_id not in self.preempted and not self.remote(self.jobs[job_id])]
             # A height build runs alone and is never the child kept: a parse always preempts it (the height
             # rebuild spec, section 2).
             kept = alive[:1] if alive and self.jobs[alive[0]].kind == "control" else []
@@ -1258,7 +1273,10 @@ class ControlRunner:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
         # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
         idle = self.idle()
-        limit = self.settings.control_workers if idle else 1
+        if self.settings.control_runner == "workflow" and self.runs is not None:
+            limit = self.settings.control_runs
+        else:
+            limit = self.settings.control_workers if idle else 1
         if len(self.running) >= limit:
             return None
         if any(self.jobs[j].kind == "heights" for j in self.running):
@@ -1317,18 +1335,21 @@ class ControlRunner:
         try:
             # Started outside the lock (preexec_fn must not run while this thread holds a lock another
             # needs), registered under it, and killed at once if a preempt landed in between.
-            process = subprocess.Popen(settings.height_cmd if build else settings.control_cmd, **kwargs)
-            with self.lock:
-                self.procs[job.id] = process
-                killed_before_start = job.id in self.preempted
-            if killed_before_start:
-                kill_tree(process)
-            stdout, _ = process.communicate(job.task, timeout=timeout)
-            answer = json.loads(stdout or b"{}")
+            if self.remote(job):
+                answer = self._run_remote(job, timeout)
+            else:
+                process = subprocess.Popen(settings.height_cmd if build else settings.control_cmd, **kwargs)
+                with self.lock:
+                    self.procs[job.id] = process
+                    killed_before_start = job.id in self.preempted
+                if killed_before_start:
+                    kill_tree(process)
+                stdout, _ = process.communicate(job.task, timeout=timeout)
+                answer = json.loads(stdout or b"{}")
             if answer.get("status") == "ok":
                 status, kind, result = "done", None, answer
             else:
-                error = answer.get("error") or f"control child exited {process.returncode}"
+                error = answer.get("error") or f"control child exited {process.returncode if process else '?'}"
                 kind = answer.get("error_kind") or "infra"
                 error_code = answer.get('error_code')
         except subprocess.TimeoutExpired:
@@ -1374,7 +1395,11 @@ class ControlRunner:
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
                 if job.kind == "control":
-                    if status == "done" or kind == "engine":
+                    # A remote round's map is warm only once its visibility cache is on this disk: a run whose
+                    # cache upload failed would otherwise release every other round to rebuild it.
+                    cached = not self.remote(job) or control_cache.has_visibility(self.settings.control_cache_dir,
+                                                                                  job.map)
+                    if (status == "done" or kind == "engine") and cached:
                         self.warm.add(job.warm_key)
                     else:
                         self.warm.discard(job.warm_key)
@@ -1386,8 +1411,25 @@ class ControlRunner:
                         del self.by_key[old.key]
         self.wake.set()
 
+    def _run_remote(self, job: ControlJob, timeout: float) -> dict:
+        """One round as a Workflow run: the task and the map's cached files are its inputs."""
+        task = json.loads(job.task)
+        folder = self.settings.temp_root / "runs-in" / job.id
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            (folder / "task.json").write_bytes(job.task)
+            files = {"task": folder / "task.json", **control_cache.inputs(self.settings.control_cache_dir, task)}
+            run = self.runs.open("control", job.id, files, timeout)
+            self.runs.start(run, {"map": job.map, "files": sorted(n for n in files if n != "task")})
+            answer = self.runs.wait(run)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        if answer.get("error_kind") == "timeout":
+            answer = {**answer, "error_kind": "infra", "error": f"control timed out after {timeout:g} s"}
+        return answer
 
-MATCH_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+MATCH_ID =re.compile(r"^[0-9a-fA-F-]{8,64}$")
 HEIGHT_COLLECTING_MAX = 2        # builds collecting rounds at once (the web app sends one at a time)
 HEIGHT_BUILDS_KEPT = 8           # ended builds whose answer stays readable (the newest)
 ROUNDS_PER_MATCH_MAX = 99
@@ -1676,6 +1718,48 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 return None
             return size
 
+        def _run_cache(self):
+            parts = self.path.split("/")             # ["", "runs", job, "cache", name]
+            name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
+            run = runs_table.accepts(parts[2], self.headers.get("X-Run-Token"))
+            job = control.get(parts[2]) if control is not None and run is not None else None
+            if run is None or job is None or run.kind != "control" or not control_cache.valid(name, job.map):
+                self.close_connection = True
+                # Read a small refused body first (as _run_result does): closing with it unread can reset the
+                # client's connection before it sees the answer.
+                try:
+                    unread = int(self.headers.get("Content-Length") or 0)
+                    if 0 < unread <= runs_mod.CHUNK:
+                        self.rfile.read(unread)
+                except (ValueError, OSError):
+                    pass
+            if run is None or job is None or run.kind != "control":
+                return self._send(HTTPStatus.CONFLICT, {"error": "no open control run takes this file"})
+            if not control_cache.valid(name, job.map):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cache file of this map"})
+            size = self._length(1, 64 * 1024 * 1024)
+            if size is None:
+                return None
+            incoming = control.settings.control_cache_dir / ".incoming" / f"{uuid.uuid4().hex}.npz"
+            incoming.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with incoming.open("wb") as sink:
+                    remaining = size
+                    while remaining:
+                        chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                        if not chunk:
+                            break
+                        sink.write(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
+                # A file arriving as its run settles is still kept: caches are named by their content's identity.
+                if not control_cache.store(control.settings.control_cache_dir, name, incoming):
+                    return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": "the cache is at its reserve"})
+                return self._send(HTTPStatus.OK, {"stored": name})
+            finally:
+                incoming.unlink(missing_ok=True)
+
         def _run_result(self):
             parts = self.path.split("/")          # ["", "runs", job, "result"]
             token = self.headers.get("X-Run-Token")
@@ -1779,6 +1863,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             if runs_table is not None and self.path.startswith("/runs/"):
                 if self.path == "/runs/ping":
                     return self._run_ping()
+                if "/cache/" in self.path:
+                    return self._run_cache()
                 if self.path.endswith("/result"):
                     return self._run_result()
             if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
@@ -1999,8 +2085,16 @@ def main() -> None:
     if runs_table is not None:
         threading.Thread(target=runs_table.reconcile_forever, args=(threading.Event(),), name="runs-reconcile",
                          daemon=True).start()
-    control = ControlRunner(settings) if settings.control_enabled else None
-    worker = Worker(settings, on_parse=control.preempt if control else None)
+    # The cache's room is reserved before the Worker opens the archive and recovers its jobs.
+    if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
+            settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += control_cache.RESERVE
+    control_cache.clear_incoming(settings.control_cache_dir)
+    control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
+    # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
+    # ControlRunner.preempt itself never touches a Workflow run.
+    local_parse = settings.parse_runner == "local" or runs_table is None
+    worker = Worker(settings, on_parse=control.preempt if (control is not None and local_parse) else None)
     if control is not None:
         # Wired after the Worker exists. Until then idle() reads True, but the control queue is empty: the
         # web app hasn't sent anything to a server that isn't listening yet.
