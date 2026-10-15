@@ -172,15 +172,19 @@ def parse(args: dict, link: WorkerLink) -> None:
     from replay_worker import parse_job
     from replay_worker.server import Settings
 
-    mine = _recipe()
-    if mine != args["recipe"]:
-        link.post_result({"status": "failed", "error_kind": "deploy",
-                          "error": f"this run has recipe {mine}, the worker {args['recipe']}"})
-        return
-    settings = Settings.from_env()
     work = Path(tempfile.mkdtemp(prefix="parse-"))
     try:
-        vrf = link.fetch("vrf", work / "upload.vrf")
+        try:
+            mine = _recipe()
+            if mine != args["recipe"]:
+                link.post_result({"status": "failed", "error_kind": "deploy",
+                                  "error": f"this run has recipe {mine}, the worker {args['recipe']}"})
+                return
+            settings = Settings.from_env()
+            vrf = link.fetch("vrf", work / "upload.vrf")
+        except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
+            link.post_result({"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"})
+            return
         try:
             result, seconds = parse_job.parse_file(vrf, work, args["sha256"], parser_cmd=settings.parser_cmd,
                                                    timeout_s=settings.timeout_s, memory_cap_mb=settings.memory_cap_mb,

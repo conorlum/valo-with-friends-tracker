@@ -257,7 +257,7 @@ def test_an_expiring_held_upload_is_never_released(rig, monkeypatch):
     job = server.Job("h1", rig.disk / "jobs" / "h1", "s" * 64, 10, status="held", game_build="release-99")
     job.folder.mkdir(parents=True)
     (job.folder / "upload.vrf").write_bytes(VRF)
-    worker.supported_builds = {"release-99"}
+    worker.supported_builds = set()                                 # nothing releasable until the hook says so
     job.created = 0.0                                               # long past HELD_TTL_S
     with worker.lock:
         worker.jobs["h1"] = job
@@ -266,8 +266,82 @@ def test_an_expiring_held_upload_is_never_released(rig, monkeypatch):
     def save_then_try_release(saved, strict=False):
         real_save(saved, strict)
         if saved.id == "h1" and saved.status == "expiring":
+            worker.supported_builds = {"release-99"}                # now releasable, were it still held
             assert worker._release_held() is None                   # the claim already excludes it
     monkeypatch.setattr(worker, "_save", save_then_try_release)
     with worker.sweep_lock:
         worker._sweep()
     assert worker.get("h1").status == "failed" and not (job.folder / "upload.vrf").exists()
+
+
+def test_a_failed_save_after_the_run_started_leaves_no_run_open(rig, monkeypatch):
+    worker = rig.start()
+    real_save = worker._save
+
+    def save(job, strict=False):
+        if strict and job.run_id:
+            raise OSError("disk full")
+        real_save(job, strict)
+    monkeypatch.setattr(worker, "_save", save)
+    [done] = wait_jobs(worker, [worker.submit(VRF + b"s").id])
+    assert done.status == "failed"
+    wait_for(lambda: not worker.runs.open_runs)
+
+
+def test_a_restart_finishes_an_upload_left_expiring(rig):
+    job_id = rig.plant(status="expiring", game_build="release-99", created=1.0)
+    worker = rig.start()
+    wait_for(lambda: worker.get(job_id).status == "failed")
+    assert not (rig.disk / "jobs" / job_id / "upload.vrf").exists()
+
+
+def test_a_reparse_whose_file_is_another_match_fails_and_stores_nothing(rig):
+    job_id = rig.plant(status="queued", kind="reparse", match_uuid="aaaa")
+    worker = rig.start()
+    [done] = wait_jobs(worker, [job_id])
+    assert done.status == "failed" and done.error == "the archived file is another match"
+    assert not (rig.disk / "jobs" / job_id / "result.json").exists()
+    assert done.result is None
+
+
+def test_a_recovered_job_past_its_deadline_cancels_its_saved_run(rig):
+    rig.render.finish = False
+    rig.render.status["trn-7"], rig.render.slug_of["trn-7"] = "running", "replay-tasks/parse"
+    job_id = rig.plant(run_id="trn-7", run_token="tok", run_deadline=time.time() - 5)
+    worker = rig.start()
+    [done] = wait_jobs(worker, [job_id])
+    assert done.status == "failed" and done.error == "parse timed out"
+    assert "trn-7" in rig.render.cancelled and rig.render.started == []
+
+
+def test_a_deploy_refusal_saves_the_cleared_run_id(tmp_path, monkeypatch):
+    rig = Rig(tmp_path)
+    try:
+        monkeypatch.setattr(server, "DEPLOY_WAIT_S", 0.1)
+        seen = []
+        answers = iter([{"status": "failed", "error_kind": "deploy", "error": "recipe"}])
+
+        def runner(kind, args):
+            seen.append(record_of(rig, args["job_id"]).get("run_id"))
+            rig.link(args).post_result(next(answers, {
+                "status": "ok", "parse_seconds": 2.0, "result": {"match_uuid": "m", "map_name": "Ascent"}}))
+        rig.render.runner = runner
+        worker = rig.start()
+        wait_jobs(worker, [worker.submit(VRF + b"q").id])
+        assert len(rig.render.started) == 2 and seen[1] is None     # the stale id was not left on the disk
+    finally:
+        rig.close()
+
+
+def test_one_releasable_held_upload_starts_exactly_one_run(rig):
+    worker = rig.start()
+    job = server.Job("h2", rig.disk / "jobs" / "h2", "s" * 64, len(VRF), status="held", game_build="release-98")
+    job.folder.mkdir(parents=True)
+    (job.folder / "upload.vrf").write_bytes(VRF)
+    with worker.lock:
+        worker.supported_builds = {"release-98"}
+        worker.jobs["h2"] = job
+    worker.wake.set()
+    [done] = wait_jobs(worker, ["h2"])
+    time.sleep(0.5)
+    assert done.status == "done" and len(rig.render.started) == 1

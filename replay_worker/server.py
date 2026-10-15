@@ -893,15 +893,24 @@ class Worker:
         reconnect = job.run_id is not None
         while True:
             if time.time() >= job.run_deadline:
+                if reconnect and job.run_id:
+                    try:                                # the run we would have reconnected to must not go on
+                        self.runs.api.cancel(job.run_id)
+                    except Exception:  # noqa: BLE001 - best effort; the job fails either way
+                        traceback.print_exc()
                 raise _JobFailed(REASON_TIMEOUT)
             run = self.runs.open("parse", job.id, files, 0, token=job.run_token,
                                  render_id=job.run_id if reconnect else None, deadline=job.run_deadline)
-            if not reconnect:
-                def started(render_id, job=job):
-                    job.run_id = render_id
-                    self._save(job, strict=True)
-                self.runs.start(run, {"recipe": self.recipe, "sha256": job.sha256}, on_started=started)
-            answer = self.runs.wait(run)
+            try:
+                if not reconnect:
+                    def started(render_id, job=job):
+                        job.run_id = render_id
+                        self._save(job, strict=True)
+                    self.runs.start(run, {"recipe": self.recipe, "sha256": job.sha256}, on_started=started)
+                answer = self.runs.wait(run)
+            except BaseException:
+                self.runs.close(run)                    # never leave the run open (close is safe to repeat)
+                raise
             kind = answer.get("error_kind")
             if answer.get("status") == "ok":
                 job.parse_seconds = answer.get("parse_seconds")
@@ -911,10 +920,12 @@ class Worker:
                 # deadline (the loop's first check ends it).
                 time.sleep(max(0.0, min(DEPLOY_WAIT_S, job.run_deadline - time.time())))
                 job.run_id, reconnect = None, False
+                self._save(job)
                 continue
             if kind == "infra" and reconnect:
                 # The run we reconnected to ended without an answer: start over, as a restart does today.
                 job.run_id, reconnect = None, False
+                self._save(job)
                 continue
             if kind == "timeout":
                 raise _JobFailed(REASON_TIMEOUT)
@@ -1007,6 +1018,8 @@ class Worker:
                       detail=record.get("detail"), run_id=record.get("run_id"),
                       run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
+            if job.status == "expiring":
+                job.status = "held"                     # a sweep died mid-claim: it expires again on the next one
             if job.status == "held":
                 if not (folder / "upload.vrf").exists():
                     job.status, job.finished = "failed", time.time()
