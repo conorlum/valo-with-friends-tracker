@@ -68,6 +68,12 @@ class PatchNotes:
     def is_miss(self) -> bool:
         return self.mentions_pool and not self.changes
 
+    @property
+    def is_balanced(self) -> bool:
+        """As many maps in as out. Every pool change since 9.08 (2024-10) is; a page that isn't was most
+        likely read in part (a line in markup the parser skips), so the refresh treats it as a miss."""
+        return sum(c.in_pool for c in self.changes) == sum(not c.in_pool for c in self.changes)
+
 
 @dataclass(frozen=True)
 class ListingItem:

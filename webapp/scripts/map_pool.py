@@ -66,17 +66,19 @@ def cmd_seed(session_factory, database: str | None) -> int:
 
     from app.models.map_pool import MapPoolChange
     from app.services import map_pool
+    from app.services.map_pool_refresh import _insert
 
     changes = map_pool.seed_history().changes
     print(f"Writing {len(changes)} seed rows to database: {database}")
     with session_factory() as db:
         with db.begin():
             db.execute(delete(MapPoolChange).where(MapPoolChange.source == "seed"))
-            db.add_all(
-                MapPoolChange(map_name=c.map_name, in_pool=c.in_pool, effective_at=c.effective_at,
-                              patch=c.patch, source="seed")
-                for c in changes
-            )
+            insert = _insert(db.get_bind())
+            for c in changes:
+                # A change the refresh already fetched keeps its fetched row.
+                db.execute(insert(MapPoolChange).values(map_name=c.map_name, in_pool=c.in_pool,
+                                                        effective_at=c.effective_at, patch=c.patch,
+                                                        source="seed").on_conflict_do_nothing())
     map_pool.clear_pool_cache()
     print("seed rows replaced")
     return 0

@@ -62,9 +62,12 @@ def page(lines, when=None):
     return ld + "".join(f"<p>{x}</p>" for x in lines)
 
 
-CHANGE_PAGE = page(["Ascent is IN the Competitive queue."])
+CHANGE_PAGE = page(["Ascent is IN the Competitive queue.", "Fracture is OUT of the Competitive queue."])
 NO_CHANGE_PAGE = page(["Nothing about maps here."])
 MISS_PAGE = "<ul><li>Map Pool Updates</li><li>Ascent joins the Competitive rotation.</li></ul>"
+# The OUT line sits in a bare <div>, which the parser doesn't read: only the IN line comes back.
+PARTIAL_PAGE = ("<ul><li>Map Pool Updates</li><li>Ascent is IN the Competitive queue.</li></ul>"
+                "<div>Fracture is OUT of the Competitive queue.</div>")
 
 
 class Fake:
@@ -161,23 +164,69 @@ def test_stored_change_shows_in_history_and_clears_memo(sf):
     with sf() as db:
         before = map_pool.load_pool_history(db)  # populates the memo
         was_in = "Ascent" in before.pool_at(NOW)
-        fake = make([("13.10", when)], {"13.10": page(["Ascent is OUT of the Competitive queue."])
-                                        if was_in else CHANGE_PAGE})
+        swap = (["Ascent is OUT of the Competitive queue.", "Fracture is IN the Competitive queue."] if was_in
+                else ["Ascent is IN the Competitive queue.", "Fracture is OUT of the Competitive queue."])
+        fake = make([("13.10", when)], {"13.10": page(swap)})
         refresh.check(sf, fake, now=NOW)
         after = map_pool.load_pool_history(db)
         assert ("Ascent" in after.pool_at(NOW)) != was_in
     with sf() as s:
-        ch = s.execute(select(MapPoolChange)).scalar_one()
-        assert ch.source == "patch_notes" and ch.patch == "13.10" and ch.source_url == url_for("13.10")
+        rows = s.execute(select(MapPoolChange)).scalars().all()
+        assert {r.map_name for r in rows} == {"Ascent", "Fracture"}
+        assert all(r.source == "patch_notes" and r.patch == "13.10" and r.source_url == url_for("13.10")
+                   for r in rows)
 
 
 def test_published_at_from_page_wins_over_listing(sf):
     page_time = t(3)
-    fake = make([("13.10", t(1))], {"13.10": page(["Ascent is IN the Competitive queue."], when=page_time)})
+    fake = make([("13.10", t(1))], {"13.10": page(["Ascent is IN the Competitive queue.",
+                                                   "Fracture is OUT of the Competitive queue."], when=page_time)})
     refresh.check(sf, fake, now=NOW)
     with sf() as s:
-        eff = s.execute(select(MapPoolChange.effective_at)).scalar_one()
-        assert eff.replace(tzinfo=UTC) == page_time
+        effs = set(s.execute(select(MapPoolChange.effective_at)).scalars())
+        assert {e.replace(tzinfo=UTC) for e in effs} == {page_time}
+
+
+def test_unbalanced_page_is_a_miss_and_stores_nothing(sf):
+    assert parse_patch_notes(PARTIAL_PAGE).changes  # the parser does find the IN line
+    fake = make([("13.10", t(1))], {"13.10": PARTIAL_PAGE})
+    c = refresh.check(sf, fake, now=t(2))
+    assert c["misses"] == 1 and c["changes"] == 0
+    with sf() as s:
+        assert s.execute(select(MapPoolChange)).all() == []
+        row = s.get(MapPoolPatchNotes, url_for("13.10"))
+        assert row.read_at is None and row.change_count is None
+    refresh.check(sf, fake, now=t(3))
+    assert fake.calls.count(url_for("13.10")) == 2  # retried, like any miss
+
+
+def test_stop_during_a_fetch_writes_nothing(sf):
+    stop = threading.Event()
+    fake = make([("13.10", t(1))], {"13.10": CHANGE_PAGE})
+
+    def fetch(url):
+        out = fake(url)
+        if url != refresh.LISTING_URL:
+            stop.set()  # shutdown arrives while the page is being fetched
+        return out
+
+    refresh.check(sf, fetch, now=NOW, stop=stop)
+    with sf() as s:
+        assert s.execute(select(MapPoolChange)).all() == []
+        assert s.execute(select(MapPoolPatchNotes)).all() == []
+
+
+def test_stop_before_a_page_skips_its_fetch(sf):
+    stop = threading.Event()
+    fake = make([("13.10", t(1)), ("13.11", t(2))], {"13.10": CHANGE_PAGE, "13.11": NO_CHANGE_PAGE})
+
+    def fetch(url):
+        out = fake(url)
+        stop.set()  # set during the listing fetch
+        return out
+
+    refresh.check(sf, fetch, now=NOW, stop=stop)
+    assert fake.calls == [refresh.LISTING_URL]
 
 
 def test_duplicate_inserts_do_not_raise(sf):
@@ -189,7 +238,7 @@ def test_duplicate_inserts_do_not_raise(sf):
     c = refresh.check(sf, fake, now=NOW)
     assert c["errors"] == 0 and c["read"] == 1
     with sf() as s:
-        assert len(s.execute(select(MapPoolChange)).all()) == 1
+        assert len(s.execute(select(MapPoolChange)).all()) == 2
 
 
 def test_start_none_when_off_or_demo(monkeypatch, sf):

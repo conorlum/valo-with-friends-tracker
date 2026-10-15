@@ -102,3 +102,21 @@ def test_seed_replaces_seed_rows_only(factory, monkeypatch, capsys):
         assert "Bogus" not in {r.map_name for r in seeds}
         assert len(seeds) == len(map_pool.seed_history().changes)
         assert [r.map_name for r in db.scalars(select(MapPoolChange).where(MapPoolChange.source == "patch_notes"))] == ["Kept"]
+
+
+def test_seed_keeps_a_fetched_row_the_seed_now_also_has(factory, monkeypatch):
+    """A change fetched by the refresh and later added to the committed seed: reseeding must not trip the
+    unique key; the fetched row stays and the seed's other rows go in."""
+    monkeypatch.setattr(settings, "demo_mode", False)
+    last = map_pool.seed_history().changes[-1]
+    with factory() as db:
+        db.add(MapPoolChange(map_name=last.map_name, in_pool=last.in_pool, effective_at=last.effective_at,
+                             patch=last.patch, source="patch_notes"))
+        db.commit()
+    assert cli.cmd_seed(factory, "testdb") == 0
+    with factory() as db:
+        rows = db.scalars(select(MapPoolChange)).all()
+        assert len(rows) == len(map_pool.seed_history().changes)
+        same = [r for r in rows if r.map_name == last.map_name and r.in_pool == last.in_pool
+                and r.effective_at.replace(tzinfo=UTC) == last.effective_at]
+        assert [r.source for r in same] == ["patch_notes"]

@@ -3,7 +3,9 @@
 `check` lists the patch-notes pages newer than the committed seed, reads each unread one (newest first, at most
 `MAX_PAGES` per check) and stores its pool changes in `map_pool_changes`; every page looked at gets a
 `map_pool_patch_notes` row so a read page is never fetched again. A page that mentions the pool but parses to
-nothing (a "miss") stays unread and is retried, and is given up on after `GIVE_UP_AFTER` since its publication.
+nothing, or whose IN and OUT lines don't balance (a "miss"), stores no change, stays unread and is retried, and
+is given up on after `GIVE_UP_AFTER` since its publication. Shutdown (`stop`) is checked before each page's
+fetch and before its commit, so nothing is written after it.
 Off unless MAP_POOL_AUTO is set, and always off in demo mode.
 """
 
@@ -66,11 +68,18 @@ def _insert(bind):
     return insert
 
 
-def _store_page(session, item, notes, effective: datetime, patch: str, now: datetime) -> tuple[int, bool]:
-    """One transaction for one page. Returns (changes stored, was a miss)."""
+class Stopped(Exception):
+    """Shutdown arrived mid-page: nothing of that page is committed."""
+
+
+def _store_page(session, item, notes, effective: datetime, patch: str, now: datetime,
+                stop: threading.Event | None = None) -> tuple[int, bool]:
+    """One transaction for one page. Returns (changes stored, was a miss). A page whose IN and OUT lines
+    don't balance is a miss too: it was most likely read in part, and storing half a swap would keep a map
+    in the pool for good (the safety net only ever adds maps)."""
     insert = _insert(session.get_bind())
-    miss = notes.is_miss
-    for ch in notes.changes:
+    miss = notes.is_miss or not notes.is_balanced
+    for ch in () if miss else notes.changes:
         session.execute(
             insert(MapPoolChange)
             .values(map_name=ch.map_name, in_pool=ch.in_pool, effective_at=effective, patch=patch,
@@ -88,11 +97,15 @@ def _store_page(session, item, notes, effective: datetime, patch: str, now: date
         gave_up = now - effective > GIVE_UP_AFTER
         values = {"miss_count": tbl.miss_count + 1, "last_error": GIVEN_UP if gave_up else "parser miss"}
     session.execute(update(tbl).where(tbl.url == item.url).values(**values))
+    if stop is not None and stop.is_set():
+        raise Stopped
     session.commit()
-    return len(notes.changes), miss
+    return (0 if miss else len(notes.changes)), miss
 
 
-def check(session_factory, fetch: Callable[[str], str], now: datetime | None = None) -> dict:
+def check(session_factory, fetch: Callable[[str], str], now: datetime | None = None,
+          stop: threading.Event | None = None) -> dict:
+    """`stop` (the thread's shutdown event) is checked before each page's fetch and before its commit."""
     counts = dict(listed=0, new=0, read=0, changes=0, misses=0, given_up=0, errors=0)
     now = _utc(now) if now is not None else datetime.now(timezone.utc)
     try:
@@ -125,11 +138,16 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
                 todo.append(i)
             todo.sort(key=lambda i: _utc(i.published_at), reverse=True)
             for item in todo[:MAX_PAGES]:
+                if stop is not None and stop.is_set():
+                    break
                 try:
                     notes = parse_patch_notes(fetch(item.url))
                     effective = _utc(notes.published_at or item.published_at)
                     patch = _patch_label(item.title, item.url)
-                    stored, miss = _store_page(session, item, notes, effective, patch, now)
+                    stored, miss = _store_page(session, item, notes, effective, patch, now, stop)
+                except Stopped:
+                    session.rollback()
+                    break
                 except Exception:  # noqa: BLE001
                     session.rollback()
                     log.exception("map pool refresh: %s failed", item.url)
@@ -167,7 +185,7 @@ def run_forever(session_factory, fetch, stop: threading.Event, every_s: float = 
         else:
             _last_check = time.monotonic()
             try:
-                counts = check(session_factory, fetch)
+                counts = check(session_factory, fetch, stop=stop)
                 log.info("map pool refresh: %s", ", ".join(f"{k} {v}" for k, v in counts.items()))
             except Exception:  # noqa: BLE001
                 log.exception("map pool refresh failed")
