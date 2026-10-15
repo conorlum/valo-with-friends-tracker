@@ -1349,7 +1349,8 @@ class ControlRunner:
             if answer.get("status") == "ok":
                 status, kind, result = "done", None, answer
             else:
-                error = answer.get("error") or f"control child exited {process.returncode if process else '?'}"
+                error = answer.get("error") or (f"control child exited {process.returncode}" if process
+                                                else "control run gave no error text")
                 kind = answer.get("error_kind") or "infra"
                 error_code = answer.get('error_code')
         except subprocess.TimeoutExpired:
@@ -1397,8 +1398,12 @@ class ControlRunner:
                 if job.kind == "control":
                     # A remote round's map is warm only once its visibility cache is on this disk: a run whose
                     # cache upload failed would otherwise release every other round to rebuild it.
-                    cached = not self.remote(job) or control_cache.has_visibility(self.settings.control_cache_dir,
-                                                                                  job.map)
+                    # And not when the run says it failed to send a visibility cache: an older one (other
+                    # heights) can still be on disk.
+                    unsent = (result or {}).get("cache_unsent") or []
+                    cached = not self.remote(job) or (
+                        control_cache.has_visibility(self.settings.control_cache_dir, job.map)
+                        and not any(control_cache.visibility_name(n) for n in unsent))
                     if (status == "done" or kind == "engine") and cached:
                         self.warm.add(job.warm_key)
                     else:
@@ -1420,8 +1425,12 @@ class ControlRunner:
             (folder / "task.json").write_bytes(job.task)
             files = {"task": folder / "task.json", **control_cache.inputs(self.settings.control_cache_dir, task)}
             run = self.runs.open("control", job.id, files, timeout)
-            self.runs.start(run, {"map": job.map, "files": sorted(n for n in files if n != "task")})
-            answer = self.runs.wait(run)
+            try:
+                self.runs.start(run, {"map": job.map, "files": sorted(n for n in files if n != "task")})
+                answer = self.runs.wait(run)
+            except BaseException:
+                self.runs.close(run)              # wait closes it itself; a failure before that must not leak it
+                raise
         finally:
             shutil.rmtree(folder, ignore_errors=True)
         if answer.get("error_kind") == "timeout":
@@ -1429,7 +1438,7 @@ class ControlRunner:
         return answer
 
 
-MATCH_ID =re.compile(r"^[0-9a-fA-F-]{8,64}$")
+MATCH_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 HEIGHT_COLLECTING_MAX = 2        # builds collecting rounds at once (the web app sends one at a time)
 HEIGHT_BUILDS_KEPT = 8           # ended builds whose answer stays readable (the newest)
 ROUNDS_PER_MATCH_MAX = 99

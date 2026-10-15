@@ -125,18 +125,20 @@ def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path) -> None:
             (cache / name).unlink(missing_ok=True)
 
 
-def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> None:
+def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> list[str]:
     """Every cache file the child created or changed, before the result: once the result is in, the worker
-    closes the run and refuses anything else from it."""
+    closes the run and refuses anything else from it. Returns the names that could not be posted."""
     from replay_worker import control_cache
 
+    unsent = []
     after = _cache_files(cache)
     for name in sorted(n for n, digest in after.items() if before.get(n) != digest):
         if control_cache.valid(name, map_name):
             try:
                 link.post_file(f"cache/{urllib.parse.quote(name, safe='')}", cache / name)
             except OSError:
-                pass     # the worker then doesn't count the map as warm (D6); the next run rebuilds
+                unsent.append(name)     # the answer names it, so the worker doesn't count the map as warm (D6)
+    return unsent
 
 
 def control(args: dict, link: WorkerLink) -> None:
@@ -148,7 +150,9 @@ def control(args: dict, link: WorkerLink) -> None:
         before = _cache_files(cache)
         stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
-        _post_caches(link, cache, before, args["map"])
+        unsent = _post_caches(link, cache, before, args["map"])
+        if unsent:
+            answer = {**answer, "cache_unsent": unsent}
         link.post_result(answer)
     finally:
         shutil.rmtree(work, ignore_errors=True)

@@ -33,9 +33,15 @@ def _tree_bytes(cache_dir: Path) -> int:
 
 
 def _newest(folder: Path, map_name: str) -> list[Path]:
-    found = [p for p in folder.glob(f"{map_name}.*.npz") if not p.name.endswith(".tmp.npz")
-             and _NAME.match(p.name)]
-    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+    found = []
+    for path in folder.glob(f"{map_name}.*.npz"):
+        if path.name.endswith(".tmp.npz") or not _NAME.fullmatch(path.name):
+            continue
+        try:
+            found.append((path.stat().st_mtime, path))
+        except OSError:
+            pass                      # pruned meanwhile
+    return [path for _, path in sorted(found, key=lambda item: item[0], reverse=True)]
 
 
 def inputs(cache_dir: Path, task: dict) -> dict[str, Path]:
@@ -57,7 +63,7 @@ def inputs(cache_dir: Path, task: dict) -> dict[str, Path]:
 
 
 def valid(name: str, map_name: str) -> bool:
-    match = _NAME.match(name)
+    match = _NAME.fullmatch(name)
     return bool(match) and match["map"] == map_name
 
 
@@ -65,7 +71,7 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
     """Moves a posted cache file into place (a rename: `src` is in `<cache>/.incoming`) and prunes its map's folder
     to KEPT. False, with `src` deleted, when the cache folder would grow past `reserve`."""
     target = Path(cache_dir) / name
-    map_name = _NAME.match(name)["map"]
+    map_name = _NAME.fullmatch(name)["map"]
     try:
         with _LOCK:
             replaced = target.stat().st_size if target.is_file() else 0
@@ -79,6 +85,12 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
             return True
     finally:
         Path(src).unlink(missing_ok=True)
+
+
+def visibility_name(name: str) -> bool:
+    """A root-folder visibility cache name, not a feature-row one."""
+    match = _NAME.fullmatch(name)
+    return bool(match) and not match["folder"]
 
 
 def has_visibility(cache_dir: Path, map_name: str) -> bool:

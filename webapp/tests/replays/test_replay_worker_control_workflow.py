@@ -239,7 +239,97 @@ def test_cache_route_refuses_other_maps_and_paths(remote, tmp_path):
     assert (settings.control_cache_dir / "Ascent.0123456789abcdef.npz").read_bytes() == b"x"
 
 
-def test_local_mode_keeps_the_local_pool_even_with_control_runs_set(tmp_path, stub):
-    settings = server.Settings(temp_root=tmp_path, control_runs=40)
-    control = server.ControlRunner(settings)
-    assert not control.remote(server.ControlJob("j", "k", "Ascent", b"{}"))
+def test_local_mode_keeps_the_local_pool_even_with_control_runs_set(tmp_path):
+    render = FakeRender()
+    child = tmp_path / "child.py"
+    child.write_text("import json, sys, time\njson.loads(sys.stdin.buffer.read())\ntime.sleep(0.6)\n"
+                     "print(json.dumps({'status': 'ok'}))\n", encoding="utf-8")
+    try:
+        settings = server.Settings(temp_root=tmp_path / "tmp", control_runner="local", control_runs=40,
+                                   control_workers=2, control_memory_mb=0, control_cmd=[sys.executable, str(child)],
+                                   workflow_slug="w", render_api_key="k", render_api_base=render.url)
+        control = server.ControlRunner(settings, runs_table=server.make_runs(settings))
+        assert not control.remote(server.ControlJob("j", "k", "Ascent", b"{}"))
+        control.warm.add("Ascent:")                                  # warm, so rounds may overlap
+        jobs = [control.submit(round_task(f"l{i}")) for i in range(4)]
+        most, end = 0, time.time() + 60
+        while time.time() < end and not all(control.get(j.id).status in ("done", "failed") for j in jobs):
+            most = max(most, control.counts()["running"])
+            time.sleep(0.02)
+        assert all(control.get(j.id).status == "done" for j in jobs)
+        assert most == 2
+    finally:
+        render.close()
+
+
+def test_control_task_names_the_caches_it_could_not_post(stub):
+    class Refusing(FakeLink):
+        def post_file(self, route, src):
+            raise OSError("507")
+
+    link = Refusing({"task": json.dumps(round_task(build=True)).encode()})
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
+    assert link.result["status"] == "ok" and link.result["cache_unsent"] == [f"Ascent.{'c' * 16}.npz"]
+    ok = FakeLink({"task": json.dumps(round_task(build=True)).encode()})
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, ok)
+    assert "cache_unsent" not in ok.result
+
+
+def _answering(render, base, extra):
+    """The fake Render's run, adding `extra` to the control task's answer."""
+    class Link(tasks.WorkerLink):
+        def post_result(self, result):
+            return super().post_result({**result, **extra})
+
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, Link(base, args["job_id"], args["token"]))
+
+
+def test_an_older_height_cache_does_not_make_the_map_warm_when_the_new_one_was_not_sent(remote):
+    control, render, settings, base = remote
+    settings.control_cache_dir.mkdir(parents=True, exist_ok=True)
+    (settings.control_cache_dir / f"Ascent.{'a' * 16}.npz").write_bytes(b"older heights")
+    _answering(render, base, {"cache_unsent": [f"Ascent.{'c' * 16}.npz"]})
+    job = control.submit(round_task("h0", build=True))
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key not in control.warm
+
+
+def test_an_older_height_cache_still_warms_the_map_when_nothing_went_unsent(remote):
+    control, _, settings, _ = remote
+    settings.control_cache_dir.mkdir(parents=True, exist_ok=True)
+    (settings.control_cache_dir / f"Ascent.{'a' * 16}.npz").write_bytes(b"older heights")
+    job = control.submit(round_task("h1"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key in control.warm
+
+
+def test_an_unsent_feature_row_cache_does_not_keep_a_map_cold(remote):
+    control, render, settings, base = remote
+    settings.control_cache_dir.mkdir(parents=True, exist_ok=True)
+    (settings.control_cache_dir / f"Ascent.{'a' * 16}.npz").write_bytes(b"visibility")
+    _answering(render, base, {"cache_unsent": [f"feature-rows/Ascent.{'d' * 64}.npz"]})
+    job = control.submit(round_task("h2"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key in control.warm
+
+
+def test_a_feature_row_cache_rewritten_in_place_reaches_the_worker_through_the_route(remote):
+    control, _, settings, _ = remote
+    rows = settings.control_cache_dir / "feature-rows" / f"Ascent.{'d' * 64}.npz"
+    rows.parent.mkdir(parents=True)
+    rows.write_bytes(b"rows")
+    job = control.submit(round_task("f0", learn=True))
+    assert wait_done(control, [job])[0].status == "done"
+    assert rows.read_bytes() == b"rows+more"
+
+
+def test_a_run_that_fails_to_start_is_not_left_open(remote, monkeypatch):
+    control, _, _, _ = remote
+
+    def broken(*args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(control.runs, "start", broken)
+    job = control.submit(round_task("s0"))
+    assert wait_done(control, [job])[0].status == "failed"
+    assert control.runs.open_runs == {}
