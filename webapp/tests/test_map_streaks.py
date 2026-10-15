@@ -1,362 +1,201 @@
-from datetime import datetime
-from unittest.mock import MagicMock
+"""Map streaks over the real map pool history (R1): pure builder, DB wrapper, card template."""
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
-import app.services.map_streaks as map_streaks_module
-from app.services.map_streaks import (
-    Act,
-    _act_pools,
-    _build_map_streaks,
-    _gap_in_window,
-    _get_acts_and_pools,
-    _map_windows,
-    compute_map_streaks,
-)
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from app.db import Base
+from app.models.match import Match, MatchPlayer, MatchSource, Team
+from app.models.player import Player
+from app.services import map_pool, map_streaks
+from app.services.map_pool import Change, PoolHistory
+from app.services.map_streaks import MapStreak, MapStreakWindow, build_map_streaks
 
-def make_acts(labels_and_starts):
-    """labels_and_starts: list of (label, iso_start). Builds Acts with each
-    act's `end` set to the next act's start, last act's `end` = None."""
-    acts = []
-    for i, (label, start) in enumerate(labels_and_starts):
-        start_dt = datetime.fromisoformat(start)
-        end_dt = (
-            datetime.fromisoformat(labels_and_starts[i + 1][1])
-            if i + 1 < len(labels_and_starts)
-            else None
-        )
-        acts.append(Act(label=label, start=start_dt, end=end_dt))
-    return acts
+UTC = timezone.utc
+T0 = datetime(2026, 1, 1, tzinfo=UTC)
+NOW = datetime(2026, 12, 1, tzinfo=UTC)
 
 
-def test_map_windows_merges_adjacent_acts_where_map_stays_in_pool():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00"), ("A3", "2026-05-01T00:00:00+00:00")])
-    act_pools = [{"Bind", "Haven"}, {"Bind", "Ascent"}, {"Bind", "Sunset"}]
-
-    windows = _map_windows("Bind", acts, act_pools)
-
-    assert windows == [(0, 2)]
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    map_pool.clear_pool_cache()
+    yield
+    map_pool.clear_pool_cache()
 
 
-def test_map_windows_splits_when_map_drops_out_and_returns():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00"), ("A3", "2026-05-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}, {"Ascent"}, {"Bind"}]
-
-    windows = _map_windows("Bind", acts, act_pools)
-
-    assert windows == [(0, 0), (2, 2)]
+def d(n: int) -> datetime:
+    return T0 + timedelta(days=n)
 
 
-def test_map_windows_map_never_in_pool():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
-    act_pools = [{"Ascent"}]
-
-    assert _map_windows("Bind", acts, act_pools) == []
+def hist(*changes):
+    return PoolHistory([Change(m, v, t, "t", "seed") for m, v, t in changes])
 
 
-def test_act_pools_counts_population_matches_per_act_window():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
-    population_matches = [
-        ("Bind", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
-        ("Bind", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),
-        ("Bind", datetime.fromisoformat("2026-01-15T00:00:00+00:00")),  # 3rd Bind match in A1 -> meets MIN_POOL_MATCHES
-        ("Haven", datetime.fromisoformat("2026-01-20T00:00:00+00:00")),  # only 1 Haven match in A1 -> below threshold
-        ("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-03-06T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-03-07T00:00:00+00:00")),  # 3rd Ascent match in A2
-    ]
-
-    pools = _act_pools(acts, population_matches)
-
-    assert pools == [{"Bind"}, {"Ascent"}]
+def ms(*pairs):
+    """pairs of (map, day)."""
+    return [(m, d(day)) for m, day in pairs]
 
 
-def test_act_pools_ignores_matches_outside_all_act_windows():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
-    population_matches = [
-        ("Bind", datetime.fromisoformat("2025-12-01T00:00:00+00:00")),  # before A1 starts
-    ] * 5
-
-    pools = _act_pools(acts, population_matches)
-
-    assert pools == [set(), set()]
+def one(history, matches, name="A"):
+    rows = {s.map_name: s for s in build_map_streaks(history, matches, now=NOW)}
+    return rows.get(name)
 
 
-def test_gap_in_window_finds_best_and_trailing_runs():
-    window_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
-    matches = [
-        ("Bind", datetime.fromisoformat("2026-01-02T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-01-03T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-04T00:00:00+00:00")),
-        ("Sunset", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
-        ("Bind", datetime.fromisoformat("2026-01-06T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-01-07T00:00:00+00:00")),
-    ]
-
-    best, trailing = _gap_in_window(window_start, None, "Bind", matches)
-
-    assert best == 3  # Ascent, Haven, Sunset between the two Bind matches
-    assert trailing == 1  # only Ascent played since the second (most recent) Bind
+def test_out_of_pool_match_is_skipped_no_count_no_reset():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    # A leaves the pool at day 10 and comes back at day 30
+    h = hist(("A", True, d(0)), ("B", True, d(0)), ("A", False, d(10)), ("A", True, d(30)))
+    s = one(h, ms(("B", 1), ("B", 2), ("B", 15), ("B", 16)))
+    assert s.current.gap == 2  # the two matches while A was out were skipped
 
 
-def test_gap_in_window_trailing_equals_best_when_map_never_replayed():
-    window_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
-    matches = [
-        ("Bind", datetime.fromisoformat("2026-01-02T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-01-03T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-04T00:00:00+00:00")),
-    ]
-
-    best, trailing = _gap_in_window(window_start, None, "Bind", matches)
-
-    assert best == 2
-    assert trailing == 2
+def test_run_carries_on_when_map_returns():
+    h = hist(("A", True, d(0)), ("B", True, d(0)), ("A", False, d(10)), ("A", True, d(30)))
+    s = one(h, ms(("B", 1), ("B", 2), ("B", 15), ("B", 31), ("B", 32)))
+    assert s.current.gap == 4
+    assert s.record.gap == 4
 
 
-def test_gap_in_window_never_played_map_counts_whole_window():
-    window_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
-    matches = [
-        ("Ascent", datetime.fromisoformat("2026-01-03T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-04T00:00:00+00:00")),
-    ]
-
-    best, trailing = _gap_in_window(window_start, None, "Bind", matches)
-
-    assert best == 2
-    assert trailing == 2
+def test_play_resets_to_zero():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 2), ("A", 3), ("B", 4)))
+    assert s.current.gap == 1
+    assert s.record.gap == 2
 
 
-def test_gap_in_window_no_matches_in_range_returns_none():
-    window_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
-    window_end = datetime.fromisoformat("2026-02-01T00:00:00+00:00")
-    matches = [("Ascent", datetime.fromisoformat("2026-03-01T00:00:00+00:00"))]
-
-    assert _gap_in_window(window_start, window_end, "Bind", matches) is None
-
-
-def test_gap_in_window_respects_closed_window_end():
-    window_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
-    window_end = datetime.fromisoformat("2026-02-01T00:00:00+00:00")
-    matches = [
-        ("Ascent", datetime.fromisoformat("2026-01-15T00:00:00+00:00")),
-        ("Bind", datetime.fromisoformat("2026-03-01T00:00:00+00:00")),  # after window_end -- excluded
-    ]
-
-    best, trailing = _gap_in_window(window_start, window_end, "Bind", matches)
-
-    assert best == 1
-    assert trailing == 1
+def test_play_while_listed_out_still_resets():
+    h = hist(("A", True, d(0)), ("B", True, d(0)), ("A", False, d(10)), ("A", True, d(30)))
+    s = one(h, ms(("B", 1), ("B", 2), ("A", 15), ("B", 31)))
+    assert s.current.gap == 1
+    assert s.record.gap == 2
 
 
-def test_build_map_streaks_merged_window_no_reset_at_act_boundary():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}, {"Bind"}]
-    player_matches = [
-        ("Bind", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),  # A1
-        ("Haven", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),  # A2 -- must chain onto the A1 gap
-    ]
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    bind = next(s for s in streaks if s.map_name == "Bind")
-    assert bind.current.gap == 2  # both Haven matches, spanning the act boundary
-    assert bind.current.act_labels == ["A1", "A2"]
-    assert bind.current.ongoing is True
+def test_current_is_trailing_run():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 2), ("B", 3), ("A", 4), ("B", 5), ("B", 6)))
+    assert s.current.gap == 2
+    assert s.record.gap == 3
+    assert not s.record_is_current
 
 
-def test_build_map_streaks_disjoint_windows_record_does_not_bridge():
-    acts = make_acts(
-        [
-            ("A1", "2026-01-01T00:00:00+00:00"),
-            ("A2", "2026-03-01T00:00:00+00:00"),
-            ("A3", "2026-05-01T00:00:00+00:00"),
-        ]
+def test_record_is_longest_and_latest_on_tie():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 2), ("A", 3), ("B", 10), ("B", 11), ("A", 12), ("B", 20)))
+    assert s.record.gap == 2
+    assert s.record.first_at == d(10)
+    assert s.record.last_at == d(11)
+
+
+def test_record_is_current_on_tie():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 2), ("A", 3), ("B", 4), ("B", 5)))
+    assert s.current.gap == s.record.gap == 2
+    assert s.record_is_current
+    # the tie resolves to the latest run, which is the current one
+    assert s.record.first_at == d(4)
+
+
+def test_record_is_current_false_on_zero_zero():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("A", 1)))
+    assert s.current.gap == 0 and s.record.gap == 0
+    assert not s.record_is_current
+
+
+def test_first_last_at_and_none_at_zero():
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 2), ("B", 3), ("A", 4), ("B", 5)))
+    assert s.record.first_at == d(1) and s.record.last_at == d(3)
+    assert s.current.first_at == d(5) and s.current.last_at == d(5)
+    z = one(h, ms(("B", 1), ("A", 2)))
+    assert z.current == MapStreakWindow(0, None, None)
+
+
+def test_first_at_skips_out_of_pool_matches():
+    h = hist(("A", True, d(5)), ("B", True, d(0)))
+    s = one(h, ms(("B", 1), ("B", 6), ("B", 7)))
+    assert s.current.first_at == d(6)  # day 1 was before A joined the pool
+
+
+def test_map_with_no_match_in_pool_or_on_it_is_omitted():
+    h = hist(("A", True, d(20)), ("B", True, d(0)))
+    assert one(h, ms(("B", 1), ("B", 2))) is None
+
+
+def test_map_outside_current_pool_gets_no_row():
+    h = hist(("A", True, d(0)), ("B", True, d(0)), ("A", False, d(50)))
+    rows = build_map_streaks(h, ms(("B", 1), ("A", 2), ("B", 3)), now=NOW)
+    assert [r.map_name for r in rows] == ["B"]
+
+
+def test_rows_sorted_by_name():
+    h = hist(("C", True, d(0)), ("A", True, d(0)), ("B", True, d(0)))
+    rows = build_map_streaks(h, ms(("A", 1), ("B", 2), ("C", 3)), now=NOW)
+    assert [r.map_name for r in rows] == ["A", "B", "C"]
+
+
+def test_compute_map_streaks_reads_player_matches(tmp_path, monkeypatch):
+    eng = create_engine("sqlite:///" + str(tmp_path / "s.sqlite"))
+    Base.metadata.create_all(
+        eng, tables=[Player.__table__, Match.__table__, MatchPlayer.__table__]
     )
-    act_pools = [{"Bind"}, {"Ascent"}, {"Bind"}]  # Bind drops out for A2, returns in A3
-    player_matches = [
-        ("Haven", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),
-        ("Haven", datetime.fromisoformat("2026-01-15T00:00:00+00:00")),  # 3-match gap in A1 window
-        ("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),  # A2 -- Bind not in pool, no window
-        ("Haven", datetime.fromisoformat("2026-05-05T00:00:00+00:00")),  # A3 window starts fresh
-    ]
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    bind = next(s for s in streaks if s.map_name == "Bind")
-    assert bind.record.gap == 3
-    assert bind.record.act_labels == ["A1"]
-    assert bind.current.gap == 1  # only the A3 window counts as "current"
-    assert bind.current.act_labels == ["A3"]
-    assert bind.record_is_current is False
-
-
-def test_build_map_streaks_record_equals_current_when_same_window():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}]
-    player_matches = [("Haven", datetime.fromisoformat("2026-01-05T00:00:00+00:00"))]
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    bind = next(s for s in streaks if s.map_name == "Bind")
-    assert bind.record_is_current is True
-    assert bind.record.gap == bind.current.gap == 1
-    assert bind.current.ongoing is True
-    assert bind.record.ongoing is True
-
-
-def test_build_map_streaks_omits_map_with_no_current_window_matches():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}]
-    player_matches: list[tuple[str, datetime]] = []  # player has no matches at all this act
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    assert streaks == []
+    h = hist(("A", True, d(0)), ("B", True, d(0)))
+    monkeypatch.setattr(map_streaks, "load_pool_history", lambda db: h)
+    monkeypatch.setattr(
+        map_streaks, "build_map_streaks",
+        lambda history, pm, now=None: build_map_streaks(history, pm, now=NOW),
+    )
+    with sessionmaker(bind=eng)() as db:
+        p = Player(display_name="x#1")
+        q = Player(display_name="y#2")
+        db.add_all([p, q])
+        db.flush()
+        for i, (m, day, mine) in enumerate(
+            [("B", 3, True), ("A", 2, True), ("B", 1, True), ("B", 4, False), ("B", None, True)]
+        ):
+            match = Match(
+                external_id=f"e{i}", source=MatchSource.SCRAPED, map_name=m,
+                played_at=d(day) if day is not None else None,
+            )
+            db.add(match)
+            db.flush()
+            db.add(MatchPlayer(
+                match_id=match.id, player_id=(p if mine else q).id, agent="Jett", team=Team.TEAM_1,
+            ))
+        db.commit()
+        rows = map_streaks.compute_map_streaks(db, p.id)
+    by = {r.map_name: r for r in rows}
+    assert by["A"].current.gap == 1  # B(1), A(2), B(3): only B(3) after the play
+    assert by["B"].current.gap == 0
+    assert by["B"].record.gap == 1
+    eng.dispose()
 
 
-def test_build_map_streaks_only_covers_current_pool_maps():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}, {"Ascent"}]  # Bind was in A1's pool but not A2's (current) pool
-    player_matches = [("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00"))]
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    assert [s.map_name for s in streaks] == ["Ascent"]  # Bind not in current pool -- not shown at all
+def _render(streaks):
+    from app.templates import templates
+    return templates.env.get_template("players/_map_streaks.html").render(
+        map_streaks=streaks, profile=SimpleNamespace(player=SimpleNamespace(display_name="Foo#NA1")),
+    )
 
 
-def test_build_map_streaks_current_gap_is_trailing_not_historical_max():
-    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
-    act_pools = [{"Bind"}]
-    player_matches = [
-        ("Haven", datetime.fromisoformat("2026-01-02T00:00:00+00:00")),
-        ("Ascent", datetime.fromisoformat("2026-01-03T00:00:00+00:00")),
-        ("Sunset", datetime.fromisoformat("2026-01-04T00:00:00+00:00")),  # best run of 3 without Bind
-        ("Bind", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),   # closes that run
-        ("Haven", datetime.fromisoformat("2026-01-06T00:00:00+00:00")),  # live trailing run of 1
-    ]
-
-    streaks = _build_map_streaks(acts, act_pools, player_matches)
-
-    bind = next(s for s in streaks if s.map_name == "Bind")
-    assert bind.current.gap == 1  # the live streak since the last Bind play, NOT the closed run of 3
-    assert bind.record.gap == 3  # the all-time record is still the closed run of 3
-    assert bind.record_is_current is False  # record's window IS "current" but its value differs from the live streak
-    assert bind.record.ongoing is False  # that record run has already been closed off by a later Bind play
+def _streak(first, last, gap=3, is_current=False):
+    rec = MapStreakWindow(gap, first, last)
+    return MapStreak("Ascent", MapStreakWindow(0, None, None), rec, is_current)
 
 
-# ---------------------------------------------------------------------------
-# Step 4 (docs/player_page_render_speed.txt): _get_acts_and_pools memoizes
-# the population-wide act-pools computation at process level -- these tests
-# never touch _build_map_streaks/_act_pools' own correctness (covered above),
-# just the caching behavior: a hit issues zero queries, a TTL expiry or a
-# season_acts.json mtime change forces a recompute.
-# ---------------------------------------------------------------------------
-
-def _mock_db_with_population_query(rows) -> MagicMock:
-    db = MagicMock()
-    db.query.return_value.filter.return_value.all.return_value = rows
-    return db
+def test_template_record_date_range():
+    html = _render([_streak(datetime(2026, 3, 5), datetime(2026, 5, 9))])
+    assert "Mar 2026 &ndash; May 2026" in html
 
 
-def setup_function(_fn):
-    # Each test starts from a clean slate -- the cache is process-global.
-    map_streaks_module._act_pools_cache = None
+def test_template_single_month_and_no_line_at_zero():
+    html = _render([_streak(datetime(2026, 3, 5), datetime(2026, 3, 9))])
+    assert "Mar 2026" in html and "&ndash;" not in html
+    html0 = _render([_streak(None, None, gap=0)])
+    assert "stat-sub" not in html0
 
 
-def test_first_call_populates_cache_and_queries_the_population(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
-    monkeypatch.setattr(map_streaks_module, "time", MagicMock(monotonic=lambda: 1000.0))
-    db = _mock_db_with_population_query([("Bind", datetime(2026, 1, 2)), ("Bind", datetime(2026, 1, 3)), ("Bind", datetime(2026, 1, 4))])
-
-    acts, act_pools = _get_acts_and_pools(db)
-
-    assert len(acts) == 1
-    db.query.assert_called_once()
-    assert map_streaks_module._act_pools_cache is not None
-
-
-def test_second_call_within_ttl_issues_no_query(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
-    fake_time = MagicMock(monotonic=lambda: 1000.0)
-    monkeypatch.setattr(map_streaks_module, "time", fake_time)
-    db1 = _mock_db_with_population_query([])
-    _get_acts_and_pools(db1)
-    assert db1.query.call_count == 1
-
-    db2 = _mock_db_with_population_query([])
-    fake_time.monotonic = lambda: 1010.0  # 10s later -- well within the 300s TTL
-    acts, act_pools = _get_acts_and_pools(db2)
-
-    db2.query.assert_not_called()
-
-
-def test_call_after_ttl_expires_recomputes(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
-    fake_time = MagicMock(monotonic=lambda: 1000.0)
-    monkeypatch.setattr(map_streaks_module, "time", fake_time)
-    db1 = _mock_db_with_population_query([])
-    _get_acts_and_pools(db1)
-
-    db2 = _mock_db_with_population_query([])
-    fake_time.monotonic = lambda: 1000.0 + map_streaks_module._ACT_POOLS_TTL_SECONDS + 1
-    _get_acts_and_pools(db2)
-
-    db2.query.assert_called_once()
-
-
-def test_season_acts_mtime_change_forces_recompute_even_within_ttl(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
-    fake_mtime = MagicMock(return_value=1.0)
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", fake_mtime)
-    fake_time = MagicMock(monotonic=lambda: 1000.0)
-    monkeypatch.setattr(map_streaks_module, "time", fake_time)
-    db1 = _mock_db_with_population_query([])
-    _get_acts_and_pools(db1)
-
-    fake_mtime.return_value = 2.0  # file edited -- must be picked up immediately, not after the TTL
-    db2 = _mock_db_with_population_query([])
-    fake_time.monotonic = lambda: 1001.0  # still well within the TTL
-    _get_acts_and_pools(db2)
-
-    db2.query.assert_called_once()
-
-
-def test_no_acts_short_circuits_without_a_population_query(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [])
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
-    db = MagicMock()
-
-    acts, act_pools = _get_acts_and_pools(db)
-
-    assert acts == []
-    assert act_pools == []
-    db.query.assert_not_called()
-
-
-def test_compute_map_streaks_reuses_cached_population_across_two_players(monkeypatch):
-    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
-    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
-    monkeypatch.setattr(map_streaks_module, "time", MagicMock(monotonic=lambda: 1000.0))
-
-    call_log = []
-
-    def fake_query(*args):
-        call_log.append(args)
-        q = MagicMock()
-        # Population query: .filter(...).all(); player query: .join(...).filter(...).order_by(...).all()
-        q.filter.return_value.all.return_value = []
-        q.join.return_value.filter.return_value.order_by.return_value.all.return_value = []
-        return q
-
-    db = MagicMock()
-    db.query.side_effect = fake_query
-
-    compute_map_streaks(db, player_id=1)
-    compute_map_streaks(db, player_id=2)
-
-    # 1 population query (memoized across both calls) + 2 per-player queries.
-    assert db.query.call_count == 3
+def test_template_empty_state():
+    assert "No matches yet while these maps were in the pool for Foo" in _render([])
