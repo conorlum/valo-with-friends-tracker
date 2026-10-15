@@ -18,11 +18,11 @@ from app.replays.header import game_build  # noqa: E402
 from replay_worker import archive as arc  # noqa: E402
 from replay_worker import server  # noqa: E402
 
-NEW = "++Ares-Core+release-13.08"
+NEW = "++Ares-Core+release-13.09"
 
 
 def new_patch_bytes() -> bytes:
-    """The synthetic replay (the stub parser exports it as the supported 13.06) with a 13.08 branch in it."""
+    """The synthetic replay (the stub parser exports it as the supported 13.06) with a 13.09 branch in it."""
     return vrf_bytes() + b" " + NEW.encode("ascii") + b" "
 
 
@@ -43,7 +43,7 @@ def test_an_unsupported_build_is_held_unparsed_and_other_uploads_still_parse(tmp
         assert (status, body["status"]) == (202, "held")
         held = get(base, f"/jobs/{body['id']}")[1]
         assert held["status"] == "held" and held["game_build"] == NEW
-        assert "13.08" in held["error"] and "kept" in held["error"]
+        assert "13.09" in held["error"] and "kept" in held["error"]
         folder = disk / "jobs" / body["id"]
         assert (folder / "upload.vrf").read_bytes() == new_patch_bytes()
         assert not (folder / "stub.pid").exists(), "never handed to the parser"
@@ -108,7 +108,7 @@ def test_a_held_job_still_unsupported_after_a_restart_stays_held(tmp_path, stub)
     try:
         time.sleep(1.5)
         job = get(base, "/jobs/held0002")[1]
-        assert job["status"] == "held" and "13.08" in job["error"]
+        assert job["status"] == "held" and "13.09" in job["error"]
     finally:
         httpd.shutdown()
 
@@ -119,7 +119,7 @@ def test_with_the_archive_off_an_unsupported_build_fails_at_once(tmp_path, stub)
         status, body = post(base, new_patch_bytes())
         assert (status, body["status"]) == (202, "failed")
         job = get(base, f"/jobs/{body['id']}")[1]
-        assert "13.08" in job["error"] and "upload it again" in job["error"]
+        assert "13.09" in job["error"] and "upload it again" in job["error"]
         assert list((tmp_path / "jobs").iterdir()) == []
     finally:
         httpd.shutdown()

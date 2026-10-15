@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/michel-giehl/ValorantReplayParser.git",
-  "commit": "2b66c65a7b116154e18ebb84d9f6795f2b080233",
+  "commit": "e86ec408f2b89ea7ddca88ffae03113781d7c482",
   "sdk": {
     "global_json_version": "10.0.301",
     "installed_tested": "10.0.401"
@@ -20,7 +20,8 @@
   ],
   "export_schema_version": 8,
   "supported_replay_builds": [
-    "++Ares-Core+release-13.06"
+    "++Ares-Core+release-13.06",
+    "++Ares-Core+release-13.08"
   ],
-  "notes": "supported_replay_builds is PROVISIONAL(D2): taken from the archive README's recorded game branch for the test replay, not yet from an export's manifest.replay_build."
+  "notes": "supported_replay_builds: 13.06 from the archive README's recorded game branch for the test replay (PROVISIONAL(D2)); 13.08 from the pinned parser's ValorantSeededTransform13_08.SupportedReplayVersions (e86ec40)."
 }
