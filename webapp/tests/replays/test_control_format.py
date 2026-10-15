@@ -58,7 +58,10 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # full list of zones that stop the unknown (shapes and wall-piercing in mollies.py).
           9: "782eba74fa70b2a1",
           # 15: combined player-state constants and adaptive ground/runtime rules.
-          15: "b3c6e0438e897969"}
+          15: "b3c6e0438e897969",
+          # 16 (2026-10-14): a heard sound names nobody unless only one enemy could have made it (R1/R2), and
+          # one team's nodes collapse to that team's (bug 3). No constant changed, so the digest is 15's.
+          16: "b3c6e0438e897969"}
 
 
 def _constants_digest() -> str:

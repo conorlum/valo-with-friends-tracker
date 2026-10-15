@@ -262,6 +262,36 @@ def test_local_mode_keeps_the_local_pool_even_with_control_runs_set(tmp_path):
         render.close()
 
 
+def test_local_control_keeps_its_cache_off_the_archive_disk(tmp_path):
+    """Blueprint sets CONTROL_CACHE_DIR on the disk for Workflow runs; while control is local the cache stays in
+    the image's own folder, so the archive keeps its whole budget (spec D2: local is today's behaviour)."""
+    disk = tmp_path / "disk"
+    local = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, control_cache_dir=disk / "control_cache",
+                            control_runner="local")
+    server.keep_local_sizing(local)
+    assert local.control_cache_dir == tmp_path / "tmp" / "control_cache"
+    remote = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, control_cache_dir=disk / "control_cache",
+                             control_runner="workflow")
+    server.keep_local_sizing(remote)
+    assert remote.control_cache_dir == disk / "control_cache"
+
+
+def test_a_local_child_is_told_the_cache_folder_the_worker_uses(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_CACHE_DIR", str(tmp_path / "disk" / "control_cache"))
+    child = tmp_path / "child.py"
+    child.write_text("import json, os, sys\njson.loads(sys.stdin.buffer.read())\n"
+                     "print(json.dumps({'status': 'ok', 'cache': os.environ['CONTROL_CACHE_DIR']}))\n",
+                     encoding="utf-8")
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "tmp" / "control_cache",
+                               control_memory_mb=0, control_cmd=[sys.executable, str(child)])
+    control = server.ControlRunner(settings)
+    job = control.submit(round_task("c0"))
+    end = time.time() + 30
+    while time.time() < end and control.get(job.id).status not in ("done", "failed"):
+        time.sleep(0.02)
+    assert control.get(job.id).result["cache"] == str(tmp_path / "tmp" / "control_cache")
+
+
 def test_control_task_names_the_caches_it_could_not_post(stub):
     class Refusing(FakeLink):
         def post_file(self, route, src):
@@ -291,6 +321,16 @@ def test_an_older_height_cache_does_not_make_the_map_warm_when_the_new_one_was_n
     _answering(render, base, {"cache_unsent": [f"Ascent.{'c' * 16}.npz"]})
     job = control.submit(round_task("h0", build=True))
     assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key not in control.warm
+
+
+def test_an_engine_failure_whose_new_cache_was_not_sent_leaves_the_map_cold(remote):
+    control, render, settings, base = remote
+    settings.control_cache_dir.mkdir(parents=True, exist_ok=True)
+    (settings.control_cache_dir / f"Ascent.{'a' * 16}.npz").write_bytes(b"older heights")
+    _answering(render, base, {"cache_unsent": [f"Ascent.{'c' * 16}.npz"]})
+    job = control.submit(round_task("e0", mode="engine"))
+    assert wait_done(control, [job])[0].error_kind == "engine"
     assert job.warm_key not in control.warm
 
 

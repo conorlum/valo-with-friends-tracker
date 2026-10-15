@@ -1,13 +1,12 @@
-import json
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Match, MatchPlayer, Player
+from app.services import map_pool
+from app.services.map_pool import load_pool_history
 
 # See scripts/analyze_map_diversity.py + scripts/analyze_session_map_patterns.py
 # + scripts/inspect_session_repeats.py for how these were derived: there is no
@@ -26,13 +25,10 @@ from app.models import Match, MatchPlayer, Player
 #     other -- so this is one flat tier, not scaled further by exact count)
 INDIVIDUAL_COOLDOWN_WEIGHT = 0.47
 GROUP_COOLDOWN_WEIGHT = 0.2
-
-SEASON_ACTS_PATH = Path(__file__).resolve().parents[2] / "scripts" / "season_acts.json"
-
-# A single match logged right at an act boundary (the previous act's last
-# map bleeding a few minutes into the new act) shouldn't count as a real
-# pool member -- see the Pearl example from the V26:A4 pool check.
-MIN_POOL_MATCHES = 3
+# Right after a pool change the game mostly gives a map that just entered (the owner's experience, D7;
+# not fitted). Each such map starts at this many matches, every other pool map at 1, and real matches
+# since the change take over as they come in.
+NEW_MAP_PRIOR = 5
 
 
 @dataclass
@@ -41,27 +37,27 @@ class MapPrediction:
     probability: float
 
 
-def _current_act_start(db: Session) -> datetime | None:
-    if not SEASON_ACTS_PATH.exists():
-        return None
-    acts = json.loads(SEASON_ACTS_PATH.read_text(encoding="utf-8"))
-    if not acts:
-        return None
-    latest = max(acts, key=lambda a: a["start_time"])
-    return datetime.fromisoformat(latest["start_time"])
-
-
 def get_current_map_pool(db: Session) -> dict[str, float]:
-    """Current active map pool with popularity weights (share of matches
-    played on that map, within the current Episode/Act only -- older acts'
-    maps are a different pool and shouldn't dilute this)."""
+    """The current map pool (app.services.map_pool) with popularity weights: each pool map's share of
+    our matches since the current pool began (the latest official pool change), each map starting at 1
+    match and each map that entered at that change at NEW_MAP_PRIOR."""
+    history = load_pool_history(db)
+    pool = history.current_pool()
+    if not pool:
+        return {}
     query = db.query(Match.map_name, func.count(Match.id)).filter(Match.played_at.isnot(None))
-    start = _current_act_start(db)
+    start = history.latest_change_at(official_only=True)
     if start is not None:
         query = query.filter(Match.played_at >= start)
-    rows = [(m, c) for m, c in query.group_by(Match.map_name).all() if c >= MIN_POOL_MATCHES]
-    total = sum(c for _, c in rows)
-    return {m: c / total for m, c in rows} if total else {}
+    counts = {m: c for m, c in query.group_by(Match.map_name).all() if m in pool}
+    new_maps = {
+        c.map_name
+        for c in history.changes
+        if c.in_pool and c.effective_at == start and c.source != map_pool.SAFETY_NET_SOURCE
+    }
+    smoothed = {m: counts.get(m, 0) + (NEW_MAP_PRIOR if m in new_maps else 1) for m in sorted(pool)}
+    total = sum(smoothed.values())
+    return {m: c / total for m, c in smoothed.items()}
 
 
 def get_player_last_map(db: Session, player_id: int) -> str | None:
@@ -99,7 +95,7 @@ def _population_last_map_rates(db: Session) -> dict[str, float]:
 def predict_map_probabilities(
     db: Session, known_player_ids: list[int], lobby_size: int = 10
 ) -> list[MapPrediction]:
-    """Combines each map's current-act popularity with the two cooldown
+    """Combines each map's current-pool popularity with the two cooldown
     tiers found during fitting (see the constants above): a map that 2+
     known players share as their last game gets the stronger GROUP
     discount; a map only one known player just played gets the milder

@@ -59,6 +59,11 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: REPLAY_HEIGHTS_AUTO
         value: "true"
+      # Map pool: a daily check of playvalorant.com patch notes for Competitive pool changes
+      # (app/services/map_pool_refresh.py), on from the merge. Without it the committed seed alone is the pool.
+      # Never set it on valomaths (demo mode turns it off anyway).
+      - key: MAP_POOL_AUTO
+        value: "true"
       # Map control limits (spec 2026-10-14, D5): rounds in flight, and from how many replays.
       - key: CONTROL_MAX_RUNS
         value: "40"
@@ -119,6 +124,8 @@ services:
       # (replay_worker/archive.py parse_reserve), about 2 GB less archive.
       - key: REPLAY_QUEUE_SIZE
         value: "15"
-      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6).
+      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6). Used only
+      # while REPLAY_CONTROL_RUNNER is workflow; a local runner keeps /jobs/control_cache and the archive's whole
+      # budget (server.py keep_local_sizing).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache

@@ -41,7 +41,7 @@ class ScriptedWorker:
         return {"archived": True, "result": "archived"}
 
 
-def held_row(db, sha="0" * 64, note="recorded on game version 13.08, which ..."):
+def held_row(db, sha="0" * 64, note="recorded on game version 13.09, which ..."):
     row = ReplayUpload(id=UPLOAD, status="held", error=note, worker_job_id="job1", source_sha256=sha,
                        session_key="mine", created_at=datetime.now(timezone.utc) - WEEKS_AGO)
     db.add(row)
@@ -55,7 +55,7 @@ def test_an_upload_from_an_unsupported_build_is_held_and_not_counted_in_the_batc
         client = uploads.WorkerClient(base)
         upload = uploads.create_upload(db, io.BytesIO(new_patch_bytes()), "mine", "ip", client)
         upload = uploads.refresh_job(db, upload, client)
-        assert upload.status == "held" and "13.08" in upload.error and upload.finished_at is None
+        assert upload.status == "held" and "13.09" in upload.error and upload.finished_at is None
         # Five more held files: none of them is "in progress", so the batch limit never refuses the next upload.
         for _ in range(uploads.MAX_UNFINISHED):
             more = uploads.create_upload(db, io.BytesIO(new_patch_bytes()), "mine", "ip", client)
@@ -64,7 +64,7 @@ def test_an_upload_from_an_unsupported_build_is_held_and_not_counted_in_the_batc
         # What the uploader's pages show.
         session = {"replay_upload_ok": True, "replay_upload_sid": "mine"}
         page = routes.upload_job(request(session), upload.id, db)
-        assert b"Waiting for a parser update" in page.body and b"13.08" in page.body
+        assert b"Waiting for a parser update" in page.body and b"13.09" in page.body
         assert page.context["job"]["status"] == "held"
     finally:
         httpd.shutdown()
@@ -95,7 +95,7 @@ def test_a_held_upload_the_worker_no_longer_has_fails_with_a_plain_reason(db):
 
 def test_a_held_upload_the_worker_gave_up_on_fails_with_its_reason(db):
     upload = held_row(db)
-    reason = "recorded on game version 13.08: the replay parser still didn't support it after 60 days"
+    reason = "recorded on game version 13.09: the replay parser still didn't support it after 60 days"
     upload = uploads.refresh_job(db, upload, ScriptedWorker({"status": "failed", "error": reason}))
     assert (upload.status, upload.error) == ("failed", reason)
 

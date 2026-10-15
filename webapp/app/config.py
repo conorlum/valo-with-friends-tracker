@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # (app/services/replay_reparse_auto.py). Off by default; needs REPLAY_CONTROL_REMOTE and
     # REPLAY_WORKER_URL too, and is always off in demo mode.
     replay_reparse_auto: bool = False
+    # The map pool's daily check of playvalorant.com patch notes (app/services/map_pool_refresh.py).
+    # Off by default, and always off in demo mode.
+    map_pool_auto: bool = False
     # The operator's secret for /admin/replays/* (app/routers/replay_admin.py: deleting a match on
     # request, reparsing from the .vrf archive). Unset: those routes 404. Set in the Render dashboard
     # only (`sync: false`), never in the repo, and never the friends' upload code.

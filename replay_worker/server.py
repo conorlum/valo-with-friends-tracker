@@ -321,6 +321,15 @@ def make_runs(settings: Settings):
                          settings.temp_root / "runs")
 
 
+def keep_local_sizing(settings: Settings) -> None:
+    """A kind still on its local runner keeps today's sizing (spec D2: local is today's child processes, and
+    rollback is one env var). render.yaml sets the Workflow sizing for every deploy, so it only takes effect for a
+    kind switched to `workflow`; otherwise the archive would lose the room it reserves for nothing."""
+    if settings.control_runner != "workflow" and settings.archive_dir is not None and \
+            settings.control_cache_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        settings.control_cache_dir = settings.temp_root / "control_cache"     # the image's own, as before
+
+
 @dataclass
 class Job:
     id: str
@@ -1355,12 +1364,14 @@ class ControlRunner:
             settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env ={**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
+        env["CONTROL_CACHE_DIR"] = str(settings.control_cache_dir)     # keep_local_sizing may have moved it
         kwargs = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env,
                   "cwd": str(WEBAPP.parent)}
         if os.name != "nt":
             kwargs["preexec_fn"] = _child_setup(settings.control_memory_mb)
         status, error, kind, result = "failed", None, "infra", None
         error_code = None
+        unsent: list = []           # cache files a run couldn't post, whether its round succeeded or not
         process = None
         try:
             # Started outside the lock (preexec_fn must not run while this thread holds a lock another
@@ -1376,6 +1387,7 @@ class ControlRunner:
                     kill_tree(process)
                 stdout, _ = process.communicate(job.task, timeout=timeout)
                 answer = json.loads(stdout or b"{}")
+            unsent = answer.get("cache_unsent") or []
             if answer.get("status") == "ok":
                 status, kind, result = "done", None, answer
             else:
@@ -1430,7 +1442,6 @@ class ControlRunner:
                     # cache upload failed would otherwise release every other round to rebuild it.
                     # And not when the run says it failed to send a visibility cache: an older one (other
                     # heights) can still be on disk.
-                    unsent = (result or {}).get("cache_unsent") or []
                     cached = not self.remote(job) or (
                         control_cache.has_visibility(self.settings.control_cache_dir, job.map)
                         and not any(control_cache.visibility_name(n) for n in unsent))
@@ -2120,6 +2131,7 @@ def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
 
 def main() -> None:
     settings = Settings.from_env()
+    keep_local_sizing(settings)
     runs_table = make_runs(settings)
     if runs_table is not None:
         threading.Thread(target=runs_table.reconcile_forever, args=(threading.Event(),), name="runs-reconcile",

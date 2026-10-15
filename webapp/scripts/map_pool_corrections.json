@@ -1,0 +1,61 @@
+[
+  {
+    "patch": "6.0",
+    "remove": ["Lotus"],
+    "quote": "Please note that the Lotus only queue will only be playable in Swiftplay mode for one week and then goes into the competitive and Unrated map rotation in Patch 6.1.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-6-0/"
+  },
+  {
+    "patch": "6.01",
+    "after_patch": "6.0",
+    "add": ["Lotus"],
+    "published_at": "2023-01-18T14:00:00.000Z",
+    "quote": "Lotus will now be included in the map rotation for Unrated and Competitive.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-6-01/"
+  },
+  {
+    "patch": "7.04",
+    "remove": ["Sunset"],
+    "quote": "Sunset will also be in the map rotation for Unrated.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-7-04/"
+  },
+  {
+    "patch": "7.05",
+    "after_patch": "7.04",
+    "add": ["Sunset"],
+    "published_at": "2023-09-06T13:00:00.000Z",
+    "quote": "Sunset will now be in the map rotation for Competitive mode.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-7-05/"
+  },
+  {
+    "patch": "8.11",
+    "remove": ["Abyss"],
+    "quote": "ABYSS will enter the competitive pool in patch 9.0.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-811/"
+  },
+  {
+    "patch": "9.0",
+    "after_patch": "8.11",
+    "add": ["Abyss"],
+    "remove": ["Icebox", "Lotus"],
+    "published_at": "2024-06-25T13:00:00.000Z",
+    "quote": "Our Competitive Mode map pool will start with Abyss, Ascent, Bind, Haven, and Sunset with new maps slowly being added in the next few patches.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-9-0/"
+  },
+  {
+    "patch": "9.01",
+    "after_patch": "9.0",
+    "add": ["Lotus"],
+    "published_at": "2024-07-16T13:00:00.000Z",
+    "quote": "Lotus enters Competitive, Unrated, Swift Play, and Deathmatch queues.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-901/"
+  },
+  {
+    "patch": "9.02",
+    "after_patch": "9.01",
+    "add": ["Icebox"],
+    "published_at": "2024-07-30T13:00:00.000Z",
+    "quote": "Icebox enters Competitive, Unrated, Swift Play, and Deathmatch queues.",
+    "url": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-902/"
+  }
+]
