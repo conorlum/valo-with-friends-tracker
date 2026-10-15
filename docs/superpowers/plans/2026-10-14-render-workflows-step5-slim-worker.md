@@ -2,32 +2,33 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `replay-worker` becomes a file and job service only. Parsing, map control and height builds always run as Workflow runs. The .NET parser leaves its image, uploads stream to disk, and it moves to a 1 CPU / 2 GB plan.
+**Goal:** With all three kinds running on Workflows, the .NET parser leaves the worker's image, uploads stream to disk instead of being read whole, and the worker moves to a 1 CPU / 2 GB plan. The local code paths stay as the test/development mode and the rollback for control and heights (spec D14).
 
-**Architecture:** Two PRs, because the workflow service builds from `replay_worker/Dockerfile` today. **5a** adds `replay_tasks/Dockerfile` (the full image), and the owner points the workflow at it. **5b** removes the `local` paths and the code that only served them (child processes, preemption, idle, the local pool), moves the worker's tests onto a shared fake-Render harness, streams `POST /jobs` to disk, slims the worker's image and changes its plan.
+**Architecture:** Two PRs. The workflow service builds from `replay_worker/Dockerfile` until now, so **5a** gives it its own `replay_tasks/Dockerfile` (the full image) and the owner points the workflow at it. **5b** removes the parser stages from the worker's Dockerfile, refuses to start with a local parse runner and no parser, streams `POST /jobs` into the job's folder, and changes the plan in `render.yaml`.
 
 **Tech Stack:** Python 3.13 standard library, pytest, Docker, `render.yaml`.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (step 5, D14, "Load")
+**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (step 5, D14, D18)
 
-**Depends on:** steps 2-4 running with `workflow` on Render with no rollback needed, and Render's metrics for the worker read during steps 2 and 3.
+**Depends on:** steps 2-4 merged and running with `workflow` on Render; step 3's result sizes recorded (D18); Render's memory graph for the worker read during steps 2 and 3.
 
 ## Global Constraints
 
-- Feature verification (`verify_feature_upload`, a short synchronous child) stays on the worker, so the worker image keeps the control venv (numpy, scipy, Pillow) and `app/control` (D14).
+- No local code path is removed (D14): `REPLAY_CONTROL_RUNNER=local` and `REPLAY_HEIGHTS_RUNNER=local` still work on the slim image (it keeps the control venv); `REPLAY_PARSE_RUNNER=local` is refused at startup on an image without the parser.
 - The worker image keeps `webapp/replay_parser.json`, the patches and `webapp/app/static/data`: `/health`'s `recipe` and the held-upload check (`supported_builds`) read them.
-- The site sees no change: `/health` keeps every key it reads (`idle`, `recipe`, `control.enabled`, `control.gaps_protocol`, `control.features`, `archive.*`). `idle` is always `true`, and `control.preempted` is always `0`.
-- The worker's new plan is `standard` (1 CPU / 2 GB) in `render.yaml`.
-- Every upload, input and result streams through in 1 MB chunks.
-- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
+- The site sees no change.
+- `POST /jobs`: `Content-Length` must be an integer in `[4, REPLAY_MAX_BYTES]`; the body streams in 1 MB chunks into the job's own folder, hashed as it goes; any failure leaves no file and no job folder behind.
+- The worker's plan becomes `standard` (1 CPU / 2 GB) only after the memory check in Task 4.
+- 5a must be live (the workflow building from `replay_tasks/Dockerfile`, ping OK) before 5b merges.
+- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`; the existing worker tests stay unchanged except where Task 2 says.
 
 ## Review Focus
 
-- A 200 MB upload must never be held whole in memory: `POST /jobs` streams to disk, hashing as it goes.
-- An upload whose first 4 bytes aren't the replay magic, or that ends short of its `Content-Length`, must leave no file behind.
-- A worker started without `RENDER_API_KEY` or `REPLAY_WORKFLOW_SLUG` must stop at startup with a clear message. Nothing can run without them now.
-- The workflow must keep building after 5b merges: it must already point at `replay_tasks/Dockerfile` (5a), or it would build the slim image.
-- Feature verification must still work on the slim image (its child uses the control venv's interpreter).
+- A 200 MB upload must never be held whole in memory: the route must not call `Worker.submit(bytes)`.
+- An upload with bad magic, a short body (client hangs up early) or a bad `Content-Length` must leave no file and no job folder.
+- The workflow must keep building after 5b: it must already point at `replay_tasks/Dockerfile`.
+- Starting the slim worker with `REPLAY_PARSE_RUNNER` unset (local) must stop it with a clear message rather than fail every upload.
+- Feature verification and local control must still work on the slim image (the control venv stays).
 
 ---
 
@@ -41,28 +42,26 @@
 
 - [ ] **Step 1: Copy the image**
 
-Copy `replay_worker/Dockerfile` to `replay_tasks/Dockerfile` unchanged except:
-- the header comment: `# The Render Workflow's image (replay_tasks): the pinned parser, the control venv, the task bodies.`
-- the last two lines become (the entrypoint drops root as before; the archive variable is unset there, so it skips the chown):
-
-```dockerfile
-ENTRYPOINT ["sh", "/srv/replay_worker/entrypoint.sh"]
-CMD ["/opt/control-venv/bin/python", "-m", "replay_tasks.main"]
-```
+Copy `replay_worker/Dockerfile` (as step 1 left it: with `render==1.0.1` and `COPY replay_tasks`) to
+`replay_tasks/Dockerfile`, then change only:
+- the first comment line to `# The Render Workflow's image (replay_tasks): the pinned parser, the control venv, the task bodies.`
+- the last line to `CMD ["/opt/control-venv/bin/python", "-m", "replay_tasks.main"]` (the `ENTRYPOINT` stays: without
+  `REPLAY_ARCHIVE_DIR` it skips the chown and just drops to the `worker` user).
 
 - [ ] **Step 2: Docs**
 
-In `RENDER_DEPLOY.md`'s Workflows section, change the setup step's Dockerfile path to `replay_tasks/Dockerfile`, and add:
+In `RENDER_DEPLOY.md`'s Workflows section, change the setup step's Dockerfile path to `replay_tasks/Dockerfile`,
+and add:
 
 ```markdown
 ### Before step 5b: point the workflow at its own Dockerfile
 
 `replay-tasks` → Settings → Dockerfile path: `replay_tasks/Dockerfile` → save; wait for the build; run the ping
-(`replay-worker` → Shell → `python3 -m replay_worker.runs ping`). Only then merge 5b, which slims
-`replay_worker/Dockerfile`.
+(`replay-worker` → Shell → `python3 -m replay_worker.runs ping`). Only then merge 5b, which takes the parser out
+of `replay_worker/Dockerfile`.
 ```
 
-- [ ] **Step 3: Commit and open PR 5a**
+- [ ] **Step 3: Commit, open PR 5a**
 
 ```bash
 git add replay_tasks/Dockerfile webapp/RENDER_DEPLOY.md
@@ -75,352 +74,232 @@ The owner merges it, changes the Dockerfile path, and confirms the ping.
 
 ## PR 5b
 
-### Task 2: A shared fake-Render harness for the worker's tests
+### Task 2: No local parse without a parser
 
 **Files:**
-- Create: `webapp/tests/replays/workflow_harness.py`
-- Test: itself, through the converted files in Task 3
+- Modify: `replay_worker/server.py` (`main`; a new `parser_available`)
+- Test: `webapp/tests/replays/test_replay_worker_runs.py`
 
 **Interfaces:**
-- Consumes: `FakeRender` (step 1), `replay_tasks.tasks.TASKS`, `server.make_runs`, `make_server`.
-- Produces: `Harness(tmp_path, **settings_overrides)` with `.settings`, `.render`, `.runs`, `.worker`, `.control`, `.heights`, `.base`, `.close()`. Every run goes through the real task body, and the task's child commands come from the environment as on Render (`REPLAY_PARSER_CMD`, `REPLAY_CONTROL_CMD`, `REPLAY_HEIGHT_CMD`), which the converted tests set to their existing stubs.
-
-- [ ] **Step 1: Write the harness**
-
-```python
-# webapp/tests/replays/workflow_harness.py
-"""The replay worker as it runs from step 5 on: every parse, control round and height build is a Workflow run.
-A fake Render runs the real task bodies (replay_tasks/tasks.py) in threads against this worker's own server."""
-
-import json
-import os
-import threading
-
-from fake_render import FakeRender
-from replay_tasks import tasks
-from replay_worker import server
-
-COMMANDS = {"parser_cmd": "REPLAY_PARSER_CMD", "control_cmd": "REPLAY_CONTROL_CMD", "height_cmd": "REPLAY_HEIGHT_CMD"}
-
-
-class Harness:
-    def __init__(self, tmp_path, control=True, heights=True, **overrides):
-        self.render = FakeRender()
-        self._env = {}
-        for name, var in COMMANDS.items():          # the tests' stub commands reach the task bodies
-            if name in overrides:
-                self._env[var] = os.environ.get(var)
-                os.environ[var] = json.dumps(overrides.pop(name))
-        self._env.setdefault("REPLAY_CONTROL_MEMORY_MB", os.environ.get("REPLAY_CONTROL_MEMORY_MB"))
-        os.environ["REPLAY_CONTROL_MEMORY_MB"] = "0"
-        overrides.setdefault("temp_root", tmp_path / "tmp")
-        overrides.setdefault("control_cache_dir", tmp_path / "cache")
-        self.settings = server.Settings(workflow_slug="replay-tasks", render_api_key="k",
-                                        render_api_base=self.render.url, **overrides)
-        self.runs = server.make_runs(self.settings)
-        self.control = server.ControlRunner(self.settings, runs_table=self.runs) if control else None
-        self.heights = server.HeightBuilds(self.settings, self.control) if (control and heights) else None
-        self.worker = server.Worker(self.settings, runs_table=self.runs)
-        self.httpd = server.make_server(self.worker, control=self.control, heights=self.heights,
-                                        runs_table=self.runs)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.render.runner = lambda kind, args: tasks.TASKS[kind](
-            args, tasks.WorkerLink(self.base, args["job_id"], args["token"]))
-
-    def close(self):
-        self.httpd.shutdown()
-        self.render.close()
-        for var, value in self._env.items():
-            if value is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = value
-```
-
-`parse_file` reads `REPLAY_TIMEOUT_S` and `REPLAY_MEMORY_CAP_MB` through `Settings.from_env()` in the task. A test that sets `timeout_s=` on the harness must also set `REPLAY_TIMEOUT_S` with `monkeypatch.setenv`. Task 3 notes where.
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add webapp/tests/replays/workflow_harness.py
-git commit -m "tests: a fake-Render harness for the worker's workflow-only shape"
-```
-
----
-
-### Task 3: Convert the worker's tests
-
-**Files:**
-- Modify: `test_replay_worker.py`, `test_replay_worker_archive.py`, `test_replay_worker_held.py`, `test_replay_worker_control.py`, `test_replay_worker_heights.py`, `test_replay_worker_control_workflow.py`, `test_replay_worker_parse_workflow.py`, `test_replay_worker_heights_workflow.py` (all in `webapp/tests/replays/`)
-
-There are 94 tests and fixtures across the first five files. The conversion is mechanical: each file's fixture that builds `server.Settings(...)`, `server.Worker(...)`, `server.ControlRunner(...)` and `make_server(...)` builds a `Harness` instead, passes the same overrides, and closes it at teardown. The test bodies don't change, except for the deletions below.
-
-- [ ] **Step 1: Delete the tests of removed behaviour**
-
-Find them with `rg -n "preempt|idle|control_workers|kill_tree|on_parse|warming.*parse|runner=\"local\"|_runner" tests/replays/test_replay_worker*.py` and delete each test whose subject is:
-- a parse preempting control children (`preempt`, `preempted`, `on_parse`)
-- the pool shrinking to one child beside a parse, or `control_workers` as the pool size (the pool is now `control_runs`)
-- a height build waiting for idle, or running alone (a remote build does neither, as step 4 tests)
-- the `local`/`workflow` switch itself (steps 2-4's "rollback" tests)
-- the parser's address-space cap reported by `/health` (`memory_cap`), which moves to the task
-
-Keep every test of queues, dedupe, held uploads, the archive, acks, receipts, re-parse attempts, height-build states, tokens and warming (a map's first round still runs alone).
-
-- [ ] **Step 2: Swap the fixtures**
-
-For each file, replace the server/worker construction with the harness. Example for `test_replay_worker_control.py`'s `runner` fixture:
-
-```python
-@pytest.fixture
-def runner(tmp_path):
-    log = tmp_path / "events"
-    log.mkdir()
-    stub = tmp_path / "stub_control.py"
-    stub.write_text(STUB.format(log=str(log)), encoding="utf-8")
-    made = []
-
-    def make(**overrides):
-        h = Harness(tmp_path / f"h{len(made)}", control_cmd=[sys.executable, str(stub)], **overrides)
-        made.append(h)
-        return h.control, log
-    yield make
-    for h in made:
-        h.close()
-```
-
-Its stub writes events from the control child, which now runs inside the task body on the test machine, so `overlaps(log)` still measures concurrency. Pool-size assertions use `control_runs=` instead of `control_workers=`.
-
-Parse tests (`test_replay_worker.py`, `_archive.py`, `_held.py`): pass the stub parser as `parser_cmd=[...]` to `Harness`. Where a test sets `timeout_s=`, add `monkeypatch.setenv("REPLAY_TIMEOUT_S", "<same value>")`.
-
-The three `*_workflow.py` files from steps 2-4: their fixtures become `Harness(...)`, and their `control_runner=`/`parse_runner=`/`heights_runner=` overrides go.
-
-- [ ] **Step 3: Run them against the current code**
-
-Until Task 4 the runners still default to `local`, so for now `Harness` passes `parse_runner="workflow", control_runner="workflow", heights_runner="workflow"` in its `Settings(...)` (Task 4 removes the three).
-
-Run: `.\.venv\Scripts\python.exe -m pytest tests/replays -k "worker" -q`
-Expected: all pass. A failure here means the conversion is wrong; fix it before Task 4.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add webapp/tests/replays
-git commit -m "tests: the worker's tests run through workflow runs"
-```
-
----
-
-### Task 4: Remove the local paths
-
-**Files:**
-- Modify: `replay_worker/server.py`, `replay_worker/runs.py` (no change expected), `replay_tasks/tasks.py` (no change expected)
-- Test: the converted suite
-
-**Interfaces:**
-- Removes: `Settings.parse_runner`, `.control_runner`, `.heights_runner`, `.control_workers`, `.height_cmd`, `.parser_build` use in the worker (the task reads it), `.memory_cap_mb` use in the worker; `Settings.workflow_wanted`; `Worker.on_parse`, `_parse_coming`, `idle`; `ControlRunner.idle`, `preempt`, `procs`, `preempted`, `preempted_total`, `_before_settle`'s child handling; the `Popen` branch of `ControlRunner._run`; the local branch of `Worker._process`; `kill_tree`/`limit_memory` imports in `server.py`.
-- Keeps: `Settings.control_cmd` (its interpreter runs feature verification, D14), `parser_cmd`/`timeout_s`/`memory_cap_mb` in `Settings.from_env` (the task reads them through it), `ControlRunner.remote` (always true now), warming.
-- Changes: `make_runs(settings)` raises `SystemExit` whenever the key or slug is missing.
-
-- [ ] **Step 1: `make_runs` always required**
-
-```python
-def make_runs(settings: Settings):
-    """The run table. Every parse, control round and height build is a Workflow run (spec step 5), so the
-    worker can't start without Render's key and the workflow's slug."""
-    if not (settings.render_api_key and settings.workflow_slug):
-        raise SystemExit("RENDER_API_KEY and REPLAY_WORKFLOW_SLUG must be set: the worker runs all work on Workflows")
-    api = runs_mod.RenderApi(settings.render_api_key, base=settings.render_api_base)
-    return runs_mod.Runs(api, settings.workflow_slug, runs_mod.Pacer(settings.task_starts_per_min),
-                         settings.temp_root / "runs")
-```
-
-- [ ] **Step 2: `ControlRunner`**
-
-- `remote(job)` returns `True` (keep the method, so the step 2-4 call sites read the same).
-- Delete `preempt`, `self.procs`, `self.preempted`, `self.preempted_total` and the `idle` parameter and attribute.
-- `_next`: drop the idle and "a build runs alone" logic. A pending `heights` job starts at once (as step 4's remote branch does). Control rounds are limited by `control_runs`, and the warming rules stay:
-
-```python
-    def _next(self) -> tuple[ControlJob, bool] | None:
-        for job_id in self.pending:
-            if self.jobs[job_id].kind == "heights":
-                return self.jobs[job_id], False
-        running = [j for j in self.running if self.jobs[j].kind == "control"]
-        if len(running) >= self.settings.control_runs:
-            return None
-        busy_maps = {self.jobs[j].map for j in running}
-        warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
-        for job_id in self.pending:
-            job = self.jobs[job_id]
-            if job.warm_key in self.warm:
-                if job.map in warming_maps:
-                    continue
-                return job, False
-            if job.map not in busy_maps:
-                return job, True
-        return None
-```
-
-- `_run`: the body's `try` becomes `answer = self._run_remote(job, timeout)` followed by today's answer handling. Delete the `kwargs`/`env` set-up, the `Popen` branch, the `finally` that kills and closes the child, and the preempted branch of the settlement (keep the `else` branch's body as the only path).
-- `counts()` returns `"preempted": 0`.
-
-- [ ] **Step 3: `Worker`**
-
-- `__init__(self, settings, runs_table)`: `runs_table` is required, and there's no `on_parse`. Always start `parse_parallel` threads.
-- Delete `idle`, `_parse_coming` and its call at the top of `_run`.
-- `_process(job)` is `return self._process_remote(job)`. Delete the local `parse_file` call (keep `_accept_result`).
-- `/health`: `body["idle"] = True`. Drop `limits.memory_cap` (the task has the cap now). Keep `limits.timeout_s`, `max_bytes`, `queue_size`.
-
-- [ ] **Step 4: Settings and `main()`**
-
-Remove the three `*_RUNNER` variables, `REPLAY_CONTROL_WORKERS` and `REPLAY_HEIGHT_CMD` from `Settings`, `from_env` and the docstring. `main()`:
-
-```python
-def main() -> None:
-    settings = Settings.from_env()
-    runs_table = make_runs(settings)
-    threading.Thread(target=runs_table.reconcile_forever, args=(threading.Event(),), name="runs-reconcile",
-                     daemon=True).start()
-    control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
-    worker = Worker(settings, runs_table=runs_table)
-    if worker.archive is not None and settings.control_cache_dir.resolve().is_relative_to(
-            worker.archive.root.resolve()):
-        worker.archive.cache_reserve = control_cache.RESERVE
-    heights = HeightBuilds(settings, control) if control is not None else None
-    server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
-                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights, runs_table)
-    print(f"replay worker on {server.server_address}: work runs on Workflows ({settings.workflow_slug}), "
-          f"{settings.parse_parallel} parses and {settings.control_runs} control runs at once", flush=True)
-    server.serve_forever()
-```
-
-Remove the three overrides added to `Harness` in Task 3, Step 3.
-
-- [ ] **Step 5: Run the suite**
-
-Run: `.\.venv\Scripts\python.exe -m pytest tests/replays -q`
-Expected: all pass. `rg -n "Popen|preempt|idle\(" replay_worker/server.py` finds only `verify_feature_upload`'s `subprocess.run`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add replay_worker/server.py webapp/tests/replays/workflow_harness.py
-git commit -m "replay worker: all work runs on Workflows; the local child paths go"
-```
-
----
-
-### Task 5: Uploads stream to disk
-
-**Files:**
-- Modify: `replay_worker/server.py` (`Worker.submit`; the `/jobs` branch of `do_POST`)
-- Test: `webapp/tests/replays/test_replay_worker.py`
-
-**Interfaces:**
-- Produces: `Worker.intake_dir() -> Path` (on the archive disk when the archive is on, else `temp_root / "incoming"`); `Worker.submit_path(path: Path, sha256: str, size: int) -> Job` (moves `path` into the new job folder); `Worker.submit(body: bytes) -> Job` (kept for tests: writes `body` to `intake_dir()` and calls `submit_path`).
+- Produces: `parser_available(settings: Settings) -> bool` (the parser command's program exists: on `PATH`, or as a file).
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `test_replay_worker.py` (use the file's harness-based fixture from Task 3; call it `h` here):
+```python
+def test_parser_available_finds_a_program_or_a_file(tmp_path):
+    assert server.parser_available(server.Settings(parser_cmd=[sys.executable, "-V"]))
+    assert not server.parser_available(server.Settings(parser_cmd=[str(tmp_path / "no-such-parser")]))
+    assert not server.parser_available(server.Settings(parser_cmd=["no-such-program-anywhere"]))
+```
+
+(`sys` is already imported at the top of that file.)
+
+- [ ] **Step 2: Run it to see it fail**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_runs.py -v -k parser_available`
+Expected: FAIL, `AttributeError: module 'replay_worker.server' has no attribute 'parser_available'`.
+
+- [ ] **Step 3: Implement**
+
+In `server.py`, beside `make_runs`:
+
+```python
+def parser_available(settings: Settings) -> bool:
+    """The parser command's program is here (step 5's worker image has none: parsing runs on Workflows)."""
+    program = settings.parser_cmd[0] if settings.parser_cmd else ""
+    return bool(program) and (shutil.which(program) is not None or Path(program).is_file())
+```
+
+In `main()`, right after `settings = Settings.from_env()`:
+
+```python
+    if settings.parse_runner == "local" and not parser_available(settings):
+        raise SystemExit("REPLAY_PARSE_RUNNER is local but this image has no parser "
+                         f"({settings.parser_cmd[:1]}): set REPLAY_PARSE_RUNNER=workflow")
+```
+
+- [ ] **Step 4: Run it and commit**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_runs.py -v`
+Expected: all pass.
+
+```bash
+git add replay_worker/server.py webapp/tests/replays/test_replay_worker_runs.py
+git commit -m "replay worker: refuse a local parse runner on an image without the parser"
+```
+
+---
+
+### Task 3: Uploads stream into the job's folder
+
+**Files:**
+- Modify: `replay_worker/server.py` (`Worker.submit`; new `Worker.reserve_folder`, `Worker.submit_streamed`; the `/jobs` branch of `do_POST`)
+- Test: `webapp/tests/replays/test_replay_worker.py`
+
+**Interfaces:**
+- Consumes: the handler's `_length(low, high)` (step 1).
+- Produces: `Worker.reserve_folder(size: int) -> tuple[str, Path]` (job id and a new, empty job folder; raises `NoSpace` when the archive can't take `size`); `Worker.submit_streamed(job_id: str, folder: Path, sha256: str, size: int) -> Job` (today's `submit` from the point the file is on disk; on any exception the folder is deleted); `Worker.submit(body: bytes) -> Job` (kept for tests and callers with bytes in hand: reserve, write, `submit_streamed`).
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `test_replay_worker.py` (its `stub` fixture and `start()` helper are at the top of the file):
 
 ```python
 import hashlib
 import http.client
+import socket
 
 
-def post_raw(base, body_parts, length):
+@pytest.fixture
+def live(tmp_path, stub):
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        yield worker, base, tmp_path / "jobs"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def raw_post(base, parts, length, half_close=False):
+    """POST /jobs with a hand-set Content-Length; `half_close` shuts the client's sending side after `parts`, as a
+    client that hung up early does, and still reads the answer."""
     host, port = base.replace("http://", "").split(":")
     conn = http.client.HTTPConnection(host, int(port), timeout=30)
-    conn.putrequest("POST", "/jobs")
-    conn.putheader("Content-Length", str(length))
-    conn.endheaders()
-    for part in body_parts:
-        conn.send(part)
-    response = conn.getresponse()
-    return response.status, response.read()
-
-
-def test_upload_streams_and_hashes(h):
-    body = server.VRF_MAGIC + os.urandom(3 * 1024 * 1024)
-    status, answer = post_raw(h.base, [body[i:i + 65536] for i in range(0, len(body), 65536)], len(body))
-    assert status == 202
-    job = h.worker.get(json.loads(answer)["id"])
-    assert job.sha256 == hashlib.sha256(body).hexdigest() and job.size == len(body)
-
-
-def test_a_bad_magic_leaves_nothing_behind(h):
-    status, _ = post_raw(h.base, [b"NOPE" + b"x" * 100], 104)
-    assert status == 400
-    assert not any(h.worker.intake_dir().iterdir())
-
-
-def test_a_short_upload_leaves_nothing_behind(h):
-    body = server.VRF_MAGIC + b"x" * 100
     try:
-        post_raw(h.base, [body], len(body) + 50)            # claims more than it sends, then hangs up
-    except (ConnectionError, http.client.HTTPException, OSError):
-        pass
-    time.sleep(0.5)
-    assert not any(h.worker.intake_dir().iterdir())
-```
+        conn.putrequest("POST", "/jobs")
+        conn.putheader("Content-Length", str(length))
+        conn.endheaders()
+        for part in parts:
+            conn.send(part)
+        if half_close:
+            conn.sock.shutdown(socket.SHUT_WR)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
 
-For the short upload, the handler's read returns short when the client closes. Set the request socket timeout to 30 s (`self.connection.settimeout(30)`) so a stalled client can't hold a thread forever.
+
+def test_upload_streams_without_the_whole_bytes_path(live, monkeypatch):
+    worker, base, _ = live
+
+    def whole(body):
+        raise AssertionError("the route must stream, not call Worker.submit(bytes)")
+    monkeypatch.setattr(worker, "submit", whole)
+    body = vrf_bytes()
+    status, answer = raw_post(base, [body[i:i + 65536] for i in range(0, len(body), 65536)], len(body))
+    assert status == 202
+    job_id = json.loads(answer)["id"]
+    assert worker.get(job_id).sha256 == hashlib.sha256(body).hexdigest() and worker.get(job_id).size == len(body)
+    assert wait(base, job_id)["status"] == "done"
+
+
+@pytest.mark.parametrize("length", ["0", "3", "-5", "abc"])
+def test_a_bad_length_is_refused_and_leaves_nothing(live, length):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [], length)
+    assert status == 400 and not any(jobs.iterdir())
+
+
+def test_a_too_large_length_is_413(live):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [], worker.settings.max_bytes + 1)
+    assert status == 413 and not any(jobs.iterdir())
+
+
+def test_bad_magic_leaves_nothing(live):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [b"NOPE" + b"x" * 100], 104)
+    assert status == 400 and not any(jobs.iterdir())
+
+
+def test_a_short_upload_leaves_nothing(live):
+    worker, base, jobs = live
+    body = vrf_bytes()[:1000]
+    status, _ = raw_post(base, [body], len(body) + 500, half_close=True)
+    assert status == 400 and not any(jobs.iterdir())
+```
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker.py -v -k "streams or bad_magic or short_upload"`
-Expected: FAIL (`intake_dir` missing).
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker.py -v -k "streams or bad_length or too_large or bad_magic or short_upload"`
+Expected: `test_upload_streams_without_the_whole_bytes_path` FAILS (the route calls `submit`); the length tests FAIL
+on `-5`/`abc` (today `int()` raises inside the handler) and `0`/`3` (accepted into a 400 only after reading).
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement `reserve_folder`, `submit_streamed`, `submit`**
 
-`Worker`:
+Replace `Worker.submit` (`server.py:428-455`) with:
 
 ```python
-    def intake_dir(self) -> Path:
-        """Where an upload streams before it becomes a job: the same disk as the job folders, so the move is a rename."""
-        folder = (self.archive.root / "incoming") if self.archive is not None else (self.settings.temp_root / "incoming")
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
-
-    def submit(self, body: bytes) -> Job:
-        path = self.intake_dir() / f"{uuid.uuid4().hex}.vrf"
-        path.write_bytes(body)
-        return self.submit_path(path, hashlib.sha256(body).hexdigest(), len(body))
-
-    def submit_path(self, path: Path, sha256: str, size: int) -> Job:
-        """Today's submit, with the upload already on disk at `path` (moved into the job folder, or deleted)."""
+    def reserve_folder(self, size: int) -> tuple[str, Path]:
+        """A new job folder for an upload of `size` bytes about to stream in. With the archive on, it is under
+        jobs/ on the disk, where a folder without job.json is debris to the next recovery."""
         job_id = uuid.uuid4().hex
+        with self.admission:
+            if self.archive is None:
+                folder = self.settings.temp_root / f"replay-job-{job_id}"
+            else:
+                if not self.archive.intake_ok(size):
+                    raise NoSpace()
+                folder = self.archive.jobs / job_id
+            folder.mkdir(parents=True)
+        return job_id, folder
+
+    def submit_streamed(self, job_id: str, folder: Path, sha256: str, size: int) -> Job:
+        """Today's submit, with the upload already at `folder/upload.vrf`. Any failure deletes the folder."""
         try:
             with self.admission:
-                if self.archive is None:
-                    folder = self.settings.temp_root / f"replay-job-{job_id}"
-                else:
-                    if not self.archive.intake_ok(size):
-                        raise NoSpace()
-                    folder = self.archive.jobs / job_id
-                folder.mkdir(parents=True)
-                os.replace(path, folder / "upload.vrf")
+                if self.archive is not None and not self.archive.intake_ok(0):
+                    raise NoSpace()
                 job = Job(job_id, folder, sha256, size)
-                # ... the rest of today's submit body from `job.game_build = ...` unchanged ...
-        finally:
-            path.unlink(missing_ok=True)
+                job.game_build = self._unsupported_build(folder / "upload.vrf")
+                if job.game_build is not None:
+                    self._hold(job)
+                else:
+                    self._save(job)
+                    self.queue.put_nowait(job)
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        if job.status != "queued":
+            with self.lock:
+                self.jobs[job.id] = job
+            return job
+        self._admitted(job)
+        return job
+
+    def submit(self, body: bytes) -> Job:
+        job_id, folder = self.reserve_folder(len(body))
+        try:
+            (folder / "upload.vrf").write_bytes(body)
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        return self.submit_streamed(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
 ```
 
-(Move today's `submit` body into `submit_path`, replacing `(folder / "upload.vrf").write_bytes(body)` and `hashlib.sha256(body).hexdigest(), len(body)` as shown. The `finally` removes the intake file if anything failed before the rename.) Also, on startup, empty `intake_dir()`: a restart mid-upload leaves a part file. Do this at the end of `Worker.__init__` with `shutil.rmtree(self.intake_dir(), ignore_errors=True)`, then let the next `intake_dir()` call recreate the folder.
+`intake_ok(0)` in `submit_streamed` re-checks under the admission lock that the disk still has room now that the
+file is written (`intake_ok` counts what `jobs/` holds, which includes this file). Concurrent uploads can each
+pass `reserve_folder` before any is written; the archive's 5 GB `ARCHIVE_SLACK` covers that overlap (15 uploads at
+the 200 MB cap is 3 GB).
 
-The `/jobs` branch of `do_POST`:
+- [ ] **Step 4: The route**
+
+Replace the `/jobs` branch of `do_POST` (`server.py:1654-1668`, from `length = self.headers.get("Content-Length")`
+to the `return self._send(HTTPStatus.ACCEPTED, ...)`) with:
 
 ```python
-            size = int(length)
-            if size > worker.settings.max_bytes:
+            size = self._length(len(VRF_MAGIC), worker.settings.max_bytes)
+            if size is None:
+                return None
+            try:
+                job_id, folder = worker.reserve_folder(size)
+            except NoSpace:
                 self.close_connection = True
-                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "file too large"})
-            self.connection.settimeout(30)
-            part = worker.intake_dir() / f"{uuid.uuid4().hex}.vrf"
+                return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the worker is busy, try again soon"})
+            self.connection.settimeout(30)               # a stalled client can't hold this thread for ever
             digest, remaining, first = hashlib.sha256(), size, True
             try:
-                with part.open("wb") as sink:
+                with (folder / "upload.vrf").open("wb") as sink:
                     while remaining:
                         chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
                         if not chunk:
@@ -435,95 +314,141 @@ The `/jobs` branch of `do_POST`:
             except OSError:
                 remaining = remaining or 1
             if remaining:
-                part.unlink(missing_ok=True)
+                shutil.rmtree(folder, ignore_errors=True)
                 self.close_connection = True
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a Valorant replay"})
             try:
-                job = worker.submit_path(part, digest.hexdigest(), size)
+                job = worker.submit_streamed(job_id, folder, digest.hexdigest(), size)
             except (queue.Full, NoSpace):
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the worker is busy, try again soon"})
             return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
 ```
 
-A first chunk shorter than 4 bytes is read as not a replay. `rfile.read(n)` blocks until it has `n` bytes or EOF, so the first chunk is a full megabyte, or the whole body when the body is smaller.
+`rfile.read(n)` returns up to `n` bytes, or fewer only at EOF, so the first chunk is the first megabyte (or the
+whole body when it is smaller), and a body of at least 4 bytes always carries the magic in it. A bad magic breaks
+with `remaining > 0`, so it lands in the same cleanup as a short body. The `_length` low bound (4) refuses `0`
+and `3` before any folder exists.
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 5: Run the worker tests**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/replays -k "worker" -q`
-Expected: all pass.
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays -k "worker or archive or held or upload" -q`
+Expected: all pass, the existing ones unchanged.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add replay_worker/server.py webapp/tests/replays/test_replay_worker.py
-git commit -m "replay worker: uploads stream to disk"
+git commit -m "replay worker: uploads stream into the job's folder"
 ```
 
 ---
 
-### Task 6: The slim image and the smaller plan
+### Task 4: The slim image and the smaller plan
 
 **Files:**
 - Modify: `replay_worker/Dockerfile`, `render.yaml`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md`
+- Test: `webapp/tests/replays/test_replay_worker_control.py` (`test_the_image_builds_a_control_venv_with_the_web_apps_pins`)
 
-- [ ] **Step 1: The worker image**
+- [ ] **Step 1: Update the image test first**
 
-Rewrite `replay_worker/Dockerfile` without the parser stages:
+In `test_the_image_builds_a_control_venv_with_the_web_apps_pins`, add after the last assertion:
 
-```dockerfile
-# The replay worker: a file and job service (docs/superpowers/specs/2026-10-14-render-workflows-design.md, step 5).
-# Parsing, map control and height builds run on the replay-tasks Workflow (replay_tasks/Dockerfile). The control
-# venv stays for feature verification (verify_feature_upload, spec D14).
-FROM python:3.13-slim
-RUN apt-get update && apt-get install -y --no-install-recommends util-linux && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --home /srv worker
-RUN python3 -m venv /opt/control-venv \
- && /opt/control-venv/bin/pip install --no-cache-dir --only-binary=:all: numpy==2.4.6 scipy==1.18.1 Pillow==10.4.0
-COPY webapp/app/__init__.py /srv/webapp/app/__init__.py
-COPY webapp/app/replays /srv/webapp/app/replays
-COPY webapp/app/control /srv/webapp/app/control
-COPY webapp/app/gaps /srv/webapp/app/gaps
-COPY webapp/app/static/data /srv/webapp/app/static/data
-COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
-COPY webapp/scripts/ascent_map_messages.patch /srv/webapp/scripts/ascent_map_messages.patch
-COPY webapp/scripts/map_pool_messages.patch /srv/webapp/scripts/map_pool_messages.patch
-COPY replay_worker /srv/replay_worker
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import app.control.feature_job, app.replays.map_feature_artifacts; from app.replays.contract import load_pin, current_recipe; load_pin(); current_recipe()"
-RUN PYTHONPATH=/srv/webapp:/srv python3 -c "import replay_worker.server"
-RUN mkdir -p /jobs && chown -R worker /jobs && command -v setpriv
-WORKDIR /srv
-ENV REPLAY_WORKER_TMP=/jobs \
-    REPLAY_CONTROL_CMD='["/opt/control-venv/bin/python", "-m", "replay_worker.control_job"]' \
-    CONTROL_CACHE_DIR=/var/replay/control_cache \
-    PYTHONUNBUFFERED=1
-ENTRYPOINT ["sh", "/srv/replay_worker/entrypoint.sh"]
-CMD ["python3", "-m", "replay_worker.server"]
+```python
+    # Step 5 (spec D14): the parser is the workflow's (replay_tasks/Dockerfile); the worker has none.
+    assert "dotnet publish" not in dockerfile and "/opt/parser" not in dockerfile
+    assert "REPLAY_PARSER_CMD" not in dockerfile
+    tasks_image = (REPO / "replay_tasks" / "Dockerfile").read_text(encoding="utf-8")
+    assert "dotnet publish src/CliReader" in tasks_image and "REPLAY_PARSER_CMD" in tasks_image
+    assert tasks_image.rstrip().endswith('CMD ["/opt/control-venv/bin/python", "-m", "replay_tasks.main"]')
 ```
 
-Copy the remaining `ENV` lines of today's worker Dockerfile that don't name the parser (`REPLAY_MAX_BYTES`, `REPLAY_QUEUE_SIZE` and any other the current file sets). Leave out `REPLAY_PARSER_CMD`, `REPLAY_PARSER_BUILD`, `REPLAY_MEMORY_CAP_MB` and `REPLAY_HEIGHT_CMD`: those now live in `replay_tasks/Dockerfile`, which already sets them.
+Every existing assertion in that test still holds for the slim image (the control venv, its pins, the gaps
+modules, `REPLAY_CONTROL_CMD`, `REPLAY_HEIGHT_CMD`, `CONTROL_CACHE_DIR=/jobs/control_cache`, the final `CMD`).
 
-- [ ] **Step 2: `render.yaml`**
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_control.py -v -k image`
+Expected: FAIL on `"dotnet publish" not in dockerfile`.
 
-On `replay-worker`: `plan: standard` (1 CPU / 2 GB), with the comment `# A file and job service since step 5 (spec 2026-10-14); work runs on the replay-tasks Workflow.` Remove the `REPLAY_PARSE_RUNNER`, `REPLAY_CONTROL_RUNNER` and `REPLAY_HEIGHTS_RUNNER` entries. Update the plan comment on the web service that names the worker's `2c-4g`.
+- [ ] **Step 2: The worker image**
 
-- [ ] **Step 3: Docs**
+In `replay_worker/Dockerfile`:
+- delete stage 1 (`FROM python:3.13-slim AS source` … the `RUN python /pin/apply_parser_pin.py ...` line) and
+  stage 2 (`FROM mcr.microsoft.com/dotnet/sdk:10.0 AS parser` … `RUN dotnet publish src/CliReader -c Release -o /out`);
+- delete `COPY --from=parser /out /opt/parser`;
+- in the final `ENV` block delete only the `REPLAY_PARSER_CMD=...` line and the `REPLAY_MEMORY_CAP_MB=0` line (both
+  are the parser's; `replay_tasks/Dockerfile` keeps them);
+- change the header comment's first lines to: `# The replay worker: uploads, the .vrf archive, the job records, and
+  the hand-off to the replay-tasks Workflow (docs/superpowers/specs/2026-10-14-render-workflows-design.md, step 5).
+  Parsing runs on the Workflow; the control venv stays for feature verification and the local control/heights
+  paths (D14).`
 
-`replay_worker/README.md`: rewrite the opening ("parses one uploaded `.vrf` at a time") to say what it is now: it takes uploads, keeps the archive and the job records, and hands parsing, control and height builds to the `replay-tasks` Workflow. Remove the sections on preemption, the local pool and idle. `RENDER_DEPLOY.md`: a short "Step 5" note saying the worker needs `RENDER_API_KEY` and `REPLAY_WORKFLOW_SLUG` to start at all.
+The base stays `mcr.microsoft.com/dotnet/runtime:10.0` (its `python3` is what the server runs on today; changing the
+base is out of scope). The final `ENV` block is then:
 
-- [ ] **Step 4: Full suite and commit**
+```dockerfile
+ENV REPLAY_WORKER_TMP=/jobs \
+    REPLAY_TIMEOUT_S=240 \
+    REPLAY_MAX_BYTES=200000000 \
+    REPLAY_QUEUE_SIZE=5 \
+    REPLAY_WORKER_HOST=0.0.0.0 \
+    REPLAY_WORKER_PORT=8080 \
+    REPLAY_CONTROL_CMD='["/opt/control-venv/bin/python", "-m", "replay_worker.control_job"]' \
+    REPLAY_CONTROL_WORKERS=2 \
+    REPLAY_HEIGHT_CMD='["/opt/control-venv/bin/python", "-m", "replay_worker.height_job"]' \
+    CONTROL_CACHE_DIR=/jobs/control_cache \
+    PYTHONUNBUFFERED=1
+```
+
+(`render.yaml` overrides `REPLAY_QUEUE_SIZE` and `CONTROL_CACHE_DIR` on Render, as steps 2 and 3 set them.)
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_control.py -v -k image`
+Expected: PASS.
+
+- [ ] **Step 3: `render.yaml`**
+
+On `replay-worker`, `plan: 2c-4g` becomes `plan: standard`, and its comment becomes:
+
+```yaml
+    # 1 CPU / 2 GB: since step 5 (docs/superpowers/specs/2026-10-14-render-workflows-design.md) the worker only takes
+    # uploads, keeps the archive and the job records and hands parsing, control and heights to the replay-tasks
+    # Workflow. Sized from step 3's measured result sizes and the memory graph at 15 parses (RENDER_DEPLOY.md).
+```
+
+Update the web service's plan comment that names the worker's `2c-4g`.
+
+- [ ] **Step 4: Docs**
+
+`replay_worker/README.md`: the opening paragraph says what the worker is now: it takes uploads (streamed to
+disk), keeps the archive, the receipts and the job records, and hands parsing, map control and height builds to the
+`replay-tasks` Workflow; the local child paths remain for development and as the rollback for control and heights.
+`RENDER_DEPLOY.md`, Workflows section:
+
+```markdown
+### Step 5: the slim worker
+
+Before merging 5b:
+1. `replay-tasks` builds from `replay_tasks/Dockerfile` (5a) and the ping is OK.
+2. `replay-worker` → Environment: `REPLAY_PARSE_RUNNER`, `REPLAY_CONTROL_RUNNER` and `REPLAY_HEIGHTS_RUNNER` are
+   all `workflow`. (The slim image refuses to start with a local parse runner.)
+3. Memory: during a burst of 15 parses (or the largest burst seen), `replay-worker` → Metrics → memory stays well
+   under 2 GB, and the largest `run result ... parse <bytes>` line times 15 fits in what is left. If not, keep
+   `plan: 2c-4g` in 5b's `render.yaml` and say why in its comment.
+
+After merging: the worker redeploys onto `standard`. Check `/health` (recipe, archive, runners), one upload parses,
+and a new match's control runs. Rolling control or heights back to `local` still works on this image; parsing
+can't, by design.
+```
+
+- [ ] **Step 5: Full suite and commit**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests -q`
 Expected: all pass.
 
 ```bash
-git add replay_worker/Dockerfile render.yaml replay_worker/README.md webapp/RENDER_DEPLOY.md
+git add replay_worker/Dockerfile render.yaml replay_worker/README.md webapp/RENDER_DEPLOY.md webapp/tests/replays/test_replay_worker_control.py
 git commit -m "replay worker: slim image (no parser), standard plan"
 ```
 
-- [ ] **Step 5: On Render (the owner)**
+- [ ] **Step 6: On Render (the owner)**
 
-Before merging 5b, check that `replay-tasks` builds from `replay_tasks/Dockerfile` (5a). After merging, the worker redeploys onto `standard`. Check:
-- `/health` reads `recipe` and the archive as before.
-- One upload parses.
-- A new match's control runs.
-- The worker's memory graph during five uploads stays under 2 GB.
+Follow "Step 5: the slim worker" before and after the merge. Done when the worker runs on `standard`, its image
+has no parser, one upload parses and a match's control runs, and the memory check is recorded.

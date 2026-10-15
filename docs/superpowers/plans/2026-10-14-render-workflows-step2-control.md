@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 standard library, pytest, the step-1 run table (`replay_worker/runs.py`), pydantic-settings on the site.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D5, D6, D7, D8, D9)
+**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D5, D6, D7, D8, D9, D17)
 
 **Depends on:** step 1 merged and its ping passing on Render.
 
@@ -16,18 +16,20 @@
 
 - `CONTROL_MAX_MATCHES` = 1 and `CONTROL_MAX_RUNS` = 40 on the site (D5); "match" means `replay_id`.
 - Worker: `REPLAY_CONTROL_RUNS` = 40 (runs at once in workflow mode; `REPLAY_CONTROL_WORKERS` stays the local pool of 2); `REPLAY_CONTROL_QUEUE` = 64.
-- `control` task: plan `flex`, `timeout_seconds=1800`, `Retry(max_retries=1, ...)` (D7-D9).
-- Visibility caches: newest 3 per map per folder (root and `feature-rows/`), inside `CONTROL_CACHE_RESERVE` = 2 GiB taken out of the archive budget (D6).
-- A map's first round still runs alone (warming); a parse never preempts a workflow run.
-- `REPLAY_CONTROL_RUNNER` stays `local` in `render.yaml` at merge; the owner flips it.
-- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
+- `control` task: plan `flex`, `timeout_seconds=1800`, `Retry(max_retries=1, ...)` (D7-D9), defined above `main.py`'s `if __name__ == "__main__":` block.
+- Caches (D6): newest 3 per map per folder (root and `feature-rows/`); a file that would take the cache folder past `control_cache.RESERVE` (2 GiB) is refused; a run posts every cache file it created **or changed**, before its result; a map is warm only once its visibility cache is on the worker's disk; a run that can't fetch a cache file skips it.
+- Preemption follows where **parsing** runs (D17): a local parse preempts local children only; it never touches a Workflow run.
+- `REPLAY_CONTROL_RUNNER` is `sync: false` (step 1) and stays unset (local) at merge; the owner flips it in the dashboard.
+- Uploads into the cache go to `<cache>/.incoming/` (same filesystem as the cache, so installing one is a rename); `.incoming` is emptied when the server starts.
+- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`. Test servers close with `shutdown()` and `server_close()` in `finally`.
 
 ## Review Focus
 
-- A run that builds a visibility cache must post it **before** its result: after the result the run is closed and a cache post is refused.
-- A parse arriving while 40 workflow runs are going must not mark them preempted (their results would be thrown away and re-queued forever).
+- A run that builds a visibility cache must post it **before** its result: after the result the run is closed and a cache post is refused. (A cache file that was already being uploaded when the run settled may still land: caches are named by their content's identity, so it is still correct, D6.)
+- A parse arriving while 40 workflow runs are going must not mark them preempted (their results would be thrown away and re-queued forever); with heights still local, the same parse must still preempt a local height build.
 - A cache file name posted by a run that isn't `<Map>.<hex>.npz` (or under `feature-rows/`) for that run's map — e.g. `../archive/x.vrf` — must be refused.
-- With the site's match limit at 1, a replay with 45 rounds sends 40, then the remaining 5 as runs finish; a second replay waits until the first has nothing in flight.
+- A feature-row cache rewritten in place by the run (same name, new rows) must reach the worker.
+- A map whose warming round succeeded but whose cache upload failed must not be marked warm (40 runs would each rebuild it).
 - Rolling back (`REPLAY_CONTROL_RUNNER=local`) with `REPLAY_CONTROL_RUNS=40` set must still run only `REPLAY_CONTROL_WORKERS` (2) children.
 
 ---
@@ -54,7 +56,7 @@
 - Test: `webapp/tests/replays/test_replay_worker_control_cache.py`
 
 **Interfaces:**
-- Produces: `KEPT = 3`; `RESERVE = 2 * 1024**3`; `inputs(cache_dir: Path, task: dict) -> dict[str, Path]` (names are paths relative to `cache_dir`, posix style); `valid(name: str, map_name: str) -> bool`; `store(cache_dir: Path, name: str, src: Path) -> None`; `Archive.cache_reserve: int` (default 0).
+- Produces: `KEPT = 3`; `RESERVE = 2 * 1024**3`; `inputs(cache_dir: Path, task: dict) -> dict[str, Path]` (names are paths relative to `cache_dir`, posix style); `valid(name: str, map_name: str) -> bool`; `store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool` (False, with `src` deleted, when installing it would take the cache folder past `reserve`); `has_visibility(cache_dir: Path, map_name: str) -> bool`; `clear_incoming(cache_dir: Path) -> None`; `Archive.cache_reserve: int` (default 0).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -119,6 +121,42 @@ def test_store_replaces_atomically_and_prunes_to_kept(tmp_path):
     assert not src.exists()
 
 
+def test_store_refuses_a_file_past_the_reserve(tmp_path):
+    touch(tmp_path / "Ascent.0000000000000001.npz")
+    big = tmp_path / ".incoming" / "x.npz"
+    big.parent.mkdir()
+    big.write_bytes(b"y" * 100)
+    assert control_cache.store(tmp_path, "Bind.0000000000000002.npz", big, reserve=50) is False
+    assert not (tmp_path / "Bind.0000000000000002.npz").exists() and not big.exists()
+
+
+def test_concurrent_stores_keep_kept_and_lose_nothing_mid_rename(tmp_path):
+    import threading
+    (tmp_path / ".incoming").mkdir()
+
+    def put(i):
+        src = tmp_path / ".incoming" / f"{i}.npz"
+        src.write_bytes(b"z")
+        assert control_cache.store(tmp_path, f"Ascent.{i:016x}.npz", src)
+    threads = [threading.Thread(target=put, args=(i,)) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(list(tmp_path.glob("Ascent.*.npz"))) == control_cache.KEPT
+
+
+def test_has_visibility_and_clear_incoming(tmp_path):
+    assert not control_cache.has_visibility(tmp_path, "Ascent")
+    touch(tmp_path / f"feature-rows/Ascent.{'c' * 64}.npz")
+    assert not control_cache.has_visibility(tmp_path, "Ascent")      # feature rows alone don't warm a map
+    touch(tmp_path / "Ascent.0000000000000001.npz")
+    assert control_cache.has_visibility(tmp_path, "Ascent")
+    touch(tmp_path / ".incoming" / "left-over.npz")
+    control_cache.clear_incoming(tmp_path)
+    assert not any((tmp_path / ".incoming").iterdir())
+
+
 def test_archive_budget_leaves_the_cache_reserve(tmp_path):
     a = archive.Archive(tmp_path, 100 * archive.GB, max_bytes=10, queue_size=1)
     before = a.budget()
@@ -140,18 +178,33 @@ Expected: FAIL, `ImportError: cannot import name 'control_cache'`.
 A control run starts on a blank machine. It gets the map's newest visibility caches (`<Map>.<16 hex>.npz`,
 app/control/geometry.py) and feature-row caches (`feature-rows/<Map>.<64 hex>.npz`,
 app/control/feature_visibility.py), plus the round's height asset and feature artifact when the worker has them,
-under the same relative names, and posts back any cache it built. KEPT newest per map and folder stay; the
-archive keeps RESERVE free for them."""
+under the same relative names, and posts back any cache it created or changed. KEPT newest per map and folder
+stay; the archive keeps RESERVE free for them, and a file that would take the folder past it is refused. Cache
+files are named by their content's identity, so a late one is still correct (spec D6)."""
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
+import threading
 from pathlib import Path
 
 KEPT = 3
 RESERVE = 2 * 1024 ** 3
 _NAME = re.compile(r"^(?P<folder>feature-rows/)?(?P<map>[A-Za-z]+)\.(?P<key>[0-9a-f]{16}|[0-9a-f]{64})\.npz$")
+_LOCK = threading.Lock()          # every install and prune; reads (inputs) need none: files are replaced atomically
+
+
+def _tree_bytes(cache_dir: Path) -> int:
+    total = 0
+    for path in Path(cache_dir).rglob("*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            pass                  # pruned or replaced meanwhile
+    return total
 
 
 def _newest(folder: Path, map_name: str) -> list[Path]:
@@ -183,14 +236,35 @@ def valid(name: str, map_name: str) -> bool:
     return bool(match) and match["map"] == map_name
 
 
-def store(cache_dir: Path, name: str, src: Path) -> None:
-    """Moves a posted cache file into place (atomic within the disk) and prunes its map's folder to KEPT."""
+def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool:
+    """Moves a posted cache file into place (a rename: `src` is in `<cache>/.incoming`) and prunes its map's folder
+    to KEPT. False, with `src` deleted, when the cache folder would grow past `reserve`."""
     target = Path(cache_dir) / name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(src, target)
     map_name = _NAME.match(name)["map"]
-    for old in _newest(target.parent, map_name)[KEPT:]:
-        old.unlink(missing_ok=True)
+    try:
+        with _LOCK:
+            replaced = target.stat().st_size if target.is_file() else 0
+            # `src` already sits under cache_dir/.incoming, so the tree's total counts it once.
+            if _tree_bytes(cache_dir) - replaced > reserve:
+                return False
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(src, target)
+            for old in _newest(target.parent, map_name)[KEPT:]:
+                old.unlink(missing_ok=True)
+            return True
+    finally:
+        Path(src).unlink(missing_ok=True)
+
+
+def has_visibility(cache_dir: Path, map_name: str) -> bool:
+    """The map's visibility cache is here: a round of it won't have to build one (what "warm" means, D6)."""
+    return bool(_newest(Path(cache_dir), map_name))
+
+
+def clear_incoming(cache_dir: Path) -> None:
+    """Part files a restart left behind."""
+    shutil.rmtree(Path(cache_dir) / ".incoming", ignore_errors=True)
+    (Path(cache_dir) / ".incoming").mkdir(parents=True, exist_ok=True)
 ```
 
 In `archive.py`, `Archive.__init__` after `self.held_bytes = ...`:
@@ -213,8 +287,8 @@ and in `intake_ok`, subtract `self.cache_reserve` on the right-hand side of the 
         return held + size <= self.total - ARCHIVE_SLACK - PARSE_RESERVE_FACTOR * self.max_bytes - self.cache_reserve
 ```
 
-(`os.replace` in `store` needs `src` on the same disk: the route in Task 3 writes the upload into the run's
-folder under `temp_root`; Task 3 moves `temp_root/runs` onto the disk with the cache, see there.)
+(`os.replace` in `store` needs `src` on the same filesystem as the cache: the route in Task 3 writes each upload to
+`<cache>/.incoming/`, and `main()` calls `clear_incoming` at startup.)
 
 - [ ] **Step 4: Run the tests**
 
@@ -265,12 +339,17 @@ from replay_tasks import tasks  # noqa: E402
 from replay_worker import runs, server  # noqa: E402
 
 STUB = """
-import json, os, sys, pathlib
+import json, os, sys, pathlib, time
 task = json.loads(sys.stdin.buffer.read())
+if str(task["link"].get("mode", "")).startswith("sleep"):
+    time.sleep(float(task["link"]["mode"].split(":")[1]))
 cache = pathlib.Path(os.environ["CONTROL_CACHE_DIR"])
 had = sorted(p.relative_to(cache).as_posix() for p in cache.rglob("*") if p.is_file())
 if task["link"].get("build"):
     (cache / f"{task['map']}.{'c' * 16}.npz").write_bytes(b"built")
+if task["link"].get("learn"):              # feature rows learned: the same file, rewritten in place
+    rows = cache / "feature-rows" / f"{task['map']}.{'d' * 64}.npz"
+    rows.write_bytes(rows.read_bytes() + b"+more")
 mode = task["link"].get("mode", "ok")
 if mode == "engine":
     print(json.dumps({"status": "failed", "error_kind": "engine", "error": "no side"}))
@@ -284,6 +363,8 @@ class FakeLink:
         self.files, self.posted, self.result, self.order = files, {}, None, []
 
     def fetch(self, name, dest):
+        if name not in self.files:
+            raise OSError(f"404 {name}")             # as urllib's HTTPError (an OSError) for a pruned file
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         Path(dest).write_bytes(self.files[name])
         return Path(dest)
@@ -319,6 +400,20 @@ def test_control_task_mirrors_caches_runs_the_child_and_posts_new_caches_first(s
     assert link.result["had"] == ["Ascent.0123456789abcdef.npz", "heights/Ascent.d1.height.npz"]
     assert link.order == [f"cache/Ascent.{'c' * 16}.npz", "result"]
     assert link.posted[f"cache/Ascent.{'c' * 16}.npz"] == b"built"
+
+
+def test_control_task_posts_a_cache_rewritten_in_place(stub):
+    rows = f"feature-rows/Ascent.{'d' * 64}.npz"
+    link = FakeLink({"task": json.dumps(round_task(learn=True)).encode(), rows: b"rows"})
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [rows]}, link)
+    route = "cache/" + rows.replace("/", "%2F")
+    assert link.order == [route, "result"] and link.posted[route] == b"rows+more"
+
+
+def test_control_task_skips_a_cache_file_it_cannot_fetch(stub):
+    link = FakeLink({"task": json.dumps(round_task()).encode()})       # the listed cache was pruned meanwhile
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": ["Ascent.0123456789abcdef.npz"]}, link)
+    assert link.result["status"] == "ok" and link.result["had"] == []
 
 
 def test_control_task_passes_an_engine_failure_through(stub):
@@ -377,29 +472,55 @@ def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path) 
     return answer
 
 
-def _cache_files(cache: Path) -> set[str]:
-    return {p.relative_to(cache).as_posix() for p in cache.rglob("*.npz")}
+def _cache_files(cache: Path) -> dict[str, str]:
+    """Every .npz under the run's cache folder, by relative name, with a hash of its bytes: feature-row caches are
+    rewritten in place under the same name (app/control/feature_visibility.py, persist), so a name isn't enough."""
+    import hashlib
+
+    out = {}
+    for path in cache.rglob("*.npz"):
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(CHUNK), b""):
+                digest.update(chunk)
+        out[path.relative_to(cache).as_posix()] = digest.hexdigest()
+    return out
+
+
+def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path) -> None:
+    """The worker's cached files for this run. One that can't be fetched (pruned since the run was opened) is
+    skipped: the child rebuilds what it needs (spec D6)."""
+    for name in names:
+        try:
+            link.fetch(name, cache / name)
+        except OSError:
+            (cache / name).unlink(missing_ok=True)
+
+
+def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> None:
+    """Every cache file the child created or changed, before the result: once the result is in, the worker
+    closes the run and refuses anything else from it."""
+    from replay_worker import control_cache
+
+    after = _cache_files(cache)
+    for name in sorted(n for n, digest in after.items() if before.get(n) != digest):
+        if control_cache.valid(name, map_name):
+            try:
+                link.post_file(f"cache/{urllib.parse.quote(name, safe='')}", cache / name)
+            except OSError:
+                pass     # the worker then doesn't count the map as warm (D6); the next run rebuilds
 
 
 def control(args: dict, link: WorkerLink) -> None:
-    from replay_worker import control_cache
-
     work = Path(tempfile.mkdtemp(prefix="control-"))
     try:
         cache = work / "cache"
         cache.mkdir()
-        for name in args.get("files", []):
-            link.fetch(name, cache / name)
+        _fetch_inputs(link, args.get("files", []), cache)
         before = _cache_files(cache)
         stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
-        # Caches first: once the result is in, the worker closes the run and refuses anything else from it.
-        for name in sorted(_cache_files(cache) - before):
-            if control_cache.valid(name, args["map"]):
-                try:
-                    link.post_file(f"cache/{urllib.parse.quote(name, safe='')}", cache / name)
-                except OSError:
-                    pass     # a lost cache costs the next run a rebuild, nothing else
+        _post_caches(link, cache, before, args["map"])
         link.post_result(answer)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -408,9 +529,11 @@ def control(args: dict, link: WorkerLink) -> None:
 TASKS = {"ping": ping, "control": control}
 ```
 
-(Replace the earlier `TASKS = {"ping": ping}` line.)
+(Replace the earlier `TASKS = {"ping": ping}` line; `TASKS` stays the last statement of `tasks.py`, after every
+body it names.)
 
-In `replay_tasks/main.py` add:
+In `replay_tasks/main.py`, add below the `ping` task and **above** the `if __name__ == "__main__":` block (a task
+defined after `app.start()` runs is never registered):
 
 ```python
 @app.task(name="control", timeout_seconds=1800, retry=Retry(max_retries=1, wait_duration_ms=5000))
@@ -422,7 +545,7 @@ def control(ctx: TaskContext, args: dict) -> dict:
 - [ ] **Step 4: Run the tests**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_control_workflow.py -v`
-Expected: 3 passed.
+Expected: 5 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -441,7 +564,7 @@ git commit -m "replay tasks: the control task"
 
 **Interfaces:**
 - Consumes: `control_cache.inputs`, `.valid`, `.store`, `.RESERVE` (Task 1); `tasks.control` (Task 2); `runs.Runs` (step 1).
-- Produces: `Settings.control_runs: int` (40, `REPLAY_CONTROL_RUNS`); `ControlRunner(settings, idle=None, runs_table=None)`; `ControlRunner.remote(job) -> bool`; route `POST /runs/{job}/cache/{name}` (header `X-Run-Token`): 200 stored, 409 no such open control run, 400 bad name, 413 over 64 MiB.
+- Produces: `Settings.control_runs: int` (40, `REPLAY_CONTROL_RUNS`); `ControlRunner(settings, idle=None, runs_table=None)`; `ControlRunner.remote(job) -> bool`; route `POST /runs/{job}/cache/{name}` (header `X-Run-Token`): 200 stored, 409 no such open control run, 400 bad name or length, 413 over 64 MiB, 507 the cache is at its reserve.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -462,9 +585,21 @@ def remote(tmp_path, stub):
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
-    yield control, render, settings, base
-    httpd.shutdown()
-    render.close()
+    try:
+        yield control, render, settings, base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
+
+
+def wait_running(control, at_least, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        if control.counts()["running"] >= at_least:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"never {at_least} running at once")
 
 
 def wait_done(control, jobs, timeout=60):
@@ -494,17 +629,57 @@ def test_engine_failure_settles_engine(remote):
     assert wait_done(control, [job])[0].error_kind == "engine"
 
 
+def warm_up(control):
+    """A first round that builds Ascent's visibility cache, so later rounds run side by side."""
+    wait_done(control, [control.submit(round_task("warm", build=True))])
+
+
 def test_a_parse_does_not_preempt_workflow_runs(remote):
     control, _, _, _ = remote
+    warm_up(control)
+    jobs = [control.submit(round_task(f"p{i}", mode="sleep:1.5")) for i in range(3)]
+    wait_running(control, 3)
     assert control.preempt() == 0
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    assert control.counts()["preempted"] == 0
 
 
 def test_runs_ignore_the_local_pool_size(remote):
     control, _, settings, _ = remote
     assert settings.control_workers == 2
+    warm_up(control)
     control.idle = lambda: False                     # a parse is on: local mode would allow only one
-    jobs = [control.submit(round_task(f"w{i}", map_name="Ascent")) for i in range(6)]
+    jobs = [control.submit(round_task(f"w{i}", mode="sleep:1.5")) for i in range(6)]
+    wait_running(control, 6)                         # all six at once: more than the local pool of 2
     assert all(j.status == "done" for j in wait_done(control, jobs))
+
+
+def test_a_local_parse_still_preempts_a_local_height_build(tmp_path, stub):
+    """Control on Workflows, heights still local (spec D17): the local build is a victim, as today."""
+    import subprocess
+    render = FakeRender()
+    try:
+        settings = server.Settings(temp_root=tmp_path, control_runner="workflow", workflow_slug="w",
+                                   render_api_key="k", render_api_base=render.url)
+        control = server.ControlRunner(settings, runs_table=server.make_runs(settings))
+        build = server.ControlJob("b1", "key", "Ascent", b"{}", kind="heights")
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        with control.lock:
+            control.jobs["b1"], control.running["b1"], control.procs["b1"] = build, False, process
+        assert control.preempt() == 1 and "b1" in control.preempted
+        assert process.wait(timeout=10) is not None
+    finally:
+        render.close()
+
+
+def test_a_map_is_not_warm_when_its_cache_never_reached_the_worker(remote, monkeypatch):
+    from replay_worker import control_cache
+    control, _, settings, _ = remote
+    monkeypatch.setattr(control_cache, "store", lambda *a, **k: False)     # the worker refuses every cache file
+    job = control.submit(round_task("w0", build=True))
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_key not in control.warm
+    assert not control_cache.has_visibility(settings.control_cache_dir, "Ascent")
 
 
 def test_cache_route_refuses_other_maps_and_paths(remote, tmp_path):
@@ -566,12 +741,23 @@ New method:
         return self.runs is not None and job.kind == "control" and self.settings.control_runner == "workflow"
 ```
 
-`preempt()`: first line of the body:
+`preempt()`: a Workflow run is never a victim (spec D17); local children are, as today. Replace its first line
+inside the lock,
 
 ```python
-        if self.settings.control_runner == "workflow":
-            return 0                                 # runs are on other machines: a parse takes nothing from them
+            alive = [job_id for job_id in self.running if job_id not in self.preempted]
 ```
+
+with
+
+```python
+            # Only children on this machine: a Workflow run takes no CPU from a parse (spec D17).
+            alive = [job_id for job_id in self.running
+                     if job_id not in self.preempted and not self.remote(self.jobs[job_id])]
+```
+
+The rest of `preempt` is unchanged: it keeps the first local control child and kills the other local children,
+including a local height build. With every control round remote, `alive` holds only local height builds.
 
 `_next()`: replace the first two lines
 
@@ -619,7 +805,33 @@ becomes
                 answer = json.loads(stdout or b"{}")
 ```
 
-and the following `if answer.get("status") == "ok": ...` stays as it is. Add:
+and the following `if answer.get("status") == "ok": ...` stays as it is.
+
+In the settlement under the lock at the end of `_run`, the warm rule changes for remote rounds (spec D6): today's
+
+```python
+                if job.kind == "control":
+                    if status == "done" or kind == "engine":
+                        self.warm.add(job.warm_key)
+                    else:
+                        self.warm.discard(job.warm_key)
+```
+
+becomes
+
+```python
+                if job.kind == "control":
+                    # A remote round's map is warm only once its visibility cache is on this disk: a run whose
+                    # cache upload failed would otherwise release every other round to rebuild it.
+                    cached = not self.remote(job) or control_cache.has_visibility(self.settings.control_cache_dir,
+                                                                                  job.map)
+                    if (status == "done" or kind == "engine") and cached:
+                        self.warm.add(job.warm_key)
+                    else:
+                        self.warm.discard(job.warm_key)
+```
+
+Add:
 
 ```python
     def _run_remote(self, job: ControlJob, timeout: float) -> dict:
@@ -658,25 +870,28 @@ Import `control_cache` beside `runs` (same try/except pattern as step 1).
             if not control_cache.valid(name, job.map):
                 self.close_connection = True
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cache file of this map"})
-            size = int(self.headers.get("Content-Length") or -1)
-            if not 0 < size <= 64 * 1024 * 1024:
-                self.close_connection = True
-                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "bad size"})
+            size = self._length(1, 64 * 1024 * 1024)
+            if size is None:
+                return None
             incoming = control.settings.control_cache_dir / ".incoming" / f"{uuid.uuid4().hex}.npz"
             incoming.parent.mkdir(parents=True, exist_ok=True)
-            with incoming.open("wb") as sink:
-                remaining = size
-                while remaining:
-                    chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
-                    if not chunk:
-                        break
-                    sink.write(chunk)
-                    remaining -= len(chunk)
-            if remaining:
+            try:
+                with incoming.open("wb") as sink:
+                    remaining = size
+                    while remaining:
+                        chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                        if not chunk:
+                            break
+                        sink.write(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
+                # A file arriving as its run settles is still kept: caches are named by their content's identity.
+                if not control_cache.store(control.settings.control_cache_dir, name, incoming):
+                    return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": "the cache is at its reserve"})
+                return self._send(HTTPStatus.OK, {"stored": name})
+            finally:
                 incoming.unlink(missing_ok=True)
-                return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
-            control_cache.store(control.settings.control_cache_dir, name, incoming)
-            return self._send(HTTPStatus.OK, {"stored": name})
 ```
 
 The upload lands in `<cache>/.incoming/` so `store`'s `os.replace` stays on one filesystem. In `do_POST`'s `/runs/` block add, before the `/result` check:
@@ -688,20 +903,25 @@ The upload lands in `<cache>/.incoming/` so `store`'s `os.replace` stays on one 
 
 - [ ] **Step 6: `main()`**
 
+The cache's room has to be reserved **before** the Worker opens the archive and recovers its jobs. Add a setting
+the Worker applies right after `open_archive` succeeds (`Settings.archive_extra_reserve: int = 0`; in
+`Worker.__init__`, after `self.archive.held_bytes = self.held_bytes`, add
+`self.archive.cache_reserve = settings.archive_extra_reserve`). Then in `main()`:
+
 ```python
     runs_table = make_runs(settings)
+    if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
+            settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += control_cache.RESERVE
+    control_cache.clear_incoming(settings.control_cache_dir)
     control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
-    local_control = control is not None and settings.control_runner == "local"
-    worker = Worker(settings, on_parse=control.preempt if local_control else None)
+    # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
+    # ControlRunner.preempt itself never touches a Workflow run.
+    local_parse = settings.parse_runner == "local" or runs_table is None
+    worker = Worker(settings, on_parse=control.preempt if (control is not None and local_parse) else None)
 ```
 
-and, when the archive is on and the cache dir is on the archive disk, reserve the cache's room (after `worker` exists):
-
-```python
-    if worker.archive is not None and settings.control_cache_dir.resolve().is_relative_to(
-            worker.archive.root.resolve()):
-        worker.archive.cache_reserve = control_cache.RESERVE
-```
+(Step 3 adds `runs_table=runs_table` to this `Worker(...)` call.)
 
 (Move the `runs_table = make_runs(settings)` line added in step 1 up here; keep a single one.)
 
@@ -776,12 +996,14 @@ def test_room_for(monkeypatch):
     assert not remote.room_for(state, 8)
 ```
 
-(Check `InFlight`'s positional fields at `replay_control_remote.py:229` before running; they are `job_id, replay_id, round_number, fingerprint, map_name, sent_at` in that order if unchanged.)
+(`InFlight`'s first six fields, `replay_control_remote.py:229-235`, are `job_id, replay_id, round_number,
+fingerprint, map_name, sent_at`, as these tests pass them; the rest have defaults.)
 
 - [ ] **Step 3: Run them to see them fail**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_control_remote.py -v`
-Expected: the three new tests FAIL (`MAX_MATCHES` / `room_for` missing); the old ones pass.
+Expected: every test in the file errors in setup (the autouse `old_limits` fixture patches `MAX_MATCHES`, which
+doesn't exist yet). After Step 4 they all pass.
 
 - [ ] **Step 4: Implement**
 
@@ -863,7 +1085,8 @@ On `valowithfriendstracker`:
         value: "1"
 ```
 
-On `replay-worker` (keep `REPLAY_CONTROL_RUNNER: local`):
+On `replay-worker` (`REPLAY_CONTROL_RUNNER` stays the `sync: false` entry from step 1; the owner sets it in the
+dashboard):
 
 ```yaml
       - key: REPLAY_CONTROL_RUNS
@@ -887,11 +1110,18 @@ On `replay-worker` (keep `REPLAY_CONTROL_RUNNER: local`):
 3. Check `/health` through the site's admin page or the worker's shell (`curl localhost:8080/health`):
    `runners.control` is `workflow`, `workflow.last_error` is null.
 4. Watch the next match: the workflow's Runs page shows its rounds; the first round of a map runs alone.
-5. Compare one round with a local run: `.\.venv\Scripts\python.exe scripts\compute_control.py` for that replay
-   on the local DB (after a Render dump), and compare the stored `data` bytes for one round.
+5. Compare one round with a local computation. Pull Render down to local ("Pulling Render down to local" above),
+   pick a match whose rounds the workflow computed (its `match_uuid` and a round `N`), then in `webapp\`:
+   - record the workflow's bytes:
+     `docker exec -i <local postgres container> psql -U <user> -d <db> -c "SELECT encode(sha256(c.data), 'hex')
+     FROM replay_round_control c JOIN replays r ON r.id = c.replay_id WHERE r.match_uuid = '<uuid>' AND
+     c.round_number = <N>"` (or the same query in any SQL client on the local DB);
+   - recompute that one round locally: `.\.venv\Scripts\python.exe scripts\compute_control.py --match <uuid>
+     --round <N> --force --workers 1`;
+   - run the query again. The two hashes must be equal. (This overwrites only the local copy; Render is untouched.)
 6. Roll back: `REPLAY_CONTROL_RUNNER=local`.
 Tune with `CONTROL_MAX_RUNS` / `CONTROL_MAX_MATCHES` (site) and `REPLAY_CONTROL_RUNS` (worker); keep the
-worker's at least the site's. `REPLAY_TASK_STARTS_PER_MIN` caps how fast runs start.
+worker's at least the site's. After every later merge, check `/health`'s `runners.control` is still `workflow`.
 ```
 
 `replay_worker/README.md`: a "Map control on Workflows" paragraph naming `control_cache.py`, the cache route and `REPLAY_CONTROL_RUNS`.

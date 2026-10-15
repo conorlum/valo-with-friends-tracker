@@ -16,8 +16,11 @@
 - Render REST API (read from the SDK's generated client, render 1.0.1): base `https://api.render.com/v1`; `POST /task-runs` body `{"task": "<workflow-slug>/<task>", "input": [args]}`; `GET /task-runs/{id}`; `DELETE /task-runs/{id}` (cancel); `GET /task-runs?taskSlug=&limit=&cursor=` returning `[{"taskRun": {...}, "cursor"}]`; header `Authorization: Bearer <key>`. Run fields: `id` (`trn-...`), `status` in `pending | running | paused | completed | succeeded | failed | canceled`.
 - `REPLAY_TASK_STARTS_PER_MIN` defaults to 1000, a safety valve only (D10). A 429 is never a failure.
 - Runs never touch the database (D12). The workflow service has only `REPLAY_WORKER_URL`.
-- Each kind's switch (`REPLAY_PARSE_RUNNER`, `REPLAY_CONTROL_RUNNER`, `REPLAY_HEIGHTS_RUNNER`) is `local` by default and stays `local` in this step.
-- Every run route streams in 1 MB chunks; nothing holds a whole file in memory.
+- Each kind's switch (`REPLAY_PARSE_RUNNER`, `REPLAY_CONTROL_RUNNER`, `REPLAY_HEIGHTS_RUNNER`) is `local` by default and stays `local` in this step. In `render.yaml` they are `sync: false` (D2): set by hand in the dashboard, never reset by a Blueprint sync.
+- Every transfer streams in 1 MB chunks. A posted result is decoded in memory once (D18), capped at 256 MB (`run_result_max_bytes`).
+- A body's `Content-Length` must be a positive integer within the route's cap; anything else is refused (400/413) before a file is opened.
+- Reconciliation (D4): one list call over every open kind's slug, following cursors up to `RECONCILE_PAGES` (5) pages, then one `GET` per open run still not found.
+- Test servers are closed with `shutdown()` **and** `server_close()`, in `try/finally` or fixture teardown.
 - Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
 
 ## Review Focus
@@ -27,6 +30,8 @@
 - A 429 from Render while starting must delay the start, not fail the job, and must stop retrying at the run's deadline (rare on the owner's tier, but the handling stays).
 - `REPLAY_*_RUNNER=workflow` without `RENDER_API_KEY` or `REPLAY_WORKFLOW_SLUG` must stop the worker at startup with a clear message, not fail later per job.
 - A request for an input name the run wasn't given (e.g. `../job.json`) must be `404`, never a path outside the run's files.
+- A run that has waited for a start slot past its deadline must never be started.
+- An open run older than the newest 100 runs of its kind must still be found by reconciliation.
 
 ---
 
@@ -53,8 +58,8 @@
 - Test: `webapp/tests/replays/test_replay_worker_runs.py`
 
 **Interfaces:**
-- Produces: `RenderApi(token: str, base: str = API, timeout_s: float = 30.0)` with `start(slug: str, args: dict) -> dict`, `get(run_id: str) -> dict`, `cancel(run_id: str) -> None`, `recent(slug: str, limit: int = 100) -> list[dict]`; exceptions `RenderError`, `RateLimited(RenderError)`; `Pacer(per_min: int, clock=time.monotonic, sleep=time.sleep)` with `take() -> None` and `hold(seconds: float) -> None`.
-- Produces (tests): `FakeRender` with `.url` (base ending in `/v1`), `.started: list[dict]`, `.status: dict[str, str]`, `.rate_limit_next: int`, `.runner` (callable `(kind, args) -> None` run in a thread per start; default does nothing), `.close()`.
+- Produces: `RenderApi(token: str, base: str = API, timeout_s: float = 30.0)` with `start(slug: str, args: dict) -> dict`, `get(run_id: str) -> dict`, `cancel(run_id: str) -> None`, `page(slugs: list[str], cursor: str | None = None, limit: int = 100) -> tuple[list[dict], str | None]` (the runs on this page, and the cursor for the next one or None); exceptions `RenderError`, `RateLimited(RenderError)`; `Pacer(per_min: int, clock=time.monotonic, sleep=time.sleep)` with `take(stop=lambda: False) -> bool` (False when `stop()` became true before a slot was free) and `hold(seconds: float) -> None`.
+- Produces (tests): `FakeRender` with `.url` (base ending in `/v1`), `.started: list[dict]`, `.status: dict[str, str]`, `.slug_of`, `.list_calls`, `.get_calls`, `.rate_limit_next: int`, `.finish: bool`, `.runner` (callable `(kind, args) -> None` run in a thread per start; default does nothing), `.close()`; and `closed_port() -> int`.
 
 - [ ] **Step 1: Write the fake Render API**
 
@@ -76,7 +81,11 @@ class FakeRender:
         self.status: dict[str, str] = {}
         self.cancelled: list[str] = []
         self.auth: list[str] = []
+        self.slug_of: dict[str, str] = {}
+        self.list_calls: list[str] = []
+        self.get_calls: list[str] = []
         self.rate_limit_next = 0
+        self.finish = True              # False: a started run stays "running" until a test sets its status
         self.runner = runner or (lambda kind, args: None)
         ids = itertools.count(1)
         fake = self
@@ -101,22 +110,35 @@ class FakeRender:
                 run_id = f"trn-{next(ids)}"
                 kind = body["task"].split("/", 1)[1]
                 fake.started.append({"id": run_id, "task": body["task"], "input": body["input"]})
+                fake.slug_of[run_id] = body["task"]
                 fake.status[run_id] = "running"
 
                 def go():
                     try:
                         fake.runner(kind, body["input"][0])
-                        fake.status[run_id] = "completed"
+                        if fake.finish and fake.status[run_id] == "running":
+                            fake.status[run_id] = "completed"
                     except Exception:  # noqa: BLE001 - a failing task is a failed run
-                        fake.status[run_id] = "failed"
+                        if fake.finish and fake.status[run_id] == "running":
+                            fake.status[run_id] = "failed"
                 threading.Thread(target=go, daemon=True).start()
-                return self._send(200, {"id": run_id, "status": "pending"})
+                return self._send(202, {"id": run_id, "status": "pending"})     # Render answers 202
 
             def do_GET(self):  # noqa: N802
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/v1/task-runs":
-                    items = [{"taskRun": {"id": i, "status": s}, "cursor": i} for i, s in fake.status.items()]
-                    return self._send(200, list(reversed(items)))
+                    fake.list_calls.append(self.path)
+                    query = urllib.parse.parse_qs(parsed.query)
+                    slugs = set(query.get("taskSlug", []))
+                    limit = int(query.get("limit", ["100"])[0])
+                    rows = [(i, s) for i, s in reversed(list(fake.status.items()))
+                            if not slugs or fake.slug_of[i] in slugs]
+                    start = int(query.get("cursor", ["0"])[0])
+                    page = rows[start:start + limit]
+                    items = [{"taskRun": {"id": i, "status": s}, "cursor": str(start + n + 1)}
+                             for n, (i, s) in enumerate(page)]
+                    return self._send(200, items)
+                fake.get_calls.append(self.path)
                 run_id = parsed.path.rsplit("/", 1)[1]
                 if run_id not in fake.status:
                     return self._send(404, {"message": "not found"})
@@ -134,6 +156,15 @@ class FakeRender:
 
     def close(self):
         self.server.shutdown()
+        self.server.server_close()     # releases the listening socket, not just the serve loop
+
+
+def closed_port() -> int:
+    """A localhost port nothing listens on: bound, then closed."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -153,27 +184,41 @@ REPO = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 
-from fake_render import FakeRender  # noqa: E402
+from fake_render import FakeRender, closed_port  # noqa: E402
 from replay_worker import runs  # noqa: E402
 
 
 @pytest.fixture
 def render():
     fake = FakeRender()
-    yield fake
-    fake.close()
+    try:
+        yield fake
+    finally:
+        fake.close()
 
 
-def test_start_get_cancel_recent(render):
+def test_start_get_cancel_page(render):
     api = runs.RenderApi("k3y", base=render.url)
     run = api.start("replay-tasks/ping", {"job_id": "j1"})
     assert run["id"] == "trn-1"
     assert render.started[0] == {"id": "trn-1", "task": "replay-tasks/ping", "input": [{"job_id": "j1"}]}
     assert render.auth[0] == "Bearer k3y"
     assert api.get("trn-1")["id"] == "trn-1"
-    assert [r["id"] for r in api.recent("replay-tasks/ping")] == ["trn-1"]
+    items, cursor = api.page(["replay-tasks/ping"])
+    assert [r["id"] for r in items] == ["trn-1"] and cursor is None
     api.cancel("trn-1")
     assert render.cancelled == ["trn-1"]
+
+
+def test_page_filters_by_every_slug_and_follows_the_cursor(render):
+    api = runs.RenderApi("k", base=render.url)
+    for kind in ("ping", "control", "ping"):
+        api.start(f"w/{kind}", {})
+    api.start("other/ping", {})
+    first, cursor = api.page(["w/ping", "w/control"], limit=2)
+    second, end = api.page(["w/ping", "w/control"], cursor=cursor, limit=2)
+    assert [r["id"] for r in first + second] == ["trn-3", "trn-2", "trn-1"] and end is None
+    assert "taskSlug=w%2Fping&taskSlug=w%2Fcontrol" in render.list_calls[0]
 
 
 def test_429_is_rate_limited_and_404_is_render_error(render):
@@ -186,7 +231,7 @@ def test_429_is_rate_limited_and_404_is_render_error(render):
 
 
 def test_unreachable_is_render_error():
-    api = runs.RenderApi("k", base="http://127.0.0.1:9/v1", timeout_s=1)
+    api = runs.RenderApi("k", base=f"http://127.0.0.1:{closed_port()}/v1", timeout_s=1)
     with pytest.raises(runs.RenderError):
         api.get("trn-1")
 
@@ -216,8 +261,16 @@ def test_pacer_hold_pushes_the_next_start():
     clock = Clock()
     pacer = runs.Pacer(40, clock=clock, sleep=clock.sleep)
     pacer.hold(10)
-    pacer.take()
+    assert pacer.take() is True
     assert clock.now >= 10.0
+
+
+def test_pacer_gives_up_when_told_to_stop():
+    clock = Clock()
+    pacer = runs.Pacer(1, clock=clock, sleep=clock.sleep)
+    pacer.take()
+    assert pacer.take(stop=lambda: clock.now >= 5.0) is False      # the next slot is 60 s away
+    assert clock.now < 60.0
 ```
 
 - [ ] **Step 3: Run them to see them fail**
@@ -260,6 +313,8 @@ from pathlib import Path
 API = "https://api.render.com/v1"
 ENDED = ("completed", "succeeded", "failed", "canceled")
 RECONCILE_S = 60
+RECONCILE_PAGES = 5    # pages of one list call per pass; a run still unseen after them is asked for alone
+RECONCILE_PAGE_SIZE = 100
 RATE_LIMIT_WAIT_S = 10
 GRACE_S = 120          # a run Render reports ended may still be posting its result
 CHUNK = 1 << 20
@@ -288,9 +343,14 @@ class RenderApi:
     def cancel(self, run_id: str) -> None:
         self._call("DELETE", f"/task-runs/{urllib.parse.quote(run_id)}")
 
-    def recent(self, slug: str, limit: int = 100) -> list[dict]:
-        query = urllib.parse.urlencode({"taskSlug": slug, "limit": limit})
-        return [item.get("taskRun", item) for item in self._call("GET", f"/task-runs?{query}") or []]
+    def page(self, slugs: list[str], cursor: str | None = None, limit: int = 100) -> tuple[list[dict], str | None]:
+        """One page of runs of any of `slugs`, and the cursor for the next page (None at the end)."""
+        params = [("taskSlug", s) for s in slugs] + [("limit", limit)]
+        if cursor:
+            params.append(("cursor", cursor))
+        items = self._call("GET", f"/task-runs?{urllib.parse.urlencode(params)}") or []
+        runs = [item.get("taskRun", item) for item in items]
+        return runs, (items[-1].get("cursor") if len(items) == limit else None)
 
     def _call(self, method: str, path: str, body: dict | None = None):
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -319,15 +379,18 @@ class Pacer:
         self.not_before = 0.0
         self.lock = threading.Lock()
 
-    def take(self) -> None:
+    def take(self, stop=lambda: False) -> bool:
+        """Waits for a start slot. False, with no slot taken, when `stop()` turns true first (the run's deadline)."""
         while True:
+            if stop():
+                return False
             with self.lock:
                 now = self.clock()
                 self.starts = [t for t in self.starts if now - t < 60]
                 wait = self.not_before - now
                 if wait <= 0 and len(self.starts) < self.per_min:
                     self.starts.append(now)
-                    return
+                    return True
                 if wait <= 0:
                     wait = 60 - (now - self.starts[0])
             self.sleep(min(max(wait, 0.01), 1.0))
@@ -340,7 +403,7 @@ class Pacer:
 - [ ] **Step 5: Run the tests**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_worker_runs.py -v`
-Expected: 5 passed.
+Expected: 7 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -359,7 +422,7 @@ git commit -m "replay worker: Render task-run client and start pacer"
 
 **Interfaces:**
 - Consumes: `RenderApi`, `Pacer`, `RateLimited`, `RenderError` (Task 1).
-- Produces: `failure(kind: str, error: str) -> dict` (`{"status": "failed", "error_kind": kind, "error": error}`); `Run` dataclass (`job_id, kind, token, files: dict[str, Path], folder: Path, deadline: float, render_id: str | None, result: dict | None, ended_seen: float | None, done: threading.Event`); `Runs(api, slug: str, pacer: Pacer, root: Path, clock=time.time)` with `open(kind, job_id, files, timeout_s, *, token=None, render_id=None) -> Run`, `start(run, args: dict, on_started=None) -> None`, `wait(run) -> dict`, `file(job_id, name, token) -> Path | None`, `accepts(job_id, token) -> Run | None`, `deliver(job_id, token, path: Path) -> int`, `reconcile() -> None`, `close(run) -> None`, `status() -> dict`, `reconcile_forever(stop: threading.Event) -> None`. Kinds: `ping`, `parse`, `control`, `heights`; a run's Render slug is `f"{slug}/{kind}"`.
+- Produces: `failure(kind: str, error: str) -> dict` (`{"status": "failed", "error_kind": kind, "error": error}`); `Run` dataclass (`job_id, kind, token, files: dict[str, Path], folder: Path, deadline: float, render_id: str | None, result: dict | None, ended_seen: float | None, done: threading.Event`); `Runs(api, slug: str, pacer: Pacer, root: Path, clock=time.time)` with `open(kind, job_id, files, timeout_s, *, token=None, render_id=None, deadline=None) -> Run` (an absolute `deadline` in the table's clock overrides `timeout_s`: a parse passes its saved one, D8), `start(run, args: dict, on_started=None) -> None`, `wait(run) -> dict`, `file(job_id, name, token) -> Path | None`, `accepts(job_id, token) -> Run | None`, `deliver(job_id, token, path: Path) -> int`, `reconcile() -> None`, `close(run) -> None`, `status() -> dict`, `reconcile_forever(stop: threading.Event) -> None`. Kinds: `ping`, `parse`, `control`, `heights`; a run's Render slug is `f"{slug}/{kind}"`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -421,18 +484,43 @@ def test_one_open_run_per_job(render, tmp_path):
         table.open("ping", "j1", {}, timeout_s=30)
 
 
+class SharedClock:
+    """One fake clock for the table and its pacer: sleeping advances it."""
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 def test_429_waits_then_starts(render, tmp_path):
-    table = make_runs(render, tmp_path)
-    table.pacer = runs.Pacer(1000, sleep=lambda s: None)
+    clock = SharedClock()
+    table = make_runs(render, tmp_path, clock=clock)
+    table.pacer = runs.Pacer(1000, clock=clock, sleep=clock.sleep)
     render.rate_limit_next = 2
-    run = table.open("ping", "j1", {}, timeout_s=30)
+    run = table.open("ping", "j1", {}, timeout_s=60)
     table.start(run, {})
     assert run.render_id == "trn-1" and not run.done.is_set()
+    assert clock.now >= 1000.0 + 2 * runs.RATE_LIMIT_WAIT_S        # two holds, on the fake clock
+
+
+def test_no_start_after_the_deadline(render, tmp_path):
+    clock = SharedClock()
+    table = make_runs(render, tmp_path, clock=clock)
+    table.pacer = runs.Pacer(1000, clock=clock, sleep=clock.sleep)
+    render.rate_limit_next = 100                                  # Render keeps saying 429
+    run = table.open("ping", "j1", {}, timeout_s=25)
+    table.start(run, {})
+    assert run.render_id is None and run.result["error_kind"] == "infra"
+    assert clock.now < 1000.0 + 25 + runs.RATE_LIMIT_WAIT_S + 1     # it stopped at the deadline
 
 
 def test_render_down_settles_infra(tmp_path):
-    table = runs.Runs(runs.RenderApi("k", base="http://127.0.0.1:9/v1", timeout_s=1), "w", runs.Pacer(1000),
-                      tmp_path / "runs")
+    table = runs.Runs(runs.RenderApi("k", base=f"http://127.0.0.1:{closed_port()}/v1", timeout_s=1), "w",
+                      runs.Pacer(1000), tmp_path / "runs")
     run = table.open("ping", "j1", {}, timeout_s=30)
     table.start(run, {})
     assert table.wait(run)["error_kind"] == "infra"
@@ -455,6 +543,7 @@ def test_deadline_cancels_and_settles_timeout(render, tmp_path):
 
 
 def test_reconcile_settles_a_run_that_ended_without_a_result_after_grace(render, tmp_path):
+    render.finish = False                         # statuses change only when this test says so
     now = [1000.0]
     table = make_runs(render, tmp_path, clock=lambda: now[0])
     run = table.open("ping", "j1", {}, timeout_s=3600)
@@ -468,18 +557,35 @@ def test_reconcile_settles_a_run_that_ended_without_a_result_after_grace(render,
 
 
 def test_reconcile_leaves_running_runs_and_a_result_in_grace_wins(render, tmp_path):
+    render.finish = False
     now = [1000.0]
     table = make_runs(render, tmp_path, clock=lambda: now[0])
     run = table.open("ping", "j1", {}, timeout_s=3600)
     table.start(run, {})
     table.reconcile()
-    assert not run.done.is_set()
+    assert render.status["trn-1"] == "running" and not run.done.is_set()
     render.status["trn-1"] = "completed"
     table.reconcile()
     assert table.deliver("j1", run.token, write(tmp_path / "r.json", {"status": "ok"})) == 200
     now[0] += runs.GRACE_S
     table.reconcile()
     assert run.result == {"status": "ok"}
+
+
+def test_reconcile_finds_an_old_run_by_paging_in_one_list(render, tmp_path, monkeypatch):
+    render.finish = False
+    monkeypatch.setattr(runs, "RECONCILE_PAGE_SIZE", 10)
+    now = [1000.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    old = table.open("heights", "old", {}, timeout_s=3600)
+    table.start(old, {})
+    api = runs.RenderApi("k", base=render.url)
+    for _ in range(25):                     # 25 newer builds (not this table's) push it to the third page
+        api.start("replay-tasks/heights", {})
+    render.status[old.render_id] = "failed"
+    table.reconcile()
+    assert len(render.list_calls) == 3 and render.get_calls == []
+    assert all("taskSlug=replay-tasks%2Fheights" in call for call in render.list_calls)
 
 
 def test_status_counts_open_runs(render, tmp_path):
@@ -528,10 +634,10 @@ class Runs:
         self.last_error: str | None = None
 
     def open(self, kind: str, job_id: str, files: dict, timeout_s: float, *, token: str | None = None,
-             render_id: str | None = None) -> Run:
+             render_id: str | None = None, deadline: float | None = None) -> Run:
         folder = self.root / job_id
         run = Run(job_id, kind, token or secrets.token_hex(16), {k: Path(v) for k, v in files.items()}, folder,
-                  self.clock() + timeout_s, render_id)
+                  deadline if deadline is not None else self.clock() + timeout_s, render_id)
         with self.lock:
             if job_id in self.open_runs:
                 raise ValueError(f"a run for job {job_id} is already open")
@@ -543,11 +649,12 @@ class Runs:
         """Starts the run, pacing starts and waiting out 429s until its deadline. `on_started(render_id)` runs
         before this returns. A start that can't happen settles the run as `infra`."""
         payload = {**args, "job_id": run.job_id, "token": run.token}
+        past = lambda: self.clock() >= run.deadline  # noqa: E731
         while True:
-            if self.clock() >= run.deadline:
+            # Checked again after the wait for a slot: a run is never started past its deadline (D10).
+            if past() or not self.pacer.take(stop=past) or past():
                 self._settle(run, failure("infra", "the run could not start before its deadline"))
                 return
-            self.pacer.take()
             try:
                 answer = self.api.start(f"{self.slug}/{run.kind}", payload)
                 break
@@ -606,11 +713,19 @@ class Runs:
             todo = [r for r in self.open_runs.values() if r.render_id and not r.done.is_set()]
         if not todo:
             return
+        # One list over every open kind, page after page until every open run is seen (D4); a run still unseen
+        # after RECONCILE_PAGES pages is asked for alone below.
         seen: dict[str, str] = {}
+        wanted = {r.render_id for r in todo}
+        slugs = sorted({f"{self.slug}/{r.kind}" for r in todo})
+        cursor = None
         try:
-            for kind in sorted({r.kind for r in todo}):
-                for item in self.api.recent(f"{self.slug}/{kind}"):
+            for _ in range(RECONCILE_PAGES):
+                items, cursor = self.api.page(slugs, cursor, limit=RECONCILE_PAGE_SIZE)
+                for item in items:
                     seen[item.get("id")] = item.get("status")
+                if cursor is None or wanted <= set(seen):
+                    break
         except RenderError as error:
             self.last_error = str(error)
             return
@@ -680,7 +795,7 @@ git commit -m "replay worker: the run table (tokens, deadline, reconcile)"
 
 **Interfaces:**
 - Consumes: `runs.Runs`, `runs.RenderApi`, `runs.Pacer`, `runs.CHUNK`, `runs.failure` (Tasks 1-2).
-- Produces: `Settings.parse_runner`, `.control_runner`, `.heights_runner` (`"local" | "workflow"`), `.workflow_slug: str | None`, `.render_api_key: str | None`, `.render_api_base: str` (default `runs.API`), `.task_starts_per_min: int` (40), `.run_result_max_bytes: int` (1 GiB); `Settings.workflow_wanted() -> bool`; `make_runs(settings) -> runs.Runs | None`; `make_handler(worker, control=None, heights=None, runs_table=None)` and `make_server(..., runs_table=None)`. Routes: `GET /runs/{job}/input/{name}` and `POST /runs/{job}/result` (header `X-Run-Token`), `POST /runs/ping`. `/health` adds `"runners": {"parse", "control", "heights"}` and `"workflow": runs_table.status() | None`.
+- Produces: `Settings.parse_runner`, `.control_runner`, `.heights_runner` (`"local" | "workflow"`), `.workflow_slug: str | None`, `.render_api_key: str | None`, `.render_api_base: str` (default `runs.API`), `.task_starts_per_min: int` (1000), `.run_result_max_bytes: int` (256 MiB); `Settings.workflow_wanted() -> bool`; `make_runs(settings) -> runs.Runs | None`; `make_handler(worker, control=None, heights=None, runs_table=None)` and `make_server(..., runs_table=None)`; the handler's `_length(low, high) -> int | None` (later steps' routes use it). Routes: `GET /runs/{job}/input/{name}` and `POST /runs/{job}/result` (header `X-Run-Token`), `POST /runs/ping`. `/health` adds `"runners": {"parse", "control", "heights"}` and `"workflow": runs_table.status() | None`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -722,12 +837,15 @@ def live(render, tmp_path):
     worker = server.Worker(settings)
     httpd = server.make_server(worker, runs_table=table)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}", table
-    httpd.shutdown()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}", table
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
-def call(url, method="GET", data=None, token=None):
-    headers = {"X-Run-Token": token} if token else {}
+def call(url, method="GET", data=None, token=None, headers=None):
+    headers = {**({"X-Run-Token": token} if token else {}), **(headers or {})}
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -754,6 +872,24 @@ def test_result_route_takes_the_first_valid_post(live):
     assert call(f"{base}/runs/j1/result", "POST", b'{"status": "ok"}', token=run.token)[0] == 200
     assert call(f"{base}/runs/j1/result", "POST", b'{"status": "no"}', token=run.token)[0] == 409
     assert run.result == {"status": "ok"}
+
+
+def test_result_route_refuses_bad_lengths_before_writing(live):
+    import http.client
+    base, table = live
+    run = table.open("ping", "j2", {}, timeout_s=30)
+    host, port = base.replace("http://", "").split(":")
+    for length in ("0", "-5", "abc", str(server.Settings().run_result_max_bytes + 1)):
+        conn = http.client.HTTPConnection(host, int(port), timeout=10)
+        try:
+            conn.putrequest("POST", "/runs/j2/result")
+            conn.putheader("X-Run-Token", run.token)
+            conn.putheader("Content-Length", length)
+            conn.endheaders()
+            assert conn.getresponse().status in (400, 413), length
+        finally:
+            conn.close()
+    assert not any(run.folder.glob("result-*")) and not run.done.is_set()
 
 
 def test_health_names_the_runners_and_the_workflow(live):
@@ -793,7 +929,7 @@ Add to `Settings` (after `archive_total_bytes`):
     render_api_key: str | None = None
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
-    run_result_max_bytes: int = 1024 ** 3
+    run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
 
     def workflow_wanted(self) -> bool:
         return "workflow" in (self.parse_runner, self.control_runner, self.heights_runner)
@@ -860,6 +996,29 @@ Inside `Handler`, add these methods:
             with path.open("rb") as source:
                 shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
 
+        def _length(self, low: int, high: int) -> int | None:
+            """The request's Content-Length when it is a decimal integer in [low, high]; otherwise sends 411, 400
+            or 413, marks the connection to close, and returns None. Nothing has been read or written yet."""
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                self.close_connection = True
+                self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
+                return None
+            if not raw.strip().isdigit():
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is not a positive number"})
+                return None
+            size = int(raw)
+            if size < low:
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "the body is empty or too short"})
+                return None
+            if size > high:
+                self.close_connection = True
+                self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "the body is too large"})
+                return None
+            return size
+
         def _run_result(self):
             parts = self.path.split("/")          # ["", "runs", job, "result"]
             token = self.headers.get("X-Run-Token")
@@ -868,12 +1027,9 @@ Inside `Handler`, add these methods:
             if run is None:
                 self.close_connection = True
                 return self._send(HTTPStatus.CONFLICT, {"error": "no open run takes this result"})
-            if length is None:
-                return self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length required"})
-            size = int(length)
-            if size > worker.settings.run_result_max_bytes:
-                self.close_connection = True
-                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "result too large"})
+            size = self._length(1, worker.settings.run_result_max_bytes)
+            if size is None:
+                return None
             target = run.folder / f"result-{uuid.uuid4().hex}.json"
             with target.open("wb") as sink:
                 remaining = size
@@ -888,6 +1044,8 @@ Inside `Handler`, add these methods:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "result cut short"})
             code = runs_table.deliver(parts[2], token, target)
             target.unlink(missing_ok=True)
+            # The sizes step 3 reads before step 5 shrinks the worker (spec D18).
+            sys.stderr.write(f"run result {parts[2]} {run.kind} {size} bytes -> {code}\n")
             return self._send(code, {"accepted": code == 200})
 
         def _run_ping(self):
@@ -1128,6 +1286,9 @@ def ping(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
+# Later steps add their @app.task blocks HERE, above this line: app.start() registers the tasks defined when it
+# runs (render/workflows/app.py, start), so a block below it would never be registered.
+
 if __name__ == "__main__":
     app.start()
 ```
@@ -1182,19 +1343,21 @@ In `render.yaml`, under `replay-worker`'s `envVars`, add:
 ```yaml
       # Render Workflows (docs/superpowers/specs/2026-10-14-render-workflows-design.md). The workflow service
       # (replay-tasks) is created by hand in the dashboard: Render can't create a Docker workflow from a
-      # Blueprint. Every runner stays local until its step's switch is flipped.
+      # Blueprint.
       - key: RENDER_API_KEY
         sync: false
       - key: REPLAY_WORKFLOW_SLUG
         value: replay-tasks
       - key: REPLAY_TASK_STARTS_PER_MIN
         value: "1000"
+      # The three switches are the owner's, set in the dashboard (spec D2): `sync: false`, so a Blueprint sync
+      # never resets one that was flipped to workflow. Unset, each is "local" (server.py's default).
       - key: REPLAY_PARSE_RUNNER
-        value: local
+        sync: false
       - key: REPLAY_CONTROL_RUNNER
-        value: local
+        sync: false
       - key: REPLAY_HEIGHTS_RUNNER
-        value: local
+        sync: false
 ```
 
 - [ ] **Step 3: The deploy notes**
@@ -1216,7 +1379,9 @@ Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`. One-time
    `{"ok": true, ...}`. The workflow's Runs page shows one `ping` run.
 
 Each kind (parse, control, heights) moves with its own switch on `replay-worker`:
-`REPLAY_<KIND>_RUNNER=workflow`; set it back to `local` to roll back.
+`REPLAY_<KIND>_RUNNER=workflow`; set it back to `local` to roll back. The switches are `sync: false` in
+`render.yaml`: the dashboard is where they live, and a Blueprint sync leaves them alone. After every later
+merge, check `/health`'s `runners` still shows the kinds already moved.
 ```
 
 Add the same three settings and the run routes to `replay_worker/README.md`'s HTTP table, with a pointer to the spec.
@@ -1256,5 +1421,6 @@ git commit -m "replay tasks: image, Blueprint settings and the workflow's setup 
 
 - [ ] **Step 7: On Render (the owner, after merge)**
 
-Follow `RENDER_DEPLOY.md`'s new section. Done when the ping prints `"ok": true`. If `POST /task-runs`
-answers 404 or 400, the slug or the REST path differs from the SDK's: read the error, fix `runs.py`, redeploy.
+Follow `RENDER_DEPLOY.md`'s new section. Done when the ping prints `"ok": true`. The REST paths are confirmed
+against the SDK; if the start is refused, read the error body for the task slug (`replay-tasks/ping`), the task's
+registration (the workflow's Tasks page lists `ping`) or the API key, and fix that.

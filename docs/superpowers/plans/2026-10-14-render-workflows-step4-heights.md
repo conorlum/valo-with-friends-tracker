@@ -8,18 +8,19 @@
 
 **Tech Stack:** Python 3.13 standard library (`tarfile` with the `data` filter), pytest, the step-1 run table, step 2's `control_cache` and `_run_remote`.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D6, D7, D8, D9)
+**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D6, D7, D8, D9, D16, D17)
 
-**Depends on:** step 2 merged (it adds `control_cache.py`, the cache route, `ControlRunner._run_remote` and `tasks._run_child`).
+**Depends on:** step 2 merged (it adds `control_cache.py`, the cache route, `ControlRunner._run_remote`, `tasks._run_child`, `_fetch_inputs`, `_post_caches`, and `Settings.archive_extra_reserve`).
 
 ## Global Constraints
 
-- The `heights` task: plan `flex` (D7), `timeout_seconds=3600` (`REPLAY_HEIGHT_TIMEOUT_S`, D8), `Retry(max_retries=0)` (D9: the site resends builds).
+- The `heights` task: plan `flex` (D7), `timeout_seconds=3600` (`REPLAY_HEIGHT_TIMEOUT_S`, D8), `Retry(max_retries=0)` (D9: the site resends builds), defined above `main.py`'s `if __name__ == "__main__":` block.
 - The build's answer is today's `height_job` answer, unchanged; the site checks it as today (`replay_heights_remote.py`).
-- A workflow build neither waits for the worker to be idle nor runs alone, and a parse never preempts it.
-- The unit is one map (spec D16). Site: `HEIGHTS_MAX_BUILDS` = 4 builds open at once, one per map. Worker: `REPLAY_HEIGHT_BUILDS_MAX` = 4 collecting at once (today's `HEIGHT_COLLECTING_MAX = 2` stays the default for local), `REPLAY_HEIGHT_SPOOL_BYTES` = 2 GiB for every build's rounds together.
-- `REPLAY_HEIGHTS_RUNNER` stays `local` in `render.yaml` at merge.
-- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
+- A workflow build neither waits for the worker to be idle nor runs alone, and a parse never preempts it; a local build keeps today's rules.
+- The unit is one map (spec D16). Site: `HEIGHTS_MAX_BUILDS` = 4 builds open at once, one per map, and a build looked at in a cycle is never reopened in that cycle. Worker: `REPLAY_HEIGHT_BUILDS_MAX` = 4 unfinished builds (collecting, queued or running; today's `HEIGHT_COLLECTING_MAX = 2` stays the default), `REPLAY_HEIGHT_SPOOL_BYTES` = 2 GiB for every build's rounds together.
+- The spool lives on the disk (`REPLAY_HEIGHT_SPOOL_DIR=/var/replay/height_builds`), packed tars beside it in `<spool_dir>/../height_runs`; the archive reserves twice the spool cap (the spool and its tars) before the Worker recovers anything.
+- `REPLAY_HEIGHTS_RUNNER` is `sync: false` (step 1) and stays unset (local) at merge.
+- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`. Test servers close with `shutdown()` and `server_close()` in `finally`.
 
 ## Review Focus
 
@@ -30,6 +31,8 @@
 - While a parse runs, `/health` must still read `idle: true` when builds are remote, or the site never opens a build (it waits for idle).
 - One map's build failing (or going stale) must drop only that build and spend only its manifest's try; the other maps' builds carry on.
 - When every map becomes due at once (a rules change), only `HEIGHTS_MAX_BUILDS` open; the next starts when one finishes, and every due map's rounds stay held until its own build ends.
+- A build collected (stored) in a cycle must not be opened again in that same cycle: one store, one count per finished manifest.
+- A map whose inputs change while its build is running must not get a second unfinished build on the worker beside it.
 - The `previous` height asset must reach the run when the worker has it (the report compares against it), and be absent otherwise.
 
 ---
@@ -193,8 +196,9 @@ from replay_tasks import tasks  # noqa: E402
 from replay_worker import control_cache, server  # noqa: E402
 
 STUB = """
-import json, os, sys, pathlib
+import json, os, sys, pathlib, time
 task = json.loads(sys.stdin.buffer.read())
+time.sleep(float(os.environ.get("HEIGHT_STUB_SLEEP", "0")))
 folder = pathlib.Path(task["dir"])
 cache = pathlib.Path(os.environ["CONTROL_CACHE_DIR"])
 rounds = sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
@@ -264,8 +268,7 @@ def heights(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
-        for name in args.get("files", []):
-            link.fetch(name, cache / name)
+        _fetch_inputs(link, args.get("files", []), cache)          # step 2: a file it can't fetch is skipped
         before = _cache_files(cache)
         task = json.loads(link.fetch("task", work / "task.json").read_text(encoding="utf-8"))
         try:
@@ -277,20 +280,16 @@ def heights(args: dict, link: WorkerLink) -> None:
         task["dir"] = str(rounds)
         answer = _run_child("REPLAY_HEIGHT_CMD", [sys.executable, "-m", "replay_worker.height_job"],
                             json.dumps(task).encode("utf-8"), cache, what="height child")
-        for name in sorted(_cache_files(cache) - before):
-            if control_cache.valid(name, args["map"]):
-                try:
-                    link.post_file(f"cache/{urllib.parse.quote(name, safe='')}", cache / name)
-                except OSError:
-                    pass
+        _post_caches(link, cache, before, args["map"])               # step 2: new or changed, before the result
         link.post_result(answer)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 ```
 
-Add `import tarfile` at the top, and `"heights": heights` to `TASKS`.
+Add `import tarfile` at the top. `TASKS` stays the last statement of `tasks.py`; it becomes
+`{"ping": ping, "control": control, "parse": parse, "heights": heights}` (with whichever earlier entries exist).
 
-In `main.py`:
+In `main.py`, below the earlier tasks and **above** the `if __name__ == "__main__":` block:
 
 ```python
 @app.task(name="heights", timeout_seconds=3600, retry=NO_RETRY)
@@ -342,9 +341,12 @@ def remote(tmp_path, stub):
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
-    yield control, builds, render, settings, worker, base
-    httpd.shutdown()
-    render.close()
+    try:
+        yield control, builds, render, settings, worker, base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
 
 
 MATCH = "0123abcd-0000-0000-0000-000000000001"     # HeightBuilds.add accepts hex match ids only (MATCH_ID)
@@ -378,15 +380,32 @@ def test_a_build_runs_as_a_workflow_run(remote):
     assert [s["task"] for s in render.started] == ["replay-tasks/heights"]
 
 
-def test_a_remote_build_does_not_block_control_or_get_preempted(remote):
-    control, builds, _, _, _, _ = remote
+def test_a_remote_build_does_not_block_control_or_get_preempted(remote, monkeypatch):
+    control, builds, _, settings, _, _ = remote
+    monkeypatch.setenv("HEIGHT_STUB_SLEEP", "2")                      # the build stays running for a while
+    settings.control_cmd = [sys.executable, "-c",
+                            "import sys, json; sys.stdin.read(); print(json.dumps({'status': 'ok'}))"]
     build = open_and_fill(builds)
     builds.start(build["id"], None)
-    assert control.preempt() == 0
-    body = wait_build(builds, build["id"])
-    assert body["status"] == "done"
+    wait_for(lambda: builds.get(build["id"])["status"] == "running")
+    round_job = control.submit({"key": "r1", "map": "Bind", "blob": "", "link": {"sides": {}, "db_deaths": []}})
+    wait_for(lambda: control.get(round_job.id).status == "done")     # a local round ran beside the remote build
+    assert builds.get(build["id"])["status"] == "running"
+    assert control.preempt() == 0 and not control.preempted
+    assert wait_build(builds, build["id"])["status"] == "done"
 ```
 
+Add `wait_for` beside `wait_build`:
+
+```python
+def wait_for(check, timeout=15):
+    end = time.time() + timeout
+    while time.time() < end:
+        if check():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+```
 `HeightBuilds.add` checks only that a blob is non-empty base64; it never reads the round, and the stub child doesn't either.
 
 - [ ] **Step 2: Run them to see them fail**
@@ -407,38 +426,52 @@ Expected: the two new tests FAIL (the build runs the local `height_cmd` or waits
         return self.settings.control_runner == "workflow"
 ```
 
-`preempt`: after the existing early return, exclude remote jobs from the victims:
+`preempt` needs no change: step 2 already excludes every remote job from its victims (`not self.remote(...)`),
+and `remote` now covers builds too.
+
+`_next`: a remote build starts at once and takes no slot; a local build keeps today's rules, judged against
+local children only (a Workflow run uses no CPU here). Replace the whole method (as step 2 left it) with:
 
 ```python
-            alive = [job_id for job_id in self.running
-                     if job_id not in self.preempted and not self.remote(self.jobs[job_id])]
-```
-
-`_next`: a remote build starts at once and takes no slot; local builds keep today's rules. At the top of `_next`, before the limit:
-
-```python
+    def _next(self) -> tuple[ControlJob, bool] | None:
+        """The next job that may start now, and whether it warms its map (called under the lock)."""
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights" and self.remote(job):
                 return job, False                    # another machine: it neither waits for idle nor runs alone
-```
-
-and change the two "a build runs alone" checks to look at local builds only:
-
-```python
+        idle = self.idle()
+        if self.settings.control_runner == "workflow" and self.runs is not None:
+            limit = self.settings.control_runs
+        else:
+            # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
+            limit = self.settings.control_workers if idle else 1
+        counted = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        if len(counted) >= limit:
+            return None
         if any(self.jobs[j].kind == "heights" and not self.remote(self.jobs[j]) for j in self.running):
             return None                              # a local build runs alone
+        local_running = [j for j in self.running if not self.remote(self.jobs[j])]
+        for job_id in self.pending:
+            if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
+                # Idle, drain the running local children before starting the build ahead of queued rounds.
+                # Beside a parse, the build waits while the one control slot keeps working.
+                if idle:
+                    return (self.jobs[job_id], False) if not local_running else None
+                break
+        busy_maps = {self.jobs[j].map for j in self.running}
+        warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
+        for job_id in self.pending:
+            job = self.jobs[job_id]
+            if job.kind == "heights":
+                continue
+            if job.warm_key in self.warm:
+                if job.map in warming_maps:
+                    continue
+                return job, False
+            if job.map not in busy_maps:
+                return job, True
+        return None
 ```
-
-and in the `limit` count, count only jobs that aren't remote builds:
-
-```python
-        running = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
-        if len(running) >= limit:
-            return None
-```
-
-(replacing `if len(self.running) >= limit: return None`).
 
 `_run_remote(job, timeout)` gains the build case:
 
@@ -518,7 +551,7 @@ git commit -m "replay worker: height builds as workflow runs"
 - Test: `webapp/tests/replays/test_replay_worker_heights.py`, `webapp/tests/replays/test_heights_remote.py`
 
 **Interfaces:**
-- Produces (worker): `Settings.height_builds_max: int` (2; `REPLAY_HEIGHT_BUILDS_MAX`), `Settings.height_spool_bytes` read from `REPLAY_HEIGHT_SPOOL_BYTES`.
+- Produces (worker): `Settings.height_builds_max: int` (2; `REPLAY_HEIGHT_BUILDS_MAX`), counting every unfinished build; `Settings.height_spool_bytes` read from `REPLAY_HEIGHT_SPOOL_BYTES`; `Settings.height_spool_dir: Path | None` (`REPLAY_HEIGHT_SPOOL_DIR`; None keeps `temp_root/height_builds`). `HeightBuilds.open` raises `OverflowError` (the route's 503, which the site treats as "busy, try later" and spends no try) at the cap, or while another build of the same map is queued or running.
 - Produces (site): `settings.heights_max_builds: int = 4`; `HeightState.builds: dict[str, Build]` (manifest key → build); `HeightState.build` (read-only: the only build when there is exactly one, else `None`, so the existing tests read as before); `MAX_BUILDS = settings.heights_max_builds`; `_try_build(session_factory, session, client, hstate, build, due, now, counts, held) -> None`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -534,12 +567,44 @@ def test_collecting_builds_are_capped_by_the_setting(worker):
         builds.open("k3", "Lotus", 1, MANIFEST)
 
 
-def test_spool_bytes_come_from_the_environment():
-    assert server.Settings.from_env({"REPLAY_HEIGHT_SPOOL_BYTES": "2147483648"}).height_spool_bytes == 2 ** 31
-    assert server.Settings.from_env({"REPLAY_HEIGHT_BUILDS_MAX": "4"}).height_builds_max == 4
+HEX = "0123abcd-0000-0000-0000-000000000001"
+
+
+def started_build(builds, key, name):
+    """A build that is past collecting: opened, its one round sent, started."""
+    build = builds.open(key, name, 1, MANIFEST)
+    builds.add(build["id"], [{"match": HEX, "n": 1, "blob": base64.b64encode(b"r").decode()}])
+    builds.start(build["id"], None)
+    return build
+
+
+def test_started_builds_count_toward_the_cap(worker):
+    control, builds, _ = worker(height_builds_max=1)
+    control.idle = lambda: False                  # a parse is on: the local build stays queued, unfinished
+    started_build(builds, "k0", "Ascent")
+    with pytest.raises(OverflowError):
+        builds.open("k1", "Bind", 1, MANIFEST)
+
+
+def test_no_second_build_of_a_map_while_one_is_unfinished(worker):
+    control, builds, _ = worker(height_builds_max=4)
+    control.idle = lambda: False
+    started_build(builds, "k0", "Ascent")
+    with pytest.raises(OverflowError):
+        builds.open("k-new-inputs", "Ascent", 1, MANIFEST)
+
+
+def test_spool_settings_come_from_the_environment(tmp_path):
+    env = {"REPLAY_HEIGHT_SPOOL_BYTES": "2147483648", "REPLAY_HEIGHT_BUILDS_MAX": "4",
+           "REPLAY_HEIGHT_SPOOL_DIR": str(tmp_path / "spool")}
+    settings = server.Settings.from_env(env)
+    assert (settings.height_spool_bytes, settings.height_builds_max) == (2 ** 31, 4)
+    assert server.HeightBuilds(settings, server.ControlRunner(settings)).root == tmp_path / "spool"
 ```
 
-`HeightBuilds.open` checks only the map name's shape and that the manifest is a dict, so one `MANIFEST` serves every map.
+`HeightBuilds.open` checks only the map name's shape and that the manifest is a dict, so one `MANIFEST` serves every
+map; `add` checks the match id's shape (hex, `MATCH_ID`) and that a blob is non-empty base64. Import `base64` at the
+top of the test file if it isn't already.
 
 Site, in `test_heights_remote.py`. Its `on` fixture gives two maps geometry (Ascent, the `linked` replay's map, and Bind). `clone` adds replays of a map, and two replays make a map's first build due (`FIRST_BUILD_MATCHES`):
 
@@ -600,21 +665,68 @@ Expected: the new tests FAIL (`height_builds_max` unknown; `HeightState` has no 
 
 - [ ] **Step 3: The worker**
 
-`Settings`: `height_builds_max: int = 2` beside `height_spool_bytes`. `from_env`:
+`Settings`: `height_builds_max: int = 2` and `height_spool_dir: Path | None = None` beside `height_spool_bytes`.
+`from_env`:
 
 ```python
         settings.height_builds_max = max(1, int(env.get("REPLAY_HEIGHT_BUILDS_MAX", settings.height_builds_max)))
         settings.height_spool_bytes = int(env.get("REPLAY_HEIGHT_SPOOL_BYTES", settings.height_spool_bytes))
+        if env.get("REPLAY_HEIGHT_SPOOL_DIR"):
+            settings.height_spool_dir = Path(env["REPLAY_HEIGHT_SPOOL_DIR"])
 ```
 
-`HeightBuilds.open`: replace `>= HEIGHT_COLLECTING_MAX` with `>= self.settings.height_builds_max`, and delete the constant (update the class docstring's "at most HEIGHT_COLLECTING_MAX builds collect at once" to name the setting).
+`HeightBuilds.__init__`: `self.root = settings.height_spool_dir or settings.temp_root / "height_builds"` (the rest,
+including clearing what a restart left, is unchanged; add `self.root.mkdir(parents=True, exist_ok=True)` after the
+clear if the existing code doesn't recreate it).
 
-`main()`: when the spool (`settings.temp_root`) is on the archive disk, its cap joins the reserve:
+`HeightBuilds.open`: replace the collecting-only count and add the per-map rule. The lines
 
 ```python
-    if worker.archive is not None and settings.temp_root.resolve().is_relative_to(worker.archive.root.resolve()):
-        worker.archive.cache_reserve += settings.height_spool_bytes
+            for other in [b for b in self.builds.values() if b["map"] == map_name and b["job"] is None]:
+                self._drop(other)                        # other inputs for this map, never started
+            if sum(1 for b in self.builds.values() if b["job"] is None) >= HEIGHT_COLLECTING_MAX:
+                raise OverflowError("too many builds are collecting")
 ```
+
+become
+
+```python
+            for other in [b for b in self.builds.values() if b["map"] == map_name and b["job"] is None]:
+                self._drop(other)                        # other inputs for this map, never started
+            unfinished = [b for b in self.builds.values() if self._state(b) not in ("done", "failed")]
+            if any(b["map"] == map_name for b in unfinished):
+                # Its old build is still queued or running (on Workflows it can't be cancelled after start):
+                # one unfinished build per map. 503 to the site: busy, ask again later, no try spent.
+                raise OverflowError("a build of this map is still running")
+            if len(unfinished) >= self.settings.height_builds_max:
+                raise OverflowError("too many unfinished builds")
+```
+
+and delete `HEIGHT_COLLECTING_MAX` (the class docstring's "at most HEIGHT_COLLECTING_MAX builds collect at once"
+becomes "at most `height_builds_max` builds are unfinished at once, one per map"). The `/heights/build` route
+already answers an `OverflowError` while opening with 503, which the site's client raises as `WorkerBusy`.
+
+`main()`: the spool and the packed tars are reserved on the disk **before** the Worker is built (beside step 2's
+cache reserve):
+
+```python
+    if settings.archive_dir is not None and settings.height_spool_dir is not None and \
+            settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)
+```
+
+In `ControlRunner._run_remote` (Task 3), pack a build's tar beside the spool rather than under `temp_root`:
+
+```python
+            if job.kind == "heights":
+                tar_dir = (self.settings.height_spool_dir.parent / "height_runs" / job.id
+                           if self.settings.height_spool_dir else folder)
+                try:
+                    files["rounds"] = control_cache.pack(Path(task["dir"]), tar_dir / "rounds.tar")
+```
+
+and delete `tar_dir` in the same `finally` that deletes `folder` (`shutil.rmtree(tar_dir, ignore_errors=True)`;
+define `tar_dir = folder` before the `try` so the `finally` always has it).
 
 - [ ] **Step 4: The site**
 
@@ -699,11 +811,15 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             _cancel(client, build)                    # its inputs are no longer the map's
             del hstate.builds[key]
             counts["heights_stale"] += 1
+    # Every build looked at this cycle, finished or not: `due` was planned before they advanced, so a manifest just
+    # collected (or failed) is still in it and must not be opened again until the next cycle plans afresh.
+    attempted = set(hstate.builds)
     for build in list(hstate.builds.values()):
         _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
     building = {b.map_name for b in hstate.builds.values()}
     ready = [d for key, d in due.items()
-             if key not in hstate.builds and d.map_name not in building and hstate.may_try(key, now)]
+             if key not in attempted and key not in hstate.builds and d.map_name not in building
+             and hstate.may_try(key, now)]
     room = MAX_BUILDS - len(hstate.builds)
     if not ready or room <= 0:
         return held
@@ -732,13 +848,37 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     return held
 ```
 
-Two behaviours differ from today and are intended:
-- With builds open, the deploy gap holds those builds' maps rather than nothing. Today nothing could be open at that point, so the old `return set()` held nothing.
-- A missing `idle` field fails the first ready map's try, as today's `_idle` raising inside the old `try` did.
+How this maps onto today's `step` (`replay_heights_remote.py:401-466`):
+- the per-build `try`/`except` is today's, moved into `_try_build` and applied to each open build;
+- a build that finishes is not reopened in the same cycle (`attempted`); today's single build, once collected,
+  also waited for the next cycle;
+- with builds open, the deploy gap holds those builds' maps rather than nothing (today nothing could be open at
+  that point, so the old `return set()` held nothing);
+- a missing `idle` field fails the first ready map's try, as today's `_idle` raising inside the old `try` did.
 
-Read the old `step` side by side with this one. Every other branch maps one-to-one.
+No other application code reads `hstate.build` / `heights.build` (checked with
+`rg -n "heights\.build\b|hstate\.build\b" webapp/app`: only the old `step`); the tests read it through the property.
 
-Find every other reader of `hstate.build` with `rg -n "heights\.build\b|hstate\.build\b" webapp/app` (the dispatcher's status page or logs, if any) and move it to `builds`.
+Add the regression for the same-cycle reopen to `test_heights_remote.py`:
+
+```python
+def test_a_collected_build_is_not_reopened_in_the_same_cycle(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    clone(db, linked, 1)
+    opened, opens_at_finish = [], []
+    real_open, real_finish = rig.client.open_build, hr._finish
+
+    def finish(*a, **k):
+        opens_at_finish.append(len(opened))
+        return real_finish(*a, **k)
+    monkeypatch.setattr(rig.client, "open_build", lambda *a, **k: opened.append(a[0]) or real_open(*a, **k))
+    monkeypatch.setattr(hr, "_finish", finish)
+    seen = rig.until(factory, lambda s: total(s, "heights_live") == 1, cycles=100, step_s=1)
+    assert len(opens_at_finish) == 1                         # collected and stored once
+    assert len(opened) == opens_at_finish[0]                 # nothing opened after it in that cycle
+    rig.cycle(factory, step_s=1)
+    assert len(opened) == opens_at_finish[0] and total(seen, "heights_live") == 1   # nor in the next
+```
 
 The module docstring's "Sent, resumably. One build at a time, opened only while the worker reports idle" becomes "Sent, resumably. Up to MAX_BUILDS builds at once, one per map, opened only while the worker reports idle (always, once builds run as Workflow runs)".
 
@@ -778,9 +918,13 @@ On `replay-worker`:
         value: "4"
       - key: REPLAY_HEIGHT_SPOOL_BYTES
         value: "2147483648"
+      # The spool on the disk, inside the archive's reserve (spec D16); packed tars go beside it in height_runs/.
+      - key: REPLAY_HEIGHT_SPOOL_DIR
+        value: /var/replay/height_builds
 ```
 
-With heights still `local`, these let up to 4 builds collect while each still waits its turn to run alone, as today.
+With heights still `local`, these let up to 4 builds be unfinished while each local one still waits its turn to
+run alone, as today. The archive keeps 4 GiB less (twice the spool cap).
 
 - [ ] **Step 1: Docs**
 
@@ -812,5 +956,6 @@ git commit -m "height builds on workflows: settings and the switch-over notes"
 
 - [ ] **Step 3: On Render (the owner)**
 
-Follow "Height builds on Workflows". Done when one rebuild is accepted. When two maps are due together, both
-should show as running at once.
+Follow "Height builds on Workflows". Done when two maps' rebuilds have run at the same time and **both** were
+accepted by the site (two new active rows in `control_heights.py list`). If no two maps come due together
+naturally, wait for the next rules change (which makes every map due) or check again after more uploads.

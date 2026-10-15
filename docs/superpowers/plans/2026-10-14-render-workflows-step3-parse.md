@@ -2,32 +2,35 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** With `REPLAY_PARSE_RUNNER=workflow`, each upload and re-parse is parsed and condensed in its own Workflow run, up to 15 at once, and a worker restart reconnects to a parse that is still running instead of starting another.
+**Goal:** With `REPLAY_PARSE_RUNNER=workflow`, each upload and re-parse is parsed and condensed in its own Workflow run, up to 15 at once; a worker restart reconnects to a parse run whose Render id it saved and otherwise starts the parse over, as today.
 
-**Architecture:** The parse-and-condense code in `Worker._process` moves to `replay_worker/parse_job.py`, used both by the local path and by the new `parse` task. The worker keeps its queues, job records, held uploads, archive and receipts; in workflow mode it runs `REPLAY_PARSE_PARALLEL` parse threads, and each opens a run with the job's `.vrf` as input, records the run's Render id and token in `job.json` before waiting, and maps the run's answer onto today's job outcomes.
+**Architecture:** The parse-and-condense code in `Worker._process` moves to `replay_worker/parse_job.py`, used both by the local path and by the new `parse` task. The worker keeps its queues, job records, held uploads, archive and receipts; in workflow mode it runs `REPLAY_PARSE_PARALLEL` parse threads. Each saves the job's run token and one deadline in `job.json` before starting a run, saves the Render id as soon as it has it, waits, and maps the answer onto today's job outcomes; the run identity is cleared only with the job's final save.
 
 **Tech Stack:** Python 3.13 standard library, pytest, the step-1 run table.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D1, D7, D8, D9, D11)
+**Spec:** `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (D1, D7, D8, D9, D11, D15, D18)
 
 **Depends on:** step 1 merged; step 2 need not be.
 
 ## Global Constraints
 
-- The `parse` task: plan `flex` (D7), `Retry(max_retries=0)` (D9). The parser keeps its own 240 s timeout (`REPLAY_TIMEOUT_S`) inside the run; the run as a whole (download, parse, condense, post) gets `REPLAY_PARSE_RUN_TIMEOUT_S` = 1200 s, the site's `STUCK_AFTER` (20 min). The task's `timeout_seconds` is 1260.
-- `REPLAY_PARSE_PARALLEL` = 15 and `REPLAY_QUEUE_SIZE` = 15 (spec D15), so the worker admits and runs 15 at once. The site's per-uploader `MAX_UNFINISHED` goes from 5 to 10 (Task 4).
-- Deploy skew (D11): a run whose `current_recipe()` differs from the worker's answers `error_kind: "deploy"`; the worker waits 60 s and starts a new run, at most 10 times.
+- The `parse` task: plan `flex` (D7), `Retry(max_retries=0)` (D9), `timeout_seconds=1260`, defined above `main.py`'s `if __name__ == "__main__":` block. The parser keeps its own 240 s timeout (`REPLAY_TIMEOUT_S`) inside the run.
+- One deadline per job (D8): `REPLAY_PARSE_RUN_TIMEOUT_S` = 1200 s after the job's first run starts, saved in `job.json` as `run_deadline`, kept across deploy refusals and restarts; every run of the job gets only the time left.
+- Restart rule (D9, the owner's call): reconnect when `run_id` was saved; otherwise start over with the saved token and deadline. A rare second execution is accepted; the token makes the first result win.
+- `REPLAY_PARSE_PARALLEL` = 15 and `REPLAY_QUEUE_SIZE` = 15 (D15): 15 run and up to 15 more wait. Recovered jobs go to a recovery list worked first, never to the bounded queue. The site's per-uploader `MAX_UNFINISHED` goes from 5 to 10 (Task 4).
+- Deploy skew (D11): a run whose `current_recipe()` differs from the worker's answers `error_kind: "deploy"`; the worker waits 60 s (bounded by the time left) and starts a new run.
 - The site, the receipts and the archive behave exactly as today; a job's outcomes and user-facing reasons are unchanged (`parse timed out`, `parse failed`, `not condensable: <reason>`, `the archived file is another match`).
-- `REPLAY_PARSE_RUNNER` stays `local` in `render.yaml` at merge.
-- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`.
+- `REPLAY_PARSE_RUNNER` is `sync: false` (step 1) and stays unset (local) at merge.
+- Tests run from `webapp/` with `.\.venv\Scripts\python.exe -m pytest`. A restart is tested with planted job records and **one** live Worker (as `test_replay_worker_archive.py` does), never two workers on one disk.
 
 ## Review Focus
 
-- A restart while a parse run is going must reconnect to that run (same Render id, same token) and never start a second one; if that run then turns out to have died, the job starts over once, as a restart does today.
-- Two parse threads must never take the same held upload when its build becomes supported (`_release_held` race).
+- A restart while a parse run is going must reconnect to that run when its Render id was saved (no new start), and start over otherwise; either way within the job's original deadline.
+- Recovering more accepted jobs than `REPLAY_QUEUE_SIZE` must fail none of them.
+- Two parse threads must never take the same held upload, and a held upload expiring must never be released at the same moment (`_release_held` against `_sweep`).
 - A run's result for a re-parse whose file turns out to be another match must fail the job with today's reason, not store it.
 - `Worker.idle()` must read "not idle" while any of the parallel parses runs (local height builds still use it).
-- A deploy refusal must neither fail the upload nor loop forever.
+- A deploy refusal must neither fail the upload nor extend the job past its deadline.
 
 ---
 
@@ -47,11 +50,11 @@
 
 **Files:**
 - Create: `replay_worker/parse_job.py`
-- Modify: `replay_worker/server.py` (`kill_tree`, `_limit_memory`, `parser_detail`, `REASON_*`, `DETAIL_MAX_CHARS` move out; `Worker._process` calls `parse_file`)
+- Modify: `replay_worker/server.py` (`kill_tree`, `_limit_memory`, `parser_detail`, `REASON_TIMEOUT`, `REASON_PARSE`, `DETAIL_MAX_CHARS` move out; `Worker._process` calls `parse_file`)
 - Test: `webapp/tests/replays/test_replay_worker_parse_job.py`
 
 **Interfaces:**
-- Produces: `ParseFailed(reason: str, detail: str | None = None)`; `parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], timeout_s: float, memory_cap_mb: int, parser_build: Path | None) -> tuple[dict, float]` (result dict in today's shape, parse seconds); raises `ParseFailed` or `ContractError`; deletes `folder / "export"` before returning. `server.py` keeps the names `kill_tree`, `_limit_memory`, `parser_detail`, `REASON_TIMEOUT`, `REASON_PARSE` by importing them from `parse_job`.
+- Produces: `ParseFailed(reason: str, detail: str | None = None, seconds: float | None = None)` (`seconds`: how long the parser ran before it failed, as `job.parse_seconds` records today for a nonzero exit; None on a timeout); `parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], timeout_s: float, memory_cap_mb: int, parser_build: Path | None) -> tuple[dict, float]` (result dict in today's shape, parse seconds); raises `ParseFailed` or `ContractError`; deletes `folder / "export"` before returning. `server.py` keeps the names `kill_tree`, `_limit_memory`, `parser_detail`, `REASON_TIMEOUT`, `REASON_PARSE` by importing them from `parse_job`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -86,6 +89,7 @@ def test_a_parser_that_exits_nonzero_is_parse_failed_with_its_last_lines(tmp_pat
         parse_job.parse_file(vrf, tmp_path, "sha", parser_cmd=[sys.executable, str(script), "{vrf}", "{out}"],
                              timeout_s=30, memory_cap_mb=0, parser_build=None)
     assert failed.value.reason == "parse failed" and "Boom: bad chunk" in failed.value.detail
+    assert failed.value.seconds is not None                     # today's job records the time of a failed parse
 
 
 def test_a_parser_that_hangs_is_parse_timed_out(tmp_path):
@@ -108,7 +112,16 @@ Expected: FAIL, `ImportError: cannot import name 'parse_job'`.
 
 - [ ] **Step 3: Create `parse_job.py`**
 
-Move, unchanged, from `server.py` into `parse_job.py`: `DETAIL_MAX_CHARS`, `REASON_TIMEOUT`, `REASON_PARSE`, `parser_detail`, `kill_tree`, `_limit_memory` (rename to `limit_memory`, keep `_limit_memory = limit_memory` as an alias). Then add:
+Create `parse_job.py` as below. Where it says "the moved definitions", **cut** these from `server.py` and paste
+them there verbatim (line numbers as of `origin/main` 571e656):
+- `REASON_TIMEOUT` and `REASON_PARSE` (`server.py:172-173`),
+- `DETAIL_MAX_CHARS` with its comment (`server.py:181`),
+- `def parser_detail(...)` (`server.py:194-205`),
+- `def kill_tree(...)` (`server.py:311-329`),
+- `def _limit_memory(...)` (`server.py:332-340`), renamed `limit_memory`, followed by the alias line
+  `_limit_memory = limit_memory`.
+
+`parser_detail` uses `re`, `kill_tree` uses `os`, `signal`, `subprocess`; all are imported below.
 
 ```python
 """Parse one `.vrf` and condense it (Stage 3, W-c), for the worker's local path and the Workflow `parse` task
@@ -133,13 +146,13 @@ if str(WEBAPP) not in sys.path:
 
 from app.replays.condense import condense_export_dir  # noqa: E402
 
-# ... the moved names here ...
+# <the moved definitions, cut from server.py as listed above>
 
 
 class ParseFailed(Exception):
-    def __init__(self, reason: str, detail: str | None = None):
+    def __init__(self, reason: str, detail: str | None = None, seconds: float | None = None):
         super().__init__(reason)
-        self.reason, self.detail = reason, detail
+        self.reason, self.detail, self.seconds = reason, detail, seconds
 
 
 def parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], timeout_s: float,
@@ -164,7 +177,7 @@ def parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], t
                 raise ParseFailed(REASON_TIMEOUT)
         seconds = round(time.perf_counter() - started, 1)
         if code != 0 or not (out / "manifest.json").exists():
-            raise ParseFailed(REASON_PARSE, parser_detail(log))
+            raise ParseFailed(REASON_PARSE, parser_detail(log), seconds)
     finally:
         log.unlink(missing_ok=True)
     build = json.loads(parser_build.read_text(encoding="utf-8-sig")) if parser_build is not None else None
@@ -186,7 +199,8 @@ def parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], t
     }, seconds
 ```
 
-Behaviour change to check: today the export is deleted after condense only when the archive is on (with it off, the whole job folder is deleted anyway in `_run`'s `finally`), so always deleting it is equivalent.
+The export is now always deleted after condensing. Today that happens only with the archive on; with it off the
+whole job folder goes in `_run`'s `finally` a moment later, so nothing a caller sees changes.
 
 - [ ] **Step 4: `server.py` uses it**
 
@@ -213,7 +227,7 @@ and `Worker._process` becomes:
                 timeout_s=self.settings.timeout_s, memory_cap_mb=self.settings.memory_cap_mb,
                 parser_build=self.settings.parser_build)
         except ParseFailed as failed:
-            job.detail = failed.detail
+            job.detail, job.parse_seconds = failed.detail, failed.seconds
             raise _JobFailed(failed.reason)
         return self._accept_result(job, result)
 
@@ -296,21 +310,23 @@ class FakeLink:
 
 def test_parse_refuses_another_recipe(monkeypatch):
     monkeypatch.setattr(tasks, "_recipe", lambda: "r-new")
+    called = []
+    monkeypatch.setattr(parse_job, "parse_file", lambda *a, **k: called.append(1))
     link = FakeLink({"vrf": b"x"})
     tasks.parse({"job_id": "j", "token": "t", "recipe": "r-old", "sha256": "s"}, link)
-    assert link.result["error_kind"] == "deploy"
+    assert link.result["error_kind"] == "deploy" and called == []      # refused before any parse
 
 
 def test_parse_reports_a_parse_failure_with_detail(monkeypatch):
     monkeypatch.setattr(tasks, "_recipe", lambda: "r")
 
     def boom(*a, **k):
-        raise parse_job.ParseFailed("parse failed", "Boom: bad chunk")
+        raise parse_job.ParseFailed("parse failed", "Boom: bad chunk", 3.5)
     monkeypatch.setattr(parse_job, "parse_file", boom)
     link = FakeLink({"vrf": b"x"})
     tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": "s"}, link)
     assert link.result == {"status": "failed", "error_kind": "parse", "error": "parse failed",
-                           "detail": "Boom: bad chunk"}
+                           "detail": "Boom: bad chunk", "parse_seconds": 3.5}
 
 
 def test_parse_posts_the_result(monkeypatch):
@@ -357,7 +373,8 @@ def parse(args: dict, link: WorkerLink) -> None:
                                                    parser_build=settings.parser_build)
             answer = {"status": "ok", "result": result, "parse_seconds": seconds}
         except parse_job.ParseFailed as failed:
-            answer = {"status": "failed", "error_kind": "parse", "error": failed.reason, "detail": failed.detail}
+            answer = {"status": "failed", "error_kind": "parse", "error": failed.reason, "detail": failed.detail,
+                      "parse_seconds": failed.seconds}
         except ContractError as refused:
             answer = {"status": "failed", "error_kind": "contract", "error": f"not condensable: {refused.reason}"}
         except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
@@ -372,7 +389,7 @@ TASKS = {"ping": ping, "control": control, "parse": parse}
 
 (If step 2 isn't merged yet, `TASKS` has no `control`; keep whatever entries exist and add `parse`.) `tasks.py` must put `webapp/` on `sys.path` before the `app` imports: add at the top of `parse` (and reuse in later tasks) `if str(WEBAPP) not in sys.path: sys.path.insert(0, str(WEBAPP))`, with `WEBAPP` defined as in step 2 (`Path(__file__).resolve().parents[1] / "webapp"`).
 
-In `replay_tasks/main.py`:
+In `replay_tasks/main.py`, below the earlier tasks and **above** the `if __name__ == "__main__":` block:
 
 ```python
 @app.task(name="parse", timeout_seconds=1260, retry=NO_RETRY)
@@ -403,138 +420,224 @@ git commit -m "replay tasks: the parse task"
 
 **Interfaces:**
 - Consumes: `runs.Runs` (step 1), `tasks.parse` (Task 2), `_accept_result` (Task 1).
-- Produces: `Settings.parse_parallel: int` (15, `REPLAY_PARSE_PARALLEL`), `Settings.parse_run_timeout_s: float` (1200, `REPLAY_PARSE_RUN_TIMEOUT_S`); `Job.run_id: str | None`, `Job.run_token: str | None` (saved in `job.json` as `run_id`, `run_token`); `Worker(settings, on_parse=None, runs_table=None)`; `Worker.parsing` (a read-only property: any parse running); `DEPLOY_RETRIES = 10`, `DEPLOY_WAIT_S = 60`.
+- Produces: `Settings.parse_parallel: int` (15, `REPLAY_PARSE_PARALLEL`), `Settings.parse_run_timeout_s: float` (1200, `REPLAY_PARSE_RUN_TIMEOUT_S`); `Job.run_id: str | None`, `Job.run_token: str | None`, `Job.run_deadline: float | None` (saved in `job.json` under those names); `Worker(settings, on_parse=None, runs_table=None)`; `Worker.parsing` (a read-only property: any parse running); `Worker.recovered: collections.deque[Job]`; `DEPLOY_WAIT_S = 60`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `test_replay_worker_parse_workflow.py`. These use a stub `parse` in place of the real parser, so they run without the .NET parser:
+Append to `test_replay_worker_parse_workflow.py`. These use a stub in place of the real parse task, so they run without the .NET parser. The worker is started by a helper, so restart tests can plant job records on the disk **before** the one live Worker starts:
 
 ```python
+import collections
+import uuid as uuidlib
+
 VRF = server.VRF_MAGIC + b"\x00" * 64
 
 
+class Rig:
+    """A fake Render, settings with the archive on a temp 'disk', and at most one live worker."""
+
+    def __init__(self, tmp_path, **overrides):
+        self.render = FakeRender()
+        self.seen, self.gate = [], threading.Event()
+        self.gate.set()
+        self.disk = tmp_path / "disk"
+        self.disk.mkdir()
+        self.settings = server.Settings(**{
+            "temp_root": tmp_path / "tmp", "parse_runner": "workflow", "parse_parallel": 15, "queue_size": 15,
+            "workflow_slug": "replay-tasks", "render_api_key": "k", "render_api_base": self.render.url,
+            "archive_dir": self.disk, "archive_require_mount": False, "archive_total_bytes": 500 * 1024 ** 3,
+            **overrides})
+        self.render.runner = self._answer_ok
+        self.httpd = self.worker = None
+
+    def _answer_ok(self, kind, args):
+        self.seen.append(args["job_id"])
+        self.gate.wait(30)
+        self.link(args).post_result({"status": "ok", "parse_seconds": 1.0,
+                                     "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
+
+    def link(self, args, token=None):
+        return tasks.WorkerLink(self.base, args["job_id"], token or args["token"])
+
+    def start(self):
+        table = server.make_runs(self.settings)
+        self.worker = server.Worker(self.settings, runs_table=table)
+        self.httpd = server.make_server(self.worker, runs_table=table)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        return self.worker
+
+    def plant(self, status="parsing", **record):
+        """A job record as an earlier worker left it on the disk."""
+        job_id = uuidlib.uuid4().hex
+        folder = self.disk / "jobs" / job_id
+        folder.mkdir(parents=True)
+        (folder / "upload.vrf").write_bytes(VRF)
+        body = {"id": job_id, "kind": "upload", "status": status, "error": None, "sha256": "s" * 64,
+                "size": len(VRF), "created": time.time(), "finished": None, "parse_seconds": None,
+                "match_uuid": None, "map": None, **record}
+        (folder / "job.json").write_text(json.dumps(body), encoding="utf-8")
+        return job_id
+
+    def close(self):
+        self.gate.set()
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        self.render.close()
+
+
 @pytest.fixture
-def remote(tmp_path, monkeypatch):
-    """A worker parsing through a fake Render whose `parse` runs a stub that answers like tasks.parse."""
-    render = FakeRender()
-    seen, gate = [], threading.Event()
-    gate.set()
-
-    def stub(args, link):
-        seen.append(args["job_id"])
-        gate.wait(30)
-        link.post_result({"status": "ok", "parse_seconds": 1.0,
-                          "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
-    archive_dir = tmp_path / "disk"
-    archive_dir.mkdir()
-    settings = server.Settings(temp_root=tmp_path / "tmp", parse_runner="workflow", parse_parallel=5,
-                               workflow_slug="replay-tasks", render_api_key="k", render_api_base=render.url,
-                               archive_dir=archive_dir, archive_require_mount=False,
-                               archive_total_bytes=500 * 1024 ** 3)
-    table = server.make_runs(settings)
-    worker = server.Worker(settings, runs_table=table)
-    httpd = server.make_server(worker, runs_table=table)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{httpd.server_address[1]}"
-    render.base_for_tests = base
-    render.runner = lambda kind, args: stub(args, tasks.WorkerLink(base, args["job_id"], args["token"]))
-    yield worker, render, seen, gate, settings, table
-    gate.set()
-    httpd.shutdown()
-    render.close()
+def rig(tmp_path):
+    made = Rig(tmp_path)
+    try:
+        yield made
+    finally:
+        made.close()
 
 
-def wait_jobs(worker, jobs, timeout=30):
+def wait_jobs(worker, ids, timeout=30):
     end = time.time() + timeout
     while time.time() < end:
-        if all(worker.get(j.id).status in ("done", "failed") for j in jobs):
-            return [worker.get(j.id) for j in jobs]
+        if all(worker.get(i) is not None and worker.get(i).status in ("done", "failed") for i in ids):
+            return [worker.get(i) for i in ids]
         time.sleep(0.05)
     raise AssertionError("jobs didn't finish")
 
 
-def test_five_uploads_parse_at_once(remote):
-    worker, render, seen, gate, _, _ = remote
-    gate.clear()
-    jobs = [worker.submit(VRF + bytes([i])) for i in range(5)]
-    end = time.time() + 10
-    while len(seen) < 5 and time.time() < end:
-        time.sleep(0.05)
-    assert len(seen) == 5 and worker.parsing and not worker.idle()
-    gate.set()
-    done = wait_jobs(worker, jobs)
+def wait_for(check, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        if check():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+
+
+def record_of(rig, job_id):
+    return json.loads((rig.disk / "jobs" / job_id / "job.json").read_text(encoding="utf-8"))
+
+
+def test_fifteen_uploads_parse_at_once(rig):
+    worker = rig.start()
+    rig.gate.clear()
+    jobs = [worker.submit(VRF + bytes([i])) for i in range(15)]
+    wait_for(lambda: len(rig.seen) == 15)
+    assert worker.parse_count == 15 and worker.parsing and not worker.idle()
+    rig.gate.set()
+    done = wait_jobs(worker, [j.id for j in jobs])
     assert all(j.status == "done" and j.parse_seconds == 1.0 for j in done)
-    assert {s["task"] for s in render.started} == {"replay-tasks/parse"}
+    assert worker.parse_count == 0
+    assert {s["task"] for s in rig.render.started} == {"replay-tasks/parse"}
 
 
-def test_the_run_id_is_saved_before_the_result(remote):
-    worker, render, seen, gate, _, _ = remote
-    gate.clear()
+def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig):
+    worker = rig.start()
+    rig.gate.clear()
     job = worker.submit(VRF + b"a")
-    end = time.time() + 10
-    while not seen and time.time() < end:
-        time.sleep(0.05)
-    record = json.loads((job.folder / "job.json").read_text(encoding="utf-8"))
-    assert record["status"] == "parsing" and record["run_id"] == "trn-1" and record["run_token"]
-    gate.set()
-    wait_jobs(worker, [job])
+    wait_for(lambda: record_of(rig, job.id).get("run_id") == "trn-1")      # the durable record itself
+    record = record_of(rig, job.id)
+    assert record["status"] == "parsing" and record["run_token"] and record["run_deadline"] > time.time()
+    assert rig.render.started[0]["input"][0]["token"] == record["run_token"]
+    rig.gate.set()
+    wait_jobs(worker, [job.id])
+    final = record_of(rig, job.id)
+    assert final["status"] == "done" and "run_id" not in final and "run_token" not in final
 
 
-def test_a_deploy_refusal_waits_and_starts_a_new_run(remote, monkeypatch):
-    worker, render, _, _, _, _ = remote
+def test_a_restart_reconnects_to_a_saved_run_and_starts_nothing(rig):
+    rig.render.finish = False
+    rig.render.status["trn-9"], rig.render.slug_of["trn-9"] = "running", "replay-tasks/parse"
+    job_id = rig.plant(run_id="trn-9", run_token="tok", run_deadline=time.time() + 600)
+    worker = rig.start()
+    wait_for(lambda: worker.get(job_id) is not None and worker.get(job_id).status == "parsing")
+    time.sleep(0.3)
+    assert rig.render.started == []                                         # reconnected, not restarted
+    rig.link({"job_id": job_id}, token="tok").post_result(
+        {"status": "ok", "parse_seconds": 3.0, "result": {"match_uuid": "m-x", "map_name": "Ascent"}})
+    [done] = wait_jobs(worker, [job_id])
+    assert done.status == "done" and done.parse_seconds == 3.0
+
+
+def test_a_restart_without_a_run_id_starts_over_with_the_saved_token_and_deadline(rig):
+    deadline = time.time() + 600
+    job_id = rig.plant(run_token="tok", run_deadline=deadline)
+    worker = rig.start()
+    [done] = wait_jobs(worker, [job_id])
+    assert done.status == "done" and len(rig.render.started) == 1
+    assert rig.render.started[0]["input"][0]["token"] == "tok"
+
+
+def test_recovery_beyond_the_queue_size_fails_nothing(tmp_path):
+    rig = Rig(tmp_path, queue_size=2, parse_parallel=1)
+    try:
+        ids = [rig.plant(status=s) for s in ("parsing", "queued") * 6]          # 12 accepted, a queue of 2
+        worker = rig.start()
+        done = wait_jobs(worker, ids, timeout=60)
+        assert all(j.status == "done" for j in done)
+    finally:
+        rig.close()
+
+
+def test_deploy_refusals_never_outlive_the_jobs_deadline(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, parse_run_timeout_s=1.5)
+    try:
+        monkeypatch.setattr(server, "DEPLOY_WAIT_S", 0.4)
+        rig.render.runner = lambda kind, args: rig.link(args).post_result(
+            {"status": "failed", "error_kind": "deploy", "error": "recipe"})
+        worker = rig.start()
+        started = time.time()
+        [done] = wait_jobs(worker, [worker.submit(VRF + b"d").id])
+        assert done.status == "failed" and done.error == "parse timed out"
+        assert time.time() - started < 4 and len(rig.render.started) <= 5
+    finally:
+        rig.close()
+
+
+def test_a_deploy_refusal_waits_and_starts_a_new_run(rig, monkeypatch):
     monkeypatch.setattr(server, "DEPLOY_WAIT_S", 0.1)
     answers = iter([{"status": "failed", "error_kind": "deploy", "error": "recipe"}])
-
-    def flaky(kind, args):
-        link = tasks.WorkerLink(render.base_for_tests, args["job_id"], args["token"])
-        link.post_result(next(answers, {"status": "ok", "parse_seconds": 2.0,
-                                        "result": {"match_uuid": "m", "map_name": "Ascent"}}))
-    render.runner = flaky
-    [done] = wait_jobs(worker, [worker.submit(VRF + b"b")])
-    assert done.status == "done" and len(render.started) == 2
+    rig.render.runner = lambda kind, args: rig.link(args).post_result(next(answers, {
+        "status": "ok", "parse_seconds": 2.0, "result": {"match_uuid": "m", "map_name": "Ascent"}}))
+    worker = rig.start()
+    [done] = wait_jobs(worker, [worker.submit(VRF + b"b").id])
+    assert done.status == "done" and len(rig.render.started) == 2
 
 
-def test_failures_keep_todays_reasons(remote):
-    worker, render, _, _, _, _ = remote
-    answers = {"parse": {"status": "failed", "error_kind": "parse", "error": "parse failed", "detail": "Boom"},
-               "timeout": {"status": "failed", "error_kind": "parse", "error": "parse timed out", "detail": None},
-               "contract": {"status": "failed", "error_kind": "contract", "error": "not condensable: x"}}
-    order = list(answers)
-
-    def answer(kind, args):
-        tasks.WorkerLink(render.base_for_tests, args["job_id"], args["token"]).post_result(answers[order.pop(0)])
-    render.runner = answer
-    jobs = []
+def test_failures_keep_todays_reasons(rig):
+    answers = collections.deque([
+        {"status": "failed", "error_kind": "parse", "error": "parse failed", "detail": "Boom", "parse_seconds": 2.0},
+        {"status": "failed", "error_kind": "parse", "error": "parse timed out", "detail": None},
+        {"status": "failed", "error_kind": "contract", "error": "not condensable: x"}])
+    rig.render.runner = lambda kind, args: rig.link(args).post_result(answers.popleft())
+    worker = rig.start()
+    got = []
     for i in range(3):
-        jobs.append(worker.submit(VRF + bytes([10 + i])))
-        wait_jobs(worker, jobs[-1:])
-    got = [(j.status, j.error, j.detail) for j in (worker.get(j.id) for j in jobs)]
+        [job] = wait_jobs(worker, [worker.submit(VRF + bytes([10 + i])).id])
+        got.append((job.status, job.error, job.detail))
     assert got == [("failed", "parse failed", "Boom"), ("failed", "parse timed out", None),
                    ("failed", "not condensable: x", None)]
 
 
-def test_a_restart_reconnects_to_a_running_parse(remote, tmp_path):
-    worker, render, seen, gate, settings, table = remote
-    gate.clear()
-    job = worker.submit(VRF + b"c")
-    end = time.time() + 10
-    while not seen and time.time() < end:
-        time.sleep(0.05)
-    # A second worker on the same disk stands for the restarted one; the first stops caring.
-    table2 = server.make_runs(settings)
-    worker2 = server.Worker(settings, runs_table=table2)
-    httpd2 = server.make_server(worker2, runs_table=table2)
-    threading.Thread(target=httpd2.serve_forever, daemon=True).start()
-    base2 = f"http://127.0.0.1:{httpd2.server_address[1]}"
-    time.sleep(0.5)
-    assert len(render.started) == 1                      # no second run
-    rec = json.loads((job.folder / "job.json").read_text(encoding="utf-8"))
-    # The running run posts to the restarted worker with its original token:
-    tasks.WorkerLink(base2, job.id, rec["run_token"]).post_result(
-        {"status": "ok", "parse_seconds": 3.0, "result": {"match_uuid": "m-c", "map_name": "Ascent"}})
-    [done] = wait_jobs(worker2, [job])
-    assert done.status == "done" and done.parse_seconds == 3.0
-    httpd2.shutdown()
+def test_an_expiring_held_upload_is_never_released(rig, monkeypatch):
+    worker = rig.start()
+    job = server.Job("h1", rig.disk / "jobs" / "h1", "s" * 64, 10, status="held", game_build="release-99")
+    job.folder.mkdir(parents=True)
+    (job.folder / "upload.vrf").write_bytes(VRF)
+    worker.supported_builds = {"release-99"}
+    job.created = 0.0                                               # long past HELD_TTL_S
+    with worker.lock:
+        worker.jobs["h1"] = job
+    real_save = worker._save
+
+    def save_then_try_release(saved, strict=False):
+        real_save(saved, strict)
+        if saved.id == "h1" and saved.status == "expiring":
+            assert worker._release_held() is None                   # the claim already excludes it
+    monkeypatch.setattr(worker, "_save", save_then_try_release)
+    with worker.sweep_lock:
+        worker._sweep()
+    assert worker.get("h1").status == "failed" and not (job.folder / "upload.vrf").exists()
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -558,14 +661,67 @@ Expected: the new tests FAIL (`Settings` has no `parse_parallel`; `Worker` takes
         settings.parse_run_timeout_s = float(env.get("REPLAY_PARSE_RUN_TIMEOUT_S", settings.parse_run_timeout_s))
 ```
 
-`Job`: `run_id: str | None = None` and `run_token: str | None = None`. `_save`: add `"run_id"` and `"run_token"` to the loop `for key in ("game_build", "detail"):` → `for key in ("game_build", "detail", "run_id", "run_token"):`. `_recover`: pass `run_id=record.get("run_id"), run_token=record.get("run_token")` to `Job(...)`. A recovered `parsing` job is queued again exactly as today; `_process_remote` sees its `run_id` and reconnects.
+`Job`: add `run_id: str | None = None`, `run_token: str | None = None`, `run_deadline: float | None = None`.
+`_save`: the loop `for key in ("game_build", "detail"):` becomes
+`for key in ("game_build", "detail", "run_id", "run_token", "run_deadline"):` (a None value is left out, as today).
+`_recover`: pass `run_id=record.get("run_id"), run_token=record.get("run_token"),
+run_deadline=record.get("run_deadline")` to `Job(...)`.
 
-Module constants beside `REASON_*` imports:
+Module constant beside the `REASON_*` imports:
 
 ```python
-DEPLOY_RETRIES = 10     # parse runs refused for another recipe, before the job fails (spec D11)
-DEPLOY_WAIT_S = 60
+DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
 ```
+
+- [ ] **Step 3b: Recovered jobs never meet the bounded queue (spec D15)**
+
+`Worker.__init__`: add `self.recovered: collections.deque[Job] = collections.deque()` (import `collections`)
+before `_recover` runs. In `_recover`, the branch for queued and parsing jobs,
+
+```python
+            elif job.status in ("queued", "parsing"):
+                job.status = "queued"
+                target = self.queue if job.kind == "upload" else self.reparse_queue
+                try:
+                    if not (folder / "upload.vrf").exists():
+                        raise queue.Full
+                    target.put_nowait(job)
+                except queue.Full:
+                    job.status, job.error, job.finished = "failed", "the worker restarted: please re-upload", time.time()
+                    (folder / "upload.vrf").unlink(missing_ok=True)
+                self._save(job)
+```
+
+becomes
+
+```python
+            elif job.status in ("queued", "parsing"):
+                if (folder / "upload.vrf").exists():
+                    # Accepted before the restart: worked first, never through the bounded queue, so a restart
+                    # can't fail it for want of room (spec D15). `released` marks a job not taken from a queue.
+                    job.status, job.released = "queued", True
+                    self.recovered.append(job)
+                else:
+                    job.status, job.error, job.finished = "failed", "the worker restarted: please re-upload", time.time()
+                self._save(job)
+```
+
+The `_log` line at the end of `_recover` reports `len(self.recovered)` recovered jobs instead of the two queue
+sizes. In `_next`'s archive-on loop, take a recovered job before the queues:
+
+```python
+        while True:
+            try:
+                job = self.recovered.popleft()
+                self._parse_started()
+                return job
+            except IndexError:
+                pass
+            for source in (self.queue, self.reparse_queue):
+                ...                                   # unchanged
+```
+
+`deque.popleft` is thread-safe, so the parse threads share it without the lock.
 
 - [ ] **Step 4: Parallel parse threads and the counter**
 
@@ -621,6 +777,33 @@ In `_run`'s `finally`, replace `self.parsing = False` with `self._parse_ended()`
         return job
 ```
 
+`_sweep`: expiring a held upload claims it under the lock first, so no parse thread can release it meanwhile
+(`_release_held` only takes `status == "held"`). Its block
+
+```python
+            with self.lock:
+                expired = [j for j in self.jobs.values() if j.status == "held" and j.created < time.time() - HELD_TTL_S]
+            for job in expired:
+                (job.folder / "upload.vrf").unlink(missing_ok=True)
+                job.status, job.finished = "failed", time.time()
+```
+
+becomes
+
+```python
+            with self.lock:
+                expired = [j for j in self.jobs.values() if j.status == "held" and j.created < time.time() - HELD_TTL_S]
+                for job in expired:
+                    job.status = "expiring"                 # claimed: _release_held skips it
+            for job in expired:
+                self._save(job)
+                (job.folder / "upload.vrf").unlink(missing_ok=True)
+                job.status, job.finished = "failed", time.time()
+```
+
+(the lines after it, setting `job.error`, `_save` and `_log`, are unchanged). `held_bytes` and `archive_status`
+count `status == "held"` only, so an expiring job leaves their totals at once.
+
 The thread start at the end of `__init__` becomes:
 
 ```python
@@ -639,45 +822,57 @@ Make `_process` start with the branch shown in Task 1, and add:
 
 ```python
     def _process_remote(self, job: Job) -> dict:
-        """The parse as a Workflow run. The run's Render id and token go into job.json before this waits, so a
-        restart reconnects to the run instead of starting another (spec D9); a reconnected run that turns out
-        to have died starts over once, as a restart does today."""
+        """The parse as Workflow runs, under the job's one deadline (spec D8) and today's restart rule (D9):
+        the token and deadline are saved before a run starts and the Render id as soon as there is one; a job
+        recovered with a saved id reconnects to that run, and one without starts over with its saved token. The
+        identity stays in job.json until `_run` settles the job."""
         files = {"vrf": job.folder / "upload.vrf"}
-        reconnected = False
-        for attempt in range(DEPLOY_RETRIES + 1):
-            if job.run_id and job.run_token and not reconnected:
-                reconnected = True
-                run = self.runs.open("parse", job.id, files, self.settings.parse_run_timeout_s,
-                                     token=job.run_token, render_id=job.run_id)
-            else:
-                run = self.runs.open("parse", job.id, files, self.settings.parse_run_timeout_s)
-                job.run_token = run.token
-
+        if job.run_deadline is None or job.run_token is None:
+            job.run_deadline = time.time() + self.settings.parse_run_timeout_s
+            job.run_token = secrets.token_hex(16)
+            self._save(job, strict=True)
+        reconnect = job.run_id is not None
+        while True:
+            if time.time() >= job.run_deadline:
+                raise _JobFailed(REASON_TIMEOUT)
+            run = self.runs.open("parse", job.id, files, 0, token=job.run_token,
+                                 render_id=job.run_id if reconnect else None, deadline=job.run_deadline)
+            if not reconnect:
                 def started(render_id, job=job):
                     job.run_id = render_id
                     self._save(job, strict=True)
                 self.runs.start(run, {"recipe": self.recipe, "sha256": job.sha256}, on_started=started)
             answer = self.runs.wait(run)
-            job.run_id = job.run_token = None
-            self._save(job)
             kind = answer.get("error_kind")
             if answer.get("status") == "ok":
                 job.parse_seconds = answer.get("parse_seconds")
                 return self._accept_result(job, answer["result"])
-            if kind == "deploy" and attempt < DEPLOY_RETRIES:
-                time.sleep(DEPLOY_WAIT_S)
+            if kind == "deploy":
+                # This run's image has another recipe: nothing was parsed. Wait, then a fresh run, within the
+                # deadline (the loop's first check ends it).
+                time.sleep(max(0.0, min(DEPLOY_WAIT_S, job.run_deadline - time.time())))
+                job.run_id, reconnect = None, False
                 continue
-            if kind == "infra" and reconnected and attempt == 0:
-                continue                                  # the run we reconnected to had died: start over once
+            if kind == "infra" and reconnect:
+                # The run we reconnected to ended without an answer: start over, as a restart does today.
+                job.run_id, reconnect = None, False
+                continue
             if kind == "timeout":
                 raise _JobFailed(REASON_TIMEOUT)
             if kind == "parse":
-                job.detail = answer.get("detail")
+                job.detail, job.parse_seconds = answer.get("detail"), answer.get("parse_seconds")
                 raise _JobFailed(answer.get("error") or REASON_PARSE)
             if kind == "contract":
                 raise _JobFailed(answer.get("error") or REASON_PARSE)
             raise _JobFailed(REASON_PARSE)
-        raise _JobFailed(REASON_PARSE)
+```
+
+(`import secrets` at the top of `server.py`.) In `_run`'s `finally`, just before the final
+`job.result, job.error, job.finished = ...` / `self._save(job)` lines, clear the identity so it goes out with the
+job's settlement in the same save:
+
+```python
+                job.run_id = job.run_token = job.run_deadline = None
 ```
 
 - [ ] **Step 6: `main()`**
@@ -693,7 +888,7 @@ Expected: all pass.
 
 ```bash
 git add replay_worker/server.py webapp/tests/replays/test_replay_worker_parse_workflow.py
-git commit -m "replay worker: parses as workflow runs, five at once, reconnecting after a restart"
+git commit -m "replay worker: parses as workflow runs, fifteen at once, reconnecting after a restart"
 ```
 
 ---
@@ -750,13 +945,17 @@ them one at a time, as today, which the site already tolerates (its `QUEUED_STUC
 3. Upload 10 replays at once from one browser session (its batch), and a few more from a second one: the
    workflow's Runs page shows up to 15 `parse` runs running together.
 4. Restart test: upload one, and while its run is running, `replay-worker` → Manual Deploy → Restart. The upload
-   still finishes, and the Runs page shows one `parse` run for it, not two.
+   still finishes, and the Runs page shows one `parse` run for it (the worker reconnected). If the restart landed
+   in the instant between starting the run and saving its id, a second run appears and the first result wins:
+   that is the accepted rule (spec D9).
 5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in
    `replay_tasks/main.py` (spec D7) and redeploy the workflow.
-6. Roll back: `REPLAY_PARSE_RUNNER=local`.
+6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
+   largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
+7. Roll back: `REPLAY_PARSE_RUNNER=local`.
 ```
 
-`replay_worker/README.md`: in "Behaviour", add that with `REPLAY_PARSE_RUNNER=workflow` up to `REPLAY_PARSE_PARALLEL` parses run at once as Workflow runs, and the job record carries `run_id`/`run_token` while one is going.
+`replay_worker/README.md`: in "Behaviour", add that with `REPLAY_PARSE_RUNNER=workflow` up to `REPLAY_PARSE_PARALLEL` parses run at once as Workflow runs; the job record carries `run_id`, `run_token` and `run_deadline` while one is going; and jobs recovered after a restart are worked first, outside the queue.
 
 - [ ] **Step 3: Full suite and commit**
 
