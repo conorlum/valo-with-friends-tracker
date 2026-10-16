@@ -38,7 +38,7 @@ For a knife with a proven pulse and a complete hit list (`activation.state == "c
    two ends of the same rule. An ulting Veto named in the hit list doesn't make it "everyone": the others get
    `knife_hit`, and the engine drops Veto's own op (below).
 5. An unproven pulse or incomplete hit list still tells nothing, as today.
-6. **Rim margin (D3, provisional):** every knife restrict (`knife_hit`, `knife_all`) uses r + `knife_rim_m`, and
+6. **Rim margin (D3, approved 2026-10-16):** every knife restrict (`knife_hit`, `knife_all`) uses r + `knife_rim_m`, and
    every knife exclude (`knife_missed`, `knife_zero`) uses r - `knife_rim_m` (never below 0), with
    `knife_rim_m` = 2 m in `app/control/utility.json`. Measured on the 45 proven knives of two local exports
    (Haven `d07225f3`, Summit `650e6c6c`; r = 15 m): 7 of 202 living enemies were on the wrong side of the radius
@@ -60,7 +60,7 @@ today it is wherever any of the 4 could have walked.
   reveals are) was offered and declined. `knife_all` stays as it is.
 - **D2 (settled by the user's request): partial knives now give information**, reversing item 10's "partial hits
   do nothing".
-- **D3 (AFK run 2026-10-16, provisional, needs the user's approval): a 2 m rim margin** on every knife op (rule 6),
+- **D3 (AFK run 2026-10-16, approved by the user on review as run decision D1): a 2 m rim margin** on every knife op (rule 6),
   from the hit-list check above. Setting `knife_rim_m` to 0 gives the plain radius.
 - **Not done: a 3D volume for the excludes.** The footprint is a 2D disk on every floor. No measured case needed
   height, and neither measured map has heights; revisit if a multi-floor map shows it.

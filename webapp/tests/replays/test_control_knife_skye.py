@@ -75,6 +75,23 @@ def test_partial_ops_need_suppress_and_carry_the_plain_radius_and_the_lists():
         assert i.detail["r_m"] == pytest.approx(plain)
 
 
+@pytest.mark.parametrize("hits, reasons", [
+    ([], {5: ("exclude", -1), 6: ("exclude", -1)}),             # knife_zero
+    ([5, 6], {5: ("restrict", 1), 6: ("restrict", 1)}),          # knife_all
+    ([5], {5: ("restrict", 1), 6: ("exclude", -1)}),             # knife_hit / knife_missed
+])
+@pytest.mark.parametrize("rim", [2.0, 0.0])
+def test_every_knife_case_carries_the_rim_and_a_zero_rim_is_the_plain_radius(monkeypatch, hits, reasons, rim):
+    monkeypatch.setitem(ut.FIGURES, "knife_rim_m", rim)
+    b = blob(players(), t_end=10.0, util=[knife(hits, r=600)])
+    rnd = ce.RoundInputs(b, open_hall())
+    plain = 600 * ce.PX / 10000 * rnd.geo.m_per_px
+    got = {i.slot: i for i in rnd.infos}
+    for slot, (kind, sign) in reasons.items():
+        assert got[slot].kind == kind
+        assert got[slot].radius_m == pytest.approx(plain + sign * rim)
+
+
 def test_a_small_knife_exclude_radius_never_goes_below_zero():
     b = blob(players(), t_end=10.0, util=[knife([5], r=R_UV)])
     got = {i.slot: i for i in ce.RoundInputs(b, open_hall()).infos}
