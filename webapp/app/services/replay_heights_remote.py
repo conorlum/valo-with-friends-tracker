@@ -16,7 +16,8 @@ the map-control dispatcher (app/services/replay_control_remote.py `cycle`), unde
 - **Held.** While a map's rebuild is due or running, its rounds are not sent for recomputing: new heights
   would make them out of date at once. Other maps' rounds keep flowing. The page keeps showing a held round's
   stored control, marked out of date.
-- **Sent, resumably.** One build at a time, opened only while the worker reports idle. Every cycle starts by
+- **Sent, resumably.** Up to MAX_BUILDS builds at once, one per map, opened only while the worker reports idle
+  (always, once builds run as Workflow runs). Every cycle starts by
   asking the worker what state the build is in (its job when the dispatcher knows one; else by opening the key,
   which answers the build there is) and acts on that: `collecting` sends rounds and then starts it; `queued`
   and `running` wait; `done` is collected; `failed` is a failed try. So a restart of the web app adopts the
@@ -67,6 +68,7 @@ STALE_BUILD_S = 7200             # a build seen running this long
 RESENDS_MAX = 2                  # times a build may be sent again from the first round (a forgotten build, lost rounds)
 MAX_TRIES = 3
 BACKOFF_S = 300
+MAX_BUILDS = settings.heights_max_builds     # maps whose rebuild is open at once (HEIGHTS_MAX_BUILDS)
 COUNTS = ("heights_live", "heights_rejected", "heights_failed", "heights_stale", "heights_off", "heights_sent")
 
 
@@ -115,8 +117,13 @@ class Build:
 
 @dataclass
 class HeightState:
-    build: Build | None = None
+    builds: dict = field(default_factory=dict)     # manifest key -> Build, one per map, at most MAX_BUILDS
     tries: dict = field(default_factory=dict)       # manifest key -> (failures, last)
+
+    @property
+    def build(self) -> Build | None:
+        """The only build, when exactly one is open (tests and logs)."""
+        return next(iter(self.builds.values())) if len(self.builds) == 1 else None
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -331,6 +338,7 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             build.job_id = state.get("id")
             build.queued_since = build.running_since = None
             if state.get("status") == "collecting":
+                build.opened_at = now                 # the clock for sending starts when the worker accepts it, not at a 503
                 build.todo = list(build.rounds)       # immutable uploads: what it already has is acknowledged for free
             else:
                 build.todo = []
@@ -370,12 +378,14 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             return False
         if status == "queued":
             build.running_since = None
-            if _idle(client):
+            answer = client.health()
+            others = (answer.get("heights") or {}).get("running") if isinstance(answer, dict) else None
+            if _idle(client, answer) and not others:
                 build.queued_since = now if build.queued_since is None else build.queued_since
                 if now - build.queued_since > QUEUED_STALE_S:
                     raise BuildFailed("it sat queued on an idle worker and never started")
             else:
-                build.queued_since = None             # waiting behind a parse is never a failure
+                build.queued_since = None             # waiting behind a parse or another build is never a failure
             return False
         if status == "running":
             build.queued_since = None
@@ -398,9 +408,40 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         raise BuildFailed(f"the worker refused the request ({refused})") from refused
 
 
+def _try_build(session_factory, session, client, hstate: HeightState, build: Build, due: dict, now: float,
+               counts: dict, held: set) -> None:
+    """One look at one map's build; its failure drops only it and spends only its manifest's try."""
+    from app.services.replay_control_remote import Conflict, Unreachable, WorkerBusy
+
+    try:
+        if _advance(session_factory, session, client, build, now, counts):
+            hstate.builds.pop(build.key, None)
+            held.discard(build.map_name)
+    except (Unreachable, WorkerBusy):
+        counts["unreachable"] = counts.get("unreachable", 0) + 1
+    except _Stale as stale:
+        log.info("heights: %s build dropped: %s", build.map_name, stale)
+        _cancel(client, build)
+        hstate.builds.pop(build.key, None)
+        counts["heights_stale"] += 1
+    except (BuildFailed, Conflict, AttributeError, KeyError, TypeError, ValueError) as error:
+        # The last four: a worker's answer that isn't shaped as the protocol says (`state.get` on a list, a
+        # missing field). Handled here, where the build can be dropped; left to `cycle`'s catch-all the build
+        # would stay and meet the same answer every cycle without spending a try. A database error is none of
+        # these and still reaches `cycle`, which rolls back and takes its lock again.
+        log.warning("heights: %s build failed: %s: %s", build.map_name, type(error).__name__, error)
+        _cancel(client, build)
+        hstate.builds.pop(build.key, None)
+        hstate.failed(build.key, now)
+        if hstate.spent(build.key):
+            _retire_spent_evidence(session_factory, due[build.key], counts)
+            held.discard(due[build.key].map_name)
+        counts["heights_failed"] += 1
+
+
 def step(session_factory, session, client, hstate: HeightState, now: float, counts: dict) -> set[str]:
     """One cycle's work on height rebuilds. Returns the maps whose rounds are held."""
-    from app.services.replay_control_remote import Conflict, Unreachable, WorkerBusy
+    from app.services.replay_control_remote import Unreachable, WorkerBusy
 
     for key in COUNTS:
         counts.setdefault(key, 0)
@@ -415,52 +456,47 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             # Also retry a retirement that failed to commit on the last failed build's cycle.
             _retire_spent_evidence(session_factory, d, counts)
     held = {d.map_name for key, d in due.items() if not hstate.spent(key)}
-    build = hstate.build
-    if build is not None and build.key not in due:
-        _cancel(client, build)                        # its inputs are no longer the map's
-        hstate.build = build = None
-        counts["heights_stale"] += 1
-    attempt_key = build.key if build is not None else None
+    for key, build in list(hstate.builds.items()):
+        if key not in due:
+            _cancel(client, build)                    # its inputs are no longer the map's
+            del hstate.builds[key]
+            counts["heights_stale"] += 1
+    # Every build looked at this cycle, finished or not: `due` was planned before they advanced, so a manifest just
+    # collected (or failed) is still in it and must not be opened again until the next cycle plans afresh.
+    attempted = set(hstate.builds)
+    for build in list(hstate.builds.values()):
+        _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
+    building = {b.map_name for b in hstate.builds.values()}
+    ready = [d for key, d in due.items()
+             if key not in attempted and key not in hstate.builds and d.map_name not in building
+             and hstate.may_try(key, now)]
+    if not ready or len(hstate.builds) >= MAX_BUILDS:
+        return held
     try:
-        if build is None:
-            ready = [d for key, d in due.items() if hstate.may_try(key, now)]
-            if not ready:
-                return held
-            d = ready[0]
-            attempt_key = hi.key(d.manifest)  # health validation can fail before a Build is created
-            answer = client.health()
-            if _other_deploy(answer):
-                return set()                          # the deploy gap: wait for the worker, hold nothing, spend nothing
-            if not _idle(client, answer):
-                return held
-            rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
-            build = hstate.build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,
-                                         previous=control_heights.active_digests(session).get(d.map_name))
-            log.info("heights: %s rebuild (%s), %d rounds", d.map_name, d.why, len(rounds))
-        held.add(build.map_name)
-        if _advance(session_factory, session, client, build, now, counts):
-            hstate.build = None
-            held.discard(build.map_name)
+        answer = client.health()
+        if _other_deploy(answer):
+            return {b.map_name for b in hstate.builds.values()}   # the deploy gap: open nothing, hold only what runs
+        if not _idle(client, answer):
+            return held
+        # A worker whose heights runner is local runs one build at a time; the rest would only sit queued.
+        runners = answer.get("runners") if isinstance(answer.get("runners"), dict) else {}
+        room = (MAX_BUILDS if runners.get("heights") == "workflow" else 1) - len(hstate.builds)
+        if room <= 0:
+            return held
     except (Unreachable, WorkerBusy):
         counts["unreachable"] = counts.get("unreachable", 0) + 1
-    except _Stale as stale:
-        log.info("heights: %s build dropped: %s", build.map_name, stale)
-        _cancel(client, build)
-        hstate.build = None
-        counts["heights_stale"] += 1
-    except (BuildFailed, Conflict, AttributeError, KeyError, TypeError, ValueError) as error:
-        # The last four: a worker's answer that isn't shaped as the protocol says (`state.get` on a list, a
-        # missing field). Handled here, where the build can be dropped; left to `cycle`'s catch-all the build
-        # would stay and meet the same answer every cycle without spending a try. A database error is none of
-        # these and still reaches `cycle`, which rolls back and takes its lock again.
-        log.warning("heights: %s build failed: %s: %s", build.map_name if build else "?", type(error).__name__, error)
-        if build is not None:
-            _cancel(client, build)
-            hstate.build = None
-        if attempt_key is not None:
-            hstate.failed(attempt_key, now)
-            if hstate.spent(attempt_key):
-                _retire_spent_evidence(session_factory, due[attempt_key], counts)
-                held.discard(due[attempt_key].map_name)
+        return held
+    except BuildFailed as error:                      # no boolean idle field: as today, a failed try for the first ready map
+        log.warning("heights: %s build failed: %s", ready[0].map_name, error)
+        hstate.failed(hi.key(ready[0].manifest), now)
         counts["heights_failed"] += 1
+        return held
+    actives = control_heights.active_digests(session)
+    for d in ready[:room]:
+        rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
+        build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,
+                      previous=actives.get(d.map_name))
+        hstate.builds[build.key] = build
+        log.info("heights: %s rebuild (%s), %d rounds", d.map_name, d.why, len(rounds))
+        _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
     return held

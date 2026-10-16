@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # Map control for new replays on the replay worker (docs/map-control-worker-plan.md). Off by
     # default; needs REPLAY_WORKER_URL too, and is always off in demo mode.
     replay_control_remote: bool = False
+    # Map control on the worker (spec 2026-10-14-render-workflows-design.md, D5): rounds in flight at once, and
+    # from how many replays. Read once at startup.
+    control_max_runs: int = 40
+    control_max_matches: int = 1
+    # Height rebuilds open at once, one per map (spec 2026-10-14, D16); the worker's REPLAY_HEIGHT_BUILDS_MAX
+    # must be at least this.
+    heights_max_builds: int = 4
     # Height rebuilds on the replay worker (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md):
     # a map's heights are rebuilt every few new matches and go live when they pass the gate. Off by default, so
     # a deploy changes nothing until it is set; needs REPLAY_CONTROL_REMOTE too, and is always off in demo mode.

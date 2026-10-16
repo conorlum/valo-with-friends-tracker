@@ -64,6 +64,16 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: MAP_POOL_AUTO
         value: "true"
+      # Map control limits (spec 2026-10-14, D5): rounds in flight, and from how many replays. Only while the
+      # worker's REPLAY_CONTROL_RUNNER is workflow; a local runner keeps today's 8 rounds from any replays.
+      - key: CONTROL_MAX_RUNS
+        value: "40"
+      - key: CONTROL_MAX_MATCHES
+        value: "1"
+      # Height rebuilds open at once, one per map (spec 2026-10-14, D16). The site opens more than one only
+      # while the worker's heights runner is workflow; a local runner gets one at a time, as before.
+      - key: HEIGHTS_MAX_BUILDS
+        value: "4"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv
@@ -92,3 +102,45 @@ services:
       # it the worker parses and deletes, and the site's re-parse queue stops.
       - key: REPLAY_ARCHIVE_DIR
         value: /var/replay
+      # Render Workflows (docs/superpowers/specs/2026-10-14-render-workflows-design.md). The workflow service
+      # (replay-tasks) is created by hand in the dashboard: Render can't create a Docker workflow from a
+      # Blueprint.
+      - key: RENDER_API_KEY
+        sync: false
+      - key: REPLAY_WORKFLOW_SLUG
+        value: replay-tasks
+      - key: REPLAY_TASK_STARTS_PER_MIN
+        value: "1000"
+      # The three switches are the owner's, set in the dashboard (spec D2): `sync: false`, so a Blueprint sync
+      # never resets one that was flipped to workflow. Unset, each is "local" (server.py's default).
+      - key: REPLAY_PARSE_RUNNER
+        sync: false
+      - key: REPLAY_CONTROL_RUNNER
+        sync: false
+      - key: REPLAY_HEIGHTS_RUNNER
+        sync: false
+      - key: REPLAY_CONTROL_RUNS
+        value: "40"
+      - key: REPLAY_CONTROL_QUEUE
+        value: "64"
+      - key: REPLAY_PARSE_PARALLEL
+        value: "15"
+      # Admits 15 waiting/running jobs (spec D15). The archive's parse reserve grows by 10 x the 200 MB cap
+      # (replay_worker/archive.py parse_reserve), about 2 GB less archive. Only while REPLAY_PARSE_RUNNER is
+      # workflow: a local parser keeps the image's 5 (server.py keep_local_sizing), and the site its batch of 5.
+      - key: REPLAY_QUEUE_SIZE
+        value: "15"
+      # The control caches on the disk, so workflow runs share them and they survive deploys (spec D6). Used only
+      # while REPLAY_CONTROL_RUNNER is workflow; a local runner keeps /jobs/control_cache and the archive's whole
+      # budget (server.py keep_local_sizing).
+      - key: CONTROL_CACHE_DIR
+        value: /var/replay/control_cache
+      - key: REPLAY_HEIGHT_BUILDS_MAX
+        value: "4"
+      - key: REPLAY_HEIGHT_SPOOL_BYTES
+        value: "2147483648"
+      # The spool on the disk, inside the archive's reserve (spec D16); packed tars go beside it in height_runs/.
+      # Both spool settings apply only while REPLAY_HEIGHTS_RUNNER is workflow: a local runner keeps today's 512 MB
+      # spool in /jobs and the archive's whole budget (server.py keep_local_sizing).
+      - key: REPLAY_HEIGHT_SPOOL_DIR
+        value: /var/replay/height_builds

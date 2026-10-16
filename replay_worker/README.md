@@ -47,7 +47,10 @@ file (`app/replays/header.py`, `game_build`), so the worker reads it before any 
 
 ## Behaviour
 
-- One job runs at a time; `REPLAY_QUEUE_SIZE` more wait, and the next upload gets `503`.
+- One job runs at a time; `REPLAY_QUEUE_SIZE` more wait, and the next upload gets `503`. With
+  `REPLAY_PARSE_RUNNER=workflow`, up to `REPLAY_PARSE_PARALLEL` parses run at once, each as a Workflow run; the
+  job record carries `run_id`, `run_token` and `run_deadline` while one is going, and jobs recovered after a
+  restart are worked first, outside the queue.
 - Each job has its own temp folder (the upload plus the export, about 65 times the file). With the archive
   off it is deleted when the job ends, whatever happened, **before** the job reads as finished. With it on,
   see "The .vrf archive" below.
@@ -134,6 +137,9 @@ web app sends one round at a time and stores the result; the worker has no datab
 and `docs/map-control-worker-plan.md`, "Height rebuilds". The web app sends a map's stored rounds in batches and
 the worker builds the map's heights from them, with the kill-line and must-block checks; the web app checks the
 result and decides whether it goes live (`webapp/app/services/replay_heights_remote.py`). Off with map control.
+With `REPLAY_HEIGHTS_RUNNER=workflow` a build is one Workflow run that neither waits for idle nor runs alone; the
+spool goes to it as one tar (`<spool>/../height_runs/<job>.tar`, removed when the run ends and at start). Only
+then does the site open more than one map's build at once (`HEIGHTS_MAX_BUILDS`, worker `REPLAY_HEIGHT_BUILDS_MAX`).
 
 - **The child** is one more control child, `python -m replay_worker.height_job` (`REPLAY_HEIGHT_CMD`, the control
   venv's interpreter in the image), niced, memory-capped and timed out after `REPLAY_HEIGHT_TIMEOUT_S` (3600). It
@@ -182,6 +188,31 @@ against the pin; unset in the image, which is built from the pin itself), `REPLA
 (0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`, `REPLAY_ARCHIVE_DIR` (unset: no archive),
 `REPLAY_ARCHIVE_REQUIRE_MOUNT` (1), `REPLAY_HEIGHT_CMD` (JSON list: the height-build child; default this Python,
 `-m replay_worker.height_job`; the image sets the control venv's), `REPLAY_HEIGHT_TIMEOUT_S` (3600).
+
+### Render Workflows (run routes and settings)
+
+Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`; setup: `webapp/RENDER_DEPLOY.md`.
+The run routes exist only when `RENDER_API_KEY` and `REPLAY_WORKFLOW_SLUG` are set.
+
+| Request | Answer |
+| --- | --- |
+| `GET /runs/{job}/input/{name}` (header `X-Run-Token`) | a Workflow run's input file, streamed; `404` otherwise |
+| `POST /runs/{job}/result` (header `X-Run-Token`) | the run's JSON answer: `200` taken, `409` refused |
+| `POST /runs/ping` | starts a ping run and waits for it: `{"ok", "answer", "seconds"}` |
+
+Settings: `RENDER_API_KEY`, `REPLAY_WORKFLOW_SLUG` (`replay-tasks`), `REPLAY_TASK_STARTS_PER_MIN` (1000), and
+`REPLAY_PARSE_RUNNER` / `REPLAY_CONTROL_RUNNER` / `REPLAY_HEIGHTS_RUNNER` (`local` by default, or `workflow`).
+`python3 -m replay_worker.runs ping` calls the ping route from the worker's shell.
+
+### Map control on Workflows
+
+With `REPLAY_CONTROL_RUNNER=workflow` each round is one Workflow run (`ControlRunner`). `control_cache.py` decides
+which cache files a run gets: the newest 3 per map per folder, and the worker keeps a 2 GiB reserve of its disk
+for them (it also empties `<cache>/.incoming` on start, whichever runner is set). A run posts every cache it
+created or changed to `POST /runs/{job}/cache/{name}` (header `X-Run-Token`) before it posts its result; if the
+answer carries `cache_unsent`, some file did not arrive and the map stays cold, so the next round of it runs
+alone. `REPLAY_CONTROL_RUNS` (40 on Render) is how many runs go at once in workflow mode;
+`REPLAY_CONTROL_WORKERS` stays the local pool's size. Setup and switch-over: `webapp/RENDER_DEPLOY.md`.
 
 ## Running it locally
 

@@ -276,3 +276,84 @@ app restarts: deploy the other service from the same commit.
 
 A rebuild that goes live makes every stored round of its map stale; the pages keep showing them, marked out of
 date, while the worker recomputes them when it is idle. Watch the worker's memory on the first build.
+
+## Render Workflows (`replay-tasks`)
+
+Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`. One-time setup:
+
+1. Dashboard → New → Workflow. Repo: this one. Language: Docker. Dockerfile path: `replay_worker/Dockerfile`,
+   context: repo root. Region: the same as `replay-worker`. Name/slug: `replay-tasks`.
+   Start command: `sh /srv/replay_worker/entrypoint.sh /opt/control-venv/bin/python -m replay_tasks.main`.
+2. Its env: `REPLAY_WORKER_URL` = the worker's private address (`replay-worker`'s "Internal address",
+   host:port, e.g. `replay-worker-xxxx:8080`).
+3. Dashboard → Account settings → API keys → create one; put it in `replay-worker`'s `RENDER_API_KEY`.
+4. After both deploy: `replay-worker` → Shell → `python3 -m replay_worker.runs ping`. Expect
+   `{"ok": true, ...}`. The workflow's Runs page shows one `ping` run.
+
+Each kind (parse, control, heights) moves with its own switch on `replay-worker`:
+`REPLAY_<KIND>_RUNNER=workflow`; set it back to `local` to roll back. The switches are `sync: false` in
+`render.yaml`: the dashboard is where they live, and a Blueprint sync leaves them alone. After every later
+merge, check `/health`'s `runners` still shows the kinds already moved.
+
+### Map control on Workflows (step 2)
+
+While control is local nothing changes: the cache stays in `/jobs/control_cache`, the archive keeps its whole
+budget, and the site sends 8 rounds from any replays as before (`server.py keep_local_sizing`, the site's
+`LOCAL_IN_FLIGHT`). With `workflow` the worker keeps 2 GiB of its disk for the caches (a full cache drops its
+oldest), empties `<cache>/.incoming` on start, and the site sends `CONTROL_MAX_RUNS` rounds from
+`CONTROL_MAX_MATCHES` replays. After a rollback the cache left on the disk stays, and the archive reserves its size.
+
+1. Merge; let both services deploy. The worker's control is still local.
+2. `replay-worker` → Environment → `REPLAY_CONTROL_RUNNER=workflow` → save (redeploys).
+3. Check `/health` through the site's admin page or the worker's shell (`curl localhost:8080/health`):
+   `runners.control` is `workflow`, `workflow.last_error` is null.
+4. Watch the next match: the workflow's Runs page shows its rounds; the first round of a map runs alone.
+5. Compare one round with a local computation. Pull Render down to local ("Pulling Render down to local" above),
+   pick a match whose rounds the workflow computed (its `match_uuid` and a round `N`), then in `webapp\`:
+   - record the workflow's bytes:
+     `docker exec -i <local postgres container> psql -U <user> -d <db> -c "SELECT encode(sha256(c.data), 'hex')
+     FROM replay_round_control c JOIN replays r ON r.id = c.replay_id WHERE r.match_uuid = '<uuid>' AND
+     c.round_number = <N>"` (or the same query in any SQL client on the local DB);
+   - recompute that one round locally: `.\.venv\Scripts\python.exe scripts\compute_control.py --match <uuid>
+     --round <N> --force --workers 1`;
+   - run the query again. The two hashes must be equal. (This overwrites only the local copy; Render is untouched.)
+6. Roll back: `REPLAY_CONTROL_RUNNER=local`.
+
+Tune with `CONTROL_MAX_RUNS` / `CONTROL_MAX_MATCHES` (site) and `REPLAY_CONTROL_RUNS` (worker); keep the
+worker's at least the site's. After every later merge, check `/health`'s `runners.control` is still `workflow`.
+
+### Parsing on Workflows (step 3)
+
+1. Note today's `parse_seconds` for three recent uploads (the job page's report, or `/admin` → replays).
+2. `replay-worker` → Environment → `REPLAY_PARSE_RUNNER=workflow` → save.
+3. Upload 10 replays at once from one browser session (its batch), and a few more from a second one: the
+   workflow's Runs page shows up to 15 `parse` runs running together.
+4. Restart test: upload one, and while its run is running, `replay-worker` → Manual Deploy → Restart. The upload
+   still finishes, and the Runs page shows one `parse` run for it (the worker reconnected). If the restart landed
+   in the instant between starting the run and saving its id, a second run appears and the first result wins:
+   that is the accepted rule (spec D9).
+5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in
+   `replay_tasks/main.py` (spec D7) and redeploy the workflow.
+6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
+   largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
+7. Roll back: `REPLAY_PARSE_RUNNER=local`. Do it when few uploads are in progress: the local worker parses one at a
+   time with a queue of 5, so
+   - jobs accepted under Workflows are recovered and parsed one by one; with many of them, the later ones pass
+     the site's 20-minute stuck limit and fail as "parse timed out" (their uploaders can try again);
+   - for up to a minute the site still offers batches of 10 (it asks the worker once a minute), so a few uploads
+     can be turned away by the worker's full queue (a 503) until it catches up.
+
+A run that fails for want of a machine (Render refused the start, the run died without an answer, or it couldn't
+download the whole file) starts again after `INFRA_WAIT_S` (30 s) within the job's 20 minutes; only the deadline
+ends it, as "parse timed out".
+
+### Height builds on Workflows (step 4)
+
+1. `replay-worker` → Environment → `REPLAY_HEIGHTS_RUNNER=workflow` → save.
+2. Each due map (5 new matches since its last build) shows as a `heights` run on the workflow's Runs page as soon
+   as it is due, up to `HEIGHTS_MAX_BUILDS` at once. `scripts/control_heights.py list` shows which maps are due.
+   While the runner is `local` the site opens one build at a time, as before.
+3. Done when the site accepts a rebuild (`heights_live` in the dispatcher's counts, or `control_heights.py list`).
+4. Tune with `HEIGHTS_MAX_BUILDS` (site); keep the worker's `REPLAY_HEIGHT_BUILDS_MAX` at least as large, and raise
+   `REPLAY_HEIGHT_SPOOL_BYTES` if the worker answers "the spool is full".
+5. Roll back: `REPLAY_HEIGHTS_RUNNER=local`.

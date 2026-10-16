@@ -28,7 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 # webapp/requirements.txt's versions, wheels only (a missing wheel fails the build rather than
 # compiling). The server keeps running on the system python3, which has none of them.
 RUN python3 -m venv /opt/control-venv \
- && /opt/control-venv/bin/pip install --no-cache-dir --only-binary=:all: numpy==2.4.6 scipy==1.18.1 Pillow==10.4.0
+ && /opt/control-venv/bin/pip install --no-cache-dir --only-binary=:all: numpy==2.4.6 scipy==1.18.1 Pillow==10.4.0 \
+    render==1.0.1
 COPY --from=parser /out /opt/parser
 # Only what the condenser reads: app/replays (stdlib only), the vendored map/agent tables and the pin;
 # and the control engine and the gap detector, run only by the control venv's children.
@@ -41,8 +42,9 @@ COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY webapp/scripts/ascent_map_messages.patch /srv/webapp/scripts/ascent_map_messages.patch
 COPY webapp/scripts/map_pool_messages.patch /srv/webapp/scripts/map_pool_messages.patch
 COPY replay_worker /srv/replay_worker
+COPY replay_tasks /srv/replay_tasks
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts; from app.replays.contract import load_pin; load_pin()"
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts, replay_tasks.tasks, replay_tasks.main; from app.replays.contract import load_pin; load_pin()"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 # No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
 # mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails

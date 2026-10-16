@@ -302,3 +302,46 @@ def test_the_http_answers_each_state_and_health(worker):
     code, job = http(base, "/heights/build", {"key": "k2", "map": "Haven", "rounds": 1, "manifest": MANIFEST})
     assert http(base, f"/heights/build/{job['id']}/cancel", {}) == (200, {"cancelled": True})
     assert http(base, f"/heights/build/{job['id']}")[0] == 404
+
+
+def test_collecting_builds_are_capped_by_the_setting(worker):
+    control, builds, _ = worker(height_builds_max=3)
+    for i, name in enumerate(("Ascent", "Bind", "Haven")):
+        builds.open(f"k{i}", name, 1, MANIFEST)
+    with pytest.raises(OverflowError):
+        builds.open("k3", "Lotus", 1, MANIFEST)
+
+
+HEX = "0123abcd-0000-0000-0000-000000000001"
+
+
+def started_build(builds, key, name):
+    """A build that is past collecting: opened, its one round sent, started."""
+    build = builds.open(key, name, 1, MANIFEST)
+    builds.add(build["id"], [{"match": HEX, "n": 1, "blob": base64.b64encode(b"r").decode()}])
+    builds.start(build["id"], None)
+    return build
+
+
+def test_started_builds_count_toward_the_cap(worker):
+    control, builds, _ = worker(height_builds_max=1)
+    control.idle = lambda: False                  # a parse is on: the local build stays queued, unfinished
+    started_build(builds, "k0", "Ascent")
+    with pytest.raises(OverflowError):
+        builds.open("k1", "Bind", 1, MANIFEST)
+
+
+def test_no_second_build_of_a_map_while_one_is_unfinished(worker):
+    control, builds, _ = worker(height_builds_max=4)
+    control.idle = lambda: False
+    started_build(builds, "k0", "Ascent")
+    with pytest.raises(OverflowError):
+        builds.open("k-new-inputs", "Ascent", 1, MANIFEST)
+
+
+def test_spool_settings_come_from_the_environment(tmp_path):
+    env = {"REPLAY_HEIGHT_SPOOL_BYTES": "2147483648", "REPLAY_HEIGHT_BUILDS_MAX": "4",
+           "REPLAY_HEIGHT_SPOOL_DIR": str(tmp_path / "spool")}
+    settings = server.Settings.from_env(env)
+    assert (settings.height_spool_bytes, settings.height_builds_max) == (2 ** 31, 4)
+    assert server.HeightBuilds(settings, server.ControlRunner(settings)).root == tmp_path / "spool"

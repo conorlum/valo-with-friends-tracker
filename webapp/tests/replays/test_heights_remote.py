@@ -176,6 +176,7 @@ def on(monkeypatch, tmp_path):
     checks.write_bytes(TEST_CHECK_BYTES)
     monkeypatch.setattr(hi, "CONTROL_DIR", directory)
     monkeypatch.setattr(hi, "MUST_BLOCK", checks)
+    monkeypatch.setattr(remote, "IN_FLIGHT", 8)               # written for 8 rounds in flight; the site's default is now 40
     monkeypatch.setattr(settings, "replay_heights_auto", True)
     monkeypatch.setattr(settings, "replay_control_remote", True)
     monkeypatch.setattr(settings, "replay_worker_url", "http://worker")
@@ -811,3 +812,125 @@ def test_it_is_off_by_default_and_in_demo_mode(rig, factory, db, linked, monkeyp
     monkeypatch.setattr(settings, "replay_heights_auto", True)
     monkeypatch.setattr(settings, "demo_mode", True)
     assert hr.enabled() is False
+
+
+def second_map(db, replay, name="Bind", count=2):
+    """`count` valid replays of another map with geometry (the `on` fixture's Bind), so two maps are due."""
+    made = clone(db, replay, count)
+    for copy in made:
+        copy.map_name = name
+    db.commit()
+    return made
+
+
+def workflow_health(rig, monkeypatch):
+    """The worker says its heights runner is a Workflow (so the site may open several builds)."""
+    real = rig.client.health
+    monkeypatch.setattr(rig.client, "health", lambda: {**real(), "runners": {"heights": "workflow"}})
+
+
+def test_two_due_maps_build_at_once(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    workflow_health(rig, monkeypatch)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    assert {b.map_name for b in rig.state.heights.builds.values()} == {linked.map_name, "Bind"}
+    rig.until(factory, lambda s: total(s, "heights_live") == 2, cycles=100, step_s=1)
+    assert db.query(ControlHeight).count() == 2
+
+
+def test_the_cap_opens_one_and_holds_both(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 1)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    session = factory()
+    try:
+        held = hr.step(factory, session, rig.client, rig.state.heights, 1.0, {})
+    finally:
+        session.close()
+    assert len(rig.state.heights.builds) == 1
+    assert held == {linked.map_name, "Bind"}         # one building, one waiting its turn: both maps' rounds wait
+
+
+def test_one_maps_failure_leaves_the_other_building(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    rig.settings.height_builds_max = 2
+    workflow_health(rig, monkeypatch)
+    one_round_batches(db, monkeypatch)               # both builds stay collecting for several cycles
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    builds = {b.map_name: b for b in rig.state.heights.builds.values()}
+    builds["Bind"].opened_at = -10_000               # Bind's collecting is past COLLECT_STALE_S: its try fails
+    counts = rig.cycle(factory, step_s=1)
+    assert counts["heights_failed"] == 1
+    assert [b.map_name for b in rig.state.heights.builds.values()] == [linked.map_name]
+
+
+def test_a_collected_build_is_not_reopened_in_the_same_cycle(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 2)
+    workflow_health(rig, monkeypatch)
+    clone(db, linked, 1)
+    opened, opens_at_finish = [], []
+    real_open, real_finish = rig.client.open_build, hr._finish
+
+    def finish(*a, **k):
+        opens_at_finish.append(len(opened))
+        return real_finish(*a, **k)
+    monkeypatch.setattr(rig.client, "open_build", lambda *a, **k: opened.append(a[0]) or real_open(*a, **k))
+    monkeypatch.setattr(hr, "_finish", finish)
+    seen = rig.until(factory, lambda s: total(s, "heights_live") == 1, cycles=100, step_s=1)
+    assert len(opens_at_finish) == 1                         # collected and stored once
+    assert len(opened) == opens_at_finish[0]                 # nothing opened after it in that cycle
+    rig.cycle(factory, step_s=1)
+    assert len(opened) == opens_at_finish[0] and total(seen, "heights_live") == 1   # nor in the next
+
+
+def test_a_worker_with_a_local_heights_runner_gets_one_build_at_a_time(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 4)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)                     # the rig's worker is local: health says so
+    assert len(rig.state.heights.builds) == 1
+
+
+def test_a_workflow_heights_runner_gets_up_to_max_builds(rig, factory, db, linked, monkeypatch):
+    monkeypatch.setattr(hr, "MAX_BUILDS", 4)
+    rig.settings.height_builds_max = 4
+    workflow_health(rig, monkeypatch)
+    clone(db, linked, 1)
+    second_map(db, linked)
+    rig.cycle(factory, step_s=1)
+    assert len(rig.state.heights.builds) == 2
+
+
+def test_waiting_behind_another_build_is_never_a_failure(rig, factory, db, linked, monkeypatch):
+    clone(db, linked, 1)
+    rig.control.idle = lambda: False                 # the runner starts nothing
+    rig.until(factory, lambda s: rig.builds.status()["queued"], step_s=10)
+    monkeypatch.setattr(rig.client, "health", lambda: {"idle": True, "heights": {"running": ["Bind"]}})
+    for _ in range(4):
+        assert rig.cycle(factory, step_s=hr.QUEUED_STALE_S + 1)["heights_failed"] == 0
+    monkeypatch.setattr(rig.client, "health", lambda: {"idle": True, "heights": {"running": []}})
+    rig.cycle(factory, step_s=10)
+    assert rig.cycle(factory, step_s=hr.QUEUED_STALE_S + 1)["heights_failed"] == 1
+
+
+def test_a_build_the_worker_refused_for_a_while_is_judged_from_when_it_was_accepted(rig, factory, db, linked,
+                                                                                     monkeypatch):
+    clone(db, linked, 1)
+    real_open, refuse = rig.client.open_build, [True]
+
+    def open_build(*a, **k):
+        if refuse[0]:
+            raise remote.WorkerBusy()                # 503: same map unfinished, or the worker's cap is full
+        return real_open(*a, **k)
+    monkeypatch.setattr(rig.client, "open_build", open_build)
+    rig.cycle(factory, step_s=10)
+    assert rig.state.heights.builds and next(iter(rig.state.heights.builds.values())).job_id is None
+    rig.cycle(factory, step_s=hr.COLLECT_STALE_S + 1)         # still refused, longer than the sending allowance
+    refuse[0] = False
+    counts = rig.cycle(factory, step_s=10)
+    assert counts["heights_failed"] == 0 and rig.state.heights.builds

@@ -14,7 +14,8 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
                        "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
-                       "idle" (no parse running or waiting),
+                       "idle" (a height build may start: no parse
+                       running or waiting, or builds run as Workflow runs),
                        "heights": {"collecting", "queued", "running" (map names), "spool_bytes"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
@@ -25,6 +26,12 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /heights     body: JSON {map, digest, asset (base64 .npz)}: a map's height asset, kept in the control
                       cache for the rounds that name it. 200 {"stored": true}, 400 not one, 404 control is off,
                       413 too large.
+
+    GET  /runs/{job}/input/{name}   (header X-Run-Token) a Workflow run's input file, streamed; 404 otherwise.
+    POST /runs/{job}/result         (header X-Run-Token) the run's JSON answer: 200 taken, 409 refused (wrong
+                                    token, unknown or already settled run), 413, 400.
+    POST /runs/ping                 starts a ping run and waits for it: {"ok", "answer", "seconds"}.
+These exist only when RENDER_API_KEY and REPLAY_WORKFLOW_SLUG are set (replay_worker/runs.py).
 
 Height builds (HeightBuilds; docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): a map's heights
 built here from its stored rounds, by one more control child (`python -m replay_worker.height_job`) that runs
@@ -118,6 +125,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_WORKERS   children at once while no parse is on (default 2: the 2-CPU plan's two cores;
                              one beside a parse; never from the core count, which a container reports
                              for the host)
+    REPLAY_CONTROL_RUNS      runs at once with REPLAY_CONTROL_RUNNER=workflow (default 40);
+                             REPLAY_CONTROL_WORKERS is the local pool
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (1800) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
@@ -127,16 +136,22 @@ Configuration (environment, all optional):
     REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
     REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
+    REPLAY_PARSE_RUNNER / REPLAY_CONTROL_RUNNER / REPLAY_HEIGHTS_RUNNER   "local" (default) or "workflow"
+    REPLAY_WORKFLOW_SLUG     the workflow service's slug (e.g. replay-tasks)
+    RENDER_API_KEY           a Render API key (set by hand in the dashboard, never in render.yaml)
+    REPLAY_TASK_STARTS_PER_MIN  run starts per minute (default 1000: a safety valve; a 429 waits and retries)
 """
 
 from __future__ import annotations
 
 import base64
+import collections
 import hashlib
 import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -145,6 +160,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -161,16 +177,24 @@ from app.replays.header import game_build  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
     from replay_worker import archive as archive_store  # noqa: E402
+    from replay_worker import control_cache  # noqa: E402
+    from replay_worker import runs as runs_mod  # noqa: E402
 except ImportError:  # pragma: no cover - run as a plain script from its folder
     import archive as archive_store  # type: ignore[no-redef]  # noqa: E402
+    import control_cache  # type: ignore[no-redef]  # noqa: E402
+    import runs as runs_mod  # type: ignore[no-redef]  # noqa: E402
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
 DEFAULT_PARSER_CMD = ["CliReader", "export", "{vrf}", "--output", "{out}"]
 FINISHED_KEPT = 50  # finished jobs whose results stay readable (oldest dropped first)
 
 # User-facing reasons (the web service shows them as they are).
-REASON_TIMEOUT = "parse timed out"
-REASON_PARSE = "parse failed"
+try:
+    from replay_worker.parse_job import (REASON_PARSE, REASON_TIMEOUT, ParseFailed, kill_tree,  # noqa: E402
+                                         limit_memory as _limit_memory, parse_file, parser_detail)
+except ImportError:  # pragma: no cover
+    from parse_job import (REASON_PARSE, REASON_TIMEOUT, ParseFailed, kill_tree,  # type: ignore  # noqa: E402
+                           limit_memory as _limit_memory, parse_file, parser_detail)
 
 # An upload recorded on a game build the pinned parser doesn't list (replay_parser.json) is never parsed: with the
 # archive on it is held on the disk as status "held" under the same job id, and parsed once an image whose parser
@@ -178,7 +202,8 @@ REASON_PARSE = "parse failed"
 # at once. Held files count against the archive's budget and are capped here.
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
-DETAIL_MAX_CHARS = 300   # the parser's last words on a failed parse, kept as the job's `detail`
+DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
+INFRA_WAIT_S = 30       # before a new parse run after a run that failed for want of a machine, within the deadline
 
 
 def _version(build: str) -> str:
@@ -191,20 +216,6 @@ def held_reason(build: str) -> str:
             f"kept and will be parsed when the parser is updated")
 
 
-def parser_detail(log: Path) -> str | None:
-    """The last few lines the parser wrote, without stack frames, for a failed parse: None when it wrote nothing."""
-    try:
-        with log.open("rb") as handle:
-            handle.seek(max(0, log.stat().st_size - 8192))
-            text = handle.read().decode("utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = [re.sub(r"\x1b\[[0-9;]*m", "", line).strip() for line in text.splitlines()]
-    lines = [line for line in lines if line and not line.startswith(("at ", "---"))]
-    detail = " | ".join(lines[-3:])
-    return detail[-DETAIL_MAX_CHARS:] or None
-
-
 @dataclass
 class Settings:
     parser_cmd: list[str] = field(default_factory=lambda: list(DEFAULT_PARSER_CMD))
@@ -213,11 +224,15 @@ class Settings:
     timeout_s: float = 180.0
     max_bytes: int = 80 * 1024 * 1024
     queue_size: int = 5
+    parse_parallel: int = 15                     # parse runs at once with REPLAY_PARSE_RUNNER=workflow (spec D15)
+    parse_run_timeout_s: float = 1200.0          # one parse run: download, parse, condense, post
     memory_cap_mb: int = 0
     # Map control (docs/map-control-worker-plan.md): its own queue, a fixed pool of child processes.
     control_enabled: bool = True
     control_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.control_job"])
     control_workers: int = 2
+    control_runs: int = 40                  # runs at once with control_runner == "workflow"
+    archive_extra_reserve: int = 0          # bytes the archive leaves free for the control cache (main() sets it)
     control_queue: int = 32
     control_timeout_s: float = 1800.0
     control_warm_timeout_s: float = 1800.0
@@ -231,12 +246,27 @@ class Settings:
     height_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.height_job"])
     height_timeout_s: float = 3600.0
     height_spool_bytes: int = 512 * 1024 * 1024      # every build's rounds together
+    height_builds_max: int = 2                       # unfinished builds (collecting, queued or running), one per map
+    height_spool_dir: Path | None = None             # None keeps `temp_root/height_builds`
     height_collect_ttl_s: float = 3600.0             # a build nobody has sent a round to for this long is dropped
     # The .vrf archive (replay_worker/archive.py): off unless the directory is a mounted, writable disk.
     archive_dir: Path | None = None
     archive_require_mount: bool = True
     archive_total_bytes: int | None = None  # tests only; the disk's own size otherwise
     supported_builds: frozenset | None = None  # tests only; the pin's supported_replay_builds otherwise
+    # Render Workflows (docs/superpowers/specs/2026-10-14-render-workflows-design.md): which kind of work runs as
+    # a Workflow run instead of a child here. "local" (default) is today's child process.
+    parse_runner: str = "local"
+    control_runner: str = "local"
+    heights_runner: str = "local"
+    workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
+    render_api_key: str | None = field(default=None, repr=False)      # never in a printed Settings
+    render_api_base: str = runs_mod.API
+    task_starts_per_min: int = 1000               # a safety valve only (spec D10)
+    run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
+
+    def workflow_wanted(self) -> bool:
+        return "workflow" in (self.parse_runner, self.control_runner, self.heights_runner)
 
     @classmethod
     def from_env(cls, env=os.environ) -> "Settings":
@@ -255,6 +285,9 @@ class Settings:
         if env.get("REPLAY_CONTROL_CMD"):
             settings.control_cmd = json.loads(env["REPLAY_CONTROL_CMD"])
         settings.control_workers = max(1, int(env.get("REPLAY_CONTROL_WORKERS", settings.control_workers)))
+        settings.control_runs = max(1, int(env.get("REPLAY_CONTROL_RUNS", settings.control_runs)))
+        settings.parse_parallel = max(1, int(env.get("REPLAY_PARSE_PARALLEL", settings.parse_parallel)))
+        settings.parse_run_timeout_s = float(env.get("REPLAY_PARSE_RUN_TIMEOUT_S", settings.parse_run_timeout_s))
         settings.control_queue = int(env.get("REPLAY_CONTROL_QUEUE", settings.control_queue))
         settings.control_timeout_s = float(env.get("REPLAY_CONTROL_TIMEOUT_S", settings.control_timeout_s))
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
@@ -265,10 +298,68 @@ class Settings:
         if env.get("REPLAY_HEIGHT_CMD"):
             settings.height_cmd = json.loads(env["REPLAY_HEIGHT_CMD"])
         settings.height_timeout_s = float(env.get("REPLAY_HEIGHT_TIMEOUT_S", settings.height_timeout_s))
+        settings.height_builds_max = max(1, int(env.get("REPLAY_HEIGHT_BUILDS_MAX", settings.height_builds_max)))
+        settings.height_spool_bytes = int(env.get("REPLAY_HEIGHT_SPOOL_BYTES", settings.height_spool_bytes))
+        if env.get("REPLAY_HEIGHT_SPOOL_DIR"):
+            settings.height_spool_dir = Path(env["REPLAY_HEIGHT_SPOOL_DIR"])
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
+        for name in ("parse", "control", "heights"):
+            value = env.get(f"REPLAY_{name.upper()}_RUNNER", "local")
+            if value not in ("local", "workflow"):
+                raise ValueError(f"REPLAY_{name.upper()}_RUNNER must be local or workflow, not {value!r}")
+            setattr(settings, f"{name}_runner", value)
+        settings.workflow_slug = env.get("REPLAY_WORKFLOW_SLUG") or None
+        settings.render_api_key = env.get("RENDER_API_KEY") or None
+        settings.render_api_base = env.get("REPLAY_RENDER_API", settings.render_api_base)
+        settings.task_starts_per_min = int(env.get("REPLAY_TASK_STARTS_PER_MIN", settings.task_starts_per_min))
         return settings
+
+
+def make_runs(settings: Settings):
+    """The run table, or None when no Render key and slug are set. A runner set to `workflow` without them stops
+    the worker here, at startup, rather than failing every job later."""
+    if not (settings.render_api_key and settings.workflow_slug):
+        if settings.workflow_wanted():
+            raise SystemExit("a REPLAY_*_RUNNER is 'workflow' but RENDER_API_KEY or REPLAY_WORKFLOW_SLUG is not set")
+        return None
+    api = runs_mod.RenderApi(settings.render_api_key, base=settings.render_api_base)
+    return runs_mod.Runs(api, settings.workflow_slug, runs_mod.Pacer(settings.task_starts_per_min),
+                         settings.temp_root / "runs")
+
+
+LOCAL_QUEUE_SIZE = 5        # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
+LOCAL_SPOOL_BYTES = 512 * 1024 * 1024      # Settings.height_spool_bytes' default before Workflows
+
+
+def keep_local_sizing(settings: Settings) -> None:
+    """A kind still on its local runner keeps today's sizing (spec D2: local is today's child processes, and
+    rollback is one env var). render.yaml sets the Workflow sizing for every deploy, so it only takes effect for a
+    kind switched to `workflow`; otherwise the archive would lose the room it reserves for nothing."""
+    if settings.control_runner != "workflow" and settings.archive_dir is not None and \
+            settings.control_cache_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        # What a Workflow spell left on the disk stays (a switch back finds the maps warm), so the archive
+        # reserves what it holds now; it can only shrink, since nothing local writes there.
+        left = settings.control_cache_dir
+        settings.archive_extra_reserve += control_cache.tree_bytes(left) if left.is_dir() else 0
+        settings.control_cache_dir = settings.temp_root / "control_cache"     # the image's own, as before
+    if settings.parse_runner != "workflow":
+        # One parse at a time: today's waiting line, and the archive's parse reserve that goes with it.
+        settings.queue_size = min(settings.queue_size, LOCAL_QUEUE_SIZE)
+    if settings.heights_runner != "workflow":
+        # One local build at a time: today's spool in the temp folder, so the archive doesn't reserve 4 GiB for it.
+        spool = settings.height_spool_dir
+        if spool is not None and settings.archive_dir is not None and \
+                spool.resolve().is_relative_to(settings.archive_dir.resolve()) and \
+                spool.resolve() != settings.archive_dir.resolve():           # never the archive itself
+            # A build in flight when the switch went back to local left its rounds and packed tar on the disk.
+            # Builds live in memory only (HeightBuilds forgets them on every start), so nothing will read them
+            # again, and nothing reserves their room any more: drop them.
+            shutil.rmtree(spool, ignore_errors=True)
+            shutil.rmtree(spool.parent / "height_runs", ignore_errors=True)
+        settings.height_spool_dir = None
+        settings.height_spool_bytes = min(settings.height_spool_bytes, LOCAL_SPOOL_BYTES)
 
 
 @dataclass
@@ -290,6 +381,9 @@ class Job:
     game_build: str | None = None   # set only for an upload from a build the parser doesn't support (held)
     detail: str | None = None       # the parser's own last lines when a parse failed
     released: bool = False          # a held job taken straight to the parse thread, not from a queue (not saved)
+    run_id: str | None = None
+    run_token: str | None = None
+    run_deadline: float | None = None
 
     def public(self) -> dict:
         body = {"id": self.id, "status": self.status}
@@ -308,38 +402,6 @@ class Job:
         return body
 
 
-def kill_tree(process: subprocess.Popen) -> None:
-    """Kill a child and everything it started; every wait is bounded. On Linux the child leads its own
-    process group (setsid), so the group is killed even when the leader has already exited."""
-    if os.name == "nt":
-        if process.poll() is None:
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True,
-                               check=False, timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-
-
-def _limit_memory(cap_mb: int):
-    """A preexec hook that caps the parser's address space (Linux; `resource` isn't on Windows)."""
-    def apply() -> None:
-        os.setsid()
-        if cap_mb:
-            import resource
-            limit = cap_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-    return apply
-
-
 class NoSpace(Exception):
     """The archive disk can't take another upload without eating into the running parse's reserve."""
 
@@ -350,10 +412,13 @@ class Worker:
 
     SWEEP_EVERY_S = 3600
 
-    def __init__(self, settings: Settings, on_parse=None):
+    def __init__(self, settings: Settings, on_parse=None, runs_table=None):
         self.settings = settings
+        self.runs = runs_table
         self.on_parse = on_parse or (lambda: None)   # map control's preempt (D4); always called outside self.lock
-        self.parsing = False
+        self.parse_count = 0
+        self.sweep_lock = threading.Lock()
+        self.recovered: collections.deque[Job] = collections.deque()
         self.queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
@@ -384,12 +449,30 @@ class Worker:
                 _log(f"archive off: {self.archive_reason}")
             else:
                 self.archive.held_bytes = self.held_bytes
+                self.archive.cache_reserve = settings.archive_extra_reserve
         self.last_sweep = 0.0
         if self.archive is not None:
             self._recover()
             self._recover_attempts()
-        self.thread = threading.Thread(target=self._run, name="replay-worker", daemon=True)
-        self.thread.start()
+        threads = self.settings.parse_parallel if (self.runs is not None and
+                                                   self.settings.parse_runner == "workflow") else 1
+        self.threads = [threading.Thread(target=self._run, name=f"replay-worker-{i}", daemon=True)
+                        for i in range(threads)]
+        for thread in self.threads:
+            thread.start()
+        self.thread = self.threads[0]
+
+    @property
+    def parsing(self) -> bool:
+        return self.parse_count > 0
+
+    def _parse_started(self) -> None:
+        with self.lock:
+            self.parse_count += 1
+
+    def _parse_ended(self) -> None:
+        with self.lock:
+            self.parse_count -= 1
 
     @property
     def memory_cap(self) -> str:
@@ -414,7 +497,10 @@ class Worker:
         Between a queue's `get` and `parsing = True` this reads True for a few bytecodes; a second child
         started in that gap is killed by the `on_parse()` call at the top of `_run`
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
-        return not self.parsing and self.queue.empty() and self.reparse_queue.empty()
+        if self.runs is not None and self.settings.parse_runner == "workflow":
+            return True     # a Workflow parse takes no CPU here, so it holds back nothing local (spec D17)
+        return (not self.parsing and not self.recovered and self.queue.empty()
+                and self.reparse_queue.empty())
 
     def _parse_coming(self) -> None:
         """Tells map control a parse is waiting or starting. A failing hook must never stop a parse."""
@@ -732,22 +818,31 @@ class Worker:
         exactly the old blocking get."""
         if self.archive is None:
             job = self.queue.get()
-            self.parsing = True
+            self._parse_started()
             return job
         while True:
+            try:
+                job = self.recovered.popleft()
+                self._parse_started()
+                return job
+            except IndexError:
+                pass
             for source in (self.queue, self.reparse_queue):
                 try:
                     job = source.get_nowait()
-                    self.parsing = True
+                    self._parse_started()
                     return job
                 except queue.Empty:
                     pass
             job = self._release_held()
             if job is not None:
-                self.parsing = True
+                self._parse_started()
                 return job
-            if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
-                self._sweep()
+            if time.time() - self.last_sweep > self.SWEEP_EVERY_S and self.sweep_lock.acquire(blocking=False):
+                try:
+                    self._sweep()
+                finally:
+                    self.sweep_lock.release()
             self.wake.wait(timeout=1.0)
             self.wake.clear()
 
@@ -758,10 +853,10 @@ class Worker:
             ready = sorted((j for j in self.jobs.values()
                             if j.status == "held" and j.game_build in (self.supported_builds or ())),
                            key=lambda j: j.created)
-        if not ready:
-            return None
-        job = ready[0]
-        job.status, job.error, job.released = "queued", None, True
+            if not ready:
+                return None
+            job = ready[0]
+            job.status, job.error, job.released = "queued", None, True
         self._save(job)
         _log(f"job {job.id} released: the parser now supports {job.game_build}")
         return job
@@ -791,13 +886,14 @@ class Worker:
                     shutil.rmtree(job.folder, ignore_errors=True)
                 else:
                     self._settle(job, status, result)
+                job.run_id = job.run_token = job.run_deadline = None
                 job.result, job.error, job.finished = result, error, time.time()
                 job.status = status
                 self._save(job)
                 self._forget_old()
                 if not job.released:
                     (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
-                self.parsing = False
+                self._parse_ended()
 
     def _settle(self, job: Job, status: str, result: dict | None) -> None:
         """Archive on: the export goes, the result is written, a parsed upload waits in pending/ for its
@@ -815,53 +911,86 @@ class Worker:
             traceback.print_exc()
 
     def _process(self, job: Job) -> dict:
-        vrf = job.folder / "upload.vrf"
-        out = job.folder / "export"
-        command = [part.replace("{vrf}", str(vrf)).replace("{out}", str(out)) for part in self.settings.parser_cmd]
-        started = time.perf_counter()
-        # The parser's own output goes to a file in the job folder, read back only if the parse fails.
-        log = job.folder / "parser.log"
+        if self.settings.parse_runner == "workflow" and self.runs is not None:
+            return self._process_remote(job)
         try:
-            with log.open("wb") as output:
-                kwargs = {"stdout": output, "stderr": subprocess.STDOUT, "cwd": str(job.folder),
-                          "env": {**os.environ, "VALO_MAP_AUDIT_RAW": "1"}}
-                if os.name == "nt":
-                    kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-                else:
-                    kwargs["preexec_fn"] = _limit_memory(self.settings.memory_cap_mb)
-                process = subprocess.Popen(command, **kwargs)
-                try:
-                    code = process.wait(timeout=self.settings.timeout_s)
-                except subprocess.TimeoutExpired:
-                    kill_tree(process)
-                    raise _JobFailed(REASON_TIMEOUT)
-            job.parse_seconds = round(time.perf_counter() - started, 1)
-            if code != 0 or not (out / "manifest.json").exists():
-                job.detail = parser_detail(log)
-                raise _JobFailed(REASON_PARSE)
-        finally:
-            log.unlink(missing_ok=True)
-        build = None
-        if self.settings.parser_build is not None:
-            build = json.loads(self.settings.parser_build.read_text(encoding="utf-8-sig"))
-        # The match UUID comes from the file's own header, never its name (check_file_name=False).
-        replay = condense_export_dir(out, source_sha256=job.sha256, build=build, vrf_path=vrf, check_file_name=False)
-        if self.archive is not None:
-            shutil.rmtree(out, ignore_errors=True)  # the export is ~65x the file; the result is all we need
-            if job.kind == "reparse" and replay.match_uuid.lower() != job.match_uuid:
-                raise _JobFailed("the archived file is another match")
-        job.match_uuid, job.map = replay.match_uuid.lower(), replay.map_name
-        return {
-            "match_uuid": replay.match_uuid, "map_name": replay.map_name, "game_branch": replay.game_branch,
-            "source_sha256": replay.source_sha256, "recipe": replay.recipe, "hz": replay.hz,
-            "round_count": replay.round_count,
-            "rounds": {str(n): base64.b64encode(data).decode("ascii") for n, data in replay.encoded_rounds().items()},
-            "players": replay.players, "link_inputs": replay.link_inputs,
-            # The web service stores this (app/replays/store.py): dropped_final_round goes into
-            # link_inputs, and the rest is a small summary for the job page.
-            "report": {k: replay.report.get(k) for k in ("rounds", "hz", "kills", "sizes", "lifecycle", "sides",
-                                                          "dropped_final_round", "extras")},
-        }
+            result, job.parse_seconds = parse_file(
+                job.folder / "upload.vrf", job.folder, job.sha256, parser_cmd=self.settings.parser_cmd,
+                timeout_s=self.settings.timeout_s, memory_cap_mb=self.settings.memory_cap_mb,
+                parser_build=self.settings.parser_build)
+        except ParseFailed as failed:
+            job.detail, job.parse_seconds = failed.detail, failed.seconds
+            raise _JobFailed(failed.reason)
+        return self._accept_result(job, result)
+
+    def _process_remote(self, job: Job) -> dict:
+        """The parse as Workflow runs, under the job's one deadline (spec D8) and today's restart rule (D9):
+        the token and deadline are saved before a run starts and the Render id as soon as there is one; a job
+        recovered with a saved id reconnects to that run, and one without starts over with its saved token. The
+        identity stays in job.json until `_run` settles the job."""
+        files = {"vrf": job.folder / "upload.vrf"}
+        if job.run_deadline is None or job.run_token is None:
+            job.run_deadline = time.time() + self.settings.parse_run_timeout_s
+            job.run_token = secrets.token_hex(16)
+            self._save(job, strict=True)
+        reconnect = job.run_id is not None
+        while True:
+            if time.time() >= job.run_deadline:
+                if reconnect and job.run_id:
+                    try:                                # the run we would have reconnected to must not go on
+                        self.runs.api.cancel(job.run_id)
+                    except Exception:  # noqa: BLE001 - best effort; the job fails either way
+                        traceback.print_exc()
+                raise _JobFailed(REASON_TIMEOUT)
+            run = self.runs.open("parse", job.id, files, 0, token=job.run_token,
+                                 render_id=job.run_id if reconnect else None, deadline=job.run_deadline)
+            try:
+                if not reconnect:
+                    def started(render_id, job=job):
+                        job.run_id = render_id
+                        self._save(job, strict=True)
+                    self.runs.start(run, {"recipe": self.recipe, "sha256": job.sha256}, on_started=started)
+                answer = self.runs.wait(run)
+            except BaseException:
+                self.runs.close(run)                    # never leave the run open (close is safe to repeat)
+                raise
+            kind = answer.get("error_kind")
+            if answer.get("status") == "ok":
+                job.parse_seconds = answer.get("parse_seconds")
+                return self._accept_result(job, answer["result"])
+            if kind == "deploy":
+                # This run's image has another recipe: nothing was parsed. Wait, then a fresh run, within the
+                # deadline (the loop's first check ends it).
+                time.sleep(max(0.0, min(DEPLOY_WAIT_S, job.run_deadline - time.time())))
+                job.run_id, reconnect = None, False
+                self._save(job)
+                continue
+            if kind == "infra":
+                # Nothing says the file can't be parsed: Render refused or couldn't take the start, the run died
+                # without an answer (or the one we reconnected to did), or it couldn't download the whole file.
+                # Start over, as a restart does today, within the one deadline (the loop's first check ends it
+                # as a timeout, which tells the uploader to try again).
+                if not reconnect:
+                    time.sleep(max(0.0, min(INFRA_WAIT_S, job.run_deadline - time.time())))
+                job.run_id, reconnect = None, False
+                self._save(job)
+                continue
+            if kind == "timeout":
+                raise _JobFailed(REASON_TIMEOUT)
+            if kind == "parse":
+                job.detail, job.parse_seconds = answer.get("detail"), answer.get("parse_seconds")
+                raise _JobFailed(answer.get("error") or REASON_PARSE)
+            if kind == "contract":
+                raise _JobFailed(answer.get("error") or REASON_PARSE)
+            raise _JobFailed(REASON_PARSE)
+
+    def _accept_result(self, job: Job, result: dict) -> dict:
+        """Today's checks on a parse's result, wherever it ran."""
+        match_uuid = str(result["match_uuid"]).lower()
+        if self.archive is not None and job.kind == "reparse" and match_uuid != job.match_uuid:
+            raise _JobFailed("the archived file is another match")
+        job.match_uuid, job.map = match_uuid, result["map_name"]
+        return result
 
     def _forget_old(self) -> None:
         with self.lock:
@@ -899,7 +1028,7 @@ class Worker:
                   "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
         if job.attempt_id:
             record["attempt_id"] = job.attempt_id
-        for key in ("game_build", "detail"):
+        for key in ("game_build", "detail", "run_id", "run_token", "run_deadline"):
             if getattr(job, key):
                 record[key] = getattr(job, key)
         try:
@@ -934,8 +1063,11 @@ class Worker:
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
                       kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
                       attempt_id=record.get("attempt_id"), game_build=record.get("game_build"),
-                      detail=record.get("detail"))
+                      detail=record.get("detail"), run_id=record.get("run_id"),
+                      run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
+            if job.status == "expiring":
+                job.status = "held"                     # a sweep died mid-claim: it expires again on the next one
             if job.status == "held":
                 if not (folder / "upload.vrf").exists():
                     job.status, job.finished = "failed", time.time()
@@ -946,15 +1078,13 @@ class Worker:
                 job.status, job.error = "held", held_reason(job.game_build)
                 self._save(job)
             elif job.status in ("queued", "parsing"):
-                job.status = "queued"
-                target = self.queue if job.kind == "upload" else self.reparse_queue
-                try:
-                    if not (folder / "upload.vrf").exists():
-                        raise queue.Full
-                    target.put_nowait(job)
-                except queue.Full:
+                if (folder / "upload.vrf").exists():
+                    # Accepted before the restart: worked first, never through the bounded queue, so a restart
+                    # can't fail it for want of room (spec D15). `released` marks a job not taken from a queue.
+                    job.status, job.released = "queued", True
+                    self.recovered.append(job)
+                else:
                     job.status, job.error, job.finished = "failed", "the worker restarted: please re-upload", time.time()
-                    (folder / "upload.vrf").unlink(missing_ok=True)
                 self._save(job)
             elif job.status == "done":
                 job.result = archive_store.read_json(folder / "result.json", None)
@@ -964,8 +1094,8 @@ class Worker:
                 self.jobs[job.id] = job
         with self.lock:
             held = sum(j.status == "held" for j in self.jobs.values())
-        _log(f"archive on: recovered {len(records)} job(s); {self.queue.qsize()} upload(s) and "
-             f"{self.reparse_queue.qsize()} reparse(s) queued again, {held} held for an unsupported game build")
+        _log(f"archive on: recovered {len(records)} job(s); {len(self.recovered)} "
+             f"queued again, {held} held for an unsupported game build")
         self._sweep()
 
     def _sweep(self) -> None:
@@ -975,7 +1105,10 @@ class Worker:
             self.archive.sweep()
             with self.lock:
                 expired = [j for j in self.jobs.values() if j.status == "held" and j.created < time.time() - HELD_TTL_S]
+                for job in expired:
+                    job.status = "expiring"                 # claimed: _release_held skips it
             for job in expired:
+                self._save(job)
                 (job.folder / "upload.vrf").unlink(missing_ok=True)
                 job.status, job.finished = "failed", time.time()
                 job.error = (f"recorded on game version {_version(job.game_build)}: the replay parser still didn't "
@@ -1117,8 +1250,9 @@ class ControlRunner:
     map's visibility cache) and a map is warm, under one height digest, once one of its rounds gets past loading.
     A task's key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
 
-    def __init__(self, settings: Settings, idle=None):
+    def __init__(self, settings: Settings, idle=None, runs_table=None):
         self.settings = settings
+        self.runs = runs_table
         self.lock = threading.Lock()
         self.jobs: dict[str, ControlJob] = {}
         self.by_key: dict[str, str] = {}
@@ -1137,6 +1271,14 @@ class ControlRunner:
     @property
     def enabled(self) -> bool:
         return self.settings.control_enabled
+
+    def remote(self, job: ControlJob) -> bool:
+        """This job runs as a Workflow run (spec 2026-10-14) rather than a child here."""
+        if self.runs is None:
+            return False
+        if job.kind == "heights":
+            return self.settings.heights_runner == "workflow"
+        return job.kind == "control" and self.settings.control_runner == "workflow"
 
     def submit(self, task: dict) -> ControlJob:
         """Raises queue.Full when the queue is full."""
@@ -1193,7 +1335,9 @@ class ControlRunner:
         `self.running` keeps start order. How each run ends is decided at settlement, under the lock, where a
         preempted mark wins over everything else."""
         with self.lock:
-            alive = [job_id for job_id in self.running if job_id not in self.preempted]
+            # Only children on this machine: a Workflow run takes no CPU from a parse (spec D17).
+            alive = [job_id for job_id in self.running
+                     if job_id not in self.preempted and not self.remote(self.jobs[job_id])]
             # A height build runs alone and is never the child kept: a parse always preempts it (the height
             # rebuild spec, section 2).
             kept = alive[:1] if alive and self.jobs[alive[0]].kind == "control" else []
@@ -1209,26 +1353,40 @@ class ControlRunner:
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
+        for job_id in self.pending:
+            job = self.jobs[job_id]
+            if job.kind == "heights" and self.remote(job):
+                return job, False                    # another machine: it neither waits for idle nor runs alone
         # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
         idle = self.idle()
-        limit = self.settings.control_workers if idle else 1
-        if len(self.running) >= limit:
+        if self.settings.control_runner == "workflow" and self.runs is not None:
+            limit = self.settings.control_runs
+        else:
+            limit = self.settings.control_workers if idle else 1
+        # Remote work takes no CPU here: a local build neither waits for it nor holds it back, and a full remote
+        # pool never holds a local build.
+        local_running = [j for j in self.running if not self.remote(self.jobs[j])]
+        local_build = any(self.jobs[j].kind == "heights" for j in local_running)
+        if not local_build:
+            for job_id in self.pending:
+                if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
+                    # Idle, drain the running local children before starting the build ahead of queued rounds.
+                    # Beside a parse, the build waits while the one control slot keeps working.
+                    if idle:
+                        return (self.jobs[job_id], False) if not local_running else None
+                    break
+        # A remote height build takes no CPU here and writes nothing a cold round reads: it holds no slot or map.
+        held = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        if len(held) >= limit:
             return None
-        if any(self.jobs[j].kind == "heights" for j in self.running):
-            return None                              # a build runs alone
-        for job_id in self.pending:
-            if self.jobs[job_id].kind == "heights":
-                # Idle, drain running control before starting the build ahead of queued rounds.
-                # Beside a parse, the build waits while the one control slot keeps working.
-                if idle:
-                    return (self.jobs[job_id], False) if not self.running else None
-                break
-        busy_maps = {self.jobs[j].map for j in self.running}
-        warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
+        busy_maps = {self.jobs[j].map for j in held}
+        warming_maps = {self.jobs[j].map for j in held if self.running[j]}
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights":
                 continue
+            if local_build and not self.remote(job):
+                continue                             # a local build runs alone among the local children
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1256,41 +1414,49 @@ class ControlRunner:
     def _run(self, job: ControlJob, warming: bool) -> None:
         settings = self.settings
         build = job.kind == "heights"
+        what = "height build" if build else "control"
         timeout = settings.height_timeout_s if build else \
             settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env ={**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
+        env["CONTROL_CACHE_DIR"] = str(settings.control_cache_dir)     # keep_local_sizing may have moved it
         kwargs = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env,
                   "cwd": str(WEBAPP.parent)}
         if os.name != "nt":
             kwargs["preexec_fn"] = _child_setup(settings.control_memory_mb)
         status, error, kind, result = "failed", None, "infra", None
         error_code = None
+        unsent: list = []           # cache files a run couldn't post, whether its round succeeded or not
         process = None
         try:
             # Started outside the lock (preexec_fn must not run while this thread holds a lock another
             # needs), registered under it, and killed at once if a preempt landed in between.
-            process = subprocess.Popen(settings.height_cmd if build else settings.control_cmd, **kwargs)
-            with self.lock:
-                self.procs[job.id] = process
-                killed_before_start = job.id in self.preempted
-            if killed_before_start:
-                kill_tree(process)
-            stdout, _ = process.communicate(job.task, timeout=timeout)
-            answer = json.loads(stdout or b"{}")
+            if self.remote(job):
+                answer = self._run_remote(job, timeout)
+            else:
+                process = subprocess.Popen(settings.height_cmd if build else settings.control_cmd, **kwargs)
+                with self.lock:
+                    self.procs[job.id] = process
+                    killed_before_start = job.id in self.preempted
+                if killed_before_start:
+                    kill_tree(process)
+                stdout, _ = process.communicate(job.task, timeout=timeout)
+                answer = json.loads(stdout or b"{}")
+            unsent = answer.get("cache_unsent") or []
             if answer.get("status") == "ok":
                 status, kind, result = "done", None, answer
             else:
-                error = answer.get("error") or f"control child exited {process.returncode}"
+                error = answer.get("error") or (f"control child exited {process.returncode}" if process
+                                                else "control run gave no error text")
                 kind = answer.get("error_kind") or "infra"
                 error_code = answer.get('error_code')
         except subprocess.TimeoutExpired:
-            error = f"control timed out after {timeout:g} s"
+            error = f"{what} timed out after {timeout:g} s"
         except (OSError, ValueError) as failure:
-            error = f"control child failed: {failure}"
+            error = f"{what} child failed: {failure}"
         except Exception:  # noqa: BLE001 - one bad round must not stop the runner
             traceback.print_exc()
-            error = "control child failed"
+            error = f"{what} child failed"
         finally:
             # A timeout leaves the child running: kill it, and close the pipes rather than drain them, so
             # a descendant holding one can't hang this thread.
@@ -1327,7 +1493,14 @@ class ControlRunner:
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
                 if job.kind == "control":
-                    if status == "done" or kind == "engine":
+                    # A remote round's map is warm only once its visibility cache is on this disk: a run whose
+                    # cache upload failed would otherwise release every other round to rebuild it.
+                    # And not when the run says it failed to send a visibility cache: an older one (other
+                    # heights) can still be on disk.
+                    cached = not self.remote(job) or (
+                        control_cache.has_visibility(self.settings.control_cache_dir, job.map)
+                        and not any(control_cache.visibility_name(n) for n in unsent))
+                    if (status == "done" or kind == "engine") and cached:
                         self.warm.add(job.warm_key)
                     else:
                         self.warm.discard(job.warm_key)
@@ -1339,9 +1512,50 @@ class ControlRunner:
                         del self.by_key[old.key]
         self.wake.set()
 
+    def _run_remote(self, job: ControlJob, timeout: float) -> dict:
+        """One round as a Workflow run: the task and the map's cached files are its inputs."""
+        task = json.loads(job.task)
+        folder = self.settings.temp_root / "runs-in" / job.id
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            (folder / "task.json").write_bytes(job.task)
+            files = {"task": folder / "task.json"}
+            if job.kind == "heights":
+                # The packed tar goes beside the spool (`<spool>/../height_runs`), not inside a build's folder.
+                runs_dir = Path(task["dir"]).parent.parent / "height_runs"
+                tar_path = runs_dir / f"{job.id}.tar"
+                try:
+                    # Only a ValueError from packing (rounds gone or unreadable) is an `inputs` failure; an
+                    # OSError (disk, permissions) is infra and falls to `_run`'s handler.
+                    files["rounds"] = control_cache.pack(Path(task["dir"]), tar_path)
+                except ValueError as missing:
+                    return {"status": "failed", "error_kind": "inputs", "error": str(missing), "key": task.get("key")}
+                files.update(control_cache.inputs(self.settings.control_cache_dir,
+                                                  {"map": job.map, "height": task.get("previous")}))
+            else:
+                files.update(control_cache.inputs(self.settings.control_cache_dir, task))
+            run = self.runs.open(job.kind, job.id, files, timeout)
+            try:
+                self.runs.start(run, {"map": job.map,
+                                      "files": sorted(n for n in files if n not in ("task", "rounds"))})
+                answer = self.runs.wait(run)
+            except BaseException:
+                self.runs.close(run)              # wait closes it itself; a failure before that must not leak it
+                raise
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+            if job.kind == "heights":
+                try:
+                    (Path(task["dir"]).parent.parent / "height_runs" / f"{job.id}.tar").unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if answer.get("error_kind") == "timeout":
+            what = "height build" if job.kind == "heights" else "control"
+            answer = {**answer, "error_kind": "infra", "error": f"{what} timed out after {timeout:g} s"}
+        return answer
+
 
 MATCH_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
-HEIGHT_COLLECTING_MAX = 2        # builds collecting rounds at once (the web app sends one at a time)
 HEIGHT_BUILDS_KEPT = 8           # ended builds whose answer stays readable (the newest)
 ROUNDS_PER_MATCH_MAX = 99
 
@@ -1364,7 +1578,7 @@ class HeightBuilds:
     - **Uploads are immutable.** A round is kept by its sha256: the same bytes again are acknowledged and cost
       nothing; other bytes for a round already received are a conflict and change nothing.
     - **Bounded.** The spool of all builds together stays under `height_spool_bytes`; at most
-      HEIGHT_COLLECTING_MAX builds collect at once; opening a build for a map drops any other still collecting
+      `height_builds_max` builds are unfinished at once, one per map; opening a build for a map drops any other still collecting
       for it (its inputs are out of date); a collector nobody feeds for `height_collect_ttl_s` is dropped; of
       the builds that ended, the newest HEIGHT_BUILDS_KEPT keep their answer.
     - **Nothing is left behind**: a build's folder goes when it ends, is cancelled, expires or is replaced, and
@@ -1372,8 +1586,9 @@ class HeightBuilds:
 
     def __init__(self, settings: Settings, control: ControlRunner):
         self.settings, self.control = settings, control
-        self.root = settings.temp_root / "height_builds"
+        self.root = settings.height_spool_dir or settings.temp_root / "height_builds"
         shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.root.parent / "height_runs", ignore_errors=True)   # packed tars a crash left (see `_run_remote`)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         # id -> {id, key, map, expected, manifest, received {(match, n): (sha256, size)}, job, touched, ended}
@@ -1393,8 +1608,13 @@ class HeightBuilds:
                     self._drop(build)                    # it failed: the web app is trying again, from nothing
             for other in [b for b in self.builds.values() if b["map"] == map_name and b["job"] is None]:
                 self._drop(other)                        # other inputs for this map, never started
-            if sum(1 for b in self.builds.values() if b["job"] is None) >= HEIGHT_COLLECTING_MAX:
-                raise OverflowError("too many builds are collecting")
+            unfinished = [b for b in self.builds.values() if self._state(b) not in ("done", "failed")]
+            if any(b["map"] == map_name for b in unfinished):
+                # Its old build is still queued or running (on Workflows it can't be cancelled after start):
+                # one unfinished build per map. 503 to the site: busy, ask again later, no try spent.
+                raise OverflowError("a build of this map is still running")
+            if len(unfinished) >= self.settings.height_builds_max:
+                raise OverflowError("too many unfinished builds")
             build = {"id": uuid.uuid4().hex, "key": key, "map": map_name, "expected": rounds, "manifest": manifest,
                      "received": {}, "job": None, "touched": time.time(), "ended": None}
             if diagnostic is not None:
@@ -1553,7 +1773,8 @@ class _JobFailed(Exception):
 # ---------------------------------------------------------------- HTTP
 
 
-def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None):
+def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None,
+                 runs_table=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "replay-worker"
 
@@ -1592,7 +1813,146 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 self.connection.settimeout(timeout)
             return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
 
+        def _run_input(self):
+            parts = self.path.split("/")          # ["", "runs", job, "input", name]
+            name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
+            path = runs_table.file(parts[2], name, self.headers.get("X-Run-Token")) if name else None
+            try:
+                source = path.open("rb") if path is not None else None
+            except OSError:
+                source = None
+            if source is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "no such input"})
+            # The size of the file opened, not of the path: a cache file os.replace'd in between keeps the old
+            # inode open here, so the body always matches its header.
+            with source:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.end_headers()
+                shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
+
+        def _length(self, low: int, high: int) -> int | None:
+            """The request's Content-Length when it is a decimal integer in [low, high]; otherwise sends 411, 400
+            or 413, marks the connection to close, and returns None. Nothing has been read or written yet."""
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                self.close_connection = True
+                self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
+                return None
+            if not raw.strip().isdigit():
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is not a positive number"})
+                return None
+            size = int(raw)
+            if size < low:
+                self.close_connection = True
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "the body is empty or too short"})
+                return None
+            if size > high:
+                self.close_connection = True
+                self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "the body is too large"})
+                return None
+            return size
+
+        def _run_cache(self):
+            parts = self.path.split("/")             # ["", "runs", job, "cache", name]
+            name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
+            run = runs_table.accepts(parts[2], self.headers.get("X-Run-Token"))
+            job = control.get(parts[2]) if control is not None and run is not None else None
+            if run is None or job is None or run.kind not in ("control", "heights") \
+                    or not control_cache.valid(name, job.map):
+                self.close_connection = True
+                # Read a small refused body first (as _run_result does): closing with it unread can reset the
+                # client's connection before it sees the answer.
+                try:
+                    unread = int(self.headers.get("Content-Length") or 0)
+                    if 0 < unread <= runs_mod.CHUNK:
+                        self.rfile.read(unread)
+                except (ValueError, OSError):
+                    pass
+            if run is None or job is None or run.kind not in ("control", "heights"):
+                return self._send(HTTPStatus.CONFLICT, {"error": "no open control run takes this file"})
+            if not control_cache.valid(name, job.map):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cache file of this map"})
+            size = self._length(1, 64 * 1024 * 1024)
+            if size is None:
+                return None
+            incoming = control.settings.control_cache_dir / ".incoming" / f"{uuid.uuid4().hex}.npz"
+            incoming.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with incoming.open("wb") as sink:
+                    remaining = size
+                    while remaining:
+                        chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                        if not chunk:
+                            break
+                        sink.write(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
+                # A file arriving as its run settles is still kept: caches are named by their content's identity.
+                if not control_cache.store(control.settings.control_cache_dir, name, incoming):
+                    return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": "the cache is at its reserve"})
+                return self._send(HTTPStatus.OK, {"stored": name})
+            finally:
+                incoming.unlink(missing_ok=True)
+
+        def _run_result(self):
+            parts = self.path.split("/")          # ["", "runs", job, "result"]
+            token = self.headers.get("X-Run-Token")
+            run = runs_table.accepts(parts[2], token) if len(parts) == 4 else None
+            if run is None:
+                self.close_connection = True
+                # Read a small refused body first: closing with it unread can reset the client's connection
+                # before it sees the 409. A large one is not read (the connection is closed on it).
+                try:
+                    unread = int(self.headers.get("Content-Length") or 0)
+                    if 0 < unread <= runs_mod.CHUNK:
+                        self.rfile.read(unread)
+                except (ValueError, OSError):
+                    pass
+                return self._send(HTTPStatus.CONFLICT, {"error": "no open run takes this result"})
+            size = self._length(1, worker.settings.run_result_max_bytes)
+            if size is None:
+                return None
+            target = run.folder / f"result-{uuid.uuid4().hex}.json"
+            with target.open("wb") as sink:
+                remaining = size
+                while remaining:
+                    chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                    if not chunk:
+                        break
+                    sink.write(chunk)
+                    remaining -= len(chunk)
+            if remaining:
+                target.unlink(missing_ok=True)
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "result cut short"})
+            code = runs_table.deliver(parts[2], token, target)
+            target.unlink(missing_ok=True)
+            # The sizes step 3 reads before step 5 shrinks the worker (spec D18).
+            sys.stderr.write(f"run result {parts[2]} {run.kind} {size} bytes -> {code}\n")
+            return self._send(code, {"accepted": code == 200})
+
+        def _run_ping(self):
+            text = uuid.uuid4().hex
+            job_id = f"ping{text[:12]}"
+            source = worker.settings.temp_root / "runs" / f"{job_id}.txt"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(text, encoding="utf-8")
+            started = time.monotonic()
+            try:
+                run = runs_table.open("ping", job_id, {"ping": source}, timeout_s=300)
+                runs_table.start(run, {})
+                answer = runs_table.wait(run)
+            finally:
+                source.unlink(missing_ok=True)
+            return self._send(HTTPStatus.OK, {"ok": answer.get("echo") == text, "answer": answer,
+                                              "seconds": round(time.monotonic() - started, 1)})
+
         def do_GET(self):  # noqa: N802
+            if runs_table is not None and self.path.startswith("/runs/") and "/input/" in self.path:
+                return self._run_input()
             if self.path == "/health":
                 body = {"ok": True, "queued": worker.queue.qsize(),
                         "limits": {"timeout_s": worker.settings.timeout_s, "max_bytes": worker.settings.max_bytes,
@@ -1602,9 +1962,15 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
-                body["idle"] = worker.idle()
+                # "A height build may start now" (app/services/replay_heights_remote.py). A Workflow build runs on
+                # another machine, so a parse here never holds it back.
+                remote_builds = runs_table is not None and worker.settings.heights_runner == "workflow"
+                body["idle"] = True if remote_builds else worker.idle()
                 body["heights"] = heights.status() if heights else {"collecting": [], "queued": [], "running": [],
                                                                     "spool_bytes": 0}
+                body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
+                                   "heights": worker.settings.heights_runner}
+                body["workflow"] = runs_table.status() if runs_table is not None else None
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -1635,6 +2001,13 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if runs_table is not None and self.path.startswith("/runs/"):
+                if self.path == "/runs/ping":
+                    return self._run_ping()
+                if "/cache/" in self.path:
+                    return self._run_cache()
+                if self.path.endswith("/result"):
+                    return self._run_result()
             if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
                 return self._height_build()
             if self.path == "/heights":
@@ -1842,21 +2215,40 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
 
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
-                control: ControlRunner | None = None, heights: HeightBuilds | None = None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights))
+                control: ControlRunner | None = None, heights: HeightBuilds | None = None,
+                runs_table=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table))
 
 
 def main() -> None:
     settings = Settings.from_env()
-    control = ControlRunner(settings) if settings.control_enabled else None
-    worker = Worker(settings, on_parse=control.preempt if control else None)
+    keep_local_sizing(settings)
+    runs_table = make_runs(settings)
+    if runs_table is not None:
+        threading.Thread(target=runs_table.reconcile_forever, args=(threading.Event(),), name="runs-reconcile",
+                         daemon=True).start()
+    # The cache's room is reserved before the Worker opens the archive and recovers its jobs.
+    if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
+            settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += control_cache.RESERVE
+    if settings.archive_dir is not None and settings.height_spool_dir is not None and \
+            settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)
+    control_cache.clear_incoming(settings.control_cache_dir)
+    control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
+    # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
+    # ControlRunner.preempt itself never touches a Workflow run.
+    local_parse = settings.parse_runner == "local" or runs_table is None
+    worker = Worker(settings, on_parse=control.preempt if (control is not None and local_parse) else None,
+                    runs_table=runs_table)
     if control is not None:
         # Wired after the Worker exists. Until then idle() reads True, but the control queue is empty: the
         # web app hasn't sent anything to a server that isn't listening yet.
         control.idle = worker.idle
     heights = HeightBuilds(settings, control) if control is not None else None
     server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
-                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights)
+                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights,
+                         runs_table=runs_table)
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)
     server.serve_forever()
