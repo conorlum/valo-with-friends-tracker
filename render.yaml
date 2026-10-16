@@ -68,8 +68,10 @@ services:
       # worker's REPLAY_CONTROL_RUNNER is workflow; a local runner keeps today's 8 rounds from any replays.
       - key: CONTROL_MAX_RUNS
         value: "40"
+      # Two replays at once, so the next match's rounds fill the slots the last one's tail leaves idle. Safe for
+      # a shared cold map: the worker warms a map with one round at a time across every replay (ControlRunner._next).
       - key: CONTROL_MAX_MATCHES
-        value: "1"
+        value: "2"
       # Height rebuilds open at once, one per map (spec 2026-10-14, D16). The site opens more than one only
       # while the worker's heights runner is workflow; a local runner gets one at a time, as before.
       - key: HEIGHTS_MAX_BUILDS
