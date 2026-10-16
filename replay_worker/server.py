@@ -256,7 +256,7 @@ class Settings:
     control_runner: str = "local"
     heights_runner: str = "local"
     workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
-    render_api_key: str | None = None
+    render_api_key: str | None = field(default=None, repr=False)      # never in a printed Settings
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
@@ -330,6 +330,10 @@ def keep_local_sizing(settings: Settings) -> None:
     kind switched to `workflow`; otherwise the archive would lose the room it reserves for nothing."""
     if settings.control_runner != "workflow" and settings.archive_dir is not None and \
             settings.control_cache_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        # What a Workflow spell left on the disk stays (a switch back finds the maps warm), so the archive
+        # reserves what it holds now; it can only shrink, since nothing local writes there.
+        left = settings.control_cache_dir
+        settings.archive_extra_reserve += control_cache.tree_bytes(left) if left.is_dir() else 0
         settings.control_cache_dir = settings.temp_root / "control_cache"     # the image's own, as before
     if settings.parse_runner != "workflow":
         # One parse at a time: today's waiting line, and the archive's parse reserve that goes with it.
@@ -1322,23 +1326,27 @@ class ControlRunner:
             limit = self.settings.control_runs
         else:
             limit = self.settings.control_workers if idle else 1
+        # Remote rounds take no CPU here: a local build neither waits for them nor holds them back.
+        local_running = [j for j in self.running if not self.remote(self.jobs[j])]
+        local_build = any(self.jobs[j].kind == "heights" for j in local_running)
+        if not local_build:
+            for job_id in self.pending:
+                if self.jobs[job_id].kind == "heights":
+                    # Idle, drain running local control before starting the build ahead of queued rounds.
+                    # Beside a parse, the build waits while the one control slot keeps working.
+                    if idle:
+                        return (self.jobs[job_id], False) if not local_running else None
+                    break
         if len(self.running) >= limit:
             return None
-        if any(self.jobs[j].kind == "heights" for j in self.running):
-            return None                              # a build runs alone
-        for job_id in self.pending:
-            if self.jobs[job_id].kind == "heights":
-                # Idle, drain running control before starting the build ahead of queued rounds.
-                # Beside a parse, the build waits while the one control slot keeps working.
-                if idle:
-                    return (self.jobs[job_id], False) if not self.running else None
-                break
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights":
                 continue
+            if local_build and not self.remote(job):
+                continue                             # a local build runs alone among the local children
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1742,13 +1750,19 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             parts = self.path.split("/")          # ["", "runs", job, "input", name]
             name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
             path = runs_table.file(parts[2], name, self.headers.get("X-Run-Token")) if name else None
-            if path is None or not path.is_file():
+            try:
+                source = path.open("rb") if path is not None else None
+            except OSError:
+                source = None
+            if source is None:
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "no such input"})
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.end_headers()
-            with path.open("rb") as source:
+            # The size of the file opened, not of the path: a cache file os.replace'd in between keeps the old
+            # inode open here, so the body always matches its header.
+            with source:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.end_headers()
                 shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
 
         def _length(self, low: int, high: int) -> int | None:

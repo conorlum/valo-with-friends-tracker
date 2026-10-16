@@ -45,6 +45,10 @@ class RateLimited(RenderError):
     """429: wait and start again; never a failure (spec D10)."""
 
 
+class NotFound(RenderError):
+    """404: Render doesn't know the run (a saved id from another workflow, or one it has dropped)."""
+
+
 class RenderApi:
     """The four task-run routes, over urllib."""
 
@@ -85,6 +89,8 @@ class RenderApi:
         except urllib.error.HTTPError as error:
             if error.code == 429:
                 raise RateLimited(f"{method} {path}: 429") from error
+            if error.code == 404:
+                raise NotFound(f"{method} {path}: HTTP 404") from error
             raise RenderError(f"{method} {path}: HTTP {error.code}") from error
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise RenderError(f"{method} {path}: {error}") from error
@@ -207,7 +213,9 @@ class Runs:
     def accepts(self, job_id: str, token: str | None) -> Run | None:
         with self.lock:
             run = self.open_runs.get(job_id)
-        if run is None or run.done.is_set() or not secrets.compare_digest(run.token, token or ""):
+        # As bytes: compare_digest raises TypeError on a non-ASCII str, and a header can carry one.
+        offered = (token or "").encode("utf-8", "surrogateescape")
+        if run is None or run.done.is_set() or not secrets.compare_digest(run.token.encode("ascii"), offered):
             return None
         return run
 
@@ -258,9 +266,13 @@ class Runs:
             if status is None:
                 try:
                     status = self.api.get(run.render_id).get("status")
+                except NotFound:
+                    # A run Render doesn't know will never post: settle it after the same grace as an ended
+                    # one, rather than leave the job waiting out its whole deadline.
+                    status = "not found"
                 except RenderError:
                     continue
-            if status not in ENDED:
+            if status not in ENDED and status != "not found":
                 continue
             if run.ended_seen is None:
                 run.ended_seen = now

@@ -212,6 +212,44 @@ def test_a_local_parse_still_preempts_a_local_height_build(tmp_path, stub):
         render.close()
 
 
+def _mixed(tmp_path, render):
+    """Control on Workflows, heights local (the mix spec D17 keeps working during the migration)."""
+    settings = server.Settings(temp_root=tmp_path, control_runner="workflow", workflow_slug="w",
+                               render_api_key="k", render_api_base=render.url)
+    return server.ControlRunner(settings, runs_table=server.make_runs(settings))
+
+
+def test_a_running_local_build_does_not_hold_back_remote_rounds(tmp_path):
+    render = FakeRender()
+    try:
+        control = _mixed(tmp_path, render)
+        build = server.ControlJob("b1", "key", "Ascent", b"{}", kind="heights")
+        round_ = server.ControlJob("r1", "key", "Bind", b"{}")
+        with control.lock:
+            control.jobs.update(b1=build, r1=round_)
+            control.running["b1"] = False
+            control.pending.append("r1")
+            assert control._next() == (round_, True)      # it takes no CPU here, so it doesn't wait an hour
+    finally:
+        render.close()
+
+
+def test_a_pending_local_build_does_not_wait_for_remote_rounds_to_drain(tmp_path):
+    render = FakeRender()
+    try:
+        control = _mixed(tmp_path, render)
+        build = server.ControlJob("b1", "key", "Ascent", b"{}", kind="heights")
+        with control.lock:
+            control.jobs["b1"] = build
+            for i in range(3):
+                control.jobs[f"r{i}"] = server.ControlJob(f"r{i}", "key", "Bind", b"{}")
+                control.running[f"r{i}"] = False
+            control.pending.append("b1")
+            assert control._next() == (build, False)
+    finally:
+        render.close()
+
+
 def test_a_map_is_not_warm_when_its_cache_never_reached_the_worker(remote, monkeypatch):
     from replay_worker import control_cache
     control, _, settings, _ = remote
@@ -274,6 +312,21 @@ def test_local_control_keeps_its_cache_off_the_archive_disk(tmp_path):
                              control_runner="workflow")
     server.keep_local_sizing(remote)
     assert remote.control_cache_dir == disk / "control_cache"
+    assert local.archive_extra_reserve == 0 and remote.archive_extra_reserve == 0     # nothing on the disk yet
+
+
+def test_a_rollback_to_local_reserves_the_cache_left_on_the_disk(tmp_path):
+    """A Workflow spell filled <archive>/control_cache; after the switch back it stays (a switch forward again finds
+    the maps warm), so the archive must not grow into it."""
+    disk = tmp_path / "disk"
+    (disk / "control_cache" / "feature-rows").mkdir(parents=True)
+    (disk / "control_cache" / "Ascent.0000000000000001.npz").write_bytes(b"x" * 700)
+    (disk / "control_cache" / "feature-rows" / f"Ascent.{'a' * 64}.npz").write_bytes(b"x" * 300)
+    local = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, control_cache_dir=disk / "control_cache",
+                            control_runner="local")
+    server.keep_local_sizing(local)
+    assert local.control_cache_dir == tmp_path / "tmp" / "control_cache"
+    assert local.archive_extra_reserve == 1000
 
 
 def test_a_local_child_is_told_the_cache_folder_the_worker_uses(tmp_path, monkeypatch):
