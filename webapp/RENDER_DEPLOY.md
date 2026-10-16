@@ -282,8 +282,11 @@ date, while the worker recomputes them when it is idle. Watch the worker's memor
 Design: `docs/superpowers/specs/2026-10-14-render-workflows-design.md`. One-time setup:
 
 1. Dashboard → New → Workflow. Repo: this one. Language: Docker. Dockerfile path: `replay_worker/Dockerfile`,
-   context: repo root. Region: the same as `replay-worker`. Name/slug: `replay-tasks`.
-   Start command: `sh /srv/replay_worker/entrypoint.sh /opt/control-venv/bin/python -m replay_tasks.main`.
+   context: repo root. Region: the same as `replay-worker`. Name: `replay-tasks`. Render makes the slug from the
+   name at creation and a rename doesn't change it: check the page shows `Workflow Slug: replay-tasks`, or
+   delete and recreate it (the worker asks for `replay-tasks/<task>` and gets a 404 otherwise).
+   Start command: `/opt/control-venv/bin/python -m replay_tasks.main`. Not through `entrypoint.sh`: its drop to
+   the `worker` user makes registration fail ("Registration failed", no log).
 2. Its env: `REPLAY_WORKER_URL` = the worker's private address (`replay-worker`'s "Internal address",
    host:port, e.g. `replay-worker-xxxx:8080`).
 3. Dashboard → Account settings → API keys → create one; put it in `replay-worker`'s `RENDER_API_KEY`.
@@ -305,7 +308,8 @@ oldest), empties `<cache>/.incoming` on start, and the site sends `CONTROL_MAX_R
 
 1. Merge; let both services deploy. The worker's control is still local.
 2. `replay-worker` → Environment → `REPLAY_CONTROL_RUNNER=workflow` → save (redeploys).
-3. Check `/health` through the site's admin page or the worker's shell (`curl localhost:8080/health`):
+3. Check `/health` through the site's admin page or the worker's shell (the image has no curl:
+   `python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/health').read().decode())"`):
    `runners.control` is `workflow`, `workflow.last_error` is null.
 4. Watch the next match: the workflow's Runs page shows its rounds; the first round of a map runs alone.
 5. Compare one round with a local computation. Pull Render down to local ("Pulling Render down to local" above),
@@ -332,8 +336,9 @@ worker's at least the site's. After every later merge, check `/health`'s `runner
    still finishes, and the Runs page shows one `parse` run for it (the worker reconnected). If the restart landed
    in the instant between starting the run and saving its id, a second run appears and the first result wins:
    that is the accepted rule (spec D9).
-5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in
-   `replay_tasks/main.py` (spec D7) and redeploy the workflow.
+5. Compare `parse_seconds` with step 1's. The `parse` task runs on `pro` (`replay_tasks/main.py`): on `flex`
+   the parser's export (~65x the file) ran out of disk (2026-10-16). Each parse run's log starts with
+   `parse: ... GB free of ... GB`, the run's disk; a parse that still runs out of it fails as `parse failed`.
 6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
    largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
 7. Roll back: `REPLAY_PARSE_RUNNER=local`. Do it when few uploads are in progress: the local worker parses one at a

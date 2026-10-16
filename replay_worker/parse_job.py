@@ -101,6 +101,9 @@ def parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], t
         seconds = round(time.perf_counter() - started, 1)
         if code != 0 or not (out / "manifest.json").exists():
             raise ParseFailed(REASON_PARSE, parser_detail(log), seconds)
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)     # a half export can fill a Workflow run's disk
+        raise
     finally:
         log.unlink(missing_ok=True)
     build = json.loads(parser_build.read_text(encoding="utf-8-sig")) if parser_build is not None else None

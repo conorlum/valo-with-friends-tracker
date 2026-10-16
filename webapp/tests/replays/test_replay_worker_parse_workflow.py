@@ -83,6 +83,51 @@ def test_parse_posts_the_result(monkeypatch):
     assert link.result == {"status": "ok", "result": {"match_uuid": "M", "map_name": "Ascent"}, "parse_seconds": 4.2}
 
 
+def test_parse_logs_the_runs_disk(monkeypatch, capsys):
+    """Render doesn't document a run's disk; each parse run's log says what it had (2026-10-16)."""
+    monkeypatch.setattr(tasks, "_recipe", lambda: "r")
+    monkeypatch.setattr(parse_job, "parse_file", lambda *a, **k: ({"match_uuid": "M"}, 1.0))
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, FakeLink({"vrf": b"x"}))
+    assert "free of" in capsys.readouterr().err
+
+
+def test_a_result_posts_from_memory_without_a_temp_file(monkeypatch):
+    """A full disk must not stop the answer: before, post_result wrote it to a temp file first (2026-10-16)."""
+    sent = []
+    link = tasks.WorkerLink("worker:8080", "j", "t")
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b""
+
+    def urlopen(request, timeout):
+        sent.append((request.full_url, request.data, request.headers))
+        return Answer()
+
+    def no_temp(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(tasks.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(tasks.tempfile, "TemporaryDirectory", no_temp)
+    monkeypatch.setattr(tasks.tempfile, "mkdtemp", no_temp)
+    link.post_result({"status": "ok"})
+    (url, data, headers), = sent
+    assert url == "http://worker:8080/runs/j/result" and json.loads(data) == {"status": "ok"}
+    assert headers["Content-length"] == str(len(data)) and headers["X-run-token"] == "t"
+
+
+def test_the_parse_task_runs_on_pro():
+    """Parsing needs more room than flex gave it (2026-10-16); control and heights stay on flex."""
+    source = (Path(tasks.__file__).parent / "main.py").read_text(encoding="utf-8")
+    assert '@app.task(name="parse", plan="pro",' in source
+    assert 'Workflows(default_plan="flex")' in source
+
+
 import collections  # noqa: E402
 import uuid as uuidlib  # noqa: E402
 

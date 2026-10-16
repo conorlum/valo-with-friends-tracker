@@ -67,10 +67,13 @@ class WorkerLink:
                 response.read()
 
     def post_result(self, result: dict) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "result.json"
-            path.write_text(json.dumps(result), encoding="utf-8")
-            self.post_file("result", path)
+        # From memory, not a temp file: the answer must still go out when the run's disk is full.
+        data = json.dumps(result).encode("utf-8")
+        request = urllib.request.Request(self._url("result"), data=data, method="POST",
+                                         headers={"X-Run-Token": self.token, "Content-Length": str(len(data)),
+                                                  "Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            response.read()
 
 
 def link_for(args: dict) -> WorkerLink:
@@ -195,6 +198,9 @@ def parse(args: dict, link: WorkerLink) -> None:
     from replay_worker.server import Settings
 
     work = Path(tempfile.mkdtemp(prefix="parse-"))
+    # Render doesn't document a run's disk, and the export is ~65x the file: the run's log says what it had.
+    disk = shutil.disk_usage(work)
+    sys.stderr.write(f"parse: {work} has {disk.free / 1e9:.1f} GB free of {disk.total / 1e9:.1f} GB\n")
     try:
         try:
             mine = _recipe()
