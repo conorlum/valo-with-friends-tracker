@@ -20,17 +20,7 @@ action" (Stage 4).
 **Stretch to-do, only after the main view works fully:** a "what the team knew" toggle. It would compute control
 from enemies the team had seen or revealed, plus fading last-known positions, instead of true positions.
 
-That toggle should also track **unknowns**: how many living enemies are unaccounted for, and where they can't be
-(user idea, 2026-10-15).
-- **Empty reveals clear space.** A recon bolt, Haunt or ZERO/point that hits nobody tells the team its area is
-  empty. That space drops out of where the unknowns can be.
-- **ZERO/point accounts for the whole radius.** The knife reveals every enemy within its radius, so its caught set
-  is complete for that area. If it catches 4 and a 5th enemy outside that set is seen anywhere else at the same
-  time, all 5 are accounted for and the unknown count is 0. In general: unknown = alive − (caught ∪ seen
-  elsewhere). Haunt and the dart don't give this complete-set reading.
-- **Data.** The pulse's time and position are already extracted (a pop at +1.0 s, `POP_ARCHETYPES` in
-  `replays/extras.py`), and so are the players it caught (as `suppressed` statuses). It is not in
-  `REVEAL_SOURCES`, so today it isn't treated as a reveal.
+A ZERO/point that hits only some enemies: see `docs/map-control-knife-partial-plan.md` (2026-10-16).
 
 ## Knowledge model
 
