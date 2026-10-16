@@ -32,6 +32,11 @@ def _tree_bytes(cache_dir: Path) -> int:
     return total
 
 
+def tree_bytes(cache_dir: Path) -> int:
+    """Everything under the folder (a cache left on the archive disk, server.py keep_local_sizing)."""
+    return _tree_bytes(cache_dir)
+
+
 def _newest(folder: Path, map_name: str) -> list[Path]:
     found = []
     for path in folder.glob(f"{map_name}.*.npz"):
@@ -67,17 +72,50 @@ def valid(name: str, map_name: str) -> bool:
     return bool(match) and match["map"] == map_name
 
 
+def _evictable(cache_dir: Path, keep: Path) -> list[Path]:
+    """The visibility and feature-row caches a full folder may drop, in order: older generations of every map
+    first, then each map's newest, both oldest first. A map that left the pool goes first among the newest, and
+    `keep` (the file being replaced) is never listed. Height assets and feature artifacts aren't caches a run
+    posts: they stay."""
+    older, newest = [], []
+    for folder in (Path(cache_dir), Path(cache_dir) / "feature-rows"):
+        maps = {m["map"] for p in folder.glob("*.npz") if (m := _NAME.fullmatch(p.name))}
+        for map_name in maps:
+            for rank, path in enumerate(_newest(folder, map_name)):
+                if path != keep:
+                    try:
+                        (older if rank else newest).append((path.stat().st_mtime, path))
+                    except OSError:
+                        pass
+    return [path for _, path in sorted(older)] + [path for _, path in sorted(newest)]
+
+
 def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool:
     """Moves a posted cache file into place (a rename: `src` is in `<cache>/.incoming`) and prunes its map's folder
-    to KEPT. False, with `src` deleted, when the cache folder would grow past `reserve`."""
+    to KEPT. A folder that would grow past `reserve` drops caches (`_evictable`'s order) until the file fits: a full
+    cache must never refuse every new one, or a map whose cache changed never warms again. False, with `src` deleted,
+    only when nothing left to drop makes room."""
     target = Path(cache_dir) / name
     map_name = _NAME.fullmatch(name)["map"]
     try:
         with _LOCK:
             replaced = target.stat().st_size if target.is_file() else 0
             # `src` already sits under cache_dir/.incoming, so the tree's total counts it once.
-            if _tree_bytes(cache_dir) - replaced > reserve:
-                return False
+            over = _tree_bytes(cache_dir) - replaced - reserve
+            if over > 0:
+                victims, freed = [], 0
+                for path in _evictable(cache_dir, target):
+                    if freed >= over:
+                        break
+                    try:
+                        freed += path.stat().st_size
+                    except OSError:
+                        continue
+                    victims.append(path)
+                if freed < over:
+                    return False             # even an empty cache wouldn't hold it: drop nothing
+                for path in victims:
+                    path.unlink(missing_ok=True)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(src, target)
             for old in _newest(target.parent, map_name)[KEPT:]:
