@@ -262,7 +262,7 @@ class Settings:
     control_runner: str = "local"
     heights_runner: str = "local"
     workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
-    render_api_key: str | None = None
+    render_api_key: str | None = field(default=None, repr=False)      # never in a printed Settings
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
@@ -1706,13 +1706,19 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             parts = self.path.split("/")          # ["", "runs", job, "input", name]
             name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
             path = runs_table.file(parts[2], name, self.headers.get("X-Run-Token")) if name else None
-            if path is None or not path.is_file():
+            try:
+                source = path.open("rb") if path is not None else None
+            except OSError:
+                source = None
+            if source is None:
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "no such input"})
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.end_headers()
-            with path.open("rb") as source:
+            # The size of the file opened, not of the path: a cache file os.replace'd in between keeps the old
+            # inode open here, so the body always matches its header.
+            with source:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.end_headers()
                 shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
 
         def _length(self, low: int, high: int) -> int | None:
