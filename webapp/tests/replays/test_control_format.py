@@ -61,7 +61,11 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           15: "b3c6e0438e897969",
           # 16 (2026-10-14): a heard sound names nobody unless only one enemy could have made it (R1/R2), and
           # one team's nodes collapse to that team's (bug 3). No constant changed, so the digest is 15's.
-          16: "b3c6e0438e897969"}
+          16: "b3c6e0438e897969",
+          # 17 (2026-10-16): partial knife hits restrict the hit and exclude the missed; the new figure
+          # knife_rim_m (utility.json, provisional D1), its note and the KNIFE_REASONS tuple change the
+          # constants digest.
+          17: "8361d989c6f5cb3b"}
 
 
 def _constants_digest() -> str:

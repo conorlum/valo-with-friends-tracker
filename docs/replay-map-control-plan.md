@@ -20,6 +20,8 @@ action" (Stage 4).
 **Stretch to-do, only after the main view works fully:** a "what the team knew" toggle. It would compute control
 from enemies the team had seen or revealed, plus fading last-known positions, instead of true positions.
 
+A ZERO/point that hits only some enemies: see `docs/map-control-knife-partial-plan.md` (2026-10-16).
+
 ## Knowledge model
 
 Control is computed from **true enemy positions**, the omniscient analyst view. The replay knows where everyone

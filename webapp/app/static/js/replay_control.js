@@ -486,6 +486,7 @@
     haunt: "Haunt saw the area", recon: "Recon Bolt saw the area", drone_dart: "tagged by a drone dart",
     camera_dart: "tagged by a camera dart", tejo_drone: "revealed by a drone", trip: "set off a trip",
     reveal: "revealed", knife_zero: "knife hit nobody: not in its radius", knife_all: "knife hit everyone: inside its radius",
+    knife_hit: "knife hit them: inside its radius", knife_missed: "knife missed them: not in its radius",
     skye_no_cue: "Skye's flash hit nobody: not in its sight", leer_seen: "Leer seen: cast from near the eye",
     omen_channel: "Omen began his ult (can't move)", omen_unheard: "Omen's ult unheard: could be anywhere unheard", omen_seen: "Omen's ult destination seen: the guess is dropped",
     waylay_recall: "Waylay's recall heard: at her return point", yoru_beacon: "Yoru's beacon heard: may be there too",
