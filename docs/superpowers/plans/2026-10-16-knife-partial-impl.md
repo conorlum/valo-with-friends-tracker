@@ -22,6 +22,13 @@ Files:
   `knife_missed: "knife missed them: not in its radius"`.
 - `tests/replays/test_control_reasons.py:105`: the literal `"knife_zero", "knife_all"` → `*ut.KNIFE_REASONS`.
 - `tests/replays/test_control_knife_skye.py`: the rewrites and new tests in the design's step 3; module docstring.
+  Toy facts (P4 review): `R_UV = 130` is ~1.86 m on the toy map (fix its comment), so with the 2 m rim every
+  `infos()` exclude has radius 0. The radius test therefore uses `r=600` (~8.57 m): exclude radius r - 2,
+  restrict r + 2, `detail["r_m"]` = r; plus an `R_UV` case asserting the exclude radius is exactly 0.0.
+  Pin the tuple: `assert ut.KNIFE_REASONS == ("knife_zero", "knife_all", "knife_hit", "knife_missed")`, and assert
+  every reason the knife tests emit is in it. The engine test uses its own tracks: A0 as in `players()`, B5 hit
+  at (330, 200) (inside the r=600 knife at (300, 200)), B6 unhit at (390, 120) (outside); keep the own-node
+  carve-out for B6 as the zero-knife engine test does.
 - `app/replays/control_format.py:47`: `CONTROL_REVISION = 17` with a one-line note.
 - `tests/replays/test_control_format.py`: `17: "<new digest>"` with a comment (partial knives, the rim figure).
 - `tests/replays/test_control_figures.py:91`: `(18, 17)`.
@@ -36,6 +43,7 @@ tests/replays/test_control_veto.py tests/replays/test_control_utility.py tests/r
 tests/replays/test_control_cases.py tests/replays/test_replay_activations.py tests/replays/test_replay_extras.py
 tests/replays/test_replay_viewer.py tests/replays/test_utility_fixtures.py tests/replays/test_control_format.py
 tests/replays/test_control_figures.py tests/replays/test_control_reference.py tests/replays/test_control_store.py
+tests/replays/test_control_mollies.py tests/replays/test_gaps_task.py
 -q -p no:cacheprovider` → 0 failed. Plus mutants (controller): (a) partial branch back to `continue`;
 (b) `knife_hit` and `knife_missed` kinds swapped; (c) rim sign flipped on restrict; (d) rim sign flipped on
 exclude; (e) `needs` dropped from the partial ops; (f) `KNIFE_REASONS` missing `knife_missed` → every mutant caught.
@@ -47,7 +55,12 @@ parts with the 3 known base failures deselected → no other failure.
 
 ## S3. Preview (run folder only, nothing in the repo)
 
-"Before" is computed from this worktree before S1 lands (base engine); "after" once S1 is committed:
+The local blobs (`<run folder>/blobs/<uuid>/<n>.json.gz`) were condensed from the two exports in W6 (condense
+revision 18, hit lists present). "Before" was computed from this worktree before any S1 edit (base engine,
+`--tag knife-before`, done 03:55-04:02); "after" once S1 is committed. The link data comes from the live site's
+public page (a read). Merging is the recompute: `knife_rim_m` changes `figures_hash`, so every stored round's
+control and gap runs go stale and the worker recomputes them after the deploy; the user approves the preview
+before merging.
 `python scripts/preview_control_live.py <uuid> <round> --blobs <run folder>/blobs/<uuid> --tag <before|after>`
 for Haven `d07225f3-cb83-4e08-87a4-487d332e77fa` round 17 (pulse 15.04 s, 1 of 5 hit) and Summit
 `650e6c6c-a0b4-425d-ba36-f0c0559e8f37` round 24 (pulse 11.44 s, 1 of 5 hit). The output folders go under
