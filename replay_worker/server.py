@@ -511,34 +511,53 @@ class Worker:
 
     # -------------------------------------------------------------- intake
 
-    def submit(self, body: bytes) -> Job:
+    def reserve_folder(self, size: int) -> tuple[str, Path]:
+        """A new job folder for an upload of `size` bytes about to stream in. With the archive on, it is under
+        jobs/ on the disk, where a folder without job.json is debris to the next recovery."""
         job_id = uuid.uuid4().hex
         with self.admission:
             if self.archive is None:
                 folder = self.settings.temp_root / f"replay-job-{job_id}"
             else:
-                if not self.archive.intake_ok(len(body)):
+                if not self.archive.intake_ok(size):
                     raise NoSpace()
                 folder = self.archive.jobs / job_id
             folder.mkdir(parents=True)
-            (folder / "upload.vrf").write_bytes(body)
-            job = Job(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
-            job.game_build = self._unsupported_build(folder / "upload.vrf")
-            if job.game_build is not None:
-                self._hold(job)
-            else:
-                self._save(job)
-                try:
+        return job_id, folder
+
+    def submit_streamed(self, job_id: str, folder: Path, sha256: str, size: int) -> Job:
+        """Today's submit, with the upload already at `folder/upload.vrf`. Any failure deletes the folder."""
+        try:
+            with self.admission:
+                # intake_ok counts what jobs/ holds, this file included: the disk still has room now it's written.
+                if self.archive is not None and not self.archive.intake_ok(0):
+                    raise NoSpace()
+                job = Job(job_id, folder, sha256, size)
+                job.game_build = self._unsupported_build(folder / "upload.vrf")
+                if job.game_build is not None:
+                    self._hold(job)
+                else:
+                    self._save(job)
                     self.queue.put_nowait(job)
-                except queue.Full:
-                    shutil.rmtree(folder, ignore_errors=True)
-                    raise
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
         if job.status != "queued":
             with self.lock:
                 self.jobs[job.id] = job
             return job
         self._admitted(job)
         return job
+
+    def submit(self, body: bytes) -> Job:
+        """For tests and callers with the bytes in hand; the upload route streams (submit_streamed)."""
+        job_id, folder = self.reserve_folder(len(body))
+        try:
+            (folder / "upload.vrf").write_bytes(body)
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        return self.submit_streamed(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
 
     def _unsupported_build(self, vrf: Path) -> str | None:
         """The file's game build when the parser is known not to support it, else None (supported, or unknown)."""
@@ -2024,18 +2043,38 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 return self._archive_post()
             if self.path != "/jobs":
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            length = self.headers.get("Content-Length")
-            if length is None:
-                return self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
-            size = int(length)
-            if size > worker.settings.max_bytes:
+            size = self._length(len(VRF_MAGIC), worker.settings.max_bytes)
+            if size is None:
+                return None
+            try:
+                job_id, folder = worker.reserve_folder(size)
+            except NoSpace:
                 self.close_connection = True
-                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "file too large"})
-            body = self.rfile.read(size)
-            if len(body) != size or not body.startswith(VRF_MAGIC):
+                return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the worker is busy, try again soon"})
+            # The upload streams to disk in CHUNKs, hashed as it goes: a 200 MB file is never held in memory.
+            self.connection.settimeout(30)               # a stalled client can't hold this thread for ever
+            digest, remaining, first = hashlib.sha256(), size, True
+            try:
+                with (folder / "upload.vrf").open("wb") as sink:
+                    while remaining:
+                        chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                        if not chunk:
+                            break
+                        if first:
+                            first = False
+                            if not chunk.startswith(VRF_MAGIC):
+                                break
+                        digest.update(chunk)
+                        sink.write(chunk)
+                        remaining -= len(chunk)
+            except OSError:
+                remaining = remaining or 1
+            if remaining:
+                shutil.rmtree(folder, ignore_errors=True)
+                self.close_connection = True
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a Valorant replay"})
             try:
-                job = worker.submit(body)
+                job = worker.submit_streamed(job_id, folder, digest.hexdigest(), size)
             except (queue.Full, NoSpace):
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the worker is busy, try again soon"})
             return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
