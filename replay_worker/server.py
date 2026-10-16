@@ -202,6 +202,7 @@ except ImportError:  # pragma: no cover
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
 DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
+INFRA_WAIT_S = 30       # before a new parse run after a run that failed for want of a machine, within the deadline
 
 
 def _version(build: str) -> str:
@@ -475,6 +476,8 @@ class Worker:
         Between a queue's `get` and `parsing = True` this reads True for a few bytecodes; a second child
         started in that gap is killed by the `on_parse()` call at the top of `_run`
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
+        if self.runs is not None and self.settings.parse_runner == "workflow":
+            return True     # a Workflow parse takes no CPU here, so it holds back nothing local (spec D17)
         return (not self.parsing and not self.recovered and self.queue.empty()
                 and self.reparse_queue.empty())
 
@@ -941,8 +944,13 @@ class Worker:
                 job.run_id, reconnect = None, False
                 self._save(job)
                 continue
-            if kind == "infra" and reconnect:
-                # The run we reconnected to ended without an answer: start over, as a restart does today.
+            if kind == "infra":
+                # Nothing says the file can't be parsed: Render refused or couldn't take the start, the run died
+                # without an answer (or the one we reconnected to did), or it couldn't download the whole file.
+                # Start over, as a restart does today, within the one deadline (the loop's first check ends it
+                # as a timeout, which tells the uploader to try again).
+                if not reconnect:
+                    time.sleep(max(0.0, min(INFRA_WAIT_S, job.run_deadline - time.time())))
                 job.run_id, reconnect = None, False
                 self._save(job)
                 continue

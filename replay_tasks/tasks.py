@@ -169,6 +169,16 @@ def control(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _recipe() -> str:
     from app.replays.contract import current_recipe
     return current_recipe()
@@ -187,12 +197,17 @@ def parse(args: dict, link: WorkerLink) -> None:
     try:
         try:
             mine = _recipe()
-            if mine != args["recipe"]:
+            # A worker that can't name its recipe still parses (server.py Worker.__init__): skew can't be
+            # checked then, and refusing would only fail every upload at its deadline.
+            if args.get("recipe") is not None and mine != args["recipe"]:
                 link.post_result({"status": "failed", "error_kind": "deploy",
                                   "error": f"this run has recipe {mine}, the worker {args['recipe']}"})
                 return
             settings = Settings.from_env()
             vrf = link.fetch("vrf", work / "upload.vrf")
+            got = _sha256(vrf)
+            if got != args["sha256"]:      # not the upload (cut short or replaced): never parse it as if it were
+                raise OSError(f"the downloaded file's sha256 is {got}, the upload's {args['sha256']}")
         except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
             link.post_result({"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"})
             return

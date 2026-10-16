@@ -297,9 +297,13 @@ merge, check `/health`'s `runners` still shows the kinds already moved.
 
 ### Map control on Workflows (step 2)
 
-The worker now keeps 2 GiB of its disk for the control caches and empties `<cache>/.incoming` on start, whichever runner is set.
+While control is local nothing changes: the cache stays in `/jobs/control_cache`, the archive keeps its whole
+budget, and the site sends 8 rounds from any replays as before (`server.py keep_local_sizing`, the site's
+`LOCAL_IN_FLIGHT`). With `workflow` the worker keeps 2 GiB of its disk for the caches (a full cache drops its
+oldest), empties `<cache>/.incoming` on start, and the site sends `CONTROL_MAX_RUNS` rounds from
+`CONTROL_MAX_MATCHES` replays. After a rollback the cache left on the disk stays, and the archive reserves its size.
 
-1. Merge; let both services deploy. The worker's control is still local; the site now sends one match at a time.
+1. Merge; let both services deploy. The worker's control is still local.
 2. `replay-worker` → Environment → `REPLAY_CONTROL_RUNNER=workflow` → save (redeploys).
 3. Check `/health` through the site's admin page or the worker's shell (`curl localhost:8080/health`):
    `runners.control` is `workflow`, `workflow.last_error` is null.
@@ -332,4 +336,13 @@ worker's at least the site's. After every later merge, check `/health`'s `runner
    `replay_tasks/main.py` (spec D7) and redeploy the workflow.
 6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
    largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
-7. Roll back: `REPLAY_PARSE_RUNNER=local`.
+7. Roll back: `REPLAY_PARSE_RUNNER=local`. Do it when few uploads are in progress: the local worker parses one at a
+   time with a queue of 5, so
+   - jobs accepted under Workflows are recovered and parsed one by one; with many of them, the later ones pass
+     the site's 20-minute stuck limit and fail as "parse timed out" (their uploaders can try again);
+   - for up to a minute the site still offers batches of 10 (it asks the worker once a minute), so a few uploads
+     can be turned away by the worker's full queue (a 503) until it catches up.
+
+A run that fails for want of a machine (Render refused the start, the run died without an answer, or it couldn't
+download the whole file) starts again after `INFRA_WAIT_S` (30 s) within the job's 20 minutes; only the deadline
+ends it, as "parse timed out".

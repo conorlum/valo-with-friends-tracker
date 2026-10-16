@@ -69,7 +69,8 @@ MAX_UNFINISHED = 10  # a batch: one session's uploads in progress at once (spec 
 # start parsing past STUCK_AFTER (counted from its upload) and be failed. `batch_limit` picks between the two.
 LOCAL_BATCH = 5
 BATCH_ASKED_EVERY_S = 60
-_batch_seen: dict[str, tuple[float, int]] = {}
+BATCH_FAILED_KEPT_S = 15    # a failed ask is remembered this long, so a hung worker costs a page load 5 s at most every 15 s
+_batch_seen: dict[str, tuple[float, int, float]] = {}     # worker -> (asked at, batch, kept for)
 RECENT_LISTED = timedelta(hours=24)  # the upload page lists this session's uploads from this long ago
 
 REASONS = {
@@ -197,17 +198,18 @@ def check_limits(db, session_key: str, limit: int = LOCAL_BATCH) -> None:
 def batch_limit(worker, now=time.monotonic) -> int:
     """MAX_UNFINISHED while the worker's /health says it parses on Workflows, else LOCAL_BATCH (a local runner, a
     worker from before the switch existed, or one that can't be asked). Asked at most once a minute per worker;
-    a failed ask isn't kept."""
+    a failed ask is kept only BATCH_FAILED_KEPT_S."""
     key, at = getattr(worker, "base", ""), now()
     seen = _batch_seen.get(key)
-    if seen is not None and 0 <= at - seen[0] < BATCH_ASKED_EVERY_S:
+    if seen is not None and 0 <= at - seen[0] < seen[2]:
         return seen[1]
     try:
         runners = (worker.health(timeout=ACK_TIMEOUT_S) or {}).get("runners") or {}
     except Exception:  # noqa: BLE001 - a worker that can't be asked never blocks an upload; submit says why
+        _batch_seen[key] = (at, LOCAL_BATCH, BATCH_FAILED_KEPT_S)
         return LOCAL_BATCH
     limit = MAX_UNFINISHED if isinstance(runners, dict) and runners.get("parse") == "workflow" else LOCAL_BATCH
-    _batch_seen[key] = (at, limit)
+    _batch_seen[key] = (at, limit, BATCH_ASKED_EVERY_S)
     return limit
 
 
