@@ -39,3 +39,16 @@ def test_a_parser_that_hangs_is_parse_timed_out(tmp_path):
         parse_job.parse_file(vrf, tmp_path, "sha", parser_cmd=[sys.executable, str(script)], timeout_s=1,
                              memory_cap_mb=0, parser_build=None)
     assert failed.value.reason == "parse timed out"
+
+
+def test_a_failed_parse_leaves_no_export_behind(tmp_path):
+    """The export is ~65x the file: one left after a failure fills a Workflow run's disk (2026-10-16)."""
+    script = tmp_path / "half_parser.py"
+    script.write_text("import sys, pathlib; out = pathlib.Path(sys.argv[1]); out.mkdir(); "
+                      "(out / 'chunk.bin').write_bytes(b'x' * 1000); sys.exit(3)", encoding="utf-8")
+    vrf = tmp_path / "upload.vrf"
+    vrf.write_bytes(b"x")
+    with pytest.raises(parse_job.ParseFailed):
+        parse_job.parse_file(vrf, tmp_path, "sha", parser_cmd=[sys.executable, str(script), "{out}"],
+                             timeout_s=30, memory_cap_mb=0, parser_build=None)
+    assert not (tmp_path / "export").exists()

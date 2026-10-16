@@ -1,8 +1,12 @@
-"""Registers the task bodies with Render Workflows. The image's start command:
+"""Registers the task bodies with Render Workflows. The workflow's start command:
 
-    sh /srv/replay_worker/entrypoint.sh /opt/control-venv/bin/python -m replay_tasks.main
+    /opt/control-venv/bin/python -m replay_tasks.main
 
-Every task runs on `flex` (spec D7) with its own timeout and retries (D8, D9)."""
+Not through replay_worker/entrypoint.sh: that drops to the `worker` user, and registration then fails (Render's
+SDK socket is root's; 2026-10-16). The workflow has no disk to hand over, so it needs no drop.
+
+Every task runs on `flex` (spec D7) with its own timeout and retries (D8, D9), except parse: on `pro`, since a
+parse's export (~65x the file) ran out of disk on `flex` (2026-10-16)."""
 
 from render.workflows import Retry, TaskContext, Workflows
 
@@ -24,7 +28,7 @@ def control(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
-@app.task(name="parse", timeout_seconds=1260, retry=NO_RETRY)
+@app.task(name="parse", plan="pro", timeout_seconds=1260, retry=NO_RETRY)
 def parse(ctx: TaskContext, args: dict) -> dict:
     tasks.parse(args, tasks.link_for(args))
     return {"ok": True}
