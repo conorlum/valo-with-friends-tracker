@@ -223,6 +223,63 @@ def test_exhausted_retries_dont_defeat_the_throttle(factory, db, linked):
     assert not worker.tasks and state.last_found is False
 
 
+class RefusingWorker(FakeWorker):
+    """Turns down the rounds in `refuse` with `error`; takes the rest."""
+
+    def __init__(self, refuse, error, **kwargs):
+        super().__init__(**kwargs)
+        self.refuse, self.error, self.refused = refuse, error, []
+
+    def submit(self, task):
+        n = int(task["key"].split(":")[1])
+        if n in self.refuse:
+            self.refused.append(n)
+            raise self.error
+        return super().submit(task)
+
+
+@pytest.mark.parametrize("error", [remote.Refused("the worker refused the round: 400: no"),
+                                   remote.Rejected(400, {"error": "no"}),
+                                   remote.Conflict({"error": "no"})], ids=["refused", "rejected", "conflict"])
+def test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out(factory, db, linked, error):
+    """2026-10-16: the first round in D2's order kept being refused, the pass returned at it every cycle, and
+    nothing behind it was ever sent."""
+    worker, state = RefusingWorker({1}, error), remote.State()
+    counts = remote.cycle(factory, worker, state, now=0)
+    assert counts["refused"] == 1 and counts["unreachable"] == 0
+    assert sent_rounds(worker) == list(range(2, remote.IN_FLIGHT + 2))
+    [first] = rc.plan(db, rounds={1})
+    key = remote.task_key(linked.id, 1, first.fingerprint)
+    assert state.tries[key][0] == 1
+    # backed off, then asked again until its tries run out; then it is given up on and never asked again
+    for n in range(1, remote.MAX_TRIES * 3):
+        remote.cycle(factory, worker, state, now=n * remote.BACKOFF_S)
+    assert worker.refused == [1] * remote.MAX_TRIES and state.gave_up(first)
+
+
+def test_an_unreachable_worker_still_ends_the_pass_without_spending_tries(factory, db, linked):
+    worker, state = RefusingWorker({1}, remote.Unreachable("the replay worker is unreachable")), remote.State()
+    counts = remote.cycle(factory, worker, state, now=0)
+    assert counts["unreachable"] == 1 and counts["refused"] == 0
+    assert not worker.tasks and not state.tries
+
+
+def test_gave_up_names_a_round_whose_tries_ran_out_under_any_kind_of_task(db, linked):
+    state = remote.State()
+    [p] = rc.plan(db, rounds={1})
+    full = remote.full_key(p.replay_id, p.round_number, p.fingerprint, "g" * 16)
+    for _ in range(remote.MAX_TRIES - 1):
+        state.failed(full, 0)
+    assert not state.gave_up(p), "tries are left"
+    state.failed(full, 0)
+    assert state.gave_up(p)
+    [other] = rc.plan(db, rounds={2})
+    assert not state.gave_up(other)
+    for _ in range(remote.MAX_TRIES):      # its tries under inputs it no longer has
+        state.failed(remote.task_key(other.replay_id, other.round_number, "0" * 16), 0)
+    assert not state.gave_up(other)
+
+
 def test_a_job_queued_through_a_long_parse_batch_is_still_collected(factory, db, linked):
     phase = {"queued": True}
     worker = FakeWorker(answer=lambda task: {"status": "queued"} if phase["queued"] else FakeWorker.ok(worker, task))
@@ -405,8 +462,8 @@ def test_the_client_maps_the_workers_answers():
     missing = json.dumps({"error": "height asset missing", "height": "a" * 12}).encode()
     request = remote.urllib.request.Request(f"{client.base}/control", data=b"{}", method="POST")
     for code, body, from_submit, from_call in ((409, missing, remote.NeedsHeight, remote.Conflict),
-                                               (409, b'{"error": "no"}', remote.Unreachable, remote.Conflict),
-                                               (413, b'{"error": "task too large"}', remote.Unreachable, remote.Rejected)):
+                                               (409, b'{"error": "no"}', remote.Refused, remote.Conflict),
+                                               (413, b'{"error": "task too large"}', remote.Refused, remote.Rejected)):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(remote.urllib.request, "urlopen", fail(code, body))
             with pytest.raises(from_submit) as raised:

@@ -272,12 +272,17 @@ def recently_refused(session, recipe: str, now: float) -> set[tuple[str, str]]:
     return out
 
 
-def restoration(session, recipe: str) -> dict | None:
+def restoration(session, recipe: str, gave_up=None) -> dict | None:
     """The replay the last successful automatic replacement stored, while its map control and timing gaps
     are not yet back: `{"match_uuid", "replay_id", "control_rounds", "gap_rounds"}` (rounds still to
     compute), else None. Read from the database, never inferred from an empty worker queue: rounds whose
     machine retries ran out are still missing here. A round whose own computation failed under the current
-    inputs is settled. A replay that is gone, superseded, deleted or stale again no longer holds the queue."""
+    inputs is settled. A replay that is gone, superseded, deleted or stale again no longer holds the queue.
+
+    `gave_up(planned_round)` is the dispatcher's own memory: True for a round it has spent every try on and
+    won't send again until it restarts. Those rounds aren't waited for: nothing will bring them back, and the
+    held replays would otherwise never be re-parsed or sent (2026-10-16: 659 rounds stuck behind 3). Without it
+    (a restart, the status page) every missing round counts, so a restart still retries before moving on."""
     for upload in _settled(session).filter(ReplayUpload.status == "stored",
                                            ReplayUpload.store_outcome == "replaced"):
         context = uploads.auto_context(upload)
@@ -292,6 +297,9 @@ def restoration(session, recipe: str) -> dict | None:
                 if p.computable and p.reason in ("missing", "stale")]
         gaps = replay_gaps.plan_gaps(session, todo,
                                      replay_control.plan(session, match_uuid=context["match_uuid"], force=True))
+        if gave_up is not None:
+            todo = [p for p in todo if not gave_up(p)]
+            gaps = [p for p in gaps if not gave_up(p)]
         if not todo and not gaps:
             return None
         return {"match_uuid": context["match_uuid"], "replay_id": replay.id, "control_rounds": len(todo),
@@ -440,10 +448,12 @@ def _reserve(session, entry: Entry, recipe: str, index: dict[str, str], when: da
     return upload_id, context
 
 
-def step(session_factory, worker, memo: Memo, control_in_flight, now: float, counts: dict) -> frozenset[int]:
+def step(session_factory, worker, memo: Memo, control_in_flight, now: float, counts: dict,
+         gave_up=None) -> frozenset[int]:
     """One pass of the automatic queue; returns the replays whose map control and timing gaps must wait.
     The caller holds the dispatcher's advisory lock in a session of its own; every read, reservation and
-    settlement here uses another one, so a failure here never ends the caller's transaction.
+    settlement here uses another one, so a failure here never ends the caller's transaction. `gave_up` is
+    the dispatcher's word on a planned round (see `restoration`).
 
     Off and with nothing unfinished, it asks the worker nothing at all. With an attempt unfinished it always
     looks: an accepted one is collected even with the switch off, a reserved one is sent again (switch on,
@@ -455,13 +465,14 @@ def step(session_factory, worker, memo: Memo, control_in_flight, now: float, cou
         return frozenset()
     session = session_factory()
     try:
-        return _step(session, worker, memo, control_in_flight, now, counts)
+        return _step(session, worker, memo, control_in_flight, now, counts, gave_up)
     finally:
         session.rollback()
         session.close()
 
 
-def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: dict) -> frozenset[int]:
+def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: dict,
+          gave_up=None) -> frozenset[int]:
     site_off = off_reason()
     pending = [upload.id for upload in unfinished_attempts(session)]
     session.rollback()
@@ -497,7 +508,7 @@ def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: di
     entries = classify(session, recipe, memo.index, supported_builds(), now)
     holding = held(entries)
     if (memo.index is None or unfinished_attempts(session) or not quiet() or settling(session, now)
-            or restoration(session, recipe) is not None):
+            or restoration(session, recipe, gave_up) is not None):
         return holding
     refused = recently_refused(session, recipe, now)
     by_id = {replay_id: sha for replay_id, sha in session.query(Replay.id, Replay.source_sha256)}

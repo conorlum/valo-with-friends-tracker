@@ -381,9 +381,10 @@ def on(db, monkeypatch):
     return sessionmaker(bind=db.get_bind())
 
 
-def run(factory, worker, memo=None, now=NOW, in_flight=0):
+def run(factory, worker, memo=None, now=NOW, in_flight=0, gave_up=None):
     counts: dict = {}
-    holding = auto.step(factory, worker, memo if memo is not None else auto.Memo(), in_flight, now, counts)
+    holding = auto.step(factory, worker, memo if memo is not None else auto.Memo(), in_flight, now, counts,
+                        gave_up=gave_up)
     return holding, {name[len("reparse_"):]: n for name, n in counts.items() if n}
 
 
@@ -832,6 +833,21 @@ def test_the_next_replay_waits_until_the_last_replacement_has_its_control_and_ga
     put_gap_run(db, replay, 1, status="failed")   # the detector's own failure under the current keys: settled
     assert auto.restoration(db, replay.recipe) is None
     assert run(on, worker)[1] == {"reserved": 1, "sent": 1}
+    assert auto.unfinished_attempts(db)[0].auto_context["selected_replay_id"] == waiting.id
+
+
+def test_rounds_the_dispatcher_gave_up_on_no_longer_hold_the_queue(db, replaced):
+    """2026-10-16: three rounds of the last replacement spent their tries, so nothing would ever send them
+    again, and the queue held 32 replays (659 rounds) behind them until a restart."""
+    replay, waiting, worker = replaced
+    on = sessionmaker(bind=db.get_bind())
+    some = auto.restoration(db, replay.recipe, gave_up=lambda p: p.round_number != 1)
+    assert some["control_rounds"] == 1, "a round with tries left is still waited for"
+    assert auto.restoration(db, replay.recipe, gave_up=lambda p: False)["control_rounds"] == replay.round_count
+    assert auto.restoration(db, replay.recipe, gave_up=lambda p: True) is None
+    assert auto.restoration(db, replay.recipe) is not None, "without the dispatcher's word nothing changes"
+    holding, counts = run(on, worker, gave_up=lambda p: True)
+    assert counts == {"reserved": 1, "sent": 1}
     assert auto.unfinished_attempts(db)[0].auto_context["selected_replay_id"] == waiting.id
 
 
