@@ -240,7 +240,7 @@ def read_knives(rnd) -> list[Info]:
         immune = [s for s in living if not affects("suppress", rnd.evolution, s, t)]
         x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
         radius_m = float(pulse["r"]) * ce.PX / 10000 * rnd.geo.m_per_px
-        # PROVISIONAL(D1): the rim margin (utility.json knife_rim_m, AFK run decision): a hit enemy may have moved
+        # The rim margin (utility.json knife_rim_m, AFK run decision): a hit enemy may have moved
         # out by the edge of the pulse's timing, a missed one in; restricts widen, excludes shrink, never below 0.
         rim = FIGURES["knife_rim_m"]
         if not hit:
