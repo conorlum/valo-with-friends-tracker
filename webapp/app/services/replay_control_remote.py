@@ -16,6 +16,9 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    isn't parsing, so a job may sit `queued` there for a long time, and that never counts as a failure
    (D8). Only a job seen `running` for STALE_JOB_S does. A round of a map whose heights are in the database
    names their digest; a worker that doesn't have the asset says so, gets it pushed and is asked again.
+   A round the worker turns down (`Refused`: 400/409/413, or inputs still missing after the bounded pushes)
+   spends a try like a machine failure and the pass goes on to the next round; only a worker that can't be
+   reached or is full ends the pass.
 
 **Timing gaps** (docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md). Each planning pass reads
 the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 1 is
@@ -39,7 +42,9 @@ collecting and submitting, the cycle runs one pass of `replay_reparse_auto.step`
 it settles any unfinished attempt (also with REPLAY_REPARSE_AUTO off, so an accepted one is never left
 behind) and, with the switch on, may reserve the next. The replays it returns are waiting for their
 re-parse; none of their rounds is sent, for control or for gaps alone, since the result would be thrown
-away. A failure in that pass is logged and holds nothing back: control goes on. When an attempt finishes
+away. A failure in that pass is logged and holds nothing back: control goes on. The pass is told which rounds
+this process has spent every try on (`State.gave_up`), so the last replacement's restoration doesn't wait for
+rounds that will never be sent again. When an attempt finishes
 or the held set changes, the planning throttle is reset so the new replay's rounds go out at once.
 
 **Rebuild heights** (app/services/replay_heights_remote.py, when REPLAY_HEIGHTS_AUTO is set). After the
@@ -120,6 +125,12 @@ class Unreachable(Exception):
     pass
 
 
+class Refused(Unreachable):
+    """The worker answered, and turned down this one round (a 400/409/413, or inputs it still lacks after the
+    bounded pushes). Unlike plain Unreachable it says nothing about the other rounds: the round spends a try and
+    the pass goes on to the next."""
+
+
 class Conflict(Exception):
     """The worker answered 409: the request is understood and can't be done as things stand. `body` is what it
     said; what that means is the caller's to decide, endpoint by endpoint."""
@@ -168,9 +179,9 @@ class ControlClient:
                 raise NeedsFeatures(conflict.body.get('digest')) from conflict
             if conflict.body.get("height"):
                 raise NeedsHeight(str(conflict.body["height"])) from conflict
-            raise Unreachable(f"the worker refused the round: {conflict}") from conflict
-        except Rejected as refused:               # as before this change: a refused round is tried again later
-            raise Unreachable(f"the worker refused the round: {refused}") from refused
+            raise Refused(f"the worker refused the round: {conflict}") from conflict
+        except Rejected as refused:               # a refused round is tried again later, MAX_TRIES times
+            raise Refused(f"the worker refused the round: {refused}") from refused
 
     def push_features(self, artifact):
         return self._post('/features', json.loads(fa.encode_artifact(artifact)))
@@ -262,14 +273,27 @@ class State:
     heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
     feature_retry_after: dict = field(default_factory=dict)
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
+    capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
         self.tries[key] = (count + 1, now)
+        if count + 1 == MAX_TRIES:
+            log.warning("map control gives up on %s after %d tries; it is sent again after a restart", key, MAX_TRIES)
 
     def may_try(self, key: str, now: float) -> bool:
         count, last = self.tries.get(key, (0, 0.0))
         return count < MAX_TRIES and (count == 0 or now - last >= BACKOFF_S)
+
+    def gave_up(self, p) -> bool:
+        """Whether a planned round (control, or reason "gaps") has spent every try under the key it would be sent
+        with now (`send_key`, with the last health's capability and the current gap fingerprint): this process
+        won't send it again. Spent tries under another key don't count: after a change of capability or gap rules
+        the round goes out under a fresh key. The automatic re-parse queue stops waiting for a round given up on
+        (replay_reparse_auto.restoration). The capability is the last cycle's: the re-parse pass runs before this
+        cycle's health read."""
+        kind = "gaps" if p.reason == "gaps" else "control"
+        return self.tries.get(send_key(p, kind, self.capable), (0, 0.0))[0] >= MAX_TRIES
 
 
 def task_key(replay_id: int, round_number: int, fingerprint: str) -> str:
@@ -372,6 +396,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 f.running_since = now
             elif now - f.running_since > STALE_JOB_S:
                 del state.in_flight[key]
+                log.warning("map control %s ran over %ss on the worker; asked again", key, STALE_JOB_S)
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -421,6 +446,8 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 message = f"{job.get('error_code') or 'source_unavailable'}: {message}; reparse this recording"
             row = {"status": "failed", "error": message, 'error_kind': job.get('error_kind')}
         else:
+            log.warning("map control %s failed on the worker (%s): %s", key, job.get("error_kind"),
+                        str(job.get("error") or job.get("status"))[:300])
             if job.get('error_kind') != 'compat':
                 state.failed(key, now)
             counts["infra_failed"] += 1
@@ -463,6 +490,16 @@ def _order(session, todo: list) -> list:
     return _rank(todo, played, created)
 
 
+def send_key(p, kind: str, capable: bool) -> str:
+    """The worker key a planned round goes out under: a gaps-only task (`kind` "gaps"), a control task with a gaps
+    block (`capable`), or a plain one."""
+    if kind == "gaps":
+        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+    if capable:
+        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+    return task_key(p.replay_id, p.round_number, p.fingerprint)
+
+
 def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: bool = False,
               held: frozenset = frozenset()) -> list:
     """Of the planned `rounds`, those that may be sent now, each with its worker key: not held back, no job
@@ -474,13 +511,7 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     for p in rounds:
         if p.replay_id in held or (p.replay_id, p.round_number) in flying:
             continue
-        key = task_key(p.replay_id, p.round_number, p.fingerprint)
-        if kind == "gaps":
-            key = gaps_key(p.replay_id, p.round_number, p.fingerprint,
-                           replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
-        elif capable:
-            key = full_key(p.replay_id, p.round_number, p.fingerprint,
-                           replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        key = send_key(p, kind, capable)
         if state.may_try(key, now):
             out.append((key, p))
     return out
@@ -549,7 +580,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                     break
                 except NeedsHeight as missing:
                     if missing.digest != digest or 'height' in pushed:
-                        raise Unreachable('worker requested an unplanned or repeated height')
+                        raise Refused('worker requested an unplanned or repeated height')
                     height_bytes = control_feature_artifacts.archived_height_bytes(session, features) if features \
                         else replay_control.exact_height_bytes(session, p.map_name, digest)
                     client.push_height(p.map_name, digest, height_bytes)
@@ -557,15 +588,24 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                     counts['pushed'] += 1
                 except NeedsFeatures as missing:
                     if missing.digest != features or 'features' in pushed:
-                        raise Unreachable('worker requested an unplanned or repeated artifact')
+                        raise Refused('worker requested an unplanned or repeated artifact')
                     client.push_features(control_feature_artifacts.load_artifact(session, features))
                     pushed.add('features')
             else:
-                raise Unreachable('worker inputs remain unavailable after bounded pushes')
+                raise Refused('worker inputs remain unavailable after bounded pushes')
         except WorkerBusy:
             counts["busy"] += 1
             return True
-        except (WorkerGone, Unreachable, fa.FeatureArtifactError, OSError, Conflict, Rejected):
+        except (Refused, Conflict, Rejected, ValueError) as refused:
+            # This round's own trouble (the worker turned it or a push down; its artifact or height can't be
+            # read here: FeatureArtifactError and FeatureInputsError are ValueErrors). It spends a try and the
+            # rounds behind it still go out: returning here sent nothing at all while the first round in D2's
+            # order kept being refused, with no try ever spent.
+            log.warning("map control %s refused: %s", key, refused)
+            state.failed(key, now)
+            counts["refused"] += 1
+            continue
+        except (WorkerGone, Unreachable, OSError):
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
@@ -591,7 +631,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
-    capable = supports_gaps(health)
+    capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
@@ -618,7 +658,8 @@ def _reparse(session_factory, worker, state: State, now: float, counts: dict) ->
     held: frozenset = frozenset()
     if worker is not None:
         try:
-            held = reparse_auto.step(session_factory, worker, state.reparse, len(state.in_flight), now, counts)
+            held = reparse_auto.step(session_factory, worker, state.reparse, len(state.in_flight), now, counts,
+                                     gave_up=state.gave_up)
         except Exception:  # noqa: BLE001 - never the dispatcher's failure
             log.exception("the automatic re-parse pass failed; map control goes on with nothing held back")
     if counts["reparse_finished"] or held != state.held:
@@ -635,7 +676,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "pushed", "gaps_sent", "gaps_stored",
+                                             "busy", "unreachable", "refused", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else
