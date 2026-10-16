@@ -2,6 +2,7 @@
 docs/map-control-worker-plan.md, step 4), on SQLite with a fake worker client."""
 
 import base64
+from dataclasses import replace
 import gzip
 import json
 import sys
@@ -264,20 +265,51 @@ def test_an_unreachable_worker_still_ends_the_pass_without_spending_tries(factor
     assert not worker.tasks and not state.tries
 
 
-def test_gave_up_names_a_round_whose_tries_ran_out_under_any_kind_of_task(db, linked):
+def spend(state, key):
+    for _ in range(remote.MAX_TRIES):
+        state.failed(key, 0)
+
+
+def test_gave_up_reads_only_the_key_the_round_would_be_sent_with_now(db, linked):
     state = remote.State()
     [p] = rc.plan(db, rounds={1})
-    full = remote.full_key(p.replay_id, p.round_number, p.fingerprint, "g" * 16)
+    plain = remote.task_key(p.replay_id, p.round_number, p.fingerprint)
+    gap_print = replay_gaps.gap_fingerprint(p.fingerprint, p.map_name)
+    full = remote.full_key(p.replay_id, p.round_number, p.fingerprint, gap_print)
     for _ in range(remote.MAX_TRIES - 1):
-        state.failed(full, 0)
+        state.failed(plain, 0)
     assert not state.gave_up(p), "tries are left"
-    state.failed(full, 0)
+    state.failed(plain, 0)
     assert state.gave_up(p)
+    state.capable = True
+    assert not state.gave_up(p), "a capable worker gets a task with a gaps block, under a fresh key"
+    spend(state, remote.full_key(p.replay_id, p.round_number, p.fingerprint, "0" * 16))
+    assert not state.gave_up(p), "tries under other gap rules don't count"
+    spend(state, full)
+    assert state.gave_up(p)
+    gaps_only = replace(p, reason="gaps")
+    assert not state.gave_up(gaps_only), "a gaps-only task has its own key"
+    spend(state, remote.gaps_key(p.replay_id, p.round_number, p.fingerprint, gap_print))
+    assert state.gave_up(gaps_only)
     [other] = rc.plan(db, rounds={2})
+    spend(state, remote.task_key(other.replay_id, other.round_number, "0" * 16))   # inputs it no longer has
+    state.capable = False
     assert not state.gave_up(other)
-    for _ in range(remote.MAX_TRIES):      # its tries under inputs it no longer has
-        state.failed(remote.task_key(other.replay_id, other.round_number, "0" * 16), 0)
-    assert not state.gave_up(other)
+
+
+def test_a_round_spent_on_plain_tasks_is_not_given_up_once_the_worker_takes_gaps(factory, db, linked):
+    """The review of 2026-10-16: with the plain key spent, a worker that gains the gaps capability is sent the round
+    again under a fresh key, so the re-parse queue must keep waiting for it."""
+    worker, state = RefusingWorker({1}, remote.Refused("no")), remote.State()
+    [p] = rc.plan(db, rounds={1})
+    for n in range(remote.MAX_TRIES):
+        remote.cycle(factory, worker, state, now=n * remote.BACKOFF_S)
+    assert worker.refused == [1] * remote.MAX_TRIES and state.gave_up(p)
+    worker.refuse, worker.gaps = set(), 1
+    remote.cycle(factory, worker, state, now=10 * remote.BACKOFF_S)
+    assert not state.gave_up(p)
+    gap_print = replay_gaps.gap_fingerprint(p.fingerprint, p.map_name)
+    assert remote.full_key(p.replay_id, 1, p.fingerprint, gap_print) in {t["key"] for t in worker.tasks.values()}
 
 
 def test_a_job_queued_through_a_long_parse_batch_is_still_collected(factory, db, linked):

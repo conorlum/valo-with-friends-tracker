@@ -273,6 +273,7 @@ class State:
     heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
     feature_retry_after: dict = field(default_factory=dict)
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
+    capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -285,12 +286,14 @@ class State:
         return count < MAX_TRIES and (count == 0 or now - last >= BACKOFF_S)
 
     def gave_up(self, p) -> bool:
-        """Whether a planned round (control or gaps) has spent every try under its current inputs, whatever kind
-        of task it went out as: this process won't send it again. The automatic re-parse queue stops waiting
-        for it (replay_reparse_auto.restoration)."""
-        prefix = task_key(p.replay_id, p.round_number, p.fingerprint)
-        return any(count >= MAX_TRIES and (key == prefix or key.startswith(prefix + ":"))
-                   for key, (count, _) in self.tries.items())
+        """Whether a planned round (control, or reason "gaps") has spent every try under the key it would be sent
+        with now (`send_key`, with the last health's capability and the current gap fingerprint): this process
+        won't send it again. Spent tries under another key don't count: after a change of capability or gap rules
+        the round goes out under a fresh key. The automatic re-parse queue stops waiting for a round given up on
+        (replay_reparse_auto.restoration). The capability is the last cycle's: the re-parse pass runs before this
+        cycle's health read."""
+        kind = "gaps" if p.reason == "gaps" else "control"
+        return self.tries.get(send_key(p, kind, self.capable), (0, 0.0))[0] >= MAX_TRIES
 
 
 def task_key(replay_id: int, round_number: int, fingerprint: str) -> str:
@@ -487,6 +490,16 @@ def _order(session, todo: list) -> list:
     return _rank(todo, played, created)
 
 
+def send_key(p, kind: str, capable: bool) -> str:
+    """The worker key a planned round goes out under: a gaps-only task (`kind` "gaps"), a control task with a gaps
+    block (`capable`), or a plain one."""
+    if kind == "gaps":
+        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+    if capable:
+        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+    return task_key(p.replay_id, p.round_number, p.fingerprint)
+
+
 def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: bool = False,
               held: frozenset = frozenset()) -> list:
     """Of the planned `rounds`, those that may be sent now, each with its worker key: not held back, no job
@@ -498,13 +511,7 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     for p in rounds:
         if p.replay_id in held or (p.replay_id, p.round_number) in flying:
             continue
-        key = task_key(p.replay_id, p.round_number, p.fingerprint)
-        if kind == "gaps":
-            key = gaps_key(p.replay_id, p.round_number, p.fingerprint,
-                           replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
-        elif capable:
-            key = full_key(p.replay_id, p.round_number, p.fingerprint,
-                           replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        key = send_key(p, kind, capable)
         if state.may_try(key, now):
             out.append((key, p))
     return out
@@ -624,7 +631,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
-    capable = supports_gaps(health)
+    capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
