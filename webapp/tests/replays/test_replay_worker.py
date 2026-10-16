@@ -272,3 +272,77 @@ def test_settings_from_the_environment():
                                          "REPLAY_QUEUE_SIZE": "2", "REPLAY_MAX_BYTES": "5"})
     assert settings.parser_cmd == ["x", "{vrf}"] and settings.timeout_s == 9 and settings.queue_size == 2
     assert settings.max_bytes == 5 and server.Settings.from_env({}).timeout_s == 180
+
+
+import hashlib  # noqa: E402
+import http.client  # noqa: E402
+import socket  # noqa: E402
+
+
+@pytest.fixture
+def live(tmp_path, stub):
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        yield worker, base, tmp_path / "jobs"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def raw_post(base, parts, length, half_close=False):
+    """POST /jobs with a hand-set Content-Length; `half_close` shuts the client's sending side after `parts`, as a
+    client that hung up early does, and still reads the answer."""
+    host, port = base.replace("http://", "").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=30)
+    try:
+        conn.putrequest("POST", "/jobs")
+        conn.putheader("Content-Length", str(length))
+        conn.endheaders()
+        for part in parts:
+            conn.send(part)
+        if half_close:
+            conn.sock.shutdown(socket.SHUT_WR)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def test_upload_streams_without_the_whole_bytes_path(live, monkeypatch):
+    worker, base, _ = live
+
+    def whole(body):
+        raise AssertionError("the route must stream, not call Worker.submit(bytes)")
+    monkeypatch.setattr(worker, "submit", whole)
+    body = vrf_bytes()
+    status, answer = raw_post(base, [body[i:i + 65536] for i in range(0, len(body), 65536)], len(body))
+    assert status == 202
+    job_id = json.loads(answer)["id"]
+    assert worker.get(job_id).sha256 == hashlib.sha256(body).hexdigest() and worker.get(job_id).size == len(body)
+    assert wait(base, job_id)["status"] == "done"
+
+
+@pytest.mark.parametrize("length", ["0", "3", "-5", "abc"])
+def test_a_bad_length_is_refused_and_leaves_nothing(live, length):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [], length)
+    assert status == 400 and not any(jobs.iterdir())
+
+
+def test_a_too_large_length_is_413(live):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [], worker.settings.max_bytes + 1)
+    assert status == 413 and not any(jobs.iterdir())
+
+
+def test_bad_magic_leaves_nothing(live):
+    worker, base, jobs = live
+    status, _ = raw_post(base, [b"NOPE" + b"x" * 100], 104)
+    assert status == 400 and not any(jobs.iterdir())
+
+
+def test_a_short_upload_leaves_nothing(live):
+    worker, base, jobs = live
+    body = vrf_bytes()[:1000]
+    status, _ = raw_post(base, [body], len(body) + 500, half_close=True)
+    assert status == 400 and not any(jobs.iterdir())
