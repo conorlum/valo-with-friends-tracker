@@ -23,6 +23,10 @@ from pathlib import Path
 CHUNK = 1 << 20
 
 
+class ShortInput(OSError):
+    """A download ended before its Content-Length (or had none): the input is not whole."""
+
+
 class WorkerLink:
     def __init__(self, base_url: str, job_id: str, token: str, timeout_s: float = 120.0):
         self.base = base_url if base_url.startswith("http") else f"http://{base_url}"
@@ -38,7 +42,14 @@ class WorkerLink:
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with urllib.request.urlopen(request, timeout=self.timeout_s) as response, dest.open("wb") as sink:
+            expected = response.headers.get("Content-Length")
             shutil.copyfileobj(response, sink, CHUNK)
+            got = sink.tell()
+        # A worker that restarts mid-download ends the body early, and urllib doesn't notice: a short file must
+        # never be parsed or unpacked as if it were whole.
+        if expected is None or not expected.isdigit() or got != int(expected):
+            dest.unlink(missing_ok=True)
+            raise ShortInput(f"input {name}: got {got} bytes, the worker sent Content-Length {expected}")
         return dest
 
     def fetch_text(self, name: str) -> str:
@@ -159,6 +170,16 @@ def control(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _recipe() -> str:
     from app.replays.contract import current_recipe
     return current_recipe()
@@ -177,12 +198,17 @@ def parse(args: dict, link: WorkerLink) -> None:
     try:
         try:
             mine = _recipe()
-            if mine != args["recipe"]:
+            # A worker that can't name its recipe still parses (server.py Worker.__init__): skew can't be
+            # checked then, and refusing would only fail every upload at its deadline.
+            if args.get("recipe") is not None and mine != args["recipe"]:
                 link.post_result({"status": "failed", "error_kind": "deploy",
                                   "error": f"this run has recipe {mine}, the worker {args['recipe']}"})
                 return
             settings = Settings.from_env()
             vrf = link.fetch("vrf", work / "upload.vrf")
+            got = _sha256(vrf)
+            if got != args["sha256"]:      # not the upload (cut short or replaced): never parse it as if it were
+                raise OSError(f"the downloaded file's sha256 is {got}, the upload's {args['sha256']}")
         except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
             link.post_result({"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"})
             return
@@ -223,7 +249,9 @@ def heights(args: dict, link: WorkerLink) -> None:
         task["dir"] = str(rounds)
         answer = _run_child("REPLAY_HEIGHT_CMD", [sys.executable, "-m", "replay_worker.height_job"],
                             json.dumps(task).encode("utf-8"), cache, what="height child")
-        _post_caches(link, cache, before, args["map"])               # step 2: new or changed, before the result
+        unsent = _post_caches(link, cache, before, args["map"])      # step 2: new or changed, before the result
+        if unsent:      # as control does: the worker must never read a missing cache as one that arrived (D6)
+            answer = {**answer, "cache_unsent": unsent}
         link.post_result(answer)
     finally:
         shutil.rmtree(work, ignore_errors=True)

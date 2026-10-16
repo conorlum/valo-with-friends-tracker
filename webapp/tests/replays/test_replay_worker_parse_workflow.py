@@ -31,6 +31,29 @@ class FakeLink:
         self.result = result
 
 
+import hashlib  # noqa: E402
+
+X_SHA = hashlib.sha256(b"x").hexdigest()        # the FakeLink's "vrf" below
+
+
+def test_parse_refuses_a_download_that_isnt_the_upload(monkeypatch):
+    """A file cut short or replaced must never be parsed: the worker gets infra and starts over (D9)."""
+    monkeypatch.setattr(tasks, "_recipe", lambda: "r")
+    called = []
+    monkeypatch.setattr(parse_job, "parse_file", lambda *a, **k: called.append(1))
+    link = FakeLink({"vrf": b"x-but-short"})
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
+    assert link.result["error_kind"] == "infra" and "sha256" in link.result["error"] and called == []
+
+
+def test_a_worker_that_cant_name_its_recipe_still_gets_a_parse(monkeypatch):
+    monkeypatch.setattr(tasks, "_recipe", lambda: "r")
+    monkeypatch.setattr(parse_job, "parse_file", lambda *a, **k: ({"match_uuid": "M", "map_name": "Ascent"}, 1.0))
+    link = FakeLink({"vrf": b"x"})
+    tasks.parse({"job_id": "j", "token": "t", "recipe": None, "sha256": X_SHA}, link)
+    assert link.result["status"] == "ok"
+
+
 def test_parse_refuses_another_recipe(monkeypatch):
     monkeypatch.setattr(tasks, "_recipe", lambda: "r-new")
     called = []
@@ -47,7 +70,7 @@ def test_parse_reports_a_parse_failure_with_detail(monkeypatch):
         raise parse_job.ParseFailed("parse failed", "Boom: bad chunk", 3.5)
     monkeypatch.setattr(parse_job, "parse_file", boom)
     link = FakeLink({"vrf": b"x"})
-    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": "s"}, link)
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
     assert link.result == {"status": "failed", "error_kind": "parse", "error": "parse failed",
                            "detail": "Boom: bad chunk", "parse_seconds": 3.5}
 
@@ -56,7 +79,7 @@ def test_parse_posts_the_result(monkeypatch):
     monkeypatch.setattr(tasks, "_recipe", lambda: "r")
     monkeypatch.setattr(parse_job, "parse_file", lambda *a, **k: ({"match_uuid": "M", "map_name": "Ascent"}, 4.2))
     link = FakeLink({"vrf": b"x"})
-    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": "s"}, link)
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
     assert link.result == {"status": "ok", "result": {"match_uuid": "M", "map_name": "Ascent"}, "parse_seconds": 4.2}
 
 
@@ -170,7 +193,8 @@ def test_fifteen_uploads_parse_at_once(rig):
     rig.gate.clear()
     jobs = [worker.submit(VRF + bytes([i])) for i in range(15)]
     wait_for(lambda: len(rig.seen) == 15)
-    assert worker.parse_count == 15 and worker.parsing and not worker.idle()
+    # Fifteen Workflow parses take no CPU here: the worker still reads idle, so local control keeps its pool (D17).
+    assert worker.parse_count == 15 and worker.parsing and worker.idle()
     rig.gate.set()
     done = wait_jobs(worker, [j.id for j in jobs])
     assert all(j.status == "done" and j.parse_seconds == 1.0 for j in done)
@@ -255,6 +279,33 @@ def test_a_deploy_refusal_waits_and_starts_a_new_run(rig, monkeypatch):
     worker = rig.start()
     [done] = wait_jobs(worker, [worker.submit(VRF + b"b").id])
     assert done.status == "done" and len(rig.render.started) == 2
+
+
+def test_an_infra_failure_starts_a_new_run_within_the_deadline(rig, monkeypatch):
+    """Render couldn't run it, or the run couldn't fetch the whole file: nothing says the file is bad, so the
+    upload isn't failed as "parse failed"."""
+    monkeypatch.setattr(server, "INFRA_WAIT_S", 0.1)
+    answers = iter([{"status": "failed", "error_kind": "infra", "error": "OSError: short"}])
+    rig.render.runner = lambda kind, args: rig.link(args).post_result(next(answers, {
+        "status": "ok", "parse_seconds": 2.0, "result": {"match_uuid": "m", "map_name": "Ascent"}}))
+    worker = rig.start()
+    [done] = wait_jobs(worker, [worker.submit(VRF + b"i").id])
+    assert done.status == "done" and len(rig.render.started) == 2
+
+
+def test_infra_failures_end_as_a_timeout_at_the_deadline(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, parse_run_timeout_s=1.5)
+    try:
+        monkeypatch.setattr(server, "INFRA_WAIT_S", 0.3)
+        rig.render.runner = lambda kind, args: rig.link(args).post_result(
+            {"status": "failed", "error_kind": "infra", "error": "no machine"})
+        worker = rig.start()
+        started = time.time()
+        [done] = wait_jobs(worker, [worker.submit(VRF + b"t").id])
+        assert done.status == "failed" and done.error == "parse timed out"       # "try again", not "parse failed"
+        assert time.time() - started < 4
+    finally:
+        rig.close()
 
 
 def test_failures_keep_todays_reasons(rig):

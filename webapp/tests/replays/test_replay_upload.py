@@ -162,15 +162,17 @@ def test_the_batch_is_ten_only_while_the_worker_parses_on_workflows():
     assert uploads.batch_limit(HealthOnly(uploads.WorkerError("down"))) == 5
 
 
-def test_the_batch_limit_is_asked_once_a_minute_and_a_failure_is_not_kept():
+def test_the_batch_limit_is_asked_once_a_minute_and_a_failure_is_kept_briefly():
     worker = HealthOnly({"runners": {"parse": "workflow"}})
     assert uploads.batch_limit(worker, now=lambda: 100.0) == 10
     assert uploads.batch_limit(worker, now=lambda: 150.0) == 10 and worker.asked == 1
     assert uploads.batch_limit(worker, now=lambda: 161.0) == 10 and worker.asked == 2
+    # A hung worker: each ask can take ACK_TIMEOUT_S, so a page load pays it at most once per BATCH_FAILED_KEPT_S.
     down = HealthOnly(uploads.WorkerError("down"))
-    uploads.batch_limit(down, now=lambda: 100.0)
-    uploads.batch_limit(down, now=lambda: 101.0)
-    assert down.asked == 2
+    assert uploads.batch_limit(down, now=lambda: 100.0) == 5
+    assert uploads.batch_limit(down, now=lambda: 110.0) == 5 and down.asked == 1
+    down.answer = {"runners": {"parse": "workflow"}}                              # back up
+    assert uploads.batch_limit(down, now=lambda: 100.0 + uploads.BATCH_FAILED_KEPT_S) == 10 and down.asked == 2
 
 
 def test_a_sixth_upload_is_refused_while_parsing_is_local(db):

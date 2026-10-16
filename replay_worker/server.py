@@ -203,6 +203,7 @@ except ImportError:  # pragma: no cover
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
 DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
+INFRA_WAIT_S = 30       # before a new parse run after a run that failed for want of a machine, within the deadline
 
 
 def _version(build: str) -> str:
@@ -259,7 +260,7 @@ class Settings:
     control_runner: str = "local"
     heights_runner: str = "local"
     workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
-    render_api_key: str | None = None
+    render_api_key: str | None = field(default=None, repr=False)      # never in a printed Settings
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
@@ -338,12 +339,25 @@ def keep_local_sizing(settings: Settings) -> None:
     kind switched to `workflow`; otherwise the archive would lose the room it reserves for nothing."""
     if settings.control_runner != "workflow" and settings.archive_dir is not None and \
             settings.control_cache_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
+        # What a Workflow spell left on the disk stays (a switch back finds the maps warm), so the archive
+        # reserves what it holds now; it can only shrink, since nothing local writes there.
+        left = settings.control_cache_dir
+        settings.archive_extra_reserve += control_cache.tree_bytes(left) if left.is_dir() else 0
         settings.control_cache_dir = settings.temp_root / "control_cache"     # the image's own, as before
     if settings.parse_runner != "workflow":
         # One parse at a time: today's waiting line, and the archive's parse reserve that goes with it.
         settings.queue_size = min(settings.queue_size, LOCAL_QUEUE_SIZE)
     if settings.heights_runner != "workflow":
         # One local build at a time: today's spool in the temp folder, so the archive doesn't reserve 4 GiB for it.
+        spool = settings.height_spool_dir
+        if spool is not None and settings.archive_dir is not None and \
+                spool.resolve().is_relative_to(settings.archive_dir.resolve()) and \
+                spool.resolve() != settings.archive_dir.resolve():           # never the archive itself
+            # A build in flight when the switch went back to local left its rounds and packed tar on the disk.
+            # Builds live in memory only (HeightBuilds forgets them on every start), so nothing will read them
+            # again, and nothing reserves their room any more: drop them.
+            shutil.rmtree(spool, ignore_errors=True)
+            shutil.rmtree(spool.parent / "height_runs", ignore_errors=True)
         settings.height_spool_dir = None
         settings.height_spool_bytes = min(settings.height_spool_bytes, LOCAL_SPOOL_BYTES)
 
@@ -483,6 +497,8 @@ class Worker:
         Between a queue's `get` and `parsing = True` this reads True for a few bytecodes; a second child
         started in that gap is killed by the `on_parse()` call at the top of `_run`
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
+        if self.runs is not None and self.settings.parse_runner == "workflow":
+            return True     # a Workflow parse takes no CPU here, so it holds back nothing local (spec D17)
         return (not self.parsing and not self.recovered and self.queue.empty()
                 and self.reparse_queue.empty())
 
@@ -949,8 +965,13 @@ class Worker:
                 job.run_id, reconnect = None, False
                 self._save(job)
                 continue
-            if kind == "infra" and reconnect:
-                # The run we reconnected to ended without an answer: start over, as a restart does today.
+            if kind == "infra":
+                # Nothing says the file can't be parsed: Render refused or couldn't take the start, the run died
+                # without an answer (or the one we reconnected to did), or it couldn't download the whole file.
+                # Start over, as a restart does today, within the one deadline (the loop's first check ends it
+                # as a timeout, which tells the uploader to try again).
+                if not reconnect:
+                    time.sleep(max(0.0, min(INFRA_WAIT_S, job.run_deadline - time.time())))
                 job.run_id, reconnect = None, False
                 self._save(job)
                 continue
@@ -1342,28 +1363,30 @@ class ControlRunner:
             limit = self.settings.control_runs
         else:
             limit = self.settings.control_workers if idle else 1
-        if any(self.jobs[j].kind == "heights" and not self.remote(self.jobs[j]) for j in self.running):
-            return None                              # a local build runs alone
-        # Before the control limit: remote rounds take no CPU here, so a full remote pool never holds a local build.
+        # Remote work takes no CPU here: a local build neither waits for it nor holds it back, and a full remote
+        # pool never holds a local build.
         local_running = [j for j in self.running if not self.remote(self.jobs[j])]
-        for job_id in self.pending:
-            if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
-                # Idle, drain the running local children before starting the build ahead of queued rounds.
-                # Beside a parse, the build waits while the one control slot keeps working.
-                if idle:
-                    return (self.jobs[job_id], False) if not local_running else None
-                break
-        counted = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
-        if len(counted) >= limit:
-            return None
-        # A remote height build takes no CPU here and writes nothing a cold round reads: it holds no map.
+        local_build = any(self.jobs[j].kind == "heights" for j in local_running)
+        if not local_build:
+            for job_id in self.pending:
+                if self.jobs[job_id].kind == "heights":  # a local one: remote builds were returned above
+                    # Idle, drain the running local children before starting the build ahead of queued rounds.
+                    # Beside a parse, the build waits while the one control slot keeps working.
+                    if idle:
+                        return (self.jobs[job_id], False) if not local_running else None
+                    break
+        # A remote height build takes no CPU here and writes nothing a cold round reads: it holds no slot or map.
         held = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
+        if len(held) >= limit:
+            return None
         busy_maps = {self.jobs[j].map for j in held}
         warming_maps = {self.jobs[j].map for j in held if self.running[j]}
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights":
                 continue
+            if local_build and not self.remote(job):
+                continue                             # a local build runs alone among the local children
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1794,13 +1817,19 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             parts = self.path.split("/")          # ["", "runs", job, "input", name]
             name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
             path = runs_table.file(parts[2], name, self.headers.get("X-Run-Token")) if name else None
-            if path is None or not path.is_file():
+            try:
+                source = path.open("rb") if path is not None else None
+            except OSError:
+                source = None
+            if source is None:
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "no such input"})
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.end_headers()
-            with path.open("rb") as source:
+            # The size of the file opened, not of the path: a cache file os.replace'd in between keeps the old
+            # inode open here, so the body always matches its header.
+            with source:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.end_headers()
                 shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
 
         def _length(self, low: int, high: int) -> int | None:

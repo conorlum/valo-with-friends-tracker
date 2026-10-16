@@ -11,7 +11,8 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
 2. **Submit** every round `plan()` lists as `missing` or `stale`
    (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D1-D3), from linked and unlinked replays
    alike: linked ones by their match's played_at, newest first, then the rest by upload time. A failure
-   under the current inputs is left alone. Up to IN_FLIGHT (CONTROL_MAX_RUNS) at a time, from at most MAX_MATCHES (CONTROL_MAX_MATCHES) replays; the worker runs them only while it
+   under the current inputs is left alone. Up to IN_FLIGHT (CONTROL_MAX_RUNS) at a time from at most MAX_MATCHES
+   (CONTROL_MAX_MATCHES) replays while the worker's control runs on Workflows, else LOCAL_IN_FLIGHT from any; the worker runs them only while it
    isn't parsing, so a job may sit `queued` there for a long time, and that never counts as a failure
    (D8). Only a job seen `running` for STALE_JOB_S does. A round of a map whose heights are in the database
    names their digest; a worker that doesn't have the asset says so, gets it pushed and is asked again.
@@ -90,6 +91,10 @@ log = logging.getLogger(__name__)
 CYCLE_S = 20
 IN_FLIGHT = settings.control_max_runs        # rounds in flight at once (CONTROL_MAX_RUNS)
 MAX_MATCHES = settings.control_max_matches   # replays those rounds may come from (CONTROL_MAX_MATCHES)
+# Both apply only while the worker's /health says control runs on Workflows. A local pool of 2 keeps today's
+# 8 rounds from any replays: with one replay at a time, a cold map's warming round would leave the second child
+# idle for up to 30 minutes.
+LOCAL_IN_FLIGHT = 8
 STALE_JOB_S = 1800
 MAX_TRIES = 3
 BACKOFF_S = 300
@@ -256,6 +261,7 @@ class State:
     held: frozenset = frozenset()       # the replays the last cycle held back for a re-parse
     heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
     feature_retry_after: dict = field(default_factory=dict)
+    remote_control: bool = False        # the worker's last /health named runners.control "workflow"
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -480,10 +486,23 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     return out
 
 
+def in_flight_cap(state: State) -> int:
+    """IN_FLIGHT while control runs on Workflows, else today's LOCAL_IN_FLIGHT."""
+    return IN_FLIGHT if state.remote_control else LOCAL_IN_FLIGHT
+
+
 def room_for(state: State, replay_id: int) -> bool:
-    """A round of `replay_id` may go out: its replay is already in flight, or fewer than MAX_MATCHES are."""
+    """A round of `replay_id` may go out: its replay is already in flight, or fewer than MAX_MATCHES are. Local
+    control has no match limit."""
+    if not state.remote_control:
+        return True
     flying = {f.replay_id for f in state.in_flight.values()}
     return replay_id in flying or len(flying) < MAX_MATCHES
+
+
+def remote_control(health) -> bool:
+    runners = health.get("runners") if isinstance(health, dict) else None
+    return isinstance(runners, dict) and runners.get("control") == "workflow"
 
 
 def _send(session, client, state: State, now: float, counts: dict, todo: list, *, kind: str, features_capable=False) -> bool:
@@ -493,7 +512,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     heights = control_heights.active_digests(session)
     held_features = False
     for p in _order(session, [p for _, p in todo]):
-        if len(state.in_flight) >= IN_FLIGHT:
+        if len(state.in_flight) >= in_flight_cap(state):
             return True                      # sendable work is left: plan again next cycle
         if not room_for(state, p.replay_id):
             continue                         # another match is in flight: this one waits its turn
@@ -559,7 +578,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
 
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
             held_maps: frozenset = frozenset()) -> None:
-    if len(state.in_flight) >= IN_FLIGHT:
+    if len(state.in_flight) >= in_flight_cap(state):     # the last health's cap; read afresh below
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
         return
@@ -571,6 +590,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         health = client.health()
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
+    state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
     capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()

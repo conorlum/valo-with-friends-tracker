@@ -64,6 +64,37 @@ def test_store_refuses_a_file_past_the_reserve(tmp_path):
     big.write_bytes(b"y" * 100)
     assert control_cache.store(tmp_path, "Bind.0000000000000002.npz", big, reserve=50) is False
     assert not (tmp_path / "Bind.0000000000000002.npz").exists() and not big.exists()
+    assert (tmp_path / "Ascent.0000000000000001.npz").exists()      # a refusal drops nothing
+
+
+def sized(path: Path, size: int, age: float) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    os.utime(path, (time.time() - age, time.time() - age))
+    return path
+
+
+def test_a_full_cache_drops_old_generations_then_the_oldest_maps_newest(tmp_path):
+    sized(tmp_path / "Ascent.0000000000000001.npz", 10, age=50)       # Ascent's newest
+    sized(tmp_path / "Ascent.0000000000000002.npz", 10, age=60)       # an older generation
+    sized(tmp_path / "Pearl.0000000000000001.npz", 10, age=900)       # a map that left the pool, long ago
+    sized(tmp_path / "heights" / "Ascent.d1.height.npz", 10, age=999)  # never dropped
+    src = sized(tmp_path / ".incoming" / "x.npz", 10, age=0)
+    # 50 bytes with the new file, room for 30: the older Ascent generation goes first, then Pearl.
+    assert control_cache.store(tmp_path, "Bind.0000000000000003.npz", src, reserve=30) is True
+    left = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.npz"))
+    assert left == ["Ascent.0000000000000001.npz", "Bind.0000000000000003.npz", "heights/Ascent.d1.height.npz"]
+
+
+def test_a_full_cache_takes_a_maps_changed_visibility_cache(tmp_path):
+    # A cache at its reserve, made only of each map's newest: before this fix every new file was refused, so a
+    # map whose heights changed never warmed again.
+    for i, name in enumerate(("Ascent", "Bind", "Haven")):
+        sized(tmp_path / f"{name}.000000000000000{i}.npz", 10, age=100 - i)
+    src = sized(tmp_path / ".incoming" / "x.npz", 10, age=0)
+    assert control_cache.store(tmp_path, "Haven.00000000000000ff.npz", src, reserve=30) is True
+    assert control_cache.has_visibility(tmp_path, "Haven")
+    assert not (tmp_path / "Ascent.0000000000000000.npz").exists()    # the oldest went
 
 
 def test_concurrent_stores_keep_kept_and_lose_nothing_mid_rename(tmp_path):

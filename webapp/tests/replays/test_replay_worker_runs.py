@@ -282,6 +282,23 @@ def test_reconcile_finds_an_old_run_by_paging_in_one_list(render, tmp_path, monk
     assert all("taskSlug=replay-tasks%2Fheights" in call for call in render.list_calls)
 
 
+def test_reconcile_settles_a_saved_run_render_doesnt_know_after_grace(render, tmp_path):
+    now = [1000.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    run = table.open("parse", "j1", {}, timeout_s=3600, render_id="trn-from-another-workflow")
+    table.reconcile()
+    assert not run.done.is_set()                  # the same grace as a run seen ended
+    now[0] += runs.GRACE_S
+    table.reconcile()
+    assert run.result["error_kind"] == "infra" and "not found" in run.result["error"]
+
+
+def test_a_token_that_isnt_ascii_is_refused_not_an_error(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    run = table.open("ping", "j1", {}, timeout_s=30)
+    assert table.accepts("j1", "té") is None and table.accepts("j1", run.token) is run
+
+
 def test_status_counts_open_runs(render, tmp_path):
     table = make_runs(render, tmp_path)
     table.open("ping", "j1", {}, timeout_s=30)
@@ -312,6 +329,10 @@ def test_workflow_runner_without_key_or_slug_stops_startup():
 
 def test_no_key_means_no_run_table():
     assert server.make_runs(server.Settings.from_env({})) is None
+
+
+def test_settings_repr_leaves_out_the_key():
+    assert "sekrit" not in repr(server.Settings.from_env({"RENDER_API_KEY": "sekrit"}))
 
 
 @pytest.fixture
@@ -396,6 +417,54 @@ def test_ping_end_to_end(render, live):
     answer = json.loads(body)
     assert status == 200 and answer["ok"] is True
     assert render.started[0]["task"] == "replay-tasks/ping"
+
+
+def test_input_route_with_a_non_ascii_token_is_404_not_500(live, tmp_path):
+    import http.client
+    base, table = live
+    table.open("ping", "j1", {"vrf": write(tmp_path / "v.bin", "x")}, timeout_s=30)
+    host, port = base.replace("http://", "").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=10)
+    try:
+        conn.putrequest("GET", "/runs/j1/input/vrf")
+        conn.putheader("X-Run-Token", "té")            # latin-1 on the wire
+        conn.endheaders()
+        assert conn.getresponse().status == 404
+    finally:
+        conn.close()
+
+
+def short_body_server(declared: int, sent: int):
+    """A one-shot server that promises `declared` bytes, sends `sent` and hangs up (a worker restarting)."""
+    import socket
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve():
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\n\r\n".encode() + b"a" * sent)
+        listener.close()
+    threading.Thread(target=serve, daemon=True).start()
+    return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+
+def test_a_download_cut_short_is_an_error_and_leaves_no_file(tmp_path):
+    link = task_bodies.WorkerLink(short_body_server(1000, 400), "j", "t", timeout_s=10)
+    with pytest.raises(OSError):                 # ShortInput, or http.client's own IncompleteRead
+        link.fetch("vrf", tmp_path / "x.vrf")
+    assert not (tmp_path / "x.vrf").exists()
+
+
+def test_input_route_sends_the_size_of_the_file_it_opened(live, tmp_path):
+    base, table = live
+    f = tmp_path / "cache.bin"
+    f.write_bytes(b"a" * 10)
+    run = table.open("ping", "j1", {"c": f}, timeout_s=30)
+    dest = task_bodies.WorkerLink(base, "j1", run.token).fetch("c", tmp_path / "out.bin")
+    assert dest.read_bytes() == b"a" * 10
 
 
 def test_worker_link_accepts_a_bare_host_port(monkeypatch):

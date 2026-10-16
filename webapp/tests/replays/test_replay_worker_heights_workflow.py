@@ -67,6 +67,18 @@ def test_heights_task_unpacks_the_rounds_and_passes_previous(tmp_path, stub):
     assert link.result["rounds_seen"] == ["m1/1.json.gz"] and link.result["had_previous"] is True
 
 
+def test_heights_task_names_the_caches_it_could_not_post(tmp_path, stub, monkeypatch):
+    spool = tmp_path / "spool"
+    (spool / "m1").mkdir(parents=True)
+    (spool / "m1" / "1.json.gz").write_bytes(b"r")
+    tar = control_cache.pack(spool, tmp_path / "rounds.tar").read_bytes()
+    unsent = [f"Ascent.{'e' * 16}.npz"]
+    monkeypatch.setattr(tasks, "_post_caches", lambda link, cache, before, map_name: list(unsent))
+    link = FakeLink({"task": json.dumps({"key": "k", "map": "Ascent"}).encode(), "rounds": tar})
+    tasks.heights({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
+    assert link.result["status"] == "ok" and link.result["cache_unsent"] == unsent
+
+
 def test_heights_task_refuses_a_bad_tar_as_infra(tmp_path, stub):
     link = FakeLink({"task": b'{"key": "k", "map": "Ascent"}', "rounds": b"not a tar"})
     tasks.heights({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
@@ -274,6 +286,31 @@ def test_local_heights_keep_todays_spool_off_the_archive_disk(tmp_path):
                              height_spool_dir=disk / "height_builds", height_spool_bytes=2 * 1024 ** 3)
     server.keep_local_sizing(remote)
     assert remote.height_spool_dir == disk / "height_builds" and remote.height_spool_bytes == 2 * 1024 ** 3
+
+
+def test_a_rollback_to_local_heights_drops_the_spool_left_on_the_disk(tmp_path):
+    """A build in flight at the switch back left its rounds and tar on the archive disk; builds live in memory only,
+    so nothing will read them again and nothing reserves their room."""
+    disk = tmp_path / "disk"
+    (disk / "height_builds" / "b1" / "m1").mkdir(parents=True)
+    (disk / "height_builds" / "b1" / "m1" / "1.json.gz").write_bytes(b"r" * 100)
+    (disk / "height_runs").mkdir()
+    (disk / "height_runs" / "b1.tar").write_bytes(b"t" * 100)
+    (disk / "jobs").mkdir()                                       # the archive's own: untouched
+    local = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, heights_runner="local",
+                            height_spool_dir=disk / "height_builds")
+    server.keep_local_sizing(local)
+    assert not (disk / "height_builds").exists() and not (disk / "height_runs").exists()
+    assert (disk / "jobs").is_dir()
+
+
+def test_a_spool_set_to_the_archive_itself_is_never_dropped(tmp_path):
+    disk = tmp_path / "disk"
+    (disk / "jobs").mkdir(parents=True)
+    local = server.Settings(temp_root=tmp_path / "tmp", archive_dir=disk, heights_runner="local",
+                            height_spool_dir=disk)
+    server.keep_local_sizing(local)
+    assert (disk / "jobs").is_dir()
 
 
 def test_a_local_build_that_times_out_says_height_build_and_a_round_says_control(tmp_path):
