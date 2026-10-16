@@ -1,5 +1,7 @@
 """KAY/O's knife and Skye's flash as information (W12; the 2026-10-05 review items 10, 14, 15): zero, all or some
-of the living enemies hit; proven complete versus missing or unresolved; Veto; KAY/O's own sight."""
+of the living enemies hit; proven complete versus missing or unresolved; Veto; KAY/O's own sight. A partial knife
+(2026-10-16, docs/map-control-knife-partial-plan.md) restricts the enemies it hit and excludes the ones it missed,
+each with the rim margin."""
 
 import numpy as np
 import pytest
@@ -8,7 +10,7 @@ from app.control import engine as ce
 from app.control import utility as ut
 from tests.replays.control_toys import blob, open_hall, toy_ability, uv
 
-R_UV = 130          # ~ 4 m on the toy map (TOY_SCALE: 0.14 m per px)
+R_UV = 130          # ~ 1.86 m on the toy map (TOY_SCALE: 0.14 m per px): under the 2 m rim
 
 
 def players():
@@ -41,13 +43,43 @@ def test_a_knife_that_hit_everyone_living_holds_each_inside_it():
     assert infos([knife([5, 6])]) == [(5, "restrict", "knife_all"), (6, "restrict", "knife_all")]
 
 
-def test_a_partial_knife_tells_nothing_not_even_about_who_it_hit():
-    assert infos([knife([5])]) == []
+PARTIAL = [(5, "restrict", "knife_hit"), (6, "exclude", "knife_missed")]
+
+
+def test_a_partial_knife_restricts_who_it_hit_and_excludes_who_it_missed():
+    assert infos([knife([5])]) == PARTIAL
+
+
+def test_the_knife_reasons_are_pinned_and_every_emitted_reason_is_in_them():
+    assert ut.KNIFE_REASONS == ("knife_zero", "knife_all", "knife_hit", "knife_missed")
+    for hits in ([], [5], [5, 6]):
+        assert {r for _, _, r in infos([knife(hits)])} <= set(ut.KNIFE_REASONS)
 
 
 def test_the_dead_dont_count_at_the_pulse():
     assert infos([knife([5])], deaths={6: 2.5}) == [(5, "restrict", "knife_all")], "B6 died before it pulsed"
-    assert infos([knife([5])], deaths={6: 3.5}) == [], "B6 was alive at the pulse: some, not all"
+    assert infos([knife([5])], deaths={6: 3.5}) == PARTIAL, "B6 was alive at the pulse: some, not all"
+
+
+def test_partial_ops_need_suppress_and_carry_the_plain_radius_and_the_lists():
+    b = blob(players(), t_end=10.0, util=[knife([5], r=600)])
+    got = {i.slot: i for i in ce.RoundInputs(b, open_hall()).infos}
+    rnd = ce.RoundInputs(b, open_hall())
+    plain = 600 * ce.PX / 10000 * rnd.geo.m_per_px
+    rim = ut.FIGURES["knife_rim_m"]
+    assert rim == 2.0
+    assert got[5].radius_m == pytest.approx(plain + rim)
+    assert got[6].radius_m == pytest.approx(plain - rim)
+    for i in got.values():
+        assert i.detail["needs"] == "suppress" and i.detail["hits"] == [5] and i.detail["living"] == [5, 6]
+        assert i.detail["r_m"] == pytest.approx(plain)
+
+
+def test_a_small_knife_exclude_radius_never_goes_below_zero():
+    b = blob(players(), t_end=10.0, util=[knife([5], r=R_UV)])
+    got = {i.slot: i for i in ce.RoundInputs(b, open_hall()).infos}
+    assert got[6].radius_m == 0.0
+    assert got[5].radius_m > 0.0
 
 
 def test_allies_hit_are_not_hits():
@@ -66,14 +98,15 @@ def test_a_legacy_knife_row_without_activation_tells_nothing():
 
 def test_an_ulting_veto_keeps_his_region_and_makes_all_impossible():
     assert infos([knife([])], veto=5) == [(6, "exclude", "knife_zero")]
-    assert infos([knife([6])], veto=5) == [], "B5 couldn't be hit: hitting B6 is not hitting everyone"
+    assert infos([knife([6])], veto=5) == [(6, "restrict", "knife_hit")], "Veto's exclude is dropped by the engine"
+    assert infos([knife([5, 6])], veto=5) == [(6, "restrict", "knife_hit")]
 
 
 def test_the_knife_radius_is_the_replays_and_goes_through_walls():
-    b = blob(players(), t_end=10.0, util=[knife([])])
+    b = blob(players(), t_end=10.0, util=[knife([], r=600)])
     rnd = ce.RoundInputs(b, open_hall())
     radius = rnd.infos[0].radius_m
-    assert radius == pytest.approx(R_UV * ce.PX / 10000 * rnd.geo.m_per_px)
+    assert radius == pytest.approx(600 * ce.PX / 10000 * rnd.geo.m_per_px - ut.FIGURES["knife_rim_m"])
     assert rnd.infos[0].mask is None, "a disk, not a line of sight"
 
 
@@ -93,6 +126,27 @@ def test_a_zero_knife_clears_its_radius_from_the_unknown():
         own = geo.node_at(geo.cell_of_px(p[0], p[1]), None)
         assert (out[5.5][s] & disk).sum() > 10
         assert not (out[6.0][s] & disk & (np.arange(geo.n) != own)).any()
+
+
+def test_a_partial_knife_restricts_the_hit_and_clears_the_missed_in_the_engine():
+    geo = open_hall()
+    tracks = {0: ("A", [(0.0, 104, 200, 180)]), 5: ("B", [(0.0, 330, 200, 0)]), 6: ("B", [(0.0, 390, 120, 0)])}
+    b = blob(tracks, t_end=10.0, util=[knife([5], t=6.0, r=600)])
+    out = {}
+
+    class Watch:
+        def on_tick(self, tick, unknown):
+            out[round(tick.t, 6)] = {s: np.isfinite(r) for s, r in unknown.reached["A"].items()}
+
+    ce.compute_round(b, geo, knowledge=False, observer=Watch())
+    infos_ = {i.slot: i for i in ce.RoundInputs(b, geo).infos}
+    assert (infos_[5].kind, infos_[6].kind) == ("restrict", "exclude")
+    keep, gone = ut.footprint(infos_[5], geo), ut.footprint(infos_[6], geo)
+    assert (out[5.5][5] & ~keep).sum() > 10, "before the pulse the hit one could be outside the disk"
+    assert not (out[6.0][5] & ~keep).any(), "at the pulse the hit one is inside it"
+    own = geo.node_at(geo.cell_of_px(390, 120), None)
+    assert gone.sum() > 10 and (out[5.5][6] & gone).sum() > 10
+    assert not (out[6.0][6] & gone & (np.arange(geo.n) != own)).any()
 
 
 def skye(hits, pop=(300, 200), state="completed", complete=True, t=4.0):

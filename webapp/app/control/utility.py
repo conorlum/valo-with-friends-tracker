@@ -211,11 +211,16 @@ def _living_enemies(rnd, side: str, t: float) -> list[int]:
     return sorted(s for s, team in rnd.team.items() if team != side and rnd.alive(s, t))
 
 
+KNIFE_REASONS = ("knife_zero", "knife_all", "knife_hit", "knife_missed")
+
+
 def read_knives(rnd) -> list[Info]:
-    """KAY/O's ZERO/point (item 10), once it is proven to have pulsed with a complete hit list (condenser
-    `activation`): no enemy hit -> every living enemy is outside its radius (through walls); every living enemy hit
-    -> each is inside it; anything else -> nothing, not even for the ones it hit. An ulting Veto can't be hit, so
-    while he's alive the knife can't have hit everyone, and his region is kept on an empty one (needs: suppress)."""
+    """KAY/O's ZERO/point (item 10; partial hits 2026-10-16), once it is proven to have pulsed with a complete hit
+    list (condenser `activation`): no enemy hit -> every living enemy is outside its radius (through walls); every
+    living enemy hit and none immune -> each is inside it; otherwise (some hit) -> each hit enemy is inside it
+    (restrict knife_hit) and each other living enemy outside it (exclude knife_missed). Every op needs: suppress,
+    so an ulting Veto, who can't be hit, keeps his region (the engine drops his op). Restricts use r + knife_rim_m,
+    excludes max(0, r - knife_rim_m)."""
     from app.control import engine as ce
 
     out = []
@@ -233,17 +238,22 @@ def read_knives(rnd) -> list[Info]:
             continue
         hit = set(pulse.get("hits") or []) & set(living)
         immune = [s for s in living if not affects("suppress", rnd.evolution, s, t)]
-        if not hit:
-            kind, reason = "exclude", "knife_zero"
-        elif hit == set(living) and not immune:
-            kind, reason = "restrict", "knife_all"
-        else:
-            continue
         x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
         radius_m = float(pulse["r"]) * ce.PX / 10000 * rnd.geo.m_per_px
+        # PROVISIONAL(D1): the rim margin (utility.json knife_rim_m, AFK run decision): a hit enemy may have moved
+        # out by the edge of the pulse's timing, a missed one in; restricts widen, excludes shrink, never below 0.
+        rim = FIGURES["knife_rim_m"]
+        if not hit:
+            plan = {s: ("exclude", "knife_zero") for s in living}
+        elif hit == set(living) and not immune:
+            plan = {s: ("restrict", "knife_all") for s in living}
+        else:
+            plan = {s: ("restrict", "knife_hit") if s in hit else ("exclude", "knife_missed") for s in living}
         for slot in living:
-            out.append(Info(t, side, slot, kind, reason, x=x, y=y, radius_m=radius_m, source=f"{KNIFE}@{e['t']}",
-                            detail={"needs": "suppress", "hits": sorted(hit), "living": living}))
+            kind, reason = plan[slot]
+            r_op = radius_m + rim if kind == "restrict" else max(0.0, radius_m - rim)
+            out.append(Info(t, side, slot, kind, reason, x=x, y=y, radius_m=r_op, source=f"{KNIFE}@{e['t']}",
+                            detail={"needs": "suppress", "hits": sorted(hit), "living": living, "r_m": radius_m}))
     return out
 
 
