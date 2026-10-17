@@ -29,7 +29,7 @@ def test_page_data_shows_the_latest_report_of_the_first_coached_player(db, world
     data = coach.page_data(db, replay, None, None)
     assert data["report"]["version"] == 2 and data["report"]["versions"] == [1, 2]
     assert [p["title"] for p in data["report"]["good"]] == ["Good one"]
-    assert data["report"]["improve"][0]["instances"] == [{"round": 2, "t": 41.5, "t1": None, "caption": "c"}]
+    assert data["report"]["improve"][0]["instances"] == [{"index": 0, "round": 2, "t": 41.5, "t1": None, "caption": "c", "feedback": []}]
     assert data["players"][0]["selected"] is True and data["team_coming_soon"] is True
 
 
@@ -65,7 +65,7 @@ def test_an_instance_without_a_time_or_caption_still_reads(db, world):
     body["points"][1]["instances"] = []
     coach.store_report(db, replay.match_id, ids[0], body)
     report = coach.page_data(db, replay, None, None)["report"]
-    assert report["good"][0]["instances"] == [{"round": 3, "t": None, "t1": None, "caption": ""}]
+    assert report["good"][0]["instances"] == [{"index": 0, "round": 3, "t": None, "t1": None, "caption": "", "feedback": []}]
     assert report["improve"][0]["instances"] == []
 
 

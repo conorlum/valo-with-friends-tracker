@@ -84,8 +84,10 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 - The page is the replay viewer: `/replays/<uuid>/coach` (`app/routers/coach.py`). A strip above it names the
   player and version (`replays/_coach.html`); the points are the first two tabs of the viewer's side column,
   "Did well" and "To improve", beside the map (`replays/_coach_points.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
-- Feedback is per point, from any logged-in viewer (login has no password, so authors are unverified). "Prompt
-  out" gives text for a Claude session that checks the feedback against the data; the owner decides any playbook
+- Feedback is per moment (Right / Wrong / Correction and a note, under each of a point's times) plus one overall
+  note per point, sent in one form, from any logged-in viewer (login has no password, so authors are
+  unverified); `coach_feedback.instance_index` (migration 0025) says which moment, NULL for the point. "Prompt
+  out" gives each moment's round and time with its feedback, and text for a Claude session that checks the feedback against the data; the owner decides any playbook
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
   that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
   feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).

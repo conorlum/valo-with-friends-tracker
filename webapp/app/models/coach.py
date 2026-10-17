@@ -52,13 +52,16 @@ class CoachPoint(Base):
 
 class CoachFeedback(Base):
     __tablename__ = "coach_feedback"
-    __table_args__ = (CheckConstraint("verdict IN ('right', 'wrong', 'badly_put')", name="ck_coach_feedback_verdict"),
+    __table_args__ = (CheckConstraint("verdict IN ('right', 'wrong', 'correction', 'badly_put')",
+                                      name="ck_coach_feedback_verdict"),
                       Index("ix_coach_feedback_point", "point_id"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     point_id: Mapped[int] = mapped_column(ForeignKey("coach_points.id", ondelete="CASCADE"), nullable=False)
+    # The moment of the point it is about (its position in the point's `instances`); None: the point as a whole.
+    instance_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     author_player_id: Mapped[int] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
-    verdict: Mapped[str] = mapped_column(String(12), nullable=False)
+    verdict: Mapped[str | None] = mapped_column(String(12), nullable=True)      # None: a note alone (migration 0025)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

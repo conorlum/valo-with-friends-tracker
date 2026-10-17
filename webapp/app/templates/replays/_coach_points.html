@@ -3,21 +3,29 @@
    is a button carrying its round and second; coach.js moves the viewer there.
    Report text is model-written: rendered escaped, never |safe. #}
 {% macro clock(i) %}R{{ i.round }}{% if i.t is not none %} {{ "%d:%02d" | format((i.t | int) // 60, (i.t | int) % 60) }}{% endif %}{% endmacro %}
+{% macro feedback_rows(rows) %}{% for f in rows %}<p class="coach-feedback-row"><strong>{{ f.author }}</strong>{% if f.verdict %}: {{ f.verdict | replace("_", " ") }}{% endif %}{% if f.note %} &ndash; {{ f.note }}{% endif %}{% if f.handled %} <span class="muted">(handled)</span>{% endif %}</p>
+{% endfor %}{% endmacro %}
+{# Feedback is per moment (Right / Wrong / Correction and a note) plus one overall note, sent together in one form
+   per point. The viewer's own open feedback is filled in; a moment sent blank clears theirs. #}
 {% macro point_card(p) %}
 <article class="coach-point{% if p.disputed %} is-disputed{% endif %}" data-coach-point="{{ p.id }}">
   <h4>{{ p.title }} <span class="coach-theme">{{ p.theme }}</span>{% if p.disputed %} <span class="coach-disputed">Disputed</span>{% endif %}</h4>
   <p>{{ p.body }}</p>
+  {% if coach.can_feedback %}<form class="coach-feedback-form" method="post" action="/replays/{{ coach.match_uuid }}/coach/points/{{ p.id }}/feedback">{% endif %}
   {% if p.instances %}<ul class="coach-instances">
-    {% for i in p.instances %}<li><button type="button" class="coach-instance" data-coach-round="{{ i.round }}" data-coach-t="{{ i.t if i.t is not none else '' }}">{{ clock(i) }}</button>{% if i.caption %} <span>{{ i.caption }}</span>{% endif %}</li>
+    {% for i in p.instances %}{% set mine = p.mine.get(i.index) if p.mine else none %}<li class="coach-moment">
+      <div><button type="button" class="coach-instance" data-coach-round="{{ i.round }}" data-coach-t="{{ i.t if i.t is not none else '' }}">{{ clock(i) }}</button>{% if i.caption %} <span>{{ i.caption }}</span>{% endif %}</div>
+      {{ feedback_rows(i.feedback) }}
+      {% if coach.can_feedback %}<div class="coach-moment-form" role="group" aria-label="Feedback on {{ clock(i) }}">
+        {% for value, label in (("right", "Right"), ("wrong", "Wrong"), ("correction", "Correction")) %}<label><input type="radio" name="verdict_{{ i.index }}" value="{{ value }}"{% if mine and mine.verdict == value %} checked{% endif %}> {{ label }}</label>
+        {% endfor %}<input type="text" name="note_{{ i.index }}" maxlength="2000" value="{{ mine.note if mine else '' }}" placeholder="What happened at {{ clock(i) }}?" aria-label="Note on {{ clock(i) }}">
+      </div>{% endif %}
+    </li>
     {% endfor %}</ul>{% endif %}
   <div class="coach-feedback" data-coach-feedback>
-    {% for f in p.feedback %}<p class="coach-feedback-row"><strong>{{ f.author }}</strong>: {{ f.verdict | replace("_", " ") }}{% if f.note %} &ndash; {{ f.note }}{% endif %}{% if f.handled %} <span class="muted">(handled)</span>{% endif %}</p>
-    {% endfor %}
-    {% if coach.can_feedback %}<form class="coach-feedback-form" method="post" action="/replays/{{ coach.match_uuid }}/coach/points/{{ p.id }}/feedback">
-      <label><input type="radio" name="verdict" value="right" required> Right</label>
-      <label><input type="radio" name="verdict" value="wrong"> Wrong</label>
-      <label><input type="radio" name="verdict" value="badly_put"> Right, badly put</label>
-      <input type="text" name="note" maxlength="2000" placeholder="What did it get wrong, or miss?" aria-label="Note">
+    {{ feedback_rows(p.feedback) }}
+    {% if coach.can_feedback %}{% set overall = p.mine.get(none) if p.mine else none %}
+      <label class="coach-overall">Overall<textarea name="note" rows="2" maxlength="2000" placeholder="Anything about this point as a whole?">{{ overall.note if overall else '' }}</textarea></label>
       <button type="submit" class="replay-button">Send</button>
     </form>{% else %}<p class="muted">Log in to give feedback on this point.</p>{% endif %}
   </div>

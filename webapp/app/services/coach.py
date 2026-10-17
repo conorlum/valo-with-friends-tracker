@@ -15,7 +15,8 @@ from app.services.replays import watchable_external_ids
 
 KIND_MATCH = "match"
 POLARITIES = ("good", "improve")
-VERDICTS = ("right", "wrong", "badly_put")
+VERDICTS = ("right", "wrong", "correction", "badly_put")      # badly_put: point-level rows from before 0025
+MOMENT_VERDICTS = ("right", "wrong", "correction")
 FEEDBACK_SHOWN = 30         # rows per point on the page and in "Prompt out": anyone can pick any name to post under
 
 
@@ -109,15 +110,24 @@ def points(db, report_id: int) -> list[CoachPoint]:
     return db.query(CoachPoint).filter(CoachPoint.report_id == report_id).order_by(order, CoachPoint.ordinal).all()
 
 
-def _instance(raw: dict) -> dict:
-    return {"round": raw["round"], "t": raw.get("t"), "t1": raw.get("t1"), "caption": str(raw.get("caption") or "")}
+def _usable(raw) -> bool:
+    return isinstance(raw, dict) and "round" in raw
 
 
-def _point(point: CoachPoint, feedback: list[dict]) -> dict:
+def _instance(index: int, raw: dict, feedback: list[dict]) -> dict:
+    """`index` is the instance's position in the point's stored `instances`: what moment feedback is keyed on."""
+    return {"index": index, "round": raw["round"], "t": raw.get("t"), "t1": raw.get("t1"),
+            "caption": str(raw.get("caption") or ""), "feedback": [f for f in feedback if f["instance"] == index]}
+
+
+def _point(point: CoachPoint, feedback: list[dict], viewer_id: int | None = None) -> dict:
+    mine = {f["instance"]: f for f in feedback if viewer_id is not None and f["author_id"] == viewer_id
+            and not f["handled"]}
     return {"id": point.id, "theme": point.theme, "title": point.title, "body": point.body,
             "disputed": any(f["verdict"] == "wrong" for f in feedback),
-            "instances": [_instance(raw) for raw in point.instances or [] if isinstance(raw, dict) and "round" in raw],
-            "feedback": feedback}
+            "instances": [_instance(j, raw, feedback) for j, raw in enumerate(point.instances or []) if _usable(raw)],
+            "feedback": [f for f in feedback if f["instance"] is None],
+            "mine": mine}       # the viewer's own open rows by moment (None: overall), to fill the form with
 
 
 def _feedback_by_point(db, point_ids: list[int]) -> dict[int, list[dict]]:
@@ -128,12 +138,13 @@ def _feedback_by_point(db, point_ids: list[int]) -> dict[int, list[dict]]:
             .join(Player, Player.id == CoachFeedback.author_player_id)
             .filter(CoachFeedback.point_id.in_(point_ids)).order_by(CoachFeedback.id).all())
     for row, author in rows:
-        out[row.point_id].append({"author": author, "verdict": row.verdict, "note": row.note or "",
+        out[row.point_id].append({"author": author, "author_id": row.author_player_id, "verdict": row.verdict,
+                                  "note": row.note or "", "instance": row.instance_index,
                                   "handled": row.handled_at is not None})
     return {pid: found[-FEEDBACK_SHOWN:] for pid, found in out.items()}      # the newest, oldest first
 
 
-def page_data(db, replay, player_id: int | None, version: int | None) -> dict:
+def page_data(db, replay, player_id: int | None, version: int | None, viewer_id: int | None = None) -> dict:
     coached = coached_players(db, replay.match_id)
     data = {"match_uuid": str(replay.match_uuid).lower(), "team_coming_soon": True, "players": [], "report": None}
     if not coached:
@@ -143,7 +154,7 @@ def page_data(db, replay, player_id: int | None, version: int | None) -> dict:
     report = get_report(db, replay.match_id, chosen, version)
     rows = points(db, report.id)
     feedback = _feedback_by_point(db, [p.id for p in rows])
-    shown = [(p.polarity, _point(p, feedback[p.id])) for p in rows]
+    shown = [(p.polarity, _point(p, feedback[p.id], viewer_id)) for p in rows]
     data["report"] = {
         "id": report.id, "version": report.version, "versions": versions(db, replay.match_id, chosen),
         "playbook_version": report.playbook_version, "model": report.model,
@@ -192,28 +203,89 @@ def set_note_active(db, note_id: int, active: bool) -> bool:
 NOTE_LIMIT = 2000
 
 
-def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdict: str, note: str | None) -> CoachFeedback:
-    if verdict not in VERDICTS:
-        raise ReportError(f"verdict must be one of {VERDICTS}")
+def _clean_note(note: str | None) -> str | None:
     note = (note or "").strip() or None
     if note and len(note) > NOTE_LIMIT:
         raise ReportError(f"a note is at most {NOTE_LIMIT} characters")
-    owner = (db.query(CoachReport).join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+    return note
+
+
+def _point_of_match(db, match_id: int, point_id: int) -> CoachPoint:
+    point = (db.query(CoachPoint).join(CoachReport, CoachPoint.report_id == CoachReport.id)
              .filter(CoachPoint.id == point_id, CoachReport.match_id == match_id).one_or_none())
-    if owner is None:
+    if point is None:
         raise LookupError(f"point {point_id} is not in a report of match {match_id}")
-    # One open row per author per point: login has no password, so a second post replaces the first instead of
-    # piling up on the page and in "Prompt out" (PR 132 review, finding 7). Handled rows are history and stay.
-    row = (db.query(CoachFeedback)
-           .filter(CoachFeedback.point_id == point_id, CoachFeedback.author_player_id == author_player_id,
-                   CoachFeedback.handled_at.is_(None)).order_by(CoachFeedback.id.desc()).first())
+    return point
+
+
+def _check_moment(point: CoachPoint, instance: int | None) -> None:
+    raw = point.instances or []
+    if instance is not None and not (0 <= instance < len(raw) and _usable(raw[instance])):
+        raise ReportError(f"point {point.id} has no moment {instance}")
+
+
+def _open_row(db, point_id: int, author_player_id: int, instance: int | None) -> CoachFeedback | None:
+    at = CoachFeedback.instance_index.is_(None) if instance is None else CoachFeedback.instance_index == instance
+    return (db.query(CoachFeedback)
+            .filter(CoachFeedback.point_id == point_id, CoachFeedback.author_player_id == author_player_id, at,
+                    CoachFeedback.handled_at.is_(None)).order_by(CoachFeedback.id.desc()).first())
+
+
+def _put(db, point_id: int, author_player_id: int, instance: int | None, verdict: str | None, note: str | None,
+         keep_verdict: bool = False) -> CoachFeedback:
+    # One open row per author per point and moment: login has no password, so a second post replaces the first
+    # instead of piling up on the page and in "Prompt out" (PR 132 review, finding 7). Handled rows are history.
+    row = _open_row(db, point_id, author_player_id, instance)
     if row is None:
-        row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, verdict=verdict, note=note)
+        row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, instance_index=instance,
+                            verdict=verdict, note=note)
         db.add(row)
     else:
-        row.verdict, row.note = verdict, note
+        row.note = note
+        if not keep_verdict:
+            row.verdict = verdict
+    return row
+
+
+def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdict: str | None, note: str | None,
+                 instance: int | None = None) -> CoachFeedback:
+    """One row: about the moment `instance` of the point, or (None) the point as a whole. A verdict, a note, or
+    both; a moment's verdict is one of MOMENT_VERDICTS."""
+    if verdict is not None and verdict not in (VERDICTS if instance is None else MOMENT_VERDICTS):
+        raise ReportError(f"verdict must be one of {VERDICTS if instance is None else MOMENT_VERDICTS}")
+    note = _clean_note(note)
+    if verdict is None and note is None:
+        raise ReportError("feedback needs a verdict or a note")
+    point = _point_of_match(db, match_id, point_id)
+    _check_moment(point, instance)
+    row = _put(db, point_id, author_player_id, instance, verdict, note)
     db.commit()
     return row
+
+
+def save_point_feedback(db, match_id: int, point_id: int, author_player_id: int,
+                        moments: dict[int, tuple[str | None, str | None]], overall: str | None) -> None:
+    """The coach panel's form for one point, in one go: a verdict and note per moment, and an overall note. The
+    form shows the author's open rows filled in, so a moment (or the overall note) sent blank removes their open
+    row for it. An overall row from before migration 0025 keeps its verdict."""
+    point = _point_of_match(db, match_id, point_id)
+    cleaned = {}
+    for instance, (verdict, note) in moments.items():
+        _check_moment(point, instance)
+        if verdict is not None and verdict not in MOMENT_VERDICTS:
+            raise ReportError(f"verdict must be one of {MOMENT_VERDICTS}")
+        cleaned[instance] = (verdict, _clean_note(note))
+    entries = [*cleaned.items(), (None, (None, _clean_note(overall)))]
+    for instance, (verdict, note) in entries:
+        if verdict is None and note is None:
+            row = _open_row(db, point_id, author_player_id, instance)
+            if row is not None and instance is None and row.verdict is not None:
+                row.note = None                         # an old overall row: its verdict is not on the form
+            elif row is not None:
+                db.delete(row)
+        else:
+            _put(db, point_id, author_player_id, instance, verdict, note, keep_verdict=instance is None)
+    db.commit()
 
 
 def report_of_point(db, point_id: int) -> CoachReport | None:

@@ -2013,8 +2013,11 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 }
 .coach-panel { margin-bottom: 1.25rem; }
 .coach-panel .coach-point:first-child { border-top: 0; padding-top: 0; }
-.coach-feedback-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem; }
-.coach-feedback-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.coach-moment { margin: 0 0 0.5rem; }
+.coach-moment-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; margin: 0.2rem 0 0 0.75rem; font-size: 0.9em; }
+.coach-moment-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.coach-overall { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
+.coach-overall textarea { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
 .coach { margin: 0 0 1rem; }
 .coach-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .coach-header h2 { margin: 0; }

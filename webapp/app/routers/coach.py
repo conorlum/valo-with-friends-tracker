@@ -4,7 +4,7 @@
 
 A linked replay only; 404 in demo mode. A match with no report renders the viewer with an empty panel."""
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -38,8 +38,10 @@ def coach_page(request: Request, match_uuid: str, player: str | None = None, ver
                db: Session = Depends(get_db)):
     replay = linked_replay_or_404(db, match_uuid)
     context = viewer_context(request, db, replay)
-    context["coach"] = coach_service.page_data(db, replay, _whole(player), _whole(version))
-    context["coach"]["can_feedback"] = get_current_player(request, db) is not None
+    viewer = get_current_player(request, db)
+    context["coach"] = coach_service.page_data(db, replay, _whole(player), _whole(version),
+                                               viewer.id if viewer is not None else None)
+    context["coach"]["can_feedback"] = viewer is not None
     return templates.TemplateResponse(request, "replays/replay.html", context)
 
 
@@ -56,15 +58,31 @@ def prompt_out(match_uuid: str, report: str | None = None, db: Session = Depends
     return PlainTextResponse(coach_prompt.prompt_out(found[0], found[1]))
 
 
+async def feedback_form(request: Request) -> dict[str, str]:
+    """The point's form (replays/_coach_points.html): its fields are named per moment, so they are read whole."""
+    return {key: value for key, value in (await request.form()).items() if isinstance(value, str)}
+
+
+def parse_feedback_form(form: dict[str, str]) -> tuple[dict[int, tuple[str | None, str]], str]:
+    """`verdict_<i>` and `note_<i>` for each moment i of the point, `note` for the point as a whole."""
+    moments: dict[int, tuple[str | None, str]] = {}
+    for key in form:
+        name, _, index = key.partition("_")
+        if name in ("verdict", "note") and index.isdigit():
+            moments[int(index)] = (form.get(f"verdict_{index}") or None, form.get(f"note_{index}", ""))
+    return moments, form.get("note", "")
+
+
 @router.post("/replays/{match_uuid}/coach/points/{point_id}/feedback")
-def post_feedback(request: Request, match_uuid: str, point_id: int, verdict: str = Form(...), note: str = Form(""),
+def post_feedback(request: Request, match_uuid: str, point_id: int, form: dict = Depends(feedback_form),
                   db: Session = Depends(get_db)):
     replay = linked_replay_or_404(db, match_uuid)
     viewer = get_current_player(request, db)
     if viewer is None:
         raise HTTPException(status_code=403, detail="Log in to give feedback")
+    moments, overall = parse_feedback_form(form)
     try:
-        coach_service.add_feedback(db, replay.match_id, point_id, viewer.id, verdict, note)
+        coach_service.save_point_feedback(db, replay.match_id, point_id, viewer.id, moments, overall)
     except LookupError:
         raise HTTPException(status_code=404) from None
     except coach_service.ReportError as error:
