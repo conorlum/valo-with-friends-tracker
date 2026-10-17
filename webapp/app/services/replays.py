@@ -3,6 +3,7 @@
 - `find_replay`: a stored replay by match UUID, only when valid (a complete round set, a
   supported `v`); anything else reads as "no replay".
 - `replay_url_for_match` / `watchable_external_ids`: links in, only for a linked, valid replay.
+- `list_watchable_replays`: the /replays page, every valid replay, linked or not.
 - `page_context`: what the page renders beside the blobs. For a linked replay: names, teams and
   sides per slot, and per round the DB outcome, plant and defuse on the replay clock
   (`t_replay = t_db - clock_offset`), each player's stats and stored Impact row, and each kill's
@@ -68,12 +69,35 @@ def watchable_external_ids(db, external_ids) -> set[str]:
     wanted = {str(e).lower() for e in external_ids if e}
     if not wanted:
         return set()
-    counts = (db.query(Replay.match_uuid, Replay.round_count, func.count(ReplayRound.round_number))
-              .join(ReplayRound, ReplayRound.replay_id == Replay.id)
-              .filter(Replay.link_status == "linked", Replay.match_id.isnot(None),
-                      Replay.format_version.in_(sorted(fmt.SUPPORTED_VERSIONS)))
-              .group_by(Replay.id, Replay.match_uuid, Replay.round_count).all())
-    return {str(uuid).lower() for uuid, rounds, stored in counts if rounds == stored} & wanted
+    query = _valid_replays(db).filter(Replay.link_status == "linked", Replay.match_id.isnot(None))
+    return {str(r.match_uuid).lower() for r in query} & wanted
+
+
+def _valid_replays(db):
+    """Replays `replay_db.is_valid` accepts (a supported `v` and one stored row per round), in one query."""
+    stored = (db.query(ReplayRound.replay_id, func.count(ReplayRound.round_number).label("n"))
+              .group_by(ReplayRound.replay_id).subquery())
+    return (db.query(Replay).join(stored, stored.c.replay_id == Replay.id)
+            .filter(stored.c.n == Replay.round_count, Replay.format_version.in_(sorted(fmt.SUPPORTED_VERSIONS))))
+
+
+def list_watchable_replays(db) -> list[dict]:
+    """The /replays page: every valid replay, linked or not, newest first. A linked one carries its match (date
+    played, score); an unlinked one has only what the replay itself knows, dated by when it was stored."""
+    if not replays_enabled():
+        return []
+    rows = (_valid_replays(db).add_entity(Match)
+            .outerjoin(Match, (Match.id == Replay.match_id) & (Replay.link_status == "linked")).all())
+    out = []
+    for replay, match in rows:
+        linked = match is not None
+        out.append({"uuid": str(replay.match_uuid).lower(), "map": replay.map_name, "rounds": replay.round_count,
+                    "match": match, "linked": linked,
+                    "when": (match.played_at if linked and match.played_at else replay.created_at),
+                    "reason": None if linked else ("no match on this site" if replay.link_status != "refused"
+                                                   else (replay.link_report or {}).get("reason") or "refused")})
+    out.sort(key=lambda r: r["when"].timestamp() if r["when"] else 0, reverse=True)
+    return out
 
 
 @lru_cache(maxsize=1)

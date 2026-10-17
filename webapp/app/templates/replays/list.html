@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Replays - {{ site_name }}{% endblock %}
+
+{% block content %}
+<h1>Replays</h1>
+<p class="page-meta">Every match with a watchable replay. A replay that isn't linked to a match on this site still plays, without names or stats.</p>
+{% set watchable = replays | map(attribute="uuid") | list %}<div class="card">
+<table>
+  <thead>
+    <tr>
+      <th>Replay</th>
+      <th>Score</th>
+      <th>Match</th>
+      <th title="Every round computed under the site's current parser, rules, heights and figures">Up to date</th>{% if coached %}
+      <th>Coach</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in replays %}{% set match = {"external_id": r.uuid} %}
+    <tr class="clickable-row" onclick="window.location='/replays/{{ r.uuid }}'">
+      <td><a href="/replays/{{ r.uuid }}">&#9654; {% if r.linked %}{{ match_label(r.match) }}{% else %}{{ r.map }} <span class="muted">added {{ r.when | local_strftime("%m/%d/%y") }}</span>{% endif %}</a></td>
+      <td>{% if r.linked %}<span class="badge badge-score">{{ r.match.team1_rounds_won }} &ndash; {{ r.match.team2_rounds_won }}</span>{% else %}<span class="muted" title="{{ r.rounds }} rounds">{{ r.rounds }} rounds</span>{% endif %}</td>
+      <td class="watch-cell">{% if r.linked %}<a class="watch-link" href="/matches/{{ r.match.external_id }}" onclick="event.stopPropagation()">Stats</a>{% else %}<span class="muted" title="Not linked: {{ r.reason }}">Not linked</span>{% endif %}</td>
+      {% include "replays/_up_to_date_cell.html" %}{% if coached %}
+      <td class="watch-cell">{% if r.linked and r.uuid in coached %}<a class="watch-link" href="/replays/{{ r.uuid }}/coach" onclick="event.stopPropagation()">Coach</a>{% else %}<span class="muted" title="No coaching report for this match">&mdash;</span>{% endif %}</td>{% endif %}
+    </tr>
+    {% else %}
+    <tr><td colspan="{{ 4 + (1 if coached else 0) }}">No replays yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
