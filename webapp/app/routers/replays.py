@@ -1,5 +1,7 @@
 """Replay pages (docs/replay-viewer-plan.md, "The viewer"): every route 404s in demo mode.
 
+- `GET /replays`: every watchable replay, linked or not, newest first. A linked one shows its match's
+  date and score and links to the match page; an unlinked one shows the map and when it was stored.
 - `GET /replays/{match_uuid}?round=n`: the player. Linked: names, the kill feed with weapons and
   per-kill Impact, the round scoreboard. Unlinked: agents and side colours, and why it isn't
   linked.
@@ -60,6 +62,7 @@ from app.services import replay_gaps_view as gaps_view
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
+from app.services.coach import coached_external_ids
 from app.services.matches import get_match_or_404
 from app.templates import templates
 
@@ -371,6 +374,17 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
         "gaps": bool(linked and context["match"].get("gaps"))}
+
+
+@router.get("/replays")
+def replay_list(request: Request, db: Session = Depends(get_db)):
+    if not replay_service.replays_enabled():
+        raise HTTPException(status_code=404)
+    replays = replay_service.list_watchable_replays(db)
+    uuids = [r["uuid"] for r in replays]
+    return templates.TemplateResponse(request, "replays/list.html", {
+        "replays": replays, "replay_states": progress.match_states(db, uuids),
+        "coached": coached_external_ids(db, [r["match"].external_id for r in replays if r["linked"]])})
 
 
 @router.get("/replays/{match_uuid}")

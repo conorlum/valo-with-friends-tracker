@@ -131,6 +131,30 @@ def test_the_links_appear_only_for_a_linked_valid_replay(db, condensed):
     assert service.replay_url_for_match(db, match) is None
 
 
+def test_the_replay_list_shows_unlinked_and_linked_valid_replays(db, condensed):
+    store.store_replay(db, condensed, source="upload")
+    [unlinked] = service.list_watchable_replays(db)
+    assert unlinked["uuid"] == MATCH_UUID and unlinked["linked"] is False and unlinked["match"] is None
+    assert unlinked["map"] and unlinked["rounds"] == len(condensed.rounds) and unlinked["reason"]
+
+    add_match(db)
+    store.store_replay(db, condensed, source="local", replace=True)
+    [linked] = service.list_watchable_replays(db)
+    assert linked["linked"] is True and linked["match"].external_id == MATCH_UUID and linked["reason"] is None
+
+
+def test_the_replay_list_page_links_every_replay_and_skips_incomplete_ones(db, condensed, monkeypatch):
+    store.store_replay(db, condensed, source="upload")
+    with_session = Request({**request().scope, "session": {}})
+    html = routes.replay_list(with_session, db).body.decode()
+    assert f'href="/replays/{MATCH_UUID}"' in html and "Not linked" in html
+    db.query(ReplayRound).filter(ReplayRound.round_number == 2).delete()
+    db.commit()
+    assert service.list_watchable_replays(db) == []
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert status_of(lambda: routes.replay_list(request(), db)) == 404
+
+
 def _round_detail_html(replay_url):
     detail = SimpleNamespace(round_number=3, outcome="Team A Elimination Win", events=[], players=[],
                              team_totals={}, impact_rows=[])

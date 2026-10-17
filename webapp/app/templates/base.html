@@ -18,8 +18,8 @@
       {% if current_player %}
       <a href="/search">Search</a>
       <a href="/friends">Friends</a>
-      <a href="/squad">Squad</a>
-      <a href="/map-prediction">Map Prediction</a>{% if replay_upload_enabled() %}
+      <a href="/squad">Squad</a>{% if not demo_mode %}
+      <a href="/replays">Replays</a>{% endif %}{% if replay_upload_enabled() %}
       <a href="/replays/upload">Upload replay</a>{% endif %}
       {% endif %}
     </div>
