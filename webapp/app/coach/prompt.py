@@ -101,19 +101,43 @@ def _report_lines(report: dict, level: str) -> tuple[list[str], int]:
     if report.get("data_gaps"):
         lines += [f"Data missing when the report was written: {report['data_gaps']}", ""]
     open_count = 0
+
+    def blocks(point: dict, rows: list[dict], moment: dict | None, number: int = 0) -> list[str]:
+        nonlocal open_count
+        out = []
+        where = "" if moment is None else f' moment="{number}" round="{moment["round"]}" t="{moment["t"]}"'
+        for f in rows:
+            if f.get("handled"):
+                continue
+            open_count += 1
+            verdict = f.get("verdict") or ("overall note" if moment is None else "note")
+            out += [f'<feedback point="{point["id"]}"{where} author="{_quote(f["author"])}" '
+                    f'verdict="{_quote(verdict)}">', _quote(f["note"] or "(no note)"), "</feedback>"]
+        return out
+
     for side, heading in (("good", "Did well"), ("improve", "To improve")):
         for point in report.get(side, []):
             lines += [f"{level} {heading}: {point['title']} [{point['theme']}]", point["body"]]
-            lines += [f"- round {i['round']} at {i['t']}: {i['caption']}" for i in point["instances"]]
-            for f in point["feedback"]:
-                if f.get("handled"):
-                    continue
-                open_count += 1
-                lines += [f'<feedback point="{point["id"]}" author="{_quote(f["author"])}" '
-                          f'verdict="{_quote(f["verdict"])}">',
-                          _quote(f["note"] or "(no note)"), "</feedback>"]
+            for number, i in enumerate(point["instances"], 1):
+                lines.append(f"- moment {number}: {_moment(i)}: {i['caption']}")
+                lines += blocks(point, i.get("feedback", []), i, number)
+            lines += blocks(point, point["feedback"], None)
             lines.append("")
     return lines, open_count
+
+
+def _clock(t) -> str:
+    return f"{int(t) // 60}:{int(t) % 60:02d}"
+
+
+def _moment(i: dict) -> str:
+    """Round and time as both the page (0:41) and the query tool (41.5 seconds into the round) write them."""
+    if i.get("t") is None:
+        return f"round {i['round']} (no time)"
+    span = f"round {i['round']} at {_clock(i['t'])} ({i['t']} s into the round"
+    if i.get("t1") is not None:
+        span += f", to {_clock(i['t1'])}, {i['t1']} s"
+    return span + ")"
 
 
 def prompt_out(match_uuid: str, report: dict) -> str:
@@ -152,7 +176,10 @@ def _how_to(match_uuid: str, report_ids: list[int]) -> list[str]:
         "1. Get the match data: from webapp/, run scripts/with_friends_db.py --expect-database valowithfriendsdb "
         f"--read-only scripts/coach_snapshot.py {match_uuid} --out <a temp directory>, then check each claim with "
         "scripts/coach_query.py --run <that directory>.",
-        "2. For each piece of feedback say whether the data supports it, contradicts it, or cannot settle it.",
+        "2. For each piece of feedback say whether the data supports it, contradicts it, or cannot settle it. A "
+        "block with a round and t is about that one moment (verdict right, wrong or correction): check it there "
+        "first, with coach_query.py where, knew and timeline at that round and t. A block without them is about "
+        "the point as a whole.",
         "3. List separately any feedback that lacks the context to judge, and any two pieces that conflict.",
         "4. Only then propose changes to the playbook, as a diff, each tied to the feedback that motivates it. "
         "Bump the playbook's version in the same diff.",

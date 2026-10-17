@@ -41,7 +41,7 @@ REPORT = {"id": 3, "version": 2, "playbook_version": "5", "player_name": "Owner#
 
 def test_prompt_out_carries_the_report_and_only_open_feedback():
     text = prompt.prompt_out("abc", REPORT)
-    assert "Late rotate" in text and "playbook version 5" in text and "round 4 at 41.5" in text
+    assert "Late rotate" in text and "playbook version 5" in text and "moment 1: round 4 at 0:41 (41.5 s into the round)" in text
     assert "Friend#2" in text and "I was told to stay." in text
     assert 'verdict="right"' not in text                         # handled feedback is left out
     assert "coach_snapshot.py abc" in text and "coach_feedback.py handled --report 3" in text
