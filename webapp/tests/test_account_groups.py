@@ -277,6 +277,56 @@ def test_recent_form_entries_and_baseline_count_a_shared_match_once(db):
     assert [mp.player_id for mp in kept] == [min(main.id, alt.id)]
 
 
+def _round_with(db, mp, kills, impact=None):
+    round_row = db.query(Round).filter_by(match_id=mp.match_id).first()
+    if round_row is None:
+        round_row = Round(match_id=mp.match_id, round_number=1)
+        db.add(round_row)
+        db.flush()
+    db.add(RoundPlayerStat(round_id=round_row.id, match_player_id=mp.id, kills=kills, deaths=0, assists=0))
+    if impact is not None:
+        db.add(ImpactScore(match_player_id=mp.id, round_id=round_row.id, kill_impact=impact, death_impact=0, impact=impact))
+    db.flush()
+
+
+def test_recent_rows_show_the_lowest_accounts_row_of_a_shared_match(db):
+    from app.services.recent_match_rows import build_recent_match_rows
+
+    main, alt = _players(db, "main#1", "alt#2")
+    low, high = (main, alt) if main.id < alt.id else (alt, main)
+    shared = _play(db, high, 5, "shared")
+    low_mp = _also_play(db, low, shared.match_id)
+    _round_with(db, low_mp, kills=7)
+    _round_with(db, shared, kills=2)
+    db.commit()
+    ids = frozenset({main.id, alt.id})
+    entries = recent_form_entries(db, main.id, player_ids=ids)
+    rows = build_recent_match_rows(db, main.id, entries, ids)
+    assert [r.kills for r in rows] == [7]
+
+
+def test_the_baseline_counts_a_shared_match_once(db, monkeypatch):
+    from app.services import recent_match_rows
+    from app.services.recent_match_rows import MIN_BASELINE_MATCHES, build_recent_match_rows
+
+    main, alt = _players(db, "main#1", "alt#2")
+    distinct = MIN_BASELINE_MATCHES - 1
+    for day in range(1, distinct):
+        _round_with(db, _play(db, main, day, f"m{day}"), kills=1, impact=1)
+    shared = _play(db, alt, distinct, "shared")
+    _round_with(db, shared, kills=1, impact=1)
+    _round_with(db, _also_play(db, main, shared.match_id), kills=1, impact=1)
+    db.commit()
+    calls = []
+    real = recent_match_rows._quantile
+    monkeypatch.setattr(recent_match_rows, "_quantile", lambda v, q: calls.append(len(v)) or real(v, q))
+    ids = frozenset({main.id, alt.id})
+    entries = recent_form_entries(db, main.id, player_ids=ids)
+    assert len(entries) == distinct
+    build_recent_match_rows(db, main.id, entries, ids)
+    assert calls == []   # 9 distinct matches: below the baseline minimum, so no thresholds
+
+
 def test_fingerprint_changes_with_members_matches_scores_and_friends(db):
     main, alt, friend = _players(db, "main#1", "alt#2", "friend#3")
     ids = frozenset({main.id, alt.id})
