@@ -10,8 +10,10 @@ import math
 from bisect import bisect_left
 
 from app.control import engine
-from app.moments.constants import (DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, MOVING_MPS,
-                                   SHOT_LEAD_S, SIGHT_STEP_S, SMOKE_ABILITIES, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
+from app.control.utility import _sees_point
+from app.moments.constants import (DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
+                                   MOVING_MPS,
+                                   SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SMOKE_ABILITIES, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
                                    TRADE_WINDOW_S, UNTAGGED_CLASSES, UTIL_LOOKBACK_S, UTIL_NEAR_M)
 
 VERSION = 1
@@ -241,11 +243,55 @@ def _mollied(rnd, slot: int, t0: float, t1: float) -> list[dict]:
     return out
 
 
-def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple]) -> dict:
+def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> dict:
+    """One kill's sight record: did either side have the other in view from the first gun damage minus
+    SIGHT_LOOK_S to the kill. W8 fills the fields that default here."""
+    kd = {"killer": killer, "victim": victim, "t": _r2(tk), "measurable": False, "killer_saw": False,
+          "victim_saw": False, "wall": False, "through_smoke": False, "spot": None, "first_shot": None,
+          "ttk_shot": None, "ttk_spot": None, "clean": False, "reason": None, "angle": None, "band": None}
+    if not sight:
+        return kd
+    gun = [row for row in blob.get("util") or ()
+           if row.get("k") == "damage" and row.get("src") == "gun" and row.get("by") == killer
+           and row.get("target") == victim and tk - GUN_DAMAGE_LOOKBACK_S <= row["t"] <= tk]
+    if not gun:
+        return kd
+    start = min(float(row["t"]) for row in gun)
+    kd["wall"] = any(row.get("wall") for row in gun)
+    t_lo = start - SIGHT_LOOK_S
+    samples = []
+    k = 0
+    while t_lo + k * SIGHT_STEP_S < tk:
+        samples.append(t_lo + k * SIGHT_STEP_S)
+        k += 1
+    for t in samples:
+        pk, pv = rnd.pos(killer, t), rnd.pos(victim, t)
+        if not kd["killer_saw"] and pv is not None and _sees_point(rnd, killer, t, pv[0], pv[1]):
+            kd["killer_saw"] = True
+        if not kd["victim_saw"] and pk is not None and _sees_point(rnd, victim, t, pk[0], pk[1]):
+            kd["victim_saw"] = True
+    if kd["killer_saw"] or kd["victim_saw"]:
+        kd["measurable"] = True
+        return kd
+    for t in samples:
+        pk, pv = rnd.pos(killer, t), rnd.pos(victim, t)
+        # engine.los with no smokes also drops ability walls and map features: "through smoke" means through
+        # smoke, an ability wall or a door.
+        if pk is not None and pv is not None and engine.los(rnd.geo, (pk[0], pk[1], None), (pv[0], pv[1], None), []):
+            kd["through_smoke"] = True
+            break
+    kd["measurable"] = kd["through_smoke"] or kd["wall"]
+    return kd
+
+
+def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | None = None) -> dict:
     t0, t1 = group[0][0], group[-1][0]
     opponents = sorted({e[3] for e in group})
     kills = [{"victim": e[3], "t": _r2(e[0])} for e in group if e[1] == "kill" and e[2] == slot]
     deaths = [e for e in group if e[1] == "kill" and e[2] != slot]
+    kds = kds if kds is not None else {}
+    kill_detail = [kds[(e[0], e[2], e[3])] for e in group if e[1] == "kill" and e[2] == slot]
+    death_detail = kds[(deaths[0][0], deaths[0][2], slot)] if deaths else None
     died = {"t": _r2(deaths[0][0]), "killer": deaths[0][2]} if deaths else None
     trade = _trade(rnd, slot, {"t": deaths[0][0], "killer": deaths[0][2]} if deaths else None,
                    [{"victim": k["victim"], "t": k["t"]} for k in kills])
@@ -273,6 +319,12 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple]) -> dict:
                        ("util_on_you", util_on_you), ("mollied", mollied)):
         if field:
             tags.append(tag)
+    if death_detail and death_detail["measurable"] and not death_detail["victim_saw"]:
+        tags.append("died_unseen")
+    if any(k["measurable"] and not k["victim_saw"] for k in kill_detail):
+        tags.append("killed_unseen")
+    if any(k["through_smoke"] for k in kill_detail + ([death_detail] if death_detail else [])):
+        tags.append("through_smoke")
     return {
         "slot": slot, "i": i, "t0": _r2(t0), "t1": _r2(t1), "opponents": opponents,
         "first": "player" if group[0][2] == slot else "opponent",
@@ -282,14 +334,16 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple]) -> dict:
         "mates": mates,
         "util_on": util_on, "util_near": util_near, "smoke_near": smoke_near, "util_on_you": util_on_you,
         "mollied": mollied, "duels": [],
-        "kill_detail": [], "death_detail": None, "tags": tags,
+        "kill_detail": kill_detail, "death_detail": death_detail, "tags": tags,
     }
 
 
 def round_moments(rnd: engine.RoundInputs, blob: dict, *, sight: bool = True) -> dict:
     """Every fight of the round's ten players: {"v": 1, "sight": bool, "fights": [fight, ...]}."""
     out = []
+    kds = {(t, killer, victim): _kd(rnd, blob, t, killer, victim, sight)
+           for t, killer, victim in rnd.kills if t <= rnd.t_decided}
     for slot in sorted(rnd.team):
         for i, group in enumerate(_split(_events(rnd, blob, slot))):
-            out.append(_fight(rnd, blob, slot, i, group))
+            out.append(_fight(rnd, blob, slot, i, group, kds))
     return {"v": VERSION, "sight": sight, "fights": out}
