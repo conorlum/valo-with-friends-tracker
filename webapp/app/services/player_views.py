@@ -109,13 +109,32 @@ def _build_profile_and_econ(
     return profile, econ_aggregates, pistol_match_stats
 
 
+def _roster_player_ids(db: Session, player: Player, player_ids: frozenset[int] | None) -> set[int]:
+    """The fight-EV teammate pool: the player's friends, or for an account
+    group (player_ids given) the friends of any of its accounts."""
+    if not player_ids:
+        return list_friend_ids(db, player.id)
+    roster: set[int] = set()
+    for pid in sorted(player_ids):
+        roster |= list_friend_ids(db, pid)
+    return roster
+
+
 def compute_player_views(
     db: Session, player: Player, match_limit: int | None,
     draws: int = PAGE_BOOTSTRAP_DRAWS,
+    player_ids: frozenset[int] | None = None,
 ) -> PlayerViews:
-    """One load, one replay, all four products (see module docstring)."""
-    match_players = load_player_match_data(db, player, match_limit)
-    roster_player_ids = list_friend_ids(db, player.id)
+    """One load, one replay, all four products (see module docstring).
+
+    `player_ids` computes an account group's combined view instead: every
+    one of those accounts' matches, profiled under `player` (the page being
+    viewed). The bootstrap is then seeded by the group's lowest player ID,
+    so the combined numbers don't depend on which account's page they were
+    computed from (they're cached once per group)."""
+    match_players = load_player_match_data(db, player, match_limit, player_ids=player_ids)
+    roster_player_ids = _roster_player_ids(db, player, player_ids)
+    seed_player_id = min(player_ids) if player_ids else player.id
     replays, _diag = _replay_all_matches(match_players)
 
     win_stats: dict[str, dict[str, int]] = {}
@@ -133,22 +152,25 @@ def compute_player_views(
 
     return PlayerViews(
         win_stats, kill_order_weights,
-        build_fight_ev_views_from_blocks(blocks, player.id, draws),
+        build_fight_ev_views_from_blocks(blocks, seed_player_id, draws),
         profile, econ_aggregates, pistol_match_stats,
     )
 
 
 def compute_player_views_by_scope(
     db: Session, player: Player, draws: int = PAGE_BOOTSTRAP_DRAWS,
+    player_ids: frozenset[int] | None = None,
 ) -> dict[str, PlayerViews]:
     """Both scopes off ONE career load and ONE replay pass. `recent` is the
     first RECENT_MATCH_LIMIT rows of the career load -- which is only
     correct because load_player_match_data always orders most-recent-first.
     ORM hydration and round replay happen once; only the bootstrap (which
     genuinely differs per match subset) and the profile/econ builders
-    (which need a per-scope slice of scores, see Step 2b) run per scope."""
-    match_players = load_player_match_data(db, player, match_limit=None)
-    roster_player_ids = list_friend_ids(db, player.id)
+    (which need a per-scope slice of scores, see Step 2b) run per scope.
+    `player_ids` is an account group's combined view, as in compute_player_views."""
+    match_players = load_player_match_data(db, player, match_limit=None, player_ids=player_ids)
+    roster_player_ids = _roster_player_ids(db, player, player_ids)
+    seed_player_id = min(player_ids) if player_ids else player.id
     replays, _diag = _replay_all_matches(match_players)
     assert len(replays) == len(match_players)   # slicing below depends on it
 
@@ -178,7 +200,7 @@ def compute_player_views_by_scope(
 
         views[scope] = PlayerViews(
             win_stats, ko_weights,
-            build_fight_ev_views_from_blocks(blocks[:n], player.id, draws),
+            build_fight_ev_views_from_blocks(blocks[:n], seed_player_id, draws),
             profile, econ_aggregates, pistol_match_stats,
         )
     return views

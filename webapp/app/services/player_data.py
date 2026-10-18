@@ -16,7 +16,8 @@ RECENT_MATCH_LIMIT = 30
 
 
 def load_player_match_data(
-    db: Session, player: Player, match_limit: int | None = None
+    db: Session, player: Player, match_limit: int | None = None,
+    player_ids: frozenset[int] | None = None,
 ) -> list[MatchPlayer]:
     """Every MatchPlayer row for `player`, most recent match first, with
     the whole Match -> match_players (+ each teammate's Player row) / rounds
@@ -58,10 +59,19 @@ def load_player_match_data(
     this ordering is ever changed, change every caller of this shared load
     (and get_player_profile/player_econ_samples's own queries) together and
     bump PLAYER_VIEW_CACHE_SCHEMA_VERSION.
+
+    `player_ids`, if given, loads every one of those accounts instead (an
+    account group's combined view, see app.services.account_groups). One
+    person can't be in two matches at once, so the accounts' rows never
+    share a match and the result is still one row per match.
     """
+    query = db.query(MatchPlayer)
+    if player_ids:
+        query = query.filter(MatchPlayer.player_id.in_(player_ids))
+    else:
+        query = query.filter_by(player_id=player.id)
     query = (
-        db.query(MatchPlayer)
-        .filter_by(player_id=player.id)
+        query
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(
             selectinload(MatchPlayer.match)

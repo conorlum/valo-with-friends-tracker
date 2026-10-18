@@ -124,13 +124,16 @@ def _round_first_kill_and_clutch(round_row: Round, player_mp_id: int, own_ids: s
     return first_blood, first_death, alone_vs
 
 
-def recent_form_entries(db: Session, player_id: int, limit: int = RECENT_FORM_COUNT) -> list[FormEntry]:
+def recent_form_entries(
+    db: Session, player_id: int, limit: int = RECENT_FORM_COUNT, player_ids: frozenset[int] | None = None
+) -> list[FormEntry]:
     """The player's `limit` most recent matches as FormEntry rows, newest first
-    -- the same matches the Form card's streak strip covers."""
+    -- the same matches the Form card's streak strip covers. `player_ids`
+    covers every one of an account group's accounts instead."""
     mps = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id)
+        .filter(MatchPlayer.player_id.in_(player_ids or {player_id}))
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(limit)
         .all()
@@ -138,16 +141,20 @@ def recent_form_entries(db: Session, player_id: int, limit: int = RECENT_FORM_CO
     return [form_entry(mp.match, _team(mp), match_win(mp.match, _team(mp))) for mp in mps]
 
 
-def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry]) -> list[RecentMatchRow]:
-    """One row per entry (same order), with stats and badges for `player_id`."""
+def build_recent_match_rows(
+    db: Session, player_id: int, entries: list[FormEntry], player_ids: frozenset[int] | None = None
+) -> list[RecentMatchRow]:
+    """One row per entry (same order), with stats and badges for `player_id`,
+    or for whichever of `player_ids` (an account group) played each match."""
     if not entries:
         return []
 
+    account_ids = player_ids or {player_id}
     shown_ids = {e.external_id for e in entries}
     baseline_mps = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id)
+        .filter(MatchPlayer.player_id.in_(account_ids))
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(BASELINE_MATCHES)
         .all()
@@ -155,7 +162,7 @@ def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry
     shown_mps = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id, Match.external_id.in_(shown_ids))
+        .filter(MatchPlayer.player_id.in_(account_ids), Match.external_id.in_(shown_ids))
         .all()
     )
     player_mps = {mp.id: mp for mp in baseline_mps + shown_mps}
@@ -226,7 +233,10 @@ def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry
         for stat in STANDOUT_STATS:
             thresholds[stat.key] = _quantile([s.totals.get(stat.key, 0) / s.rounds for s in baseline], STANDOUT_QUANTILE)
 
-    friend_ids = list_friend_ids(db, player_id) - {player_id}
+    friend_ids: set[int] = set()
+    for pid in account_ids:
+        friend_ids |= list_friend_ids(db, pid)
+    friend_ids -= account_ids
     friend_names = (
         dict(db.query(Player.id, Player.display_name).filter(Player.id.in_(friend_ids)).all()) if friend_ids else {}
     )

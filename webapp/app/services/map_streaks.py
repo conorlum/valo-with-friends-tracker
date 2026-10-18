@@ -77,14 +77,17 @@ def build_map_streaks(
     return streaks
 
 
-def compute_map_streaks(db: Session, player_id: int) -> list[MapStreak]:
+def compute_map_streaks(
+    db: Session, player_id: int, player_ids: frozenset[int] | None = None
+) -> list[MapStreak]:
     """For every map in the current pool, the player's current and record run
-    of matches without it, counting only matches played while it was in the pool."""
+    of matches without it, counting only matches played while it was in the pool.
+    `player_ids` counts every one of an account group's accounts instead."""
     history = load_pool_history(db)
     player_matches = list(
         db.query(Match.map_name, Match.played_at)
         .join(MatchPlayer, MatchPlayer.match_id == Match.id)
-        .filter(MatchPlayer.player_id == player_id, Match.played_at.isnot(None))
+        .filter(MatchPlayer.player_id.in_(player_ids or {player_id}), Match.played_at.isnot(None))
         .order_by(Match.played_at)
         .all()
     )

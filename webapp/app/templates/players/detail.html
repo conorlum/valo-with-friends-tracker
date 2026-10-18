@@ -5,7 +5,7 @@
 {% block content %}
 <h1>
   {{ profile.player.display_name | strip_tag }}
-  {% if current_player and not is_own_profile %}
+  {% if current_player and not is_own_profile and not is_own_account %}
   {% if is_friend %}
   <span class="badge badge-score">Friends</span>
   {% elif not demo_mode %}
@@ -17,6 +17,22 @@
   {% endif %}
   {% endif %}
 </h1>
+
+{% if account_members %}
+<div class="scope-toggle account-toggle">
+  <a class="scope-toggle-btn{{ ' active' if accounts_combined else '' }}"
+     href="/players/{{ profile.player.display_name | urlencode }}?accounts=all">All accounts</a>
+  {% for member in account_members %}
+  <a class="scope-toggle-btn{{ ' active' if not accounts_combined and member.player_id == profile.player.id else '' }}"
+     href="/players/{{ member.player.display_name | urlencode }}"
+     title="{{ member.player.display_name }}{{ ' (main account)' if member.is_main else '' }}">{{ member.label or (member.player.display_name | strip_tag) }}{% if member.is_main %} <span class="account-main-tag">main</span>{% endif %}</a>
+  {% endfor %}
+  {% if is_own_account and not demo_mode %}<a class="account-toggle-manage" href="/accounts">Manage accounts</a>{% endif %}
+</div>
+{% if accounts_combined %}
+<p class="page-meta">Combined stats across all {{ account_members | length }} accounts.</p>
+{% endif %}
+{% endif %}
 
 <div class="scope-toggle">
   <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
@@ -36,7 +52,7 @@
      fetch then); fall back to `hx-trigger="load delay:1s"` if that's ever
      judged worse than the eager load was. -->
 <div id="career-sections" style="display:none;"
-     hx-get="/players/{{ profile.player.display_name | urlencode }}/career"
+     hx-get="/players/{{ profile.player.display_name | urlencode }}/career{{ accounts_query }}"
      hx-trigger="click once from:#career-tab-btn"
      hx-swap="innerHTML">
   <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
@@ -154,9 +170,9 @@
       '<p class="page-meta">Couldn\'t load career stats. Reload the page to try again.</p>';
   }
 
-  document.querySelectorAll(".scope-toggle-btn").forEach((btn) => {
+  document.querySelectorAll(".scope-toggle-btn[data-scope]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".scope-toggle-btn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".scope-toggle-btn[data-scope]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById("recent-sections").style.display = btn.dataset.scope === "recent" ? "" : "none";
       document.getElementById("career-sections").style.display = btn.dataset.scope === "career" ? "" : "none";

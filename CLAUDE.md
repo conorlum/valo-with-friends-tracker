@@ -44,6 +44,21 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 
 `/stats` has two populations. **All Players** (every match) is one row in `site_stats_cache`. **Friends** is the logged-in viewer plus the friendships that viewer owns. It is computed per viewer and cached one row per viewer in `viewer_site_stats_cache` (migration 0011), keyed by a hash of that player-ID set. Logged-out visitors get All Players only. `scripts/tracked_players.json` only chooses which matches to crawl, so nothing on the site may be defined by it. Any match ingest clears both caches. A friend add or remove clears that viewer's row. The ingest scripts then pre-warm the rows of every friendship owner unless `--no-prewarm` is passed. See `app/services/site_stats.py`.
 
+### Account groups
+
+One person's several Riot accounts (migration 0026): `account_groups` (with its `main_player_id`) +
+`account_group_members` (an account is in at most one group, with an optional label). `/accounts` links them,
+zero-auth like friendships, never on the demo. The first account to add another becomes the main; only the main
+adds, removes and labels accounts or hands the main role to a sub, and a sub can leave. A linked account can't
+be added to another group, so a wrong claim is undone by leaving.
+Each grouped account's player page shows an "All accounts" chip (`?accounts=all`, also passed to the career and
+recent-matches fragments) and one chip per account. The combined page is the same replay over every account's
+matches (`player_ids=` on `load_player_match_data` / `compute_player_views`) and is cached per group in
+`account_group_view_cache`. A row is valid only while its fingerprint matches (accounts, their matches and Impact
+rows, their friendships: `group_fingerprint`), so ingest paths need no new hooks; `invalidate_player_cache` and
+`invalidate_all_player_caches` clear group rows too, and `prewarm_player_cache` re-warms them. See
+`app/services/account_groups.py`. `/stats` Friends and friendships themselves are still per account.
+
 ### Player page pre-compute cache
 
 The player detail page's two heaviest computations (the round-win/kill-order state diagrams and the fight-EV diamond, both of which replay every round of every match a player has played) are pre-computed and cached in the `player_view_cache` table instead of being recomputed on every page load. See `docs/player_page_precompute.txt` for the full design.
