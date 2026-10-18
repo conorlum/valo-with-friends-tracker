@@ -1,11 +1,13 @@
 """Fight split, outcome, trades and teammates (W5), through the real engine on toy rounds."""
 
+import math
+
 import pytest
 
 from app.moments import fights
 from app.moments.constants import TRADE_RANGE_M
-from tests.moments.helpers import damage, kill, round_of
-from tests.replays.control_toys import open_hall
+from tests.moments.helpers import damage, kill, round_of, shot
+from tests.replays.control_toys import open_hall, uv
 
 GEO = open_hall()
 
@@ -111,6 +113,42 @@ def test_a_teammate_in_range_who_damaged_an_opponent_is_with():
     assert f["mates"]["state"] == "with" and f["mates"]["with_slot"] == 1
     assert f["mates"]["with_m"] == pytest.approx(10.0, abs=0.1)
     assert "with_teammate" in f["tags"] and "alone" not in f["tags"]
+
+
+def _aimed(deg):
+    """Slot 1 (10 m east of slot 0, at x~120+) shoots from its position, aimed `deg` off the bearing to slot 5."""
+    p = team(10)
+    sx, sy = p[1][1][0][1], p[1][1][0][2]
+    bearing = math.atan2(160 - sy, 400 - sx) + math.radians(deg)
+    u, v = uv(sx, sy)
+    u1, v1 = uv(sx + 100 * math.cos(bearing), sy + 100 * math.sin(bearing))
+    return p, [damage(9.0, 0, 5), shot(9.2, 1, u=u, v=v, u1=u1, v1=v1), damage(10.0, 0, 5)]
+
+
+def test_a_teammate_who_shot_at_the_opponent_is_with():
+    p, util = _aimed(0)
+    [f] = of(run(p, util=util), 0)
+    assert f["mates"]["state"] == "with" and f["mates"]["with_slot"] == 1
+
+
+def test_a_teammate_who_shot_25_degrees_away_is_not_with():
+    p, util = _aimed(25)
+    [f] = of(run(p, util=util), 0)
+    assert f["mates"]["state"] is None and f["mates"]["with_slot"] is None
+
+
+def test_aimed_shots_do_not_count_when_the_rule_is_off(monkeypatch):
+    monkeypatch.setattr(fights, "WITH_AIM_DEG", -1)
+    p, util = _aimed(0)
+    [f] = of(run(p, util=util), 0)
+    assert f["mates"]["with_slot"] is None
+
+
+def test_a_shot_row_without_an_end_point_does_not_count():
+    p, util = _aimed(0)
+    del util[1]["u1"]
+    [f] = of(run(p, util=util), 0)
+    assert f["mates"]["with_slot"] is None
 
 
 def test_a_teammate_out_of_range_who_fired_does_not_make_it_with():

@@ -10,8 +10,9 @@ def damage(t, by, target, *, t1=None, src="gun", wall=False, n=1) -> dict:
             "wall": wall, "n": n}
 
 
-def shot(t, by, gun="Vandal", u=0, v=0) -> dict:
-    return {"k": "shot", "t": t, "by": by, "u": u, "v": v, "u1": u, "v1": v, "gun": gun}
+def shot(t, by, gun="Vandal", u=0, v=0, u1=None, v1=None) -> dict:
+    return {"k": "shot", "t": t, "by": by, "u": u, "v": v, "u1": u if u1 is None else u1,
+            "v1": v if v1 is None else v1, "gun": gun}
 
 
 def kill(t, killer, victim, i=0) -> dict:

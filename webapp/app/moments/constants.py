@@ -5,7 +5,8 @@ approves them. Standard library only: nothing here may import the app."""
 from __future__ import annotations
 
 TRADE_WINDOW_S = 6.0        # equals app.scoring.impact.TRADE_WINDOW_SECONDS, pinned by a test  # PROVISIONAL(D4)
-TRADE_RANGE_M = 20.0        # a teammate farther than this could not have traded  # PROVISIONAL(D4)
+WITH_AIM_DEG = 10  # a teammate's shot aimed within this of an opponent counts as fighting  # PROVISIONAL(D6); -1 = damage only
+TRADE_RANGE_M = 20.0       # a teammate farther than this could not have traded  # PROVISIONAL(D4)
 
 FIGHT_GAP_S = 3.0           # a gap longer than this splits fights (corpus: 20,622 fights at 3 s)  # PROVISIONAL(D4)
 

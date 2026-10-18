@@ -14,7 +14,7 @@ from app.control.utility import _sees_point
 from app.moments.constants import (CLEAN_MAX_MOVING, CLEAN_SPOT_TO_SHOT_S, CROSSHAIR_NEAR_DEG, CROSSHAIR_ON_DEG,
                                    DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
                                    MOVING_MPS, RUN_GAP_S, SHOT_AFTER_KILL_S, SPOT_GAP_S, SPOT_LOOKBACK_S,
-                                   SPOT_TOLERANCE_S,
+                                   SPOT_TOLERANCE_S, WITH_AIM_DEG,
                                    SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SMOKE_ABILITIES, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
                                    TRADE_WINDOW_S, UNTAGGED_CLASSES, UTIL_LOOKBACK_S, UTIL_NEAR_M)
 
@@ -98,6 +98,28 @@ def _trade(rnd, slot: int, died: dict | None, kills: list[dict]) -> dict:
     return out
 
 
+def _aimed_at(rnd, row: dict, opponents: list[int]) -> bool:
+    """The shot's line (u,v)->(u1,v1) points within WITH_AIM_DEG of a living opponent. uv and px share axes."""
+    u, v, u1, v1 = row.get("u"), row.get("v"), row.get("u1"), row.get("v1")
+    if None in (u, v, u1, v1) or (u1 == u and v1 == v):
+        return False
+    t = row["t"]
+    p = rnd.pos(row["by"], t)
+    if p is None:
+        return False
+    aim = math.atan2(v1 - v, u1 - u)
+    for o in opponents:
+        if not rnd.alive(o, t):
+            continue
+        q = rnd.pos(o, t)
+        if q is None:
+            continue
+        bearing = math.atan2(q[1] - p[1], q[0] - p[0])
+        if abs((math.degrees(aim - bearing) + 180) % 360 - 180) <= WITH_AIM_DEG:
+            return True
+    return False
+
+
 def _mates(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: list[int]) -> dict:
     before = t0 - _EPS
     mine = rnd.team[slot]
@@ -114,6 +136,10 @@ def _mates(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: list[int
     res.update(nearest_m=round(dists[near], 1), nearest_slot=near)
     fired = {row["by"] for row in blob.get("util") or ()
              if row.get("k") == "damage" and row.get("target") in opponents and t0 <= row["t"] <= t1}
+    if WITH_AIM_DEG >= 0:   # PROVISIONAL(D6): a shot aimed at a living opponent counts like damage
+        fired |= {row["by"] for row in blob.get("util") or ()
+                  if row.get("k") == "shot" and t0 <= row["t"] <= t1 and row.get("by") in dists
+                  and _aimed_at(rnd, row, opponents)}
     firing = [s for s in dists if dists[s] <= TRADE_RANGE_M and s in fired]
     if firing:
         w = min(firing, key=lambda s: (dists[s], s))
