@@ -132,6 +132,26 @@ def test_linking_yourself_or_an_existing_member_is_a_no_op(db):
     assert len(list_group_members(db, main.id)) == 2
 
 
+@pytest.mark.parametrize("owner_first", [True, False])
+def test_a_new_groups_member_rows_are_inserted_in_ascending_player_id(db, owner_first):
+    from sqlalchemy import event
+
+    low, high = _players(db, "low#1", "high#2")
+    owner, other = (low, high) if owner_first else (high, low)
+    inserted = []
+
+    def record(mapper, connection, target):
+        inserted.append(target.player_id)
+
+    event.listen(AccountGroupMember, "before_insert", record)
+    try:
+        assert link_account(db, owner.id, other.id) is None
+        db.commit()
+    finally:
+        event.remove(AccountGroupMember, "before_insert", record)
+    assert inserted == [low.id, high.id]
+
+
 def test_a_sub_can_leave_but_not_remove_another_and_the_main_cant_leave(db):
     main, alt, third, stranger = _players(db, "main#1", "alt#2", "third#3", "stranger#4")
     link_account(db, main.id, alt.id)

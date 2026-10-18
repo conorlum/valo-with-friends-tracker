@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -17,6 +18,9 @@ from app.services.players import get_player_or_404, list_player_display_names
 from app.templates import templates
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+DEADLOCK_PGCODE = "40P01"
+LOST_RACE_MESSAGE = "That account was just linked to another group."
 
 
 def _reject_in_demo_mode() -> None:
@@ -55,11 +59,20 @@ def add_account_route(request: Request, display_name: str = Form(...), db: Sessi
         return RedirectResponse(url="/login", status_code=303)
 
     other = get_player_or_404(db, display_name)
-    error = link_account(db, current_player.id, other.id)
+    try:
+        error = link_account(db, current_player.id, other.id)
+        if not error:
+            db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        # Two links at once: the loser's member row collides with the winner's
+        # (unique violation), or Postgres picked it as a deadlock victim.
+        if isinstance(exc, OperationalError) and getattr(exc.orig, "pgcode", None) != DEADLOCK_PGCODE:
+            raise
+        db.rollback()
+        return accounts_page(request, error=LOST_RACE_MESSAGE, db=db)
     if error:
         db.rollback()
         return accounts_page(request, error=error, db=db)
-    db.commit()
     return RedirectResponse(url="/accounts", status_code=303)
 
 

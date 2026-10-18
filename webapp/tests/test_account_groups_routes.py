@@ -248,3 +248,54 @@ def test_invalidate_all_player_caches_clears_group_rows(site):
     site.commit()
     site.expire_all()
     assert site.query(AccountGroupViewCache).count() == 0
+
+
+# --- a lost race on the add route -----------------------------------------------
+
+LOST_RACE = "That account was just linked to another group."
+
+
+def _lose_a_race(monkeypatch, error):
+    """link_account writes a duplicate member row (a real IntegrityError on
+    flush) or raises `error` -- either way the session is left mid-write."""
+    def racing(db, owner_id, other_id):
+        if error is not None:
+            raise error
+        db.add(AccountGroupMember(player_id=owner_id, group_id=1))
+        db.flush()
+
+    monkeypatch.setattr(accounts_router, "link_account", racing)
+
+
+def test_add_route_lost_race_on_a_unique_violation_shows_the_message(site, monkeypatch):
+    main, alt, sub = _group(site)
+    _lose_a_race(monkeypatch, None)
+    response = accounts_router.add_account_route(_request(main, "/accounts/add"), display_name="alt#2", db=site)
+    assert response.status_code == 200
+    assert LOST_RACE in _body(response)
+    assert _member_rows(site) == sorted((p.id, 1, None) for p in (main, alt, sub))
+
+
+def test_add_route_lost_race_on_a_deadlock_shows_the_message(site, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    class Deadlock(Exception):
+        pgcode = "40P01"
+
+    main, _, _ = _group(site)
+    _lose_a_race(monkeypatch, OperationalError("INSERT", {}, Deadlock()))
+    response = accounts_router.add_account_route(_request(main, "/accounts/add"), display_name="alt#2", db=site)
+    assert response.status_code == 200
+    assert LOST_RACE in _body(response)
+
+
+def test_add_route_other_operational_errors_are_not_swallowed(site, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    class Other(Exception):
+        pgcode = "57014"
+
+    main, _, _ = _group(site)
+    _lose_a_race(monkeypatch, OperationalError("INSERT", {}, Other()))
+    with pytest.raises(OperationalError):
+        accounts_router.add_account_route(_request(main, "/accounts/add"), display_name="alt#2", db=site)

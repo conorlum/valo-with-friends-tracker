@@ -65,6 +65,22 @@ def _group_of(db: Session, player_id: int) -> AccountGroup | None:
     return member.group if member is not None else None
 
 
+def _locked_group(db: Session, player_id: int) -> AccountGroup | None:
+    """`player_id`'s group with its row locked until the transaction ends (a
+    no-op on sqlite), so two writes to one group queue instead of interleaving.
+    Membership is re-checked after the lock: a write that waited may find the
+    account gone from the group, or the group itself deleted. None then."""
+    group_id = group_id_for(db, player_id)
+    if group_id is None:
+        return None
+    group = (
+        db.query(AccountGroup).filter_by(id=group_id).with_for_update().populate_existing().one_or_none()
+    )
+    if group is None or group_id_for(db, player_id) != group_id:
+        return None
+    return group
+
+
 def _clear_group_cache(db: Session, group_id: int) -> None:
     db.query(AccountGroupViewCache).filter_by(group_id=group_id).delete(synchronize_session=False)
 
@@ -76,7 +92,7 @@ def link_account(db: Session, owner_player_id: int, other_player_id: int) -> str
     is already linked to anyone. Does NOT commit."""
     if owner_player_id == other_player_id:
         return None
-    group = _group_of(db, owner_player_id)
+    group = _locked_group(db, owner_player_id)
     if group is not None and group.main_player_id != owner_player_id:
         main = db.get(Player, group.main_player_id)
         return f"Only the main account adds accounts. Log in as {main.display_name} to add one."
@@ -91,9 +107,13 @@ def link_account(db: Session, owner_player_id: int, other_player_id: int) -> str
         group = AccountGroup(main_player_id=owner_player_id)
         db.add(group)
         db.flush()
-        db.add(AccountGroupMember(player_id=owner_player_id, group_id=group.id))
+        # Ascending player_id, so two opposite links at once collide on the
+        # same first row: the loser gets a unique violation, not a deadlock.
+        for pid in sorted((owner_player_id, other_player_id)):
+            db.add(AccountGroupMember(player_id=pid, group_id=group.id))
         db.flush()
-    db.add(AccountGroupMember(player_id=other_player_id, group_id=group.id))
+    else:
+        db.add(AccountGroupMember(player_id=other_player_id, group_id=group.id))
     _clear_group_cache(db, group.id)
     return None
 
@@ -103,7 +123,7 @@ def unlink_account(db: Session, actor_player_id: int, other_player_id: int) -> b
     leaves. The main itself can't leave while it has subs: it hands the main
     role over first. Deletes the group if only the main would be left. False
     if the actor may not remove that account. Does NOT commit."""
-    group = _group_of(db, actor_player_id)
+    group = _locked_group(db, actor_player_id)
     if group is None or group_id_for(db, other_player_id) != group.id or other_player_id == group.main_player_id:
         return False
     if actor_player_id not in (group.main_player_id, other_player_id):
@@ -122,7 +142,7 @@ def unlink_account(db: Session, actor_player_id: int, other_player_id: int) -> b
 def make_main_account(db: Session, actor_player_id: int, other_player_id: int) -> bool:
     """The main hands the main role to one of its subs. False if the actor
     isn't the main or `other_player_id` isn't in its group. Does NOT commit."""
-    group = _group_of(db, actor_player_id)
+    group = _locked_group(db, actor_player_id)
     if group is None or group.main_player_id != actor_player_id or group_id_for(db, other_player_id) != group.id:
         return False
     group.main_player_id = other_player_id
@@ -133,8 +153,8 @@ def set_account_label(db: Session, actor_player_id: int, other_player_id: int, l
     """The main sets (or with a blank `label`, clears) what an account in its
     group is called. False if the actor isn't the main or the account isn't in
     its group. Does NOT commit."""
-    group = _group_of(db, actor_player_id)
-    member = db.get(AccountGroupMember, other_player_id)
+    group = _locked_group(db, actor_player_id)
+    member = db.query(AccountGroupMember).filter_by(player_id=other_player_id).populate_existing().one_or_none()
     if group is None or group.main_player_id != actor_player_id or member is None or member.group_id != group.id:
         return False
     member.label = label.strip()[:LABEL_MAX_LENGTH] or None
