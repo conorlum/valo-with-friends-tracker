@@ -194,6 +194,42 @@ Clean kills: time to kill from the first shot has a median of 0.27 s (10th perce
 0.28, 90th 0.82). The spot is when the victim enters the killer's 103-degree field of view with a clear line, not
 when they are on the crosshair, so spot-to-shot includes turning to them.
 
+### 7a. Where the enemy was on the screen
+
+The owner, 2026-10-18: an enemy who shows up within a few degrees of the crosshair means something different from
+one who surprised the player on another angle. The replay stores only the horizontal facing (`yaw`, whole
+degrees), not the vertical one, so the angle is left-right only: an enemy straight above the crosshair counts
+as on it. The facing is fine enough: while firing, it changes by a median of 0 degrees per 1/16 s (90th
+percentile 2 degrees).
+
+**The angle at the spot**: at each player's own spot of the other (section 7), the horizontal angle between
+their facing and the bearing to the other player. It is measured at each player's own spot, never at the first
+damage: at the first damage the shooter is aiming at their target by definition, which would make every winner
+look "on the crosshair". Three bands:
+- **On the crosshair**: 5 degrees or less.
+- **Near**: over 5 and up to 20 degrees.
+- **Off-angle**: over 20 degrees, up to the edge of the 103-degree view.
+
+Corpus, the killer's angle at their spot (8,335 kills where the killer saw the victim):
+
+| Angle at the spot | Kills | Share clean | Spot to first shot, median (clean) | Time to kill from the spot, median (clean) |
+| --- | --- | --- | --- | --- |
+| up to 2 degrees | 1,576 | 78% | 0.44 s | 0.69 s |
+| 2 to 5 | 1,847 | 77% | 0.47 s | 0.75 s |
+| 5 to 10 | 1,719 | 66% | 0.50 s | 0.81 s |
+| 10 to 20 | 1,347 | 51% | 0.55 s | 0.88 s |
+| 20 to 51.5 | 1,846 | 36% | 0.63 s | 0.94 s |
+
+41% of kills start with the enemy on the crosshair, and those are about 0.2 s quicker. The off-angle ones are
+clean less often because a flick to 40 degrees takes time, so part of the 1.0 s rule in section 7 is turning, not
+waiting. So:
+- **The reaction and time-to-kill medians are shown per band**, never as one number across bands.
+- Each fight shows both players' angles at their spots: "they appeared 3 degrees off your crosshair; you were 31
+  degrees off theirs".
+- Groups: **Caught off-angle** (the opponent's spot of the player came first and the player's own angle at
+  their spot was over 20 degrees), and a match count: "N of your M fights started with the enemy off your
+  crosshair (over 20 degrees)".
+
 ### 8. Information given away
 
 Map control stores every event that located a player for the enemy (`signals`: time, slot, reason) in 1,180 of the
@@ -275,6 +311,7 @@ link, with an ETag over the stored rows (`_json_with_etag`). The same 404s as th
   shot and from the spot over clean kills (section 7), and the match's information given away (section 8).
 - Groups, each with its count: Moving while firing, Alone, With a teammate, Died not traded, Traded, Traded a
   teammate, Utility on them, Utility near them, Utility on you, Mollied off a spot, Saw them first, Seen first,
+  Caught off-angle,
   Died without seeing the killer, Killed unseen, Through smoke, Heard, Found by utility. A fight with several tags
   is in several groups.
 - Each row: the round and clock time, the opponents, the outcome (kills / died / traded) and the measured
@@ -317,3 +354,4 @@ The demo never shows the tab: it has no replays (`store.refuse_demo`).
 - Confirm the clean-kill rules (start within 1.0 s of the spot, gaps up to 0.6 s, at most one moving shot) on a
   few of their own kills, clean and not.
 - Say which locating reasons count as "found by utility" if the list in section 8 is wrong.
+- Confirm the crosshair bands (5 and 20 degrees) on a few of their own fights.
