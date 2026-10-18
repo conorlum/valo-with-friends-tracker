@@ -334,7 +334,7 @@ def _gap_run(factory, replay, n, status="ok", fingerprint=None):
     run = {"status": status, "fingerprint": fingerprint or replay_gaps.gap_fingerprint(p.fingerprint, p.map_name),
            "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": None, "notes": {},
            "error": None if status == "ok" else "RuntimeError: boom"}
-    assert store_gaps(factory, replay.id, n, run, []) == "stored"
+    assert store_gaps(factory, replay.id, n, run, [], moments=dict(status="ok", v=1, sight=True, fights=[], error=None)) == "stored"
 
 
 def _plan_gaps(db, retry_failed=False):

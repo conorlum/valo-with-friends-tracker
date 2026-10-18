@@ -272,7 +272,7 @@ def run(planned, args, session_factory) -> int:
                     run_row = result["gaps"]["run"]
                     rows = result.get("gaps", {}).get("rows", [])
                     gap_outcome = store_gaps(session_factory, p.replay_id, p.round_number, run_row, rows,
-                                             expected_control_fingerprint=p.fingerprint)
+                                             moments=result["gaps"]["moments"], expected_control_fingerprint=p.fingerprint)
                     if run_row["status"] != "ok":
                         gap_failed.append((p, (run_row.get("error") or "failed").splitlines()[0]))
                         gap_note = f"gaps FAILED: {gap_failed[-1][1]}"

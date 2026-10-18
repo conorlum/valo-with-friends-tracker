@@ -363,7 +363,7 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool
         return False
     try:
         outcome = gaps_store.store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps["rows"],
-                                        expected_control_fingerprint=f.fingerprint)
+                                        moments=gaps["moments"], expected_control_fingerprint=f.fingerprint)
     except Exception:  # noqa: BLE001 - rows the model refuses: the gaps are dropped, control stays stored
         log.exception("timing gaps of replay %s round %s could not be stored", f.replay_id, f.round_number)
         counts["gaps_dropped"] += 1
