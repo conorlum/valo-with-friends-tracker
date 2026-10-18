@@ -36,7 +36,7 @@ from app.models import Friendship, Match, MatchPlayer, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
 from app.services.enemy_at_11_response import compute_enemy_at_11_response_stats
 from app.services.force_buy_stats import compute_force_buy_stats
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids
 from app.services.halftime_conversion_stats import compute_halftime_conversion_stats
 from app.services.map_side_stats import compute_map_side_stats
 from app.services.player_data import RECENT_MATCH_LIMIT
@@ -169,7 +169,7 @@ def get_site_stats(db: Session) -> dict:
 
 def viewer_group_player_ids(db: Session, viewer_player_id: int) -> set[int]:
     """The viewer plus everyone on their own Friends page."""
-    return {viewer_player_id} | list_friend_ids(db, viewer_player_id)
+    return circle_ids(db, viewer_player_id)
 
 
 def compute_viewer_site_stats(db: Session, group_player_ids: set[int]) -> dict:

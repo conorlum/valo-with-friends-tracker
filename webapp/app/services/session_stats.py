@@ -17,7 +17,7 @@ from app.services.economy_graphs import (
     build_tier_matrix,
     session_econ_samples,
 )
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
 from app.services.shoutouts import (
     SCAVENGER_MIN_AVG_PER_ROUND,
@@ -212,7 +212,7 @@ def get_session_stats(
     for row in kda_rows:
         row.agents = agents_by_player.get(row.player_id, [])
 
-    friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id} if viewer_player_id is not None else set()
+    friend_ids = circle_ids(db, viewer_player_id) if viewer_player_id is not None else set()
     # Fun Stats should only crown players who were actually part of the
     # friend group for this session -- either they played every match (the
     # "core" roster) or they're a known friend -- not a random pub teammate

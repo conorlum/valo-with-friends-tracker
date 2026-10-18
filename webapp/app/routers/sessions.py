@@ -10,7 +10,7 @@ from app.services.coach import coached_external_ids
 from app.services.replay_progress import match_states
 from app.services.replays import watchable_external_ids
 from app.services.auth import get_current_player
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids, own_account_ids
 from app.services.session_stats import get_session_stats
 from app.services.sessions import find_session_index_for_matches, get_session_or_404, list_sessions
 from app.templates import templates
@@ -20,9 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 def _scoped_player_ids(db: Session, current_player_id: int, include_friends: bool) -> list[int]:
-    if not include_friends:
-        return [current_player_id]
-    return [current_player_id, *list_friend_ids(db, current_player_id)]
+    ids = circle_ids(db, current_player_id) if include_friends else own_account_ids(db, current_player_id)
+    return [current_player_id, *sorted(ids - {current_player_id})]
 
 
 @router.get("")

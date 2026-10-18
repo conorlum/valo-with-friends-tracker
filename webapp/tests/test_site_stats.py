@@ -89,7 +89,7 @@ def test_group_variants_come_from_the_group_not_the_whole_load():
 
 
 def test_viewer_group_is_the_viewer_plus_their_own_friends(monkeypatch):
-    monkeypatch.setattr(site_stats, "list_friend_ids", lambda db, owner: {11, 12} if owner == 5 else set())
+    monkeypatch.setattr(site_stats, "circle_ids", lambda db, owner: {owner, 11, 12} if owner == 5 else {owner})
     assert site_stats.viewer_group_player_ids(None, 5) == {5, 11, 12}
     assert site_stats.viewer_group_player_ids(None, 6) == {6}
 
