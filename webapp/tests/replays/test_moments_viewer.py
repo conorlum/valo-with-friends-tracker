@@ -71,6 +71,26 @@ def test_default_slot():
 
 
 @needs_node
+def test_every_fight_is_in_some_group_and_smoke_near_has_its_own():
+    # B2, B5: a clutch fight with no other tag goes to Other fights; a smoke near them has its own group
+    rounds = {"1": {"status": "ok", "fights": [
+        fight(t0=10, tags=["no_teammate"]), fight(t0=20, tags=[]),
+        fight(t0=30, tags=["smoke_near"], smoke_near=[{"by": 1, "name": "4_Smoke", "util_kind": "smoke", "on": 5, "m": 6.5},
+                                                     {"by": 1, "name": "E_Smoke", "util_kind": "smoke", "on": 5, "m": 3.2}]),
+        fight(t0=40, tags=["alone"])]}}
+    got = run_node("""function run(p) {
+      const g = M.groupsFor(p, 0);
+      const rows = k => g.find(x => x.key === k).rows.map(r => r.t0);
+      const seen = new Set(); g.forEach(x => x.rows.forEach(r => { if (r.t0 !== undefined) seen.add(r.t0); }));
+      return {other: rows("other"), smoke: rows("smoke_near"), seen: Array.from(seen).sort((a, b) => a - b),
+              text: M.rowText(g.find(x => x.key === "smoke_near").rows[0], "smoke_near", p.players)};
+    }""", payload(rounds))
+    assert got["other"] == [10, 20] and got["smoke"] == [30]
+    assert got["seen"] == [10, 20, 30, 40]
+    assert "2 smokes, nearest 3.2 m" in got["text"]
+
+
+@needs_node
 def test_groups_for_puts_a_two_tag_fight_in_both_groups_in_order():
     rounds = {"2": {"status": "ok", "fights": [fight(t0=40, tags=["died_not_traded", "util_on_them"]),
                                                fight(slot=1, tags=["alone"]),
@@ -84,7 +104,7 @@ def test_groups_for_puts_a_two_tag_fight_in_both_groups_in_order():
     }""", payload(rounds))
     assert got["labels"][:3] == ["Moving while firing", "Alone", "With a teammate"]
     assert got["labels"][-2:] == ["Heard", "Found by utility"]
-    assert len(got["keys"]) == 18 and got["counts"][0] == 0
+    assert len(got["keys"]) == 20 and got["counts"][0] == 0
     assert got["alone"] == [[1, 30], [2, 10]]
     by_key = dict(zip(got["keys"], got["counts"]))
     assert by_key["died_not_traded"] == 1 and by_key["util_on_them"] == 1 and by_key["alone"] == 3 - 1 + 0

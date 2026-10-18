@@ -16,6 +16,7 @@
     { key: "traded_teammate", tag: "traded_teammate", label: "Traded a teammate" },
     { key: "util_on_them", tag: "util_on_them", label: "Utility on them" },
     { key: "util_near_them", tag: "util_near_them", label: "Utility near them" },
+    { key: "smoke_near", tag: "smoke_near", label: "Smoke near them" },
     { key: "util_on_you", tag: "util_on_you", label: "Utility on you" },
     { key: "mollied", tag: "mollied", label: "Mollied off a spot" },
     { key: "saw_first", tag: "saw_first", label: "Saw them first" },
@@ -24,6 +25,7 @@
     { key: "died_unseen", tag: "died_unseen", label: "Died without seeing the killer" },
     { key: "killed_unseen", tag: "killed_unseen", label: "Killed unseen" },
     { key: "through_smoke", tag: "through_smoke", label: "Through smoke" },
+    { key: "other", tag: null, label: "Other fights" },   // every fight no group above shows, so none is lost
     { key: "heard", tag: null, label: "Heard" },
     { key: "found_by_utility", tag: null, label: "Found by utility" }
   ];
@@ -60,10 +62,15 @@
 
   function groupsFor(payload, slot) {
     var fights = fightsFor(payload, slot);
+    var shown = GROUPS.filter(function (g) { return g.tag; }).map(function (g) { return g.tag; });
     return GROUPS.map(function (g) {
       var rows;
       if (g.tag) rows = fights.filter(function (f) { return (f.tags || []).indexOf(g.tag) >= 0; });
-      else rows = infoRows(payload, slot, g.key);
+      else if (g.key === "other") {
+        rows = fights.filter(function (f) {
+          return !(f.tags || []).some(function (t) { return shown.indexOf(t) >= 0; });
+        });
+      } else rows = infoRows(payload, slot, g.key);
       return { key: g.key, label: g.label, rows: rows };
     });
   }
@@ -124,6 +131,10 @@
         return row.trade && typeof row.trade.after_s === "number" ? "traded after " + row.trade.after_s + " s" : "";
       case "util_on_them": return utilityText(row.util_on);
       case "util_near_them": return utilityText(row.util_near);
+      case "smoke_near":
+        var smokes = row.smoke_near || [];
+        var nearest = smokes.reduce(function (m, s) { return typeof s.m === "number" && (m === null || s.m < m) ? s.m : m; }, null);
+        return smokes.length + (smokes.length === 1 ? " smoke" : " smokes") + (nearest === null ? "" : ", nearest " + nearest + " m");
       case "util_on_you": return utilityText(row.util_on_you);
       case "mollied": return "molly " + (row.mollied || []).length;
       case "saw_first":

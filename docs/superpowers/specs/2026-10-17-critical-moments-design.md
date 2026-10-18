@@ -314,10 +314,11 @@ link, with an ETag over the stored rows (`_json_with_etag`). The same 404s as th
 - At the top: **Most expensive deaths** (section 6), then a one-line summary: median time to kill from the first
   shot and from the spot over clean kills (section 7), and the match's information given away (section 8).
 - Groups, each with its count: Moving while firing, Alone, With a teammate, Died not traded, Traded, Traded a
-  teammate, Utility on them, Utility near them, Utility on you, Mollied off a spot, Saw them first, Seen first,
-  Caught off-angle,
-  Died without seeing the killer, Killed unseen, Through smoke, Heard, Found by utility. A fight with several tags
-  is in several groups.
+  teammate, Utility on them, Utility near them, Smoke near them, Utility on you, Mollied off a spot, Saw them
+  first, Seen first, Caught off-angle,
+  Died without seeing the killer, Killed unseen, Through smoke, Other fights, Heard, Found by utility. A fight
+  with several tags is in several groups; "Other fights" holds every fight no group above shows (a clutch with
+  no other tag, or a fight with none), so every fight is listed.
 - Each row: the round and clock time, the opponents, the outcome (kills / died / traded) and the measured
   numbers of that group's tag. Clicking a row moves the viewer to the round at 3 s before the fight's start
   (playbook rule 17), using the same jump the Analysis tab uses.
