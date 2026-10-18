@@ -226,6 +226,57 @@ def test_combined_load_takes_every_accounts_matches_newest_first(db):
     assert [e.external_id for e in entries] == ["a3", "m2", "m1"]
 
 
+def _also_play(db, player, match_id):
+    mp = MatchPlayer(match_id=match_id, player_id=player.id, agent="Sage", team=Team.TEAM_2)
+    db.add(mp)
+    db.flush()
+    return mp
+
+
+def test_combined_load_counts_a_shared_match_once_with_the_lowest_player_id(db):
+    main, alt = _players(db, "main#1", "alt#2")
+    shared = _play(db, alt, 5, "shared")
+    _also_play(db, main, shared.match_id)
+    _play(db, main, 1, "m1")
+    db.commit()
+    ids = frozenset({main.id, alt.id})
+    rows = load_player_match_data(db, main, player_ids=ids)
+    assert [mp.match.external_id for mp in rows] == ["shared", "m1"]
+    assert rows[0].player_id == min(main.id, alt.id)
+    # The single-account load is unchanged.
+    assert [mp.match.external_id for mp in load_player_match_data(db, alt)] == ["shared"]
+
+
+def test_a_shared_match_does_not_use_up_a_slot_of_the_limit(db):
+    main, alt = _players(db, "main#1", "alt#2")
+    for day in range(1, 29):
+        _play(db, main if day % 2 else alt, day, f"x{day}")
+    shared = _play(db, alt, 29, "s29")
+    _also_play(db, main, shared.match_id)
+    _play(db, main, 30, "x30")
+    _play(db, alt, 31, "x31")
+    db.commit()
+    rows = load_player_match_data(db, main, 30, frozenset({main.id, alt.id}))
+    assert len(rows) == 30
+    assert len({mp.match_id for mp in rows}) == 30
+
+
+def test_recent_form_entries_and_baseline_count_a_shared_match_once(db):
+    from app.services.recent_match_rows import build_recent_match_rows
+    from app.services.player_data import one_row_per_match
+
+    main, alt = _players(db, "main#1", "alt#2")
+    shared = _play(db, alt, 5, "shared")
+    _also_play(db, main, shared.match_id)
+    db.commit()
+    ids = frozenset({main.id, alt.id})
+    entries = recent_form_entries(db, main.id, player_ids=ids)
+    assert [e.external_id for e in entries] == ["shared"]
+    assert len(build_recent_match_rows(db, main.id, entries, ids)) == 1
+    kept = db.query(MatchPlayer).filter(MatchPlayer.player_id.in_(ids), one_row_per_match(ids)).all()
+    assert [mp.player_id for mp in kept] == [min(main.id, alt.id)]
+
+
 def test_fingerprint_changes_with_members_matches_scores_and_friends(db):
     main, alt, friend = _players(db, "main#1", "alt#2", "friend#3")
     ids = frozenset({main.id, alt.id})

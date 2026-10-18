@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.services.match_streaks import RECENT_FORM_COUNT, FormEntry, form_entry
 from app.services.friends import list_friend_ids
+from app.services.player_data import one_row_per_match
 from app.services.player_profile_types import match_win
 
 BASELINE_MATCHES = 30
@@ -130,10 +131,12 @@ def recent_form_entries(
     """The player's `limit` most recent matches as FormEntry rows, newest first
     -- the same matches the Form card's streak strip covers. `player_ids`
     covers every one of an account group's accounts instead."""
+    query = db.query(MatchPlayer).join(Match, Match.id == MatchPlayer.match_id)
+    query = query.filter(MatchPlayer.player_id.in_(player_ids or {player_id}))
+    if player_ids:
+        query = query.filter(one_row_per_match(player_ids))
     mps = (
-        db.query(MatchPlayer)
-        .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id.in_(player_ids or {player_id}))
+        query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(limit)
         .all()
@@ -151,20 +154,27 @@ def build_recent_match_rows(
 
     account_ids = player_ids or {player_id}
     shown_ids = {e.external_id for e in entries}
-    baseline_mps = (
+    baseline_query = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
         .filter(MatchPlayer.player_id.in_(account_ids))
+    )
+    if player_ids:
+        baseline_query = baseline_query.filter(one_row_per_match(player_ids))
+    baseline_mps = (
+        baseline_query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(BASELINE_MATCHES)
         .all()
     )
-    shown_mps = (
+    shown_query = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
         .filter(MatchPlayer.player_id.in_(account_ids), Match.external_id.in_(shown_ids))
-        .all()
     )
+    if player_ids:
+        shown_query = shown_query.filter(one_row_per_match(player_ids))
+    shown_mps = shown_query.all()
     player_mps = {mp.id: mp for mp in baseline_mps + shown_mps}
     match_ids = {mp.match_id for mp in player_mps.values()}
     baseline_mp_ids = {mp.id for mp in baseline_mps}

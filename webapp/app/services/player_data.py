@@ -6,13 +6,28 @@ player_views, players, economy_graphs and the player_view_cache module can
 all import from here without creating an import cycle.
 """
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
 from app.services.state_replay import KillEventInput, MatchInput, RoundInput
 
 RECENT_MATCH_LIMIT = 30
+
+
+def one_row_per_match(player_ids):
+    """Filter for a combined (multi-account) MatchPlayer query: of the given
+    accounts' rows in one match, keep only the lowest player_id's. Applied in
+    SQL so it takes effect before any LIMIT."""
+    other = aliased(MatchPlayer)
+    lowest = (
+        select(func.min(other.player_id))
+        .where(other.match_id == MatchPlayer.match_id, other.player_id.in_(player_ids))
+        .correlate(MatchPlayer)
+        .scalar_subquery()
+    )
+    return MatchPlayer.player_id == lowest
 
 
 def load_player_match_data(
@@ -61,13 +76,14 @@ def load_player_match_data(
     bump PLAYER_VIEW_CACHE_SCHEMA_VERSION.
 
     `player_ids`, if given, loads every one of those accounts instead (an
-    account group's combined view, see app.services.account_groups). One
-    person can't be in two matches at once, so the accounts' rows never
-    share a match and the result is still one row per match.
+    account group's combined view, see app.services.account_groups).
+    Linking is zero-auth, so two linked accounts may have played the same
+    match (a false link): the result keeps one row per match, the lowest
+    player_id's, chosen before the LIMIT (see one_row_per_match).
     """
     query = db.query(MatchPlayer)
     if player_ids:
-        query = query.filter(MatchPlayer.player_id.in_(player_ids))
+        query = query.filter(MatchPlayer.player_id.in_(player_ids), one_row_per_match(player_ids))
     else:
         query = query.filter_by(player_id=player.id)
     query = (
