@@ -30,6 +30,7 @@
 
   var BANDS = ["all", "on", "near", "off"];
   var JUMP_LEAD_S = 3;
+  var UTILITY_KINDS = ["damaging", "info", "smoke", "teleport", "heal", "status", "blind"];  // constants.UTILITY_KINDS
 
   function keysOf(obj) { return Object.keys(obj || {}); }
 
@@ -100,6 +101,15 @@
     return bits.join(", ");
   }
 
+  // "utility: 1 damaging, 2 status", in UTILITY_KINDS order; entries stored before the kinds existed count as "other".
+  function utilityText(list) {
+    var counts = {};
+    (list || []).forEach(function (u) { var k = u.util_kind || "other"; counts[k] = (counts[k] || 0) + 1; });
+    var bits = UTILITY_KINDS.concat(["other"]).filter(function (k) { return counts[k]; })
+      .map(function (k) { return counts[k] + " " + k; });
+    return bits.length ? "utility: " + bits.join(", ") : "utility 0";
+  }
+
   function groupNumbers(row, key) {
     var mates = row.mates || {};
     switch (key) {
@@ -112,9 +122,9 @@
         return typeof mates.with_m === "number" ? "teammate " + mates.with_m + " m" : "";
       case "died_traded":
         return row.trade && typeof row.trade.after_s === "number" ? "traded after " + row.trade.after_s + " s" : "";
-      case "util_on_them": return "utility " + (row.util_on || []).length;
-      case "util_near_them": return "utility " + (row.util_near || []).length;
-      case "util_on_you": return "utility " + (row.util_on_you || []).length;
+      case "util_on_them": return utilityText(row.util_on);
+      case "util_near_them": return utilityText(row.util_near);
+      case "util_on_you": return utilityText(row.util_on_you);
       case "mollied": return "molly " + (row.mollied || []).length;
       case "saw_first":
       case "seen_first":

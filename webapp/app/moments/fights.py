@@ -11,11 +11,11 @@ from bisect import bisect_left
 
 from app.control import engine
 from app.control.utility import _sees_point
-from app.moments.constants import (CLEAN_MAX_MOVING, CLEAN_SPOT_TO_SHOT_S, CROSSHAIR_NEAR_DEG, CROSSHAIR_ON_DEG,
-                                   DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
-                                   MOVING_MPS, RUN_GAP_S, SHOT_AFTER_KILL_S, SPOT_GAP_S, SPOT_LOOKBACK_S,
-                                   SPOT_TOLERANCE_S, WITH_AIM_DEG,
-                                   SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SMOKE_ABILITIES, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
+from app.moments.constants import (ABILITY_KIND, CLEAN_MAX_MOVING, CLEAN_SPOT_TO_SHOT_S, CROSSHAIR_NEAR_DEG,
+                                   CROSSHAIR_ON_DEG, DASH_EXCLUDE_S, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
+                                   HIT_KIND, MOVING_MPS, NEAR_THEM_KINDS, RUN_GAP_S, SHOT_AFTER_KILL_S, SPOT_GAP_S,
+                                   SPOT_LOOKBACK_S, SPOT_TOLERANCE_S, WITH_AIM_DEG,
+                                   SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
                                    TRADE_WINDOW_S, UNTAGGED_CLASSES, UTIL_LOOKBACK_S, UTIL_NEAR_M)
 
 VERSION = 1
@@ -213,7 +213,8 @@ def _utility_on(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: lis
     for row, by, target, t, dur in _hits(blob, t0, t1):
         if by is None or rnd.team.get(by) is None or target is None:
             continue
-        entry = {"by": by, "kind": row["k"], "name": row.get("name"), "t": _r2(t), "dur": _r2(dur)}
+        entry = {"by": by, "kind": row["k"], "util_kind": HIT_KIND.get(row["k"]), "name": row.get("name"),
+                 "t": _r2(t), "dur": _r2(dur)}
         if rnd.team[by] == mine and target in opponents:
             on.append({**entry, "on": target})
         elif rnd.team[by] != mine and target == slot:
@@ -235,7 +236,8 @@ def _near(rnd, blob: dict, slot: int, t0: float, opponents: list[int]) -> tuple[
                 or row.get("v") is None or rnd.team.get(row.get("by")) != mine:
             continue
         name = row.get("name")
-        group = near if name in DENY_ABILITIES else smoke if name in SMOKE_ABILITIES else None
+        util_kind = ABILITY_KIND.get(name)
+        group = smoke if util_kind == "smoke" else near if util_kind in NEAR_THEM_KINDS else None
         end = row.get("t1")
         if group is None or not (row["t"] <= t0 and (end is None or t0 <= end)):
             continue
@@ -243,7 +245,7 @@ def _near(rnd, blob: dict, slot: int, t0: float, opponents: list[int]) -> tuple[
         d = {s: math.hypot(p[0] - x, p[1] - y) * rnd.geo.m_per_px for s, p in spots.items()}
         s = min(d, key=lambda k: (d[k], k))
         if d[s] <= UTIL_NEAR_M:
-            group.append({"by": row["by"], "name": name, "on": s, "m": round(d[s], 1)})
+            group.append({"by": row["by"], "name": name, "util_kind": util_kind, "on": s, "m": round(d[s], 1)})
     return near, smoke
 
 

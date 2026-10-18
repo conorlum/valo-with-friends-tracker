@@ -100,7 +100,7 @@ def test_row_text_for_each_kind_of_group():
     died = fight(opponents=[5], died={"t": 25.0, "killer": 5, "control_m2": 1234.4, "share": 0.123},
                  trade={"died": "traded", "by": 1, "after_s": 2.5, "avenged": []},
                  mates={"state": "with", "nearest_m": 6, "nearest_slot": 1, "with_slot": 1, "with_m": 6.2},
-                 util_on=[{}, {}], duels=[{"opponent": 5, "you_saw_t": 20, "they_saw_t": 20.1, "you_angle": 12.0,
+                 util_on=[{"util_kind": "blind"}, {"util_kind": "status"}, {}, {"util_kind": "status"}], duels=[{"opponent": 5, "you_saw_t": 20, "they_saw_t": 20.1, "you_angle": 12.0,
                                            "they_angle": 40.5}])
     for r, n in ((f, 7), (died, 3)):
         r["round"] = n
@@ -124,7 +124,7 @@ def test_row_text_for_each_kind_of_group():
     assert "teammate 6.2 m" in got["mate"]
     assert "died" in got["traded"] and "traded after 2.5 s" in got["traded"]
     assert "team lost 1234 m² (12%)" in got["traded"]
-    assert "2" in got["util"].split("Utility")[-1] or "2" in got["util"]
+    assert "· utility: 2 status, 1 blind, 1 other ·" in got["util"]
     assert "you 12°, they 40.5°" in got["saw"]
     assert "team lost" in got["unseen"]
     assert got["info"] == "R4 1:05 flash" and got["heard"] == "R4 0:05"

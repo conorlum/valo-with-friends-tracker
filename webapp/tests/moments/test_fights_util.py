@@ -53,14 +53,20 @@ def test_reveal_that_ended_before_the_window_is_not_counted():
 
 def test_enemy_flash_on_player():
     f = fight0([flash(9.0, 5, [[0, 9.5, 1.2]])])
-    assert f["util_on_you"] == [{"by": 5, "kind": "flash", "name": "Flash", "t": 9.5, "dur": 1.2}]
+    assert f["util_on_you"] == [{"by": 5, "kind": "flash", "util_kind": "blind", "name": "Flash", "t": 9.5,
+                                 "dur": 1.2}]
     assert "util_on_you" in f["tags"] and f["util_on"] == []
 
 
 def test_nearsight_and_ability_damage_are_utility_on():
     f = fight0([flash(9.0, 1, [[5, 9.2, 2.0]], k="nearsight", name="Nearsight"),
                 {**damage(9.5, 1, 5, src="ability"), "name": "Shock"}])
-    assert sorted(u["kind"] for u in f["util_on"]) == ["damage", "nearsight"]
+    assert sorted((u["kind"], u["util_kind"]) for u in f["util_on"]) == [("damage", "damaging"), ("nearsight", "status")]
+
+
+def test_reveal_and_status_on_them_get_their_kinds():
+    f = fight0([reveal(8.0, 11.0, 1, 5), status(9.0, 12.0, 1, 5)])
+    assert sorted(u["util_kind"] for u in f["util_on"]) == ["info", "status"]
 
 
 def test_smoke_near_enemy_is_smoke_near_not_util_near():
@@ -75,6 +81,17 @@ def test_deny_ability_at_threshold():
     assert len(inside["util_near"]) == 1 and "util_near_them" in inside["tags"]
     assert abs(inside["util_near"][0]["m"] - 7.9) < 0.11
     assert fight0([placed("E_Turret", 8.1)])["util_near"] == []
+
+
+def test_near_them_carries_its_kind_and_counts_info_status_blind():
+    f = fight0([placed("E_PossessableCamera", 3.0), placed("4_SlowField_Production", 4.0),
+                placed("E_HawkFlash_FlashSource", 5.0)])
+    assert sorted(u["util_kind"] for u in f["util_near"]) == ["blind", "info", "status"]
+
+
+def test_heal_teleport_and_walls_are_never_near_them():
+    f = fight0([placed("4_Heal_AOE", 3.0), placed("4_UsableTeleport", 3.0), placed("E_Wall_Fortifying", 3.0)])
+    assert f["util_near"] == [] and f["smoke_near"] == [] and "util_near_them" not in f["tags"]
 
 
 def test_ability_placed_after_t0_or_unlisted_is_not_near():

@@ -44,21 +44,70 @@ GUN_CLASS = {
 }
 UNTAGGED_CLASSES = frozenset({"shotgun", "other"})  # classes given no speed tags; an unknown gun is "other"
 
-DENY_ABILITIES = frozenset({  # utility near them; an unlisted name counts in no group  # PROVISIONAL(D5)
-    "4_TripWire", "4_TripWire_SecondWire", "MolotovFire", "Q_Molotov_Production", "AcidMolotov_NewMolotov",
-    "C_ExplodeyPatch", "Reclaim_Orb_ExplodeyPatch", "4_SlowField_Production", "E_Slow_Large",
-    "4_ExplosiveBolt_Explosion", "ConcussPulse", "Concuss", "C_TimeSlowGrenade_Explosion", "E_Turret",
-    "E_Trap", "Q_CageTrap", "Q_Cage", "Q_Explosion", "Q_DecayExplosion", "E_Explosion", "4_BeeSwarm_Damage",
-    "Q_ElectricSphere", "E_SweetSpotFissure", "Q_SeizeTrap", "E_AirStrikeMortar", "X_DelayedBeam_Beam",
-    "4_FusionBlast", "X_Shockwave", "StealthingTrap_Flash_2", "X_Bomb", "X_OrbitalStrike_Production",
-    "Q_ShellShockGrenade", "4_NetToss", "4_RemovableNet", "E_CableJam_Root", "4_BlackHole", "X_TidalWave",
-    "X_TidalWave_Chunk", "X_FishingHook_Cage", "E_SuppressionPulse", "Q_FlameWallManager_Production",
-    "E_Wall_Segment_Fortifying", "E_Wall_Fortifying", "Wall", "Q_WallManager", "X_Segment",
-    "X_SegmentManager", "X_GlobalWall", "BarbedWire", "WallTrap", "Q_SoundSensor", "Q_SoundSensor_Fissure",
-    "Q_Tether_SphereExpansion", "4_SplashGrenade",
-})
+# The owner's seven kinds of utility (D5). Most abilities are one of them; walls, decoys, shields, buffs, ult
+# markers and pickup orbs are none, and so is a name not listed here.
+UTILITY_KINDS = ("damaging", "info", "smoke", "teleport", "heal", "status", "blind")
+NEAR_THEM_KINDS = frozenset({"damaging", "info", "status", "blind"})  # "utility near them"; smokes are their own tag
+# A hit on a player, by its event kind. Nearsight is a status, not a blind (judgment: vision capped, not zero).
+HIT_KIND = {"damage": "damaging", "reveal": "info", "status": "status", "nearsight": "status", "flash": "blind"}
 
-SMOKE_ABILITIES = frozenset({  # smoke placements  # PROVISIONAL(D5)
-    "4_Smoke", "NewSmoke", "NewSmoke_PDS", "E_Smoke", "4_Smoke_ProductionNEW", "4_SmokeZone",
-    "4_SmokeManager_Production", "E_SmokeZone", "E_SmokeZone_Fake", "E_SmokeScreenManager", "E_WorldSmoke",
-})
+ABILITY_KIND = {  # placed ability name -> kind; agents from the corpus (ability_names, W10)
+    # damaging
+    "MolotovFire": "damaging", "Q_FlameWallManager_Production": "damaging",                  # Phoenix
+    "Q_Molotov_Production": "damaging", "X_OrbitalStrike_Production": "damaging",            # Brimstone
+    "AcidMolotov_NewMolotov": "damaging",                                                    # Viper
+    "4_ExplosiveBolt_Explosion": "damaging",                                                 # Sova
+    "E_Turret": "damaging", "4_BeeSwarm_Damage": "damaging",                                 # Killjoy
+    "Q_Explosion": "damaging", "E_Boomba": "damaging",                                       # Raze
+    "Q_DecayExplosion": "damaging",                                                          # Clove (decay)
+    "E_Explosion": "damaging", "E_AirStrikeMortar": "damaging", "E_MapMissileMarker": "damaging",
+    "E_MapMissileMarker_SecondRocket": "damaging", "X_Segment": "damaging", "X_SegmentManager": "damaging",  # Tejo
+    "4_FusionBlast": "damaging",                                                             # Breach
+    "BarbedWire": "damaging",                                                                # Vyse
+    "C_ExplodeyPatch": "damaging", "Reclaim_Orb_ExplodeyPatch": "damaging",                  # Gekko
+    # info
+    "Q_SonarPing": "info", "Q_SonarBolt": "info", "E_Drone": "info", "E_Drone_RevealDart": "info",  # Sova
+    "E_PossessableCamera": "info", "RemovableObject_GumshoeTrackingDart": "info", "X_InterrogateHat": "info",  # Cypher
+    "E_LoSReveal_Source_Reactivate": "info",                                                 # Fade
+    "4_SonarPing": "info", "4_Spider_LockOn": "info",                                        # Tejo
+    # smoke (anything that blocks sight like a smoke: smokes, smoke walls, cages)
+    "4_Smoke": "smoke", "NewSmoke": "smoke", "NewSmoke_PDS": "smoke", "E_Smoke": "smoke",
+    "4_Smoke_ProductionNEW": "smoke", "4_SmokeManager_Production": "smoke", "4_SmokeZone": "smoke",
+    "E_SmokeZone": "smoke", "E_SmokeZone_Fake": "smoke", "X_GlobalWall": "smoke",            # Astra
+    "E_SmokeScreenManager": "smoke", "X_Circular": "smoke",                                  # Viper
+    "E_WorldSmoke": "smoke", "Q_WallManager": "smoke",                                       # Harbor
+    "Q_CageTrap": "smoke", "Q_Cage": "smoke",                                                # Cypher
+    "4_Tunnel": "smoke",                                                                     # Neon
+    # teleport
+    "E_Teleporter_Tether": "teleport", "E_TeleporterMoving_FakeTP": "teleport",
+    "E_TeleporterStationary_FakeTP": "teleport", "X_GlobalTeleport_Intention": "teleport",
+    "E_RewindTime_RewindTarget": "teleport", "4_UsableTeleport": "teleport",
+    # heal
+    "Q_Heal_HealPool_High": "heal", "Q_Heal_HealPool_AutoActivate": "heal", "Heal": "heal", "4_Heal_AOE": "heal",
+    # status (non-damaging: slows, concusses, tethers, suppress, vulnerable, nearsight, detain)
+    "4_TripWire": "status", "4_TripWire_SecondWire": "status",                               # Cypher
+    "4_SlowField_Production": "status",                                                      # Sage
+    "E_Trap": "status", "E_Slow_Large": "status",                                            # Chamber
+    "ConcussPulse": "status", "Concuss": "status", "X_SonicWave": "status",                  # Miks
+    "C_TimeSlowGrenade_Explosion": "status", "X_DelayedBeam_Beam": "status",                 # Waylay
+    "Q_Tether_SphereExpansion": "status", "Q_SeizeTrap": "status",                           # Fade, Veto
+    "4_WolfHound": "status", "X_WaveForm": "status",                                         # Fade
+    "4_NearsightAOE_Source": "status",                                                       # Reyna
+    "Q_NearsightMissile_TrajectoryWarning": "status",                                        # Omen
+    "Q_PossessableScout": "status", "X_Pack": "status",                                      # Skye
+    "Q_StealthAlarmbot": "status", "X_Bomb": "status",                                       # Killjoy
+    "X_Shockwave": "status", "E_SweetSpotFissure": "status",                                 # Breach
+    "Q_ElectricSphere": "status",                                                            # Neon
+    "E_SuppressionPulse": "status", "X_UltPulse": "status", "X_UltPulseManager": "status",   # KAY/O
+    "Q_FragileMissile_TrajectoryWarning": "status",                                          # Iso
+    "Q_ShellShockGrenade": "status",                                                         # Tejo
+    "4_NetToss": "status", "4_RemovableNet": "status", "Q_SoundSensor": "status",
+    "Q_SoundSensor_Fissure": "status", "X_FishingHook": "status", "X_FishingHook_Cage": "status",  # Deadlock
+    "4_BlackHole": "status", "Q_FlashBurst": "status",                                       # Astra
+    "X_TidalWave": "status", "X_TidalWave_Chunk": "status", "4_SplashGrenade": "status",     # Harbor
+    "SeekerNade": "status", "RollyPolly": "status",                                          # Gekko
+    "DisarmPulse": "status",                                                                 # Vyse
+    # blind
+    "E_HawkFlash_FlashSource": "blind",                                                      # Skye
+    "StealthingTrap_Flash_2": "blind",                                                       # Vyse
+}

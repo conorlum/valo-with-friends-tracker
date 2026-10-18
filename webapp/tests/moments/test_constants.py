@@ -34,8 +34,12 @@ def test_detectors_take_the_leaf_values():
     assert detectors.TRADE_RANGE_M == constants.TRADE_RANGE_M
 
 
-def test_ability_groups_are_disjoint():
-    assert not (constants.DENY_ABILITIES & constants.SMOKE_ABILITIES)
+def test_ability_kinds_are_the_seven():
+    kinds = set(constants.UTILITY_KINDS)
+    assert len(kinds) == 7
+    assert set(constants.ABILITY_KIND.values()) == kinds
+    assert set(constants.HIT_KIND.values()) <= kinds and constants.NEAR_THEM_KINDS <= kinds
+    assert not constants.NEAR_THEM_KINDS & {"smoke", "heal", "teleport"}
 
 
 def test_gun_classes_are_known():

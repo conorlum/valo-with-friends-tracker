@@ -93,8 +93,12 @@ Utility from the player's side, on or near this fight's opponents, from 3 s befo
 - ability damage (`damage` with `src: "ability"`).
 Corpus: 4,611 such rows across the fights (status 1,417, reveal 1,323, ability damage 1,109, flash hit 762).
 
-**Near an opponent**: a placed ability alive at the fight's start within **8 m** of an opponent. Only abilities
-that deny or damage space count: mollies and other damage zones, slows, cages, trips, turrets, walls. **Smokes
+**Near an opponent**: a placed ability alive at the fight's start within **8 m** of an opponent. Every ability is one of
+the owner's seven kinds (D5, `constants.ABILITY_KIND`): damaging, info, smoke, teleport, heal, status
+(non-damaging: slows, concusses, tethers, suppress, nearsight) and blind; walls, decoys, shields and buffs are none.
+Damaging, info, status and blind count as near, and each entry and row names its kind ("utility: 1 damaging,
+1 status"); utility on a player is labelled the same way from its event (damage, reveal, status, nearsight,
+flash). **Smokes
 are listed separately as "smoke near"**: a smoke near an enemy is not utility on them, and smokes are the most
 common placed ability within 8 m (corpus: 4_Smoke 904, NewSmoke 840, E_Smoke 471 among the within-8 m rows).
 Movement and self abilities (stims, Clove's orbs, teleporters) never count. The list of which ability names
