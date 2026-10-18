@@ -20,7 +20,9 @@ fight" never is. Wins and losses of the same kind sit together (playbook rule 14
 | Placement | A tab in the replay viewer's side column, for the picked player, on every linked replay, coach report or not. |
 | Contents | Every fight the player was in, tagged and grouped by type, wins and losses together. Nothing filtered out, nothing called good or bad. |
 | Process | This spec first; thresholds measured from the whole replay corpus before any code. |
-| Sight | "Did you see your killer" and "did your victim see you" are wanted (owner, 2026-10-17). |
+| Sight | "Did you see your killer" and "did your victim see you" are wanted. Spam through smoke is real, so a kill with no sight is not an error. |
+| More tags | Control lost at death (with the most expensive deaths shown), saw-first and time to kill (medians over clean kills only), information given away, and utility on you, mollies included. |
+| Where | Computed in the gaps block of the control task on the worker. |
 
 ## What a fight is
 
@@ -125,12 +127,106 @@ Corpus, all live-round gun kills (n = 8,734) on the 7 maps with geometry:
 | Sunset | 15.3% | 5.2% | 4.7% |
 | Ascent | 15.6% | 6.5% | 5.1% |
 
-"Neither saw, not a wall-bang" is the check's error floor. A gun kill where neither player had the other in sight
-and nothing went through a wall is most likely a shot through a smoke edge, a door or a height the 2D line gets
-wrong. Rule: **a sight tag is stored only when the killer did see the victim** (or the kill was a wall-bang).
-When the killer did not, the fight shows "sight: not measurable" and no tag. That keeps the floor out of the
-tags. The killer must have the victim in sight to shoot them, so a missing sighting there means the check failed,
-not the player.
+You do not need to see an enemy to shoot them: players spam through smokes and get lucky (owner, 2026-10-17).
+The "neither saw" kills were split by testing the killer-to-victim line again with smokes ignored (corpus, the
+341 such kills):
+
+| Why neither saw | Kills | Share of all gun kills |
+| --- | --- | --- |
+| Through smoke: walls clear, a smoke in the way | 308 | 3.5% |
+| Walls in the way at every moment (Ascent 18, Summit 5, others 1-3) | 32 | 0.4% |
+| Killer flashed | 1 | 0.0% |
+
+So the check's real error floor is about 0.4% of kills (most likely doors and heights the line gets wrong), not
+the 2-5% the first table suggests. Rules:
+
+- A kill whose line was clear except for a smoke is tagged **Through smoke**, on the killer's fight and on the
+  victim's. It also counts for "killed unseen" and "died without seeing the killer".
+- A kill where walls block the line both ways and nothing went through a wall shows "sight: not measurable" and
+  carries no sight tag.
+- The rest are tagged as measured.
+
+### 6. Control lost at the death
+
+Map control already measures, for every death in the live round, the area the team lost when that player died
+(`deaths[].control_m2` and `share_of_team` in the round summary; the Control tab's "Lost" column). The moments
+are computed in the same task as control, so the fight's death takes that number as it is.
+
+- Shown on every death: "the team lost N m² (P% of its control)".
+- At the top of the tab, before the groups: **Most expensive deaths**, the player's three deaths with the most
+  control lost in the match, each a jump like any fight (owner, 2026-10-17). This is the owner's point from
+  report 20: "my team would lose a lot of control if I die".
+
+### 7. Who saw whom first, and time to kill
+
+The sight check of section 5 also gives, for each kill, the start of the killer's last unbroken sighting of the
+victim before it (a gap of up to 0.25 s does not break it): the **spot**. And the killer's **first shot** is the
+first of the run of shots that ended in the kill (shots more than 0.6 s apart start a new run).
+
+Per fight, always shown:
+- **Saw first**: who had the other in sight first, and by how much ("they had you in view 0.6 s before you saw
+  them"). That separates a held angle from a peek.
+- **Time to kill from the first shot** and **from the spot**, for each of the player's kills; and for each death,
+  the killer's.
+
+Not every kill is a reaction fight: a player may watch an enemy who hasn't seen them, wait for a teammate, or
+spray from movement and then stop (owner, 2026-10-17). So a kill is **clean** only when the killer saw the
+victim, the shot run starts no earlier than the spot and within 1.0 s of it, no gap in the run is over 0.6 s, and
+at most one shot in it was above 2.5 m/s. A kill that is not clean still shows its numbers, with the reason
+("first shot 2.3 s after seeing them", "moving", "fired before seeing them", "never saw them").
+
+**Averages use clean kills only**, and the tab shows medians, never means, with the count they are over
+("median 0.31 s over 14 clean kills"). Fewer than 5 clean kills: no median, only the list.
+
+Corpus (8,673 live-round gun kills):
+
+| | Kills | Share |
+| --- | --- | --- |
+| Clean | 5,138 | 59% |
+| First shot more than 1 s after the spot | 2,385 | 27% |
+| Moving (two or more shots above 2.5 m/s) | 514 | 6% |
+| Killer never saw the victim (smoke, wall-bang) | 338 | 4% |
+| Fired before the spot (pre-fire, spam into a corner) | 298 | 3% |
+| No shots stored | 61 | 1% |
+
+Clean kills: time to kill from the first shot has a median of 0.27 s (10th percentile 0.00: a one-shot kill; 90th
+0.81 s); from the spot, a median of 0.81 s (10th 0.44, 90th 1.38); spot to first shot, a median of 0.50 s (10th
+0.28, 90th 0.82). The spot is when the victim enters the killer's 103-degree field of view with a clear line, not
+when they are on the crosshair, so spot-to-shot includes turning to them.
+
+### 8. Information given away
+
+Map control stores every event that located a player for the enemy (`signals`: time, slot, reason) in 1,180 of the
+corpus's 1,201 rounds. Corpus counts by reason: seen 30,117, damage 14,689, footsteps 9,351, kill 8,457,
+gunfire 5,712, and the enemy's recon (Sova and Fade reveals, cameras, trips, drones and so on) about 11,000
+together. A median of 6 per player-round.
+
+For the picked player, per match and per round:
+- **Heard**: footsteps. The player's own noise; the owner's noise-discipline principle.
+- **Shots heard outside a fight**: gunfire not inside one of the player's fights.
+- **Found by utility**: the enemy's recon and traps (recon, haunt, camera_dart, drone_dart, trip, tejo_drone,
+  neural_theft, and the other utility reasons).
+- **Seen** is counted but not listed: being seen is part of playing.
+Consecutive events with the same reason less than 2 s apart are one moment. Each "heard" and "found by utility"
+moment is a jump. These are the enemy's knowledge, so they say what the player gave away, never what they should
+have done (playbook rule 13).
+
+### 9. Utility on you
+
+The reverse of section 4: the enemy's utility on the player, from 3 s before the fight to its end.
+- Flash hits, statuses (concuss, slow, suppress and so on), reveals and ability damage on the player, exact from
+  the rows that name their target.
+- **Mollied off a spot**: the player was inside an enemy damage zone when it appeared, and left it. The zones and
+  their shapes come from `app/control/mollies.py` (the owner's list `MOLLY_KEYS`: Aftershock, Incendiary, Orbital
+  Strike, Mosh Pit, FRAG/ment, Nanoswarm, Hot Hands, Guided Salvo, Armageddon, Snake Bite), so the moments and
+  control agree on what a molly is. A player made to move by a molly is being utiled even if it never damaged
+  them (owner, 2026-10-17).
+- Shown on the fight: what hit them, from whom, and when.
+
+### Considered and left out (owner, 2026-10-17)
+
+Health going into a fight; weapon matchup (the database already has loadouts); peek order in a double swing; what
+the player did after a kill.
 
 ## Architecture
 
@@ -138,24 +234,31 @@ not the player.
 
 `app/moments/fights.py` splits a round into fights and tags them. Its inputs are the round blob, the link (sides,
 DB-only deaths) and, when available, the control engine's `RoundInputs` and geometry for the sight tags. It
-reuses `app/coach/roundview.py` for positions and distances, and `app/coach/detectors.py`'s constants. All
-thresholds live at the top of the module with their corpus numbers in a comment, as `detectors.py` does.
+reuses `app/coach/roundview.py` for positions and distances. All thresholds live at the top of the module with
+their corpus numbers in a comment, as `detectors.py` does.
+
+The worker's interpreter has no SQLAlchemy, and `detectors.py` imports `app.scoring.impact`, which needs it. So
+the moments module never imports `detectors.py`. The trade window and the 20 m trade range move into a leaf
+module (`app/coach/fight_constants.py`) that both import, so the two can never disagree.
 
 It needs the map's geometry for sight, which only the replay worker has loaded (the visibility table takes about
-60 s to build per map; it is cached). So the moments are computed **in the control task** (`app/control/task.py`),
-next to the gap detector, which already builds `RoundInputs(blob, geo, link)` for the same round. A map without
-geometry still gets every tag except sight.
+60 s to build per map; it is cached). Gaps are not a workflow task of their own: they are a `gaps` block on the
+control task, plus a gaps-only task for a round whose control is already current
+(`app/services/replay_control_remote.py`). The moments join the **gaps block** (owner, 2026-10-17): the same
+task in `app/control/task.py` that runs the gap detector over `RoundInputs(blob, geo, link)` returns the round's
+fights as well. A map without geometry still gets every tag except sight.
 
-`MOMENTS_REVISION` starts at 1 and changes with any rule change; a stale row is recomputed like a stale gap run.
+`MOMENTS_REVISION` starts at 1 and changes with any rule change. It is part of the gap fingerprint, so a rule
+change makes every round stale and the existing gaps-only path recomputes them. That is also the backfill of the
+55 stored replays, with no script of its own. The worker's `control.gaps_protocol` goes to 2, so a worker that
+can't compute moments is never sent a block that asks for them.
 
 ### Storage (migration 0026)
 
 `replay_round_moments`: one row per replay round (`replay_id`, `round_number`, `status` ok/failed,
-`fingerprint`, `moments_revision`, `fights` JSON, `error`, `computed_at`), cascade-deleted with the round, written
-by `app/services/replay_moments_store.py`. The JSON holds slots, never names or player ids, like
-`replay_gaps`.
-
-A one-off `scripts/compute_moments.py` backfills the 55 stored replays.
+`fingerprint`, `moments_revision`, `fights` JSON, `error`, `computed_at`), cascade-deleted with the round. It is
+written by the gaps' guarded writer (`app/services/replay_gaps_store.py`) in the same transaction as the round's
+gap run. The JSON holds slots, never names or player ids, like `replay_gaps`.
 
 ### Endpoint
 
@@ -168,9 +271,12 @@ link, with an ETag over the stored rows (`_json_with_etag`). The same 404s as th
 - A **Critical Moments** tab after Analysis in `replays/_player.html`, loaded when first opened.
 - A player picker at the top. It defaults to the logged-in viewer when they played in the match, otherwise the
   first player of the attacking team in round 1.
+- At the top: **Most expensive deaths** (section 6), then a one-line summary: median time to kill from the first
+  shot and from the spot over clean kills (section 7), and the match's information given away (section 8).
 - Groups, each with its count: Moving while firing, Alone, With a teammate, Died not traded, Traded, Traded a
-  teammate, Utility on them, Utility near them, Died without seeing the killer, Killed unseen. A fight with
-  several tags is in several groups.
+  teammate, Utility on them, Utility near them, Utility on you, Mollied off a spot, Saw them first, Seen first,
+  Died without seeing the killer, Killed unseen, Through smoke, Heard, Found by utility. A fight with several tags
+  is in several groups.
 - Each row: the round and clock time, the opponents, the outcome (kills / died / traded) and the measured
   numbers of that group's tag. Clicking a row moves the viewer to the round at 5 s before the fight's start
   (playbook rule 17), using the same jump the Analysis tab uses.
@@ -184,7 +290,7 @@ The demo never shows the tab: it has no replays (`store.refuse_demo`).
   standing still. A tag means "moving at the shot", not "inaccurate".
 - "With a teammate" needs the teammate to have dealt damage. A teammate holding the same angle and never firing
   counts as nearby but not fighting.
-- Sight is 2D lines with heights where the map has them. Doors, rope and elevated angles are where the error floor
+- Sight is 2D lines with heights where the map has them. Doors, rope and elevated angles are where the 0.4% error floor
   above comes from. "Not measurable" is shown honestly rather than guessed.
 - The near-utility list of ability names needs the owner's review; until then an unlisted ability is not counted.
 
@@ -198,7 +304,8 @@ The demo never shows the tab: it has no replays (`store.refuse_demo`).
 
 - Unit tests on hand-built blobs for each tag's edges: a 2.9 s and a 3.1 s gap, exactly 2.5 m/s, a dash shot, a
   shotgun, a trade at the window's edge, a teammate at 19.9 and 20.1 m, a flash hit before the window, a smoke
-  near an enemy, a kill where the killer never saw the victim.
+  near an enemy, a kill where the killer never saw the victim, a kill through smoke, a first shot 0.99 and 1.01 s
+  after the spot, a molly that lands on the player and one that lands beside them, footsteps 1.9 and 2.1 s apart.
 - A golden test on one real round of match `ac9fd52a`, whose fights were checked by hand on 2026-10-17 (round 33:
   with a teammate, 2.0 m; round 15: 3v3 before the fight; round 9: killed unseen).
 - The corpus survey scripts are rerun after the build, and their numbers must match this spec's within rounding.
@@ -207,3 +314,6 @@ The demo never shows the tab: it has no replays (`store.refuse_demo`).
 
 - Review the ability-name groups for "utility near" (damage/deny, smoke, never).
 - Confirm 2.5 m/s, 20 m and 8 m after seeing them on a few of their own fights in the built tab.
+- Confirm the clean-kill rules (start within 1.0 s of the spot, gaps up to 0.6 s, at most one moving shot) on a
+  few of their own kills, clean and not.
+- Say which locating reasons count as "found by utility" if the list in section 8 is wrong.
