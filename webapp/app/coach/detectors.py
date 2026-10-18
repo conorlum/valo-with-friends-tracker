@@ -6,10 +6,8 @@ Thresholds are first values, to be reviewed against real rounds (plan 1, Task 9)
 from __future__ import annotations
 
 from app.coach import areas, knowledge
-from app.scoring.impact import TRADE_WINDOW_SECONDS
+from app.moments.constants import TRADE_RANGE_M, TRADE_WINDOW_S  # shared with the moments package
 
-TRADE_WINDOW_S = float(TRADE_WINDOW_SECONDS)   # the scoring formula's own trade window
-TRADE_RANGE_M = 20.0        # a teammate farther than this at the death could not have traded it
 STACK_ENEMIES = 4           # this many enemies known on one site is a stack
 STACK_FRESH_S = 10.0        # a sighting older than this no longer places an enemy
 STACK_HOLD_S = 8.0          # still on another site this long after the stack was known
