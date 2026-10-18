@@ -11,6 +11,7 @@
     { key: "moving", tag: "moving", label: "Moving while firing" },
     { key: "alone", tag: "alone", label: "Alone" },
     { key: "with_teammate", tag: "with_teammate", label: "With a teammate" },
+    { key: "no_teammate", tag: "no_teammate", label: "Clutch (no teammate alive)" },
     { key: "died_not_traded", tag: "died_not_traded", label: "Died not traded" },
     { key: "died_traded", tag: "died_traded", label: "Traded" },
     { key: "traded_teammate", tag: "traded_teammate", label: "Traded a teammate" },
@@ -125,6 +126,9 @@
         return m.measured ? m.above + " of " + m.measured + " shots moving" : "";
       case "alone":
         return typeof mates.nearest_m === "number" ? "nearest teammate " + mates.nearest_m + " m" : "no teammate alive";
+      case "no_teammate":
+        var man = row.man || [];
+        return typeof man[0] === "number" && typeof man[1] === "number" ? man[0] + "v" + man[1] + " clutch" : "clutch";
       case "with_teammate":
         return typeof mates.with_m === "number" ? "teammate " + mates.with_m + " m" : "";
       case "died_traded":

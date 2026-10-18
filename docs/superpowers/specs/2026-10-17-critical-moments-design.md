@@ -78,7 +78,7 @@ The distance to every living teammate just before the fight starts; the nearest 
 - **Alone**: nearest teammate farther than 20 m. Wins as well as losses (owner's feedback, report 20).
 - **With a teammate**: a teammate within 20 m who also dealt damage to an opponent of this fight during it. This
   is the "double swing" the owner pointed out in round 33 of the first match reviewed.
-- **No teammate alive**: the clutch case. Neither of the above, and never shown as "alone".
+- **No teammate alive**: the clutch case. Neither of the above, and never shown as "alone"; it has its own group, "Clutch (no teammate alive)", whose rows give the man count ("1v3 clutch").
 - Also shown, not a tag: **who did the first damage**, the player or the opponent. A fight the enemy started
   may have been forced (owner's feedback, report 20).
 
@@ -313,7 +313,7 @@ link, with an ETag over the stored rows (`_json_with_etag`). The same 404s as th
   first player of the attacking team in round 1.
 - At the top: **Most expensive deaths** (section 6), then a one-line summary: median time to kill from the first
   shot and from the spot over clean kills (section 7), and the match's information given away (section 8).
-- Groups, each with its count: Moving while firing, Alone, With a teammate, Died not traded, Traded, Traded a
+- Groups, each with its count: Moving while firing, Alone, With a teammate, Clutch (no teammate alive), Died not traded, Traded, Traded a
   teammate, Utility on them, Utility near them, Smoke near them, Utility on you, Mollied off a spot, Saw them
   first, Seen first, Caught off-angle,
   Died without seeing the killer, Killed unseen, Through smoke, Other fights, Heard, Found by utility. A fight
