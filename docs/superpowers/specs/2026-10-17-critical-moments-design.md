@@ -7,7 +7,7 @@ from `origin/main` at `a88f2ae`.
 
 Every linked replay gets a **Critical Moments** tab in the replay viewer's side column. A viewer picks a player
 and sees every fight that player took, grouped by what kind of fight it was, with no AI involved: the tags are
-fixed rules over the stored replay. Each fight is a button that moves the viewer to about 5 seconds before it
+fixed rules over the stored replay. Each fight is a button that moves the viewer to about 3 seconds before it
 started, so the viewer can see how the player got there.
 
 The tab states measurements, not verdicts. "Moving while firing: 9 of 12 shots above 2.5 m/s" is shown; "bad
@@ -315,7 +315,7 @@ link, with an ETag over the stored rows (`_json_with_etag`). The same 404s as th
   Died without seeing the killer, Killed unseen, Through smoke, Heard, Found by utility. A fight with several tags
   is in several groups.
 - Each row: the round and clock time, the opponents, the outcome (kills / died / traded) and the measured
-  numbers of that group's tag. Clicking a row moves the viewer to the round at 5 s before the fight's start
+  numbers of that group's tag. Clicking a row moves the viewer to the round at 3 s before the fight's start
   (playbook rule 17), using the same jump the Analysis tab uses.
 - One line under the tabs says what the tags are measured from and that they are not verdicts.
 

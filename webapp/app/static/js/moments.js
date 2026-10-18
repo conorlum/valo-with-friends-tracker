@@ -29,7 +29,7 @@
   ];
 
   var BANDS = ["all", "on", "near", "off"];
-  var JUMP_LEAD_S = 5;
+  var JUMP_LEAD_S = 3;
 
   function keysOf(obj) { return Object.keys(obj || {}); }
 
@@ -159,7 +159,7 @@
       ", found by utility " + count("found_by_utility") + ", seen " + (info.seen || 0);
   }
 
-  // [round, t] to show for a row: five seconds before a fight starts, the moment itself for deaths and info.
+  // [round, t] to show for a row: three seconds before a fight starts, the moment itself for deaths and info.
   function jumpFor(row) {
     if (typeof row.t0 === "number") return [row.round, Math.max(0, row.t0 - JUMP_LEAD_S)];
     return [row.round, Math.max(0, row.t)];

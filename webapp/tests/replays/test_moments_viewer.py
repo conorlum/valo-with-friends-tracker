@@ -146,9 +146,9 @@ def test_summary_line():
 
 @needs_node
 def test_jump_target():
-    got = run_node("""function run(p) { return [M.jumpFor({round: 3, t0: 42}), M.jumpFor({round: 3, t0: 3}),
+    got = run_node("""function run(p) { return [M.jumpFor({round: 3, t0: 42}), M.jumpFor({round: 3, t0: 2}),
       M.jumpFor({round: 2, t: 9}), M.jumpFor({round: 2, t: 9, t0: undefined})]; }""", {})
-    assert got == [[3, 37], [3, 0], [2, 9], [2, 9]]
+    assert got == [[3, 39], [3, 0], [2, 9], [2, 9]]
 
 
 def render_player(**context):
