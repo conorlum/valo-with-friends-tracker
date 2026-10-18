@@ -260,6 +260,61 @@ failures deselected): after W6, after W9, after W12, and at wrap-up.
   before shot.
 - Check: three PNGs exist, the after-click screenshot's round label differs.
 
+## Review amendments (P4 review, 2026-10-18; these win over the steps above)
+
+- **Splits.** W6 becomes W6a (moving, dash, gun class) and W6b (utility on/near/smoke, on you, mollied). W14
+  becomes W14a (pure functions in `app/services/replay_moments.py` + unit tests) and W14b (route, ETag, web
+  tests). Checkpoint 1 moves to after W6b.
+- **W5/W6 helpers:** `tests/moments/helpers.py` wraps `tests/replays/control_toys.py` (`toy_geometry`,
+  `open_hall`, `door_hall`, `track`, `blob`, `toy_ability`, `uv`; :28-110) and only adds damage, shot, kill,
+  cast, status, reveal and flash row builders.
+- **W6a dash rule:** casts are `util` rows `{"k": "cast", "t", "by", ...}`; `movement_casts` is a flag (`1`,
+  `app/replays/format.py:30-33`, `extras.py:51-55`). A shot within `DASH_EXCLUDE_S` of a cast row by the slot
+  has no speed; a blob without the `movement_casts` key excludes none.
+- **W6b formats:** flash `hits` durations can be null (format.py:15: `dur` null); `status.by` can be null
+  (extras.py:23): such a row counts for no side. Nearsight rows with `hits` count as utility on (kind
+  `nearsight`). Mollies: read `rnd.mollies` (`[(owner side group, Molly, nodes)]`, built at `engine.py:932-948`),
+  never a second `molly_zones` call; "inside" uses the containment test `mollies.py` itself uses.
+- **W7 no-smoke line:** `engine.los(geo, a, b, [])` also drops ability walls and map features (as
+  `survey/smoke_split.py:39-40`), so "through smoke" means through smoke, an ability wall or a door; the
+  constant's comment says so.
+- **Geometry path.** W9 (golden) and W10 (corpus) use plain `geometry.load_geometry` + `visibility`, as the
+  survey did. The worker uses `prepare_geometry` with features and heights (`task.py:278-280`;
+  `smokes_at` includes map features, `engine.py:1008-1013`). W10 adds one row: a sample of 5 matches through
+  the `prepare_geometry` path where the local assets allow it, with the difference in sight counts.
+- **W11 third protocol:** `app/services/replay_upload.py:97` (`GAPS_PROTOCOL = 1`, checked in
+  `worker_off_reason` :167-168) also goes to 2, or the site refuses every re-parse. Pins add
+  `tests/replays/test_replay_upload.py`; a protocol-2 worker gets no off-reason (test). `/replay_tasks/` builds
+  from the same `replay_worker/Dockerfile` (`render.yaml:84`; `COPY replay_tasks` at Dockerfile:44); the smoke
+  import line is ~:46. The fake ok-result helper in `tests/replays/test_control_remote.py:96` (and any in
+  `test_gaps_task.py`) returns an ok `moments` dict by default.
+- **W12:** `store_gaps(..., *, moments)` keyword-only and required; both callers change in the same commit
+  (`replay_control_remote.py:361`, `scripts/compute_control.py:274`). The stored `fights` JSON keeps
+  `round_moments`' `v` and `sight`. The column is `gaps_revision` (the amendment), not the spec's
+  `moments_revision`. The cascade test uses the opt-in Postgres fixture `pg` (`tests/replays/test_replay_store.py:387`,
+  `tests/_postgres.py`, `writes=True`): SQLite doesn't cascade (`app/replays/store.py:74`).
+- **W13** also deletes the replay round and shows the moments row count go to 0.
+- **W14a inputs:** pure functions over `deaths = {n: {slot: [{"t", "control_m2", "share_of_team"}]}}` (the
+  `player_tables` / `control_players.json` shape, `replay_control_views.py:106-111, :169-176`) and
+  `events = {n: knowledge_events}`, so the endpoint and the W16 script feed the same signature. Each fight's
+  `died` gets `control_m2` and `share` from the death of that slot with `|t - died.t| <= DEATH_MATCH_S` (0.1 s);
+  `expensive_deaths` uses the same match for `fight_i`.
+- **W14b reading `knowledge_events`:** they are in the header of `ReplayRoundControl.data` (gzip), not the
+  summary. Load `data` with `load_only` in one query and read the header with `control_format.unpack_data`
+  (`app/replays/control_format.py:165`); the test notes the time on a 24-round replay.
+- **Fight JSON additions:** `mates.with_m` (the fighting teammate's distance); payload `players: {slot:
+  {"name", "team"}}` plus `attack_round1: [slots]` for the picker default.
+- **W15:** also `app/static/js/replay.js` (`showTab` :1520-1532 lazy-loads `moments` through a new
+  `options.loadMoments`, supplied by the page as `loadGaps` is at `replay.html:45-53` and by the standalone
+  script as at `render_replay_standalone.py:160-163`); the `<script>` tag beside `replay.html:11-13`, gated
+  `control`; the panel div in `_player.html`. Rows carry `data-moment-round` / `data-moment-t`.
+- **W16:** `scripts/export_replay_preview.py` also writes `N.link.json` (`replay_control.round_link(...)`,
+  `app/services/replay_control.py:316`); events come from the exported `control.bin` via `unpack_data`. The
+  standalone page takes `&tab=moments&slot=N` in its hash. The click is on a row in a round other than the one
+  shown; the check reads the round label and clock with `--text` (round differs, clock ≈ t0 - 5). Pixels that
+  move: the round label, the scrubber and the map's player dots. `shot_page.py` is
+  `~/.claude/skills/afk/tools/shot_page.py`.
+
 ## Cards at wrap-up
 
 D1 (departures), D4+D5 (thresholds and ability groups, with the corpus numbers and CORPUS-CHECK.md), the
