@@ -136,7 +136,7 @@ def _mates(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: list[int
     res.update(nearest_m=round(dists[near], 1), nearest_slot=near)
     fired = {row["by"] for row in blob.get("util") or ()
              if row.get("k") == "damage" and row.get("target") in opponents and t0 <= row["t"] <= t1}
-    if WITH_AIM_DEG >= 0:   # PROVISIONAL(D6): a shot aimed at a living opponent counts like damage
+    if WITH_AIM_DEG >= 0:   # A shot aimed at a living opponent counts like damage
         fired |= {row["by"] for row in blob.get("util") or ()
                   if row.get("k") == "shot" and t0 <= row["t"] <= t1 and row.get("by") in dists
                   and _aimed_at(rnd, row, opponents)}
