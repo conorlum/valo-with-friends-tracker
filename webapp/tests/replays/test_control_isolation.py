@@ -54,7 +54,7 @@ def test_the_worker_server_never_loads_the_engine():
             "threading.Thread(target=httpd.serve_forever, daemon=True).start(); "
             "body = json.loads(urllib.request.urlopen("
             "f'http://127.0.0.1:{httpd.server_address[1]}/health', timeout=30).read()); "
-            "assert body['control']['gaps_protocol'] == 1, body; "
+            "assert body['control']['gaps_protocol'] == 2, body; "
             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
             "or m.startswith(('app.control', 'app.gaps', 'replay_worker.control_job'))))")
     out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP.parent, capture_output=True, text=True, timeout=120)

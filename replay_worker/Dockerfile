@@ -37,6 +37,7 @@ COPY webapp/app/__init__.py /srv/webapp/app/__init__.py
 COPY webapp/app/replays /srv/webapp/app/replays
 COPY webapp/app/control /srv/webapp/app/control
 COPY webapp/app/gaps /srv/webapp/app/gaps
+COPY webapp/app/moments /srv/webapp/app/moments
 COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY webapp/scripts/ascent_map_messages.patch /srv/webapp/scripts/ascent_map_messages.patch
@@ -44,7 +45,7 @@ COPY webapp/scripts/map_pool_messages.patch /srv/webapp/scripts/map_pool_message
 COPY replay_worker /srv/replay_worker
 COPY replay_tasks /srv/replay_tasks
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts, replay_tasks.tasks, replay_tasks.main; from app.replays.contract import load_pin; load_pin()"
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, app.moments.fights, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts, replay_tasks.tasks, replay_tasks.main; from app.replays.contract import load_pin; load_pin()"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 # No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
 # mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails

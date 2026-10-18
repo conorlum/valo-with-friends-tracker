@@ -363,7 +363,7 @@ class AutoWorker:
 
     def __init__(self, recipe: str, result: dict | None = None):
         self.health_body = {"ok": True, "recipe": recipe, "archive": {"enabled": True, "reparse_protocol": 1},
-                            "control": {"enabled": True, "gaps_protocol": 1}}
+                            "control": {"enabled": True, "gaps_protocol": 2}}
         self.receipt = {"code": "unknown_attempt"}
         self.job_body = {"status": "done", "result": result} if result else {"status": "parsing"}
         self.ack_error = None
@@ -457,6 +457,9 @@ def test_the_tag_the_job_id_and_the_context_helpers():
 def test_the_worker_check_requires_everything_explicitly():
     good = AutoWorker("r1").health_body
     assert uploads.worker_off_reason(good, "r1") is None
+    assert uploads.GAPS_PROTOCOL == 2
+    old = uploads.worker_off_reason({**good, "control": {"enabled": True, "gaps_protocol": 1}}, "r1")
+    assert old and "timing-gaps protocol" in old, "a worker before moments is off"
     assert "unreachable" in uploads.worker_off_reason(None, "r1")
     assert "recipe skew" in uploads.worker_off_reason(good, "r2")
     assert "recipe skew" in uploads.worker_off_reason({**good, "recipe": None}, "r1")
@@ -465,8 +468,8 @@ def test_the_worker_check_requires_everything_explicitly():
                               ("archive", {"enabled": True, "reparse_protocol": 2}, "re-parse protocol"),
                               ("archive", {"enabled": True, "reparse_protocol": True}, "re-parse protocol"),
                               ("archive", None, "archive is off"),
-                              ("control", {"enabled": False, "gaps_protocol": 1}, "map control is off"),
-                              ("control", {"gaps_protocol": 1}, "map control is off"),
+                              ("control", {"enabled": False, "gaps_protocol": 2}, "map control is off"),
+                              ("control", {"gaps_protocol": 2}, "map control is off"),
                               ("control", {"enabled": True}, "timing-gaps protocol"),
                               ("control", {"enabled": True, "gaps_protocol": "1"}, "timing-gaps protocol")):
         assert said in uploads.worker_off_reason({**good, part: value}, "r1"), (part, value)
@@ -516,7 +519,7 @@ HANDSHAKES = {
     "the site moved first": ("B", {"recipe": "A"}, "recipe skew"),
     "the worker is unreachable": ("B", None, "unreachable"),
     "the archive is off": ("B", {"archive": {"enabled": False}}, "archive is off"),
-    "worker control is off": ("B", {"control": {"enabled": False, "gaps_protocol": 1}}, "map control is off"),
+    "worker control is off": ("B", {"control": {"enabled": False, "gaps_protocol": 2}}, "map control is off"),
     "no gaps protocol": ("B", {"control": {"enabled": True}}, "timing-gaps protocol"),
     "another re-parse protocol": ("B", {"archive": {"enabled": True, "reparse_protocol": 2}}, "re-parse protocol"),
 }

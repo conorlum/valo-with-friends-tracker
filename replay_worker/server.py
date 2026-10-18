@@ -1159,7 +1159,7 @@ HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
 # The control child's task and result protocol, told to the web app in /health: 1 means a task's `gaps` block
 # is understood (replay_worker/control_job.py; the image ships app/gaps). A plain number here, never read
 # from the detector: this process imports none of it.
-GAPS_PROTOCOL = 1
+GAPS_PROTOCOL = 2
 from app.replays import map_feature_artifacts as feature_artifacts
 _FEATURE_VERIFY_SLOTS = threading.BoundedSemaphore(2)
 CHILD_THREADS = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}

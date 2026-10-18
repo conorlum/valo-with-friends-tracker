@@ -43,7 +43,7 @@ RESULT_WINDOW_S = 3.0
 SHOT_LOOKBACK_S = 0.5
 BEHIND_DEG = 120.0
 ROUTE_THIN_S = 0.5
-GAPS_REVISION = 3    # 3: feature occlusion in exposure and release attribution
+GAPS_REVISION = 4    # 4: critical moments ride the gap run (3: feature occlusion in exposure and release attribution)
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
