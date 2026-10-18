@@ -22,18 +22,20 @@ def cast(t, by, code="Dash", name="Dash") -> dict:
     return {"k": "cast", "t": t, "by": by, "code": code, "name": name}
 
 
-def status(t, t1, by, target, kind="slow") -> dict:
-    return {"k": "status", "t": t, "t1": t1, "by": by, "target": target, "kind": kind}
+def status(t, t1, by, target, name="Concuss", status="concussed") -> dict:
+    """app/replays/extras.py:21: by is a slot or None."""
+    return {"k": "status", "t": t, "by": by, "t1": t1, "target": target, "code": "Breach", "name": name,
+            "status": status, "from": "ability"}
 
 
-def reveal(t, t1, by, target) -> dict:
-    return {"k": "reveal", "t": t, "t1": t1, "by": by, "target": target}
+def reveal(t, t1, by, target, name="Dart") -> dict:
+    return {"k": "reveal", "t": t, "by": by, "t1": t1, "target": target, "code": "Sova", "name": name}
 
 
-def flash(t, by, hits, x=0, y=0) -> dict:
+def flash(t, by, hits, x=0, y=0, k="flash", name="Flash") -> dict:
+    """app/replays/format.py:16: hits = [[target slot, hit t, dur s or None], ...]."""
     u, v = uv(x, y)
-    return {"k": "flash", "t": t, "by": by, "u": u, "v": v, "ability": "Flash", "targets": [h[0] for h in hits],
-            "hits": [list(h) for h in hits]}
+    return {"k": k, "t": t, "by": by, "u": u, "v": v, "name": name, "hits": [list(h) for h in hits]}
 
 
 def round_of(players, *, kills=(), util=(), t_end=30.0, t_decided=None, db_deaths=(), geo=None):
