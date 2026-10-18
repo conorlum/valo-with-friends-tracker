@@ -58,10 +58,11 @@ def test_shot_run_breaks_at_a_gap_over_run_gap():
 
 
 def test_shot_after_the_kill_counts_a_little():
-    kd = kd_of(killer_from(8.0), [*GUN, shot(9.6, 0), shot(10.04, 0)])
-    assert kd["first_shot"] == 9.6
-    kd = kd_of(killer_from(8.0), [*GUN, shot(9.9, 0), shot(10.06, 0)])
-    assert kd["first_shot"] == 9.9
+    # the walk starts from the last shot at or before kill + SHOT_AFTER_KILL_S; 9.3 -> 10.04 is a 0.74 s gap
+    kd = kd_of(killer_from(8.0), [*GUN, shot(9.3, 0), shot(10.04, 0)])
+    assert kd["first_shot"] == 10.04
+    kd = kd_of(killer_from(8.0), [*GUN, shot(9.3, 0), shot(10.06, 0)])
+    assert kd["first_shot"] == 9.3
 
 
 def test_no_shots():
