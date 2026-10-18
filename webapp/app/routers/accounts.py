@@ -27,11 +27,14 @@ def _reject_in_demo_mode() -> None:
 
 @router.get("")
 def accounts_page(request: Request, error: str | None = None, db: Session = Depends(get_db)):
+    _reject_in_demo_mode()
     current_player = get_current_player(request, db)
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
 
     members = list_group_members(db, current_player.id)
+    if len(members) < 2:   # a group left with only its main (a sub's player row was deleted) is no group
+        members = []
     main = members[0] if members else None
     is_main = main is None or main.player_id == current_player.id
     # Accounts already linked anywhere can't be added, so they aren't offered.

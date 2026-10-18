@@ -7,6 +7,7 @@ from typing import TypeVar
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import SessionLocal, get_db
 from app.models import AccountGroupMember, Player
 from app.services.account_groups import (
@@ -89,6 +90,8 @@ class _AccountView:
 
 
 def _account_view(db: Session, player: Player, accounts: str | None) -> _AccountView:
+    if settings.demo_mode:   # accounts are never grouped on the demo
+        return _AccountView([])
     members = list_group_members(db, player.id)
     if accounts != "all" or len(members) < 2:
         return _AccountView(members)
