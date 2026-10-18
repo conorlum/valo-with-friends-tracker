@@ -71,6 +71,18 @@ def test_no_gun_damage_is_not_measurable():
     assert not kd["measurable"] and "killed_unseen" not in f[0]["tags"] and "died_unseen" not in f[5]["tags"]
 
 
+def victim_turns_away_at(t):
+    """The victim faces the killer until t, then faces away for good."""
+    return {0: ("A", [(0.0, 120, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180), (t, 400, 200, 180),
+                                                      (t + 0.05, 400, 200, 0)])}
+
+
+def test_sight_counts_from_look_s_before_the_first_damage():
+    # first gun damage at 9.0, so the window opens at 9.0 - SIGHT_LOOK_S = 6.0
+    assert fights_of(victim_turns_away_at(7.0), GUN)[0]["kill_detail"][0]["victim_saw"]
+    assert not fights_of(victim_turns_away_at(5.5), GUN)[0]["kill_detail"][0]["victim_saw"]
+
+
 def test_sight_off_nothing_is_measured():
     f = fights_of(FACING_AWAY, GUN, sight=False)
     kd = f[0]["kill_detail"][0]
