@@ -123,6 +123,7 @@ def pocket():
     return toy_geometry("Pocket", [HALL, (480, 96, 488, 104)])
 
 
+@pytest.mark.slow
 def test_a_hypothesis_in_a_one_cell_room_survives_the_sliver_cleanup_while_unseen():
     geo = pocket()
     rc, regions, extra = snapshots(hall_round(), geo, [info(2.0, "hypothesis", 484, 100, source="beacon-1")])

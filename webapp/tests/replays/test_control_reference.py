@@ -36,6 +36,7 @@ from app.control import engine as ce  # noqa: E402
 REFERENCE = json.loads(ref.FIXTURE.read_text(encoding="utf-8"))["rounds"]
 
 
+@pytest.mark.slow
 def test_the_fixture_names_every_reference_round():
     assert set(REFERENCE) == set(reference_rounds())
 

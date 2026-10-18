@@ -248,6 +248,7 @@ def test_refinement_manifest_uses_durable_rejected_build_after_cache_restart(db,
             'history_sha256': hi.history_identity(previous)})
 
 
+@pytest.mark.slow
 def test_tag_edit_and_web_restart_preserve_admitted_snapshot_without_rebuilding(rig, factory, db, linked, monkeypatch):
     import hashlib
     from app.replays.map_feature_diagnostics import diagnostic_envelope
@@ -331,6 +332,7 @@ def test_tagged_maps_are_still_due_for_height_rebuilds(db, linked, monkeypatch):
     assert [d.map_name for d in plan.due] == [linked.map_name] and not plan.skipped
 
 
+@pytest.mark.slow
 def test_tagged_two_then_five_match_rebuild_pending_and_recovery(rig, factory, db, linked, tagged):
     from app.services import control_feature_artifacts as archives
     from app.models.replay import ControlFeatureArtifact
@@ -396,6 +398,7 @@ def test_a_due_maps_rounds_wait_and_its_build_goes_live(rig, factory, db, linked
     assert (rig.tmp / "cache" / "heights" / f"{linked.map_name}.{rig.asset.digest}.height.npz").is_file()
 
 
+@pytest.mark.slow
 def test_a_build_below_the_bar_is_rejected_the_old_heights_stay_and_the_rounds_flow(rig, factory, db, linked):
     clone(db, linked, 1)
     stored(db, linked.map_name)                                # active, built from these two matches
@@ -410,6 +413,7 @@ def test_a_build_below_the_bar_is_rejected_the_old_heights_stay_and_the_rounds_f
     assert hr.plan_maps(db).due == [], "not built again until its inputs change"
 
 
+@pytest.mark.slow
 def test_a_restarted_dispatcher_adopts_a_running_build_and_never_resends_to_it(rig, factory, db, linked):
     clone(db, linked, 1)
     rig.mode(sleep=1.5)
@@ -459,6 +463,7 @@ def test_a_lost_start_response_is_recovered_by_asking(rig, factory, db, linked, 
     assert total(seen, "heights_sent") == 2 * linked.round_count, "nothing was sent to the started build"
 
 
+@pytest.mark.slow
 def test_a_real_worker_restart_resends_from_the_first_round(rig, factory, db, linked, monkeypatch):
     clone(db, linked, 1)
     one_round_batches(db, monkeypatch)
@@ -505,6 +510,7 @@ def test_malformed_health_before_open_spends_the_selected_manifests_budget(rig, 
 # ---------------------------------------------------------------- a result that isn't what it says
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name, mode", [
     ("not JSON", {"raw": "not json"}),
     ("no asset", {"drop": ["asset"]}),
@@ -601,6 +607,7 @@ def test_an_error_inside_the_height_step_never_stops_round_dispatch(rig, factory
     assert counts["heights_error"] == 1 and counts["sent"] == remote.IN_FLIGHT
 
 
+@pytest.mark.slow
 def test_an_answer_that_isnt_shaped_as_the_protocol_says_spends_a_try_and_is_not_met_again(rig, factory, db, linked,
                                                                                          monkeypatch):
     clone(db, linked, 1)
@@ -616,6 +623,7 @@ def test_an_answer_that_isnt_shaped_as_the_protocol_says_spends_a_try_and_is_not
     assert total(seen, "heights_failed") == 0 and len(rig.builds.builds) == 1, "the next try adopts the worker's build"
 
 
+@pytest.mark.slow
 def test_the_height_step_never_commits_or_rolls_back_the_dispatchers_own_session(rig, factory, db, linked):
     # That session holds the cycle's transaction-scoped lock on PostgreSQL: ending its transaction in the middle
     # of a cycle would let a second dispatcher in. Turning heights off and storing a build both write, and both
@@ -692,6 +700,7 @@ def test_a_match_deleted_while_its_rounds_are_being_sent_drops_the_build(rig, fa
     assert hi.key(row.inputs) != first_key and len(row.match_uuids) == 2, "built from the matches that are left"
 
 
+@pytest.mark.slow
 def test_a_match_deleted_after_the_build_started_keeps_its_result_from_going_live(rig, factory, db, linked):
     others = clone(db, linked, 2)
     rig.mode(sleep=1.5)
@@ -721,6 +730,7 @@ def test_a_good_result_for_inputs_that_changed_meanwhile_is_not_stored(rig, fact
     assert db.query(ControlHeight).count() == 0 and counts["heights_live"] == 0
 
 
+@pytest.mark.slow
 def test_evidence_deleted_and_the_rebuild_rejected_turns_the_maps_heights_off(rig, factory, db, linked):
     others = clone(db, linked, 2)
     stored(db, linked.map_name)
@@ -741,6 +751,7 @@ def test_fewer_than_two_matches_left_turns_heights_off_without_a_build(rig, fact
     assert counts["sent"] > 0, "and its rounds are recomputed flat"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("evidence", ["deleted", "recondensed", "intact"])
 def test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence(rig, factory, db, linked, evidence):
     others = clone(db, linked, 2)
@@ -789,6 +800,7 @@ def test_retirement_keeps_an_operator_replacement_with_current_evidence(factory,
     assert ch.active_digests(db) == {linked.map_name: "b" * 12}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("older", [
     lambda real: {k: v for k, v in real.items() if k != "heights"},       # an image from before height builds
     lambda real: {**real, "recipe": real["recipe"] + ".older"},           # an image on other rules
@@ -829,6 +841,7 @@ def workflow_health(rig, monkeypatch):
     monkeypatch.setattr(rig.client, "health", lambda: {**real(), "runners": {"heights": "workflow"}})
 
 
+@pytest.mark.slow
 def test_two_due_maps_build_at_once(rig, factory, db, linked, monkeypatch):
     monkeypatch.setattr(hr, "MAX_BUILDS", 2)
     rig.settings.height_builds_max = 2

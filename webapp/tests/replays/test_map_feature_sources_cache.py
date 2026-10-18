@@ -94,6 +94,7 @@ def test_replaced_walk_png_is_decoded_afresh(tmp_path):
     assert new['walk'] != old['walk']
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('change', ['cover_paint', 'cant_walk_paint', 'specials', 'scale'])
 def test_entry_or_scale_change_is_a_miss(tmp_path, change):
     folder = _copy_map(tmp_path, MAP_A)
@@ -180,6 +181,7 @@ def _without_checked_at(body):
     return {k: v for k, v in body.items() if k != 'checked_at'}
 
 
+@pytest.mark.slow
 def test_compute_is_equal_cold_and_warm_and_geometry_key_is_unchanged(factory, db, linked, monkeypatch):
     monkeypatch.setattr(rc, '_current_snapshot', REAL_CURRENT_SNAPSHOT)
     cached = mfs.base_snapshot

@@ -18,6 +18,7 @@ def request_case():
                    'canonical_inputs': base64.b64encode(inp.canonical_inputs).decode()}, 'height': None}
 
 
+@pytest.mark.slow
 def test_real_child_compilation_matches_direct_compiler_bytes():
     from app.services.control_feature_artifacts import run_feature_child
     from app.replays.map_feature_artifacts import decode_artifact, expanded_assets
@@ -29,6 +30,7 @@ def test_real_child_compilation_matches_direct_compiler_bytes():
     assert expanded_assets(child.assets) == expanded_assets(direct.assets)
 
 
+@pytest.mark.slow
 def test_child_verify_detects_tampered_archive_and_does_not_read_current_tags():
     from app.services.control_feature_artifacts import run_feature_child
     from app.replays.map_feature_artifacts import FeatureArtifactError
@@ -70,6 +72,7 @@ def test_child_preparation_failure_never_becomes_no_features(archive_factory, mo
         assert service.find_artifact(db, inp.key) is None
 
 
+@pytest.mark.slow
 def test_verified_cache_rehashes_hits_and_never_caches_failed_correspondence():
     from dataclasses import replace
     from app.replays import map_feature_artifacts as codec
@@ -96,6 +99,7 @@ def test_verified_cache_rehashes_hits_and_never_caches_failed_correspondence():
     assert tiny.entries == 0 and tiny.bytes_used == 0
 
 
+@pytest.mark.slow
 def test_durable_preparation_hit_skips_child_and_rehashes_archive(archive_factory, monkeypatch):
     from app.services import control_feature_artifacts as service
     inp, _ = request_case()

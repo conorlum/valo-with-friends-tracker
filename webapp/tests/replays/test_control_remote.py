@@ -507,6 +507,7 @@ def test_the_client_maps_the_workers_answers():
             assert raised.value.body == json.loads(body)
 
 
+@pytest.mark.slow
 def test_a_tagged_map_waits_for_capability_then_pins_exact_inputs(factory, db, linked, tagged):
     from app.replays.map_feature_artifacts import protocol_identity
     worker, state = FakeWorker(), remote.State()

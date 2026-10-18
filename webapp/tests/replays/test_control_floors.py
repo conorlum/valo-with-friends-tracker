@@ -71,6 +71,7 @@ def test_a_player_stands_on_the_floor_under_their_own_height():
     assert all(len(getattr(tk.holders[0], name)) == geo.n for name in ("active", "passive", "watch", "raw", "body"))
 
 
+@pytest.mark.slow
 def test_an_enemy_in_the_tunnel_is_not_spotted_from_the_bridge_side_or_from_right_above():
     geo = bridge()
     players = {0: still("A", 200, Y, 0, 4.0),        # on the plateau, looking along the bridge
@@ -87,6 +88,7 @@ def test_an_enemy_in_the_tunnel_is_not_spotted_from_the_bridge_side_or_from_righ
     assert 5 in as_2d.sees[0], "in 2D the same enemy is spotted: this is what heights fix"
 
 
+@pytest.mark.slow
 def test_an_enemy_above_their_floor_is_spotted_at_their_own_height():
     # From 2 m back on a 4 m ledge, a body standing on the ground 3 m out is hidden by the ledge's edge. The
     # same enemy 2.4 m up (boosted, mid-jump, on a Sage wall) shows over it: spotting uses their real height.
@@ -169,6 +171,7 @@ def unknown_below(geo, from_top: bool = True) -> np.ndarray:
     return unk.cells["A"]
 
 
+@pytest.mark.slow
 def test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up():
     # docs/superpowers/specs/2026-10-05-height-slopes-design.md, part 5
     for geo in (drop_ledge(4.0, hc.EDGE_SLIDE), drop_ledge(1.0, hc.EDGE_FALL)):
@@ -179,6 +182,7 @@ def test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up():
     assert not unknown_below(ledge())[node(ledge(), 300)], "with no walked drop the ledge isn't crossed at all"
 
 
+@pytest.mark.slow
 def test_the_unknown_stops_at_a_fall_too_high_to_land_quietly():
     assert not unknown_below(drop_ledge(4.0, hc.EDGE_FALL))[node(drop_ledge(4.0, hc.EDGE_FALL), 300)]
     just_over = drop_ledge(1.1, hc.EDGE_FALL)
@@ -196,6 +200,7 @@ def test_a_real_player_still_drops_off_any_ledge():
     assert grown[node(geo, 260)], "growing a mask (memory, backfill) still goes over the edge"
 
 
+@pytest.mark.slow
 def test_a_fall_edge_between_stacked_floors_is_judged_by_its_own_two_floors():
     # A bridge 4 m over the ground: dropping from the bridge onto the ground beside it is a 4 m fall, whatever the
     # ground floor of the bridge's own cell is.
@@ -208,6 +213,7 @@ def test_a_fall_edge_between_stacked_floors_is_judged_by_its_own_two_floors():
     assert np.isinf(topo.in_cost_quiet[beside, row.index(on)]) and np.isfinite(topo.in_cost[beside, row.index(on)])
 
 
+@pytest.mark.slow
 def test_the_unknown_climbs_a_connected_step():
     geo = toy_heights("Step", [HALL], ground=[((96, 96, 256, 296), 0.5)])      # half a metre: a step, both ways
     unk = ce.Unknown(geo)
@@ -216,6 +222,7 @@ def test_the_unknown_climbs_a_connected_step():
     assert unk.cells["A"][node(geo, 200)]
 
 
+@pytest.mark.slow
 def test_the_unknown_crosses_an_unresolved_strip_as_it_does_in_2d():
     # The ledge with the column at its foot unresolved: that column walks in 2D, to every floor around it,
     # so the unknown gets from the low ground up onto the ledge through it (uncertain terrain is 2D).
@@ -230,6 +237,7 @@ def test_the_unknown_crosses_an_unresolved_strip_as_it_does_in_2d():
     assert unk.cells["A"][strip] and unk.cells["A"][node(geo, 200)]
 
 
+@pytest.mark.slow
 def test_specials_join_every_floor_of_their_cells():
     from tests.replays.control_toys import uv
 
@@ -332,6 +340,7 @@ def region(geo, x0, x1):
     return geo.walk_n & (cx >= x0) & (cx < x1)
 
 
+@pytest.mark.slow
 def test_a_raised_node_inside_the_unknown_sees_what_its_boundary_cannot():
     # The reviewer's case (spec, "Unknown and Safe per floor"): Safe is what no node of a team's unknown
     # sees. The unknown here is everything west of x 200, with the mound in its middle. Its boundary is low
@@ -406,6 +415,7 @@ def columns(geo, nodes):
     return sorted({int(geo.node_cell[n]) % GRID for n in nodes})
 
 
+@pytest.mark.slow
 def test_a_wire_beside_a_step_extends_to_the_step():
     # Ground at 0 m, a step up to 1.5 m at x 256. A wire 0.4 m above the ground from x 204 to x 240 (its east
     # end hangs 2.2 m short of the step): it extends east to the step's face. Its west end has nothing
@@ -416,6 +426,7 @@ def test_a_wire_beside_a_step_extends_to_the_step():
     assert all(geo.node_z[n] in (0.0, 1.5) for n in got)
 
 
+@pytest.mark.slow
 def test_on_a_ramp_a_wire_stops_where_the_ground_reaches_it():
     # A 20% ramp climbing east from x 200. A level wire 0.4 m above the ground at its east anchor (x 200):
     # the ground reaches to within TRIP_HIT_M of it 1.5 m on (0.4 - 0.1 = 0.3 m of climb), 2 m with no
@@ -427,6 +438,7 @@ def test_on_a_ramp_a_wire_stops_where_the_ground_reaches_it():
     assert min(columns(geo, got)) == 22, "the west end, on flat ground with no wall in reach, stays at x 180"
 
 
+@pytest.mark.slow
 def test_a_wire_between_two_walls_or_with_nothing_in_reach_does_not_change():
     walls = toy_heights("TripWalls", [HALL], walls=[(192, 96, 200, 280), (248, 96, 256, 280)],
                         ground=[((0, 0, 1024, 1024), 0.0)])

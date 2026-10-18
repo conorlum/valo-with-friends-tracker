@@ -170,6 +170,7 @@ def test_a_blaze_blocks_sight_only():
     assert rnd.blockers == [] and len(rnd.walls) == 1 and rnd.smokes_at(5.0)
 
 
+@pytest.mark.slow
 def test_a_flat_trip_joins_the_wall_beside_its_end():
     geo = door_hall()                # the wall x 200-216 ends at y 288; a wire from beside its foot to the south edge
     wire = toy_ability("Gumshoe", "4_TripWire", 220, 290, 0, t=0.0, t1=20.0, kind="GameObject", end=list(uv(220, 295)))

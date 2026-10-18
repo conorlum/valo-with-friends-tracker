@@ -11,6 +11,7 @@ from test_adaptive_ground import mixed
 from test_ascent_features import runtime_case
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('wall_attachment', [False, True])
 def test_compiled_descending_door_on_refined_ground_and_wall_attachment(wall_attachment):
     geo = mixed(name='Ascent')

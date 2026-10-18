@@ -3,12 +3,15 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "scripts"))
 
 import replay_gate  # noqa: E402
 
 
+@pytest.mark.slow
 def test_every_synthetic_gate_row_is_at_its_expected_outcome(tmp_path, capsys):
     code = replay_gate.main(["--work", str(tmp_path)])
     printed = capsys.readouterr().out

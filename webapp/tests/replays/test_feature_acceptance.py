@@ -18,6 +18,7 @@ REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('case', ['small', 'larger', 'all_pending'])
 def test_artifact_cross_process_measurements(case, record_property):
     from app.control import heights as hc
@@ -73,6 +74,7 @@ print(json.dumps({'artifact':artifact,'seconds':time.perf_counter()-start,'peak'
         assert artifact.manifest['active_bundles'] == [] and artifact.digest
 
 
+@pytest.mark.slow
 def test_actual_control_runner_fresh_children_and_persistent_pool(tmp_path, monkeypatch, record_property):
     """Test-only registry/geometry setup wraps the real control_job -> compute_task lifecycle."""
     from replay_worker import server

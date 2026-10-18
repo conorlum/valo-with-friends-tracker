@@ -38,6 +38,7 @@ def compiled_case():
     return geo, artifact, mf, data, base, source
 
 
+@pytest.mark.slow
 def test_archive_engine_and_gaps_only_use_the_same_domain_and_timeline(tmp_path, monkeypatch):
     from app.gaps import cache, detect
     from app.control.feature_runtime import prepare_geometry
@@ -86,6 +87,7 @@ def test_archive_engine_and_gaps_only_use_the_same_domain_and_timeline(tmp_path,
     assert live['gaps'] == first['gaps']
 
 
+@pytest.mark.slow
 def test_ascent_compiler_refuses_duplicate_binding_flat_map_and_unresolved_clearance():
     geo, _, mf, _, _, _ = compiled_case()
     flat = geometry_case(flat=True); flat.name = 'Ascent'
@@ -99,6 +101,7 @@ def test_ascent_compiler_refuses_duplicate_binding_flat_map_and_unresolved_clear
     assert all('duplicate Ascent replay binding' in st.reasons for st in features.bundle_status(geo, mf).values())
 
 
+@pytest.mark.slow
 def test_archived_conservative_cutoff_is_eligible_and_samples_exact_boundary():
     from app.control.feature_runtime import FeatureRuntime
     from app.replays.map_feature_schema import known

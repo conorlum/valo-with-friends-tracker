@@ -3,6 +3,7 @@ contested with no orange claim). Toy patterns as test_control_floors.py and test
 import copy
 
 import numpy as np
+import pytest
 
 from app.control import engine as ce
 from app.control import geometry as cg
@@ -42,6 +43,7 @@ def test_adaptive_both_teams_is_contested_active():
     assert ce.collapse_states(geo, state)[PARENT] == ce.CONTESTED_ACTIVE
 
 
+@pytest.mark.slow
 def test_floors_one_team_takes_its_strongest():
     geo, state, under = _floors(ce.B_SAFE, ce.B_PASSIVE)
     assert ce.collapse_states(geo, state)[under] == ce.B_SAFE
@@ -64,6 +66,7 @@ def test_floors_a_contested_floor_keeps_the_cell_contested():
     assert ce.collapse_states(geo, state)[under] == ce.CONTESTED_ACTIVE
 
 
+@pytest.mark.slow
 def test_three_floors_one_team():
     geo = toy_heights("Three", [HALL], upper=[((240, 96, 288, 296), 4.0), ((240, 96, 288, 296), 8.0)])
     low, mid, top = (node(geo, 260, floor=k) for k in range(3))

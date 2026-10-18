@@ -133,6 +133,7 @@ def test_the_view_is_the_players_own_sight_before_memory():
     assert checked
 
 
+@pytest.mark.slow
 def test_eye_z_is_the_engines_eye_height_on_a_map_with_heights():
     """R13: `eye_z` is Tick._eye: the player's own z plus EYE_M."""
     geo = toy_heights("ObserveEye", [(96, 96, 416, 296)], upper=[((200, 150, 260, 200), 3.0)])
@@ -178,6 +179,7 @@ def test_the_cache_replays_what_the_observer_saw(tmp_path):
     assert len(replayed[-1][1]["A"]) > 0
 
 
+@pytest.mark.slow
 def test_the_cache_keeps_players_events_and_smokes(tmp_path):
     geo = toy_heights("ObserveCache", [(96, 96, 416, 296)], upper=[((200, 150, 260, 200), 3.0)])
     data = height_blob({0: standing(230, 175, 3.0), 5: ("B", [(0.0, 380, 250, 180, 0.0), (3.0, 300, 270, 180, 0.0)])},

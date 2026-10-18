@@ -58,6 +58,7 @@ def test_half_coverage_is_open_for_each_child_not_the_old_parent():
     assert geo.area(effects.blocked) == .5
 
 
+@pytest.mark.slow
 def test_panel_grid_reproduces_through_archived_inputs_and_original_height():
     geo, mf, _ = case()
     base = dict(sight=cf._packed_mask(geo.sight), walk=cf._packed_mask(geo.walk_px),

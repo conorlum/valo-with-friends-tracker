@@ -65,6 +65,7 @@ def test_pin_result_rejects_unexpected_artifact_and_tampered_provenance():
         rc.verify_result_inputs(pin, {'status': 'ok', 'geometry': {'sight': 's', 'features': 'a' * 64}})
 
 
+@pytest.mark.slow
 def test_pending_is_read_only_and_preparation_is_shared_per_map(factory, db, linked, tagged, monkeypatch):
     import time
     from app.services import control_feature_artifacts as service
@@ -85,6 +86,7 @@ def test_pending_is_read_only_and_preparation_is_shared_per_map(factory, db, lin
     assert db.query(ControlFeatureArtifact).count() == 1
 
 
+@pytest.mark.slow
 def test_result_provenance_tamper_and_runtime_edit_preserve_old_row(factory, db, linked, tagged):
     from app.services.replay_control_store import store_round
     from app.models.replay import ReplayRoundControl
@@ -154,6 +156,7 @@ def test_review_current_snapshot_rejects_bad_json_containers(tmp_path, monkeypat
         rc._current_snapshot()
 
 
+@pytest.mark.slow
 def test_review_match_summary_freshness_uses_current_tagged_context(factory, db, linked, tagged, monkeypatch):
     from test_control_store import put_row
     from app.services.replay_control_views import load_round_summaries
@@ -186,6 +189,7 @@ def test_review_match_summary_explicit_off_beats_committed_fallback(db, linked, 
     assert load_round_summaries(db, linked).stale == []
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('editorial', [False, True])
 def test_review_gap_writer_rechecks_tags_after_existing_run_lookup(factory, db, linked, tagged, monkeypatch, editorial):
     from sqlalchemy.orm import Session

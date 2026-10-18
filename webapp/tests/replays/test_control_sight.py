@@ -69,6 +69,7 @@ def test_up_at_a_ledge_a_body_at_the_edge_is_seen_and_one_far_back_is_hidden():
     assert seen[node(geo, 270)], "the lower floor between them"
 
 
+@pytest.mark.slow
 def test_a_flat_floor_never_hides_itself():
     # Heights that are all one level change nothing: the height test agrees with 2D everywhere, on an
     # open hall and behind a door (the 2D corner tolerance is the same with heights).
@@ -94,6 +95,7 @@ def z_at(geo, x, y=Y):
     return float(geo.node_z[geo.cell_of_px(x, y)])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("x", [120, 164, 240, 316, 380])
 def test_a_continuous_ramp_hides_nothing_on_itself(x):
     geo = ramp()
@@ -170,6 +172,7 @@ def test_from_outside_the_bridge_hides_what_is_on_it_past_its_edge_and_shows_the
 # ---------------------------------------------------------------- unresolved terrain
 
 
+@pytest.mark.slow
 def test_a_ray_into_an_unresolved_cell_gives_the_2d_answer_and_is_recorded():
     # The ledge again, with an unresolved strip (x 264-272) just below it. A ray that crosses the strip is
     # 2D from there on: the ground the ledge would hide is seen, as it is today.
@@ -253,6 +256,7 @@ def test_load_geometry_takes_a_preview_asset_and_checks_a_committed_ones_digest(
         cg.load_geometry("Ascent", tmp_path)
 
 
+@pytest.mark.slow
 def test_a_walkable_cell_the_asset_does_not_know_is_unresolved_and_counted():
     import copy
 
