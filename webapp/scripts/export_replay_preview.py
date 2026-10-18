@@ -5,6 +5,8 @@
 Writes, into `--out` (default `%TEMP%\\valo-replay\\<uuid>-preview`, never the repo):
 
 - `N.json.gz`: each round's stored blob, as served;
+- `N.link.json`: what map control reads from the link for round N (`replay_control.round_link`), for
+  computing the round's critical moments offline;
 - `N.control.bin`: each round's stored map control (`replay_round_control.data`, gzip), when it has an ok row;
 - `context.json`: the replay page's site data (app/services/replays.py `page_context`), with player names:
   keep the folder local;
@@ -27,6 +29,7 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.db import SessionLocal  # noqa: E402
 from app.models.replay import Replay, ReplayRound, ReplayRoundControl  # noqa: E402
+from app.services import replay_control  # noqa: E402
 from app.services import replay_control_views as views  # noqa: E402
 from app.services import replays as replay_service  # noqa: E402
 
@@ -37,8 +40,11 @@ def export(db, uuid: str, out: Path) -> dict:
         raise SystemExit(f"no stored replay {uuid}")
     out.mkdir(parents=True, exist_ok=True)
     rounds = 0
+    groups = replay_control.side_groups(db, replay)
     for row in db.query(ReplayRound).filter(ReplayRound.replay_id == replay.id):
         (out / f"{row.round_number}.json.gz").write_bytes(row.data)
+        link = replay_control.round_link(replay, groups, row.round_number)
+        (out / f"{row.round_number}.link.json").write_text(json.dumps(link), encoding="utf-8")
         rounds += 1
     control = 0
     for row in db.query(ReplayRoundControl).filter(ReplayRoundControl.replay_id == replay.id,
