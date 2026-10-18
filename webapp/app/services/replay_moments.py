@@ -1,7 +1,7 @@
 """Pure functions that turn stored per-round moments, control deaths and
 locating events into the JSON payload of the replay moments route.
 
-No DB, no SQLAlchemy, no FastAPI.
+The functions above `load_moments_payload` are pure (no DB, no FastAPI); the loader alone reads the DB.
 """
 from __future__ import annotations
 
@@ -154,3 +154,59 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale) -> 
                               "info": player_info(slot, events, moments)}
     return {"players": players, "attack_round1": attack_round1, "rounds": rounds,
             "summary": summary, "stale": stale}
+
+
+def load_moments_payload(db, replay) -> dict:
+    """The route's body for a linked replay with the control layer: reads the stored moments, control deaths and
+    knowledge events, then hands them to build_payload."""
+    from sqlalchemy.orm import load_only
+
+    from app.models.replay import ReplayRoundControl, ReplayRoundMoments
+    from app.replays import control_format
+    from app.services import replay_control, replay_control_views, replay_gaps
+    from app.services import replays as replay_service
+
+    moments = {}
+    stored = {}
+    for row in db.query(ReplayRoundMoments).filter(ReplayRoundMoments.replay_id == replay.id):
+        moments[row.round_number] = {"status": row.status, "fights": (row.fights or {}).get("fights")}
+        stored[row.round_number] = row
+
+    groups = replay_control.side_groups(db, replay)
+    context = replay_control.resolve_current_geometry(db, replay.map_name)
+    stale = 0
+    for n in range(1, replay.round_count + 1):
+        row = stored.get(n)
+        if row is None or row.gaps_revision != replay_gaps.GAPS_REVISION:
+            stale += 1
+            continue
+        control = replay_control.round_fingerprint(replay, groups, n, context=context)
+        current = None if control is None else replay_gaps.gap_fingerprint(control, replay.map_name)
+        if current is None or row.fingerprint != current:
+            stale += 1
+
+    loaded = replay_control_views.load_round_summaries(db, replay)
+    tables = replay_control_views.player_tables(replay, loaded)
+    deaths = {}
+    for n, entry in tables["rounds"].items():
+        if entry.get("status") == "ok":
+            deaths[int(n)] = {slot: p["lost"] for slot, p in entry["players"].items()}
+
+    events = {}
+    rows = (db.query(ReplayRoundControl.round_number, ReplayRoundControl.data)
+            .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.status == "ok"))
+    for n, data in rows:
+        try:
+            header, _ = control_format.unpack_data(data)
+        except (control_format.ControlFormatError, ValueError, OSError):
+            continue
+        found = header.get("knowledge_events") or {}
+        if found:
+            events[n] = found
+
+    page = replay_service.page_context(db, replay)["players"]
+    players = {str(slot): {"name": p.get("name"), "team": p.get("team")} for slot, p in page.items()}
+    link = replay_control.round_link(replay, groups, 1)
+    attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
+    return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
+                         events=events, stale=stale)

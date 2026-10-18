@@ -59,6 +59,7 @@ from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import replay_moments
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
@@ -337,6 +338,18 @@ def replay_round_gaps(request: Request, match_uuid: str, round_number: int, db: 
     view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], replay.map_name)
     body = {"status": status, "stale": status == "stale", "revision": gaps_service.GAPS_REVISION,
             "rows": view["rows"], "chokes": view["chokes"]}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
+@router.get("/replays/{match_uuid}/moments.json")
+def replay_moments_json(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    """The match's critical moments, with each player's summary (app/services/replay_moments.py); the same 404s as
+    gaps.json. The ETag is over the whole body."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    body = replay_moments.load_moments_payload(db, replay)
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return _json_with_etag(request, body, etag_of(canonical))
 
