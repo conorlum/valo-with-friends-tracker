@@ -1729,7 +1729,8 @@ table.compact-table .badge-score {
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
 .replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
 .replay { --replay-unknown: #77787f; }
-.replay-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
+/* PROVISIONAL(D9): wrap, as the coach page's row does, since Critical Moments makes the row wider than the column */
+.replay-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
 .replay-tab {
   font: inherit;
   font-weight: 600;
