@@ -28,7 +28,8 @@ def _r2(x):
 
 
 def _events(rnd, blob: dict, slot: int) -> list[tuple]:
-    """(t, kind, by, other) for every cross-team damage or kill row touching `slot`, up to t_decided, sorted by t."""
+    """(t, kind, by, other, end) for every cross-team damage or kill row touching `slot`, up to t_decided, sorted by
+    t. A damage run's end is its t1 (clipped to t_decided); a kill's is its t."""
     team, out = rnd.team, []
     mine = team.get(slot)
     for row in blob.get("util") or ():
@@ -40,23 +41,26 @@ def _events(rnd, blob: dict, slot: int) -> list[tuple]:
         other = target if by == slot else by
         if team.get(other) is None or team.get(other) == mine:
             continue
-        out.append((float(row["t"]), "damage", by, other))
+        t = float(row["t"])
+        end = row.get("t1")
+        out.append((t, "damage", by, other, t if end is None else min(max(float(end), t), rnd.t_decided)))
     for t, killer, victim in rnd.kills:
         if slot not in (killer, victim):
             continue
         other = victim if killer == slot else killer
         if team.get(other) is None or team.get(other) == mine:
             continue
-        out.append((t, "kill", killer, other))
+        out.append((t, "kill", killer, other, t))
     out = [e for e in out if e[0] <= rnd.t_decided]
     out.sort(key=lambda e: (e[0], e[1] != "damage"))
     return out
 
 
 def _split(events: list[tuple]) -> list[list[tuple]]:
+    """Fights: a gap of more than FIGHT_GAP_S from the end of everything so far (a damage run's t1) splits them."""
     groups: list[list[tuple]] = []
     for e in events:
-        if groups and e[0] - groups[-1][-1][0] <= FIGHT_GAP_S:
+        if groups and e[0] - max(g[4] for g in groups[-1]) <= FIGHT_GAP_S:
             groups[-1].append(e)
         else:
             groups.append([e])
@@ -329,11 +333,12 @@ def _ttk(rnd, blob: dict, tk: float, killer: int, victim: int, kd: dict) -> None
 
 
 def _first_sight(rnd, viewer: int, target: int, t_lo: float, t1: float):
-    """(t, angle) of the first sample from t_lo, step SIGHT_STEP_S, up to t1, where viewer sees target; else (None, None)."""
+    """(t, angle) of the first sample from t_lo, step SIGHT_STEP_S, up to t1, where viewer sees target; else (None, None).
+    A dead target is never seen (its track can outlive it); _sees_point checks the viewer is alive."""
     k = 0
     while t_lo + k * SIGHT_STEP_S <= t1:
         t = t_lo + k * SIGHT_STEP_S
-        p = rnd.pos(target, t)
+        p = rnd.pos(target, t) if rnd.alive(target, t) else None
         if p is not None and _sees_point(rnd, viewer, t, p[0], p[1]):
             angle = _off(rnd, viewer, target, t)
             return t, None if angle is None else int(round(angle)), angle
@@ -400,8 +405,12 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
     for t in samples:
         pk, pv = rnd.pos(killer, t), rnd.pos(victim, t)
         # engine.los with no smokes also drops ability walls and map features: "through smoke" means through
-        # smoke, an ability wall or a door.
-        if pk is not None and pv is not None and engine.los(rnd.geo, (pk[0], pk[1], None), (pv[0], pv[1], None), []):
+        # smoke, an ability wall or a door, so the bare line must be clear AND the line with that moment's
+        # smokes blocked (neither seeing the other can also be facing, a flash or nearsight).
+        if pk is None or pv is None:
+            continue
+        a, b = (pk[0], pk[1], None), (pv[0], pv[1], None)
+        if engine.los(rnd.geo, a, b, []) and not engine.los(rnd.geo, a, b, rnd.smokes_at(t)):
             kd["through_smoke"] = True
             break
     kd["measurable"] = kd["through_smoke"] or kd["wall"]
@@ -410,7 +419,7 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
 
 def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | None = None,
            sight: bool = False) -> dict:
-    t0, t1 = group[0][0], group[-1][0]
+    t0, t1 = group[0][0], max(e[4] for e in group)
     opponents = sorted({e[3] for e in group})
     kills = [{"victim": e[3], "t": _r2(e[0])} for e in group if e[1] == "kill" and e[2] == slot]
     deaths = [e for e in group if e[1] == "kill" and e[2] != slot]
@@ -419,7 +428,7 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | N
     death_detail = kds[(deaths[0][0], deaths[0][2], slot)] if deaths else None
     died = {"t": _r2(deaths[0][0]), "killer": deaths[0][2]} if deaths else None
     trade = _trade(rnd, slot, {"t": deaths[0][0], "killer": deaths[0][2]} if deaths else None,
-                   [{"victim": k["victim"], "t": k["t"]} for k in kills])
+                   [{"victim": e[3], "t": e[0]} for e in group if e[1] == "kill" and e[2] == slot])  # unrounded
     mates = _mates(rnd, blob, slot, t0, t1, opponents)
     tags = []
     if mates["state"] == "alone":

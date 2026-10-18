@@ -51,6 +51,16 @@ def test_gap_of_2_9_s_is_one_fight_and_3_1_s_is_two():
     assert [f["i"] for f in two] == [0, 1] and two[1]["t0"] == pytest.approx(13.1)
 
 
+def test_a_damage_run_s_end_counts_for_the_gap_and_the_fight_end():
+    # B1: a run 10-12.5 s then damage at 14 s is 1.5 s apart, one fight; the run's end is the fight's end
+    [f] = of(run(team(), util=[damage(10, 0, 5, t1=12.5), damage(14, 0, 5)]), 0)
+    assert f["t0"] == 10 and f["t1"] == pytest.approx(14)
+    [g] = of(run(team(), util=[damage(10, 0, 5, t1=12.5)]), 0)
+    assert g["t1"] == pytest.approx(12.5)
+    [h] = of(run(team(), util=[damage(10, 0, 5, t1=25)], t_decided=20.0), 0)   # clipped to t_decided
+    assert h["t1"] == pytest.approx(20)
+
+
 def test_events_after_t_decided_are_dropped():
     out = run(team(), util=[damage(10, 0, 5), damage(25, 0, 5)], t_decided=20.0)
     [f] = of(out, 0)
@@ -65,6 +75,15 @@ def test_a_death_only_the_db_knows_is_not_a_fight():
 
 def test_same_team_damage_is_not_a_fight():
     assert run(team(), util=[damage(10, 0, 1)])["fights"] == []
+
+
+def test_both_trade_verdicts_use_unrounded_times():
+    # B6: 6.001 s apart is outside the window for the death AND for the avenger, though 16.004 rounds to 16.0
+    out = run(team(10), kills=[kill(10.003, 5, 0), kill(16.004, 1, 5)])
+    [dead] = of(out, 0)
+    assert dead["trade"]["died"] == "not_traded"
+    avenger = [f for f in of(out, 1) if f["kills"]][0]
+    assert avenger["trade"]["avenged"] == [] and "traded_teammate" not in avenger["tags"]
 
 
 @pytest.mark.parametrize("second,traded", [(16.0, True), (16.01, False)])

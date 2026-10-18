@@ -47,6 +47,29 @@ def test_through_smoke_counts_as_unseen_and_tags_both():
     assert "killed_unseen" in f[0]["tags"] and "died_unseen" in f[5]["tags"]
 
 
+def test_neither_saw_on_open_ground_without_smoke_is_not_through_smoke():
+    # B3: the killer faces north, the victim faces away; the bare line is clear and nothing blocks it
+    side_on = {0: ("A", [(0.0, 120, 200, 90)]), 5: ("B", [(0.0, 400, 200, 0)])}
+    f = fights_of(side_on, GUN)
+    kd = f[0]["kill_detail"][0]
+    assert not kd["killer_saw"] and not kd["victim_saw"]
+    assert not kd["through_smoke"] and not kd["measurable"]
+    assert "through_smoke" not in f[0]["tags"] and "through_smoke" not in f[5]["tags"]
+
+
+def test_a_dead_opponent_is_never_first_seen():
+    # B4: slot 0 kills 5 at 10 s without seeing them, keeps fighting 6 to 11 s, and turns east at 10.25 s,
+    # toward where 5's track still is. 5 is dead by then, so slot 0 never "saw" 5.
+    players = {0: ("A", [(0.0, 120, 200, 180), (10.2, 120, 200, 180), (10.25, 120, 200, 0)]),
+               5: ("B", [(0.0, 400, 200, 0)]), 6: ("B", [(0.0, 400, 240, 0)])}
+    util = [damage(9.0, 0, 5), damage(9.5, 0, 5), damage(10.5, 0, 6), damage(11.0, 0, 6)]
+    f = fights_of(players, util)
+    duel = [d for d in f[0]["duels"] if d["opponent"] == 5][0]
+    assert duel["you_saw_t"] is None
+    seen6 = [d for d in f[0]["duels"] if d["opponent"] == 6][0]
+    assert seen6["you_saw_t"] is not None    # the living opponent in the same view is still seen
+
+
 def walled_players():
     return {0: ("A", [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 260, 200, 180)])}
 
