@@ -1,13 +1,20 @@
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_db
-from app.models import Player
+from app.models import AccountGroupMember, Player
+from app.services.account_groups import (
+    get_cached_group_views,
+    group_fingerprint,
+    list_group_members,
+    store_group_views,
+)
 from app.services.auth import SESSION_KEY
 from app.services.economy_graphs import (
     build_loadout_win_scatter_from_aggregates,
@@ -21,7 +28,7 @@ from app.services.map_streaks import compute_map_streaks
 from app.services.match_streaks import compute_form, form_entry
 from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
-from app.services.player_view_cache import CachedPlayerViews, store_player_views
+from app.services.player_view_cache import CachedPlayerViews, get_cached_views, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
 from app.services.players import get_player_and_cached_views, get_player_or_404, list_players
 from app.services.recent_match_rows import build_recent_match_rows, recent_form_entries
@@ -64,10 +71,61 @@ def _run_in_own_session(fn, *args, _trace_phase: str | None = None, **kwargs):
         return _call()
 
 
+@dataclass(frozen=True)
+class _AccountView:
+    """Which accounts a player page shows. `group` is set only for the
+    combined "All accounts" view of a group of two or more."""
+    members: list[AccountGroupMember]
+    group: tuple[int, frozenset[int], str] | None = None   # (group_id, player_ids, fingerprint)
+
+    @property
+    def player_ids(self) -> frozenset[int] | None:
+        return self.group[1] if self.group else None
+
+    @property
+    def query(self) -> str:
+        """Appended to the page's own fragment URLs so they show the same accounts."""
+        return "?accounts=all" if self.group else ""
+
+
+def _account_view(db: Session, player: Player, accounts: str | None) -> _AccountView:
+    members = list_group_members(db, player.id)
+    if accounts != "all" or len(members) < 2:
+        return _AccountView(members)
+    player_ids = frozenset(m.player_id for m in members)
+    return _AccountView(members, (members[0].group_id, player_ids, group_fingerprint(db, player_ids)))
+
+
+def _player_and_cached_views(
+    db: Session, display_name: str, scope: str, accounts: str | None
+) -> tuple[Player, CachedPlayerViews | None, _AccountView]:
+    """The player, its cached page for `scope` and which accounts it shows.
+    The usual (single-account) path keeps its one merged lookup; only the
+    combined view asks for the group's cache row instead."""
+    if accounts != "all":
+        player, cached = get_player_and_cached_views(db, display_name, scope)
+        return player, cached, _account_view(db, player, None)
+    player = get_player_or_404(db, display_name)
+    view = _account_view(db, player, accounts)
+    if view.group is None:
+        return player, get_cached_views(db, player, scope), view
+    group_id, _, fingerprint = view.group
+    return player, get_cached_group_views(db, group_id, scope, fingerprint, player), view
+
+
+def _account_context(view: _AccountView) -> dict:
+    return {
+        "account_members": view.members if len(view.members) > 1 else [],
+        "accounts_combined": view.group is not None,
+        "accounts_query": view.query,
+    }
+
+
 def _build_profile_context(
     db: Session, player: Player, match_limit: int | None, scope: str, *,
     cached: CachedPlayerViews | None, include_map_streaks: bool = False,
     extra_work: Callable[[], _T] | None = None,
+    account_view: _AccountView | None = None,
 ) -> tuple[dict, _T | None]:
     """Builds the profile-page context. `cached` is the ALREADY-FETCHED cache
     result (Step 1 merges its lookup with the player lookup one level up, in
@@ -85,17 +143,23 @@ def _build_profile_context(
     submitted future(s), the same way the live-compute branch already
     overlaps them on a cache miss. This is how Step 1(b)'s auth/friendship
     lookup gets run "off the critical path" without widening the executor's
-    own fan-out or handing the request Session to another thread."""
+    own fan-out or handing the request Session to another thread.
+
+    `account_view`, if it is a group's combined view, builds the page from
+    every one of the group's accounts and writes through to the group's
+    cache instead of the player's."""
     trace = get_current_trace()
     if trace is not None:
         trace.tags["scope"] = scope
         trace.tags["cache_hit"] = cached is not None
     computed: PlayerViews | None = None
+    group = account_view.group if account_view is not None else None
+    player_ids = group[1] if group else None
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         map_streaks_future = (
             submit_traced(
-                executor, _run_in_own_session, compute_map_streaks, player.id,
+                executor, _run_in_own_session, compute_map_streaks, player.id, player_ids,
                 _trace_phase="executor:map_streaks",
             )
             if include_map_streaks else None
@@ -118,7 +182,9 @@ def _build_profile_context(
             # counted in the same max() as the other concurrent chains, not
             # added serially.
             with span("live_compute", phase="executor:main_thread_live_compute"):
-                computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
+                computed = compute_player_views(
+                    db, player, match_limit, PAGE_BOOTSTRAP_DRAWS, player_ids=player_ids
+                )
                 round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
                     computed.win_stats, computed.kill_order_weights
                 )
@@ -143,10 +209,16 @@ def _build_profile_context(
         # request session here would expire `player` and every other ORM
         # object the caller still uses. Failure is non-fatal.
         try:
-            _run_in_own_session(
-                store_player_views, player.id, {scope: computed},
-                _trace_phase="post_executor_writethrough",
-            )
+            if group:
+                _run_in_own_session(
+                    store_group_views, group[0], scope, group[2], computed,
+                    _trace_phase="post_executor_writethrough",
+                )
+            else:
+                _run_in_own_session(
+                    store_player_views, player.id, {scope: computed},
+                    _trace_phase="post_executor_writethrough",
+                )
         except Exception:
             logger.exception("Cache write-through failed for player %s (%s)", player.id, scope)
 
@@ -188,6 +260,8 @@ def _build_profile_context(
     }
     if include_map_streaks:
         context["map_streaks"] = map_streaks
+    if account_view is not None:
+        context.update(_account_context(account_view))
     return context, extra_result
 
 
@@ -198,11 +272,13 @@ def player_list(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/{display_name}")
-def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
+def player_detail(
+    request: Request, display_name: str, accounts: str | None = None, db: Session = Depends(get_db)
+):
     trace = start_trace(f"players.detail:{display_name}", endpoint="detail")
     try:
         with span("player_lookup", phase="pre_executor"):
-            player, cached = get_player_and_cached_views(db, display_name, "recent")
+            player, cached, account_view = _player_and_cached_views(db, display_name, "recent", accounts)
 
         session_player_id = request.session.get(SESSION_KEY)
 
@@ -220,9 +296,13 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
         context, (current_player, is_friend) = _build_profile_context(
             db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent",
             cached=cached, include_map_streaks=True, extra_work=_auth_and_friends,
+            account_view=account_view,
         )
         context["is_own_profile"] = current_player is not None and current_player.id == player.id
         context["is_friend"] = is_friend
+        context["is_own_account"] = current_player is not None and any(
+            m.player_id == current_player.id for m in account_view.members
+        )
 
         with span("template_render", phase="render"):
             response = templates.TemplateResponse(request, "players/detail.html", context)
@@ -232,21 +312,29 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
 
 
 @router.get("/{display_name}/recent-matches")
-def player_recent_matches_fragment(request: Request, display_name: str, db: Session = Depends(get_db)):
+def player_recent_matches_fragment(
+    request: Request, display_name: str, accounts: str | None = None, db: Session = Depends(get_db)
+):
     """The Form card's recent-match rows, loaded after the page itself (via
     htmx) since the badges need per-round data the page cache doesn't hold."""
     player = get_player_or_404(db, display_name)
-    rows = build_recent_match_rows(db, player.id, recent_form_entries(db, player.id))
+    player_ids = _account_view(db, player, accounts).player_ids if accounts == "all" else None
+    entries = recent_form_entries(db, player.id, player_ids=player_ids)
+    rows = build_recent_match_rows(db, player.id, entries, player_ids=player_ids)
     return templates.TemplateResponse(request, "_recent_match_rows.html", {"recent_rows": rows})
 
 
 @router.get("/{display_name}/career")
-def player_career_fragment(request: Request, display_name: str, db: Session = Depends(get_db)):
+def player_career_fragment(
+    request: Request, display_name: str, accounts: str | None = None, db: Session = Depends(get_db)
+):
     trace = start_trace(f"players.career:{display_name}", endpoint="career")
     try:
         with span("player_lookup", phase="pre_executor"):
-            player, cached = get_player_and_cached_views(db, display_name, "career")
-        context, _ = _build_profile_context(db, player, match_limit=None, scope="career", cached=cached)
+            player, cached, account_view = _player_and_cached_views(db, display_name, "career", accounts)
+        context, _ = _build_profile_context(
+            db, player, match_limit=None, scope="career", cached=cached, account_view=account_view,
+        )
         with span("template_render", phase="render"):
             response = templates.TemplateResponse(request, "players/_profile_sections.html", context)
         return response

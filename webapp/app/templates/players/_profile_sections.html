@@ -42,7 +42,7 @@
 </div>
 
 {% set form_title = "Form" %}
-{% set recent_rows_url = "/players/" ~ (profile.player.display_name | urlencode) ~ "/recent-matches" %}
+{% set recent_rows_url = "/players/" ~ (profile.player.display_name | urlencode) ~ "/recent-matches" ~ (accounts_query or "") %}
 {% set form_meta = "Match win/loss streaks over this player's last 30 matches." if scope == 'recent' else "Match win/loss streaks over this player's full match history." %}
 {% include "_form_card.html" %}
 

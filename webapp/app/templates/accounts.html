@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts - {{ site_name }}{% endblock %}
+
+{% block content %}
+<h1>Accounts</h1>
+<p class="page-meta">Group your Riot accounts to see their stats together. Each account's player page gets an "All accounts" toggle, and you can still view each account on its own.</p>
+<p class="page-meta">The account you add from becomes your main; the others are its sub accounts. Only the main adds, removes and labels accounts. An account that's already linked can't be added by anyone else until it leaves.</p>
+{% if demo_mode %}
+<p class="page-meta">Accounts can't be grouped on this demo.</p>
+{% endif %}
+{% if error %}
+<p class="page-meta" role="alert"><strong>{{ error }}</strong></p>
+{% endif %}
+
+<div class="card">
+  <h2>Your accounts</h2>
+  {% if members %}
+  <p class="page-meta"><a href="/players/{{ current_player.display_name | urlencode }}?accounts=all">See all {{ members | length }} accounts together</a></p>
+  {% if not is_main %}
+  <p class="page-meta">{{ current_player.display_name }} is a sub account of {{ main.player.display_name }}. Log in as {{ main.player.display_name }} to add, remove or label accounts.</p>
+  {% endif %}
+  <table>
+    <thead>
+      <tr><th>Account</th><th>Label</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for member in members %}
+      <tr>
+        <td>
+          <a class="player-link" href="/players/{{ member.player.display_name | urlencode }}">{{ member.player.display_name }}</a>
+          {% if member.is_main %}<span class="badge">Main</span>{% endif %}
+          {% if member.player_id == current_player.id %}<span class="page-meta">(logged in)</span>{% endif %}
+        </td>
+        <td>
+          {% if is_main and not demo_mode %}
+          <form action="/accounts/label" method="post" class="inline-form account-label-form">
+            <input type="hidden" name="display_name" value="{{ member.player.display_name }}">
+            <input type="text" name="label" value="{{ member.label or '' }}" maxlength="32" placeholder="e.g. Duelist alt" aria-label="Label for {{ member.player.display_name }}">
+            <button type="submit" class="link-button">Save</button>
+          </form>
+          {% else %}{{ member.label or '' }}{% endif %}
+        </td>
+        <td>
+          {% if not demo_mode and not member.is_main %}
+          {% if is_main %}
+          <form action="/accounts/make-main" method="post" class="inline-form">
+            <input type="hidden" name="display_name" value="{{ member.player.display_name }}">
+            <button type="submit" class="link-button">Make main</button>
+          </form>
+          <form action="/accounts/remove" method="post" class="inline-form">
+            <input type="hidden" name="display_name" value="{{ member.player.display_name }}">
+            <button type="submit" class="link-button">Remove</button>
+          </form>
+          {% elif member.player_id == current_player.id %}
+          <form action="/accounts/remove" method="post" class="inline-form">
+            <input type="hidden" name="display_name" value="{{ member.player.display_name }}">
+            <button type="submit" class="link-button">Leave group</button>
+          </form>
+          {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="page-meta">Only {{ current_player.display_name }} so far. Add your other accounts below and {{ current_player.display_name }} becomes the main.</p>
+  {% endif %}
+</div>
+
+{% if not demo_mode and is_main %}
+<div class="card">
+  <h2>Add an account</h2>
+  <p class="page-meta">Only accounts that appear in a match on the site and aren't linked to anyone yet are listed.</p>
+  <form class="player-picker" action="/accounts/add" method="post">
+    <select name="display_name" required>
+      <option value="" disabled selected>Choose a player&hellip;</option>
+      {% for player in all_players %}
+      <option value="{{ player }}">{{ player }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Add account</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

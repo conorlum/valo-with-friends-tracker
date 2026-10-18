@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
-from app.routers import (auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
+from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
                          site_stats, squad)
 from app.services.auth import get_current_player
 from app.templates import templates
@@ -55,6 +55,7 @@ app.add_middleware(
     https_only=settings.session_cookie_https_only,
 )
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
+app.include_router(accounts.router)
 app.include_router(auth.router)
 app.include_router(friends.router)
 app.include_router(matches.router)

@@ -17,11 +17,11 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import MatchPlayer, Player, PlayerViewCache
+from app.models import AccountGroupMember, AccountGroupViewCache, MatchPlayer, Player, PlayerViewCache
 from app.scoring.impact import IMPACT_CALCULATION_VERSION
 from app.services.economy_graphs import (
     LoadoutWinScatter,
@@ -570,6 +570,27 @@ def decode_cache_row(row: PlayerViewCache | None, player: Player) -> CachedPlaye
         return None
 
 
+def encode_player_views(views: PlayerViews) -> dict:
+    """The stored blob for `views` -- shared with the account-group cache
+    (app.services.account_groups), which keeps the same blob per group."""
+    return _encode(views)
+
+
+def decode_player_views_blob(data: dict, version: int, player: Player) -> CachedPlayerViews | None:
+    """decode_cache_row's version check + validate + decode, for a blob
+    stored somewhere other than player_view_cache. Same contract: a stale,
+    invalid or undecodable blob is None, never an exception."""
+    if version != cache_version():
+        return None
+    try:
+        if not _validate_blob(data):
+            return None
+        return _decode(data, player)
+    except Exception:
+        logger.exception("player view blob: decode failed for player %s", player.id)
+        return None
+
+
 def get_cached_views(db: Session, player: Player, scope: str) -> CachedPlayerViews | None:
     """Cache miss, version mismatch, or any validation/decode failure ->
     None (the caller then computes live). Failures are logged, never
@@ -610,31 +631,50 @@ def store_player_views(db: Session, player_id: int, views_by_scope: dict[str, Pl
 def invalidate_player_cache(db: Session, player_ids: set[int]) -> None:
     """DELETE FROM player_view_cache WHERE player_id IN (...).
     Does NOT commit -- the caller commits, so the delete lands in the same
-    transaction as whatever mutation triggered it."""
+    transaction as whatever mutation triggered it. Also deletes the combined
+    rows of any account group those players are in: the group fingerprint
+    catches new matches on its own, but not Impact rows rescored in place."""
     if not player_ids:
         return
     db.query(PlayerViewCache).filter(PlayerViewCache.player_id.in_(player_ids)).delete(synchronize_session=False)
+    group_ids = select(AccountGroupMember.group_id).where(AccountGroupMember.player_id.in_(player_ids))
+    db.query(AccountGroupViewCache).filter(AccountGroupViewCache.group_id.in_(group_ids)).delete(
+        synchronize_session=False
+    )
 
 
 def invalidate_all_player_caches(db: Session) -> None:
     """DELETE every player_view_cache row. Does NOT commit. For a
     recompute that touches EVERY match (scripts/recompute_impact.py) --
     simpler and strictly safer than discovering which players are affected,
-    since the answer there is "all of them" (Step 3a)."""
+    since the answer there is "all of them" (Step 3a). Account groups'
+    combined rows go too: their fingerprint can't see Impact rows rewritten
+    in place."""
     db.query(PlayerViewCache).delete(synchronize_session=False)
+    db.query(AccountGroupViewCache).delete(synchronize_session=False)
 
 
 def filter_cached_player_ids(db: Session, player_ids: set[int]) -> set[int]:
-    """Narrows an arbitrary ID set to those with existing cache rows."""
+    """Narrows an arbitrary ID set to those with existing cache rows: their
+    own, or their account group's combined rows."""
     if not player_ids:
         return set()
-    return {
+    own = {
         pid
         for (pid,) in db.query(PlayerViewCache.player_id)
         .filter(PlayerViewCache.player_id.in_(player_ids))
         .distinct()
         .all()
     }
+    grouped = {
+        pid
+        for (pid,) in db.query(AccountGroupMember.player_id)
+        .join(AccountGroupViewCache, AccountGroupViewCache.group_id == AccountGroupMember.group_id)
+        .filter(AccountGroupMember.player_id.in_(player_ids))
+        .distinct()
+        .all()
+    }
+    return own | grouped
 
 
 def find_cached_player_ids_for_match(db: Session, match_id: int) -> set[int]:
@@ -657,10 +697,15 @@ def recompute_player_views(db: Session, player_id: int) -> None:
 
 
 def prewarm_player_cache(db: Session, player_ids: set[int]) -> None:
-    """Best-effort, per player: one player's failure never aborts the batch."""
+    """Best-effort, per player: one player's failure never aborts the batch.
+    Then the combined rows of any account group those players are in."""
+    # Imported here: account_groups imports this module.
+    from app.services.account_groups import prewarm_group_caches
+
     for pid in player_ids:
         try:
             recompute_player_views(db, pid)
         except Exception:
             db.rollback()
             logger.exception("Cache pre-warm failed for player %s; next page visit will recompute", pid)
+    prewarm_group_caches(db, set(player_ids))
