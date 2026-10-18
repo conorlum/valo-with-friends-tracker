@@ -14,6 +14,7 @@ def artifact_case():
     return compile_artifact(geometry_case(flat=True), inp, '0' * 40)
 
 
+@pytest.mark.slow
 def test_atomic_cache_validates_before_replacement_and_removes_corruption(tmp_path):
     artifact = artifact_case()
     seen = []
@@ -30,6 +31,7 @@ def test_atomic_cache_validates_before_replacement_and_removes_corruption(tmp_pa
         codec.load_cached_artifact(tmp_path, artifact.digest)
 
 
+@pytest.mark.slow
 def test_exact_loader_checks_context_and_digestless_never_reads_cache(tmp_path, monkeypatch):
     from app.control import task
     from app.replays import map_feature_inputs as fi
@@ -49,6 +51,7 @@ def test_exact_loader_checks_context_and_digestless_never_reads_cache(tmp_path, 
         task.load_task_features(request, geometry_case(flat=True), tmp_path)
 
 
+@pytest.mark.slow
 def test_verified_cache_hit_cannot_apply_to_different_permanent_geometry(tmp_path, monkeypatch):
     from app.control import task
     from app.replays import map_feature_inputs as fi
@@ -73,6 +76,7 @@ def test_feature_failure_is_explicit(error, kind, code):
     assert codec.feature_failure(error) == {'status': 'failed', 'error_kind': kind, 'error_code': code, 'error': str(error)}
 
 
+@pytest.mark.slow
 def test_real_http_push_miss_corruption_and_client_protocol(tmp_path):
     from test_replay_worker_control import serve, server
     from app.services.replay_control_remote import ControlClient, NeedsFeatures

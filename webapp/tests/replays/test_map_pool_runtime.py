@@ -154,6 +154,7 @@ def test_missing_or_invalid_motion_duration_cannot_be_enabled(duration):
     assert 'transition timing unresolved' in readiness(f)
 
 
+@pytest.mark.slow
 def test_lotus_keeps_a_partial_sight_panel_while_movement_is_passable():
     from tests.replays.control_toys import toy_heights, HALL
     def rectangle(x0, y0, x1, y1):
@@ -396,6 +397,7 @@ def test_witnessed_open_completion_drives_the_descending_runtime_without_default
     assert timeline['events'][-1]['parameter_evidence'][0]['property_lines'] == [4]
 
 
+@pytest.mark.slow
 def test_full_control_fresh_gaps_and_cached_gaps_share_source_bound_geometry(tmp_path, monkeypatch):
     from app.control import features, geometry, task, engine
     from app.gaps import cache

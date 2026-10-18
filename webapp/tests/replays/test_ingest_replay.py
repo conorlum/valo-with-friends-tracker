@@ -187,6 +187,7 @@ def test_dry_run_never_writes(export, session):
     assert not session.dirty and not session.new
 
 
+@pytest.mark.slow
 def test_without_a_mode_it_stores_and_links_then_skips_a_same_file_reingest(export, session, capsys):
     from app.models.replay import Replay, ReplayDeletion, ReplayPlayer, ReplayRound
 

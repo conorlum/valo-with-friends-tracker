@@ -247,6 +247,7 @@ def test_fifteen_uploads_parse_at_once(rig):
     assert {s["task"] for s in rig.render.started} == {"replay-tasks/parse"}
 
 
+@pytest.mark.slow
 def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig):
     at_start = []
     rig.render.on_start = lambda run_id, args: at_start.append(record_of(rig, args["job_id"]))

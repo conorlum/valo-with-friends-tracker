@@ -104,6 +104,27 @@ docker compose -p valomaths-private up -d            # start local Postgres on p
 
 A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
 
+### Running the tests
+
+From `webapp/`, `.\.venv313\Scripts\python.exe -m pytest` (`webapp/pytest.ini`). By default it leaves out the tests
+marked `slow` (5 s or more each) and runs the rest on `pytest-xdist` workers: a third of the machine's cores, pinned
+off its last four cores (`tests/conftest.py`). Child processes inherit the pin. Times on the 12-thread dev machine:
+
+| Run | Command (after `-m pytest`) | Time |
+|---|---|---|
+| Everyday: all but `slow` | (nothing) | ~11 min |
+| Everything outside the replays | `tests --ignore=tests/replays` | ~40 s |
+| Replays without the map-control engine | `tests/replays -m "not geometry"` | ~2 min |
+| The map-control engine (control, heights, features, gaps) | `tests/replays -m geometry` | most of the 11 min |
+| Only the slow tests | `-m slow` | ~15 min |
+| Everything | `-m ""` | ~26 min |
+
+`-n 0` runs in one process, and `-n 2` sets the worker count. `geometry` is set by `tests/replays/conftest.py` on
+every replay test module that imports the engine or its toy maps. Run `-m slow`, or everything, before merging a
+change to `app/control`, `app/gaps` or the height build. Mark a new test `@pytest.mark.slow` if it takes 5 s or
+more on its own. A test must not depend on the machine's free memory or load, because parallel workers change both
+(`test_gaps_task.py` fakes `compute_control.free_memory` for this reason).
+
 ## Changing how Impact is scored
 
 Any change to Impact scoring -- a new term, a changed factor, new weights -- and any release of one follows

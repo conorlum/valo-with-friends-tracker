@@ -46,6 +46,7 @@ def report():
                              draws=20, l2_grid=[1.0])
 
 
+@pytest.mark.slow
 def test_every_declared_section_is_populated(report):
     for section in REPORT_SECTIONS:
         assert report.get(section) is not None, f"{section} was never filled in"

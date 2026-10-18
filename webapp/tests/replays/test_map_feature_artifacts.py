@@ -18,6 +18,7 @@ def compiled(*, multi=False, ground=0, origin=100, source=None):
     return geo, compile_artifact(geo, inputs, '0' * 40)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('available', [{}, {'test': 2}])
 def test_review_historical_verifier_requires_available_consumer_versions(monkeypatch, available):
     from app.control.features import verify_artifact
@@ -64,6 +65,7 @@ def test_review_parent_dependencies_gate_only_the_dependent_bundle(problem):
     assert statuses['bundle-4'].publishable
 
 
+@pytest.mark.slow
 def test_archive_contains_loadable_masks_and_pending_is_not_none():
     from app.control.features import verify_artifact
     from app.replays.map_feature_artifacts import check_artifact, decode_artifact, encode_artifact, unpack_mask
@@ -86,6 +88,7 @@ def test_archive_contains_loadable_masks_and_pending_is_not_none():
     assert empty['base_deltas'] == {}
 
 
+@pytest.mark.slow
 def test_ground_origin_and_audit_metadata_have_distinct_identity_effects():
     from app.replays.map_feature_artifacts import check_artifact
     _, a = compiled()
@@ -135,6 +138,7 @@ def test_tampered_input_manifest_and_loaded_parts_fail_integrity():
             check_artifact(bad)
 
 
+@pytest.mark.slow
 def test_hash_valid_but_forged_compilation_fails_heavy_correspondence():
     from app.replays.map_feature_artifacts import canonical_json, check_artifact, FeatureArtifactCorrupt
     from app.control.features import verify_artifact

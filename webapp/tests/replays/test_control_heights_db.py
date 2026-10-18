@@ -83,6 +83,7 @@ def verified(digest, **changes) -> dict:
             "must_block": report()["must_block"], **changes}
 
 
+@pytest.mark.slow
 def test_a_build_at_the_bar_goes_live_and_the_one_before_it_is_superseded(db, linked):
     name = linked.map_name
     assert ch.active_digests(db) == {} and "height" not in rc.geometry_inputs(name, ch.active_digests(db))
@@ -195,6 +196,7 @@ def test_new_heights_make_a_maps_rounds_stale_and_they_are_still_served(db, link
     assert rc.round_control(db, linked, 1).stale is False, "and going back makes it current again"
 
 
+@pytest.mark.slow
 def test_activate_puts_an_earlier_asset_back_and_off_leaves_none(db, linked):
     name = linked.map_name
     build(db, name, "aaaaaaaaaaaa")
@@ -207,6 +209,7 @@ def test_activate_puts_an_earlier_asset_back_and_off_leaves_none(db, linked):
     assert {r.status for r in ch.rows(db, name)} == {"superseded"}
 
 
+@pytest.mark.slow
 def test_activating_the_digest_that_is_already_active_leaves_it_active(db, linked, factory):
     # The row is loaded as active; retiring "the active row" in SQL and then setting the loaded one active
     # again changes nothing the ORM can see, and the map would be left with no heights.
@@ -297,6 +300,7 @@ def test_old_height_rollback_and_off_remain_available(db, linked):
     assert ch.deactivate(db, name) and ch.active_digests(db) == {}
 
 
+@pytest.mark.slow
 def test_the_operator_lists_activates_exports_and_turns_off(factory, db, linked, capsys, tmp_path, monkeypatch):
     import control_heights as command
 

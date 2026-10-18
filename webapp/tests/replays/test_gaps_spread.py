@@ -22,6 +22,7 @@ def _setup(geo):
     return topo, room, reached, free, start
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("make", [door_hall, lambda: toy_heights("Spread", [(96, 96, 416, 296)],
                                                                   upper=[((200, 150, 260, 200), 3.0)])])
 def test_parents_do_not_change_arrivals(make):

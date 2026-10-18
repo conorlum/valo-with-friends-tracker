@@ -296,6 +296,7 @@ def test_cached_and_live_gaps_agree_on_a_blinded_round(tmp_path):
     assert a == b
 
 
+@pytest.mark.slow
 def test_a_round_without_a_blind_matches_its_reference_digest():
     """The unchanged no-blind fixture: every flat reference round but `midwall` has no flash or nearsight."""
     import json

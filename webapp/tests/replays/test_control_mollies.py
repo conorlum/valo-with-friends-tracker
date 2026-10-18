@@ -589,6 +589,7 @@ def test_a_special_link_over_the_zone_still_carries_the_unknown_but_not_into_it(
     assert out[6.0][at(25, 37)] == pytest.approx(5.03 + s, abs=1e-9)
 
 
+@pytest.mark.slow
 def test_a_molly_blocks_only_the_floor_it_burns_on():
     """A bridge (4 m) over the corridor at x 256-344, not joined to the ground. A molly on the bridge leaves the
     ground route as it was; the same molly on the ground holds it."""

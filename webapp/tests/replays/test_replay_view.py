@@ -137,6 +137,7 @@ def test_a_defuse_ending_sits_at_its_own_db_time(db):
 # ---------------------------------------------------------------- reingest write mode
 
 
+@pytest.mark.slow
 def test_reingest_restores_a_stale_local_replay_from_its_export(db, tmp_path, monkeypatch):
     import reingest_replays
 

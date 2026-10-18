@@ -608,6 +608,7 @@ def kill_round(kills, players, n=1, t_end=10.0):
     return ("m", n, blob)
 
 
+@pytest.mark.slow
 def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body_and_head_are_hidden():
     geo = ledge_geo()
     x = 256 - 2 * M_PX
@@ -634,6 +635,7 @@ def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body
     assert hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: players[0], 5: near})], geo)["blocked"] == 0
 
 
+@pytest.mark.slow
 def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
     from tests.replays.control_toys import toy_heights
 
@@ -721,6 +723,7 @@ def test_a_must_block_line_that_is_not_blocked_fails_and_so_does_an_unknown_heig
     assert not result["passes"] and [r["source"] for r in result["results"] if r["checked"] and not r["blocked"]] == ["seen"]
 
 
+@pytest.mark.slow
 def test_permanent_wall_proves_required_blockage_without_fabricating_endpoint_heights():
     from tests.replays.control_toys import toy_heights
 

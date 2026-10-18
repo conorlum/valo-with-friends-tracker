@@ -121,6 +121,7 @@ def test_unaffected_proofs_do_not_mix_fixed_panel_bounds_or_source_hints():
     assert not memo.unaffected(geo, src, [hinted]).any()
 
 
+@pytest.mark.slow
 def test_batched_visibility_keeps_height_band_and_thin_panel_answers():
     geo = copy.copy(bridge())
     rng = np.random.default_rng(21)

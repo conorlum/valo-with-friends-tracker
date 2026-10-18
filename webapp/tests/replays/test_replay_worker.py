@@ -175,6 +175,7 @@ def test_a_failed_job_says_why_and_cleans_up(tmp_path, stub, mode, reason):
         httpd.shutdown()
 
 
+@pytest.mark.slow
 def test_a_full_queue_answers_503(tmp_path, stub):
     worker, httpd, base = start(tmp_path, stub, mode="slow", queue_size=1)
     try:

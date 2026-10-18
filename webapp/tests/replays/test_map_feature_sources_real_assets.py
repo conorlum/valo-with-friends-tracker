@@ -2,10 +2,13 @@
 
 import json
 
+import pytest
+
 from app.replays import map_feature_sources as mfs
 from app.services import replay_control as rc
 
 
+@pytest.mark.slow
 def test_every_real_map_cached_equals_uncached():
     tags = json.loads((rc.CONTROL_DIR / 'tags.json').read_text(encoding='utf-8')).get('maps', {})
     maps = json.loads(rc.MAPS_JSON.read_text(encoding='utf-8'))

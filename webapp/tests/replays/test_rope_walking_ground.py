@@ -63,6 +63,7 @@ def test_supported_local_ground_is_immutable_and_never_changes_terrain_sight():
     assert cg.cache_key(flat)!=cg.cache_key(walking)
 
 
+@pytest.mark.slow
 def test_walking_archive_reproduces_after_cache_loss_and_does_not_get_a_global_height_key(tmp_path):
     from app.control.feature_runtime import prepare_geometry
     from app.control.task import load_task_features,geometry_used
@@ -146,6 +147,7 @@ def test_refined_children_keep_exact_footprints_and_unknown_children():
     assert walking.area(walking.walk_n)==flat.area(flat.walk_n)
 
 
+@pytest.mark.slow
 def test_isolated_compiler_reproduces_walking_archive_without_global_height_bytes():
     import subprocess,sys
     from dataclasses import asdict
@@ -161,6 +163,7 @@ def test_isolated_compiler_reproduces_walking_archive_without_global_height_byte
     assert rebuilt.digest==item.digest and rebuilt.assets==item.assets
 
 
+@pytest.mark.slow
 def test_reviewed_rope_only_platform_compiles_and_restores_without_a_walk_exemption():
     from app.control.feature_runtime import prepare_geometry
     measured, mf = rope_case()

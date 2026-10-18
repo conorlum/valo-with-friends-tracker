@@ -397,6 +397,7 @@ def test_the_attempt_routes_say_archive_off_without_an_archive(tmp_path, stub): 
         httpd.shutdown()
 
 
+@pytest.mark.slow
 def test_a_full_queue_accepts_nothing_and_the_same_id_works_later(tmp_path, stub):  # noqa: F811
     disk, sha = plant_archive(tmp_path, vrf_bytes())
     worker, httpd, base, disk = start_archive(tmp_path, stub, mode="slow", queue_size=1)

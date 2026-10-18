@@ -46,12 +46,14 @@ def historical_row(factory, db, linked, tagged, tmp_path):
     return db.get(ReplayRoundControl, (linked.id, 1))
 
 
+@pytest.mark.slow
 def test_historical_round_verifies_old_archive_after_height_and_tag_changes(db, historical_row):
     from app.services.control_feature_verification import verify_stored_round
     result = verify_stored_round(db, historical_row)
     assert (result.integrity, result.recompilation, result.freshness) == ('verified', 'verified', 'stale')
 
 
+@pytest.mark.slow
 def test_unsupported_recompilation_keeps_independent_integrity(db, historical_row, monkeypatch):
     from app.services import control_feature_verification as service
     from app.replays.map_feature_artifacts import UnsupportedFeatureCompiler
@@ -62,6 +64,7 @@ def test_unsupported_recompilation_keeps_independent_integrity(db, historical_ro
     assert (result.integrity, result.recompilation, result.freshness) == ('verified', 'unsupported', 'stale')
 
 
+@pytest.mark.slow
 def test_tampered_provenance_fails_before_unsupported_recompilation(db, historical_row, monkeypatch):
     from app.services import control_feature_verification as service
     from app.replays import control_format as cf
@@ -72,6 +75,7 @@ def test_tampered_provenance_fails_before_unsupported_recompilation(db, historic
     assert service.verify_stored_round(db, historical_row).integrity == 'failed'
 
 
+@pytest.mark.slow
 def test_missing_archive_and_legacy_provenance_are_unavailable(db, historical_row):
     from app.services.control_feature_verification import verify_stored_round
     from app.models.replay import ControlFeatureArtifact
@@ -85,6 +89,7 @@ def test_missing_archive_and_legacy_provenance_are_unavailable(db, historical_ro
     assert result.integrity == result.recompilation == 'unavailable' and result.reasons
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('field', ['assets', 'height_asset'])
 def test_corrupt_archive_fails_independently_of_compiler_availability(db, historical_row, monkeypatch, field):
     from app.services import control_feature_verification as service
@@ -98,6 +103,7 @@ def test_corrupt_archive_fails_independently_of_compiler_availability(db, histor
     assert service.verify_stored_round(db, historical_row).integrity == 'failed'
 
 
+@pytest.mark.slow
 def test_current_source_failure_does_not_prevent_historical_reproduction(db, historical_row, monkeypatch):
     from app.services import replay_control as rc
     from app.services.control_feature_verification import verify_stored_round
@@ -108,6 +114,7 @@ def test_current_source_failure_does_not_prevent_historical_reproduction(db, his
     assert (result.integrity, result.recompilation, result.freshness) == ('verified', 'verified', 'unavailable')
 
 
+@pytest.mark.slow
 def test_recorded_base_mask_identity_must_match_archive_even_with_rehashed_provenance(db, historical_row):
     from app.services.control_feature_verification import verify_stored_round
     from app.replays import control_format as cf
@@ -119,6 +126,7 @@ def test_recorded_base_mask_identity_must_match_archive_even_with_rehashed_prove
     assert verify_stored_round(db, historical_row).integrity == 'failed'
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('bad', ['bad', {'bundles': [None]}])
 def test_review_bad_current_structure_keeps_historical_verdict_independent(db, historical_row, tagged, bad):
     from app.services.control_feature_verification import verify_stored_round
@@ -127,6 +135,7 @@ def test_review_bad_current_structure_keeps_historical_verdict_independent(db, h
     assert (result.integrity, result.recompilation, result.freshness) == ('verified', 'verified', 'unavailable')
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('available', [{}, {'test': 2}])
 def test_review_historical_child_reports_unavailable_consumer_independently(db, historical_row, monkeypatch, available):
     from app.services.control_feature_verification import verify_stored_round

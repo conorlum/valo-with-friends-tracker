@@ -184,6 +184,7 @@ def test_one_child_runs_while_the_worker_is_busy_and_two_once_it_is_idle(runner)
     assert overlaps(log)[0] == 2
 
 
+@pytest.mark.slow
 def test_a_parse_kills_the_child_started_last_and_its_round_goes_back_first_uncounted(runner):
     busy = {"on": False}
     r, log = runner()
@@ -207,6 +208,7 @@ def test_a_parse_kills_the_child_started_last_and_its_round_goes_back_first_unco
     assert r.counts()["preempted"] == 1
 
 
+@pytest.mark.slow
 def test_a_preempted_warming_round_leaves_its_map_cold(runner):
     busy = {"on": False}
     r, log = runner()

@@ -876,6 +876,7 @@ def deeper_bridge():
                        upper=[((240, 96, 288, 296), 4.0)])
 
 
+@pytest.mark.slow
 def test_a_band_is_rebased_when_a_rebuild_moves_the_maps_lowest_floor():
     old, new = bridge(), deeper_bridge()
     assert old.heights.origin_z - new.heights.origin_z == 20 and old.height_sha != new.height_sha
@@ -907,6 +908,7 @@ def test_a_band_with_no_recorded_origin_binds_only_while_its_asset_is_the_maps()
     assert cf._band_shift(new, legacy[0]) is None
 
 
+@pytest.mark.slow
 def test_a_floor_that_moved_out_of_its_band_is_pending_and_the_rest_still_bind():
     old = bridge()
     lowered = toy_heights("BridgeLower", [HALL], ground=[((96, 96, 240, 296), 4.0)], upper=[((240, 96, 288, 296), 1.5)])

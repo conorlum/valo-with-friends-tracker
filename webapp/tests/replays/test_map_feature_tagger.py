@@ -914,6 +914,8 @@ def test_finer_grid_requires_current_compiler_report_and_preserves_edits():
     assert 'fresh compiler diagnostics needed for the finer height grid' in got['mismatched']
 
 
+@pytest.mark.slow
+
 def test_measured_multifloor_issue_highlights_cells_and_edit_clears_stale_overlay():
     data = page_data(future=False)
     data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic', 'floor_counts': [2] * (128 * 128), 'unresolved': [0] * (128 * 128)}
@@ -1160,6 +1162,8 @@ DRAFT_PAGE = """
   }
 """
 
+
+@pytest.mark.slow
 
 def test_a_downloaded_draft_restores_after_a_storage_failure():
     got = run_page(DRAFT_PAGE, {"data": page_data(), "moved": page_data(x_moved=True)})

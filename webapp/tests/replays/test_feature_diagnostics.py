@@ -12,6 +12,7 @@ def test_full_catalogue_reports_disabled_placement_separately():
     assert report['comparison']['available'] is False
 
 
+@pytest.mark.slow
 def test_diagnostics_compare_physical_ground_and_pending_transitions():
     from app.control.feature_diagnostics import diagnose_features
     old = diagnose_features(geometry_case(origin_dm=0), snapshot_case(), consumers={'test': 1})

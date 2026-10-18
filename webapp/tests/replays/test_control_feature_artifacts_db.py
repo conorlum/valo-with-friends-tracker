@@ -30,6 +30,7 @@ def artifact():
     return compile_artifact(geo, inp, '0' * 40)
 
 
+@pytest.mark.slow
 def test_same_key_shares_one_immutable_row_and_audit_changes_are_idempotent(archive_factory, artifact):
     from app.models.replay import ControlFeatureArtifact
     from app.services.control_feature_artifacts import store_artifact, load_artifact
@@ -44,6 +45,7 @@ def test_same_key_shares_one_immutable_row_and_audit_changes_are_idempotent(arch
         assert db.query(ControlFeatureArtifact).count() == 1
 
 
+@pytest.mark.slow
 def test_same_key_never_overwrites_a_hash_valid_different_compilation(archive_factory, artifact):
     from app.replays.map_feature_artifacts import canonical_json, FeatureArtifactError
     from app.services.control_feature_artifacts import store_artifact, load_artifact
@@ -98,6 +100,7 @@ def test_missing_lookup_is_explicit_and_exact_keys_do_not_fall_back(archive_fact
         assert find_artifact(db, replace(artifact.key, compiler_version=99)) is None
 
 
+@pytest.mark.slow
 def test_separate_connections_converge_on_existing_durable_representation(archive_factory, artifact):
     from app.models.replay import ControlFeatureArtifact
     from app.services.control_feature_artifacts import store_artifact
@@ -122,6 +125,7 @@ def test_nonflat_archive_requires_its_exact_retained_height(archive_factory):
             store_artifact(db, artifact)
 
 
+@pytest.mark.slow
 def test_concurrent_first_inserts_use_a_savepoint_and_converge(archive_factory, artifact, monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -148,6 +152,7 @@ def test_concurrent_first_inserts_use_a_savepoint_and_converge(archive_factory, 
     assert a == b
     with archive_factory() as db:
         assert db.query(ControlFeatureArtifact).count() == 1
+@pytest.mark.slow
 def test_committed_height_is_retained_without_creating_activation_history(archive_factory, tmp_path):
     from app.control import heights as hc
     from app.control.features import compile_artifact

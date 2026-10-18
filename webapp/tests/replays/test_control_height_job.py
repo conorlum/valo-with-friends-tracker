@@ -95,6 +95,7 @@ def test_a_missing_or_broken_check_set_fails_the_check(tmp_path):
                                                        None), "neither half of the gate lets it through"
 
 
+@pytest.mark.slow
 def test_corrupt_or_foreign_bytes_are_never_an_asset(tmp_path, checks):
     assets = toy_assets(tmp_path)
     out = height_job.run("Ascent", height_job.BlobDir(write_blobs(tmp_path / "blobs", covered_rounds()), "Ascent"),
@@ -302,6 +303,7 @@ def test_the_child_refuses_inputs_that_are_not_the_manifests(tmp_path, checks, m
     assert out["status"] == "failed" and out["error_kind"] == "inputs" and "asset" not in out, name
 
 
+@pytest.mark.slow
 def test_a_build_lists_the_tagged_features_that_no_longer_fit(tmp_path, monkeypatch):
     from app.control import features
     from tests.replays.control_toys import HALL, toy_heights

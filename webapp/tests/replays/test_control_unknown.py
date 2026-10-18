@@ -77,6 +77,7 @@ def test_unknown_walks_diagonals_at_their_true_length():
     assert at(4, 2) and not at(5, 3), "between: octile length (5.4 m reached, 7.0 m not)"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("block_top, sealed", [(208, True), (224, False)])
 def test_unknown_cannot_squeeze_through_a_pinch_between_a_smoke_and_a_wall(block_top, sealed):
     """A screen across the hall at y 200; A watches everything north of it. South of it a map wall block
@@ -96,6 +97,7 @@ def test_unknown_cannot_squeeze_through_a_pinch_between_a_smoke_and_a_wall(block
     assert unk.cells["A"][geo.cell_of_px(200, 260)] != sealed, "the pocket: only through the strip"
 
 
+@pytest.mark.slow
 def test_a_screen_across_a_narrow_door_or_a_smoke_filling_a_corridor_stays_walkable():
     """A pinch is a gap beside the gas with the wall across from it. A screen laid across a 2.2 m door, or
     a smoke filling a 2.2 m corridor, leaves no such gap: the unknown walks through the gas as ever."""
@@ -628,6 +630,7 @@ def test_unknown_cannot_step_diagonally_through_a_wire_laid_at_45_degrees():
     assert not _unknown_reaches(geo, players, [wire], 250, 280), "the wire crosses the hall wall to wall"
 
 
+@pytest.mark.slow
 def test_unknown_cannot_squeeze_between_a_wires_end_and_a_wall_corner():
     """Round 2 of the Sunset sample at 32.5 s: the wire's last cell touched a wall corner only diagonally, and
     the unknown stepped round it into the room behind the wire."""
@@ -638,6 +641,7 @@ def test_unknown_cannot_squeeze_between_a_wires_end_and_a_wall_corner():
     assert not _unknown_reaches(geo, players, [wire], 380, 200), "the only way in is past the wire's end"
 
 
+@pytest.mark.slow
 def test_a_map_with_heights_seals_a_wires_end_the_same_way():
     """The per-floor topology cuts the same diagonal walks: one floor everywhere spreads as the flat map does."""
     from app.control import topology
@@ -661,6 +665,7 @@ def test_a_map_with_heights_seals_a_wires_end_the_same_way():
     assert np.array_equal(got["floors"][:GRID * GRID], got["flat"])
 
 
+@pytest.mark.slow
 def test_a_wire_on_the_upper_floor_seals_only_that_floor():
     """Two floors everywhere, the same wire as above but on the upper floor only, and the lower floor's column
     26 watched (not solid): the upper floor stays sealed at the wall corner, the lower floor's diagonal past

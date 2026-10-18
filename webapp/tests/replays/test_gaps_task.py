@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -78,6 +79,7 @@ def test_gaps_only_uses_the_cache_written_by_a_full_run(tmp_path, monkeypatch):
     assert again["gaps"]["run"] == first["gaps"]["run"]
 
 
+@pytest.mark.slow
 def test_gaps_only_without_a_cache_runs_the_engine_and_matches_the_full_run(tmp_path, monkeypatch):
     # R20: the live path's notes (the engine's missing inputs) equal the cache path's (stored with the file)
     first = compute_task(_task(tmp_path, monkeypatch))
@@ -102,6 +104,7 @@ def test_the_notes_carry_the_compute_time_missing_inputs(tmp_path, monkeypatch):
     assert first["missing"].items() <= first["gaps"]["run"]["notes"].items()
 
 
+@pytest.mark.slow
 def test_a_cache_in_another_format_is_a_miss(tmp_path, monkeypatch):
     from app.gaps import cache
     compute_task(_task(tmp_path, monkeypatch))
@@ -130,6 +133,7 @@ def test_an_observer_exception_leaves_control_ok_and_the_gap_run_failed(tmp_path
     assert not list(tmp_path.glob("*")), "no file, partial or whole"
 
 
+@pytest.mark.slow
 def test_an_error_building_the_tick_record_fails_the_gap_run_not_control(tmp_path, monkeypatch):
     # final review M1: the record is built inside the guard, so control's result is unchanged
     from app.control import observe
@@ -163,6 +167,7 @@ def _corrupt(path: Path, how: str) -> None:
         path.write_bytes(gzip.compress(__import__("pickle").dumps(head) + b"\x00garbage"))
 
 
+@pytest.mark.slow
 def test_an_unreadable_cache_is_a_miss_and_is_deleted(tmp_path, monkeypatch):
     # final review M7: any read error on the gaps-only path is a miss; the file is replaced by the engine run
     first = compute_task(_task(tmp_path, monkeypatch))
@@ -215,6 +220,7 @@ def test_a_task_without_gaps_is_unchanged(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("*")), "no tick cache without a gap job"
 
 
+@pytest.mark.slow
 def test_a_choke_edit_misses_the_old_cache(tmp_path, monkeypatch):
     # R5: the cache is keyed by the engine key, so a gaps-only run after a choke edit goes through the engine
     from app.replays import choke_assets
@@ -400,6 +406,8 @@ def _command(monkeypatch, gaps_result):
     monkeypatch.setattr(geometry, "load_geometry", lambda name, heights=None, **kwargs: name)
     monkeypatch.setattr(geometry, "visibility", lambda geo: SimpleNamespace(visibility_source="fake"))
     monkeypatch.setattr(compute_control, "POLL_S", 0)
+    # No memory reading, so no gate: the real one waits for free RAM, which a parallel test run can hold for minutes.
+    monkeypatch.setattr(compute_control, "free_memory", lambda: None)
     tasks = []
 
     def fake(task):
