@@ -330,6 +330,8 @@ def test_the_baseline_counts_a_shared_match_once(db, monkeypatch):
 def test_fingerprint_changes_with_members_matches_scores_and_friends(db):
     main, alt, friend = _players(db, "main#1", "alt#2", "friend#3")
     ids = frozenset({main.id, alt.id})
+    link_account(db, main.id, alt.id)   # the friends part is the circle, which needs the real link
+    db.commit()
     before = group_fingerprint(db, ids)
     assert group_fingerprint(db, ids) == before
 

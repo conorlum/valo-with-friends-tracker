@@ -21,7 +21,8 @@ import logging
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, contains_eager, joinedload
 
-from app.models import AccountGroup, AccountGroupMember, AccountGroupViewCache, Friendship, ImpactScore, MatchPlayer, Player
+from app.models import AccountGroup, AccountGroupMember, AccountGroupViewCache, ImpactScore, MatchPlayer, Player
+from app.services.circle import circle_ids
 from app.services.player_view_cache import CachedPlayerViews, cache_version, decode_player_views_blob, encode_player_views
 from app.services.player_views import PlayerViews, compute_player_views_by_scope
 
@@ -163,9 +164,9 @@ def set_account_label(db: Session, actor_player_id: int, other_player_id: int, l
 
 def group_fingerprint(db: Session, player_ids: frozenset[int]) -> str:
     """What a group's combined page is built from: its accounts, their
-    matches, their Impact rows and their friendships (the fight-EV teammate
-    pool). A new match, a newly scored one or a friend added or removed
-    changes it. Impact rows rescored in place don't, which is why
+    matches, their Impact rows and their circle (the fight-EV teammate pool
+    and the friends shown: app.services.circle). A new match, a newly scored
+    one, a friend added or removed, or a friend linking an alt changes it. Impact rows rescored in place don't, which is why
     invalidate_player_cache clears group rows too."""
     ids = sorted(player_ids)
     match_count, match_max = (
@@ -180,9 +181,7 @@ def group_fingerprint(db: Session, player_ids: frozenset[int]) -> str:
         .filter(MatchPlayer.player_id.in_(ids))
         .one()
     )
-    friends = sorted(
-        {fid for (fid,) in db.query(Friendship.friend_player_id).filter(Friendship.owner_player_id.in_(ids)).all()}
-    )
+    friends = sorted(circle_ids(db, ids[0])) if ids else []
     parts = [ids, [match_count, match_max], list(score_stats), friends]
     return hashlib.sha256(repr(parts).encode()).hexdigest()
 

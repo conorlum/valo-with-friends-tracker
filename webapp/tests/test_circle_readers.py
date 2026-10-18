@@ -100,3 +100,68 @@ def test_deep_readers_use_circle_ids(module, fn, name):
     assert f"{name}(db, viewer_player_id)" in src
     assert "list_friend_ids" not in src
     assert getattr(module, name) is not None
+
+
+# --- W11b: page-side readers ---------------------------------------------------
+
+
+def test_roster_pool_has_a_friends_alt_but_not_an_own_alt(db, world):
+    from app.services.player_views import _roster_player_ids
+
+    pool = _roster_player_ids(db, world.viewer, None)
+    assert pool == {world.friend.id, world.friend_alt.id}
+    assert _roster_player_ids(db, world.alt, None) == pool
+
+
+def test_roster_pool_for_a_group_is_the_same_from_any_member(db, world):
+    from app.services.player_views import _roster_player_ids
+
+    ids = frozenset({world.viewer.id, world.alt.id})
+    pool = _roster_player_ids(db, world.viewer, ids)
+    assert pool == {world.friend.id, world.friend_alt.id}
+    assert _roster_player_ids(db, world.alt, ids) == pool
+
+
+def test_fight_ev_loader_takes_its_pool_from_the_circle(db, world, monkeypatch):
+    from app.services import fight_ev
+
+    seen = []
+    monkeypatch.setattr(fight_ev, "circle_teammate_ids", lambda d, pid: seen.append(pid) or set())
+    fight_ev.load_match_fight_ev_blocks_from_data(db, [], world.viewer)
+    assert seen == [world.viewer.id]
+
+
+def test_recent_rows_count_a_friends_alt_as_a_friend(db, world):
+    from app.models import MatchPlayer
+    from app.models.match import Team
+    from app.services.recent_match_rows import build_recent_match_rows, recent_form_entries
+    from tests.test_account_groups import _play, _round_with
+
+    mp = _play(db, world.viewer, 5, "m1")
+    _round_with(db, mp, kills=3)
+    db.add(MatchPlayer(match_id=mp.match_id, player_id=world.friend_alt.id, agent="Sage", team=Team.TEAM_1))
+    db.add(MatchPlayer(match_id=mp.match_id, player_id=world.alt.id, agent="Sage", team=Team.TEAM_1))
+    db.commit()
+    ids = frozenset({world.viewer.id, world.alt.id})
+    entries = recent_form_entries(db, world.viewer.id, player_ids=ids)
+    rows = build_recent_match_rows(db, world.viewer.id, entries, ids)
+    details = [b.title for r in rows for b in r.badges if b.kind == "party"]
+    assert len(details) == 1
+    assert details[0].startswith("Queued with ")
+    assert "fa" in details[0]          # the friend's alt
+    assert "va" not in details[0]      # an own alt is not a friend
+
+
+def test_fingerprint_changes_when_a_friend_links_an_alt(db, world):
+    from app.services.account_groups import group_fingerprint
+
+    ids = frozenset({world.viewer.id, world.alt.id})
+    before = group_fingerprint(db, ids)
+    new_alt = _players(db, "fa2#9")[0]
+    link_account(db, world.friend.id, new_alt.id)
+    db.commit()
+    mid = group_fingerprint(db, ids)
+    assert mid != before
+    db.add(Friendship(owner_player_id=world.alt.id, friend_player_id=world.stranger.id))
+    db.commit()
+    assert group_fingerprint(db, ids) != mid

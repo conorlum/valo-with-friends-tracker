@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.services.match_streaks import RECENT_FORM_COUNT, FormEntry, form_entry
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids
 from app.services.player_data import one_row_per_match
 from app.services.player_profile_types import match_win
 
@@ -243,10 +243,7 @@ def build_recent_match_rows(
         for stat in STANDOUT_STATS:
             thresholds[stat.key] = _quantile([s.totals.get(stat.key, 0) / s.rounds for s in baseline], STANDOUT_QUANTILE)
 
-    friend_ids: set[int] = set()
-    for pid in account_ids:
-        friend_ids |= list_friend_ids(db, pid)
-    friend_ids -= account_ids
+    friend_ids = circle_ids(db, player_id) - account_ids
     friend_names = (
         dict(db.query(Player.id, Player.display_name).filter(Player.id.in_(friend_ids)).all()) if friend_ids else {}
     )

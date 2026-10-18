@@ -268,7 +268,7 @@ def friend_slots(db, replay_ids, player_ids) -> dict[int, set[int]]:
 
 
 def group_player_ids(db, viewer_player_id: int | None) -> set[int]:
-    """The viewer and the friends they own (as /stats); empty when logged out."""
+    """The viewer's circle (app.services.circle, as /stats); empty when logged out."""
     if viewer_player_id is None:
         return set()
     return circle_ids(db, viewer_player_id)

@@ -168,7 +168,7 @@ def get_site_stats(db: Session) -> dict:
 
 
 def viewer_group_player_ids(db: Session, viewer_player_id: int) -> set[int]:
-    """The viewer plus everyone on their own Friends page."""
+    """The viewer's circle (app.services.circle)."""
     return circle_ids(db, viewer_player_id)
 
 

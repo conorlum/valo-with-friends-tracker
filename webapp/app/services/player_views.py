@@ -26,7 +26,7 @@ from app.services.fight_ev import (
     build_fight_ev_views_from_blocks,
     build_match_fight_ev_block_from_replay,
 )
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_teammate_ids
 from app.services.player_data import (
     RECENT_MATCH_LIMIT,
     load_impact_scores_for_match_players,
@@ -110,14 +110,12 @@ def _build_profile_and_econ(
 
 
 def _roster_player_ids(db: Session, player: Player, player_ids: frozenset[int] | None) -> set[int]:
-    """The fight-EV teammate pool: the player's friends, or for an account
-    group (player_ids given) the friends of any of its accounts."""
+    """The fight-EV teammate pool: the player's circle minus their own
+    accounts. A group's members share one circle, so any member gives the
+    same pool (the lowest id, for a stable choice)."""
     if not player_ids:
-        return list_friend_ids(db, player.id)
-    roster: set[int] = set()
-    for pid in sorted(player_ids):
-        roster |= list_friend_ids(db, pid)
-    return roster
+        return circle_teammate_ids(db, player.id)
+    return circle_teammate_ids(db, min(player_ids))
 
 
 def compute_player_views(
