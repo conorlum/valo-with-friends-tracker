@@ -7,9 +7,11 @@ against the other team with no gap longer than FIGHT_GAP_S. Slots only, never na
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 
 from app.control import engine
-from app.moments.constants import FIGHT_GAP_S, TRADE_RANGE_M, TRADE_WINDOW_S
+from app.moments.constants import (DASH_EXCLUDE_S, FIGHT_GAP_S, GUN_CLASS, MOVING_MPS, SHOT_LEAD_S,
+                                   SPEED_MAX_SPAN_S, TRADE_RANGE_M, TRADE_WINDOW_S, UNTAGGED_CLASSES)
 
 VERSION = 1
 _EPS = 0.01        # alive counts and positions are read this long before a fight's first event
@@ -115,6 +117,46 @@ def _mates(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: list[int
     return res
 
 
+def _speed(rnd, slot: int, t: float):
+    """m/s from the 16 Hz samples either side of t; None when either is missing or they span too long."""
+    tr = rnd.tracks.get(slot)
+    if tr is None:
+        return None
+    ts = tr[0]
+    i = int(bisect_left(ts, t))
+    a, b = i - 1, i + 1
+    if a < 0 or b >= len(ts) or ts[b] - ts[a] > SPEED_MAX_SPAN_S:
+        return None
+    dist = math.hypot(float(tr[1][b] - tr[1][a]), float(tr[2][b] - tr[2][a])) * engine.PX / 10000
+    return dist * rnd.geo.m_per_px / float(ts[b] - ts[a])
+
+
+def _moving(rnd, blob: dict, slot: int, t0: float, t1: float) -> tuple[dict, bool]:
+    util = blob.get("util") or ()
+    shots = sorted((row for row in util if row.get("k") == "shot" and row.get("by") == slot
+                    and t0 - SHOT_LEAD_S <= row["t"] <= t1), key=lambda r: r["t"])
+    casts = [row["t"] for row in util if row.get("k") == "cast" and row.get("by") == slot] \
+        if blob.get("movement_casts") else []
+    speeds = []
+    for row in shots:
+        if any(abs(row["t"] - c) < DASH_EXCLUDE_S for c in casts):
+            continue
+        v = _speed(rnd, slot, row["t"])
+        if v is not None:
+            speeds.append(v)
+    counts: dict[str, int] = {}
+    for row in shots:
+        c = GUN_CLASS.get(row.get("gun"), "other")
+        counts[c] = counts.get(c, 0) + 1
+    gun_class = None
+    if counts:   # max keeps the first key on a tie, and keys are in order of each class's earliest shot
+        gun_class = max(counts, key=counts.get)
+    above = sum(1 for v in speeds if v > MOVING_MPS)
+    tagged = above >= 2 and above * 2 >= len(speeds) and gun_class not in UNTAGGED_CLASSES
+    return {"measured": len(speeds), "above": above, "first_mps": _r2(speeds[0]) if speeds else None,
+            "tagged": tagged, "gun_class": gun_class}, tagged
+
+
 def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple]) -> dict:
     t0, t1 = group[0][0], group[-1][0]
     opponents = sorted({e[3] for e in group})
@@ -137,12 +179,15 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple]) -> dict:
         tags.append("died_not_traded")
     if trade["avenged"]:
         tags.append("traded_teammate")
+    moving, moving_tag = _moving(rnd, blob, slot, t0, t1)
+    if moving_tag:
+        tags.append("moving")
     return {
         "slot": slot, "i": i, "t0": _r2(t0), "t1": _r2(t1), "opponents": opponents,
         "first": "player" if group[0][2] == slot else "opponent",
         "man": _man(rnd, slot, t0 - _EPS),
         "kills": kills, "died": died, "trade": trade,
-        "moving": {"measured": 0, "above": 0, "first_mps": None, "tagged": False, "gun_class": None},
+        "moving": moving,
         "mates": mates,
         "util_on": [], "util_near": [], "smoke_near": [], "util_on_you": [], "mollied": [], "duels": [],
         "kill_detail": [], "death_detail": None, "tags": tags,
