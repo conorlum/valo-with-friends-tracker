@@ -11,8 +11,10 @@ from bisect import bisect_left
 
 from app.control import engine
 from app.control.utility import _sees_point
-from app.moments.constants import (DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
-                                   MOVING_MPS,
+from app.moments.constants import (CLEAN_MAX_MOVING, CLEAN_SPOT_TO_SHOT_S, CROSSHAIR_NEAR_DEG, CROSSHAIR_ON_DEG,
+                                   DASH_EXCLUDE_S, DENY_ABILITIES, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
+                                   MOVING_MPS, RUN_GAP_S, SHOT_AFTER_KILL_S, SPOT_GAP_S, SPOT_LOOKBACK_S,
+                                   SPOT_TOLERANCE_S,
                                    SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SMOKE_ABILITIES, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
                                    TRADE_WINDOW_S, UNTAGGED_CLASSES, UTIL_LOOKBACK_S, UTIL_NEAR_M)
 
@@ -243,6 +245,99 @@ def _mollied(rnd, slot: int, t0: float, t1: float) -> list[dict]:
     return out
 
 
+def _off(rnd, viewer: int, target: int, t: float):
+    """Horizontal angle in degrees between the viewer's yaw and the bearing to the target; None without both positions."""
+    p, q = rnd.pos(viewer, t), rnd.pos(target, t)
+    if p is None or q is None:
+        return None
+    return abs((math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])) - p[2] + 180) % 360 - 180)
+
+
+def _band(angle: float) -> str:
+    return "on" if angle <= CROSSHAIR_ON_DEG else "near" if angle <= CROSSHAIR_NEAR_DEG else "off"
+
+
+def _ttk(rnd, blob: dict, tk: float, killer: int, victim: int, kd: dict) -> None:
+    """Fill spot, first_shot, ttk, clean/reason, angle and band on `kd` (the kill has gun damage)."""
+    shots = sorted(float(row["t"]) for row in blob.get("util") or ()
+                   if row.get("k") == "shot" and row.get("by") == killer
+                   and tk - SPOT_LOOKBACK_S <= row["t"] <= tk + SHOT_AFTER_KILL_S)
+    run = [shots[-1]] if shots else []
+    for s in reversed(shots[:-1]):
+        if run[-1] - s > RUN_GAP_S:
+            break
+        run.append(s)
+    first_shot = run[-1] if run else None
+    spot = last_seen = None
+    k = 0
+    while k * SIGHT_STEP_S < SPOT_LOOKBACK_S:
+        t = tk - k * SIGHT_STEP_S
+        p = rnd.pos(victim, t)
+        if p is not None and _sees_point(rnd, killer, t, p[0], p[1]):
+            spot = last_seen = t
+        elif last_seen is not None and last_seen - t > SPOT_GAP_S:
+            break
+        k += 1
+    kd["spot"], kd["first_shot"] = _r2(spot), _r2(first_shot)
+    kd["ttk_shot"] = None if first_shot is None else _r2(tk - first_shot)
+    kd["ttk_spot"] = None if spot is None else _r2(tk - spot)
+    if spot is not None:
+        angle = _off(rnd, killer, victim, spot)
+        if angle is not None:
+            kd["angle"], kd["band"] = int(round(angle)), _band(angle)
+    if spot is None:
+        reason = "never_saw"
+    elif first_shot is None:
+        reason = "no_shots"
+    elif first_shot < spot - SPOT_TOLERANCE_S:
+        reason = "fired_before_spot"
+    elif first_shot - spot > CLEAN_SPOT_TO_SHOT_S:
+        reason = "slow_start"
+    elif sum(1 for s in run if (_speed(rnd, killer, s) or 0) > MOVING_MPS) > CLEAN_MAX_MOVING:
+        reason = "moving"
+    else:
+        reason = None
+    kd["clean"], kd["reason"] = reason is None, reason
+
+
+def _first_sight(rnd, viewer: int, target: int, t_lo: float, t1: float):
+    """(t, angle) of the first sample from t_lo, step SIGHT_STEP_S, up to t1, where viewer sees target; else (None, None)."""
+    k = 0
+    while t_lo + k * SIGHT_STEP_S <= t1:
+        t = t_lo + k * SIGHT_STEP_S
+        p = rnd.pos(target, t)
+        if p is not None and _sees_point(rnd, viewer, t, p[0], p[1]):
+            angle = _off(rnd, viewer, target, t)
+            return t, None if angle is None else int(round(angle)), angle
+        k += 1
+    return None, None, None
+
+
+def _duels(rnd, slot: int, t0: float, t1: float, opponents: list[int]) -> tuple[list[dict], list[str]]:
+    duels, tags = [], []
+    firsts = []
+    for o in opponents:
+        yt, ya, yraw = _first_sight(rnd, slot, o, t0 - SIGHT_LOOK_S, t1)
+        tt, ta, _ = _first_sight(rnd, o, slot, t0 - SIGHT_LOOK_S, t1)
+        duels.append({"opponent": o, "you_saw_t": _r2(yt), "they_saw_t": _r2(tt), "you_angle": ya, "they_angle": ta})
+        firsts.append((yt, tt, yraw))
+    seen = [(min(t for t in (yt, tt) if t is not None), yt, tt, yraw) for yt, tt, yraw in firsts
+            if yt is not None or tt is not None]
+    if seen:
+        earliest = min(e[0] for e in seen)
+        top = [e for e in seen if e[0] == earliest]
+        mine = any(e[1] == earliest and (e[2] is None or e[2] > earliest) for e in top)
+        theirs = any(e[2] == earliest and (e[1] is None or e[1] > earliest) for e in top)
+        if mine and not theirs:
+            tags.append("saw_first")
+        elif theirs and not mine:
+            tags.append("seen_first")
+    if any(tt is not None and (yt is None or tt < yt) and yt is not None and yraw is not None
+           and yraw > CROSSHAIR_NEAR_DEG for yt, tt, yraw in firsts):
+        tags.append("caught_off_angle")
+    return duels, tags
+
+
 def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> dict:
     """One kill's sight record: did either side have the other in view from the first gun damage minus
     SIGHT_LOOK_S to the kill. W8 fills the fields that default here."""
@@ -256,6 +351,7 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
            and row.get("target") == victim and tk - GUN_DAMAGE_LOOKBACK_S <= row["t"] <= tk]
     if not gun:
         return kd
+    _ttk(rnd, blob, tk, killer, victim, kd)
     start = min(float(row["t"]) for row in gun)
     kd["wall"] = any(row.get("wall") for row in gun)
     t_lo = start - SIGHT_LOOK_S
@@ -284,7 +380,8 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
     return kd
 
 
-def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | None = None) -> dict:
+def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | None = None,
+           sight: bool = False) -> dict:
     t0, t1 = group[0][0], group[-1][0]
     opponents = sorted({e[3] for e in group})
     kills = [{"victim": e[3], "t": _r2(e[0])} for e in group if e[1] == "kill" and e[2] == slot]
@@ -325,6 +422,10 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | N
         tags.append("killed_unseen")
     if any(k["through_smoke"] for k in kill_detail + ([death_detail] if death_detail else [])):
         tags.append("through_smoke")
+    duels = []
+    if sight:
+        duels, duel_tags = _duels(rnd, slot, t0, t1, opponents)
+        tags.extend(duel_tags)
     return {
         "slot": slot, "i": i, "t0": _r2(t0), "t1": _r2(t1), "opponents": opponents,
         "first": "player" if group[0][2] == slot else "opponent",
@@ -333,7 +434,7 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | N
         "moving": moving,
         "mates": mates,
         "util_on": util_on, "util_near": util_near, "smoke_near": smoke_near, "util_on_you": util_on_you,
-        "mollied": mollied, "duels": [],
+        "mollied": mollied, "duels": duels,
         "kill_detail": kill_detail, "death_detail": death_detail, "tags": tags,
     }
 
@@ -345,5 +446,5 @@ def round_moments(rnd: engine.RoundInputs, blob: dict, *, sight: bool = True) ->
            for t, killer, victim in rnd.kills if t <= rnd.t_decided}
     for slot in sorted(rnd.team):
         for i, group in enumerate(_split(_events(rnd, blob, slot))):
-            out.append(_fight(rnd, blob, slot, i, group, kds))
+            out.append(_fight(rnd, blob, slot, i, group, kds, sight))
     return {"v": VERSION, "sight": sight, "fights": out}
