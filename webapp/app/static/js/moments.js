@@ -147,13 +147,15 @@
 
   function summaryLine(summary) {
     var medians = (summary && summary.medians) || {};
-    var bands = BANDS.map(function (b) {
-      var m = medians[b] || {};
-      return b + " " + sec(m.ttk_shot) + " (n " + (m.n || 0) + ")";
-    });
+    var bandsOf = function (field) {
+      return BANDS.map(function (b) {
+        var m = medians[b] || {};
+        return b + " " + sec(m[field]) + " (n " + (m.n || 0) + ")";
+      }).join(", ");
+    };
     var info = (summary && summary.info) || {};
     var count = function (k) { return (info[k] || []).length; };
-    return "TTK from first shot: " + bands.join(", ") + ". heard " + count("heard") + ", gunfire outside fights " + count("gunfire_outside") +
+    return "TTK from first shot: " + bandsOf("ttk_shot") + ". TTK from spot: " + bandsOf("ttk_spot") + ". heard " + count("heard") + ", gunfire outside fights " + count("gunfire_outside") +
       ", found by utility " + count("found_by_utility") + ", seen " + (info.seen || 0);
   }
 

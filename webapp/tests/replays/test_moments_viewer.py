@@ -136,7 +136,11 @@ def test_summary_line():
     s["medians"]["all"] = {"ttk_shot": 0.42, "ttk_spot": None, "spot_to_shot": 0.3, "n": 12}
     s["info"] = {"heard": [{}, {}], "gunfire_outside": [{}], "found_by_utility": [], "seen": 4}
     got = run_node("function run(p) { return M.summaryLine(p); }", s)
-    assert "TTK from first shot: all 0.42 s (n 12)" in got and "on –" in got
+    s["medians"]["all"]["ttk_spot"] = 0.8
+    got = run_node("function run(p) { return M.summaryLine(p); }", s)
+    assert "TTK from first shot: all 0.42 s (n 12)" in got and "on – (n 0)" in got
+    assert "TTK from spot: all 0.80 s (n 12), on – (n 0)" in got
+    assert got.index("TTK from first shot") < got.index("TTK from spot")
     assert got.endswith("heard 2, gunfire outside fights 1, found by utility 0, seen 4")
 
 
