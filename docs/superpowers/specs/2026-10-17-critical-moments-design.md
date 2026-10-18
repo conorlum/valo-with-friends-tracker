@@ -331,6 +331,55 @@ The demo never shows the tab: it has no replays (`store.refuse_demo`).
   above comes from. "Not measurable" is shown honestly rather than guessed.
 - The near-utility list of ability names needs the owner's review; until then an unlisted ability is not counted.
 
+## Build amendments (independent review, 2026-10-18)
+
+An independent review of this spec against the repo found places where it could not be built as written. These
+amendments win over the sections above where they differ.
+
+- **Control lost (6) and information given away (8) are joined on the site, not computed in the gaps block.**
+  Almost every round's moments come from a gaps-only task, which runs no control summary and no knowledge pass
+  (`app/control/task.py` gaps-only path). The fights and every other tag stay in the gaps block. The endpoint
+  reads each death's `control_m2` and `share_of_team` from the stored control summaries
+  (`replay_control_views.load_round_summaries`) and the locating events from the stored control data's
+  `knowledge_events` header (already collapsed at 1.0 s by the encoder; the 2 s grouping of section 8 goes on
+  top). The endpoint's ETag covers the moments rows and the summaries.
+- **No geometry, no moments.** A round on a map without geometry is never sent a control task, so it has no
+  moments. The tab is shown where the Control tab is (`linked and control`), and the endpoint uses
+  `_control_replay_or_404` unchanged.
+- **Revision.** The moments ride `GAPS_REVISION` (3 -> 4, in `app/gaps/detect.py` and
+  `app/services/replay_gaps.py`): the worker reports its own revision, so an old image's result is never taken
+  as current. An ok gaps result with no `moments` key is untrusted and retried. Merging makes every stored gap
+  run stale until the worker's gaps-only backlog drains: the Gaps tab says stale and `/gaps/<map>` leaves those
+  rounds out meanwhile.
+- **Where the code lives.** `app/moments/` (`__init__.py`, `constants.py`, `fights.py`). `fights.py` imports
+  only `app.control.{engine, utility, mollies}` and works in the engine's own units (`RoundInputs`: pixels,
+  `m_per_px`, yaw); it does not use `app/coach/roundview.py`. `constants.py` is standard library only and holds
+  `TRADE_WINDOW_S = 6.0` and `TRADE_RANGE_M = 20.0`; `app/coach/detectors.py` imports them from it, and a
+  site-side test pins `TRADE_WINDOW_S == float(app.scoring.impact.TRADE_WINDOW_SECONDS)` (no edit to
+  `app/scoring/`). The worker image copies `app/moments` and smoke-imports `app.moments.fights`. The web app
+  never imports `app.moments.fights`.
+- **The gun table** (survey `GUN_CLASS`) moves into `app/moments/constants.py`. Every class except shotgun and
+  "other" can be tagged moving.
+- **Fight events.** An event's time is its `t` (not `t1`). Damage and kills with `t > t_decided` are dropped.
+  The 3 s gap is measured from the previous event's `t`. A DB-only death (no killer) is not a fight event;
+  "died" comes from kill rows only.
+- **Spot and clean-kill details**, each a named constant: the spot is looked for up to 10 s back from the kill;
+  the run is walked backward from the killer's last shot at or before kill + 0.05 s; "no earlier than the spot"
+  allows 0.05 s; a kill needs gun damage from the killer to the victim within 10 s before it to be measured.
+- **Saw first and angles for every fight**: over fight start - 3 s to its end, for the player and each opponent,
+  each one's first sight of the other in that window; a fight where neither saw the other shows none.
+- **Mollied off a spot**: the player was inside a zone from `mollies.molly_zones` when it appeared, alive, and
+  was outside it before the zone ended.
+- **Dash shots**: only blobs with `movement_casts` exclude them; older blobs exclude none.
+- **The jump** is `window.viewer.showRound(round, t)` (as the coach panel does), not the Analysis tab's
+  in-round seek.
+- **Picker default**: the logged-in player (`get_current_player`) mapped to a slot through the page's players;
+  otherwise the lowest slot of the round-1 attacking team.
+- **Moments have their own status** in their row. They are written only where the gap run is written (never
+  on the writer's "already current" return).
+- **Demo**: reads already 404 in demo mode (`_replay_or_404`, `replays_enabled`).
+- **Sight is 2D**: `_sees_point` passes no height, so the "with heights" in the known limits is wrong.
+
 ## Later
 
 - The coach brief can take these fights as flags (`detectors.flags`), replacing the per-death flags with
