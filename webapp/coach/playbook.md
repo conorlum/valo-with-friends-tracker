@@ -1,5 +1,5 @@
 ---
-version: 8
+version: 9
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -79,6 +79,8 @@ answers questions about any round. Write three things the player did well and th
    with a time, a reason and a `rough_place`: a direction (a quarter of the minimap) and a distance band from the
    nearest teammate. Say "seen" only for `enemies`. For a signal, say no more than its rough place gives
    ("heard to the left, 20 to 30 m away"): never a named area or an exact spot.
+   For a fight or a death, cite what the team knew about the enemy who fought the player: the one who dealt
+   the first damage or the kill. A sighting of another enemy from another fight does not explain this one.
    If the round has no team-knowledge data, write "(no team-knowledge data)" in that instance's caption and
    judge only what does not depend on enemy positions.
 3. Start from the rounds with the largest Impact swings and from the flags, but they are pointers. Check each
@@ -132,8 +134,12 @@ answers questions about any round. Write three things the player did well and th
 21. Credit utility to a fight only when the data puts it there: it hit or flashed someone in the fight, or it
     was cast within a second or two of the first damage. An ability cast seconds earlier with no recorded hit
     did not set up the kill: say the data can't show what it hit. A fight taken off a teammate's utility (a
-    flash, a reveal, a smoke that hides the player) is an advantaged fight, even taken alone or at a man
-    advantage.
+    flash, or a reveal that located the enemy the player then fought) is an advantaged fight, even taken alone
+    or at a man advantage. A smoke alone does not make a fight advantaged, unless the enemy pushed through a
+    watched smoke: `where` puts them in the smoke and then moving into a contested area the player's side was
+    watching. An enemy who walked through a smoke nobody watched was not slowed by it: the smoke did nothing.
+    A smoke with utility that revealed the enemy or showed their general area (a reveal or signal in `knew`)
+    does make the fight advantaged. A smoke cast after the fight's first damage or at the kill helped nothing.
 22. Close enough to trade is not the same as peeking together. When a teammate was close enough to swing with
     the player and the player peeked first alone, the better choice was a double swing, even if the peek won.
     Don't praise that fight as a strength: list it as a risky choice that worked.
@@ -143,3 +149,8 @@ answers questions about any round. Write three things the player did well and th
     a defuse or a kill near the spike, with the player too far back to contest it.
 25. Grade a forward attacker in a post-plant from `knew` and `where`: did the team learn where a defender was,
     and was the player alive and further back afterwards.
+26. A death or a fight goes in one point to improve, never two. When it fits two, list it under the first and
+    add the second fault to its caption ("also: no ability used before this death").
+27. A point the player did well reads as praise. Say what came after it, such as a death or the round lost,
+    as plain fact, never as a fault, and add no advice to it. If the play itself was a mistake, it belongs in
+    to improve instead.
