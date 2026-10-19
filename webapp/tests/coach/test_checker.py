@@ -443,3 +443,32 @@ def test_a_player_named_with_digits_does_not_hide_a_number(tmp_path):           
     found = checker.check_point(point(polarity="good", body="You were 35 metres from 35#NA1.", instances=inst),
                                 log, snap, THEMES, 0)
     assert any("number 35" in p for p in found), found
+
+
+@pytest.fixture
+def spike_log(toy_areas, tmp_path):
+    """A round whose spike went down at 10 s on B Site, with one 1.9 s tap at 40 s (15 s left on the spike)."""
+    bomb = {"k": "ability", "kind": "Bomb", "name": "Spike", "by": 1, "t": 10.0, "t1": None,
+            "defuses": [[40.0, 41.9, 2, False]], "owner_by": "planted", "u": 8000, "v": 8000}
+    blob = toys.round_blob(toys.ten(), util=[bomb], t_end=60.0, n=1)
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]},
+               "rounds": {"1": {"db": {}, "stats": {}, "kills": {}}}}
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}), tmp_path)
+    snap = snapshot.load(tmp_path)
+    query.run(snap, tmp_path, "timeline", ["1"])                       # q1
+    return snap, checker.trusted_log(query.read_log(tmp_path), snap, {})
+
+
+SPIKE_INST = [{"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}]
+
+
+@pytest.mark.parametrize("body", ["The spike was planted on B Site.", "You made a 1.9 s tap.",
+                                  "You tapped with 15 s on the spike."])
+def test_a_cited_spike_area_attempt_length_and_time_left_pass(spike_log, body):
+    snap, log = spike_log
+    assert _check(snap, log, body, SPIKE_INST) == []
+
+
+def test_an_attempt_length_not_in_the_answer_fails(spike_log):
+    snap, log = spike_log
+    assert _check(snap, log, "You made a 2.5 s tap.", SPIKE_INST) != []
