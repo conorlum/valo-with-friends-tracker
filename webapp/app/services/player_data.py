@@ -34,6 +34,7 @@ def one_row_per_match(player_ids):
 def load_player_match_data(
     db: Session, player: Player, match_limit: int | None = None,
     player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
 ) -> list[MatchPlayer]:
     """Every MatchPlayer row for `player`, most recent match first, with
     the whole Match -> match_players (+ each teammate's Player row) / rounds
@@ -81,12 +82,20 @@ def load_player_match_data(
     Linking is zero-auth, so two linked accounts may have played the same
     match (a false link): the result keeps one row per match, the lowest
     player_id's, chosen before the LIMIT (see one_row_per_match).
+
+    `agents`, if given, keeps only rows played as one of those agents (applied
+    after the per-match dedupe, like slicing the full load would); an empty
+    set returns [] without querying.
     """
+    if agents is not None and not agents:
+        return []
     query = db.query(MatchPlayer)
     if player_ids:
         query = query.filter(MatchPlayer.player_id.in_(player_ids), one_row_per_match(player_ids))
     else:
         query = query.filter_by(player_id=player.id)
+    if agents is not None:
+        query = query.filter(MatchPlayer.agent.in_(agents))
     query = (
         query
         .join(Match, Match.id == MatchPlayer.match_id)

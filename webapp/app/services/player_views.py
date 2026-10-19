@@ -26,6 +26,7 @@ from app.services.fight_ev import (
     build_fight_ev_views_from_blocks,
     build_match_fight_ev_block_from_replay,
 )
+from app.services.agent_roles import filter_agents
 from app.services.circle import circle_teammate_ids
 from app.services.player_data import (
     RECENT_MATCH_LIMIT,
@@ -122,6 +123,7 @@ def compute_player_views(
     db: Session, player: Player, match_limit: int | None,
     draws: int = PAGE_BOOTSTRAP_DRAWS,
     player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
 ) -> PlayerViews:
     """One load, one replay, all four products (see module docstring).
 
@@ -130,7 +132,7 @@ def compute_player_views(
     viewed). The bootstrap is then seeded by the group's lowest player ID,
     so the combined numbers don't depend on which account's page they were
     computed from (they're cached once per group)."""
-    match_players = load_player_match_data(db, player, match_limit, player_ids=player_ids)
+    match_players = load_player_match_data(db, player, match_limit, player_ids=player_ids, agents=agents)
     roster_player_ids = _roster_player_ids(db, player, player_ids)
     seed_player_id = min(player_ids) if player_ids else player.id
     replays, _diag = _replay_all_matches(match_players)
@@ -166,6 +168,40 @@ def compute_player_views_by_scope(
     genuinely differs per match subset) and the profile/econ builders
     (which need a per-scope slice of scores, see Step 2b) run per scope.
     `player_ids` is an account group's combined view, as in compute_player_views."""
+    return compute_player_views_by_filter(db, player, ("",), draws, player_ids)
+
+
+def _views_from_rows(
+    player: Player, indices: list[int], match_players: list[MatchPlayer],
+    per_match_state: list, blocks: list, scores_by_match_player: dict,
+    seed_player_id: int, draws: int,
+) -> PlayerViews:
+    """One PlayerViews from the rows at `indices` (load order, newest first)
+    of the shared load, its per-match state and fight-EV blocks."""
+    rows = [match_players[i] for i in indices]
+    win_stats, ko_weights = _merge_state_aggregates([per_match_state[i] for i in indices])
+    ids = {mp.id for mp in rows}
+    scope_scores = {mid: s for mid, s in scores_by_match_player.items() if mid in ids}
+    profile, econ_aggregates, pistol_match_stats = _build_profile_and_econ(player, rows, scope_scores)
+    return PlayerViews(
+        win_stats, ko_weights,
+        build_fight_ev_views_from_blocks([blocks[i] for i in indices], seed_player_id, draws),
+        profile, econ_aggregates, pistol_match_stats,
+    )
+
+
+def compute_player_views_by_filter(
+    db: Session, player: Player, keys, draws: int = PAGE_BOOTSTRAP_DRAWS,
+    player_ids: frozenset[int] | None = None,
+) -> dict[str, PlayerViews]:
+    """Both scopes of every filter key off ONE career load and ONE replay.
+    A key is "" (all rows), "role:<role>" or "agent:<Name>"; its rows are
+    the loaded rows whose agent the key selects (agent_roles.filter_agents
+    over the agents played), in load order. `recent` is the first
+    RECENT_MATCH_LIMIT of those, `career` all of them. Output keys are
+    cache_scope_key(scope, key). The bootstrap is seeded the same for every
+    filter. `player_ids` is an account group's combined view."""
+    from app.services.player_view_cache import cache_scope_key   # it imports this module
     match_players = load_player_match_data(db, player, match_limit=None, player_ids=player_ids)
     roster_player_ids = _roster_player_ids(db, player, player_ids)
     seed_player_id = min(player_ids) if player_ids else player.id
@@ -181,24 +217,19 @@ def compute_player_views_by_scope(
         per_match_state.append((ws, ko))
         blocks.append(build_match_fight_ev_block_from_replay(mp, match_input, entries, duels, roster_player_ids))
 
-    match_player_ids = [mp.id for mp in match_players]
-    scores_by_match_player = load_impact_scores_for_match_players(db, match_player_ids)
+    scores_by_match_player = load_impact_scores_for_match_players(db, [mp.id for mp in match_players])
+    agents_played = {mp.agent for mp in match_players}
 
     views: dict[str, PlayerViews] = {}
-    for scope, limit in (("recent", RECENT_MATCH_LIMIT), ("career", None)):
-        n = len(match_players) if limit is None else limit
-        scope_match_players = match_players[:n]
-        win_stats, ko_weights = _merge_state_aggregates(per_match_state[:n])
-
-        scope_ids = {mp.id for mp in scope_match_players}
-        scope_scores = {mid: s for mid, s in scores_by_match_player.items() if mid in scope_ids}
-        profile, econ_aggregates, pistol_match_stats = _build_profile_and_econ(
-            player, scope_match_players, scope_scores
-        )
-
-        views[scope] = PlayerViews(
-            win_stats, ko_weights,
-            build_fight_ev_views_from_blocks(blocks[:n], seed_player_id, draws),
-            profile, econ_aggregates, pistol_match_stats,
-        )
+    for key in keys:
+        if key:
+            wanted = filter_agents(key, agents_played)
+            indices = [i for i, mp in enumerate(match_players) if mp.agent in wanted]
+        else:
+            indices = list(range(len(match_players)))
+        for scope, chosen in (("recent", indices[:RECENT_MATCH_LIMIT]), ("career", indices)):
+            views[cache_scope_key(scope, key)] = _views_from_rows(
+                player, chosen, match_players, per_match_state, blocks,
+                scores_by_match_player, seed_player_id, draws,
+            )
     return views
