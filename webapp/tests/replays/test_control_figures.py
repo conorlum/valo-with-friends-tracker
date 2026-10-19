@@ -88,7 +88,7 @@ def test_the_revisions_of_this_release():
     from app.gaps import detect
     from app.replays import format as fmt
 
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (19, 18)
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (20, 19)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 4, "mixed ground gap consumers"
 
 

@@ -218,6 +218,8 @@ TRIPWIRE = "Gumshoe_4_TripWire"
 AREA_TRIPS = {"Killjoy_Q_StealthAlarmbot": ALARMBOT_M, "Deadeye_E_Trap": CHAMBER_TRAP_M}
 CONTEST_STATUSES = {"slowed", "tethered", "hindered", "fragile", "suppressed", "decay", "decayed"}
 DOWNGRADE_STATUSES = {"concussed", "stunned"}
+# Statuses that are a blind's condition, read with the flash and nearsight rows (`_blinds`).
+BLIND_STATUSES = {"nearsighted", "blinded"}
 
 # Cell state codes (one per walkable cell per tick), in side-group terms (A/B, the blob's `side`).
 NONE, A_PASSIVE, A_SAFE, A_ACTIVE, B_PASSIVE, B_SAFE, B_ACTIVE, CONTESTED_ACTIVE, CONTESTED = range(9)
@@ -618,6 +620,12 @@ class RoundInputs:
             k = e.get("k")
             if k == "ability":
                 rows.append(e)      # the normaliser finds an older flash row's explosion in its thrower's ability row
+            elif k == "status" and e.get("status") in BLIND_STATUSES:
+                # Reckoning's nearsight is a status row (app/replays/extras.py DEBUFF_ONLY); the normaliser reads
+                # its `status` as the condition, from `t` to `t1`.
+                if not (self.evolution and e.get("target") is not None
+                        and not utility.affects("blind", self.evolution, e["target"], float(e["t"]))):
+                    rows.append(e)
             elif k in ("flash", "nearsight"):
                 e = self._unhit(e) if self.evolution else e
                 rows.append(e)

@@ -5,16 +5,19 @@ what should happen. Leads are guesses until checked.
 
 ## Open
 
-### 4. Reckoning's nearsight doesn't reach map control
-
-- **Where:** `app/control/engine.py` reads nearsight from `nearsight` rows only; Reckoning's are `status` rows
-  (`nearsighted`), which it ignores (neither set in `CONTEST_STATUSES` / `DOWNGRADE_STATUSES`).
-- **Should be:** a Reckoning hit blinds like Storm Surge's, whose nearsight is the export's own `nearsight`
-  row. The parser emits no such row for Reckoning.
-- **Leads (unchecked):** write Reckoning's debuffs as `nearsight` rows (`hits: [[slot, t, 3.0]]`) instead of
-  statuses, or have the engine read `nearsighted` statuses through the shared normaliser.
+None.
 
 ## Fixed
+
+### 4. Reckoning's nearsight doesn't reach map control
+
+- **Where:** `app/control/engine.py` read nearsight from `nearsight` rows only; Reckoning's are `status` rows
+  (`nearsighted`), which it ignored (neither set in `CONTEST_STATUSES` / `DOWNGRADE_STATUSES`).
+- **Should be:** a Reckoning hit blinds like Storm Surge's, whose nearsight is the export's own `nearsight`
+  row. The parser emits no such row for Reckoning.
+- **Fixed (2026-10-19, control revision 19):** `_blinds` also passes `status` rows in `BLIND_STATUSES`
+  (`nearsighted`, `blinded`) to the shared normaliser, which already reads a status row's `status` as its
+  condition; an ulting Veto is left out as for nearsight rows.
 
 ### 3. Harbor's High Tide slow isn't shown, and Reckoning's hits are wrong
 
