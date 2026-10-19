@@ -73,6 +73,24 @@ def test_an_attempt_after_a_half_is_resumed(tmp_path):
     assert (done["result"], done["resumed"]) == ("defused", True)
 
 
+def test_every_attempt_after_a_half_is_resumed_and_judged_by_its_own_length(tmp_path):
+    snap = make(tmp_path, bomb(defuses=[(20.0, 24.0, 2, False), (30.0, 34.0, 3, False), (40.0, 41.0, 2, False)]))
+    first, second, third = attempts(snap)
+    assert [a["result"] for a in (first, second, third)] == ["half", "half", "tap"]
+    assert ("resumed" in first, second.get("resumed"), third.get("resumed")) == (False, True, True)
+
+
+def test_the_half_boundary_is_judged_on_the_displayed_seconds(tmp_path):
+    snap = make(tmp_path, bomb(defuses=[(20.0, 23.499, 2, False), (30.0, 33.494, 2, False)]))
+    assert [(a["seconds"], a["result"]) for a in attempts(snap)] == [(3.5, "half"), (3.49, "tap")]
+
+
+def test_a_null_stop_is_never_defused(tmp_path):
+    snap = make(tmp_path, bomb(defuses=[(20.0, None, 2, True)]), t_end=25.0, db={"plant": 10.0, "defuse": 25.0})
+    defuses = [e for e in query.timeline(snap, 1)["events"] if e["kind"] == "defuse"]
+    assert [e.get("result") for e in defuses] == ["half", None]
+
+
 def test_the_half_boundary_is_three_and_a_half_seconds(tmp_path):
     snap = make(tmp_path, bomb(defuses=[(10.0, 13.5, 2, False), (20.0, 20.0 + 3.49, 2, False),
                                         (30.0, 32.0, 2, True)]))

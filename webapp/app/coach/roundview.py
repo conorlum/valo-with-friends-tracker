@@ -141,6 +141,7 @@ class RoundView:
             start = float(start)
             row = {}
             if stop is None:
+                finished = False                # D2: an attempt with no recorded stop is never defused
                 life = next((iv for iv in self._intervals(slot) if iv[0] <= start < iv[1]), None)
                 if life is not None and life[1] < cap:
                     stop, row["until"] = float(life[1]), "death"
