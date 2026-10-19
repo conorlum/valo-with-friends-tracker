@@ -153,7 +153,7 @@ def test_only_maps_that_passed_the_kill_line_test_have_the_layer():
         has = rc.map_layer(name) is not None
         assert has == bool((entry.get("kill_lines") or {}).get("passes")), name
     assert rc.map_layer("Nowhere") is None
-    assert rc.map_layer("Bind") is None, "no Bind replay has passed yet"
+    assert rc.map_layer("Breeze") is None, "no Breeze replay has passed yet"
 
 
 def test_map_layer_exposes_current_editorial_names_by_id_and_replay_key(monkeypatch):

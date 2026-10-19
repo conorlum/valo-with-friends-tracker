@@ -153,12 +153,12 @@ def test_an_unchanged_page_exports_the_loaded_tags():
 
 def test_the_page_builds_with_every_map(tmp_path):
     out = tmp_path / "tagger.html"
-    assert control_tagger.main(["--out", str(out), "--map", "Abyss", "--map", "Bind"]) == 0
+    assert control_tagger.main(["--out", str(out), "--map", "Abyss", "--map", "Breeze"]) == 0
     page = out.read_text(encoding="utf-8")
     assert "global.TaggerCore = api" in page and "/*DATA*/" not in page and "/*CORE*/" not in page
     data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
-    assert sorted(data["maps"]) == ["Abyss", "Bind"] and data["tags"] == TAGS
-    assert data["maps"]["Bind"]["lines"] == [] and len(data["maps"]["Abyss"]["lines"]) == 200
+    assert sorted(data["maps"]) == ["Abyss", "Breeze"] and data["tags"] == TAGS
+    assert data["maps"]["Breeze"]["lines"] == [] and len(data["maps"]["Abyss"]["lines"]) == 200
 
 
 # ---- Choke mode (timing-gaps spec section 2: add, delete, move, rename; hand edits survive re-detection) ----

@@ -546,7 +546,7 @@ def test_a_build_that_fails_on_the_worker_spends_the_budget_and_other_maps_are_n
     clone(db, linked, 1)
     other = clone(db, linked, 1)[0]
     other.map_name = "Haven"                                   # a second map with one match: nothing due for it
-    # (Haven, not Bind: the committed index gives Bind no control layer yet, so its rounds would never be sent)
+    # (Haven, not Breeze: the committed index gives Breeze no control layer yet, so its rounds would never be sent)
     db.commit()
     rig.mode(raw="not json")
     first = rig.cycle(factory)
