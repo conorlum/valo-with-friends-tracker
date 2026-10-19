@@ -46,7 +46,7 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 
 ### Account groups
 
-One person's several Riot accounts (migration 0026): `account_groups` (with its `main_player_id`) +
+One person's several Riot accounts (migration 0027): `account_groups` (with its `main_player_id`) +
 `account_group_members` (an account is in at most one group, with an optional label). `/accounts` links them,
 zero-auth like friendships, never on the demo. The first account to add another becomes the main; only the main
 adds, removes and labels accounts or hands the main role to a sub, and a sub can leave. A linked account can't
@@ -74,7 +74,7 @@ from the committed `app/data/agent_roles.json` (`app/services/agent_roles.py`). 
 player's matches is filtered, except map streaks; "recent" is the last 30 matches on that filter. One career load
 and one replay feed every filter (`compute_player_views_by_filter`). The pre-warm computes the unfiltered view,
 each role played and the top 3 agents (`precompute_keys`); any other filter is computed on first visit and
-cached. Filtered rows live in the same caches: migration 0027 widens `player_view_cache.scope` and
+cached. Filtered rows live in the same caches: migration 0028 widens `player_view_cache.scope` and
 `account_group_view_cache.scope` to keys like `career|role:sentinel` (`cache_scope_key`), and they are cleared
 with the unfiltered rows.
 

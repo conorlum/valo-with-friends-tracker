@@ -1,4 +1,4 @@
-"""Migration 0027 (filtered view-cache scopes): revision chain, an up/down/up round trip on a real server,
+"""Migration 0028 (filtered view-cache scopes): revision chain, an up/down/up round trip on a real server,
 the model-level CHECKs on sqlite, and the cache_scope_key helper."""
 import importlib.util
 from pathlib import Path
@@ -19,8 +19,8 @@ def _jsonb_on_sqlite(type_, compiler, **kw):
 
 
 def load_migration():
-    path = WEBAPP / "alembic" / "versions" / "0027_view_filter_scope.py"
-    spec = importlib.util.spec_from_file_location("migration_0027", path)
+    path = WEBAPP / "alembic" / "versions" / "0028_view_filter_scope.py"
+    spec = importlib.util.spec_from_file_location("migration_0028", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     return migration
@@ -28,10 +28,10 @@ def load_migration():
 
 def test_revision_chain():
     migration = load_migration()
-    assert (migration.revision, migration.down_revision) == ("0027", "0026")
+    assert (migration.revision, migration.down_revision) == ("0028", "0027")
 
 
-def test_pg_migration_0027_up_down_up():
+def test_pg_migration_0028_up_down_up():
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import text
@@ -69,7 +69,7 @@ def test_pg_migration_0027_up_down_up():
         transaction = connection.begin()
         try:
             with Operations.context(MigrationContext.configure(connection)):
-                if widened(connection):     # a database already at 0027
+                if widened(connection):     # a database already at 0028
                     migration.downgrade()
                 assert not widened(connection)
                 player = connection.execute(text(

@@ -1,7 +1,7 @@
 """filtered view-cache scopes
 
-Revision ID: 0027
-Revises: 0026
+Revision ID: 0028
+Revises: 0027
 Create Date: 2026-10-18
 
 The two view caches (player_view_cache, account_group_view_cache) fold a page
@@ -14,8 +14,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0027"
-down_revision: Union[str, None] = "0026"
+revision: str = "0028"
+down_revision: Union[str, None] = "0027"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

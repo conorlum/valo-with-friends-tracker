@@ -125,7 +125,7 @@ def cache_version() -> int:
 
 
 UNFILTERED_SCOPES = ("recent", "career")
-SCOPE_MAX_LENGTH = 48  # player_view_cache.scope / account_group_view_cache.scope (migration 0027)
+SCOPE_MAX_LENGTH = 48  # player_view_cache.scope / account_group_view_cache.scope (migration 0028)
 
 
 def cache_scope_key(scope: str, key: str = "") -> str:

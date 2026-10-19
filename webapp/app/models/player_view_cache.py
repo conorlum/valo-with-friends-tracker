@@ -14,7 +14,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
-# 'recent' / 'career', optionally followed by '|<filter key>' (migration 0027).
+# 'recent' / 'career', optionally followed by '|<filter key>' (migration 0028).
 SCOPE_CHECK = "scope IN ('recent', 'career') OR scope LIKE 'recent|%' OR scope LIKE 'career|%'"
 
 
