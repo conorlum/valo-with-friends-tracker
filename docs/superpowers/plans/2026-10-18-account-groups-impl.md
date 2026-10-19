@@ -54,7 +54,7 @@ host is `localhost`/`127.0.0.1` and its database is `valo_groups_corpus`.
   single career page cold and cached (route functions in-process), the H8 extra queries (`_account_view`,
   `group_fingerprint`), blob bytes × rows written. A `--link`/`--unlink` mode links or unlinks the three
   accounts on the corpus copy.
-- Run for NPrightdolphin#NA1 with Najumi#NPC and Osmin#NA1 linked as subs. Output to the run folder only:
+- Run for one tracked account with two friends' accounts linked as stand-in subs (the corpus has no real alts). Output to the run folder only:
   `timings-before.json`.
 - Check: `timings-before.json` has every figure.
 
@@ -171,7 +171,7 @@ host is `localhost`/`127.0.0.1` and its database is `valo_groups_corpus`.
 
 ### W19 — "After" numbers and R4's reach
 - `timings-after.json` (same script, plus a filtered page cold and cached, and the played-agents query, I13).
-- R4's reach on the corpus, viewer NPrightdolphin#NA1: `--unlink`, count, `--link`, count: /stats Friends
+- R4's reach on the corpus, viewer that same account: `--unlink`, count, `--link`, count: /stats Friends
   (players, matches), match-list friends, sessions, squad → `r4-reach.json`.
 - If H8's or P11's queries cost over ~10% of a cached page load: a `W19b` folding them (D3); else logged.
 - Check: both files complete.
