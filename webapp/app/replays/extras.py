@@ -207,7 +207,8 @@ class _Context:
 @dataclass
 class _Effect:
     """An effect played on an actor (a character pawn or the planted spike), with the actors its
-    context names and, for a continuous one, when it stopped. A one-shot (`oneshot`) has no stop."""
+    context names and, for a continuous one, when it stopped. A one-shot (`oneshot`) has no stop. `buff` is its
+    `FXC.Buff.Duration` (seconds), which a debuff carries."""
     t_ms: int
     actor: int
     effect_id: int | None
@@ -215,6 +216,7 @@ class _Effect:
     context: tuple[int, ...]
     stop_ms: int | None = None
     oneshot: bool = False
+    buff: float | None = None
 
 
 @dataclass
@@ -265,6 +267,9 @@ class Raw:
     # capture, (time, the capturer's pawn), once.
     orbs: list[list] = field(default_factory=list)
     orb_pickups: list[tuple[int, int]] = field(default_factory=list)
+    # A push or pull an ability object put on a character (`NetMulticastApplyForceModule` naming it as `Source`):
+    # (time, the character, the object). Reckoning's chunks send one on every touch.
+    forces: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -272,12 +277,14 @@ RPC_PLAY = "MulticastPlayContinuousEffect"
 RPC_STOP = "MulticastStopContinuousEffect"
 RPC_ONESHOT = "MulticastPlayOneShotEffect"
 RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one per point laid
+RPC_FORCE = "NetMulticastApplyForceModule"
 # The carried spike: its equippable is named by an effect on the planter's character as the plant begins.
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
-                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"')
+                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
+                           f'"{RPC_FORCE}"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -429,6 +436,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     if pickup not in raw.orb_pickups:          # sent twice
                         raw.orb_pickups.append(pickup)
                     continue
+                if function == RPC_FORCE:
+                    source = int(payload.get("Source") or 0)
+                    if source in actors and guid in pawns:
+                        raw.forces.append((t_ms, guid, source))
+                    continue
                 if guid in raw.device_fx and function in _DEVICE_FX:
                     raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
                                                 payload.get("EffectContainer")))
@@ -444,7 +456,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if guid in pawns and value in carried:
                             raw.plant_starts.append((t_ms, guid))
                     if context:
-                        effect = _Effect(t_ms, guid, payload.get("EffectId"), payload.get("EffectContainer"), context)
+                        effect = _Effect(t_ms, guid, payload.get("EffectId"), payload.get("EffectContainer"), context,
+                                         buff=_float_tags(payload).get("FXC.Buff.Duration"))
                         raw.effects.append(effect)
                         open_effects[(guid, effect.effect_id)] = effect
                 elif function == RPC_PLAY and guid in actors:
@@ -918,16 +931,26 @@ STATUS_OBJECTS = (
     (re.compile(r"^Cable_Q_SoundSensor_Fissure$"), "concussed"),  # Deadlock's Sonic Sensor (caster-named)
     (re.compile(r"^Cable_4_RemovableNet$"), "netted"),            # Deadlock's GravNet: crouched and slowed
     (re.compile(r"^Cable_X_FishingHook_Cage$"), "cocooned"),      # Deadlock's Annihilation
-    # Harbor's Reckoning and Storm Surge nearsight and slow. Their effects run until the object closes,
-    # so they last the game's nearsight instead (STATUS_GAME_MS).
-    (re.compile(r"^Mage_(X_TidalWave_Chunk|4_SplashGrenade)$"), "nearsighted"),
+    # Harbor's Reckoning nearsights and slows the enemies its wave touches: see DEBUFF_ONLY.
+    (re.compile(r"^Mage_X_TidalWave_Chunk$"), "nearsighted"),
 )
-# Not statuses, though their effects name enemies: Neon's Fast Lane (walking through it does nothing),
-# and Harbor's High Tide (Mage_Q_WallManager), whose effect starts on every enemy at once as the wall
-# goes up and lasts its whole life, so it can't tell who walked through the wall and was slowed.
+# Not statuses, though their effects name enemies: Neon's Fast Lane (walking through it does nothing);
+# Harbor's High Tide (Mage_Q_WallManager), whose effect starts on every player at once as the wall goes up
+# and lasts its whole life (its slow is read from the tracks instead: condense.high_tide_slows); and Harbor's
+# Storm Surge (Mage_4_SplashGrenade), whose effect is a player standing in the whirlpool (its nearsight is the
+# export's own `nearsight` row, at the moment it goes off).
 CASTER_ONLY = re.compile(r"^Sequoia_Q_FragileMissile_TrajectoryWarning$")
-# How long an object's status lasts in game, where its effect on the player runs on past it.
-STATUS_GAME_MS = {"Mage_X_TidalWave_Chunk": 3000, "Mage_4_SplashGrenade": 2000}
+# Objects whose touch plays effects on anyone, though only some of those touches debuff: only the effect that
+# carries `FXC.Buff.Duration` counts, and the status lasts that long (3 s for Reckoning), though the effects run
+# on until the wave closes. Its debuff is on whoever the export puts it on, teammates included (wiki: friendly
+# fire): on the six Reckonings of three local exports (2026-10-19), two of Harbor's teammates were debuffed,
+# and two enemies were touched (1.0 s and 2.7 s after the cast) with no debuff. On the first stored one, each
+# debuff starts when a front moving at the game's 8 m/s from Harbor reached that player, within 0.1 s.
+DEBUFF_ONLY = re.compile(r"^Mage_X_TidalWave_Chunk$")
+# A DEBUFF_ONLY object's later touches (`Raw.forces`: one on every frame a player is inside the wave, including
+# walking into a wave that has stopped) restart the debuff of a player it has already debuffed, within this
+# long of that first debuff (one ult's life; Reckoning closes 14.3 s at most after its cast).
+DEBUFF_REFRESH_MS = 15000
 # A caster-named status (Iso's Fragile, Gekko's concuss) counts within this long after its source.
 STATUS_WINDOW_MS = 3000
 STATUS_SHARE = 0.8
@@ -1049,7 +1072,8 @@ def orb_tries(effects: list[_Effect], pickups: list[tuple[int, int]], container:
 
 def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: dict[int, int | None],
                   players: PlayerTable, counts: Counter, equips: list[_Equip] = (),
-                  teams: dict[int, str | None] | None = None) -> list[dict]:
+                  teams: dict[int, str | None] | None = None,
+                  forces: list[tuple[int, int, int]] = ()) -> list[dict]:
     """[{t_ms, t1_ms, by, target, code, name, status, from}]: players an enemy's ability put a status
     on, from when to when. Two shapes, both effects played on the hit player's character:
 
@@ -1059,7 +1083,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
       container that plays at least STATUS_SHARE of the time within STATUS_WINDOW_MS after one of
       that caster's status objects spawned (Iso's Fragile, Gekko's concuss). The source is that object.
 
-    Never the applier themself, and with `teams`, only their enemies. A continuous effect lasts until
+    Never the applier themself, and with `teams`, only their enemies, except a DEBUFF_ONLY object's debuff,
+    which the game puts on teammates too (the export says who). A continuous effect lasts until
     it stops; a one-shot STATUS_PING_MS, or STATUS_KNOWN_MS for its status. Overlapping ones from the
     same source on the same player merge."""
     def alive(actor: _Actor, t_ms: int) -> bool:
@@ -1071,9 +1096,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         return not (teams and by is not None and teams.get(by) is not None and teams.get(by) == teams.get(target))
 
     def span(effect: _Effect, label: str, source: _Actor) -> int:
-        game_ms = STATUS_GAME_MS.get(f"{source.code}_{source.name}")
-        if game_ms is not None:
-            return game_ms
+        if DEBUFF_ONLY.match(f"{source.code}_{source.name}") and effect.buff is not None:
+            return round(effect.buff * 1000)
         if effect.oneshot:
             return STATUS_KNOWN_MS.get(label, STATUS_PING_MS)
         return (effect.stop_ms - effect.t_ms) if effect.stop_ms is not None else STATUS_PING_MS
@@ -1107,7 +1131,11 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             label = status_of(source, effect.oneshot)
             if CASTER_ONLY.match(f"{source.code}_{source.name}"):
                 continue
-            if enemies(owner_of.get(source.guid), target):
+            debuff_only = DEBUFF_ONLY.match(f"{source.code}_{source.name}")
+            if debuff_only and (effect.buff is None or effect.buff <= 0):
+                continue
+            by = owner_of.get(source.guid)
+            if (debuff_only and by != target) or enemies(by, target):
                 hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source.guid, target, label, "object"))
             continue
         casters = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
@@ -1131,6 +1159,19 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             label = status_of(actors[source])
             hits.append((effect.t_ms, effect.t_ms + span(effect, label, actors[source]), source, target, label,
                          "caster"))
+    # A DEBUFF_ONLY object's later touches restart the debuff of a player its owner's object already debuffed.
+    debuffs = sorted((t, owner_of.get(source), target, t1 - t) for t, t1, source, target, _, how in hits
+                     if how == "object" and DEBUFF_ONLY.match(f"{actors[source].code}_{actors[source].name}"))
+    for t_ms, character, guid in forces:
+        target, source = players.pawn_slot.get(character), actors.get(guid)
+        if target is None or source is None or not DEBUFF_ONLY.match(f"{source.code}_{source.name}"):
+            continue
+        by = owner_of.get(guid)
+        first = [length for t, owner, hit, length in debuffs
+                 if owner == by and hit == target and t <= t_ms <= t + DEBUFF_REFRESH_MS]
+        if first:
+            hits.append((t_ms, t_ms + first[0], guid, target, status_of(source), "object"))
+            counts["status_refreshes"] += 1
     # One run per (source, target, status): a trip's two anchors count as one source, its tether and
     # its going off as two statuses.
     merged: dict[tuple, list[list]] = defaultdict(list)
@@ -1900,7 +1941,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "t0": _seconds(reveal["t_ms"], start), "t1": _seconds(min(reveal["t1_ms"], end), start),
             "slot": reveal["by"], "target": reveal["target"], "code": reveal["code"], "name": reveal["name"]})
 
-    statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams)
+    statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams, raw.forces)
     for status in statuses:
         if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed":
             # Going off reveals the player it caught (it's also a concuss).

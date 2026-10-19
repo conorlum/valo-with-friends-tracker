@@ -5,18 +5,37 @@ what should happen. Leads are guesses until checked.
 
 ## Open
 
-### 3. Harbor's High Tide slow isn't shown
+### 4. Reckoning's nearsight doesn't reach map control
 
-- **Where:** any round with an enemy Harbor's wall (`Mage_Q_WallManager`), e.g. match
-  8214115b-8510-4f71-b695-c26cd0449041, rounds 1, 3, 4, 5, 6, 8.
-- **Should be:** a brief "slowed" on an enemy as they walk through the wall (owner, 2026-10-19).
-- **Data (checked 2026-10-19):** the only effect naming the wall on enemies starts on all five of them at the
-  same instant, as the wall finishes forming, and runs to the wall's close (about 16 s), whoever was near it.
-  It can't say who walked through, so since the fix for bug 2 it shows nothing.
-- **Leads (unchecked):** look for a shorter effect or one-shot on a player's character while they are inside
-  the wall's `points`, or tie the slow to a player's track crossing the wall's line.
+- **Where:** `app/control/engine.py` reads nearsight from `nearsight` rows only; Reckoning's are `status` rows
+  (`nearsighted`), which it ignores (neither set in `CONTEST_STATUSES` / `DOWNGRADE_STATUSES`).
+- **Should be:** a Reckoning hit blinds like Storm Surge's, whose nearsight is the export's own `nearsight`
+  row. The parser emits no such row for Reckoning.
+- **Leads (unchecked):** write Reckoning's debuffs as `nearsight` rows (`hits: [[slot, t, 3.0]]`) instead of
+  statuses, or have the engine read `nearsighted` statuses through the shared normaliser.
 
 ## Fixed
+
+### 3. Harbor's High Tide slow isn't shown, and Reckoning's hits are wrong
+
+- **Where:** match 8214115b-8510-4f71-b695-c26cd0449041 (10 walls, 2 Reckonings), and three local exports.
+- **Should be (owner, 2026-10-19; valorant.fandom.com High Tide / Reckoning):** High Tide slows anyone who
+  touches it, either team, 30% for 0.6 s. Reckoning nearsights (3 s) and slows (2 s) players its wave touches,
+  at any point, including walking into it after it was stopped (it then stands like a smoke). The owner first
+  said enemies only; the data shows teammates debuffed too (wiki: friendly fire), and the owner chose the data.
+- **Data (checked 2026-10-19):** High Tide's one effect starts on all ten players at once as the wall goes up
+  and lasts its whole life: no row names a touch. But tracks crossing the wall's line (its projectile's
+  `flight`) while it stands slow down: on the 23 enemy crossings, speed over the next 0.6 s was a median 0.69
+  of the 0.6 s before, against 0.98 at other moments. Reckoning's wave plays touch effects on anyone it
+  touches, the debuff (`FXC.Buff.Duration` 3) only on some (two of Harbor's teammates, but not two enemies
+  touched 1.0 s and 2.7 s after a cast), and a force module (`NetMulticastApplyForceModule`, `Source` = the
+  chunk) on every frame of a touch; one export has a player walking back into a stopped wave and being
+  debuffed again. Storm Surge already has the export's `nearsight` row (at the moment it goes off, 2 s).
+- **Fixed (2026-10-19, condenser revision 20):** `condense.high_tide_slows` writes a 0.6 s `slowed` for every
+  track that crosses a standing wall, any team. Reckoning counts only its debuff effect, on whoever has it
+  (teammates included, never Harbor), for its 3 s, and each later touch of a player it already debuffed
+  restarts it (`extras.DEBUFF_ONLY`, `Raw.forces`). Storm Surge's
+  object effect is no status (its `nearsight` row stands).
 
 ### 1. Walking through a Neon Fast Lane wall shows a hit
 
@@ -46,8 +65,7 @@ what should happen. Leads are guesses until checked.
   Reckoning (6, 2 on the dead), Annihilation (4), Storm Surge (1). Astra made none beyond her already-mapped
   Nova Pulse. Statuses on the dead came from other agents too: Thorne's slow field 11, KAY/O and Fade 1 each.
 - **Fixed (2026-10-19, condenser revision 20):** the fallback is gone. Mapped by name in `STATUS_OBJECTS`:
-  Relay Bolt and Sonic Sensor "concussed", GravNet "netted", Annihilation "cocooned", Reckoning and Storm Surge
-  "nearsighted" for the game's 3 s and 2 s (`STATUS_GAME_MS`; their effects run until the object closes).
-  Fast Lane and High Tide show nothing (High Tide's slow: bug 3). `condense.statuses_while_alive` drops a
+  Relay Bolt and Sonic Sensor "concussed", GravNet "netted", Annihilation "cocooned", Reckoning "nearsighted"
+  (bug 3). Fast Lane, High Tide's effect and Storm Surge's effect show nothing (High Tide's slow: bug 3). `condense.statuses_while_alive` drops a
   status that starts while its target is dead and ends one at the target's death. The revision bump re-parses
   stored replays.

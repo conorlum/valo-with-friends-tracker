@@ -78,8 +78,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 20   # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), none on the
-                         #     dead (2026-10-19);
+CONDENSE_REVISION = 20   # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's
+                         #     slow from track crossings, Reckoning's re-touches, none on the dead (2026-10-19);
                          # 19: `player_state` ult points (`ult`) and ult orbs (`orbs`) (2026-10-18);
                          # 18: combined player-state and map-message/state-witness inputs;
                          # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);

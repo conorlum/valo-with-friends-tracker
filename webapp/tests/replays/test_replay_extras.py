@@ -601,8 +601,9 @@ def object_statuses(tmp_path, archetypes, effect_ms=1_000, life_ms=16_000):
     return [(st["name"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1].get("statuses", [])]
 
 
-def test_walking_through_fast_lane_or_high_tide_shows_no_status(tmp_path):
-    assert object_statuses(tmp_path, ["Sprinter_4_Tunnel", "Mage_Q_WallManager"]) == []
+def test_fast_lane_high_tide_and_storm_surge_effects_are_no_status(tmp_path):
+    archetypes = ["Sprinter_4_Tunnel", "Mage_Q_WallManager", "Mage_4_SplashGrenade"]
+    assert object_statuses(tmp_path, archetypes) == []
 
 
 def test_deadlocks_gravnet_nets_and_her_ult_cocoons_for_as_long_as_they_last(tmp_path):
@@ -610,9 +611,63 @@ def test_deadlocks_gravnet_nets_and_her_ult_cocoons_for_as_long_as_they_last(tmp
     assert got == [("4_RemovableNet", 11.0, 13.0, "netted"), ("X_FishingHook_Cage", 31.0, 33.0, "cocooned")]
 
 
-def test_harbors_reckoning_and_storm_surge_nearsight_for_the_games_length_not_the_effects(tmp_path):
-    got = object_statuses(tmp_path, ["Mage_X_TidalWave_Chunk", "Mage_4_SplashGrenade"], effect_ms=12_000)
-    assert got == [("X_TidalWave_Chunk", 11.0, 14.0, "nearsighted"), ("4_SplashGrenade", 31.0, 33.0, "nearsighted")]
+def buffed(t_ms, actor, effect_id, context, seconds, container=900):
+    row = effect(t_ms, actor, effect_id, context, container)
+    row["payload"]["FunctionFloatValues"] = [{"Name": {"TagName": "FXC.Buff.Duration"}, "Value": seconds}]
+    return row
+
+
+def force(t_ms, character, source):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": character, "function_name": "NetMulticastApplyForceModule",
+            "payload": {"Character": character, "Source": source, "Module": 77}}
+
+
+def reckoning(tmp_path, touches):
+    """Waylay's slot (4, team A) casts a Reckoning (one chunk, guid 70) at 20 s, which closes at 34 s."""
+    rows = [spawned(20_000, 70, "Default__GameObject_Mage_X_TidalWave_Chunk_C", 0, 0), instigated(20_000, 70, 104),
+            closed(34_000, 70)] + touches
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS_NDH, lambda t_ms: {}, teams=TEAMS7)
+    return [(st["target"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1].get("statuses", [])]
+
+
+def test_reckoning_nearsights_for_its_debuffs_length_not_its_touch_effects(tmp_path):
+    touches = [effect(21_000, 101, 1, [70], container=800),                 # enemy 1 touched before it formed
+               force(21_000, 101, 70),
+               effect(22_000, 102, 2, [70], container=800), buffed(22_000, 102, 3, [70], 3),   # enemy 2 debuffed
+               force(22_000, 102, 70), stop(34_000, 102, 2), stop(34_000, 102, 3),
+               effect(22_500, 105, 4, [70], container=800), force(22_500, 105, 70),            # a teammate touched
+               buffed(23_000, 107, 5, [70], 3), force(23_000, 107, 70),                        # one debuffed
+               buffed(23_500, 104, 6, [70], 3)]                                                # never Harbor
+    assert reckoning(tmp_path, touches) == [(2, 12.0, 15.0, "nearsighted"), (7, 13.0, 16.0, "nearsighted")]
+
+
+def test_walking_back_into_a_stopped_reckoning_nearsights_again(tmp_path):
+    touches = [buffed(22_000, 102, 3, [70], 3), force(22_000, 102, 70), force(22_100, 102, 70),
+               force(28_000, 102, 70), force(29_500, 102, 70),               # back in the stopped wave
+               force(30_000, 101, 70)]                                       # never debuffed: not a hit
+    assert reckoning(tmp_path, touches) == [(2, 12.0, 15.1, "nearsighted"), (2, 18.0, 22.5, "nearsighted")]
+
+
+def test_a_track_crossing_high_tide_is_slowed_whoever_it_is():
+    from app.replays.condense import high_tide_slows
+    from app.replays.format import encode_segment
+
+    def track(t0, us, vs):
+        return [encode_segment(t0, us, vs, [0] * len(us))]
+
+    wall = [{"k": "ability", "t": 5.0, "t1": 7.0, "by": 2, "code": "Mage", "name": "Q_Wall", "kind": "Projectile",
+             "flight": [[5.0, 5000, 1000, 28], [6.0, 5000, 5000, 28], [7.0, 5000, 9000, 28]]},
+            {"k": "ability", "t": 5.0, "t1": 22.0, "by": 2, "code": "Mage", "name": "Q_WallManager", "kind": "GameObject"}]
+    # 16 Hz; slot 1 crosses u=5000 at 10 s (and back at 30 s, after the wall), slot 3 at 12 s, slot 4 never.
+    blob = {"hz": 16, "util": wall, "tracks": {
+        "1": track(9.0, [4840 + 10 * i for i in range(33)], [3000] * 33),
+        "3": track(11.0, [5160 - 10 * i for i in range(33)], [6000] * 33),
+        "4": track(9.0, [4000] * 33, [3000] * 33),
+        "5": track(29.0, [5160 - 10 * i for i in range(33)], [3000] * 33)}}
+    got = [(e["target"], e["t"], e["t1"], e["status"], e["by"]) for e in high_tide_slows(blob)]
+    assert got == [(1, 10.0, 10.6, "slowed", 2), (3, 12.0, 12.6, "slowed", 2)]
 
 
 def test_a_status_on_a_dead_player_is_dropped_and_one_running_past_death_ends_there():
