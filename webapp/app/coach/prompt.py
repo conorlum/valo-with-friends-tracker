@@ -9,7 +9,7 @@ COMMANDS = """\
 ./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), other signals (a rough direction and distance only)
 ./q distance <round> <t> <player> <player> metres between two living players
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
-./q timeline <round> [<t0> <t1>]           kills, damage, utility, plant and defuse in order
+./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
 ./q impact <round> <player>                the player's stored Impact row for the round"""
 
 SHAPE = """\
