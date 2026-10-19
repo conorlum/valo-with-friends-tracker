@@ -61,6 +61,16 @@ def test_a_damage_run_s_end_counts_for_the_gap_and_the_fight_end():
     assert h["t1"] == pytest.approx(20)
 
 
+def test_a_teammate_damage_run_that_began_before_the_fight_counts_as_with():
+    # C1: the fight is 10-11 s; teammate 1, 2.8 m away, deals ability damage 9.9-10.2 s
+    util = [damage(10, 0, 5), damage(11, 0, 5), damage(9.9, 1, 5, t1=10.2, src="ability")]
+    [f] = [f for f in of(run(team(2.8), util=util), 0) if f["t0"] == 10]
+    assert f["mates"]["state"] == "with" and f["mates"]["with_slot"] == 1 and "with_teammate" in f["tags"]
+    ended = [damage(10, 0, 5), damage(11, 0, 5), damage(9.0, 1, 5, t1=9.5, src="ability")]
+    [g] = [f for f in of(run(team(2.8), util=ended), 0) if f["t0"] == 10]
+    assert "with_teammate" not in g["tags"]     # a run that ended before the fight still doesn't
+
+
 def test_events_after_t_decided_are_dropped():
     out = run(team(), util=[damage(10, 0, 5), damage(25, 0, 5)], t_decided=20.0)
     [f] = of(out, 0)

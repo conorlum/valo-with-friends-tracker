@@ -27,6 +27,12 @@ def _r2(x):
     return None if x is None else round(float(x), 2)
 
 
+def _live_pos(rnd, slot: int, t: float):
+    """The slot's position at t while alive, else None: a track can outlive its player (and a revived player's
+    corpse is not them), so sight never lands on the dead."""
+    return rnd.pos(slot, t) if rnd.alive(slot, t) else None
+
+
 def _events(rnd, blob: dict, slot: int) -> list[tuple]:
     """(t, kind, by, other, end) for every cross-team damage or kill row touching `slot`, up to t_decided, sorted by
     t. A damage run's end is its t1 (clipped to t_decided); a kill's is its t."""
@@ -139,7 +145,8 @@ def _mates(rnd, blob: dict, slot: int, t0: float, t1: float, opponents: list[int
     near = min(dists, key=lambda s: (dists[s], s))
     res.update(nearest_m=round(dists[near], 1), nearest_slot=near)
     fired = {row["by"] for row in blob.get("util") or ()
-             if row.get("k") == "damage" and row.get("target") in opponents and t0 <= row["t"] <= t1}
+             if row.get("k") == "damage" and row.get("target") in opponents
+             and row["t"] <= t1 and t0 <= (row["t"] if row.get("t1") is None else max(row["t"], row["t1"]))}
     if WITH_AIM_DEG >= 0:   # A shot aimed at a living opponent counts like damage
         fired |= {row["by"] for row in blob.get("util") or ()
                   if row.get("k") == "shot" and t0 <= row["t"] <= t1 and row.get("by") in dists
@@ -271,6 +278,8 @@ def _mollied(rnd, slot: int, t0: float, t1: float) -> list[dict]:
         while z.t0 + k * SIGHT_STEP_S < end:
             t = z.t0 + k * SIGHT_STEP_S
             if inside(t) is False:
+                if t < t0 - UTIL_LOOKBACK_S:    # left it before the fight's utility window: not this fight's
+                    break
                 out.append({"by": z.by, "name": "molly", "t_in": _r2(z.t0), "t_out": _r2(t)})
                 break
             k += 1
@@ -304,7 +313,7 @@ def _ttk(rnd, blob: dict, tk: float, killer: int, victim: int, kd: dict) -> None
     k = 0
     while k * SIGHT_STEP_S < SPOT_LOOKBACK_S:
         t = tk - k * SIGHT_STEP_S
-        p = rnd.pos(victim, t)
+        p = _live_pos(rnd, victim, t)
         if p is not None and _sees_point(rnd, killer, t, p[0], p[1]):
             spot = last_seen = t
         elif last_seen is not None and last_seen - t > SPOT_GAP_S:
@@ -338,7 +347,7 @@ def _first_sight(rnd, viewer: int, target: int, t_lo: float, t1: float):
     k = 0
     while t_lo + k * SIGHT_STEP_S <= t1:
         t = t_lo + k * SIGHT_STEP_S
-        p = rnd.pos(target, t) if rnd.alive(target, t) else None
+        p = _live_pos(rnd, target, t)
         if p is not None and _sees_point(rnd, viewer, t, p[0], p[1]):
             angle = _off(rnd, viewer, target, t)
             return t, None if angle is None else int(round(angle)), angle
@@ -394,7 +403,7 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
         samples.append(t_lo + k * SIGHT_STEP_S)
         k += 1
     for t in samples:
-        pk, pv = rnd.pos(killer, t), rnd.pos(victim, t)
+        pk, pv = _live_pos(rnd, killer, t), _live_pos(rnd, victim, t)
         if not kd["killer_saw"] and pv is not None and _sees_point(rnd, killer, t, pv[0], pv[1]):
             kd["killer_saw"] = True
         if not kd["victim_saw"] and pk is not None and _sees_point(rnd, victim, t, pk[0], pk[1]):
@@ -402,18 +411,22 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
     if kd["killer_saw"] or kd["victim_saw"]:
         kd["measurable"] = True
         return kd
+    clear = False
     for t in samples:
-        pk, pv = rnd.pos(killer, t), rnd.pos(victim, t)
+        pk, pv = _live_pos(rnd, killer, t), _live_pos(rnd, victim, t)
         # engine.los with no smokes also drops ability walls and map features: "through smoke" means through
         # smoke, an ability wall or a door, so the bare line must be clear AND the line with that moment's
         # smokes blocked (neither seeing the other can also be facing, a flash or nearsight).
         if pk is None or pv is None:
             continue
         a, b = (pk[0], pk[1], None), (pv[0], pv[1], None)
-        if engine.los(rnd.geo, a, b, []) and not engine.los(rnd.geo, a, b, rnd.smokes_at(t)):
+        if not engine.los(rnd.geo, a, b, []):
+            continue
+        clear = True    # a clear bare line: who saw whom is measurable even when facing or a flash hid it
+        if not engine.los(rnd.geo, a, b, rnd.smokes_at(t)):
             kd["through_smoke"] = True
             break
-    kd["measurable"] = kd["through_smoke"] or kd["wall"]
+    kd["measurable"] = clear or kd["wall"]
     return kd
 
 

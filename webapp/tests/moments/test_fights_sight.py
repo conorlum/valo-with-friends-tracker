@@ -1,7 +1,8 @@
 """Sight tags (W7): died_unseen, killed_unseen, through_smoke, through the real engine on toy rounds."""
 
+from app.control import engine as ce
 from app.moments import fights
-from tests.moments.helpers import damage, door_hall, kill, open_hall, round_of, toy_ability
+from tests.moments.helpers import blob, damage, door_hall, flash, kill, open_hall, round_of, toy_ability
 
 OPEN = open_hall()
 T_KILL = 10.0
@@ -53,8 +54,31 @@ def test_neither_saw_on_open_ground_without_smoke_is_not_through_smoke():
     f = fights_of(side_on, GUN)
     kd = f[0]["kill_detail"][0]
     assert not kd["killer_saw"] and not kd["victim_saw"]
-    assert not kd["through_smoke"] and not kd["measurable"]
+    assert not kd["through_smoke"] and kd["measurable"]          # C3: a clear line is still measurable
     assert "through_smoke" not in f[0]["tags"] and "through_smoke" not in f[5]["tags"]
+    assert "killed_unseen" in f[0]["tags"] and "died_unseen" in f[5]["tags"]
+
+
+def test_both_flashed_on_a_clear_line_keeps_the_unseen_tags():
+    # C3: facing each other in the open but both flashed through the whole sight window (6-10 s)
+    util = [flash(5.5, 5, [[0, 5.9, 5.0]]), flash(5.5, 0, [[5, 5.9, 5.0]]), *GUN]
+    f = fights_of(FACING, util)
+    kd = f[0]["kill_detail"][0]
+    assert not kd["killer_saw"] and not kd["victim_saw"] and kd["measurable"] and not kd["through_smoke"]
+    assert "killed_unseen" in f[0]["tags"] and "died_unseen" in f[5]["tags"]
+
+
+def test_the_spot_never_reaches_back_into_the_victim_s_earlier_life():
+    # C2: slot 5 dies at 3 s (to slot 1), is revived at 9 s and killed by slot 0 at 10 s. Slot 0 has looked at
+    # that place the whole round; the spot is in 5's second life, not on the corpse.
+    players = {0: ("A", [(0.0, 120, 200, 0)]), 1: ("A", [(0.0, 120, 260, 0)]), 5: ("B", [(0.0, 400, 200, 0)])}
+    data = blob(players, util=[damage(9.5, 0, 5), damage(10.0, 0, 5)], deaths={5: 10.0})
+    data["alive"]["5"] = [[0.0, 3.0, "kill"], [9.0, 10.0, "kill"]]
+    data["kills"] = [kill(3.0, 1, 5), kill(10.0, 0, 5, i=1)]
+    rnd = ce.RoundInputs(data, OPEN, ce.ControlLink())
+    out = fights.round_moments(rnd, data)
+    kd = [f for f in out["fights"] if f["slot"] == 0 and f["kills"]][0]["kill_detail"][0]
+    assert kd["spot"] is not None and kd["spot"] >= 9.0
 
 
 def test_a_dead_opponent_is_never_first_seen():

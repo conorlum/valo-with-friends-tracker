@@ -128,5 +128,16 @@ def test_own_teams_molly_does_not_count():
     assert fight0([molly(1, 120)], mover=LEAVES)["mollied"] == []
 
 
+def test_leaving_a_molly_long_before_the_fight_is_not_this_fight_s():
+    # C4: Hot Hands burns 4 s (utility.json), so 4.5-8.5 s, overlapping the fight's utility window (7-11 s); the
+    # player leaves at about 5 s, before that window
+    early = [(0.0, 120, 200, 0), (4.7, 120, 200, 0), (6.0, 300, 200, 0)]
+    f = fight0([molly(5, 120, t=4.5, t1=8.5)], mover=early)
+    assert f["mollied"] == [] and "mollied" not in f["tags"]
+    late = [(0.0, 120, 200, 0), (7.4, 120, 200, 0), (8.4, 300, 200, 0)]      # leaves inside the window: counts
+    g = fight0([molly(5, 120, t=4.5, t1=8.5)], mover=late)
+    assert len(g["mollied"]) == 1 and g["mollied"][0]["t_out"] >= 7.0
+
+
 def test_player_who_stays_inside_is_not_mollied():
     assert fight0([molly(5, 120)])["mollied"] == []
