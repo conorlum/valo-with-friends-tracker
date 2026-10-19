@@ -474,3 +474,39 @@ def test_a_bad_blob_is_a_miss_not_an_error(db, monkeypatch):
     store_group_views(db, group_id, "recent", "fp", _sample_views(main.id))
     monkeypatch.undo()
     assert get_cached_group_views(db, group_id, "recent", "fp", main) is None
+
+
+def test_combined_map_streaks_count_a_shared_match_once(db, monkeypatch):
+    from app.services import map_streaks
+
+    main, alt = _players(db, "main#1", "alt#2")
+    shared = _play(db, main, 1, "m-shared")
+    db.add(MatchPlayer(match_id=shared.match_id, player_id=alt.id, agent="Sage", team=Team.TEAM_2))
+    _play(db, alt, 2, "m-alt")
+    db.commit()
+    seen = []
+    monkeypatch.setattr(map_streaks, "load_pool_history", lambda d: None)
+    monkeypatch.setattr(map_streaks, "build_map_streaks", lambda history, rows: seen.extend(rows) or [])
+    map_streaks.compute_map_streaks(db, main.id, frozenset({main.id, alt.id}))
+    assert [played_at.day for _, played_at in seen] == [1, 2]
+
+
+def test_store_group_views_commits_for_a_fresh_session(db):
+    # The page's write-through stores on its own session and closes it: what
+    # it wrote must be readable from another connection.
+    main, alt = _players(db, "main#1", "alt#2")
+    link_account(db, main.id, alt.id)
+    db.commit()
+    group_id = list_group_members(db, main.id)[0].group_id
+    factory = sessionmaker(bind=db.get_bind())
+
+    with factory() as writer:
+        store_group_views(writer, group_id, "recent", "fp1", _sample_views(main.id))
+    with factory() as reader:
+        assert get_cached_group_views(reader, group_id, "recent", "fp1", main) is not None
+
+    with factory() as writer:
+        store_group_views(writer, group_id, "recent", "fp2", _sample_views(main.id))
+    with factory() as reader:
+        assert get_cached_group_views(reader, group_id, "recent", "fp1", main) is None
+        assert get_cached_group_views(reader, group_id, "recent", "fp2", main) is not None
