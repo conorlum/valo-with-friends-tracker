@@ -56,7 +56,12 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null,
+   "kill_lines": {
+    "qualifying": 122,
+    "blocked": 0,
+    "share": 0.0,
+    "passes": true
+   },
    "barrier_sha": "17f178122d9f",
    "paints": [
     "barrier_paint"
