@@ -62,8 +62,8 @@ def _parse(html):
     return p.root
 
 
-def _matrix():
-    return SimpleNamespace(total_rounds=2, tiers=[], tier_labels={}, cells={})
+def _matrix(rounds=2):
+    return SimpleNamespace(total_rounds=rounds, tiers=[], tier_labels={}, cells={})
 
 
 def _graph():
@@ -77,7 +77,7 @@ def _shoutouts(n):
             for i in range(n)]
 
 
-def _ctx(shoutouts=10, graph=True, demo_mode=False):
+def _ctx(shoutouts=10, graph=True, demo_mode=False, team2_rounds=2):
     players = [_player(1, "team-1"), _player(2, "team-2")]
     for p in players:
         for f in ("kills", "deaths", "assists", "traded_teammate"):
@@ -105,7 +105,7 @@ def _ctx(shoutouts=10, graph=True, demo_mode=False):
         "team1_win_graph": _graph() if graph else SimpleNamespace(nodes=[], edges=[], view_box=""),
         "team2_win_graph": _graph() if graph else SimpleNamespace(nodes=[], edges=[], view_box=""),
         "econ_by_round": {},
-        "team1_econ_tier_matrix": _matrix(), "team2_econ_tier_matrix": _matrix(),
+        "team1_econ_tier_matrix": _matrix(), "team2_econ_tier_matrix": _matrix(team2_rounds),
         "team1_econ_pistol_stats": None, "team2_econ_pistol_stats": None,
         "econ_loadout_scatter": None,
         "replay_url": None, "coach_url": None,
@@ -177,7 +177,7 @@ def test_no_script_inside_a_row_or_stack(root):
 
 def test_every_getelementbyid_target_exists_once(root):
     ids = [n.attrs["id"] for n in root.walk() if "id" in n.attrs]
-    for needed in ("scoreboard-combined", "scoreboard-split", "econ-matrix-1", "team-win-graph-1",
+    for needed in ("scoreboard-combined", "scoreboard-split", "team-win-graph-1",
                    "round-detail", "impact-chart", "impact-highlights-chart"):
         assert ids.count(needed) == 1
 
@@ -193,3 +193,44 @@ def test_no_game_state_graph_leaves_the_stack_alone_in_row_two():
     wide = _wide(_render(graph=False))
     row2 = _rows(wide)[1]
     assert len(row2.children) == 1 and "page-stack" in row2.children[0].classes
+
+
+def _econ_card(root):
+    cards = [n for n in root.walk() if "card" in n.classes and n.h2() == "Economy win rate by buy tier"]
+    assert len(cards) == 1
+    return cards[0]
+
+
+def _econ_cells(card):
+    teams = [n for n in card.walk() if "econ-teams" in n.classes]
+    assert len(teams) == 1
+    assert "page-row" not in teams[0].classes
+    return teams[0].children
+
+
+def test_economy_shows_both_teams_side_by_side_under_headings(root):
+    card = _econ_card(root)
+    assert "econ-compact" in card.classes
+    cells = _econ_cells(card)
+    assert len(cells) == 2
+    for i, cell in enumerate(cells, start=1):
+        assert f"team-panel-team-{i}" in cell.classes
+        h3s = [n for n in cell.walk() if n.tag == "h3"]
+        assert len(h3s) == 1 and h3s[0].text.strip() == f"Team {i}"
+        assert f"team-name-team-{i}" in h3s[0].classes
+        assert not [n for n in cell.walk() if "page-meta" in n.classes and n.text.strip() == "No rounds."]
+
+
+def test_economy_has_no_team_tabs(root):
+    assert not [n for n in root.walk() if "data-econ-team-tab" in n.attrs]
+    assert not [n for n in root.walk() if n.attrs.get("id") in ("econ-matrix-panel", "econ-matrix-meta",
+                                                                "econ-matrix-1", "econ-matrix-2")]
+
+
+@pytest.mark.parametrize("demo", [False, True], ids=["site", "demo"])
+def test_economy_team_without_rounds_says_so(demo):
+    card = _econ_card(_render(demo_mode=demo, team2_rounds=0))
+    c1, c2 = _econ_cells(card)
+    assert [n.text.strip() for n in c2.walk() if "page-meta" in n.classes] == ["No rounds."]
+    assert [n.text.strip() for n in c2.walk() if n.tag == "h3"] == ["Team 2"]
+    assert not [n for n in c1.walk() if n.text.strip() == "No rounds."]

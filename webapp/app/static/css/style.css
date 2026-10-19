@@ -312,6 +312,13 @@ main:has(.page-wide) { max-width: 2400px; }
 @media (max-width: 1300px) {
   .page-row, .page-row--60-40, .page-row--halves { grid-template-columns: minmax(0, 1fr); }
 }
+/* Match page economy card: both teams' grids side by side, tighter cells. */
+.econ-teams { display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.econ-teams > * { min-width: 0; }
+@media (max-width: 1300px) { .econ-teams { grid-template-columns: minmax(0, 1fr); } }
+.econ-compact h3 { margin: 0 0 0.5rem; }
+.econ-compact table { font-size: 0.85rem; }
+.econ-compact th, .econ-compact td { padding: 0.3rem 0.45rem; }
 
 h1, h2, h3 {
   font-weight: 600;
