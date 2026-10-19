@@ -133,7 +133,8 @@ def _player_and_cached_views(
             player = get_player_or_404(db, display_name)
             view = _account_view(db, player, accounts)
             cached = _read_cached(db, player, scope, view, "")
-        counts = tuple(played_agent_counts(db, player.id, view.player_ids))
+        # Only the page itself shows the dropdown; the career fragment skips its counts.
+        counts = tuple(played_agent_counts(db, player.id, view.player_ids)) if scope == "recent" else ()
         return player, cached, view, _FilterView(counts=counts)
 
     player = get_player_or_404(db, display_name)

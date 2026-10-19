@@ -196,6 +196,16 @@ def test_a_filtered_combined_view_reads_and_writes_the_groups_keyed_row(site, mo
     assert stores == [("career", "role:duelist")]
 
 
+def test_the_unfiltered_career_fragment_skips_the_dropdown_counts(site, solo, monkeypatch):
+    calls = []
+    real = players_router.played_agent_counts
+    monkeypatch.setattr(players_router, "played_agent_counts", lambda *a: calls.append(a) or real(*a))
+    players_router.player_career_fragment(_request(solo), "p#1", db=site)
+    assert calls == []
+    players_router.player_detail(_request(solo), "p#1", db=site)
+    assert len(calls) == 1
+
+
 def test_the_unfiltered_page_still_uses_the_unkeyed_row(site, solo, monkeypatch):
     counters = _Counters(monkeypatch)
     players_router.player_career_fragment(_request(solo), "p#1", db=site)
