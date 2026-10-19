@@ -9,6 +9,7 @@ from app.services.account_groups import (
     link_account,
     linked_display_names,
     list_group_members,
+    lock_group,
     make_main_account,
     set_account_label,
     unlink_account,
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 DEADLOCK_PGCODE = "40P01"
 LOST_RACE_MESSAGE = "That account was just linked to another group."
+CHANGED_AT_ONCE_MESSAGE = "Your accounts were being changed at the same moment. Try again."
 
 
 def _reject_in_demo_mode() -> None:
@@ -99,11 +101,20 @@ def remove_account_route(request: Request, display_name: str = Form(...), db: Se
         return RedirectResponse(url="/login", status_code=303)
 
     other = get_player_or_404(db, display_name)
-    # Before the write, while the group still holds both accounts; after it,
-    # the two are apart and their circles are a subset of that.
-    _invalidate_circles(db, {current_player.id, other.id})
-    unlink_account(db, current_player.id, other.id)
-    db.commit()
+    try:
+        # The group row first, as a link takes it, then the cache rows.
+        lock_group(db, current_player.id)
+        # Before the write, while the group still holds both accounts; after it,
+        # the two are apart and their circles are a subset of that.
+        _invalidate_circles(db, {current_player.id, other.id})
+        unlink_account(db, current_player.id, other.id)
+        db.commit()
+    except OperationalError as exc:
+        # Two groups' writes can still meet on a shared friend's cache rows.
+        if getattr(exc.orig, "pgcode", None) != DEADLOCK_PGCODE:
+            raise
+        db.rollback()
+        return accounts_page(request, error=CHANGED_AT_ONCE_MESSAGE, db=db)
     return RedirectResponse(url="/accounts", status_code=303)
 
 

@@ -289,6 +289,38 @@ def test_add_route_lost_race_on_a_deadlock_shows_the_message(site, monkeypatch):
     assert LOST_RACE in _body(response)
 
 
+def test_remove_route_locks_the_group_before_clearing_caches(site, monkeypatch):
+    # A link locks the group, then clears caches; an unlink must take them in
+    # the same order or the two can deadlock over one group.
+    main, _, _ = _group(site)
+    order = []
+    real_lock = accounts_router.lock_group
+    monkeypatch.setattr(accounts_router, "lock_group", lambda db, pid: order.append("lock") or real_lock(db, pid))
+    monkeypatch.setattr(accounts_router, "invalidate_player_cache", lambda db, ids: order.append("caches"))
+    response = accounts_router.remove_account_route(_request(main, "/accounts/remove"), display_name="sub#3", db=site)
+    assert response.status_code == 303
+    assert order == ["lock", "caches"]
+
+
+def test_remove_route_deadlock_shows_a_message_and_changes_nothing(site, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    class Deadlock(Exception):
+        pgcode = "40P01"
+
+    main, alt, sub = _group(site)
+
+    def deadlocked(db, actor_id, other_id):
+        db.query(AccountGroupMember).filter_by(player_id=other_id).delete()
+        raise OperationalError("DELETE", {}, Deadlock())
+
+    monkeypatch.setattr(accounts_router, "unlink_account", deadlocked)
+    response = accounts_router.remove_account_route(_request(main, "/accounts/remove"), display_name="sub#3", db=site)
+    assert response.status_code == 200
+    assert accounts_router.CHANGED_AT_ONCE_MESSAGE in _body(response)
+    assert _member_rows(site) == sorted((p.id, 1, None) for p in (main, alt, sub))
+
+
 def test_add_route_other_operational_errors_are_not_swallowed(site, monkeypatch):
     from sqlalchemy.exc import OperationalError
 

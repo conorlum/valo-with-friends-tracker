@@ -88,6 +88,15 @@ def _locked_group(db: Session, player_id: int) -> AccountGroup | None:
     return group
 
 
+def lock_group(db: Session, player_id: int) -> None:
+    """Locks `player_id`'s group row, if it has one, until the transaction
+    ends. A route that clears caches before a group write calls this first,
+    so every group write takes the group row before any cache row (a link
+    clears caches after link_account's own lock) and two of them can't
+    deadlock over one group."""
+    _locked_group(db, player_id)
+
+
 def _clear_group_cache(db: Session, group_id: int) -> None:
     db.query(AccountGroupViewCache).filter_by(group_id=group_id).delete(synchronize_session=False)
 
