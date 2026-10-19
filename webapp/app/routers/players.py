@@ -3,6 +3,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TypeVar
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
@@ -27,8 +28,6 @@ from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
 from app.services.friends import get_current_player_and_friendship
 from app.services.map_streaks import compute_map_streaks
 from app.services.match_streaks import compute_form, form_entry
-from urllib.parse import urlencode
-
 from app.services.agent_roles import ROLES, filter_agents, filter_label, parse_filter, rank_agents
 from app.services.player_data import RECENT_MATCH_LIMIT, played_agent_counts
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas

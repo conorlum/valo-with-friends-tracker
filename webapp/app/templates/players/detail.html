@@ -44,7 +44,7 @@
   </select>
   <noscript><button type="submit">Apply</button></noscript>
 </form>
-{% if filter_key %}
+{% if filter_key and not filter_empty %}
 <p class="page-meta">Showing {{ filter_matches }} match{{ 'es' if filter_matches != 1 else '' }} as {{ filter_label }}</p>
 {% endif %}
 

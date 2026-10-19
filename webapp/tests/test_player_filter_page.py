@@ -175,6 +175,27 @@ def test_a_filtered_miss_writes_a_keyed_row_and_the_next_request_hits_it(site, s
     assert _externals(page) == {"e-jett", "e-reyna"}
 
 
+def test_a_filtered_combined_view_reads_and_writes_the_groups_keyed_row(site, monkeypatch):
+    main, alt = _players(site, "main#1", "alt#2")
+    _match(site, main, 1, "m-jett", "Jett")
+    _match(site, alt, 2, "a-reyna", "Reyna")
+    assert link_account(site, main.id, alt.id) is None
+    site.commit()
+    reads, stores = [], []
+
+    def read(db, group_id, scope, fingerprint, player, key=""):
+        reads.append((scope, key))
+
+    def store(db, group_id, scope, fingerprint, views, key=""):
+        stores.append((scope, key))
+
+    monkeypatch.setattr(players_router, "get_cached_group_views", read)
+    monkeypatch.setattr(players_router, "store_group_views", store)
+    players_router.player_career_fragment(_request(main), "main#1", accounts="all", filter="role:duelist", db=site)
+    assert reads == [("career", "role:duelist")]
+    assert stores == [("career", "role:duelist")]
+
+
 def test_the_unfiltered_page_still_uses_the_unkeyed_row(site, solo, monkeypatch):
     counters = _Counters(monkeypatch)
     players_router.player_career_fragment(_request(solo), "p#1", db=site)
