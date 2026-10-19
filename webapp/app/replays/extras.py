@@ -914,11 +914,20 @@ STATUS_OBJECTS = (
     (re.compile(r"^Rift_Q_FlashBurst$"), "concussed"),
     (re.compile(r"^Smonk_Q_DecayExplosion$"), "decayed"),
     (re.compile(r"^(Deadeye_E_Slow_Large|Thorne_4_SlowField_Production)$"), "slowed"),
+    (re.compile(r"^Sprinter_Q_ElectricSphere$"), "concussed"),    # Neon's Relay Bolt (caster-named)
+    (re.compile(r"^Cable_Q_SoundSensor_Fissure$"), "concussed"),  # Deadlock's Sonic Sensor (caster-named)
+    (re.compile(r"^Cable_4_RemovableNet$"), "netted"),            # Deadlock's GravNet: crouched and slowed
+    (re.compile(r"^Cable_X_FishingHook_Cage$"), "cocooned"),      # Deadlock's Annihilation
+    # Harbor's Reckoning and Storm Surge nearsight and slow. Their effects run until the object closes,
+    # so they last the game's nearsight instead (STATUS_GAME_MS).
+    (re.compile(r"^Mage_(X_TidalWave_Chunk|4_SplashGrenade)$"), "nearsighted"),
 )
+# Not statuses, though their effects name enemies: Neon's Fast Lane (walking through it does nothing),
+# and Harbor's High Tide (Mage_Q_WallManager), whose effect starts on every enemy at once as the wall
+# goes up and lasts its whole life, so it can't tell who walked through the wall and was slowed.
 CASTER_ONLY = re.compile(r"^Sequoia_Q_FragileMissile_TrajectoryWarning$")
-# Agents in no archived replay yet (Neon, Deadlock, Harbor) and Astra: any of their objects that
-# hits an enemy is shown as a status, named after the object, until a replay names them.
-STATUS_AGENTS = frozenset({"Sprinter", "Cable", "Mage", "Rift"})
+# How long an object's status lasts in game, where its effect on the player runs on past it.
+STATUS_GAME_MS = {"Mage_X_TidalWave_Chunk": 3000, "Mage_4_SplashGrenade": 2000}
 # A caster-named status (Iso's Fragile, Gekko's concuss) counts within this long after its source.
 STATUS_WINDOW_MS = 3000
 STATUS_SHARE = 0.8
@@ -937,8 +946,6 @@ def status_of(actor: _Actor, oneshot: bool = False) -> str | None:
     for pattern, label in STATUS_OBJECTS:
         if pattern.match(key):
             return label
-    if actor.code in STATUS_AGENTS and actor.kind != "Pawn":
-        return "hit"
     return None
 
 
@@ -1063,7 +1070,10 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             return False
         return not (teams and by is not None and teams.get(by) is not None and teams.get(by) == teams.get(target))
 
-    def span(effect: _Effect, label: str) -> int:
+    def span(effect: _Effect, label: str, source: _Actor) -> int:
+        game_ms = STATUS_GAME_MS.get(f"{source.code}_{source.name}")
+        if game_ms is not None:
+            return game_ms
         if effect.oneshot:
             return STATUS_KNOWN_MS.get(label, STATUS_PING_MS)
         return (effect.stop_ms - effect.t_ms) if effect.stop_ms is not None else STATUS_PING_MS
@@ -1098,7 +1108,7 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             if CASTER_ONLY.match(f"{source.code}_{source.name}"):
                 continue
             if enemies(owner_of.get(source.guid), target):
-                hits.append((effect.t_ms, effect.t_ms + span(effect, label), source.guid, target, label, "object"))
+                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source.guid, target, label, "object"))
             continue
         casters = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
         if not casters or not enemies(casters[0], target):
@@ -1119,7 +1129,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         counts["status_containers"] += 1
         for effect, target, source in inside:
             label = status_of(actors[source])
-            hits.append((effect.t_ms, effect.t_ms + span(effect, label), source, target, label, "caster"))
+            hits.append((effect.t_ms, effect.t_ms + span(effect, label, actors[source]), source, target, label,
+                         "caster"))
     # One run per (source, target, status): a trip's two anchors count as one source, its tether and
     # its going off as two statuses.
     merged: dict[tuple, list[list]] = defaultdict(list)

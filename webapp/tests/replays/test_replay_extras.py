@@ -583,6 +583,53 @@ def test_a_caster_named_status_is_found_after_its_source_like_isos_fragile(tmp_p
     assert got == [(1, 10.6, 14.6, "fragile", 5, "caster"), (2, 30.6, 34.6, "fragile", 5, "caster")]
 
 
+AGENTS_NDH = {**AGENTS7, "Sprinter": "Neon", "Cable": "Deadlock", "Mage": "Harbor"}
+
+
+def object_statuses(tmp_path, archetypes, effect_ms=1_000, life_ms=16_000):
+    """Waylay's slot (4, team A) owns one object per archetype; each plays an effect on enemy 1 (team B) from
+    1 s after its spawn, for `effect_ms`, and closes `life_ms` after it."""
+    rows = []
+    for i, archetype in enumerate(archetypes):
+        guid, t = 60 + i, 20_000 + i * 20_000
+        rows += [spawned(t, guid, f"Default__GameObject_{archetype}_C", 0, 0), instigated(t, guid, 104),
+                 effect(t + 1_000, 101, 10 + i, [guid], container=80 + i), stop(t + 1_000 + effect_ms, 101, 10 + i),
+                 closed(t + life_ms, guid)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS_NDH, lambda t_ms: {}, teams=TEAMS7)
+    return [(st["name"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1].get("statuses", [])]
+
+
+def test_walking_through_fast_lane_or_high_tide_shows_no_status(tmp_path):
+    assert object_statuses(tmp_path, ["Sprinter_4_Tunnel", "Mage_Q_WallManager"]) == []
+
+
+def test_deadlocks_gravnet_nets_and_her_ult_cocoons_for_as_long_as_they_last(tmp_path):
+    got = object_statuses(tmp_path, ["Cable_4_RemovableNet", "Cable_X_FishingHook_Cage"], effect_ms=2_000)
+    assert got == [("4_RemovableNet", 11.0, 13.0, "netted"), ("X_FishingHook_Cage", 31.0, 33.0, "cocooned")]
+
+
+def test_harbors_reckoning_and_storm_surge_nearsight_for_the_games_length_not_the_effects(tmp_path):
+    got = object_statuses(tmp_path, ["Mage_X_TidalWave_Chunk", "Mage_4_SplashGrenade"], effect_ms=12_000)
+    assert got == [("X_TidalWave_Chunk", 11.0, 14.0, "nearsighted"), ("4_SplashGrenade", 31.0, 33.0, "nearsighted")]
+
+
+def test_a_status_on_a_dead_player_is_dropped_and_one_running_past_death_ends_there():
+    from app.replays.condense import statuses_while_alive
+
+    def status(t, t1, target=1):
+        return {"k": "status", "t": t, "t1": t1, "target": target, "status": "slowed"}
+
+    alive = {"1": [[0.0, 20.0, "kill"], [30.0, None, "revive"]], "2": [[0.0, None, None]]}
+    util = [status(5.0, 8.0), status(18.0, 24.0), status(22.0, 23.0), status(31.0, 33.0), status(40.0, 41.0, 2),
+            {"k": "shot", "t": 25.0, "by": 1}]
+    got = statuses_while_alive(util, alive)
+    assert [(e["k"], e["t"], e.get("t1")) for e in got] == [
+        ("status", 5.0, 8.0), ("status", 18.0, 20.0), ("status", 31.0, 33.0), ("status", 40.0, 41.0), ("shot", 25.0, None)]
+    assert statuses_while_alive(util, None) == util
+
+
 def test_m_pulse_keeps_its_pulses(tmp_path):
     wave = 42
     rows = [spawned(20_000, wave, "Default__GameObject_Thumper_Concuss_C", 0, 0), instigated(20_000, wave, 107),

@@ -522,7 +522,7 @@
     return pops[pops.length - 1] + pop;
   }
 
-  // The statuses on players at t (concussed, hindered, suppressed, fragile, tethered, decayed, slowed).
+  // The statuses on players at t (concussed, hindered, suppressed, fragile, tethered, decayed, slowed, netted, ...).
   function statusesAt(statuses, t) {
     return (statuses || []).filter(function (st) {
       return st.t0 <= t && t <= (typeof st.t1 === "number" ? st.t1 : st.t0 + 1);
@@ -679,6 +679,7 @@
     suppressed: { color: "#b06cff", label: "SUPPRESSED" }, fragile: { color: "#ff5ea8", label: "FRAGILE" },
     tethered: { color: "#2cd5c4", label: "TETHERED" }, decayed: { color: "#c0463f", label: "DECAYED" },
     slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" },
+    netted: { color: "#8fd14f", label: "NETTED" }, cocooned: { color: "#e07b39", label: "COCOONED" },
     blinded: { color: "#ffffff", label: "BLINDED" }, nearsighted: { color: "#a78bfa", label: "NEARSIGHTED" }
   };
 

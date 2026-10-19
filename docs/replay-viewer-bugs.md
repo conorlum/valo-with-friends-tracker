@@ -5,6 +5,19 @@ what should happen. Leads are guesses until checked.
 
 ## Open
 
+### 3. Harbor's High Tide slow isn't shown
+
+- **Where:** any round with an enemy Harbor's wall (`Mage_Q_WallManager`), e.g. match
+  8214115b-8510-4f71-b695-c26cd0449041, rounds 1, 3, 4, 5, 6, 8.
+- **Should be:** a brief "slowed" on an enemy as they walk through the wall (owner, 2026-10-19).
+- **Data (checked 2026-10-19):** the only effect naming the wall on enemies starts on all five of them at the
+  same instant, as the wall finishes forming, and runs to the wall's close (about 16 s), whoever was near it.
+  It can't say who walked through, so since the fix for bug 2 it shows nothing.
+- **Leads (unchecked):** look for a shorter effect or one-shot on a player's character while they are inside
+  the wall's `points`, or tie the slow to a player's track crossing the wall's line.
+
+## Fixed
+
 ### 1. Walking through a Neon Fast Lane wall shows a hit
 
 - **Where:** https://valowithfriendstracker.onrender.com/replays/c8f512b4-a12d-45f3-9fde-1036a7df39c0,
@@ -19,23 +32,22 @@ what should happen. Leads are guesses until checked.
 - **Cause:** `app/replays/extras.py`: `STATUS_AGENTS` contains `Sprinter` (Neon), and `status_of` labels any
   non-pawn object of those agents that touches an enemy `"hit"`. That fallback was for agents with no
   archived replay yet. Fast Lane's effect on a player passing through is caught by it.
-- **Fix (not done):** leave `4_Tunnel` out of the fallback, or drop `Sprinter` from `STATUS_AGENTS` now that
-  Neon replays exist and map Relay Bolt (`Q_ElectricSphere`, a concuss) by name like the other agents. Also
-  check whether a status on a dead player should be dropped for every agent. Re-parse affected replays after.
+- **Fixed (2026-10-19, condenser revision 20):** see bug 2. Fast Lane shows nothing, and no status is kept on a
+  dead player, for any agent.
 
 ### 2. The `STATUS_AGENTS` fallback is a likely source of more false statuses
 
 - **Where:** `app/replays/extras.py`, `STATUS_AGENTS = {"Sprinter", "Cable", "Mage", "Rift"}` (Neon, Deadlock,
   Harbor, Astra) and the last branch of `status_of`.
-- **What is wrong:** for these agents, any ability object (not the agent's pawn) that touches an enemy is shown
-  as a generic `"hit"` status, named after the object. It doesn't check what the ability does. Bug 1 (Fast
-  Lane) is one case. Other likely ones: walls, smokes, and barriers walked through or touched (Harbor's walls,
-  Astra's smokes and Cosmic Divide, Deadlock's Barrier Mesh), each of which would show a hit that did nothing
-  in game.
-- **Should be:** a status only for abilities that really act on a player (a concuss, a slow, a net, a pull),
-  each mapped by name in `STATUS_OBJECTS` like the other agents. Everything else from these agents shows
-  nothing.
-- **Leads (unchecked):** the fallback's comment says these agents had no archived replay yet. Neon now has
-  replays (match c8f512b4-a12d-45f3-9fde-1036a7df39c0, both teams). Count the `"hit"` statuses per object
-  name across stored replays for all four agents, check each object in game, then map the real ones by name
-  and drop the fallback. Re-parse affected replays after.
+- **What was wrong:** for these agents, any ability object (not the agent's pawn) that touched an enemy was
+  shown as a generic `"hit"` status, named after the object, whatever the ability does.
+- **Counted (2026-10-19, 1,358 stored rounds):** the fallback made 9 kinds of `"hit"`: Fast Lane (55, 7 on the
+  dead), High Tide (50, 5 on the dead, ~16 s each), Relay Bolt (24), Sonic Sensor (13), GravNet (11),
+  Reckoning (6, 2 on the dead), Annihilation (4), Storm Surge (1). Astra made none beyond her already-mapped
+  Nova Pulse. Statuses on the dead came from other agents too: Thorne's slow field 11, KAY/O and Fade 1 each.
+- **Fixed (2026-10-19, condenser revision 20):** the fallback is gone. Mapped by name in `STATUS_OBJECTS`:
+  Relay Bolt and Sonic Sensor "concussed", GravNet "netted", Annihilation "cocooned", Reckoning and Storm Surge
+  "nearsighted" for the game's 3 s and 2 s (`STATUS_GAME_MS`; their effects run until the object closes).
+  Fast Lane and High Tide show nothing (High Tide's slow: bug 3). `condense.statuses_while_alive` drops a
+  status that starts while its target is dead and ends one at the target's death. The revision bump re-parses
+  stored replays.

@@ -1612,6 +1612,26 @@ def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: d
     return replay
 
 
+def statuses_while_alive(util: list[dict], alive: dict | None) -> list[dict]:
+    """`util` with each `status` row kept only while its target is alive (`alive`, the blob's spans): one that
+    starts while they're dead (between a span's end and the next one's start) is dropped, and one that runs past
+    their death ends there. The extras find some on players already dead (28 in the first 1,358 stored rounds)."""
+    out = []
+    for entry in util:
+        spans = (alive or {}).get(str(entry.get("target"))) if entry.get("k") == "status" else None
+        if spans:
+            t = entry["t"]
+            nexts = [s[0] for s in spans[1:]] + [None]
+            if any(end is not None and end <= t and (nxt is None or t < nxt)
+                   for (_, end, *_), nxt in zip(spans, nexts)):
+                continue
+            ends = [end for start, end, *_ in spans if start <= t and end is not None and t < end]
+            if ends and entry.get("t1") is not None and entry["t1"] > ends[0]:
+                entry = {**entry, "t1": ends[0]}
+        out.append(entry)
+    return out
+
+
 def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, game_map: MapInfo,
                   agents_by_code: dict[str, str]) -> None:
     """Adds each round's ability objects and shots (app/replays/extras.py) to its blob's `util`
@@ -1629,7 +1649,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
                           teams=teams, pawn_yaws=positions.yaws)
     spike_counts: dict[str, int] = {}
     for n, blob in replay.rounds.items():
-        blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        blob["util"] = statuses_while_alive(blob["util"] + util_entries(extras.rounds.get(n, {})), blob.get("alive"))
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
