@@ -1612,6 +1612,82 @@ def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: d
     return replay
 
 
+# Harbor's High Tide slows anyone who touches it, either team, for 0.6 s (the game's value).
+HIGH_TIDE_SLOW_S = 0.6
+
+
+def _crossing(p1: tuple, p2: tuple, a: tuple, b: tuple) -> float | None:
+    """Where along p1->p2 (0..1) it crosses segment a-b, or None."""
+    dx, dy, ex, ey = p2[0] - p1[0], p2[1] - p1[1], b[0] - a[0], b[1] - a[1]
+    den = dx * ey - dy * ex
+    if den == 0:
+        return None
+    s = ((a[0] - p1[0]) * ey - (a[1] - p1[1]) * ex) / den
+    r = ((a[0] - p1[0]) * dy - (a[1] - p1[1]) * dx) / den
+    return s if 0 <= s <= 1 and 0 <= r <= 1 else None
+
+
+def high_tide_slows(blob: dict) -> list[dict]:
+    """`slowed` status rows for every player who walked through a Harbor's High Tide. The replay names no contact
+    with the wall (its one effect starts on all ten players as it goes up), so they come from the tracks: a track
+    that crosses the wall's line (its projectile's `flight`) between two samples while it stands, from the
+    projectile's close (the wall rises) to the wall's. Measured on the 23 enemy crossings of the first 10 stored
+    walls: speed over the next 0.6 s was a median 0.69 of the 0.6 s before, against 0.98 at other moments."""
+    util = blob.get("util", [])
+    out = []
+    for wall in (e for e in util if e.get("k") == "ability" and e.get("code") == "Mage"
+                 and e.get("name") == "Q_WallManager" and e.get("t1") is not None):
+        sphere = next((e for e in util if e.get("k") == "ability" and e.get("code") == "Mage"
+                       and e.get("name") == "Q_Wall" and e.get("by") == wall.get("by")
+                       and abs(e["t"] - wall["t"]) < 0.05 and len(e.get("flight") or []) >= 2
+                       and e.get("t1") is not None), None)
+        if sphere is None:
+            continue
+        up, line = sphere["t1"], [(p[1], p[2]) for p in sphere["flight"]]
+        for slot, segments in blob.get("tracks", {}).items():
+            times: list[float] = []
+            for segment in segments:
+                track = fmt.decode_segment(segment, blob["hz"])
+                for (t1, u1, v1, _), (t2, u2, v2, _) in zip(track, track[1:]):
+                    if t2 < up or t1 > wall["t1"]:
+                        continue
+                    for a, b in zip(line, line[1:]):
+                        s = _crossing((u1, v1), (u2, v2), a, b)
+                        if s is not None and up <= (t := t1 + s * (t2 - t1)) <= wall["t1"]:
+                            times.append(t)
+                            break
+            runs: list[list[float]] = []
+            for t in sorted(times):
+                if runs and t <= runs[-1][1]:
+                    runs[-1][1] = t + HIGH_TIDE_SLOW_S
+                else:
+                    runs.append([t, t + HIGH_TIDE_SLOW_S])
+            out += [{"k": "status", "t": round(t, 3), "by": wall.get("by"), "t1": round(t1, 3), "target": int(slot),
+                     "code": "Mage", "name": "Q_WallManager", "status": "slowed", "from": "crossing"}
+                    for t, t1 in runs]
+    return sorted(out, key=lambda e: (e["t"], e["target"]))
+
+
+def statuses_while_alive(util: list[dict], alive: dict | None) -> list[dict]:
+    """`util` with each `status` row kept only while its target is alive (`alive`, the blob's spans): one that
+    starts while they're dead (between a span's end and the next one's start) is dropped, and one that runs past
+    their death ends there. The extras find some on players already dead (28 in the first 1,358 stored rounds)."""
+    out = []
+    for entry in util:
+        spans = (alive or {}).get(str(entry.get("target"))) if entry.get("k") == "status" else None
+        if spans:
+            t = entry["t"]
+            nexts = [s[0] for s in spans[1:]] + [None]
+            if any(end is not None and end <= t and (nxt is None or t < nxt)
+                   for (_, end, *_), nxt in zip(spans, nexts)):
+                continue
+            ends = [end for start, end, *_ in spans if start <= t and end is not None and t < end]
+            if ends and entry.get("t1") is not None and entry["t1"] > ends[0]:
+                entry = {**entry, "t1": ends[0]}
+        out.append(entry)
+    return out
+
+
 def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, game_map: MapInfo,
                   agents_by_code: dict[str, str]) -> None:
     """Adds each round's ability objects and shots (app/replays/extras.py) to its blob's `util`
@@ -1630,6 +1706,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     spike_counts: dict[str, int] = {}
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)

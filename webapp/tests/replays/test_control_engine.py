@@ -250,6 +250,20 @@ def test_nearsight_leaves_a_bubble():
     assert ce.NEARSIGHT_RADIUS_M == 7.0 and d.max() > 4.0 + geo.cell_m
 
 
+def test_a_nearsighted_status_like_reckonings_blinds_like_a_nearsight_row():
+    geo = open_hall()
+    players = {0: still("A", 150, 200, 0), 5: still("B", 400, 110, 90)}
+    status = {"k": "status", "t": 1.0, "t1": 3.0, "by": 5, "target": 0, "status": "nearsighted",
+              "code": "Mage", "name": "X_TidalWave_Chunk", "from": "object"}
+    row = {"k": "nearsight", "t": 0.9, "by": 5, "ability": "omen_paranoia", "targets": [0], "hits": [[0, 1.0, 2.0]]}
+    by_status, by_row = ce.RoundInputs(blob(players, util=[status]), geo), ce.RoundInputs(blob(players, util=[row]), geo)
+    assert by_status.nearsight[0] == by_row.nearsight[0] == [(1.0, 3.0)]
+    for t in (1.5, 3.5):
+        assert (ce.Tick(by_status, t).holders[0].body == ce.Tick(by_row, t).holders[0].body).all()
+    slowed = dict(status, status="slowed")
+    assert not ce.RoundInputs(blob(players, util=[slowed]), geo).nearsight.get(0)
+
+
 def test_a_nearsighted_player_is_deafened_but_still_controls():
     """D11 (2026-10-09): "deafened players cant hear" (Omen's ult, footsteps, gunfire); only a flash is zero control."""
     from app.control import utility

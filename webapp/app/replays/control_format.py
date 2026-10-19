@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 18    # 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
+CONTROL_REVISION = 19    # 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
