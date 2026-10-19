@@ -309,8 +309,12 @@ main:has(.page-wide) { max-width: 2400px; }
 .page-stack { display: flex; flex-direction: column; gap: 1.5rem; }
 .page-row > *, .page-stack > * { min-width: 0; }
 .page-row > .card, .page-stack > .card { margin-bottom: 0; }
+/* Match page round detail: kill table left, round Impact right. */
+.round-detail-cols { display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.round-detail-cols > * { min-width: 0; }
+#round-detail .round-detail-cols .card { margin-top: 0; }
 @media (max-width: 1300px) {
-  .page-row, .page-row--60-40, .page-row--halves { grid-template-columns: minmax(0, 1fr); }
+  .page-row, .page-row--60-40, .page-row--halves, .round-detail-cols { grid-template-columns: minmax(0, 1fr); }
 }
 /* Match page economy card: both teams' grids side by side, tighter cells. */
 .econ-teams { display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }

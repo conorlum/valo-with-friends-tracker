@@ -136,3 +136,10 @@ def test_wide_page_css():
     assert re.search(r"grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;", inner)
     for sel in (".page-row--60-40 {", ".page-row--halves {", ".page-row > :only-child {"):
         assert css.index(sel) < media.start(), sel
+
+    # round detail: two minmax(0, ...) cells, one column in the same media rule, defined before it
+    assert ".round-detail-cols" in by_sel
+    assert "minmax(0," in by_sel[".round-detail-cols"].replace(" ", "").replace("minmax(0,", "minmax(0,")
+    assert not re.search(r"(?<![\w.])\d*\.?\d*fr\b", re.sub(r"minmax\([^)]*\)", "", by_sel[".round-detail-cols"]))
+    assert ".round-detail-cols" in inner
+    assert css.index(".round-detail-cols {") < media.start()

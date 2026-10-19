@@ -234,3 +234,64 @@ def test_economy_team_without_rounds_says_so(demo):
     assert [n.text.strip() for n in c2.walk() if "page-meta" in n.classes] == ["No rounds."]
     assert [n.text.strip() for n in c2.walk() if n.tag == "h3"] == ["Team 2"]
     assert not [n for n in c1.walk() if n.text.strip() == "No rounds."]
+
+
+# ---- S5: round detail, kill table left, round Impact right ----
+
+def _fake_detail():
+    kill = SimpleNamespace(kind="kill", team="team-1", death_team="team-2", event_time_seconds=12,
+                           killer_agent="Jett", killer_display_name="Aa#NA1", weapon="Vandal",
+                           death_agent="Sage", death_display_name="Bb#NA1")
+    plant = SimpleNamespace(kind="plant", team="team-1", event_time_seconds=30)
+    return SimpleNamespace(
+        round_number=3, outcome="Team 1 won", attacking_team="team-1", events=[kill, plant],
+        team_totals=[SimpleNamespace(team="team-1", impact=5.0, kill_impact=6.0, death_impact=-1.0),
+                     SimpleNamespace(team="team-2", impact=-5.0, kill_impact=1.0, death_impact=-6.0)],
+        player_impacts=[SimpleNamespace(team="team-1", display_name="Aa#NA1", agent="Jett",
+                                        kill_impact=6.0, death_impact=-1.0, impact=5.0),
+                        SimpleNamespace(team="team-2", display_name="Bb#NA1", agent="Sage",
+                                        kill_impact=1.0, death_impact=-6.0, impact=-5.0)])
+
+
+def _check_round_detail(root):
+    cols = [n for n in root.walk() if "round-detail-cols" in n.classes]
+    assert len(cols) == 1
+    assert [c.tag for c in cols[0].children] == ["div", "div"]
+    left, right = cols[0].children
+    assert not [n for n in cols[0].walk() if n.tag == "h3"]
+    assert [n.tag for n in left.walk() if n.tag == "table"] == ["table"]
+    assert [n.tag for n in right.walk() if n.tag == "table"] == ["table"]
+    assert "Killer" in [n.text.strip() for n in left.walk() if n.tag == "th"]
+    assert "card" in right.classes or [n for n in right.walk() if "card" in n.classes]
+    assert "Kill Impact" in [n.text.strip() for n in right.walk() if n.tag == "th"]
+    for side in (left, right):
+        table = [n for n in side.walk() if n.tag == "table"][0]
+        assert table.parent is not None and "table-scroll" in table.parent.classes
+
+
+def test_round_detail_route_renders_two_cells(monkeypatch):
+    from starlette.requests import Request
+
+    from app.routers import matches as router
+
+    seen = {}
+    monkeypatch.setattr(router, "get_match_or_404", lambda db, ext: SimpleNamespace(external_id=ext))
+    monkeypatch.setattr(router, "get_round_detail", lambda db, match, n: _fake_detail())
+    monkeypatch.setattr(router, "replay_url_for_match", lambda db, match: None)
+    monkeypatch.setattr(router.templates, "TemplateResponse", lambda req, name, ctx, **kw: seen.update(ctx))
+    req = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": []})
+    router.round_detail(req, "abc", 3, None)
+    env = templates.env.overlay(undefined=jinja2.StrictUndefined)
+    root = _parse(env.get_template("matches/_round_detail.html").render(seen))
+    assert [n.text.strip() for n in root.children if n.tag == "h3"][0].startswith("Round 3")
+    _check_round_detail(root)
+
+
+def test_round_detail_inside_full_match_page():
+    ctx = _ctx()
+    ctx["initial_round_detail"] = _fake_detail()
+    env = templates.env.overlay(undefined=jinja2.StrictUndefined)
+    root = _parse(env.get_template("matches/detail.html").render(**ctx))
+    holder = [n for n in root.walk() if n.attrs.get("id") == "round-detail"]
+    assert len(holder) == 1
+    _check_round_detail(holder[0])

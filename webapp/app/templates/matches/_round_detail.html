@@ -8,6 +8,9 @@
 {%- endmacro %}
 {% set kill_ns = namespace(prev=None, run=0) %}
 
+<div class="round-detail-cols">
+<div>
+<div class="table-scroll">
 <table>
   <thead>
     <tr><th>Time</th><th>Killer</th><th>Weapon</th><th>Victim</th></tr>
@@ -46,7 +49,10 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
+</div>
 
+<div>
 <div class="card">
 <div class="stat-grid">
   {% for t in detail.team_totals %}
@@ -58,6 +64,7 @@
   {% endfor %}
 </div>
 {% set max_abs_impact = (detail.player_impacts | map(attribute='impact') | map('abs') | list | max) if detail.player_impacts else 0 %}
+<div class="table-scroll">
 <table>
   <thead>
     <tr><th>Player</th><th>Agent</th><th>Kill Impact</th><th>Death Impact</th><th>Impact</th></tr>
@@ -82,4 +89,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
+</div>
+</div>
 </div>
