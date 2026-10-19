@@ -14,7 +14,10 @@ from app.services.account_groups import (
     unlink_account,
 )
 from app.services.auth import get_current_player
+from app.services.circle import circle_dependents
+from app.services.player_view_cache import invalidate_player_cache
 from app.services.players import get_player_or_404, list_player_display_names
+from app.services.viewer_site_stats_cache import invalidate_viewer_site_stats
 from app.templates import templates
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -27,6 +30,16 @@ def _reject_in_demo_mode() -> None:
     """The demo's sample players aren't anyone's accounts to group."""
     if settings.demo_mode:
         raise HTTPException(status_code=403, detail="Accounts can't be grouped on the demo.")
+
+
+def _invalidate_circles(db: Session, account_ids: set[int]) -> None:
+    """Clears the cached pages of every account whose circle the link change
+    can touch. Call it while one group holds both accounts (after a link,
+    before an unlink): that group's dependents cover both groupings. Does NOT commit."""
+    dependents = circle_dependents(db, account_ids)
+    invalidate_player_cache(db, dependents)
+    for player_id in dependents:
+        invalidate_viewer_site_stats(db, player_id)
 
 
 @router.get("")
@@ -62,6 +75,8 @@ def add_account_route(request: Request, display_name: str = Form(...), db: Sessi
     try:
         error = link_account(db, current_player.id, other.id)
         if not error:
+            # Linking joins two groups: the new group's dependents are both old ones'.
+            _invalidate_circles(db, {current_player.id, other.id})
             db.commit()
     except (IntegrityError, OperationalError) as exc:
         # Two links at once: the loser's member row collides with the winner's
@@ -84,6 +99,9 @@ def remove_account_route(request: Request, display_name: str = Form(...), db: Se
         return RedirectResponse(url="/login", status_code=303)
 
     other = get_player_or_404(db, display_name)
+    # Before the write, while the group still holds both accounts; after it,
+    # the two are apart and their circles are a subset of that.
+    _invalidate_circles(db, {current_player.id, other.id})
     unlink_account(db, current_player.id, other.id)
     db.commit()
     return RedirectResponse(url="/accounts", status_code=303)

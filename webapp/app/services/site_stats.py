@@ -36,7 +36,7 @@ from app.models import Friendship, Match, MatchPlayer, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
 from app.services.enemy_at_11_response import compute_enemy_at_11_response_stats
 from app.services.force_buy_stats import compute_force_buy_stats
-from app.services.circle import circle_ids
+from app.services.circle import circle_ids, own_account_ids
 from app.services.halftime_conversion_stats import compute_halftime_conversion_stats
 from app.services.map_side_stats import compute_map_side_stats
 from app.services.player_data import RECENT_MATCH_LIMIT
@@ -203,11 +203,12 @@ def get_viewer_site_stats(db: Session, viewer_player_id: int) -> dict:
 
 
 def prewarm_viewer_site_stats(db: Session) -> int:
-    """Recomputes and stores the Friends tab for every player who owns at
-    least one friendship -- the only viewers whose Friends tab is more than
-    their own matches. Returns how many rows were written. Best-effort per
-    viewer: one failure is logged and skipped."""
-    viewer_ids = sorted(pid for (pid,) in db.query(Friendship.owner_player_id).distinct().all())
+    """Recomputes and stores the Friends tab for every account of every person
+    who owns at least one friendship (from any of their accounts) -- the only
+    viewers whose Friends tab is more than their own matches. Returns how many
+    rows were written. Best-effort per viewer: one failure is logged and skipped."""
+    owner_ids = {pid for (pid,) in db.query(Friendship.owner_player_id).distinct().all()}
+    viewer_ids = sorted(set().union(*(own_account_ids(db, pid) for pid in owner_ids)))
     written = 0
     for viewer_id in viewer_ids:
         try:

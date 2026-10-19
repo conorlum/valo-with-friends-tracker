@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.services.auth import get_current_player
+from app.services.circle import own_account_ids
 from app.services.friends import add_friend, list_acquaintances, list_friends, remove_friend
 from app.services.player_view_cache import invalidate_player_cache
 from app.services.players import get_player_or_404, list_player_display_names
@@ -51,6 +52,15 @@ def _safe_next(next: str | None) -> str:
     return "/friends"
 
 
+def _invalidate_owner_circle(db: Session, owner_player_id: int) -> None:
+    """A friendship owned by any of a person's accounts is in the circle of
+    every one of them (R3), so all their cached pages go. Does NOT commit."""
+    own = own_account_ids(db, owner_player_id)
+    invalidate_player_cache(db, own)
+    for player_id in own:
+        invalidate_viewer_site_stats(db, player_id)
+
+
 @router.post("/add")
 def add_friend_route(
     request: Request, display_name: str = Form(...), next: str | None = Form(None), db: Session = Depends(get_db)
@@ -62,8 +72,7 @@ def add_friend_route(
 
     friend = get_player_or_404(db, display_name)
     if add_friend(db, current_player.id, friend.id):
-        invalidate_player_cache(db, {current_player.id})
-        invalidate_viewer_site_stats(db, current_player.id)
+        _invalidate_owner_circle(db, current_player.id)
     db.commit()
     return RedirectResponse(url=_safe_next(next), status_code=303)
 
@@ -77,7 +86,6 @@ def remove_friend_route(request: Request, display_name: str = Form(...), db: Ses
 
     friend = get_player_or_404(db, display_name)
     if remove_friend(db, current_player.id, friend.id):
-        invalidate_player_cache(db, {current_player.id})
-        invalidate_viewer_site_stats(db, current_player.id)
+        _invalidate_owner_circle(db, current_player.id)
     db.commit()
     return RedirectResponse(url="/friends", status_code=303)

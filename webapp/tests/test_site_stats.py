@@ -276,6 +276,7 @@ def test_a_friendship_change_invalidates_that_viewers_row(monkeypatch, route, ex
     monkeypatch.setattr(friends_router, "get_player_or_404", lambda db, name: _Friend())
     monkeypatch.setattr(friends_router, "add_friend", lambda db, a, b: True)
     monkeypatch.setattr(friends_router, "remove_friend", lambda db, a, b: True)
+    monkeypatch.setattr(friends_router, "own_account_ids", lambda db, pid: {pid})
     monkeypatch.setattr(friends_router, "invalidate_player_cache", lambda db, ids: None)
     monkeypatch.setattr(friends_router, "invalidate_viewer_site_stats", lambda db, v: invalidated.append(v))
 

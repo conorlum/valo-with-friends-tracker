@@ -22,6 +22,7 @@ from app.models import (
     RoundPlayerStat,
 )
 from app.models.match import MatchSource, Team
+from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
 from app.services import account_groups
 from app.services.account_groups import (
     get_cached_group_views,
@@ -45,7 +46,7 @@ def _jsonb_on_sqlite(type_, compiler, **kw):   # impact_scores.trade_detail
 
 TABLES = [
     Player, Match, MatchPlayer, Round, RoundPlayerStat, KillEvent, ImpactScore, Friendship,
-    PlayerViewCache, AccountGroup, AccountGroupMember, AccountGroupViewCache,
+    PlayerViewCache, AccountGroup, AccountGroupMember, AccountGroupViewCache, ViewerSiteStatsCache,
 ]
 
 
