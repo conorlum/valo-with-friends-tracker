@@ -42,7 +42,7 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 
 ### Stats page caches
 
-`/stats` has two populations. **All Players** (every match) is one row in `site_stats_cache`. **Friends** is the logged-in viewer plus the friendships that viewer owns. It is computed per viewer and cached one row per viewer in `viewer_site_stats_cache` (migration 0011), keyed by a hash of that player-ID set. Logged-out visitors get All Players only. `scripts/tracked_players.json` only chooses which matches to crawl, so nothing on the site may be defined by it. Any match ingest clears both caches. A friend add or remove clears that viewer's row. The ingest scripts then pre-warm the rows of every friendship owner unless `--no-prewarm` is passed. See `app/services/site_stats.py`.
+`/stats` has two populations. **All Players** (every match) is one row in `site_stats_cache`. **Friends** is the logged-in viewer's circle (their linked accounts and their friends', see "Account groups" below). It is computed per viewer and cached one row per viewer in `viewer_site_stats_cache` (migration 0011), keyed by a hash of that player-ID set. Logged-out visitors get All Players only. `scripts/tracked_players.json` only chooses which matches to crawl, so nothing on the site may be defined by it. Any match ingest clears both caches. A friend add or remove clears that viewer's row. The ingest scripts then pre-warm the rows of every friendship owner unless `--no-prewarm` is passed. See `app/services/site_stats.py`.
 
 ### Account groups
 
@@ -57,7 +57,26 @@ matches (`player_ids=` on `load_player_match_data` / `compute_player_views`) and
 `account_group_view_cache`. A row is valid only while its fingerprint matches (accounts, their matches and Impact
 rows, their friendships: `group_fingerprint`), so ingest paths need no new hooks; `invalidate_player_cache` and
 `invalidate_all_player_caches` clear group rows too, and `prewarm_player_cache` re-warms them. See
-`app/services/account_groups.py`. `/stats` Friends and friendships themselves are still per account.
+`app/services/account_groups.py`. A match two linked accounts both played counts once in the combined view
+(`player_data.one_row_per_match`, lowest player id's row). The combined recent-matches table has an Account
+column (the member's label, else its name without the tag).
+
+**Friends through groups.** A person is a group: their circle is all their accounts, everyone friended from any
+of them, and those friends' own grouped accounts, one level deep (`app/services/circle.py`, one SQL statement
+each). Every reader of "friends" uses it: `/stats` Friends, fight-EV's teammate pool, the match list, sessions,
+squad, gap patterns and recent match rows. Friendships stay stored per account. A friend add or remove clears
+the player and `/stats` viewer rows of all the owner's accounts; a link or unlink clears every circle that holds
+either account (`circle_dependents`), in the same transaction.
+
+**Role/agent filter.** The player page (single account or `?accounts=all`) takes `?filter=role:<role>` or
+`?filter=agent:<Agent>`, one at a time, from a dropdown of the agents that account or group played. Roles come
+from the committed `app/data/agent_roles.json` (`app/services/agent_roles.py`). Every section built from the
+player's matches is filtered, except map streaks; "recent" is the last 30 matches on that filter. One career load
+and one replay feed every filter (`compute_player_views_by_filter`). The pre-warm computes the unfiltered view,
+each role played and the top 3 agents (`precompute_keys`); any other filter is computed on first visit and
+cached. Filtered rows live in the same caches: migration 0027 widens `player_view_cache.scope` and
+`account_group_view_cache.scope` to keys like `career|role:sentinel` (`cache_scope_key`), and they are cleared
+with the unfiltered rows.
 
 ### Player page pre-compute cache
 
