@@ -8,6 +8,7 @@ from __future__ import annotations
 import statistics
 
 from app.moments.constants import DEATH_MATCH_S, INFO_MERGE_S, MEDIAN_MIN_CLEAN
+from app.services import enemy_names
 
 
 def _slot_list(by_slot, slot) -> list:
@@ -157,11 +158,33 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale, fai
             "summary": summary, "stale": stale, "failed": sorted(int(n) for n in failed)}
 
 
+def home_team(page_players: dict, friends: set[int]):
+    """The team with more of the site's friends (players in any friendship) on it; None on a tie."""
+    counts: dict = {}
+    for p in page_players.values():
+        counts.setdefault(p.get("team"), 0)
+        counts[p.get("team")] += p.get("player_id") in friends
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    if not ranked or (len(ranked) > 1 and ranked[0][1] == ranked[1][1]):
+        return None
+    return ranked[0][0]
+
+
+def tab_players(page_players: dict, friends: set[int]) -> dict:
+    """The tab's players: slot -> name, agent and team, the other team's named by agent (app/services/enemy_names.py).
+    With no home team, everyone is named by agent: no opponent's name is ever shown."""
+    players = {str(slot): {"name": p.get("name"), "agent": p.get("agent"), "team": p.get("team")}
+               for slot, p in page_players.items()}
+    return enemy_names.hide_in(players, home_team(page_players, friends))
+
+
 def load_moments_payload(db, replay) -> dict:
     """The route's body for a linked replay with the control layer: reads the stored moments, control deaths and
     knowledge events, then hands them to build_payload."""
+    from sqlalchemy import or_
     from sqlalchemy.orm import load_only
 
+    from app.models.friendship import Friendship
     from app.models.replay import ReplayRoundControl, ReplayRoundMoments
     from app.replays import control_format
     from app.services import replay_control, replay_control_views, replay_gaps
@@ -209,7 +232,11 @@ def load_moments_payload(db, replay) -> dict:
             events[n] = found
 
     page = replay_service.page_context(db, replay)["players"]
-    players = {str(slot): {"name": p.get("name"), "team": p.get("team")} for slot, p in page.items()}
+    ids = [p["player_id"] for p in page.values() if p.get("player_id") is not None]
+    friends = {pid for pair in db.query(Friendship.owner_player_id, Friendship.friend_player_id)
+               .filter(or_(Friendship.owner_player_id.in_(ids), Friendship.friend_player_id.in_(ids)))
+               for pid in pair} if ids else set()
+    players = tab_players(page, friends)
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,

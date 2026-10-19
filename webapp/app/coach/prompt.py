@@ -17,28 +17,23 @@ SHAPE = """\
   {"polarity": "good" | "improve",
    "theme": "<one theme from the list>",
    "title": "<a few words>",
-   "body": "<two to four sentences in the owner's voice>",
+   "body": "<two to four sentences>",
    "instances": [{"round": 7, "t": 41.5, "t1": 48.0, "caption": "<one line>", "evidence": ["q3", "q9"]}]}
 ]}"""
 
 
-def run_prompt(book, voice: list[str], brief: dict) -> str:
-    samples = "\n".join(f"- {line}" for line in voice) if voice else "No voice samples yet: write plainly and directly."
+def run_prompt(book, brief: dict) -> str:
     return f"""{book.text}
 
 # Themes
 
 A point's theme must be one of: {", ".join(book.themes)}
 
-# The owner's voice
-
-{samples}
-
 # The query command
 
 Run it from the current directory, one call per command, with no pipes or redirection. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
-number. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with "error" is not
+number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with "error" is not
 evidence. An answer with "available": false means the data is missing for that round.
 
 {COMMANDS}
