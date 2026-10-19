@@ -6,6 +6,7 @@
 {% block content %}
 {% set viewer_won = viewer_team is not none and summary.winner_team == viewer_team %}
 {% set viewer_lost = viewer_team is not none and summary.winner_team is not none and summary.winner_team != viewer_team %}
+<div class="page-wide">
 <section class="result-banner {{ 'result-win' if viewer_won else 'result-loss' if viewer_lost else 'result-neutral' }}">
   <div class="result-main">
     <h1>{{ match.map_name or match.external_id }}</h1>{% if replay_url %}
@@ -84,6 +85,7 @@
 </div>
 {% endmacro %}
 
+<div class="page-row page-row--60-40">
 <div class="card">
   <div class="card-head">
     <h2>Scoreboard</h2>
@@ -116,6 +118,37 @@
     {% endfor %}
   </div>
 </div>
+{% if shoutouts %}
+<div class="card">
+  <h2>Shoutouts</h2>
+  <p class="page-meta">{% if current_player %}One highlight for you and every friend in this match.{% else %}One highlight for every player in this match.{% endif %}</p>
+  <div class="shoutout-rows shoutout-rows--side">
+    {% for row in shoutouts | balanced_rows(3) %}
+    <div class="shoutout-row">
+      {% for shoutout in row %}
+      {% set icon = agent_icon_slug(shoutout.agent) %}
+      <div class="shoutout-card">
+        <div class="shoutout-portrait-frame">
+          {% if icon %}
+          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
+          {% else %}
+          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
+          {% endif %}
+        </div>
+        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+        {% if shoutout.agent %}
+        <div class="shoutout-agent">{{ shoutout.agent }}</div>
+        {% endif %}
+        <div class="shoutout-headline">{{ shoutout.headline }}</div>
+        <div class="shoutout-detail">{{ shoutout.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+</div>
 
 <script>
   // Within each run of consecutive same-team rows, alternate lighter/darker
@@ -146,36 +179,104 @@
   });
 </script>
 
-{% if shoutouts %}
+<div class="page-row page-row--halves">
+  <div class="page-stack">
 <div class="card">
-  <h2>Shoutouts</h2>
-  <p class="page-meta">{% if current_player %}One highlight for you and every friend in this match.{% else %}One highlight for every player in this match.{% endif %}</p>
-  <div class="shoutout-rows">
-    {% for row in shoutouts | balanced_rows %}
-    <div class="shoutout-row">
-      {% for shoutout in row %}
-      {% set icon = agent_icon_slug(shoutout.agent) %}
-      <div class="shoutout-card">
-        <div class="shoutout-portrait-frame">
-          {% if icon %}
-          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
-          {% else %}
-          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
-          {% endif %}
-        </div>
-        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
-        {% if shoutout.agent %}
-        <div class="shoutout-agent">{{ shoutout.agent }}</div>
-        {% endif %}
-        <div class="shoutout-headline">{{ shoutout.headline }}</div>
-        <div class="shoutout-detail">{{ shoutout.detail }}</div>
-      </div>
-      {% endfor %}
-    </div>
+  <h2>Match Data Highlights</h2>
+  <p class="page-meta">Match-summed impact by category, split into kill impact and death impact.</p>
+  <div class="tab-row" role="tablist">
+    {% for p in summary.players %}
+    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name | strip_tag }}</button>
     {% endfor %}
+  </div>
+  <div style="max-width: 620px; height: 320px; margin: 0 auto;">
+    <canvas id="impact-highlights-chart"></canvas>
+  </div>
+  <div class="stat-grid">
+    <div class="stat-tile">
+      <div class="stat-label">Traded for teammate</div>
+      <div class="stat-value" id="traded-teammate-value">-</div>
+      <div class="stat-sub" id="traded-teammate-sub"></div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Traded by teammate</div>
+      <div class="stat-value" id="traded-by-teammate-value">-</div>
+      <div class="stat-sub" id="traded-by-teammate-sub"></div>
+    </div>
+  </div>
+</div>
+{% if team1_econ_tier_matrix.total_rounds or team2_econ_tier_matrix.total_rounds %}
+<div class="card">
+  <h2>Economy win rate by buy tier</h2>
+  <div class="tab-row" role="tablist">
+    <button type="button" class="tab-btn tab-btn-team-1 active" data-econ-team-tab="1">Team 1{% if viewer_team == 'team-1' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
+    <button type="button" class="tab-btn tab-btn-team-2" data-econ-team-tab="2">Team 2{% if viewer_team == 'team-2' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
+  </div>
+  <div class="team-panel team-panel-team-1" id="econ-matrix-panel">
+  <p class="page-meta" id="econ-matrix-meta">Win rate of rounds where <span class="team-name-team-1">Team 1</span> bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
+  <div id="econ-matrix-1">
+    {% set econ_tier_matrix = team1_econ_tier_matrix %}
+    {% set econ_pistol_stats = team1_econ_pistol_stats %}
+    {% set econ_pistol_label = "Pistol rounds:" %}
+    {% include "_econ_tier_matrix_body.html" %}
+  </div>
+  <div id="econ-matrix-2" style="display: none;">
+    {% set econ_tier_matrix = team2_econ_tier_matrix %}
+    {% set econ_pistol_stats = team2_econ_pistol_stats %}
+    {% set econ_pistol_label = "Pistol rounds:" %}
+    {% include "_econ_tier_matrix_body.html" %}
+  </div>
   </div>
 </div>
 {% endif %}
+  </div>
+{% if team1_win_graph.nodes or team2_win_graph.nodes %}
+<div class="card">
+  <h2>Round win rate by game state</h2>
+  <div class="tab-row" role="tablist">
+    <button type="button" class="tab-btn active" data-team-tab="1">Team 1</button>
+    <button type="button" class="tab-btn" data-team-tab="2">Team 2</button>
+  </div>
+  <p class="page-meta" id="team-win-graph-meta">Win rate of rounds Team 1 reached at each man-advantage state (own side v opponent side).</p>
+  <div class="chart-scroll">
+    <div id="team-win-graph-1">
+      <svg viewBox="{{ team1_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
+        {% for edge in team1_win_graph.edges %}
+        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
+        {% endfor %}
+        {% for node in team1_win_graph.nodes %}
+        <g>
+          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
+          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
+          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
+          {% if node.short_label %}
+          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
+          {% endif %}
+        </g>
+        {% endfor %}
+      </svg>
+    </div>
+    <div id="team-win-graph-2" style="display: none;">
+      <svg viewBox="{{ team2_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
+        {% for edge in team2_win_graph.edges %}
+        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
+        {% endfor %}
+        {% for node in team2_win_graph.nodes %}
+        <g>
+          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
+          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
+          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
+          {% if node.short_label %}
+          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
+          {% endif %}
+        </g>
+        {% endfor %}
+      </svg>
+    </div>
+  </div>
+</div>
+{% endif %}
+</div>
 
 <div class="card">
   <h2>Rounds</h2>
@@ -235,31 +336,6 @@
 </script>
 
 <div class="card">
-  <h2>Match Data Highlights</h2>
-  <p class="page-meta">Match-summed impact by category, split into kill impact and death impact.</p>
-  <div class="tab-row" role="tablist">
-    {% for p in summary.players %}
-    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name | strip_tag }}</button>
-    {% endfor %}
-  </div>
-  <div style="max-width: 620px; height: 320px; margin: 0 auto;">
-    <canvas id="impact-highlights-chart"></canvas>
-  </div>
-  <div class="stat-grid">
-    <div class="stat-tile">
-      <div class="stat-label">Traded for teammate</div>
-      <div class="stat-value" id="traded-teammate-value">-</div>
-      <div class="stat-sub" id="traded-teammate-sub"></div>
-    </div>
-    <div class="stat-tile">
-      <div class="stat-label">Traded by teammate</div>
-      <div class="stat-value" id="traded-by-teammate-value">-</div>
-      <div class="stat-sub" id="traded-by-teammate-sub"></div>
-    </div>
-  </div>
-</div>
-
-<div class="card">
   <h2>Cumulative Impact</h2>
   <p class="page-meta">Each player's running Impact total after every round. Lines are colored by team. Click a name on the right or a line to highlight that player; select several to compare them.</p>
   <div class="round-strip-legend">
@@ -274,29 +350,6 @@
 </div>
 
 {% if team1_econ_tier_matrix.total_rounds or team2_econ_tier_matrix.total_rounds %}
-<div class="card">
-  <h2>Economy win rate by buy tier</h2>
-  <div class="tab-row" role="tablist">
-    <button type="button" class="tab-btn tab-btn-team-1 active" data-econ-team-tab="1">Team 1{% if viewer_team == 'team-1' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
-    <button type="button" class="tab-btn tab-btn-team-2" data-econ-team-tab="2">Team 2{% if viewer_team == 'team-2' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
-  </div>
-  <div class="team-panel team-panel-team-1" id="econ-matrix-panel">
-  <p class="page-meta" id="econ-matrix-meta">Win rate of rounds where <span class="team-name-team-1">Team 1</span> bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
-  <div id="econ-matrix-1">
-    {% set econ_tier_matrix = team1_econ_tier_matrix %}
-    {% set econ_pistol_stats = team1_econ_pistol_stats %}
-    {% set econ_pistol_label = "Pistol rounds:" %}
-    {% include "_econ_tier_matrix_body.html" %}
-  </div>
-  <div id="econ-matrix-2" style="display: none;">
-    {% set econ_tier_matrix = team2_econ_tier_matrix %}
-    {% set econ_pistol_stats = team2_econ_pistol_stats %}
-    {% set econ_pistol_label = "Pistol rounds:" %}
-    {% include "_econ_tier_matrix_body.html" %}
-  </div>
-  </div>
-</div>
-
 <script>
   document.querySelectorAll(".tab-btn[data-econ-team-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -312,53 +365,6 @@
     });
   });
 </script>
-{% endif %}
-
-{% if team1_win_graph.nodes or team2_win_graph.nodes %}
-<div class="card">
-  <h2>Round win rate by game state</h2>
-  <div class="tab-row" role="tablist">
-    <button type="button" class="tab-btn active" data-team-tab="1">Team 1</button>
-    <button type="button" class="tab-btn" data-team-tab="2">Team 2</button>
-  </div>
-  <p class="page-meta" id="team-win-graph-meta">Win rate of rounds Team 1 reached at each man-advantage state (own side v opponent side).</p>
-  <div class="chart-scroll">
-    <div id="team-win-graph-1">
-      <svg viewBox="{{ team1_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
-        {% for edge in team1_win_graph.edges %}
-        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
-        {% endfor %}
-        {% for node in team1_win_graph.nodes %}
-        <g>
-          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
-          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
-          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
-          {% if node.short_label %}
-          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
-          {% endif %}
-        </g>
-        {% endfor %}
-      </svg>
-    </div>
-    <div id="team-win-graph-2" style="display: none;">
-      <svg viewBox="{{ team2_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
-        {% for edge in team2_win_graph.edges %}
-        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
-        {% endfor %}
-        {% for node in team2_win_graph.nodes %}
-        <g>
-          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
-          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
-          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
-          {% if node.short_label %}
-          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
-          {% endif %}
-        </g>
-        {% endfor %}
-      </svg>
-    </div>
-  </div>
-</div>
 {% endif %}
 
 <script>
@@ -607,5 +613,7 @@
     restyle();
   });
 </script>
+
+</div>
 
 {% endblock %}

@@ -594,6 +594,12 @@ a {
   }
 }
 
+/* Shoutouts in a side column: each row of up to 3 shares the width evenly. */
+@media (min-width: 701px) {
+  .shoutout-rows--side .shoutout-row { flex-wrap: nowrap; }
+  .shoutout-rows--side .shoutout-card { flex: 1 1 0; min-width: 0; }
+}
+
 .shoutout-portrait-frame {
   display: flex;
   justify-content: center;
