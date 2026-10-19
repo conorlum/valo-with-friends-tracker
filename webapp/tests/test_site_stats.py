@@ -89,7 +89,7 @@ def test_group_variants_come_from_the_group_not_the_whole_load():
 
 
 def test_viewer_group_is_the_viewer_plus_their_own_friends(monkeypatch):
-    monkeypatch.setattr(site_stats, "list_friend_ids", lambda db, owner: {11, 12} if owner == 5 else set())
+    monkeypatch.setattr(site_stats, "circle_ids", lambda db, owner: {owner, 11, 12} if owner == 5 else {owner})
     assert site_stats.viewer_group_player_ids(None, 5) == {5, 11, 12}
     assert site_stats.viewer_group_player_ids(None, 6) == {6}
 
@@ -276,6 +276,7 @@ def test_a_friendship_change_invalidates_that_viewers_row(monkeypatch, route, ex
     monkeypatch.setattr(friends_router, "get_player_or_404", lambda db, name: _Friend())
     monkeypatch.setattr(friends_router, "add_friend", lambda db, a, b: True)
     monkeypatch.setattr(friends_router, "remove_friend", lambda db, a, b: True)
+    monkeypatch.setattr(friends_router, "own_account_ids", lambda db, pid: {pid})
     monkeypatch.setattr(friends_router, "invalidate_player_cache", lambda db, ids: None)
     monkeypatch.setattr(friends_router, "invalidate_viewer_site_stats", lambda db, v: invalidated.append(v))
 

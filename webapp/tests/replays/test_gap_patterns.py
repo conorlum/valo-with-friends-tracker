@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.models import Friendship, Match, MatchPlayer, Player
+from app.models import AccountGroup, AccountGroupMember, Friendship, Match, MatchPlayer, Player
 from app.models.match import MatchSource, Team
 from app.models.replay import (Replay, ReplayGap, ReplayPlayer, ReplayRound, ReplayRoundControl,
                                ReplayRoundGapRun)
@@ -20,7 +20,7 @@ from app.services import gap_patterns as gp
 from app.services import replay_gaps
 
 MAP = "Ascent"
-TABLES = [Player.__table__, Match.__table__, MatchPlayer.__table__, Friendship.__table__, Replay.__table__,
+TABLES = [AccountGroup.__table__, AccountGroupMember.__table__, Player.__table__, Match.__table__, MatchPlayer.__table__, Friendship.__table__, Replay.__table__,
           ReplayRound.__table__, ReplayRoundControl.__table__, ReplayPlayer.__table__,
           ReplayRoundGapRun.__table__, ReplayGap.__table__]
 T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)

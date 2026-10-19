@@ -7,7 +7,7 @@ from app.adapters.demo_match_source import load_match
 from app.db import SessionLocal
 from app.models import Match, MatchPlayer
 from app.scoring.impact import compute_impact_for_match
-from app.services.player_view_cache import filter_cached_player_ids, invalidate_player_cache
+from app.services.player_view_cache import invalidate_cached_players
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,9 +40,7 @@ def main() -> None:
 
             # Invalidate BETWEEN load_match's commit and impact scoring, not
             # after both -- see ingest_demo_match.py for the ordering rationale.
-            affected = filter_cached_player_ids(db, old_ids | new_ids)
-            if affected:
-                invalidate_player_cache(db, affected)
+            invalidate_cached_players(db, old_ids | new_ids)
             invalidate_site_stats_cache(db)    # every new/changed match affects the All Players stats
             db.commit()
 

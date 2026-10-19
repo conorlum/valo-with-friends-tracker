@@ -48,22 +48,25 @@ def test_viewer_team_logged_out_is_neutral():
 
 
 def test_viewer_team_is_own_team_when_viewer_played(monkeypatch):
-    monkeypatch.setattr(matches, "list_friend_ids", lambda db, pid: pytest_fail())
+    monkeypatch.setattr(matches, "own_account_ids", lambda db, pid: pytest_fail())
+    monkeypatch.setattr(matches, "circle_friend_ids", lambda db, pid: pytest_fail())
     summary = _summary([_player(1, "team-1"), _player(2, "team-2")])
     assert get_viewer_team(None, summary, 2) == ("team-2", "You")
 
 
 def test_viewer_team_falls_back_to_the_team_with_more_friends(monkeypatch):
-    monkeypatch.setattr(matches, "list_friend_ids", lambda db, pid: {1, 3, 4})
+    monkeypatch.setattr(matches, "own_account_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(matches, "circle_friend_ids", lambda db, pid: {1, 3, 4})
     summary = _summary([_player(1, "team-1"), _player(3, "team-2"), _player(4, "team-2")])
     assert get_viewer_team(None, summary, 99) == ("team-2", "Your friends")
 
 
 def test_viewer_team_is_neutral_when_friends_split_evenly_or_absent(monkeypatch):
     summary = _summary([_player(1, "team-1"), _player(3, "team-2")])
-    monkeypatch.setattr(matches, "list_friend_ids", lambda db, pid: {1, 3})
+    monkeypatch.setattr(matches, "own_account_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(matches, "circle_friend_ids", lambda db, pid: {1, 3})
     assert get_viewer_team(None, summary, 99) == (None, None)
-    monkeypatch.setattr(matches, "list_friend_ids", lambda db, pid: set())
+    monkeypatch.setattr(matches, "circle_friend_ids", lambda db, pid: set())
     assert get_viewer_team(None, summary, 99) == (None, None)
 
 

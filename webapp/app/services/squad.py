@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_friend_ids
 from app.services.match_streaks import Form, FormEntry, compute_form, form_entry
 from app.services.player_profile_types import match_win
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
@@ -233,7 +233,7 @@ def _clutch_resolvers_by_round(
 
 
 def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | None) -> SquadOverview:
-    friend_ids = list_friend_ids(db, viewer_player_id)
+    friend_ids = circle_friend_ids(db, viewer_player_id)
     friend_names = (
         {p.id: p.display_name for p in db.query(Player).filter(Player.id.in_(friend_ids)).all()}
         if friend_ids

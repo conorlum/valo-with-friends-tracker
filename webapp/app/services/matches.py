@@ -8,7 +8,7 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.scoring.plant_window import attacking_team
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_friend_ids, circle_ids, own_account_ids
 from app.services.shoutouts import (
     SCAVENGER_MIN_AVG_PER_ROUND,
     SUGAR_DADDY_MIN_AVG_PER_ROUND,
@@ -423,7 +423,11 @@ def get_viewer_team(db: Session, summary: MatchSummary, viewer_player_id: int | 
     for p in summary.players:
         if p.player_id == viewer_player_id:
             return p.team, "You"
-    friend_ids = list_friend_ids(db, viewer_player_id)
+    own = own_account_ids(db, viewer_player_id)  # P8: an own alt playing reads as "You"
+    for p in summary.players:
+        if p.player_id in own:
+            return p.team, "You"
+    friend_ids = circle_friend_ids(db, viewer_player_id)
     friends_per_team: dict[str, int] = {}
     for p in summary.players:
         if p.player_id in friend_ids:
@@ -744,7 +748,7 @@ def get_match_shoutouts(
 
     if viewer_player_id is not None:
         player_id_by_mp: dict[int, int] = {mp.id: mp.player_id for mp in match_players}
-        friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
+        friend_ids = circle_ids(db, viewer_player_id)
         shoutouts = [
             s for s in shoutouts if player_id_by_mp.get(s.player_id) in friend_ids
         ]

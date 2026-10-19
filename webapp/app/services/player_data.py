@@ -6,7 +6,10 @@ player_views, players, economy_graphs and the player_view_cache module can
 all import from here without creating an import cycle.
 """
 
-from sqlalchemy.orm import Session, selectinload
+from datetime import datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
@@ -15,8 +18,40 @@ from app.services.state_replay import KillEventInput, MatchInput, RoundInput
 RECENT_MATCH_LIMIT = 30
 
 
+# Dedupe a shared match rather than refuse the link.
+def one_row_per_match(player_ids):
+    """Filter for a combined (multi-account) MatchPlayer query: of the given
+    accounts' rows in one match, keep only the lowest player_id's. Applied in
+    SQL so it takes effect before any LIMIT."""
+    other = aliased(MatchPlayer)
+    lowest = (
+        select(func.min(other.player_id))
+        .where(other.match_id == MatchPlayer.match_id, other.player_id.in_(player_ids))
+        .correlate(MatchPlayer)
+        .scalar_subquery()
+    )
+    return MatchPlayer.player_id == lowest
+
+
+def played_agent_counts(db: Session, player_id: int, player_ids=None) -> list[tuple[str, int, datetime | None]]:
+    """(agent, matches, last played_at) per agent the player (or every one of
+    `player_ids`, an account group, a shared match counting once) has played.
+    NULL agents are skipped; the order is unspecified (rank with rank_agents)."""
+    ids = player_ids or {player_id}
+    query = (
+        db.query(MatchPlayer.agent, func.count(), func.max(Match.played_at))
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .filter(MatchPlayer.player_id.in_(ids), MatchPlayer.agent.isnot(None))
+    )
+    if player_ids:
+        query = query.filter(one_row_per_match(player_ids))
+    return [(agent, count, last) for agent, count, last in query.group_by(MatchPlayer.agent).all()]
+
+
 def load_player_match_data(
-    db: Session, player: Player, match_limit: int | None = None
+    db: Session, player: Player, match_limit: int | None = None,
+    player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
 ) -> list[MatchPlayer]:
     """Every MatchPlayer row for `player`, most recent match first, with
     the whole Match -> match_players (+ each teammate's Player row) / rounds
@@ -58,10 +93,28 @@ def load_player_match_data(
     this ordering is ever changed, change every caller of this shared load
     (and get_player_profile/player_econ_samples's own queries) together and
     bump PLAYER_VIEW_CACHE_SCHEMA_VERSION.
+
+    `player_ids`, if given, loads every one of those accounts instead (an
+    account group's combined view, see app.services.account_groups).
+    Linking is zero-auth, so two linked accounts may have played the same
+    match (a false link): the result keeps one row per match, the lowest
+    player_id's, chosen before the LIMIT (see one_row_per_match).
+
+    `agents`, if given, keeps only rows played as one of those agents (applied
+    after the per-match dedupe, like slicing the full load would); an empty
+    set returns [] without querying.
     """
+    if agents is not None and not agents:
+        return []
+    query = db.query(MatchPlayer)
+    if player_ids:
+        query = query.filter(MatchPlayer.player_id.in_(player_ids), one_row_per_match(player_ids))
+    else:
+        query = query.filter_by(player_id=player.id)
+    if agents is not None:
+        query = query.filter(MatchPlayer.agent.in_(agents))
     query = (
-        db.query(MatchPlayer)
-        .filter_by(player_id=player.id)
+        query
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(
             selectinload(MatchPlayer.match)

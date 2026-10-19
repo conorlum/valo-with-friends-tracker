@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import AccountGroupMember, ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.services.match_streaks import RECENT_FORM_COUNT, FormEntry, form_entry
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids
+from app.services.player_data import one_row_per_match
 from app.services.player_profile_types import match_win
 
 BASELINE_MATCHES = 30
@@ -70,6 +71,7 @@ class RecentMatchRow:
     assists: int = 0
     average_impact: float | None = None
     badges: list[MatchBadge] = field(default_factory=list)
+    account: str | None = None   # which of a group's accounts played it; only on the combined view
 
 
 @dataclass
@@ -124,13 +126,22 @@ def _round_first_kill_and_clutch(round_row: Round, player_mp_id: int, own_ids: s
     return first_blood, first_death, alone_vs
 
 
-def recent_form_entries(db: Session, player_id: int, limit: int = RECENT_FORM_COUNT) -> list[FormEntry]:
+def recent_form_entries(
+    db: Session, player_id: int, limit: int = RECENT_FORM_COUNT, player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
+) -> list[FormEntry]:
     """The player's `limit` most recent matches as FormEntry rows, newest first
-    -- the same matches the Form card's streak strip covers."""
+    -- the same matches the Form card's streak strip covers. `player_ids`
+    covers every one of an account group's accounts instead. `agents`, if
+    given, keeps only matches played as one of those agents (before the LIMIT)."""
+    query = db.query(MatchPlayer).join(Match, Match.id == MatchPlayer.match_id)
+    query = query.filter(MatchPlayer.player_id.in_(player_ids or {player_id}))
+    if player_ids:
+        query = query.filter(one_row_per_match(player_ids))
+    if agents is not None:
+        query = query.filter(MatchPlayer.agent.in_(agents))
     mps = (
-        db.query(MatchPlayer)
-        .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id)
+        query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(limit)
         .all()
@@ -138,26 +149,42 @@ def recent_form_entries(db: Session, player_id: int, limit: int = RECENT_FORM_CO
     return [form_entry(mp.match, _team(mp), match_win(mp.match, _team(mp))) for mp in mps]
 
 
-def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry]) -> list[RecentMatchRow]:
-    """One row per entry (same order), with stats and badges for `player_id`."""
+def build_recent_match_rows(
+    db: Session, player_id: int, entries: list[FormEntry], player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
+) -> list[RecentMatchRow]:
+    """One row per entry (same order), with stats and badges for `player_id`,
+    or for whichever of `player_ids` (an account group) played each match.
+    `agents`, if given, limits the stand-out baseline to those agents' matches
+    (the entries are already filtered by the caller)."""
     if not entries:
         return []
 
+    account_ids = player_ids or {player_id}
     shown_ids = {e.external_id for e in entries}
-    baseline_mps = (
+    baseline_query = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id)
+        .filter(MatchPlayer.player_id.in_(account_ids))
+    )
+    if player_ids:
+        baseline_query = baseline_query.filter(one_row_per_match(player_ids))
+    if agents is not None:
+        baseline_query = baseline_query.filter(MatchPlayer.agent.in_(agents))
+    baseline_mps = (
+        baseline_query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
         .limit(BASELINE_MATCHES)
         .all()
     )
-    shown_mps = (
+    shown_query = (
         db.query(MatchPlayer)
         .join(Match, Match.id == MatchPlayer.match_id)
-        .filter(MatchPlayer.player_id == player_id, Match.external_id.in_(shown_ids))
-        .all()
+        .filter(MatchPlayer.player_id.in_(account_ids), Match.external_id.in_(shown_ids))
     )
+    if player_ids:
+        shown_query = shown_query.filter(one_row_per_match(player_ids))
+    shown_mps = shown_query.all()
     player_mps = {mp.id: mp for mp in baseline_mps + shown_mps}
     match_ids = {mp.match_id for mp in player_mps.values()}
     baseline_mp_ids = {mp.id for mp in baseline_mps}
@@ -226,10 +253,20 @@ def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry
         for stat in STANDOUT_STATS:
             thresholds[stat.key] = _quantile([s.totals.get(stat.key, 0) / s.rounds for s in baseline], STANDOUT_QUANTILE)
 
-    friend_ids = list_friend_ids(db, player_id) - {player_id}
+    friend_ids = circle_ids(db, player_id) - account_ids
     friend_names = (
         dict(db.query(Player.id, Player.display_name).filter(Player.id.in_(friend_ids)).all()) if friend_ids else {}
     )
+
+    account_names: dict[int, str] = {}
+    if player_ids:
+        for pid, display_name, label in (
+            db.query(Player.id, Player.display_name, AccountGroupMember.label)
+            .outerjoin(AccountGroupMember, AccountGroupMember.player_id == Player.id)
+            .filter(Player.id.in_(player_ids))
+            .all()
+        ):
+            account_names[pid] = label or display_name.split("#")[0]
 
     mp_by_external_id = {external_id_by_match[mp.match_id]: mp for mp in player_mps.values()}
     rows = []
@@ -291,6 +328,7 @@ def build_recent_match_rows(db: Session, player_id: int, entries: list[FormEntry
                 assists=s.assists,
                 average_impact=(s.impact_sum / s.rounds) if s.rounds else None,
                 badges=badges,
+                account=account_names.get(mp.player_id),
             )
         )
     return rows

@@ -17,11 +17,11 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import MatchPlayer, Player, PlayerViewCache
+from app.models import AccountGroupMember, AccountGroupViewCache, MatchPlayer, Player, PlayerViewCache
 from app.scoring.impact import IMPACT_CALCULATION_VERSION
 from app.services.economy_graphs import (
     LoadoutWinScatter,
@@ -51,7 +51,7 @@ from app.services.player_profile_types import (
     PlayerProfile,
     grouped_stats,
 )
-from app.services.player_views import PlayerViews, compute_player_views_by_scope
+from app.services.player_views import PlayerViews, compute_player_views_by_filter
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,20 @@ def cache_version() -> int:
         + CALCULATION_VERSION * 1000
         + IMPACT_CALCULATION_VERSION
     )
+
+
+UNFILTERED_SCOPES = ("recent", "career")
+SCOPE_MAX_LENGTH = 48  # player_view_cache.scope / account_group_view_cache.scope (migration 0028)
+
+
+def cache_scope_key(scope: str, key: str = "") -> str:
+    """The stored scope string: "recent"/"career", plus "|<key>" for a filtered row."""
+    if scope not in ("recent", "career"):
+        raise ValueError(f"unknown cache scope {scope!r}")
+    result = scope if key == "" else f"{scope}|{key}"
+    if len(result) > SCOPE_MAX_LENGTH:
+        raise ValueError(f"cache scope {result!r} is longer than {SCOPE_MAX_LENGTH} characters")
+    return result
 
 
 VALID_DISPLAY_STATES = frozenset(state.value for state in DisplayState)
@@ -570,7 +584,28 @@ def decode_cache_row(row: PlayerViewCache | None, player: Player) -> CachedPlaye
         return None
 
 
-def get_cached_views(db: Session, player: Player, scope: str) -> CachedPlayerViews | None:
+def encode_player_views(views: PlayerViews) -> dict:
+    """The stored blob for `views` -- shared with the account-group cache
+    (app.services.account_groups), which keeps the same blob per group."""
+    return _encode(views)
+
+
+def decode_player_views_blob(data: dict, version: int, player: Player) -> CachedPlayerViews | None:
+    """decode_cache_row's version check + validate + decode, for a blob
+    stored somewhere other than player_view_cache. Same contract: a stale,
+    invalid or undecodable blob is None, never an exception."""
+    if version != cache_version():
+        return None
+    try:
+        if not _validate_blob(data):
+            return None
+        return _decode(data, player)
+    except Exception:
+        logger.exception("player view blob: decode failed for player %s", player.id)
+        return None
+
+
+def get_cached_views(db: Session, player: Player, scope: str, key: str = "") -> CachedPlayerViews | None:
     """Cache miss, version mismatch, or any validation/decode failure ->
     None (the caller then computes live). Failures are logged, never
     raised: a corrupt blob must not turn into a 500, and must not reach
@@ -578,63 +613,103 @@ def get_cached_views(db: Session, player: Player, scope: str) -> CachedPlayerVie
     TierMatrix, PistolStats, LoadoutWinScatter, GroupedStat lists) from
     canonical aggregates so a purely visual change never needs a cache
     bump."""
-    row = db.query(PlayerViewCache).filter_by(player_id=player.id, scope=scope).one_or_none()
+    row = (
+        db.query(PlayerViewCache)
+        .filter_by(player_id=player.id, scope=cache_scope_key(scope, key))
+        .one_or_none()
+    )
     return decode_cache_row(row, player)
 
 
-def _upsert_cache(db: Session, player_id: int, scope: str, data: dict) -> None:
-    """Does NOT commit -- store_player_views commits once for all scopes."""
+def _upsert_cache(db: Session, player_id: int, views_by_scope: dict[str, PlayerViews]) -> None:
+    """ONE multi-row upsert for every stored scope string given. Does NOT
+    commit -- the caller does, once."""
+    if not views_by_scope:
+        return
     version = cache_version()
-    stmt = (
-        pg_insert(PlayerViewCache.__table__)
-        .values(player_id=player_id, scope=scope, data=data,
-                version=version, updated_at=func.now())
-        .on_conflict_do_update(
-            index_elements=[PlayerViewCache.player_id, PlayerViewCache.scope],
-            set_={"data": data, "version": version, "updated_at": func.now()},
-        )
+    stmt = pg_insert(PlayerViewCache.__table__).values([
+        {"player_id": player_id, "scope": scope, "data": _encode(views),
+         "version": version, "updated_at": func.now()}
+        for scope, views in views_by_scope.items()
+    ])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[PlayerViewCache.player_id, PlayerViewCache.scope],
+        set_={"data": stmt.excluded.data, "version": stmt.excluded.version, "updated_at": func.now()},
     )
     db.execute(stmt)
 
 
-def store_player_views(db: Session, player_id: int, views_by_scope: dict[str, PlayerViews]) -> None:
-    """Encode and upsert EVERY given scope, then commit ONCE.
-    recompute_player_views passes both scopes so a mid-way failure can
-    never leave one scope cached and the other empty; the route's
-    write-through passes a single-entry dict."""
-    for scope, views in views_by_scope.items():
-        _upsert_cache(db, player_id, scope, _encode(views))
+def store_player_views(db: Session, player_id: int, views_by_key: dict[str, PlayerViews]) -> None:
+    """Encode and upsert EVERY given stored scope string ("recent", "career",
+    "career|role:duelist", ...) in ONE statement, then commit ONCE.
+    recompute_player_views passes every scope so a mid-way failure can
+    never leave one cached and another empty; the route's write-through
+    passes a single-entry dict."""
+    _upsert_cache(db, player_id, views_by_key)
+    db.commit()
+
+
+def _replace_player_rows(db: Session, player_id: int, views_by_key: dict[str, PlayerViews]) -> None:
+    """In ONE transaction: delete the player's filtered rows ('|' in the scope)
+    that are not in the new set, upsert the new set, commit. A player
+    recomputed without an invalidation must not keep a filtered row from an
+    old top-3 (per-player rows carry no fingerprint to tell it is stale)."""
+    db.query(PlayerViewCache).filter(
+        PlayerViewCache.player_id == player_id,
+        PlayerViewCache.scope.contains("|"),
+        PlayerViewCache.scope.notin_(list(views_by_key)),
+    ).delete(synchronize_session=False)
+    _upsert_cache(db, player_id, views_by_key)
     db.commit()
 
 
 def invalidate_player_cache(db: Session, player_ids: set[int]) -> None:
     """DELETE FROM player_view_cache WHERE player_id IN (...).
     Does NOT commit -- the caller commits, so the delete lands in the same
-    transaction as whatever mutation triggered it."""
+    transaction as whatever mutation triggered it. Also deletes the combined
+    rows of any account group those players are in: the group fingerprint
+    catches new matches on its own, but not Impact rows rescored in place."""
     if not player_ids:
         return
     db.query(PlayerViewCache).filter(PlayerViewCache.player_id.in_(player_ids)).delete(synchronize_session=False)
+    group_ids = select(AccountGroupMember.group_id).where(AccountGroupMember.player_id.in_(player_ids))
+    db.query(AccountGroupViewCache).filter(AccountGroupViewCache.group_id.in_(group_ids)).delete(
+        synchronize_session=False
+    )
 
 
 def invalidate_all_player_caches(db: Session) -> None:
     """DELETE every player_view_cache row. Does NOT commit. For a
     recompute that touches EVERY match (scripts/recompute_impact.py) --
     simpler and strictly safer than discovering which players are affected,
-    since the answer there is "all of them" (Step 3a)."""
+    since the answer there is "all of them" (Step 3a). Account groups'
+    combined rows go too: their fingerprint can't see Impact rows rewritten
+    in place."""
     db.query(PlayerViewCache).delete(synchronize_session=False)
+    db.query(AccountGroupViewCache).delete(synchronize_session=False)
 
 
 def filter_cached_player_ids(db: Session, player_ids: set[int]) -> set[int]:
-    """Narrows an arbitrary ID set to those with existing cache rows."""
+    """Narrows an arbitrary ID set to those with existing cache rows: their
+    own, or their account group's combined rows."""
     if not player_ids:
         return set()
-    return {
+    own = {
         pid
         for (pid,) in db.query(PlayerViewCache.player_id)
-        .filter(PlayerViewCache.player_id.in_(player_ids))
+        .filter(PlayerViewCache.player_id.in_(player_ids), PlayerViewCache.scope.in_(UNFILTERED_SCOPES))
         .distinct()
         .all()
     }
+    grouped = {
+        pid
+        for (pid,) in db.query(AccountGroupMember.player_id)
+        .join(AccountGroupViewCache, AccountGroupViewCache.group_id == AccountGroupMember.group_id)
+        .filter(AccountGroupMember.player_id.in_(player_ids), AccountGroupViewCache.scope.in_(UNFILTERED_SCOPES))
+        .distinct()
+        .all()
+    }
+    return own | grouped
 
 
 def find_cached_player_ids_for_match(db: Session, match_id: int) -> set[int]:
@@ -648,19 +723,44 @@ def find_cached_player_ids_for_match(db: Session, match_id: int) -> set[int]:
     return filter_cached_player_ids(db, player_ids)
 
 
+def invalidate_cached_players(db: Session, player_ids: set[int]) -> set[int]:
+    """Clears every cache row of `player_ids`, filtered ones included, and
+    returns those that had unfiltered rows (the set to pre-warm). A player
+    whose only rows are filtered isn't counted as cached, but their rows
+    still go: they'd otherwise outlive the match that made them stale.
+    Does NOT commit."""
+    cached = filter_cached_player_ids(db, player_ids)
+    invalidate_player_cache(db, player_ids)
+    return cached
+
+
+def invalidate_match_players(db: Session, match_id: int) -> set[int]:
+    """invalidate_cached_players for everyone in `match_id`. Does NOT commit."""
+    player_ids = {
+        pid for (pid,) in db.query(MatchPlayer.player_id).filter_by(match_id=match_id).all()
+    }
+    return invalidate_cached_players(db, player_ids)
+
+
 def recompute_player_views(db: Session, player_id: int) -> None:
-    """compute_player_views_by_scope, then one store_player_views call
-    with both scopes -- a single commit."""
+    """One load and replay for the pre-computed filter set (no filter, each
+    role played, the top three agents), both scopes each; stored in one
+    statement and one commit, with filtered rows no longer in the set dropped."""
     player = db.query(Player).filter_by(id=player_id).one()
-    views_by_scope = compute_player_views_by_scope(db, player)
-    store_player_views(db, player_id, views_by_scope)
+    views_by_key = compute_player_views_by_filter(db, player, None)
+    _replace_player_rows(db, player_id, views_by_key)
 
 
 def prewarm_player_cache(db: Session, player_ids: set[int]) -> None:
-    """Best-effort, per player: one player's failure never aborts the batch."""
+    """Best-effort, per player: one player's failure never aborts the batch.
+    Then the combined rows of any account group those players are in."""
+    # Imported here: account_groups imports this module.
+    from app.services.account_groups import prewarm_group_caches
+
     for pid in player_ids:
         try:
             recompute_player_views(db, pid)
         except Exception:
             db.rollback()
             logger.exception("Cache pre-warm failed for player %s; next page visit will recompute", pid)
+    prewarm_group_caches(db, set(player_ids))

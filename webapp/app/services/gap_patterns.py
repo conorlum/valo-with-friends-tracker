@@ -30,7 +30,7 @@ from app.models.replay import Replay, ReplayGap, ReplayPlayer, ReplayRoundContro
 from app.replays import choke_assets
 from app.replays import db as replay_db
 from app.services import replay_control, replay_gaps
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_ids
 from app.services.replay_gaps_view import choke_points
 
 SHAPE_THRESHOLD_M = 4.0
@@ -268,10 +268,10 @@ def friend_slots(db, replay_ids, player_ids) -> dict[int, set[int]]:
 
 
 def group_player_ids(db, viewer_player_id: int | None) -> set[int]:
-    """The viewer and the friends they own (as /stats); empty when logged out."""
+    """The viewer's circle (app.services.circle, as /stats); empty when logged out."""
     if viewer_player_id is None:
         return set()
-    return {viewer_player_id} | set(list_friend_ids(db, viewer_player_id))
+    return circle_ids(db, viewer_player_id)
 
 
 def apply_population(db, rows: list[dict], eligible: Eligible, filters: Filters,

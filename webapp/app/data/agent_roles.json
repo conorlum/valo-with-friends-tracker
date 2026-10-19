@@ -1,0 +1,7 @@
+{
+  "_source": "valorant.fandom.com MediaWiki API, Category:Duelists / Initiators / Controllers / Sentinels, 2026-10-18. Agent names as stored in match_players.agent.",
+  "Duelist": ["Iso", "Jett", "Neon", "Phoenix", "Raze", "Reyna", "Waylay", "Yoru"],
+  "Initiator": ["Breach", "Fade", "Gekko", "KAY/O", "Skye", "Sova", "Tejo"],
+  "Controller": ["Astra", "Brimstone", "Clove", "Harbor", "Miks", "Omen", "Viper"],
+  "Sentinel": ["Chamber", "Cypher", "Deadlock", "Killjoy", "Sage", "Veto", "Vyse"]
+}

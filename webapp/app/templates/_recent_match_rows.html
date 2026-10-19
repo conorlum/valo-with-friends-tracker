@@ -3,12 +3,14 @@
    `visible` rows show until "Show all" is clicked; the rest are already in
    the page, just hidden. #}
 {% set visible = 10 %}
+{% set show_account = recent_rows | selectattr("account") | list | length > 0 %}
 {% if recent_rows %}
 <div class="table-scroll">
   <table class="recent-matches">
     <thead>
       <tr>
         <th>Result</th>
+        {% if show_account %}<th>Account</th>{% endif %}
         <th>Map</th>
         <th>Score</th>
         <th>Agent</th>
@@ -24,6 +26,7 @@
       <tr class="recent-match recent-match-{{ e.result | lower }}" data-href="/matches/{{ e.external_id }}"
           onclick="if (!event.target.closest('a')) window.location.href = this.dataset.href;"{% if loop.index > visible %} data-recent-extra hidden{% endif %}>
         <td><span class="result-pill result-pill-{{ e.result | lower }}">{{ {'W': 'Win', 'L': 'Loss', 'D': 'Draw'}[e.result] }}</span></td>
+        {% if show_account %}<td>{{ row.account or '' }}</td>{% endif %}
         <td>
           <a class="player-link" href="/matches/{{ e.external_id }}">{{ e.map_name or e.external_id }}</a>
           {% if e.played_at %}<div class="stat-sub">{{ e.played_at | local_strftime("%b %d, %I:%M %p") }}</div>{% endif %}

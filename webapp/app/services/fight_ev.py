@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.models import MatchPlayer, Player
 from app.models.match import Team
-from app.services.friends import list_friend_ids
+from app.services.circle import circle_teammate_ids
 from app.services.player_data import load_player_match_data, match_input_from_data
 from app.services.state_replay import (
     DuelOccurrence,
@@ -589,7 +589,7 @@ def load_match_fight_ev_blocks_from_data(
     app.services.state_replay, returning one MatchFightEvBlock per input row
     (same order) plus the merged replay diagnostics (exclusion reasons,
     ambiguous-lifecycle and equal-time-ambiguity counts, etc.) across all of
-    them. `db` is still needed for list_friend_ids.
+    them. `db` is still needed for circle_teammate_ids.
 
     INVARIANT: returns exactly one block per input match_player, in the same
     order. app.services.player_views.compute_player_views_by_scope slices
@@ -600,7 +600,7 @@ def load_match_fight_ev_blocks_from_data(
     only need fight-EV, e.g. scripts/validate_fight_ev.py via
     load_match_fight_ev_blocks below.
     """
-    roster_player_ids = list_friend_ids(db, player.id)
+    roster_player_ids = circle_teammate_ids(db, player.id)
     diagnostics = ReplayDiagnostics()
 
     blocks: list[MatchFightEvBlock] = []

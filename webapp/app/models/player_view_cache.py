@@ -14,6 +14,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
+# 'recent' / 'career', optionally followed by '|<filter key>' (migration 0028).
+SCOPE_CHECK = "scope IN ('recent', 'career') OR scope LIKE 'recent|%' OR scope LIKE 'career|%'"
+
 
 class PlayerViewCache(Base):
     """One pre-computed (state-diagram aggregates + fight-EV) payload per
@@ -23,14 +26,14 @@ class PlayerViewCache(Base):
     __tablename__ = "player_view_cache"
     __table_args__ = (
         UniqueConstraint("player_id", "scope", name="uq_player_view_cache_scope"),
-        CheckConstraint("scope IN ('recent', 'career')", name="ck_player_view_cache_scope"),
+        CheckConstraint(SCOPE_CHECK, name="ck_player_view_cache_scope"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     player_id: Mapped[int] = mapped_column(
         ForeignKey("players.id", ondelete="CASCADE"), nullable=False
     )
-    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope: Mapped[str] = mapped_column(String(48), nullable=False)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
     # BigInteger, not the default 4-byte Integer: cache_version() packs
     # PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000_000 + ... (see

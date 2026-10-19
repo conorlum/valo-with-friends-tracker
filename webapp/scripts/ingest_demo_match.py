@@ -7,7 +7,7 @@ from app.adapters.demo_match_source import load_match
 from app.db import SessionLocal
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.scoring.impact import compute_impact_for_match
-from app.services.player_view_cache import filter_cached_player_ids, invalidate_player_cache
+from app.services.player_view_cache import invalidate_cached_players
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
 
@@ -33,9 +33,7 @@ def main(filename: str) -> None:
         # both (same ordering rule as the tracker.gg ingestion path): if
         # compute_impact_for_match raises, invalidating first still leaves the
         # cache empty rather than permanently stale.
-        affected = filter_cached_player_ids(db, old_ids | new_ids)
-        if affected:
-            invalidate_player_cache(db, affected)
+        invalidate_cached_players(db, old_ids | new_ids)
         invalidate_site_stats_cache(db)    # every new/changed match affects the All Players stats
         db.commit()
 
