@@ -124,6 +124,19 @@ def cache_version() -> int:
     )
 
 
+SCOPE_MAX_LENGTH = 48   # player_view_cache.scope / account_group_view_cache.scope (migration 0027)
+
+
+def cache_scope_key(scope: str, key: str = "") -> str:
+    """The stored scope string: "recent"/"career", plus "|<key>" for a filtered row."""
+    if scope not in ("recent", "career"):
+        raise ValueError(f"unknown cache scope {scope!r}")
+    result = scope if key == "" else f"{scope}|{key}"
+    if len(result) > SCOPE_MAX_LENGTH:
+        raise ValueError(f"cache scope {result!r} is longer than {SCOPE_MAX_LENGTH} characters")
+    return result
+
+
 VALID_DISPLAY_STATES = frozenset(state.value for state in DisplayState)
 
 _BOOTSTRAP_KEYS = frozenset({

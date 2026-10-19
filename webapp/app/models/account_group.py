@@ -4,6 +4,7 @@ from sqlalchemy import JSON, BigInteger, CheckConstraint, DateTime, ForeignKey, 
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.player_view_cache import SCOPE_CHECK
 
 
 class AccountGroup(Base):
@@ -61,13 +62,13 @@ class AccountGroupViewCache(Base):
 
     __tablename__ = "account_group_view_cache"
     __table_args__ = (
-        CheckConstraint("scope IN ('recent', 'career')", name="ck_account_group_view_cache_scope"),
+        CheckConstraint(SCOPE_CHECK, name="ck_account_group_view_cache_scope"),
     )
 
     group_id: Mapped[int] = mapped_column(
         ForeignKey("account_groups.id", ondelete="CASCADE"), primary_key=True
     )
-    scope: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(48), primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Same packed cache_version() as player_view_cache.version, hence BigInteger.
