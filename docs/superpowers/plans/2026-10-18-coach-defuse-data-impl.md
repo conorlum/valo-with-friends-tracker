@@ -25,19 +25,25 @@ Bomb entry's by under 0.01 s.
 ## Rules (R1 settled; the rest are the agent's, logged in DECISIONS.md)
 
 - **Kind (R1):** `defused` if the attempt finished; else `half` if it lasted at least `HALF_S = 3.5` s; else
-  `tap`. Finished beats half. An attempt that fell short of 3.5 s is a tap whatever was intended.
-- **Null stop:** the attempt runs to the defuser's death (the end of the alive interval it falls in, via
-  `RoundView._intervals`, which includes site-only deaths) or the round's `t_end`, whichever is first. Its kind is
-  judged by R1 on that duration (never `defused`), and the event says `"until": "death" | "round_end"`.
+  `tap`. Finished beats half. An attempt that fell short of 3.5 s is a tap whatever was intended. The length
+  judged is the displayed `seconds` (rounded to 2 decimals), so the label never contradicts the figure and
+  float noise (13.6 - 10.1 = 3.4999…) can't flip it.
+- **Null stop:** the cap is `min(Bomb entry t1 if set, t_end)`. The attempt runs to the end of the defuser's
+  alive interval that holds its start (`RoundView._intervals`, which includes site-only deaths) or the cap,
+  whichever is first: `"until": "death"` when the life ends before the cap, else `"round_end"`. A start in no
+  alive interval (a data glitch) runs to the cap with `"until": "round_end"`. Its kind is judged by R1 on that
+  duration (never `defused`).
 - **A resumed attempt** (any attempt after an earlier `half` in the same round) is labelled by its own length
   under R1, and carries `"resumed": true`. A resumed attempt that finishes is `defused`.
-- **Spike time left:** `spike_left_s = plant t + SPIKE_TIMER_S (45.0) - attempt start`, rounded to 2 decimals, on
-  each attempt; omitted when no plant time is known. Not asked for in the goal, but "under-10-seconds sticks"
+- **Spike time left:** `spike_left_s = Bomb entry t + SPIKE_TIMER_S (45.0) - attempt start`, rounded to 2
+  decimals, on each attempt (attempts only exist on a Bomb entry, so the site DB's plant time is never used);
+  omitted when the Bomb entry has no `t`. Not asked for in the goal, but "under-10-seconds sticks"
   can't be judged without it and the coach is told never to compute a time itself. Tier 2 (D-entry), as
   `PROVISIONAL`.
 - **Event shapes** (all times and seconds rounded to 3 and 2 decimals respectively, as stored):
   - plant: `{"t", "kind": "plant", "by": <planter name | null>, "area": {"name", "super"} | null}`. `t` and `by`
-    come from the Bomb entry; `area` from `RoundView.area(u, v)` (the same nearest-callout lookup `where` uses).
+    come from the Bomb entry, `by` only when its `owner_by` is in
+    `app.replays.player_state_extract.PROVEN_PLANTER` (else null: `nearest` is a guess); `area` from `RoundView.area(u, v)` (the same nearest-callout lookup `where` uses).
     Without a Bomb entry it falls back to the site DB's plant time with `by` and `area` null. Bomb entry with no
     u/v: `area` null.
   - attempt: `{"t": start, "t1": stop, "kind": "defuse", "by": <defuser name>, "seconds": <stop - start>,
@@ -62,15 +68,20 @@ built from `tests/coach/toys.py` blobs with a hand-written Bomb entry, through a
 Toy shapes (synthetic names `P0`-`P9` only):
 - a 1.9 s attempt then a 6.04 s unfinished one ending at the defuser's kill → `tap`, `half` (`resumed` absent on
   both: the half is the second);
-- 34 taps of 0.07 s then a finished 7 s one → 34 `tap` and 1 `defused`, and no extra site `defuse` event;
-- a single finished 7 s one → 1 `defused`, `spike_left_s` = plant + 45 - start;
+- 34 taps of 0.07 s then a finished 7 s one, with the site DB `defuse` set to the finish → 34 `tap` and 1
+  `defused`, and no site `defuse` event; the reverse: one unfinished attempt plus a site DB `defuse` keeps the
+  site event;
+- a single finished 7 s one → 1 `defused`, `spike_left_s` = Bomb t + 45 - start;
 - a half (4 s, unfinished) then a 3.5 s finished one → `half`, then `defused` with `resumed: true`;
-- boundaries: 3.5 s unfinished → `half`; 3.49 s → `tap`; 2 s finished → `defused`;
+- boundaries from exactly representable times: 10.0→13.5 unfinished → `half`; 10.0→13.49 → `tap`; 2 s finished
+  → `defused`;
 - null stop: defuser dies 2 s in → `tap`, `until: "death"`; defuser alive, round ends 5 s in → `half`,
-  `until: "round_end"`;
-- plant carries `by` and `area` (`{"name": "A Site", ...}` for u/v at the toy A Site); no Bomb entry → site
-  plant time with `by`/`area` null (the existing `test_timeline_has_the_plant_the_defuse_and_damage` still passes
-  unchanged); no "Spike" ability row in `timeline`, but `view.utility()` still has it.
+  `until: "round_end"`; Bomb `t1` earlier than `t_end` caps it; a start in no alive interval → cap,
+  `round_end`;
+- plant carries `by` and `area`: the Bomb's u/v at the toy B Site (8000, 8000) while side A stands on A Site, so
+  an area taken from a player fails; `owner_by: "nearest"` → `by` null; no Bomb entry → site plant time with
+  `by`/`area` null (the existing `test_timeline_has_the_plant_the_defuse_and_damage` still passes unchanged); no
+  "Spike" ability row in `timeline`, but `view.utility()` still has it.
 
 Check: `cd webapp; <python> -m pytest tests/coach -q` all pass, and the new tests were run red first. Mutants
 (`mutant_check.py`, spec in the run folder): `>= HALF_S` → `> HALF_S`; finished checked after half; `area` taken
@@ -78,13 +89,14 @@ from the first player's position instead of the Bomb entry's u/v (or `None`); sp
 
 ### S2 (W4) — checker accepts the new citations; the prompt line
 
-Files: `webapp/app/coach/checker.py` (`_MEASURED` :23, `_SECOND_KEYS` :30: add `spike_left_s`), only if tests
-fail without it; `webapp/app/coach/prompt.py:12` (the `timeline` line). Tests: add to
+Files: `webapp/app/coach/checker.py` (`_MEASURED` :23, `_SECOND_KEYS` :30: add `spike_left_s`, always: until
+then it grounds nothing); `webapp/app/coach/prompt.py:12` (the `timeline` line). Tests: add to
 `webapp/tests/coach/test_checker.py` (pattern: :385-398, the monkeypatched callouts and `_check`).
 
 Tests: a caption citing a timeline answer passes for (a) "planted on A Site" (the plant's `area`), (b) "a 1.9 s
 tap at 1:49" style text (`seconds` and the attempt `t`), (c) "with 15 s on the spike" (`spike_left_s`), and fails
-for a duration not in the answer ("a 2.5 s tap"). `test_prompt.py` still passes; the prompt line reads, in one
+for a duration not in the answer ("a 2.5 s tap"). The toy is built so no other cited value is within 0.5 of the
+(c) figure or within 0.051 of 2.5, so (c) is red before the key is added. `test_prompt.py` still passes; the prompt line reads, in one
 line: `kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused,
 spike time left) in order`.
 
@@ -94,10 +106,12 @@ needed).
 ### S3 (W5) — real snapshot counts and the full suite
 
 No repo change. Copy the run folder's `snapshot-ac9fd52a.json` to `<run folder>/real/snapshot.json` and run
-`timeline` for rounds 2, 15, 30, 35 through `app.coach.snapshot.load` (as `scripts/coach_query.py:37`). Record in
+`timeline` for rounds 2, 15, 17, 23, 25, 30, 35, 38 through `app.coach.snapshot.load` (as `scripts/coach_query.py:37`). Record in
 `LOG.md` the counts by kind and result. Expected: round 2: 1 defused; 15: 34 tap + 1 defused; 30: 1 tap + 1 half
-(the half ends at the defuser's kill time); 35: 1 defused; each round one plant event with a non-null area and
-planter. Then the full suite in the baseline's parts, one per call, with the known base failures deselected.
+(the half ends at the defuser's kill time); 35, 17, 23, 25, 38: 1 defused each; each round one plant event with a
+non-null area and planter. Then the full suite in the baseline's 6 parts (`prereqs.json`, each ≤ 420 s), one per
+Bash call, with the known base failures deselected; this is also the wrap-up run, since nothing in the repo
+changes after it.
 
 Check: the counts equal the expected ones; the suite shows no failure outside the known list.
 
