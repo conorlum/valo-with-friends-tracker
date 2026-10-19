@@ -447,11 +447,11 @@ def test_prewarm_writes_both_scopes_under_the_current_fingerprint(db, monkeypatc
     group_id = list_group_members(db, main.id)[0].group_id
     seen = []
 
-    def fake_by_scope(db_, anchor, player_ids=None):
+    def fake_by_scope(db_, anchor, keys, player_ids=None):
         seen.append((anchor.id, player_ids))
         return {"recent": _sample_views(anchor.id), "career": _sample_views(anchor.id)}
 
-    monkeypatch.setattr(account_groups, "compute_player_views_by_scope", fake_by_scope)
+    monkeypatch.setattr(account_groups, "compute_player_views_by_filter", fake_by_scope)
     prewarm_group_caches(db, {alt.id, other.id})
     assert seen == [(main.id, frozenset({main.id, alt.id}))]
     fingerprint = group_fingerprint(db, frozenset({main.id, alt.id}))

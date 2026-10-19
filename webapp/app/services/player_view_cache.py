@@ -51,7 +51,7 @@ from app.services.player_profile_types import (
     PlayerProfile,
     grouped_stats,
 )
-from app.services.player_views import PlayerViews, compute_player_views_by_scope
+from app.services.player_views import PlayerViews, compute_player_views_by_filter
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,8 @@ def cache_version() -> int:
     )
 
 
-SCOPE_MAX_LENGTH = 48   # player_view_cache.scope / account_group_view_cache.scope (migration 0027)
+UNFILTERED_SCOPES = ("recent", "career")
+SCOPE_MAX_LENGTH = 48  # player_view_cache.scope / account_group_view_cache.scope (migration 0027)
 
 
 def cache_scope_key(scope: str, key: str = "") -> str:
@@ -604,7 +605,7 @@ def decode_player_views_blob(data: dict, version: int, player: Player) -> Cached
         return None
 
 
-def get_cached_views(db: Session, player: Player, scope: str) -> CachedPlayerViews | None:
+def get_cached_views(db: Session, player: Player, scope: str, key: str = "") -> CachedPlayerViews | None:
     """Cache miss, version mismatch, or any validation/decode failure ->
     None (the caller then computes live). Failures are logged, never
     raised: a corrupt blob must not turn into a 500, and must not reach
@@ -612,32 +613,53 @@ def get_cached_views(db: Session, player: Player, scope: str) -> CachedPlayerVie
     TierMatrix, PistolStats, LoadoutWinScatter, GroupedStat lists) from
     canonical aggregates so a purely visual change never needs a cache
     bump."""
-    row = db.query(PlayerViewCache).filter_by(player_id=player.id, scope=scope).one_or_none()
+    row = (
+        db.query(PlayerViewCache)
+        .filter_by(player_id=player.id, scope=cache_scope_key(scope, key))
+        .one_or_none()
+    )
     return decode_cache_row(row, player)
 
 
-def _upsert_cache(db: Session, player_id: int, scope: str, data: dict) -> None:
-    """Does NOT commit -- store_player_views commits once for all scopes."""
+def _upsert_cache(db: Session, player_id: int, views_by_scope: dict[str, PlayerViews]) -> None:
+    """ONE multi-row upsert for every stored scope string given. Does NOT
+    commit -- the caller does, once."""
+    if not views_by_scope:
+        return
     version = cache_version()
-    stmt = (
-        pg_insert(PlayerViewCache.__table__)
-        .values(player_id=player_id, scope=scope, data=data,
-                version=version, updated_at=func.now())
-        .on_conflict_do_update(
-            index_elements=[PlayerViewCache.player_id, PlayerViewCache.scope],
-            set_={"data": data, "version": version, "updated_at": func.now()},
-        )
+    stmt = pg_insert(PlayerViewCache.__table__).values([
+        {"player_id": player_id, "scope": scope, "data": _encode(views),
+         "version": version, "updated_at": func.now()}
+        for scope, views in views_by_scope.items()
+    ])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[PlayerViewCache.player_id, PlayerViewCache.scope],
+        set_={"data": stmt.excluded.data, "version": stmt.excluded.version, "updated_at": func.now()},
     )
     db.execute(stmt)
 
 
-def store_player_views(db: Session, player_id: int, views_by_scope: dict[str, PlayerViews]) -> None:
-    """Encode and upsert EVERY given scope, then commit ONCE.
-    recompute_player_views passes both scopes so a mid-way failure can
-    never leave one scope cached and the other empty; the route's
-    write-through passes a single-entry dict."""
-    for scope, views in views_by_scope.items():
-        _upsert_cache(db, player_id, scope, _encode(views))
+def store_player_views(db: Session, player_id: int, views_by_key: dict[str, PlayerViews]) -> None:
+    """Encode and upsert EVERY given stored scope string ("recent", "career",
+    "career|role:duelist", ...) in ONE statement, then commit ONCE.
+    recompute_player_views passes every scope so a mid-way failure can
+    never leave one cached and another empty; the route's write-through
+    passes a single-entry dict."""
+    _upsert_cache(db, player_id, views_by_key)
+    db.commit()
+
+
+def _replace_player_rows(db: Session, player_id: int, views_by_key: dict[str, PlayerViews]) -> None:
+    """In ONE transaction: delete the player's filtered rows ('|' in the scope)
+    that are not in the new set, upsert the new set, commit. A player
+    recomputed without an invalidation must not keep a filtered row from an
+    old top-3 (per-player rows carry no fingerprint to tell it is stale)."""
+    db.query(PlayerViewCache).filter(
+        PlayerViewCache.player_id == player_id,
+        PlayerViewCache.scope.contains("|"),
+        PlayerViewCache.scope.notin_(list(views_by_key)),
+    ).delete(synchronize_session=False)
+    _upsert_cache(db, player_id, views_by_key)
     db.commit()
 
 
@@ -675,7 +697,7 @@ def filter_cached_player_ids(db: Session, player_ids: set[int]) -> set[int]:
     own = {
         pid
         for (pid,) in db.query(PlayerViewCache.player_id)
-        .filter(PlayerViewCache.player_id.in_(player_ids))
+        .filter(PlayerViewCache.player_id.in_(player_ids), PlayerViewCache.scope.in_(UNFILTERED_SCOPES))
         .distinct()
         .all()
     }
@@ -683,7 +705,7 @@ def filter_cached_player_ids(db: Session, player_ids: set[int]) -> set[int]:
         pid
         for (pid,) in db.query(AccountGroupMember.player_id)
         .join(AccountGroupViewCache, AccountGroupViewCache.group_id == AccountGroupMember.group_id)
-        .filter(AccountGroupMember.player_id.in_(player_ids))
+        .filter(AccountGroupMember.player_id.in_(player_ids), AccountGroupViewCache.scope.in_(UNFILTERED_SCOPES))
         .distinct()
         .all()
     }
@@ -702,11 +724,12 @@ def find_cached_player_ids_for_match(db: Session, match_id: int) -> set[int]:
 
 
 def recompute_player_views(db: Session, player_id: int) -> None:
-    """compute_player_views_by_scope, then one store_player_views call
-    with both scopes -- a single commit."""
+    """One load and replay for the pre-computed filter set (no filter, each
+    role played, the top three agents), both scopes each; stored in one
+    statement and one commit, with filtered rows no longer in the set dropped."""
     player = db.query(Player).filter_by(id=player_id).one()
-    views_by_scope = compute_player_views_by_scope(db, player)
-    store_player_views(db, player_id, views_by_scope)
+    views_by_key = compute_player_views_by_filter(db, player, None)
+    _replace_player_rows(db, player_id, views_by_key)
 
 
 def prewarm_player_cache(db: Session, player_ids: set[int]) -> None:

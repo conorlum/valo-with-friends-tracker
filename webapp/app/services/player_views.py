@@ -26,7 +26,7 @@ from app.services.fight_ev import (
     build_fight_ev_views_from_blocks,
     build_match_fight_ev_block_from_replay,
 )
-from app.services.agent_roles import filter_agents
+from app.services.agent_roles import ROLES, filter_agents, rank_agents, role_of
 from app.services.circle import circle_teammate_ids
 from app.services.player_data import (
     RECENT_MATCH_LIMIT,
@@ -190,6 +190,31 @@ def _views_from_rows(
     )
 
 
+PRECOMPUTED_AGENT_COUNT = 3
+
+
+def precompute_keys(match_players) -> tuple[str, ...]:
+    """The filter keys worth computing ahead of any visit: "" (no filter),
+    then each role (in ROLES order) the loaded rows include, then the top
+    PRECOMPUTED_AGENT_COUNT agents (most matches, then most recently played,
+    then name). A role with no matches is skipped: the page shows it empty
+    without computing anything."""
+    roles_played = {role_of(mp.agent) for mp in match_players}
+    keys = [""] + [f"role:{r}" for r in ROLES if r in roles_played]
+    stats: dict[str, tuple[int, object]] = {}
+    for mp in match_players:
+        if not mp.agent:
+            continue
+        count, last = stats.get(mp.agent, (0, None))
+        played = mp.match.played_at
+        if last is None or (played is not None and played > last):
+            last = played
+        stats[mp.agent] = (count + 1, last)
+    ranked = rank_agents([(agent, count, last) for agent, (count, last) in stats.items()])
+    keys.extend(f"agent:{a}" for a in ranked[:PRECOMPUTED_AGENT_COUNT])
+    return tuple(keys)
+
+
 def compute_player_views_by_filter(
     db: Session, player: Player, keys, draws: int = PAGE_BOOTSTRAP_DRAWS,
     player_ids: frozenset[int] | None = None,
@@ -203,6 +228,8 @@ def compute_player_views_by_filter(
     filter. `player_ids` is an account group's combined view."""
     from app.services.player_view_cache import cache_scope_key   # it imports this module
     match_players = load_player_match_data(db, player, match_limit=None, player_ids=player_ids)
+    if keys is None:
+        keys = precompute_keys(match_players)
     roster_player_ids = _roster_player_ids(db, player, player_ids)
     seed_player_id = min(player_ids) if player_ids else player.id
     replays, _diag = _replay_all_matches(match_players)

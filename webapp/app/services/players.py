@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, PlayerViewCache, Round, RoundPlayerStat
 from app.services.player_profile_types import PlayerProfile, build_profile_from_precomputed
-from app.services.player_view_cache import CachedPlayerViews, decode_cache_row
+from app.services.player_view_cache import CachedPlayerViews, cache_scope_key, decode_cache_row
 
 
 @dataclass
@@ -45,7 +45,7 @@ def get_player_or_404(db: Session, display_name: str) -> Player:
 
 
 def get_player_and_cached_views(
-    db: Session, display_name: str, scope: str
+    db: Session, display_name: str, scope: str, key: str = ""
 ) -> tuple[Player, CachedPlayerViews | None]:
     """Merges the player-page router's Q1 (player lookup) and Q2
     (player_view_cache lookup) into one round trip -- an OUTER join so a
@@ -56,7 +56,7 @@ def get_player_and_cached_views(
         db.query(Player, PlayerViewCache)
         .outerjoin(
             PlayerViewCache,
-            and_(PlayerViewCache.player_id == Player.id, PlayerViewCache.scope == scope),
+            and_(PlayerViewCache.player_id == Player.id, PlayerViewCache.scope == cache_scope_key(scope, key)),
         )
         .filter(Player.display_name == display_name)
         .one_or_none()

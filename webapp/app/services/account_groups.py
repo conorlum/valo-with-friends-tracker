@@ -23,8 +23,14 @@ from sqlalchemy.orm import Session, contains_eager, joinedload
 
 from app.models import AccountGroup, AccountGroupMember, AccountGroupViewCache, ImpactScore, MatchPlayer, Player
 from app.services.circle import circle_ids
-from app.services.player_view_cache import CachedPlayerViews, cache_version, decode_player_views_blob, encode_player_views
-from app.services.player_views import PlayerViews, compute_player_views_by_scope
+from app.services.player_view_cache import (
+    CachedPlayerViews,
+    cache_scope_key,
+    cache_version,
+    decode_player_views_blob,
+    encode_player_views,
+)
+from app.services.player_views import PlayerViews, compute_player_views_by_filter
 
 logger = logging.getLogger(__name__)
 
@@ -187,13 +193,13 @@ def group_fingerprint(db: Session, player_ids: frozenset[int]) -> str:
 
 
 def get_cached_group_views(
-    db: Session, group_id: int, scope: str, fingerprint: str, player: Player
+    db: Session, group_id: int, scope: str, fingerprint: str, player: Player, key: str = ""
 ) -> CachedPlayerViews | None:
     """The group's cached combined page for `scope`, profiled under `player`
     (the page being viewed). None on a miss, a stale fingerprint or version,
     or a bad blob -- never raises."""
     try:
-        row = db.get(AccountGroupViewCache, (group_id, scope))
+        row = db.get(AccountGroupViewCache, (group_id, cache_scope_key(scope, key)))
     except Exception:
         logger.exception("account_group_view_cache: read failed for group %s", group_id)
         return None
@@ -202,9 +208,11 @@ def get_cached_group_views(
     return decode_player_views_blob(row.data, row.version, player)
 
 
-def store_group_views(db: Session, group_id: int, scope: str, fingerprint: str, views: PlayerViews) -> None:
-    """Upserts one scope's row and commits."""
-    _put_group_views(db, group_id, scope, fingerprint, views)
+def store_group_views(
+    db: Session, group_id: int, scope: str, fingerprint: str, views: PlayerViews, key: str = ""
+) -> None:
+    """Upserts one scope's (and filter key's) row and commits."""
+    _put_group_views(db, group_id, cache_scope_key(scope, key), fingerprint, views)
     db.commit()
 
 
@@ -248,7 +256,7 @@ def prewarm_group_caches(db: Session, player_ids: set[int]) -> None:
             member_ids = frozenset(m.player_id for m in members)
             fingerprint = group_fingerprint(db, member_ids)
             anchor = db.get(Player, members[0].player_id)
-            for scope, views in compute_player_views_by_scope(db, anchor, player_ids=member_ids).items():
+            for scope, views in compute_player_views_by_filter(db, anchor, None, player_ids=member_ids).items():
                 _put_group_views(db, group_id, scope, fingerprint, views)
             db.commit()
         except Exception:
