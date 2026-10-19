@@ -73,6 +73,18 @@ def test_the_route_is_registered():
     assert "/replays/{match_uuid}/moments.json" in [r.path for r in app.routes]
 
 
+def test_the_path_reaches_the_moments_route():
+    """The first route that fully matches the path is the one that answers it: /{round_number}.json declared
+    earlier took "moments" as a round number and answered 422 on the live site."""
+    from starlette.routing import Match
+
+    from app.main import app
+
+    scope = {"type": "http", "method": "GET", "path": f"/replays/{MATCH_UUID}/moments.json", "root_path": ""}
+    first = next(r for r in app.routes if r.matches(scope)[0] == Match.FULL)
+    assert first.path == "/replays/{match_uuid}/moments.json"
+
+
 def test_the_endpoint_404s_like_the_gaps_route(db, linked, monkeypatch):
     monkeypatch.setattr(rc, "map_layer", lambda name: None)
     response = call(db)
