@@ -88,6 +88,73 @@ def test_gunfire_with_no_gun_and_the_other_dead_names_the_shooter(monkeypatch):
     assert located[5] == pytest.approx(6.0)
 
 
+# Control revision 18 (2026-10-18): a spike tap and an ult orb taken say someone is there, not who (the owner).
+
+def _spike_tap(t, by):
+    """A planted spike (planted by nobody known, so the plant itself names no one) with one defuse attempt."""
+    x, y = uv(400, 200)
+    return {"k": "ability", "kind": "Bomb", "code": "", "name": "Spike", "t": 1.0, "t1": 40.0, "u": x, "v": y,
+            "defuses": [[t, t + 0.3, by, False]]}
+
+
+def _orb_taken(data, t, slot):
+    x, y = uv(400, 200)
+    data["player_state"] = {"version": 1, "orbs": [{"u": x, "v": y, "t0": 0.0, "t1": t, "end": "taken", "slot": slot}]}
+    return data
+
+
+def _sounds(monkeypatch, heard_m=100.0):
+    monkeypatch.setattr(ce, "SOUND_RANGE_M", {"tap": heard_m, "orb": heard_m})
+
+
+def test_a_spike_tap_with_another_enemy_unseen_names_nobody(monkeypatch):
+    _sounds(monkeypatch)
+    assert 5 not in _run(blob(_players(), t_end=10.0, util=[_spike_tap(6.0, 5)]), 6.5, monkeypatch)
+
+
+def test_a_spike_tap_with_the_other_enemy_dead_names_the_tapper(monkeypatch):
+    _sounds(monkeypatch)
+    located = _run(blob(_players(), t_end=10.0, util=[_spike_tap(6.0, 5)], deaths={6: 3.0}), 6.5, monkeypatch)
+    assert located[5] == pytest.approx(6.0)
+
+
+def test_a_spike_tap_out_of_hearing_names_nobody(monkeypatch):
+    _sounds(monkeypatch, heard_m=1.0)
+    assert 5 not in _run(blob(_players(), t_end=10.0, util=[_spike_tap(6.0, 5)], deaths={6: 3.0}), 6.5, monkeypatch)
+
+
+def test_an_orb_taken_names_the_taker_only_by_elimination(monkeypatch):
+    _sounds(monkeypatch)
+    assert 5 not in _run(_orb_taken(blob(_players(), t_end=10.0), 6.0, 5), 6.5, monkeypatch)
+    located = _run(_orb_taken(blob(_players(), t_end=10.0, deaths={6: 3.0}), 6.0, 5), 6.5, monkeypatch)
+    assert located[5] == pytest.approx(6.0)
+
+
+def test_an_orb_capture_is_heard_as_its_channel_starts_too(monkeypatch):
+    # captured at 8 s: its 2 s channel began at 6 s, heard then (the other enemy dead by 3 s)
+    _sounds(monkeypatch)
+    located = _run(_orb_taken(blob(_players(), t_end=10.0, deaths={6: 3.0}), 8.0, 5), 6.5, monkeypatch)
+    assert located[5] == pytest.approx(6.0)
+
+
+def test_a_buy_phase_capture_is_never_heard_at_the_round_start(monkeypatch):
+    # captured at -10 s: both its sounds are before the round, none is moved to 0 s
+    _sounds(monkeypatch)
+    assert 5 not in _run(_orb_taken(blob(_players(), t_end=10.0, deaths={6: 0.0}), -10.0, 5), 1.0, monkeypatch)
+    # one completing at 0.3 s is heard then, though its channel began before the round
+    located = _run(_orb_taken(blob(_players(), t_end=10.0, deaths={6: 0.0}), 0.3, 5), 1.0, monkeypatch)
+    assert located[5] == pytest.approx(0.3)
+
+
+def test_a_capture_let_go_is_heard_as_it_starts(monkeypatch):
+    _sounds(monkeypatch)
+    data = blob(_players(), t_end=10.0, deaths={6: 3.0})
+    x, y = uv(400, 200)
+    data["player_state"] = {"version": 1, "orbs": [{"u": x, "v": y, "t0": 0.0, "t1": None, "end": "round",
+                                                    "tries": [[6.0, 6.4, 5]]}]}
+    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
+
+
 def test_a_kill_still_names_the_killer_with_the_other_unseen(monkeypatch):
     data = blob({**_players(), 1: ("A", [(0.0, 200, 120, 180)])}, t_end=12.0, deaths={1: 8.0})
     data["kills"] = [{"i": 0, "t": 8.0, "killer": 5, "victim": 1, "u": uv(200, 120)[0], "v": uv(200, 120)[1]}]

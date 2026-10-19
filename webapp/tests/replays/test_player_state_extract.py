@@ -406,3 +406,134 @@ def test_a_death_of_someone_other_than_a_proven_carrier_places_nothing():
     pse.attribute_death_drops(state, [DEATH], counts)
     assert state["spike"] == [{"t": 10.0, "s": "carried", "slot": 1}, {"t": 22.879, "s": "dropped"}]
     assert counts == {"spike: dropped at a death of someone other than the carrier (not attributed)": 1}
+
+
+# ---------------------------------------------------------------- ult points and ult orbs (2026-10-18)
+
+def ult_points(t_ms, slot, points):
+    """A player state's replicated ult points (player states are 200 + slot in `table()`)."""
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": 200 + slot,
+            "export_group_path": "/Game/GameModes/Bomb/BombPlayerState.BombPlayerState_C",
+            "payload": {"NumUltimatePoints": points, "TotalAcquiredUltimatePoints": points}}
+
+
+def orb(t_ms, guid, x, y):
+    return {"type": "actor_spawned", "time_ms": t_ms, "actor_net_guid": guid, "archetype_path": "Default__UltPointOrb_C",
+            "location": {"x": x, "y": y, "z": 0.0}}
+
+
+def closed(t_ms, guid):
+    return {"type": "actor_closed", "time_ms": t_ms, "actor_net_guid": guid}
+
+
+WINDOWS_2 = [(START, 190_000, END), (260_000, 350_000, 360_000)]
+
+
+def test_ult_points_are_the_seed_before_the_round_then_each_change_and_the_first_round_starts_at_zero():
+    rows = [ult_points(120_000, 3, 1), ult_points(120_500, 3, 1), ult_points(150_000, 3, 2),
+            ult_points(300_000, 3, 0), ult_points(130_000, 4, 9), ult_points(140_000, 200, 1)]
+    first, inputs = extract(rows, windows=WINDOWS_2, n=1)
+    second, _ = extract(rows, windows=WINDOWS_2, n=2)
+    # round 1: everyone starts at 0 (the game sends a change, not a value); a repeat adds nothing
+    assert first["ult"]["3"] == [{"t": -200.0, "n": 0}, {"t": 20.0, "n": 1}, {"t": 50.0, "n": 2}]
+    # round 2: the value before it (its look-back starts at round 1's end), then the cast
+    assert second["ult"]["3"] == [{"t": -60.0, "n": 2}, {"t": 40.0, "n": 0}]
+    # 9 is a full Killjoy; a player state no slot owns is counted, not guessed
+    assert first["ult"]["4"] == [{"t": -200.0, "n": 0}, {"t": 30.0, "n": 9}]
+    assert inputs.diagnostics["ult: unreadable or unowned NumUltimatePoints"] == 1
+    assert ps.validate(first)["ult"]["3"] == first["ult"]["3"]
+
+
+def pickup(t_ms, guid, slot):
+    """The game state's capture notice: the orb and its capturer's pawn (pawns are 1000 + slot in `table()`)."""
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": 264, "function_name": "OrbPickedUpRPC",
+            "class_path": "/Game/GameModes/Bomb/BombGameState.BombGameState_C",
+            "payload": {"CollectableOrb": guid, "OrbGatherer": 1000 + slot}}
+
+
+def to_uv(x, y):
+    return int(x // 10), int(y // 10)
+
+
+def test_an_orb_is_taken_by_the_player_the_game_names_and_otherwise_goes_with_the_plant_or_the_round():
+    rows = [orb(101_000, 1, 0.0, 0.0), orb(101_000, 2, 5000.0, 0.0), orb(101_000, 3, 0.0, 5000.0),
+            orb(101_000, 4, 9000.0, 9000.0), orb(101_000, 5, 100.0, 0.0),
+            closed(130_000, 1), pickup(130_000, 1, 6), pickup(130_000, 1, 6),   # sent twice: one capture
+            closed(150_000, 2), bomb_state(150_100, 4),                          # the plant: gone with it
+            closed(170_000, 3),                                                  # no capture: round
+            closed(150_000, 5), pickup(150_000, 5, 2)]       # captured at the plant: still a capture
+    inputs = pse.read_player_state(export(rows), table())
+    state = pse.round_player_state(inputs, START, END, None, lives_whole_round, to_uv=to_uv)
+    assert state["orbs"] == [
+        {"u": 0, "v": 0, "t0": 1.0, "t1": 30.0, "end": "taken", "slot": 6},
+        {"u": 500, "v": 0, "t0": 1.0, "t1": 50.0, "end": "plant"},
+        {"u": 0, "v": 500, "t0": 1.0, "t1": 70.0, "end": "round"},
+        {"u": 900, "v": 900, "t0": 1.0, "t1": None, "end": "round"},   # never closed in the window
+        {"u": 10, "v": 0, "t0": 1.0, "t1": 50.0, "end": "taken", "slot": 2},
+    ]
+    assert ps.validate(state)["orbs"] == state["orbs"]
+    # without a map there are no orbs (they have no place to be drawn)
+    assert "orbs" not in pse.round_player_state(inputs, START, END, None, lives_whole_round)
+
+
+def test_a_buy_phase_capture_and_one_at_full_ult_are_named_like_any_other():
+    # a short-handed team's spawn orb, captured at -10 s by a player whose ult points don't move (full)
+    rows = [orb(85_000, 1, 0.0, 0.0), closed(90_000, 1), pickup(90_000, 1, 3), ult_points(80_000, 3, 7)]
+    state = pse.round_player_state(pse.read_player_state(export(rows), table()), START, END, None, lives_whole_round,
+                                   to_uv=to_uv)
+    assert state["orbs"] == [{"u": 0, "v": 0, "t0": -15.0, "t1": -10.0, "end": "taken", "slot": 3}]
+
+
+def test_a_reused_orb_guid_is_a_new_orb_with_its_own_capturer():
+    rows = [orb(101_000, 1, 0.0, 0.0), closed(130_000, 1), pickup(130_000, 1, 3), pickup(130_000, 1, 3),
+            orb(261_000, 1, 500.0, 0.0), closed(300_000, 1), pickup(300_000, 1, 4)]
+    inputs = pse.read_player_state(export(rows), table())
+    first = pse.round_player_state(inputs, *WINDOWS_2[0][::2], None, lives_whole_round, to_uv=to_uv)
+    second = pse.round_player_state(inputs, WINDOWS_2[1][0], WINDOWS_2[1][2], WINDOWS_2[0][2], lives_whole_round,
+                                    to_uv=to_uv)
+    assert first["orbs"] == [{"u": 0, "v": 0, "t0": 1.0, "t1": 30.0, "end": "taken", "slot": 3}]
+    assert second["orbs"] == [{"u": 50, "v": 0, "t0": 1.0, "t1": 40.0, "end": "taken", "slot": 4}]
+
+
+def test_a_capturer_no_slot_owns_is_counted_and_the_orb_still_taken():
+    rows = [orb(101_000, 1, 0.0, 0.0), closed(130_000, 1), dict(pickup(130_000, 1, 0), payload={
+        "CollectableOrb": 1, "OrbGatherer": 77})]
+    inputs = pse.read_player_state(export(rows), table())
+    state = pse.round_player_state(inputs, START, END, None, lives_whole_round, to_uv=to_uv)
+    assert state["orbs"] == [{"u": 0, "v": 0, "t0": 1.0, "t1": 30.0, "end": "taken"}]
+    assert inputs.diagnostics["orbs: capturer's pawn unknown"] == 1
+
+
+def test_an_orb_that_never_closes_stays_in_the_round_it_appeared_in():
+    rows = [orb(101_000, 1, 0.0, 0.0), orb(261_000, 2, 0.0, 0.0), closed(300_000, 2)]   # orb 1 has no close at all
+    inputs = pse.read_player_state(export(rows), table())
+    first = pse.round_player_state(inputs, *WINDOWS_2[0][::2], None, lives_whole_round, to_uv=to_uv)
+    second = pse.round_player_state(inputs, WINDOWS_2[1][0], WINDOWS_2[1][2], WINDOWS_2[0][2], lives_whole_round,
+                                    to_uv=to_uv)
+    assert [o["t0"] for o in first["orbs"]] == [1.0]
+    assert [o["t0"] for o in second["orbs"]] == [1.0], "round 1's unclosed orb isn't carried into round 2"
+
+
+def test_a_capture_let_go_goes_on_the_orb_at_its_place_that_was_open():
+    state = {"version": 1, "orbs": [{"u": 5, "v": 5, "t0": 1.0, "t1": 20.0, "end": "taken", "slot": 1},
+                                    {"u": 9, "v": 9, "t0": 1.0, "t1": None, "end": "round"}]}
+    counts = {}
+    pse.attach_orb_tries(state, [{"t": 12.0, "t1": 12.6, "slot": 4, "u": 5, "v": 5},
+                                 {"t": 30.0, "t1": None, "slot": 2, "u": 9, "v": 9},
+                                 {"t": 25.0, "t1": 26.0, "slot": 2, "u": 5, "v": 5}], counts)   # orb 1 gone by then
+    assert state["orbs"][0]["tries"] == [[12.0, 12.6, 4]]
+    assert state["orbs"][1]["tries"] == [[30.0, None, 2]]
+    assert counts == {"orbs: capture let go": 2, "orbs: capture let go on no orb of the round": 1}
+    assert ps.validate(state)["orbs"] == state["orbs"]
+
+
+def test_the_validator_drops_bad_ult_points_and_orbs():
+    checked = ps.validate({"version": 1, "ult": {"0": [{"t": 1.0, "n": 3}, {"t": 2.0, "n": 99}, {"t": 3.0, "n": True}],
+                                                 "x": [{"t": 1.0, "n": 1}]},
+                           "orbs": [{"u": 1, "v": 2, "t0": 1.0, "t1": None, "end": "round",
+                                     "tries": [[3.0, 3.5, 4], [3.0, 2.0, 4], [3.0, None, 12], [3.0, None], "x"]},
+                                    {"u": 1, "v": 2, "t0": 5.0, "t1": 4.0, "end": "taken"},
+                                    {"u": 1, "v": 2, "t0": 1.0, "t1": 2.0, "end": "eaten"},
+                                    {"u": 1, "v": 2, "t0": 1.0, "t1": 2.0, "end": "taken", "slot": 12}]})
+    assert checked["ult"] == {"0": [{"t": 1.0, "n": 3}]}
+    assert checked["orbs"] == [{"u": 1, "v": 2, "t0": 1.0, "t1": None, "end": "round", "tries": [[3.0, 3.5, 4]]}]

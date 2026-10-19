@@ -51,8 +51,8 @@ from app.replays.contract import (
     load_pin,
     map_codes_in_file,
 )
-from app.replays.player_state_extract import (attribute_death_drops, attribute_planter, read_player_state,
-                                              round_player_state)
+from app.replays.player_state_extract import (attach_orb_tries, attribute_death_drops, attribute_planter,
+                                              read_player_state, round_player_state)
 
 # EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
 PHASE_IN_ROUND = 4
@@ -1507,7 +1507,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         }
         state = round_player_state(state_inputs, start, end, game.windows[n - 2][2] if n > 1 else None,
                                    lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
-                                                                                             t_ms, _end))
+                                                                                             t_ms, _end),
+                                   to_uv=game_map.to_uv)
         if state is not None:
             # D5: a drop right after one death lies at that death's place, and that player carried it.
             attribute_death_drops(state, kill_rows, state_inputs.diagnostics)
@@ -1632,6 +1633,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
+        attach_orb_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("orb_tries", []), spike_counts)
     replay.report["extras"] = extras.report
     replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())

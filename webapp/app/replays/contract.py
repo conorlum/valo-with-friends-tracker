@@ -45,6 +45,9 @@ CHARACTER_PLAYER_STATE = "PlayerState"
 # Not seen in the first export (no revive happened); the name is from the parser source.
 RPC_SET_PHASE = "MulticastSetPhase"
 RPC_RESURRECT = "MulticastReceivePlayerResurrectEvent"
+# 2026-10-18: the game state's notice that a player captured an ult orb (`CollectableOrb`, `OrbGatherer`: the
+# capturer's pawn), sent twice, as the orb closes. In every one of 14 13.08 exports.
+RPC_ORB_PICKUP = "OrbPickedUpRPC"
 # Confirmed by the Abyss export (81e38a00): a lethal hit's damage notify, which names the victim's
 # pawn (`Character`) and the killer's (`EventInstigatorPawn`). Three of its kills (all Gekko's) had
 # this and no MulticastNotifyKilledEnemy; every other player kill in it and in the Ascent export had both.
@@ -278,7 +281,8 @@ UTIL_EVENT_TYPES = frozenset({"valorant_flash_cast", "valorant_flash_player_hit"
                               "valorant_flash_path_updated"})
 STREAM_EVENT_TYPES = frozenset({"actor_spawned", "actor_closed", *UTIL_EVENT_TYPES})
 STREAM_PAYLOAD_KEYS = frozenset({CHARACTER_PLAYER_STATE, "Subject", "SpawnedCharacter", "PossessedCharacter"})
-STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT})
+STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT,
+                         RPC_ORB_PICKUP})
 STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH})
 PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
 # Substrings that every kept row's line contains; a line with none of them can't be kept, so it

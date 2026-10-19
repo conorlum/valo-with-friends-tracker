@@ -37,6 +37,9 @@ looked for them, so a round with that key and no cast had none. A blob without t
 A Killjoy turret or alarmbot `ability` row has `"off"` (revision 12) when it was switched off (KJ walked out
 of its range): `[[from, to | null], ...]` in round seconds, null meaning until the row's `t1`.
 
+An `ability` row that closed has `"full"` (revision 19): the longest life, in seconds, of any actor of its kind in the
+match. The viewer's timer runs over it, not over the row's own close, so a smoke cut short shows no sign of it early.
+
 Flash rows (2026-10-05) also carry, all optional to a reader: `"id"` (the ability actor: one cast's
 identity within the round), `"z"` (the cast's height), `"pop"` (the explosion: `{"t"}` plus either its place
 `{"u", "v", ["z"], "src": "flash_source" | "replicated_movement", ["age"]}` or `{"place": "stale" |
@@ -75,7 +78,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 18   # combined player-state and map-message/state-witness inputs
+CONDENSE_REVISION = 19   # 19: `player_state` ult points (`ult`) and ult orbs (`orbs`) (2026-10-18);
+                         # 18: combined player-state and map-message/state-witness inputs;
                          # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);
                          # 13: utility kept in full (2026-10-05): Deadlock's actors, flash explosions, paths and
                          #     activation, knife pulses, projectile flights, Blaze/Sage/Vyse walls, Omen's ult

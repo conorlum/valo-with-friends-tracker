@@ -150,9 +150,14 @@ AUDIBLE_WINDOW_S = 0.5
 _HEARING_FILE = json.loads((Path(__file__).with_name("hearing.json")).read_text(encoding="utf-8"))
 # only the numeric fields (pinned with the other constants): editing a citation in `sources` changes nothing
 HEARING = {"footstep_range_m": float(_HEARING_FILE["footstep_range_m"]),
+           "spike_tap_range_m": float(_HEARING_FILE["spike_tap_range_m"]),
+           "orb_pickup_range_m": float(_HEARING_FILE["orb_pickup_range_m"]),
            "default_gun_m": float(_HEARING_FILE["default_gun_m"]),
            "guns": {str(k): float(v) for k, v in _HEARING_FILE["guns"].items()}}
 FOOTSTEP_RANGE_M = HEARING["footstep_range_m"]
+SOUND_RANGE_M = {"tap": HEARING["spike_tap_range_m"], "orb": HEARING["orb_pickup_range_m"]}
+SOUND_AREA_M = 5.0           # a tap is at the spike, an orb taken at the orb: the enemy stands right there
+ORB_CAPTURE_S = 2.0          # capturing an ult orb is a 2 s channel (wiki): its start is heard too
 GUN_HEARING_M = dict(HEARING["guns"])
 GUN_HEARING_DEFAULT_M = HEARING["default_gun_m"]     # a gun named but not in the table (a shot with no gun: the longest)
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
@@ -367,6 +372,9 @@ class RoundInputs:
         # locating events (timing gaps, section 4)
         self.planter: tuple[float, int] | None = None     # (time, slot) of the plant, when its owner is known
         self.shots: list[tuple[float, int, str | None]] = []                 # (t, by, gun)
+        # Anonymous sounds of revision 18 (2026-10-18): a defuse attempt starting ("tap", from the planted spike's
+        # `defuses`) and an ult orb taken ("orb", player_state `orbs`, condenser revision 19). (t, by, kind).
+        self.sounds: list[tuple[float, int, str]] = []
         self.gun_runs: list[tuple[float, float, int, int, bool]] = []       # (t, t1, by, target, wall), enemies only
         self.kills = [(float(k["t"]), int(k["killer"]), int(k["victim"])) for k in blob.get("kills") or []
                       if k.get("killer") is not None and k.get("victim") is not None]
@@ -510,6 +518,10 @@ class RoundInputs:
                         self.planter = (float(e["t"]), int(e["by"]))
                     else:
                         self.miss("plant without a planter (locates nobody)", None)
+                if e.get("kind") == "Bomb":
+                    for attempt in e.get("defuses") or []:
+                        if isinstance(attempt, list) and len(attempt) >= 3 and attempt[2] is not None:
+                            self.sounds.append((float(attempt[0]), int(attempt[2]), "tap"))
                 if e.get("kind") == "Projectile":
                     continue
                 t0, t1 = _span(e["t"], end)
@@ -548,6 +560,19 @@ class RoundInputs:
                         self.miss("shot without a gun (longest hearing range used)", int(e["by"]))
             elif k == "damage":
                 self._damage(e)
+        state = self.blob.get("player_state")
+        for orb in (state.get("orbs") if isinstance(state, dict) else None) or []:
+            if not isinstance(orb, dict):
+                continue
+            heard = []
+            if orb.get("end") == "taken" and orb.get("slot") is not None and orb.get("t1") is not None:
+                # A capture sounds as its channel starts and as it completes (wiki).
+                t1 = float(orb["t1"])
+                heard += [(t1 - ORB_CAPTURE_S, int(orb["slot"])), (t1, int(orb["slot"]))]
+            # A capture started and let go sounds as it starts, the same.
+            heard += [(float(t), int(slot)) for t, _, slot in orb.get("tries") or []]
+            # Only what sounds in the round: a buy-phase capture's sounds are before 0 s, and never moved to it.
+            self.sounds += [(t, slot, "orb") for t, slot in heard if t >= 0.0]
         self._blinds(util)
         self._mollies(util)
         if not any(e.get("k") == "damage" for e in util):
@@ -639,7 +664,7 @@ class RoundInputs:
 
     def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
         """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
-        `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun)."""
+        `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun), `tap` and `orb` (None)."""
         if self._by_slot is None:
             rows: dict[int, list[tuple]] = defaultdict(list)
             for te, killer, victim in self.kills:
@@ -650,6 +675,8 @@ class RoundInputs:
                 rows[by].append((te, "damage", target))
             for te, by, gun in self.shots:
                 rows[by].append((te, "gunfire", gun))
+            for te, by, kind in self.sounds:
+                rows[by].append((te, kind, None))
             self._by_slot = {}
             for s, rs in rows.items():
                 rs.sort(key=lambda r: r[0])
@@ -2501,6 +2528,12 @@ class Unknown:
                 if not self._heard_by(rnd, side, te, p[0], p[1], rng):
                     continue
                 radius = SHOT_AREA_M
+            elif kind in SOUND_RANGE_M:
+                # A spike tap or an orb taken says someone is there, not who: like footsteps (R1).
+                if not (self._attributable(rnd, side, slot, te, spotted)
+                        and self._heard_by(rnd, side, te, p[0], p[1], SOUND_RANGE_M[kind])):
+                    continue
+                radius = SOUND_AREA_M
             else:
                 radius = {"kill": KILL_AREA_M, "plant": PLANT_AREA_M, "damage": DAMAGE_AREA_M}[kind]
             out.append((te, kind, radius, rnd.node(slot, te, p[0], p[1]), p[0], p[1]))

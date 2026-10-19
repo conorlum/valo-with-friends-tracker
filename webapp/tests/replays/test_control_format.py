@@ -65,7 +65,11 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 17 (2026-10-16): partial knife hits restrict the hit and exclude the missed; the new figure
           # knife_rim_m (utility.json, provisional D1), its note and the KNIFE_REASONS tuple change the
           # constants digest.
-          17: "8361d989c6f5cb3b"}
+          17: "8361d989c6f5cb3b",
+          # 18 (2026-10-18): a spike tap and an ult orb taken are anonymous sounds (R1), heard within the new
+          # hearing.json figures spike_tap_range_m and orb_pickup_range_m (provisional, 50 m), at SOUND_AREA_M.
+          # Unreleased, so re-pinned in place when the capture's start (ORB_CAPTURE_S before it) became a sound too.
+          18: "64b0e0cdf5418980"}
 
 
 def _constants_digest() -> str:

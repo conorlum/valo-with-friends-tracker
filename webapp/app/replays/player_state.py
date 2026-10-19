@@ -5,7 +5,9 @@ sections 3-4; the plan's P02 and its amendments). Stdlib only: the upload worker
       "version": 1,
       "vitals": {"<slot>": [{"t", "life", "hp", "sh", "mhp", "msh", ["q": "start"]}, ...]},
       "damage_taken": {"<slot>": [t, ...]},
-      "spike": [{"t", "s", ["slot"], ["u", "v"]}, ...]
+      "spike": [{"t", "s", ["slot"], ["u", "v"]}, ...],
+      "ult": {"<slot>": [{"t", "n"}, ...]},
+      "orbs": [{"u", "v", "t0", "t1", "end", ["slot"], ["tries"]}, ...]
     }
 
 Every `t` is round seconds from InRound (format.py), negative in the buy phase. Slots are "0".."9" as JSON keys.
@@ -28,6 +30,12 @@ the carrier isn't: decision D5 fills it only where proven, from the last pickup 
 (0..10000) only where a recorded position exists (a dropped spike has one when the drop follows one death: that death's place). At equal `t`, a completed plant
 supersedes planting/carried; otherwise the later source order wins (a later pickup supersedes an earlier drop);
 two records of that winning state naming different slots contradict each other and the time ends `unknown`.
+
+`ult` (2026-10-18): each slot's ult points, `n`, as the game replicates them: the value before the round (its `t` the
+look-back start), then each change. `orbs`: the round's ult orbs, `u`/`v` where they lie, `t0` when they appeared,
+`t1` when they went (null: there to the round's end), and `end`: "taken" (by `slot`, the capturer the game named),
+"plant" or "round". `tries`: captures started on it and let go, [t, t1, slot] each (`t1` when let go, null if never
+seen); a bad one is dropped.
 
 `validate` returns a normalized copy or None (unavailable: not a dict, an unsupported version, a part of the wrong
 shape). A bad entry is dropped; an absurd count makes that slot's list (or the spike) unavailable. Missing parts are
@@ -138,12 +146,71 @@ def _spike_order(entries: list[dict], diagnostics: dict | None = None) -> list[d
     return out
 
 
+ULT_MAX = 20
+MAX_ORBS = 16           # per round: a map has two or three spots
+ORB_ENDS = frozenset({"taken", "plant", "round"})
+
+
+def _whole(value, lo: int, hi: int) -> int | None:
+    """An integer in [lo, hi], or None. A whole float (3.0) counts as its integer: the viewer's JSON can't tell them
+    apart, so both sides read it alike (the 2026-10-18 review's parity case)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+        value = int(value)
+    return value if lo <= value <= hi else None
+
+
+def _ult_point(entry) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    t, n = _num(entry.get("t"), T_MIN, T_MAX), _whole(entry.get("n"), 0, ULT_MAX)
+    if t is None or n is None:
+        return None
+    return {"t": t, "n": n}
+
+
+def _orb(entry) -> dict | None:
+    if not isinstance(entry, dict) or not isinstance(entry.get("end"), str) or entry["end"] not in ORB_ENDS:
+        return None
+    u, v = _whole(entry.get("u"), 0, UV_MAX), _whole(entry.get("v"), 0, UV_MAX)
+    if u is None or v is None:
+        return None
+    t0 = _num(entry.get("t0"), T_MIN, T_MAX)
+    t1 = None if entry.get("t1") is None else _num(entry.get("t1"), T_MIN, T_MAX)
+    if t0 is None or (entry.get("t1") is not None and (t1 is None or t1 < t0)):
+        return None
+    out = {"u": u, "v": v, "t0": t0, "t1": t1, "end": entry["end"]}
+    if entry["end"] == "taken" and entry.get("slot") is not None:
+        slot = _whole(entry["slot"], 0, 9)
+        if slot is None:
+            return None
+        out["slot"] = slot
+    if isinstance(entry.get("tries"), list):
+        tries = [kept for kept in map(_orb_try, entry["tries"]) if kept is not None]
+        if tries:
+            out["tries"] = tries
+    return out
+
+
+def _orb_try(entry) -> list | None:
+    if not isinstance(entry, list) or len(entry) != 3:
+        return None
+    t, slot = _num(entry[0], T_MIN, T_MAX), _whole(entry[2], 0, 9)
+    t1 = None if entry[1] is None else _num(entry[1], T_MIN, T_MAX)
+    if t is None or slot is None or (entry[1] is not None and (t1 is None or t1 < t)):
+        return None
+    return [t, t1, slot]
+
+
 def validate(obj, diagnostics: dict | None = None) -> dict | None:
     """A normalized copy of a `player_state` subsection, or None when it is unavailable. `diagnostics`, when
     given, counts what was dropped."""
     if not isinstance(obj, dict) or isinstance(obj.get("version"), bool) or obj.get("version") != VERSION:
         return None
-    for key, kind in (("vitals", dict), ("damage_taken", dict), ("spike", list)):
+    for key, kind in (("vitals", dict), ("damage_taken", dict), ("spike", list), ("ult", dict), ("orbs", list)):
         if key in obj and not isinstance(obj[key], kind):
             return None
     out: dict = {"version": VERSION}
@@ -191,6 +258,25 @@ def validate(obj, diagnostics: dict | None = None) -> dict | None:
                 else:
                     kept.append(checked)
             out["spike"] = _spike_order(kept, diagnostics)
+    if "ult" in obj:
+        ult = {}
+        for slot, line in obj["ult"].items():
+            if slot not in SLOTS or not isinstance(line, list) or len(line) > MAX_EVENTS:
+                _count(diagnostics, "ult: bad slot")
+                continue
+            kept = [p for p in (_ult_point(e) for e in line) if p is not None]
+            if len(kept) < len(line):
+                _count(diagnostics, "ult: bad point")
+            ult[slot] = sorted(kept, key=lambda e: e["t"])
+        out["ult"] = ult
+    if "orbs" in obj:
+        if len(obj["orbs"]) > MAX_ORBS:
+            _count(diagnostics, "orbs: too many (unavailable)")
+        else:
+            kept = [o for o in (_orb(e) for e in obj["orbs"]) if o is not None]
+            if len(kept) < len(obj["orbs"]):
+                _count(diagnostics, "orbs: bad orb")
+            out["orbs"] = sorted(kept, key=lambda o: o["t0"])
     return out
 
 

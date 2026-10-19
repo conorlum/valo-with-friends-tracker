@@ -5,7 +5,7 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
-  ["defuses"], ["points", "on"], ["fx"], ["gone"], ["possessed"], ["yaws"], ["off"]}` (`possessed` and
+  ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"]}` (`possessed` and
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
   point's fourth value are heights in decimetres of world z, each left out when the export gave none:
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
@@ -16,7 +16,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   and `on` like Viper's wall, laid along its projectile's flight; a Barrier Orb's root has `segments` =
   `[[u, v, from, to | null], ...]`; a Shear has `line` = its two ends and, once raised, `raised` = `[from,
   to | null]` and `trigger` = the slot whose crossing raised it; Omen's ult marker has `outcome`, `evidence`
-  and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it);
+  and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it; Veto's Interceptor
+  has `active` = when it was set off and `intercepts` = `[[t, u, v], ...]`, inferred: `intercepts`);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`;
@@ -70,6 +71,8 @@ from pathlib import Path
 
 from app.replays import format as fmt
 from app.replays.condense import MapInfo, PlayerTable
+from app.replays.contract import RPC_ORB_PICKUP
+from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
 
 # `Gameobject_` (lower-case o) is how KAY/O's ZERO/point pulse is spelled; it is read as GameObject.
 ABILITY_ARCHETYPE = re.compile(r"^Default__(GameObject|Gameobject|Projectile|Zone|Patch|Pawn)_([A-Za-z0-9]+)_(.+)_C$")
@@ -226,6 +229,9 @@ class Raw:
     wall_states: dict[int, list[tuple[int, bool]]] = field(default_factory=lambda: defaultdict(list))
     # Effects played on ability objects (a Chamber trap firing): guid -> times.
     object_effects: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    # The `FXC.Duration` of a continuous effect an ability object played on itself (Veto's Interceptor going
+    # active): guid -> [(time, seconds)].
+    object_durations: dict[int, list[tuple[int, float]]] = field(default_factory=lambda: defaultdict(list))
     # One-shot effects played on ability objects (a Fault Line firing, a ZERO/point pulse): guid -> times.
     object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # One-shot effects played on an actor that is neither a known pawn nor a known object: (time, the actors its
@@ -255,6 +261,10 @@ class Raw:
     # Continuous effects a player triggered on their own character, with float tags: (time, the pawn, {tag:
     # value}). `movement_cast` picks the movement abilities out of them.
     movement_plays: list[tuple[int, int, dict[str, float]]] = field(default_factory=list)
+    # Ult orbs, one per spawn (a guid can come back for a later orb): [spawn ms, x, y, close ms | None]; and each
+    # capture, (time, the capturer's pawn), once.
+    orbs: list[list] = field(default_factory=list)
+    orb_pickups: list[tuple[int, int]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -267,7 +277,7 @@ BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
-                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_')
+                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -336,6 +346,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     bombs: set[int] = set()
     carried: set[int] = set()              # the spike's equippable, alive under each GUID
     walls: set[int] = set()
+    orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -360,6 +371,12 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.device_fx[guid] = []
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     carried.add(guid)
+                    continue
+                if archetype == ORB_ARCHETYPE:
+                    where = data.get("location") or {}
+                    if where.get("x") is not None and where.get("y") is not None:
+                        orb_now[guid] = [t_ms, float(where["x"]), float(where["y"]), None]
+                        raw.orbs.append(orb_now[guid])
                     continue
                 match = ABILITY_ARCHETYPE.match(archetype)
                 location = data.get("location") or {}
@@ -387,6 +404,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                                       z=None if location.get("z") is None else float(location["z"]))
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
+                if guid in orb_now and orb_now[guid][3] is None:
+                    orb_now[guid][3] = t_ms
             elif kind == "valorant_shot_received":
                 raw.shots.append(data)
             elif kind is not None and kind.startswith("valorant_wall_"):
@@ -405,6 +424,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
             elif kind == "rpc_received":
                 function = data.get("function_name")
                 payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+                if function == RPC_ORB_PICKUP:
+                    pickup = (t_ms, int(payload.get("OrbGatherer") or 0))
+                    if pickup not in raw.orb_pickups:          # sent twice
+                        raw.orb_pickups.append(pickup)
+                    continue
                 if guid in raw.device_fx and function in _DEVICE_FX:
                     raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
                                                 payload.get("EffectContainer")))
@@ -425,6 +449,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         open_effects[(guid, effect.effect_id)] = effect
                 elif function == RPC_PLAY and guid in actors:
                     raw.object_effects[guid].append(t_ms)
+                    duration = _float_tags(payload).get("FXC.Duration")
+                    if duration is not None:
+                        raw.object_durations[guid].append((t_ms, duration))
                 elif function == RPC_ONESHOT and guid in pawns:
                     context = _context_values(payload)
                     if context:
@@ -851,6 +878,22 @@ POP_ARCHETYPES = re.compile(r"^(Terra_C_TimeSlowGrenade_Explosion|Iris_Concuss|C
                             r"Breach_E_SweetSpotFissure|Breach_X_Shockwave|Breach_4_FusionBlast|Rift_Q_FlashBurst|"
                             r"Grenadier_E_SuppressionPulse|Smonk_Q_DecayExplosion)$")
 FX_GAP_MS = 200
+# Vyse's Arc Rose (2026-10-18): its effects after it's placed are Vyse triggering it, each played in the same ms as an
+# effect on Vyse (8 of 8 on the first Vyse export); the effects in its first seconds are its deploy. `fx` = the
+# flashes: each trigger plus the 0.5 s windup (wiki). Flashing doesn't use it up (the owner): it closes when it is
+# shot or pulled back, or at the round's end. A rose never triggered has no `fx`.
+ARC_ROSE = re.compile(r"^Nox_StealthingTrap_Flash")
+ARC_ROSE_ARMED_MS = 2500
+ARC_ROSE_WINDUP_MS = 500
+# Breach's Fault Line (2026-10-18): its reach (8 to 56 m) grows over a 1 s charge (wiki) the object doesn't record.
+# Breach's character plays one continuous effect as the charge starts and another FULL_CHARGE_MS later at full charge
+# (7 of 7 full charges on the first Breach export, 1000-1007 ms). The containers change per export, so the charge's is
+# learnt per match (fault_line_charge_container). `charge` = seconds charged, at most 1.
+FAULT_LINE = "Breach_E_SweetSpotFissure"
+FULL_CHARGE_MS = 1000
+CHARGE_PAIR_MS = 30          # a full-charge effect starts within this of FULL_CHARGE_MS after the charge's
+CHARGE_MIN_PAIRS = 2         # pairs needed before a container is the charge's
+CHARGE_LEAD_MS = 6000        # a charge start counts only if a release follows it within this
 
 # The abilities whose hit puts a status on a player, and which status (see find_statuses).
 # A trapwire tethers whoever walks into it (effects naming its anchors while they're caught), and if
@@ -909,6 +952,92 @@ def pop_times(actor: _Actor, raw: "Raw") -> list[int]:
         if not out or t - out[-1] >= FX_GAP_MS:
             out.append(t)
     return out
+
+
+def fault_line_charge_container(effects: list[_Effect], pawns: set[int], releases: list[int]) -> int | None:
+    """The container of the continuous effect Breach's character starts as a Fault Line charge begins, learnt from
+    this match: of the (start, full charge) pairs of containers on one character, FULL_CHARGE_MS apart (within
+    CHARGE_PAIR_MS), whose start leads into a release (`releases`, ms) within CHARGE_LEAD_MS, the most frequent pair's
+    start. None unless that pair is seen CHARGE_MIN_PAIRS times and more often than any other (on the first Breach
+    export, 7 against 3: other busy effects pair by chance, but not just before releases)."""
+    releases = sorted(releases)
+    starts: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for e in effects:
+        if e.actor in pawns and not e.oneshot and e.container is not None:
+            starts[e.actor].append((e.t_ms, e.container))
+    pairs: Counter[tuple[int, int]] = Counter()
+    for rows in starts.values():
+        rows.sort()
+        times = [t for t, _ in rows]
+        for t, container in rows:
+            i = bisect.bisect_left(releases, t)
+            if i == len(releases) or releases[i] - t > CHARGE_LEAD_MS:
+                continue
+            lo = bisect.bisect_left(times, t + FULL_CHARGE_MS - CHARGE_PAIR_MS)
+            hi = bisect.bisect_right(times, t + FULL_CHARGE_MS + CHARGE_PAIR_MS)
+            for j in {rows[k][1] for k in range(lo, hi)} - {container}:
+                pairs[(container, j)] += 1
+    ranked = pairs.most_common(2)
+    if not ranked or ranked[0][1] < CHARGE_MIN_PAIRS or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+        return None
+    return ranked[0][0][0]
+
+
+def fault_line_charge(effects: list[_Effect], pawns: set[int], container: int, release_ms: int) -> float | None:
+    """Seconds a Fault Line released at `release_ms` was charged: from the charge effect's latest start on Breach's
+    characters (`pawns`, his slot's) before it, at most FULL_CHARGE_MS. None without one."""
+    started = [e.t_ms for e in effects if e.actor in pawns and e.container == container and not e.oneshot
+               and e.t_ms <= release_ms]
+    if not started:
+        return None
+    return round(min(FULL_CHARGE_MS, release_ms - max(started)) / 1000.0, 3)
+
+
+# Ult orb captures (2026-10-18). As a capture's 2 s channel begins, the capturer's character starts continuous
+# effects, and the game's pickup notice follows ORB_CAPTURE_MS later: 1993-2007 ms on all 84 captures of four
+# exports. The same effect also starts 2-5 times a match with no pickup after, stopped 63-1493 ms in: captures
+# let go, which make the same noise. Its container changes per export, so it is learnt per match.
+ORB_CAPTURE_MS = 2000
+ORB_CAPTURE_TOLERANCE_MS = 50
+ORB_CAPTURE_MIN = 2          # pickups needed before a container is the capture's
+
+
+def orb_capture_container(effects: list[_Effect], pickups: list[tuple[int, int]]) -> int | None:
+    """The container of the continuous effect a capturer's character starts as the channel begins, learnt from this
+    match: of the containers started ORB_CAPTURE_MS (within the tolerance) before a pickup on its capturer's
+    character, the one before the most pickups, at least ORB_CAPTURE_MIN and half of them. The channel starts two
+    effects, both before every pickup; the nearer to ORB_CAPTURE_MS on average wins, then the lower container."""
+    by_pawn: dict[int, list[_Effect]] = defaultdict(list)
+    for e in effects:
+        if not e.oneshot and e.container is not None:
+            by_pawn[e.actor].append(e)
+    misses: dict[int, list[int]] = defaultdict(list)
+    for t_ms, pawn in pickups:
+        seen = set()
+        for e in by_pawn.get(pawn, []):
+            miss = abs(t_ms - e.t_ms - ORB_CAPTURE_MS)
+            if miss <= ORB_CAPTURE_TOLERANCE_MS and e.container not in seen:
+                seen.add(e.container)
+                misses[e.container].append(miss)
+    if not misses:
+        return None
+    best = min(misses, key=lambda c: (-len(misses[c]), sum(misses[c]) / len(misses[c]), c))
+    return best if len(misses[best]) >= max(ORB_CAPTURE_MIN, len(pickups) / 2) else None
+
+
+def orb_tries(effects: list[_Effect], pickups: list[tuple[int, int]], container: int) -> list[tuple[int, int | None, int]]:
+    """Captures started and let go: (start ms, stop ms | None, pawn) for each start of the capture effect with no
+    pickup by that character ORB_CAPTURE_MS later."""
+    done = set(pickups)
+    out = []
+    for e in effects:
+        if e.oneshot or e.container != container:
+            continue
+        if any(pawn == e.actor and abs(t_ms - e.t_ms - ORB_CAPTURE_MS) <= ORB_CAPTURE_TOLERANCE_MS
+               for t_ms, pawn in done):
+            continue
+        out.append((e.t_ms, e.stop_ms, e.actor))
+    return sorted(out)
 
 
 def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: dict[int, int | None],
@@ -1225,7 +1354,8 @@ def vyse_wall(typed: dict | None) -> dict | None:
 # - Waylay's Refract: WAYLAY_ANCHOR is the return point; a recall is the WAYLAY_RECALL projectile flying back
 #   to it (`recall_of`), and both close as she arrives.
 # - Yoru's Gatecrash and Dimensional Drift, and Veto's Evolution, have no row: the export spawns no beacon
-#   actor (only the held equippable changes), and no local replay has a Veto. Nothing is inferred for them.
+#   actor (only the held equippable changes); Evolution is unchecked on the one local Veto export. Nothing is
+#   inferred for them.
 OMEN_ULT = "Wraith_X_GlobalTeleport_Intention"
 PHOENIX_RETURN = "Phoenix_X_ResTarget_Production"
 WAYLAY_ANCHOR = "Terra_E_RewindTime_RewindTarget"
@@ -1270,6 +1400,82 @@ def recall_of(anchor: _Actor, slot: int | None, actors: dict[int, _Actor], owner
              and p.closed_ms is not None and abs(p.closed_ms - anchor.closed_ms) <= LANDING_MS
              and (slot is None or owner_of.get(p.guid) in (None, slot))]
     return min(found, key=lambda p: (p.t_ms, p.guid)) if found else None
+
+
+# Veto's Interceptor (measured 2026-10-18 on the one local Veto export, 18 throws): it lands and waits; enemy utility
+# in its range sets it off, and it then plays a continuous effect tagged `FXC.Duration` 9 on itself and closes 9 s
+# later (14 of 18; two never went off, two were shot first). Nothing in the export names what it destroyed, so its
+# `intercepts` are inferred: enemy utility that closed within INTERCEPT_UNITS of it while it was active (the one that
+# set it off can close up to INTERCEPT_EARLY_MS before the effect is sent), cut short: it lived under INTERCEPT_CUT of
+# the longest life of its kind in the match. Distance alone doesn't tell: utility running out its usual life 13-18 m
+# off was as near as what it plainly stopped (Raze's ult rockets at 0.7-1.1 s where they run 1.4 and at most 1.9,
+# Boom Bots at 1.6-2 s of 5), and a usual life can be 0.75 of the longest (those rockets), hence 0.6.
+INTERCEPTOR = "Pine_E_RadEater"
+INTERCEPTOR_ACTIVE_S = 9.0
+INTERCEPT_UNITS = 1800.0
+INTERCEPT_EARLY_MS = 350
+INTERCEPT_CUT = 0.6
+
+
+def interceptor_active(actor: _Actor, raw: Raw) -> int | None:
+    """When an Interceptor went active: its first INTERCEPTOR_ACTIVE_S effect on itself, or None (never set off)."""
+    found = [t for t, seconds in raw.object_durations.get(actor.guid, [])
+             if abs(seconds - INTERCEPTOR_ACTIVE_S) < 0.01 and t >= actor.t_ms]
+    return min(found) if found else None
+
+
+def _where_closed(actor: _Actor, raw: Raw, pawn_path) -> tuple[float, float]:
+    """Where an actor was as it closed: its flight's or path's last point by then, else its spawn point."""
+    track = [(t, x, y) for t, x, y, *_ in raw.flights.get(actor.guid, [])]
+    if not track and actor.kind == "Pawn" and pawn_path is not None:
+        track = [(t, x, y) for t, x, y, *_ in pawn_path(actor.guid) or []]
+    track = [p for p in track if actor.closed_ms is None or p[0] <= actor.closed_ms]
+    return (track[-1][1], track[-1][2]) if track else (actor.x, actor.y)
+
+
+def longest_lives(actors: dict[int, _Actor]) -> dict[str, int]:
+    """`<code>_<name>` -> the longest life (ms) any actor of it had in the match."""
+    out: dict[str, int] = {}
+    for a in actors.values():
+        if a.closed_ms is not None:
+            key = f"{a.code}_{a.name}"
+            out[key] = max(out.get(key, 0), a.closed_ms - a.t_ms)
+    return out
+
+
+def intercepts(interceptor: _Actor, active_ms: int, side: str, actors: dict[int, _Actor],
+               owner_of: dict[int, int | None], teams: dict[int, str | None], raw: Raw,
+               longest: dict[str, int], pawn_path=None) -> list[tuple[int, float, float]]:
+    """(close ms, x, y) of each enemy ability actor that closed, cut short (`longest`), within INTERCEPT_UNITS of
+    the Interceptor while it was active (from INTERCEPT_EARLY_MS before it went active to its close, at most
+    INTERCEPTOR_ACTIVE_S on). Only actors whose owner's side is known and isn't the Interceptor's. One use counts
+    once: a projectile that landed (an object of its agent spawned within LANDING_MS of its close, as `_thrown`) only
+    changed stage, and parts of one use (a trapwire's anchors) closing in the same tick are one."""
+    until = active_ms + int(INTERCEPTOR_ACTIVE_S * 1000) + 50
+    if interceptor.closed_ms is not None:
+        until = min(until, interceptor.closed_ms + 50)
+    out, kept = [], []
+    for other in sorted(actors.values(), key=lambda a: (a.closed_ms or 0, a.guid)):
+        if other.guid == interceptor.guid or other.kind == "Bomb" or other.closed_ms is None:
+            continue
+        owner = owner_of.get(other.guid)
+        if owner is None or teams.get(owner) in (None, side):
+            continue
+        if not (active_ms - INTERCEPT_EARLY_MS <= other.closed_ms <= until) or other.t_ms >= other.closed_ms:
+            continue
+        if other.closed_ms - other.t_ms >= INTERCEPT_CUT * longest.get(f"{other.code}_{other.name}", 0):
+            continue
+        if other.kind == "Projectile" and any(
+                a.kind != "Projectile" and a.code == other.code and other.t_ms <= a.t_ms
+                and abs(other.closed_ms - a.t_ms) <= LANDING_MS for a in actors.values()):
+            continue
+        if any(o == owner and code == other.code and other.closed_ms - t <= SAME_TICK_MS for t, o, code in kept):
+            continue
+        x, y = _where_closed(other, raw, pawn_path)
+        if math.hypot(x - interceptor.x, y - interceptor.y) <= INTERCEPT_UNITS:
+            out.append((other.closed_ms, x, y))
+            kept.append((other.closed_ms, owner, other.code))
+    return sorted(out)
 
 
 # KAY/O's ZERO/point once it has landed: it pulses once (a one-shot on itself, 1.000 s after landing on all nine
@@ -1413,10 +1619,41 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     placed: dict[int, list[_Actor]] = defaultdict(list)
     for guid, (_, context) in claims.items():
         placed[id(context)].append(actors[guid])
+    # Fault Line's charge (FAULT_LINE): each slot's characters, and the charge effect learnt from the Breaches'.
+    pawns_of: dict[int, set[int]] = defaultdict(set)
+    for pawn, owner in players.pawn_slot.items():
+        pawns_of[owner].add(pawn)
+    breaches = {p for slot in slots_of_agent.get("Breach", []) for p in pawns_of[slot]}
+    releases = [a.t_ms for a in actors.values() if f"{a.code}_{a.name}" == FAULT_LINE]
+    charge_container = fault_line_charge_container(raw.effects, breaches, releases) if breaches and releases else None
+    # Ult orb captures let go (orb_tries), each on the open orb within ORB_REACH of the player as it began.
+    capture = orb_capture_container(raw.effects, raw.orb_pickups) if raw.orb_pickups else None
+    for t_ms, stop_ms, pawn in orb_tries(raw.effects, raw.orb_pickups, capture) if capture is not None else []:
+        slot = players.pawn_slot.get(pawn)
+        where = positions_at(t_ms).get(slot) if slot is not None else None
+        n = _round_of(t_ms, windows, buy_phase=True)
+        if where is None or n is None:
+            counts["orb tries: no player position"] += 1
+            continue
+        near = [(math.dist(where, (x, y)), x, y) for spawned, x, y, closed in raw.orbs
+                if spawned <= t_ms and (closed is None or t_ms < closed)]
+        near = [orb for orb in near if orb[0] <= ORB_REACH]
+        if not near:
+            counts["orb tries: no orb within reach"] += 1
+            continue
+        _, x, y = min(near)
+        u, v = game_map.to_uv(x, y)
+        start, _, end = windows[n - 1]
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("orb_tries", []).append(
+            {"t": _seconds(t_ms, start), "t1": None if stop_ms is None else _seconds(min(stop_ms, end), start), "slot": slot,
+             "u": u, "v": v})
+        counts["orb tries"] += 1
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
     owner_of: dict[int, int | None] = {}
     anchors: list[tuple[dict, _Actor, int | None, int, int]] = []     # Waylay's return points, for their recalls
+    interceptors: list[tuple[dict, _Actor, int | None, int, int]] = []    # Veto's, for what they destroyed
+    longest = longest_lives(actors)
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -1447,6 +1684,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                  "slot": slot, "owner_by": owner_by, "u": u, "v": v}
         if actor.z is not None:
             entry["z"] = _dm(actor.z)
+        if actor.closed_ms is not None and longest.get(f"{actor.code}_{actor.name}", 0) > 0:
+            # Its kind's full run: the viewer's timer runs over this, so one cut short doesn't show it ahead of time.
+            entry["full"] = _seconds(longest[f"{actor.code}_{actor.name}"], 0)
         if owner_by == "nearest":
             # The guess's evidence: world units to the owner and to the other player of that agent.
             entry["owner_d"] = round(near[1])
@@ -1510,6 +1750,18 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if fx:
                 entry["fx"] = fx
                 counts["abilities_with_fx"] += 1
+        if ARC_ROSE.match(f"{actor.code}_{actor.name}"):
+            trigger = [t for t in pop_times(actor, raw) if t - actor.t_ms >= ARC_ROSE_ARMED_MS and t <= end]
+            if trigger:
+                entry["fx"] = [max(0.0, _seconds(t + ARC_ROSE_WINDUP_MS, start)) for t in trigger]
+            counts[f"arc_roses_{'triggered' if trigger else 'never_triggered'}"] += 1
+        if f"{actor.code}_{actor.name}" == FAULT_LINE:
+            charge = None
+            if charge_container is not None and slot is not None:
+                charge = fault_line_charge(raw.effects, pawns_of.get(slot, set()), charge_container, actor.t_ms)
+            if charge is not None:
+                entry["charge"] = charge
+            counts[f"fault_lines_{'charge_known' if charge is not None else 'charge_unknown'}"] += 1
         key = f"{actor.code}_{actor.name}"
         if actor.kind == "Projectile":
             flight = flight_points(raw.flights.get(actor.guid, []), actor.t_ms, actor.closed_ms)
@@ -1556,6 +1808,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if f"{actor.code}_{actor.name}" == WAYLAY_ANCHOR:
             # the recall is looked up when every owner is known (below): a projectile can sort after its anchor
             anchors.append((entry, actor, slot, start, end))
+        if f"{actor.code}_{actor.name}" == INTERCEPTOR:
+            interceptors.append((entry, actor, slot, start, end))
         if KNIFE_PULSE.match(f"{actor.code}_{actor.name}"):
             pulse = knife_pulse(actor, raw, players, slot)
             if pulse["state"] == "completed":
@@ -1602,7 +1856,26 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             counts["waylay_recalls"] += 1
         counts["waylay_anchors"] += 1
 
-    reveals = find_reveals(raw.effects, actors, players, code_of_agent, counts, raw.equips, teams)
+    for entry, interceptor, slot, start, end in interceptors:
+        active = interceptor_active(interceptor, raw)
+        if active is None or active > end:
+            counts["interceptors_never_active"] += 1
+            continue
+        entry["active"] = max(0.0, _seconds(active, start))
+        side = (teams or {}).get(slot) if slot is not None else None
+        if side is None:
+            counts["interceptors_side_unknown"] += 1
+            continue
+        hits = [[max(0.0, _seconds(t, start)), *game_map.to_uv(x, y)]
+                for t, x, y in intercepts(interceptor, active, side, actors, owner_of, teams or {}, raw, longest,
+                                          pawn_path)
+                if t <= end]
+        if hits:
+            entry["intercepts"] = hits
+        counts["interceptors_active"] += 1
+        counts["intercepts"] += len(hits)
+
+    reveals =find_reveals(raw.effects, actors, players, code_of_agent, counts, raw.equips, teams)
     for tag in dart_tags(actors, claims, players, counts):
         if not any(r["by"] == tag["by"] and r["target"] == tag["target"] and abs(r["t_ms"] - tag["t_ms"]) <= SAME_REVEAL_MS
                    for r in reveals):

@@ -482,7 +482,7 @@
   // t in round seconds at the event's own time). The words the Control panel shows for each reason.
   var REASON_TEXT = {
     seen: "seen", kill: "got a kill", plant: "planted", damage: "dealt gun damage", gunfire: "gunfire heard",
-    footsteps: "footsteps heard", revived: "revived", neural_theft: "revealed by Neural Theft",
+    footsteps: "footsteps heard", tap: "spike tap heard", orb: "ult orb taken: heard", revived: "revived", neural_theft: "revealed by Neural Theft",
     haunt: "Haunt saw the area", recon: "Recon Bolt saw the area", drone_dart: "tagged by a drone dart",
     camera_dart: "tagged by a camera dart", tejo_drone: "revealed by a drone", trip: "set off a trip",
     reveal: "revealed", knife_zero: "knife hit nobody: not in its radius", knife_all: "knife hit everyone: inside its radius",
