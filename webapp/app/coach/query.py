@@ -13,6 +13,7 @@ from pathlib import Path
 from app.coach import control_areas, knowledge
 from app.coach.snapshot import SnapshotError
 from app.replays import player_state
+from app.replays.player_state_extract import PROVEN_PLANTER
 
 LOG = "log.jsonl"
 
@@ -141,11 +142,20 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     name = snap.names.get
     events = [{"t": k["t"], "kind": "kill", "killer": name(k.get("killer")), "victim": name(k["victim"]),
                "after_decided": k["t"] > view.t_decided} for k in view.kills]
-    events += view.utility() + view.damage()
+    events += view.utility(spike=False) + view.damage()
     db = snap.site(int(n)).get("db") or {}                  # the site's times, already on the replay clock
-    for key in ("plant", "defuse"):
-        if db.get(key) is not None:
-            events.append({"t": db[key], "kind": key})
+    bomb = view.spike()
+    tries = view.defuse_attempts()
+    events += tries
+    if bomb is not None and bomb.get("t") is not None:
+        proven = bomb.get("owner_by") in PROVEN_PLANTER     # else the planter is a guess: not named
+        where = None if bomb.get("u") is None or bomb.get("v") is None else view.area(bomb["u"], bomb["v"])
+        events.append({"t": round(float(bomb["t"]), 3), "kind": "plant",
+                       "by": name(bomb.get("by")) if proven else None, "area": where})
+    elif db.get("plant") is not None:
+        events.append({"t": db["plant"], "kind": "plant", "by": None, "area": None})
+    if db.get("defuse") is not None and not any(a["result"] == "defused" for a in tries):
+        events.append({"t": db["defuse"], "kind": "defuse"})
     events = sorted((e for e in events if lo <= e["t"] <= hi), key=lambda e: (e["t"], e["kind"]))
     return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events}
 

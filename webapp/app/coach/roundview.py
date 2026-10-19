@@ -13,7 +13,9 @@ from app.replays import format as fmt
 SAME_DEATH_S = 1.0      # app/control/engine.py's: a site death this close to the replay's own is the same death
 STALE_SAMPLE_S = 1.0    # a living player's nearest earlier sample older than this is not a position (tracks are
                         # condensed at sub-second steps, so a real track never trips it)
-_UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
+HALF_S = 3.5            # an unfinished defuse attempt this long (as displayed, 2 decimals) is a half, else a tap
+SPIKE_TIMER_S = 45.0    # PROVISIONAL(D3): the spike's fuse, from plant to detonation
+_UTIL_KINDS =("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
 
 
@@ -123,12 +125,51 @@ class RoundView:
             return None
         return self.metres(math.hypot(pa["u"] - pb["u"], pa["v"] - pb["v"]))
 
-    def utility(self, by: int | None = None) -> list[dict]:
+    def spike(self) -> dict | None:
+        """The round's Bomb entry (the plant and its defuse attempts), or None."""
+        return next((e for e in self.blob.get("util", []) if e.get("kind") == "Bomb"), None)
+
+    def defuse_attempts(self) -> list[dict]:
+        """One row per defuse attempt on the Bomb entry: start `t`, stop `t1`, `seconds`, defuser `by`, and
+        `result` tap / half / defused. A null stop runs to the defuser's death or the cap (`until` says which)."""
+        bomb = self.spike()
+        if bomb is None:
+            return []
+        cap = self.t_end if bomb.get("t1") is None else min(float(bomb["t1"]), self.t_end)
+        out, halved = [], False
+        for start, stop, slot, finished in bomb.get("defuses") or []:
+            start = float(start)
+            row = {}
+            if stop is None:
+                life = next((iv for iv in self._intervals(slot) if iv[0] <= start < iv[1]), None)
+                if life is not None and life[1] < cap:
+                    stop, row["until"] = float(life[1]), "death"
+                else:
+                    stop, row["until"] = cap, "round_end"
+            stop = float(stop)
+            seconds = round(stop - start, 2)
+            result = "defused" if finished else "half" if seconds >= HALF_S else "tap"
+            out_row = {"t": round(start, 3), "t1": round(stop, 3), "kind": "defuse", "by": self.names.get(slot),
+                       "seconds": seconds, "result": result}
+            if bomb.get("t") is not None:
+                # PROVISIONAL(D3): time left on the spike's fuse when the attempt began
+                out_row["spike_left_s"] = round(float(bomb["t"]) + SPIKE_TIMER_S - start, 2)
+            out_row.update(row)
+            if halved:
+                out_row["resumed"] = True      # PROVISIONAL(D3): an attempt after an earlier half
+            halved = halved or result == "half"
+            out.append(out_row)
+        return out
+
+    def utility(self, by: int | None = None, spike: bool = True) -> list[dict]:
         """Flashes, nearsights, abilities and movement casts, in stored order, with names for slots. A flash's
-        `hits_complete` is true only when an empty or short hit list is proven to be the whole list."""
+        `hits_complete` is true only when an empty or short hit list is proven to be the whole list. The Bomb
+        entry's "Spike" row is left out when `spike` is False."""
         out = []
         for e in self.blob.get("util", []):
             if e.get("k") not in _UTIL_KINDS or (by is not None and e.get("by") != by):
+                continue
+            if not spike and e.get("kind") == "Bomb":
                 continue
             row = {"t": e["t"], "kind": e["k"], "by": self.names.get(e.get("by"))}
             ability = e.get("name") or e.get("code") or e.get("ability")
