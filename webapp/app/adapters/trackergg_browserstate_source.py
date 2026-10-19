@@ -25,7 +25,7 @@ from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayer
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
 from app.scoring.ingest_preflight import verify_ingest_preflight
-from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
+from app.services.player_view_cache import invalidate_match_players
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
@@ -917,10 +917,7 @@ def _ingest_discovered(
         # dedup-skipped on every future run, so if compute_impact_for_match
         # then raises, invalidating first still leaves the cache empty
         # (recomputes live on next visit) rather than permanently stale.
-        cached_ids = find_cached_player_ids_for_match(db, match.id)
-        if cached_ids:
-            invalidate_player_cache(db, cached_ids)    # DELETE, no commit
-            dirty |= cached_ids
+        dirty |= invalidate_match_players(db, match.id)    # DELETE, no commit
         # Unlike the per-player cache above, the "All Players" site-stats cache
         # covers EVERY match in the DB, so it's invalidated on every new match
         # regardless of whether cached_ids is empty.
@@ -973,10 +970,7 @@ def backfill_unscored_matches(db: Session) -> set[int]:
         match = db.query(Match).filter_by(id=match_id).one()
         print(f"found stranded unscored match {match.external_id} ({match.map_name}), backfilling...")
 
-        cached_ids = find_cached_player_ids_for_match(db, match_id)
-        if cached_ids:
-            invalidate_player_cache(db, cached_ids)
-            dirty |= cached_ids
+        dirty |= invalidate_match_players(db, match_id)
         invalidate_site_stats_cache(db)
         db.commit()
 

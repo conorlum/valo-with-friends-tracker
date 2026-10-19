@@ -723,6 +723,25 @@ def find_cached_player_ids_for_match(db: Session, match_id: int) -> set[int]:
     return filter_cached_player_ids(db, player_ids)
 
 
+def invalidate_cached_players(db: Session, player_ids: set[int]) -> set[int]:
+    """Clears every cache row of `player_ids`, filtered ones included, and
+    returns those that had unfiltered rows (the set to pre-warm). A player
+    whose only rows are filtered isn't counted as cached, but their rows
+    still go: they'd otherwise outlive the match that made them stale.
+    Does NOT commit."""
+    cached = filter_cached_player_ids(db, player_ids)
+    invalidate_player_cache(db, player_ids)
+    return cached
+
+
+def invalidate_match_players(db: Session, match_id: int) -> set[int]:
+    """invalidate_cached_players for everyone in `match_id`. Does NOT commit."""
+    player_ids = {
+        pid for (pid,) in db.query(MatchPlayer.player_id).filter_by(match_id=match_id).all()
+    }
+    return invalidate_cached_players(db, player_ids)
+
+
 def recompute_player_views(db: Session, player_id: int) -> None:
     """One load and replay for the pre-computed filter set (no filter, each
     role played, the top three agents), both scopes each; stored in one

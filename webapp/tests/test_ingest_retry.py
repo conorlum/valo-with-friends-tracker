@@ -59,8 +59,7 @@ def wiring(monkeypatch):
     state = {"fetch_calls": [], "loaded": [], "slept": [], "scored": []}
 
     monkeypatch.setattr(src, "verify_ingest_preflight", lambda db: None)
-    monkeypatch.setattr(src, "find_cached_player_ids_for_match", lambda db, mid: set())
-    monkeypatch.setattr(src, "invalidate_player_cache", lambda db, ids: None)
+    monkeypatch.setattr(src, "invalidate_match_players", lambda db, mid: set())
     monkeypatch.setattr(src, "invalidate_site_stats_cache", lambda db: None)
     monkeypatch.setattr(src, "compute_impact_for_match",
                         lambda db, mid: state["scored"].append(mid))

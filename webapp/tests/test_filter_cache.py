@@ -139,6 +139,22 @@ def test_a_player_with_only_a_filtered_row_is_not_counted_as_cached(db):
     assert filter_cached_player_ids(db, {a.id, b.id, c.id}) == {b.id}
 
 
+def test_a_new_match_clears_a_players_filtered_only_rows_without_prewarming_them(db):
+    a, b, c = _players(db, "a#1", "b#2", "c#3")
+    mp = _play_as(db, a, "Jett", 1, "m1")
+    for player in (b, c):
+        db.add(MatchPlayer(match_id=mp.match_id, player_id=player.id, agent="Sage", team=Team.TEAM_1))
+    db.commit()
+    _add_row(db, a.id, "career|role:duelist")
+    _add_row(db, b.id, "career")
+
+    dirty = pvc.invalidate_match_players(db, mp.match_id)
+    db.commit()
+    assert dirty == {b.id}
+    with sessionmaker(bind=db.get_bind())() as fresh:
+        assert fresh.query(PlayerViewCache).count() == 0
+
+
 def test_a_group_with_only_a_filtered_row_does_not_count_its_members(db):
     main, alt = _players(db, "main#1", "alt#2")
     link_account(db, main.id, alt.id)
