@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from sqlalchemy import case, func
 
 from app.config import settings
-from app.models import Match, Player
+from app.models import Match, MatchPlayer, Player
 from app.models.replay import Replay
 from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
+from app.services import enemy_names
 from app.services.replays import watchable_external_ids
 
 KIND_MATCH = "match"
@@ -120,12 +121,28 @@ def _instance(index: int, raw: dict, feedback: list[dict]) -> dict:
             "caption": str(raw.get("caption") or ""), "feedback": [f for f in feedback if f["instance"] == index]}
 
 
-def _point(point: CoachPoint, feedback: list[dict], viewer_id: int | None = None) -> dict:
+def opponent_swaps(db, match_id: int, player_id: int) -> dict[str, str]:
+    """The names of this player's opponents in the match, each to "the enemy <agent>" (app/services/enemy_names.py):
+    reports written before runs hid them still name them."""
+    rows = db.query(MatchPlayer.player_id, MatchPlayer.team, MatchPlayer.agent, Player.display_name).join(
+        Player, Player.id == MatchPlayer.player_id).filter(MatchPlayer.match_id == match_id).all()
+    team = next((t for pid, t, _, _ in rows if pid == player_id), None)
+    if team is None:
+        return {}
+    return enemy_names.replacements((name, agent) for _, t, agent, name in rows if t != team)
+
+
+def _point(point: CoachPoint, feedback: list[dict], viewer_id: int | None = None, swaps: dict | None = None) -> dict:
     mine = {f["instance"]: f for f in feedback if viewer_id is not None and f["author_id"] == viewer_id
             and not f["handled"]}
-    return {"id": point.id, "theme": point.theme, "title": point.title, "body": point.body,
+    swaps = swaps or {}
+    instances = [_instance(j, raw, feedback) for j, raw in enumerate(point.instances or []) if _usable(raw)]
+    for i in instances:
+        i["caption"] = enemy_names.scrub(i["caption"], swaps)
+    return {"id": point.id, "theme": point.theme, "title": enemy_names.scrub(point.title, swaps),
+            "body": enemy_names.scrub(point.body, swaps),
             "disputed": any(f["verdict"] == "wrong" for f in feedback),
-            "instances": [_instance(j, raw, feedback) for j, raw in enumerate(point.instances or []) if _usable(raw)],
+            "instances": instances,
             "feedback": [f for f in feedback if f["instance"] is None],
             "mine": mine}       # the viewer's own open rows by moment (None: overall), to fill the form with
 
@@ -154,7 +171,8 @@ def page_data(db, replay, player_id: int | None, version: int | None, viewer_id:
     report = get_report(db, replay.match_id, chosen, version)
     rows = points(db, report.id)
     feedback = _feedback_by_point(db, [p.id for p in rows])
-    shown = [(p.polarity, _point(p, feedback[p.id], viewer_id)) for p in rows]
+    swaps = opponent_swaps(db, replay.match_id, chosen)
+    shown = [(p.polarity, _point(p, feedback[p.id], viewer_id, swaps)) for p in rows]
     data["report"] = {
         "id": report.id, "version": report.version, "versions": versions(db, replay.match_id, chosen),
         "playbook_version": report.playbook_version, "model": report.model,

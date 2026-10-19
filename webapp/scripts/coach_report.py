@@ -1,6 +1,6 @@
 """Writes and publishes one coaching report: snapshot, brief, headless Claude Code, checker, store.
 
-    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" [--model <name>] [--voice-file <path>] [--dry-run | --prompt-only]
+    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" [--model <name>] [--dry-run | --prompt-only]
 
 The model runs in the snapshot's own directory under the system temp folder, with an allow-listed environment
 (no DATABASE_URL) and one permitted command, ./q (the logged query tool). `--dry-run` prints the payload and stores
@@ -91,7 +91,6 @@ def main() -> int:
     parser.add_argument("match_uuid")
     parser.add_argument("player")
     parser.add_argument("--model")
-    parser.add_argument("--voice-file", type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--prompt-only", action="store_true",
@@ -111,12 +110,10 @@ def main() -> int:
         try:
             book = playbook.load()
             match_id, player_id = resolve(db, uuid, args.player)
-            data = snapshot.read(db, uuid)
+            data = snapshot.hide_enemy_names(snapshot.read(db, uuid), player_id)
         except (ValueError, snapshot.SnapshotError) as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
-        voice = ([line.strip() for line in args.voice_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-                 if args.voice_file else coach.active_notes(db, "voice"))
     # One directory per match and player: a second player's run must not delete the first's files.
     root = Path(tempfile.gettempdir()) / "valo-coach"
     run_dir = root / f"{uuid}-p{player_id}"
@@ -142,14 +139,14 @@ def main() -> int:
         return 2
     if args.prompt_only:
         built, _ = runner._brief_with_flag_ids(snap, slot, run_dir)
-        text = prompt.run_prompt(book, voice, built)
+        text = prompt.run_prompt(book, built)
         path = run_dir / "prompt.txt"
         path.write_text(text, encoding="utf-8")
         print(f"{path}\n{len(text)} characters")
         return 0
     call = claude_call(run_dir, args.model)
     try:
-        payload = runner.generate(snap, slot, run_dir, book, voice, call,
+        payload = runner.generate(snap, slot, run_dir, book, call,
                                   args.model or "claude-code (default model)")
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)

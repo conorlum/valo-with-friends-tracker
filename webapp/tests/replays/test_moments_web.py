@@ -19,6 +19,7 @@ from test_replay_routes import request, status_of  # noqa: E402
 from test_replay_store import condensed  # noqa: E402,F401  (fixture)
 
 from app.config import settings  # noqa: E402
+from app.models.friendship import Friendship  # noqa: E402
 from app.models.replay import ReplayRoundControl, ReplayRoundMoments  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
@@ -29,6 +30,7 @@ from app.services import replay_moments  # noqa: E402
 @pytest.fixture
 def db(page_db, monkeypatch):
     feature_free_source(monkeypatch)      # the fixtures' control inputs, so round fingerprints exist
+    Friendship.__table__.create(page_db.get_bind())     # which team is the friends' (enemies are named by agent)
     return page_db
 
 
@@ -116,10 +118,24 @@ def test_payload_shape_and_stale_count(db, linked):
     assert body["rounds"]["1"]["status"] == "ok"
     [f] = body["rounds"]["1"]["fights"]
     assert f["slot"] == 0 and f["died"]["t"] == 13.0 and "control_m2" in f["died"]
-    assert body["players"] and all(set(p) == {"name", "team"} for p in body["players"].values())
+    assert body["players"] and all(set(p) == {"name", "agent", "team"} for p in body["players"].values())
     assert isinstance(body["attack_round1"], list) and len(body["attack_round1"]) == 5
     assert set(body["summary"]) == set(body["players"])
     assert body["stale"] == linked.round_count - 1
+
+
+def test_the_other_team_than_the_friends_is_named_by_agent(db, linked):
+    from app.services import replays as replay_service
+
+    page = replay_service.page_context(db, linked)["players"]
+    first, *_ = sorted(page.values(), key=lambda p: p["slot"])
+    mate = next(p for p in page.values() if p["team"] == first["team"] and p["slot"] != first["slot"])
+    db.add(Friendship(owner_player_id=first["player_id"], friend_player_id=mate["player_id"]))
+    db.commit()
+    players = body_of(call(db))["players"]
+    for slot, p in page.items():
+        expected = p["name"] if p["team"] == first["team"] else f"the enemy {p['agent']}"
+        assert players[slot]["name"] == expected
 
 
 def test_old_fingerprint_old_revision_and_missing_rows_are_stale(db, linked):

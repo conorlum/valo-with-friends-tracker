@@ -33,6 +33,20 @@ def test_page_data_shows_the_latest_report_of_the_first_coached_player(db, world
     assert data["players"][0]["selected"] is True and data["team_coming_soon"] is True
 
 
+def test_a_stored_report_shows_opponents_by_agent_and_teammates_by_name(db, world):
+    from app.models import Player
+    replay, ids = world
+    mate, enemy = db.get(Player, ids[1]).display_name, db.get(Player, ids[6]).display_name
+    point = {"polarity": "good", "theme": "trading", "title": f"{enemy} fell first",
+             "body": f"You killed {enemy} at 7.97s; {mate} traded.",
+             "instances": [{"round": 2, "t": 41.5, "caption": f"vs {enemy}", "evidence": ["q1"]}]}
+    coach.store_report(db, replay.match_id, ids[0], payload(points=[point]))
+    shown = coach.page_data(db, replay, None, None)["report"]["good"][0]
+    assert shown["title"] == "The enemy Jett fell first"
+    assert shown["body"] == f"You killed the enemy Jett at 7.97s; {mate} traded."
+    assert shown["instances"][0]["caption"] == "vs the enemy Jett"
+
+
 def test_a_bad_or_unknown_player_or_version_falls_back(db, world):
     replay, ids = world
     coach.store_report(db, replay.match_id, ids[0], payload())

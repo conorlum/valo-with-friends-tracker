@@ -53,7 +53,7 @@ class Model:
 
 def run(snap, tmp_path, replies):
     model = Model(snap, tmp_path, replies)
-    return runner.generate(snap, 0, tmp_path, BOOK, [], model, "test-model"), model
+    return runner.generate(snap, 0, tmp_path, BOOK, model, "test-model"), model
 
 
 def test_the_flags_are_logged_first_and_shown_with_their_ids(snap, tmp_path):
@@ -245,7 +245,7 @@ def _wire(monkeypatch, tmp_path, argv, data):
     monkeypatch.setattr(sys, "argv", ["coach_report.py", *argv])
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
     monkeypatch.setattr(playbook, "load", lambda: BOOK)
-    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 8))
+    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 100))
     monkeypatch.setattr(snapshot, "read", lambda db, uuid: data)
     monkeypatch.setattr(coach, "active_notes", lambda db, kind: ["Plain words."])
     monkeypatch.setattr(coach_report.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -259,9 +259,10 @@ def _wire(monkeypatch, tmp_path, argv, data):
 def test_prompt_only_writes_the_first_prompt_and_never_calls_the_model(tmp_path, monkeypatch, capsys):
     _wire(monkeypatch, tmp_path, ["ABCDEF12-0000-4000-8000-000000000000", "0", "--prompt-only"], make_data())
     assert coach_report.main() == 0
-    path = tmp_path / "valo-coach" / "abcdef12-0000-4000-8000-000000000000-p8" / "prompt.txt"
+    path = tmp_path / "valo-coach" / "abcdef12-0000-4000-8000-000000000000-p100" / "prompt.txt"
     text = path.read_text(encoding="utf-8")
-    assert "Plain words." in text and "./q where" in text and "Trade." in text
+    assert "Plain words." not in text and "./q where" in text and "Trade." in text
+    assert "the enemy Jett" in text and "P5#T5" not in text and "P1#T1" in text   # player 100 is on team1
     out = capsys.readouterr().out
     assert str(path) in out and str(len(text)) in out
 
@@ -290,11 +291,11 @@ def test_coach_query_refuses_a_second_run_option(tmp_path, monkeypatch, capsys):
 def test_a_rerun_keeps_an_unstored_payload(tmp_path, monkeypatch, capsys):
     uuid = "abcdef12-0000-4000-8000-000000000000"
     _wire(monkeypatch, tmp_path, [uuid, "0", "--prompt-only"], make_data())
-    old = tmp_path / "valo-coach" / f"{uuid}-p8"
+    old = tmp_path / "valo-coach" / f"{uuid}-p100"
     old.mkdir(parents=True)
     (old / "payload.json").write_text('{"kept": true}', encoding="utf-8")
     assert coach_report.main() == 0
-    saved = list((tmp_path / "valo-coach").glob(f"{uuid}-p8-payload-*.json"))
+    saved = list((tmp_path / "valo-coach").glob(f"{uuid}-p100-payload-*.json"))
     assert len(saved) == 1 and saved[0].read_text(encoding="utf-8") == '{"kept": true}'
     assert str(saved[0]) in capsys.readouterr().out
     assert not (old / "payload.json").exists()
@@ -342,7 +343,7 @@ def test_a_follow_up_without_a_session_id_raises_instead_of_starting_afresh(snap
     model = Model(snap, tmp_path, ["no json here"])
     model_call = lambda text, session: (model(text, session)[0], None)
     with pytest.raises(runner.RunError, match="session"):
-        runner.generate(snap, 0, tmp_path, BOOK, [], model_call, "test-model")
+        runner.generate(snap, 0, tmp_path, BOOK, model_call, "test-model")
 
 
 # PR 132 review.
@@ -366,7 +367,7 @@ def test_each_rounds_economy_and_score_can_be_cited(snap, tmp_path):            
 
     model = Facts(snap, tmp_path / "econ", [lambda q: json.dumps({"points": [
         {**point, "instances": [{**point["instances"][0], "evidence": [model.facts]}]}]})])
-    payload = runner.generate(snap, 0, tmp_path / "econ", BOOK, [], model, "test-model")
+    payload = runner.generate(snap, 0, tmp_path / "econ", BOOK, model, "test-model")
     assert [p["title"] for p in payload["points"]] == ["Bought up"] and payload["unchecked"] == []
 
 
@@ -390,7 +391,7 @@ def test_a_report_the_store_refuses_is_kept_on_disk(snap, tmp_path, monkeypatch)
 
 def test_the_stored_title_is_trimmed_and_a_long_model_name_is_cut(snap, tmp_path):           # finding 9
     model = Model(snap, tmp_path, [lambda q: json.dumps({"points": [{**good_point([q]), "title": "  Held  "}]})])
-    payload = runner.generate(snap, 0, tmp_path, BOOK, [], model, "m" * 80)
+    payload = runner.generate(snap, 0, tmp_path, BOOK, model, "m" * 80)
     assert payload["points"][0]["title"] == "Held" and len(payload["model"]) == 64
 
 

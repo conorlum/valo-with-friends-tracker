@@ -80,7 +80,8 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   match ids in it. Bump its `version` on any edit; only the owner approves edits. Every coach command
   refuses to run on a playbook at version 0 or with nothing under `# Principles`: the principles are the
   owner's own lines. Never write stand-in principles for them.
-  Voice samples live in `coach_notes` (`scripts/coach_notes.py`).
+  The model writes in its own plain voice, one tone for every point: no voice samples go into the prompt
+  (the owner's choice, 2026-10-18). `coach_notes` (`scripts/coach_notes.py`) still stores notes; none are read.
 - The page is the replay viewer: `/replays/<uuid>/coach` (`app/routers/coach.py`). A strip above it names the
   player and version (`replays/_coach.html`); the points are the first two tabs of the viewer's side column,
   "Did well" and "To improve", beside the map (`replays/_coach_points.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
@@ -91,6 +92,10 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
   that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
   feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).
+- Opponents' names never appear in the coach or Critical Moments tabs; they are "the enemy <agent>"
+  (`app/services/enemy_names.py`). A run's snapshot renames them before the model sees it
+  (`snapshot.hide_enemy_names`), the coach page swaps any left in stored text, and the moments payload names the
+  team without the friends (by friendships; both teams on a tie) by agent.
 - Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
 
 ### Running the webapp locally

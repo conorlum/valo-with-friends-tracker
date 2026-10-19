@@ -63,9 +63,9 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
     return built, logged
 
 
-def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model, model_name: str) -> dict:
+def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) -> dict:
     built, flags = _brief_with_flag_ids(snap, slot, run_dir)
-    text, session = call_model(prompt.run_prompt(book, voice, built), None)
+    text, session = call_model(prompt.run_prompt(book, built), None)
     points = extract_points(text)
     if points is None:
         _need_session(session)

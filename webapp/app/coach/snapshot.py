@@ -9,7 +9,7 @@ from pathlib import Path
 from app.coach import control_areas
 from app.coach.roundview import RoundView
 from app.replays import format as fmt
-from app.services import replay_control, replays
+from app.services import enemy_names, replay_control, replays
 
 VERSION = 1
 FILE = "snapshot.json"
@@ -66,6 +66,16 @@ def read(db, match_uuid: str) -> dict:
         shares = control_areas.area_shares(answer.row.data, replay.map_name) if answer.status == "ok" else None
         controls[n] = (answer.status, bool(answer.stale), shares)
     return assemble(context, blobs, controls, links)
+
+
+def hide_enemy_names(data: dict, player_id: int) -> dict:
+    """The snapshot as one player's run sees it: every opponent named by their agent ("the enemy Neon"), so no
+    opponent's name reaches the model or its report."""
+    players = data["context"]["players"]
+    team = next((p.get("team") for p in players.values() if p.get("player_id") == player_id), None)
+    if team is None:
+        raise SnapshotError(f"player {player_id} is not in this replay")
+    return {**data, "context": {**data["context"], "players": enemy_names.hide_in(players, team)}}
 
 
 def save(data: dict, directory: Path) -> None:
