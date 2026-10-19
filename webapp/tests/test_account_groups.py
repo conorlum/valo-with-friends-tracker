@@ -306,6 +306,47 @@ def test_recent_rows_show_the_lowest_accounts_row_of_a_shared_match(db):
     assert [r.kills for r in rows] == [7]
 
 
+def _combined_account_rows(db):
+    from app.services.recent_match_rows import build_recent_match_rows
+
+    main, alt = _players(db, "main#1", "alt#2")
+    link_account(db, main.id, alt.id)
+    set_account_label(db, main.id, main.id, "Smurf")
+    _play(db, main, 1, "m1")
+    _play(db, alt, 2, "a1")
+    db.commit()
+    ids = frozenset({main.id, alt.id})
+    entries = recent_form_entries(db, main.id, player_ids=ids)
+    return main, ids, entries, build_recent_match_rows(db, main.id, entries, ids)
+
+
+def test_combined_rows_name_the_account_that_played(db):
+    _, _, entries, rows = _combined_account_rows(db)
+    by_match = {r.entry.external_id: r.account for r in rows}
+    assert by_match == {"m1": "Smurf", "a1": "alt"}
+
+
+def test_single_account_rows_have_no_account(db):
+    from app.services.recent_match_rows import build_recent_match_rows
+
+    main, ids, _, _ = _combined_account_rows(db)
+    entries = recent_form_entries(db, main.id)
+    rows = build_recent_match_rows(db, main.id, entries)
+    assert rows and all(r.account is None for r in rows)
+
+
+def test_account_column_shows_only_on_combined_rows(db):
+    from app.services.recent_match_rows import build_recent_match_rows
+    from app.templates import templates
+
+    main, ids, _, combined = _combined_account_rows(db)
+    single = build_recent_match_rows(db, main.id, recent_form_entries(db, main.id))
+    template = templates.get_template("_recent_match_rows.html")
+    ctx = {"agent_icon_slug": lambda a: None}
+    assert "<th>Account</th>" in template.render(recent_rows=combined, **ctx)
+    assert "<th>Account</th>" not in template.render(recent_rows=single, **ctx)
+
+
 def test_the_baseline_counts_a_shared_match_once(db, monkeypatch):
     from app.services import recent_match_rows
     from app.services.recent_match_rows import MIN_BASELINE_MATCHES, build_recent_match_rows

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import AccountGroupMember, ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.services.match_streaks import RECENT_FORM_COUNT, FormEntry, form_entry
 from app.services.circle import circle_ids
 from app.services.player_data import one_row_per_match
@@ -71,6 +71,7 @@ class RecentMatchRow:
     assists: int = 0
     average_impact: float | None = None
     badges: list[MatchBadge] = field(default_factory=list)
+    account: str | None = None   # which of a group's accounts played it; only on the combined view
 
 
 @dataclass
@@ -248,6 +249,16 @@ def build_recent_match_rows(
         dict(db.query(Player.id, Player.display_name).filter(Player.id.in_(friend_ids)).all()) if friend_ids else {}
     )
 
+    account_names: dict[int, str] = {}
+    if player_ids:
+        for pid, display_name, label in (
+            db.query(Player.id, Player.display_name, AccountGroupMember.label)
+            .outerjoin(AccountGroupMember, AccountGroupMember.player_id == Player.id)
+            .filter(Player.id.in_(player_ids))
+            .all()
+        ):
+            account_names[pid] = label or display_name.split("#")[0]
+
     mp_by_external_id = {external_id_by_match[mp.match_id]: mp for mp in player_mps.values()}
     rows = []
     for entry in entries:
@@ -308,6 +319,7 @@ def build_recent_match_rows(
                 assists=s.assists,
                 average_impact=(s.impact_sum / s.rounds) if s.rounds else None,
                 badges=badges,
+                account=account_names.get(mp.player_id),
             )
         )
     return rows
