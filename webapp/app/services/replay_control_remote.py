@@ -21,7 +21,7 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    reached or is full ends the pass.
 
 **Timing gaps** (docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md). Each planning pass reads
-the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 1 is
+the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 2 is
 sent a `gaps` block (with the gap fingerprint and the tick cache key, which the worker cannot compute: its
 interpreter has no SQLAlchemy); an older image, an unknown protocol or a failed read gets the plain task it
 always got, because a gaps block fails the whole task there. A capable task has its own key, so the worker's
@@ -106,7 +106,7 @@ BACKOFF_S = 300
 PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
 LOCK_ID = 7_346_120_117          # pg_try_advisory_xact_lock's key for the dispatcher
 TIMEOUT_S = 30
-GAPS_PROTOCOL = 1               # the worker's control.gaps_protocol this deploy can talk to (its /health)
+GAPS_PROTOCOL = 2               # the worker's control.gaps_protocol this deploy can talk to (its /health)
 
 
 def enabled() -> bool:
@@ -343,6 +343,10 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     run = gaps.get("run") if isinstance(gaps, dict) else None
     if not isinstance(run, dict) or not isinstance(gaps.get("rows"), list) or run.get("status") not in ("ok", "failed"):
         return None
+    moments = gaps.get("moments")
+    if not isinstance(moments, dict) or moments.get("status") not in ("ok", "failed") \
+            or (moments["status"] == "ok" and not isinstance(moments.get("fights"), list)):
+        return None
     if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, f.map_name) \
             or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
             or run.get("chokes_hash") != choke_assets.asset_hash(f.map_name):
@@ -359,7 +363,7 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool
         return False
     try:
         outcome = gaps_store.store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps["rows"],
-                                        expected_control_fingerprint=f.fingerprint)
+                                        moments=gaps["moments"], expected_control_fingerprint=f.fingerprint)
     except Exception:  # noqa: BLE001 - rows the model refuses: the gaps are dropped, control stays stored
         log.exception("timing gaps of replay %s round %s could not be stored", f.replay_id, f.round_number)
         counts["gaps_dropped"] += 1
@@ -434,7 +438,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 'gaps_revision': replay_gaps.GAPS_REVISION,
                 'chokes_hash': choke_assets.asset_hash(f.map_name),
                 'notes': {job.get('error_code') or 'source_unavailable': 1},
-                'error': job.get('error') or 'round source unavailable; reparse this recording'}, 'rows': []}}
+                'error': job.get('error') or 'round source unavailable; reparse this recording'}, 'rows': [],
+                'moments': {'status': 'failed', 'fights': [],
+                            'error': job.get('error') or 'round source unavailable; reparse this recording'}}}
             _keep_gaps(session_factory, f, failure, counts)
             continue
         elif status == "failed" and job.get("error_kind") in ('engine', 'inputs') and not f.gaps_only:

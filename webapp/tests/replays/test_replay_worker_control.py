@@ -353,8 +353,10 @@ def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
     assert sorted(re.findall(r"(numpy|scipy|Pillow)==(\S+)", install)) == sorted(pins.items())
     assert "python3-venv" in dockerfile and "COPY webapp/app/control /srv/webapp/app/control" in dockerfile
     assert "COPY webapp/app/gaps /srv/webapp/app/gaps" in dockerfile
+    assert "COPY webapp/app/moments /srv/webapp/app/moments" in dockerfile       # critical moments ride the gap run
     smoke = re.search(r'/opt/control-venv/bin/python -c "import ([^"]+)"', dockerfile).group(1)
-    assert {"app.gaps.detect", "app.gaps.cache", "app.gaps.rows", "app.gaps.backshots"} <= set(smoke.split(", "))
+    assert {"app.gaps.detect", "app.gaps.cache", "app.gaps.rows", "app.gaps.backshots",
+            "app.moments.fights"} <= set(smoke.split(", "))
     assert re.search(r'RUN PYTHONPATH=\S+ /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine',
                      dockerfile)
     assert "REPLAY_CONTROL_CMD='[\"/opt/control-venv/bin/python\", \"-m\", \"replay_worker.control_job\"]'" in dockerfile
@@ -465,13 +467,13 @@ def test_a_task_without_gaps_touches_no_tick_cache(tmp_path, monkeypatch):
 
 def test_health_advertises_the_gaps_protocol_beside_the_switch(tmp_path, runner):
     # What the web app reads before it sends a gaps block (app/services/replay_control_remote.py).
-    assert server.GAPS_PROTOCOL == 1
+    assert server.GAPS_PROTOCOL == 2
     on, _ = runner()
     control = http(serve(tmp_path, on), "/health")[1]["control"]
-    assert control["enabled"] is True and control["gaps_protocol"] == 1
+    assert control["enabled"] is True and control["gaps_protocol"] == 2
     off, _ = runner(control_enabled=False)
     control = http(serve(tmp_path, off), "/health")[1]["control"]
-    assert control["enabled"] is False and control["gaps_protocol"] == 1, "the switch and the protocol are separate"
+    assert control["enabled"] is False and control["gaps_protocol"] == 2, "the switch and the protocol are separate"
 
 
 # ---------------------------------------------------------------- heights by digest

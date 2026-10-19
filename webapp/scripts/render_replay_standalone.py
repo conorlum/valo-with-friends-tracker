@@ -78,6 +78,8 @@ def load_site(folder: Path) -> dict | None:
         site["players"] = json.loads((folder / "control_players.json").read_text(encoding="utf-8"))
     for path in folder.glob("control_heatmap_*.json"):
         site["heatmaps"][path.stem.split("_")[-1]] = json.loads(path.read_text(encoding="utf-8"))
+    if (folder / "moments.json").is_file():   # the moments.json body for the whole match
+        site["moments"] = json.loads((folder / "moments.json").read_text(encoding="utf-8"))
     return site
 
 
@@ -89,6 +91,7 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     linked = bool(site and match.get("linked"))
     control = match.get("control") if linked else None
     gaps = bool(linked and site.get("gaps"))
+    moments = bool(control and site.get("moments"))   # the tab is gated on control, as on the site
     player = env.get_template("replays/_player.html").render(
         replay={"map_name": map_name, "round_numbers": sorted(blobs)}, linked=linked, control=control, gaps=gaps)
     agents = sorted({p["agent"] for blob in blobs.values() for p in blob["players"]})
@@ -104,10 +107,14 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
         payload["heatmaps"] = site["heatmaps"] if control else {}
     if gaps:
         payload["gaps"] = site["gaps"]
+    if moments:
+        payload["moments"] = site["moments"]
     style = (APP / "static" / "css" / "style.css").read_text(encoding="utf-8")
     script = (APP / "static" / "js" / "replay.js").read_text(encoding="utf-8")
     if gaps:   # before replay.js, as the site's pages include it
         script = (APP / "static" / "js" / "replay_gaps.js").read_text(encoding="utf-8") + "\n" + script
+    if moments:
+        script = (APP / "static" / "js" / "moments.js").read_text(encoding="utf-8") + "\n" + script
     if control:
         script += "\n" + (APP / "static" / "js" / "replay_control.js").read_text(encoding="utf-8")
     data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
@@ -164,12 +171,18 @@ __SCRIPT__
       };
     }
     // An optional "#round=N&t=T" in the URL opens round N at T seconds; "&control=1" also turns the Map control
-    // layer on and "&panel=1" opens the Control tab (a link or a headless screenshot of one moment).
-    var start = {};
+    // layer on and "&panel=1" opens the Control tab (a link or a headless screenshot of one moment);
+    // "&tab=moments&slot=N" opens the Critical Moments tab on slot N's fights.
+    var start = {}, openTab = null;
     String(window.location.hash || "").replace(/^#/, "").split("&").forEach(function (part) {
       var kv = part.split("=");
-      if (kv.length === 2 && kv[1] !== "" && isFinite(Number(kv[1]))) start[kv[0]] = Number(kv[1]);
+      if (kv.length === 2 && kv[0] === "tab") openTab = kv[1];
+      else if (kv.length === 2 && kv[1] !== "" && isFinite(Number(kv[1]))) start[kv[0]] = Number(kv[1]);
     });
+    if (site && match.control && data.moments && window.ReplayMoments) {
+      options.loadMoments = function () { return Promise.resolve(data.moments); };
+      options.momentsViewerSlot = start.slot !== undefined ? start.slot : null;
+    }
     var first = rounds.indexOf(start.round) >= 0 ? start.round : rounds[0];
     window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
     window.viewerReady = window.viewer.showRound(first).then(function (round) {
@@ -179,6 +192,8 @@ __SCRIPT__
       var layer = pick("layer"), tab = pick("tab");
       if (start.control && layer && !layer.checked) layer.click();
       if (start.panel && tab) tab.click();
+      var momentsTab = document.querySelector('[data-replay-tab="moments"]');
+      if (openTab === "moments" && momentsTab) momentsTab.click();
       return round;
     });
   })();

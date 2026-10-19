@@ -1876,6 +1876,24 @@
     this.tab = name;
     if (name === "control") this.loadControlTables();
     if (name === "gaps") this.refreshGaps();
+    if (name === "moments") this.loadMoments();
+  };
+
+  // Critical Moments: fetched the first time the tab opens; a failed fetch is asked again next time.
+  ReplayViewer.prototype.loadMoments = function () {
+    var self = this;
+    var panel = this.root.querySelector("[data-replay-moments]");
+    if (!panel || !this.options.loadMoments || !window.ReplayMoments) return;
+    if (!this.momentsPromise) {
+      panel.textContent = "Loading…";
+      this.momentsPromise = Promise.resolve().then(function () { return self.options.loadMoments(); }).then(function (payload) {
+        var slot = window.ReplayMoments.defaultSlot(payload, self.options.momentsViewerSlot);
+        window.ReplayMoments.render(panel, payload, slot, self);
+      }).catch(function () {
+        self.momentsPromise = null;
+        panel.textContent = "Could not load the moments. Open the tab again to retry.";
+      });
+    }
   };
 
   ReplayViewer.prototype.step = function (delta) {

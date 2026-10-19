@@ -203,7 +203,7 @@ def test_review_gap_writer_rechecks_tags_after_existing_run_lookup(factory, db, 
     [p] = rc.plan(db, rounds={1})
     put_row(db, linked, 1, fingerprint=p.fingerprint)
     old = dict(RUN, fingerprint='0' * 16)
-    assert store_gaps(factory, linked.id, 1, old, [ROW, dict(ROW, seq=1)]) == 'stored'
+    assert store_gaps(factory, linked.id, 1, old, [ROW, dict(ROW, seq=1)], moments=dict(status="ok", v=1, sight=True, fights=[], error=None)) == 'stored'
     wanted = dict(RUN, fingerprint=gaps.gap_fingerprint(p.fingerprint, linked.map_name),
                   gaps_revision=gaps.GAPS_REVISION, chokes_hash=choke_assets.asset_hash(linked.map_name))
     get = Session.get
@@ -215,7 +215,7 @@ def test_review_gap_writer_rechecks_tags_after_existing_run_lookup(factory, db, 
             tagged['map_features']['features'][0]['name' if editorial else 'initial_state'] = 'renamed' if editorial else 'open'
         return row
     monkeypatch.setattr(Session, 'get', late_edit)
-    result = store_gaps(factory, linked.id, 1, wanted, [ROW], expected_control_fingerprint=p.fingerprint)
+    result = store_gaps(factory, linked.id, 1, wanted, [ROW], moments=dict(status="ok", v=1, sight=True, fights=[], error=None), expected_control_fingerprint=p.fingerprint)
     assert changed
     assert result == 'stored' if editorial else result.startswith('skipped')
     db.expire_all()
