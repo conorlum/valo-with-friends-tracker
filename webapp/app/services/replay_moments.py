@@ -139,7 +139,8 @@ def player_summary(slot, moments, deaths) -> dict:
             "medians": {k: _bucket(v) for k, v in buckets.items()}}
 
 
-def build_payload(*, players, attack_round1, moments, deaths, events, stale) -> dict:
+def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=()) -> dict:
+    """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights)."""
     rounds = {}
     for n, m in (moments or {}).items():
         ok = m.get("status") == "ok"
@@ -153,7 +154,7 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale) -> 
         summary[str(slot)] = {**player_summary(slot, moments, deaths),
                               "info": player_info(slot, events, moments)}
     return {"players": players, "attack_round1": attack_round1, "rounds": rounds,
-            "summary": summary, "stale": stale}
+            "summary": summary, "stale": stale, "failed": sorted(int(n) for n in failed)}
 
 
 def load_moments_payload(db, replay) -> dict:
@@ -175,6 +176,7 @@ def load_moments_payload(db, replay) -> dict:
     groups = replay_control.side_groups(db, replay)
     context = replay_control.resolve_current_geometry(db, replay.map_name)
     stale = 0
+    failed = []
     for n in range(1, replay.round_count + 1):
         row = stored.get(n)
         if row is None or row.gaps_revision != replay_gaps.GAPS_REVISION:
@@ -184,6 +186,8 @@ def load_moments_payload(db, replay) -> dict:
         current = None if control is None else replay_gaps.gap_fingerprint(control, replay.map_name)
         if current is None or row.fingerprint != current:
             stale += 1
+        elif row.status != "ok":
+            failed.append(n)     # current but failed: the tab says so, not "no fights"
 
     loaded = replay_control_views.load_round_summaries(db, replay)
     tables = replay_control_views.player_tables(replay, loaded)
@@ -209,4 +213,4 @@ def load_moments_payload(db, replay) -> dict:
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
-                         events=events, stale=stale)
+                         events=events, stale=stale, failed=failed)

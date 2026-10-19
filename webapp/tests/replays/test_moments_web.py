@@ -119,6 +119,19 @@ def test_old_fingerprint_old_revision_and_missing_rows_are_stale(db, linked):
     assert body_of(call(db))["stale"] == linked.round_count - 1
 
 
+def test_a_current_failed_round_is_listed_as_failed_not_stale(db, linked):
+    # C5: the gaps ran but the moments raised; the row is current, so it is not stale, and the tab must say so
+    put_moments(db, linked, 1, status="failed", fights=[])
+    body = body_of(call(db))
+    assert body["failed"] == [1] and body["stale"] == linked.round_count - 1
+    assert body["rounds"]["1"] == {"status": "failed", "fights": []}
+    put_moments(db, linked, 1, status="failed", fights=[], fingerprint="0" * 16)   # an old failure is just stale
+    body = body_of(call(db))
+    assert body["failed"] == [] and body["stale"] == linked.round_count
+    put_moments(db, linked, 1)
+    assert body_of(call(db))["failed"] == []
+
+
 def test_knowledge_events_reach_the_summary(db, linked):
     put_row(db, linked, 1)
     row = db.get(ReplayRoundControl, (linked.id, 1))

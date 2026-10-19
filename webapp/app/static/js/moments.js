@@ -118,6 +118,18 @@
     return bits.length ? "utility: " + bits.join(", ") : "utility 0";
   }
 
+  // The lines above the summary: rounds still waiting, and rounds whose moments failed (their fights are missing).
+  function notes(payload) {
+    var out = [];
+    if (payload.stale > 0) out.push(payload.stale + " rounds not computed yet");
+    var failed = payload.failed || [];
+    if (failed.length) {
+      out.push("Moments could not be computed for round" + (failed.length === 1 ? " " : "s ") + failed.join(", ") +
+        ": their fights are missing below");
+    }
+    return out;
+  }
+
   function groupNumbers(row, key) {
     var mates = row.mates || {};
     switch (key) {
@@ -222,7 +234,7 @@
     select.addEventListener("change", function () { render(panel, payload, Number(select.value), viewer); });
     panel.appendChild(select);
     var summary = (payload.summary || {})[String(slot)] || {};
-    if (payload.stale > 0) panel.appendChild(el("p", "replay-side-note", payload.stale + " rounds not computed yet"));
+    notes(payload).forEach(function (text) { panel.appendChild(el("p", "replay-side-note", text)); });
     panel.appendChild(el("p", "replay-side-note", summaryLine(summary)));
     panel.appendChild(el("h3", "replay-moments-heading", "Most expensive deaths"));
     var deaths = el("ol", "replay-feed");
@@ -245,7 +257,7 @@
 
   var api = {
     GROUPS: GROUPS, defaultSlot: defaultSlot, fightsFor: fightsFor, groupsFor: groupsFor, rowText: rowText,
-    summaryLine: summaryLine, jumpFor: jumpFor, clock: clock, render: render
+    summaryLine: summaryLine, notes: notes, jumpFor: jumpFor, clock: clock, render: render
   };
   global.ReplayMoments = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -168,6 +168,17 @@ def test_summary_line():
 
 
 @needs_node
+def test_notes_name_failed_rounds_beside_stale_ones():
+    # C5: a failed round's fights are missing, which the tab must not show as "no fights"
+    got = run_node("""function run(p) { return [M.notes(p.a), M.notes(p.b), M.notes(p.c)]; }""",
+                   {"a": payload(stale=2, failed=[3, 7]), "b": payload(failed=[5]), "c": payload()})
+    assert got[0] == ["2 rounds not computed yet",
+                      "Moments could not be computed for rounds 3, 7: their fights are missing below"]
+    assert got[1] == ["Moments could not be computed for round 5: their fights are missing below"]
+    assert got[2] == []
+
+
+@needs_node
 def test_jump_target():
     got = run_node("""function run(p) { return [M.jumpFor({round: 3, t0: 42}), M.jumpFor({round: 3, t0: 2}),
       M.jumpFor({round: 2, t: 9}), M.jumpFor({round: 2, t: 9, t0: undefined})]; }""", {})
