@@ -15,7 +15,7 @@ STALE_SAMPLE_S = 1.0    # a living player's nearest earlier sample older than th
                         # condensed at sub-second steps, so a real track never trips it)
 HALF_S = 3.5            # an unfinished defuse attempt this long (as displayed, 2 decimals) is a half, else a tap
 SPIKE_TIMER_S = 45.0    # PROVISIONAL(D3): the spike's fuse, from plant to detonation
-_UTIL_KINDS =("flash", "nearsight", "ability", "cast")
+_UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
 
 
