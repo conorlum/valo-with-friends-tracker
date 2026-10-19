@@ -18,7 +18,7 @@ from app.services.state_replay import KillEventInput, MatchInput, RoundInput
 RECENT_MATCH_LIMIT = 30
 
 
-# PROVISIONAL(D2): dedupe a shared match rather than refuse the link.
+# Dedupe a shared match rather than refuse the link.
 def one_row_per_match(player_ids):
     """Filter for a combined (multi-account) MatchPlayer query: of the given
     accounts' rows in one match, keep only the lowest player_id's. Applied in
