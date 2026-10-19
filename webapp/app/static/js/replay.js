@@ -91,11 +91,27 @@
   // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a dark
   // disc), area (a team-tinted disc), reveal (a pulsing ring), wire (a line to its paired end),
   // line (a wall or an aim, from the object's yaw: see lineEnds), wall (Viper's screen, along its
-  // laid points), badge (a team-coloured disc with the ability's glyph) or hidden. `pop` (seconds):
+  // laid points; with `trace`, along that projectile's flight: traceWalls), box (a rectangle along the
+  // object's yaw, `len` by `width`: boxCorners; a `sweep` runs a front across it in that many seconds), lanes
+  // (two walls `width` apart along the yaw: Fast Lane), badge (a team-coloured disc with the ability's glyph)
+  // or hidden. `part`: a later stage of an object already placed (a Cyber Cage going up from its trap), so not a
+  // use of its own in the players panel. The offsets were measured on live replays: each directional object spawns a fixed distance
+  // straight ahead of its caster with the caster's facing as its yaw. `pop` (seconds):
   // the ability goes off in an instant though its object lives on, so it shows only until that long
   // after its last pop (see popTimes), each pop drawn as a burst. `r` and `len` are world units. First match wins; an
   // unknown archetype is a badge with no glyph. Projectiles are never drawn (their object is).
   // Radii are approximate in-game sizes, tuned by eye on the map.
+  // `life` (seconds): a unit's full run from its spawn (a drone, a bot), drawn as a timer round its badge that runs
+  // down whether or not it lasts; one destroyed sooner goes as any ability does. Each is where the full lives of its
+  // kind end over 843 live rounds (2026-10-18): Owl Drone 7.1 (83 of 223), Trailblazer 6.1 (48 of 186), Boom Bot 5.1
+  // (103 of 174), FAKEOUT 11.0 (50 of 97; 5 more to 11.34), Seekers 15.25 (7 of 113), Tejo's drone 6.3-6.6 (13 of
+  // 55), Thrash 6.0 (2 of 7).
+  // Prowler runs 2.5 s (249 of 502) but chases past it once it locks on. Wingman has no fixed run (5 to 8 s): none.
+  // `carried` (seconds): an ult the owner carries, drawn as a timer round the owner (carriedAt), not on the map.
+  // `trip` (world units): a device's trigger radius; `cone` (degrees each side of its facing) and `coneLen`: a turret's
+  // view, drawn fading out (it sees as far as its line of sight goes). Both are the engine's (TURRET_HALF, ALARMBOT_M,
+  // CHAMBER_TRAP_M in app/control/engine.py; test_replay_viewer pins them). `activeFor` (seconds): a device's run
+  // from its row's `active` (Veto's Interceptor, set off), with a line to each of its `intercepts`.
   var ABILITY_STYLES = [
     // Omen
     [/^Wraith_4_Smoke$/, { ability: "Dark Cover", shape: "smoke", r: 410 }],
@@ -104,7 +120,7 @@
     [/^Smonk_NewSmoke(_PDS)?$/, { ability: "Ruse", shape: "smoke", r: 410 }],
     [/^Smonk_Q_DecayExplosion$/, { ability: "Meddle", shape: "area", r: 450, pop: 1.0 }],
     // Cypher
-    [/^Gumshoe_Q_Cage$/, { ability: "Cyber Cage", shape: "smoke", r: 330 }],
+    [/^Gumshoe_Q_Cage$/, { ability: "Cyber Cage", shape: "smoke", r: 330, part: true }],
     [/^Gumshoe_Q_CageTrap$/, { ability: "Cyber Cage", shape: "badge" }],
     [/^Gumshoe_4_TripWire$/, { ability: "Trapwire", shape: "wire" }],
     [/^Gumshoe_4_TripWire_SecondWire$/, { ability: "Trapwire", shape: "hidden" }],
@@ -115,27 +131,37 @@
     [/^Hunter_Q_SonarPing$/, { ability: "Recon Bolt", shape: "reveal", r: 1500 }],
     [/^Hunter_Q_SonarBolt$/, { ability: "Recon Bolt", shape: "hidden" }],
     [/^Hunter_4_ExplosiveBolt_Explosion$/, { ability: "Shock Bolt", shape: "area", r: 350 }],
-    [/^Hunter_E_Drone$/, { ability: "Owl Drone", shape: "badge" }],
+    [/^Hunter_E_Drone$/, { ability: "Owl Drone", shape: "badge", life: 7.1 }],
     [/^Hunter_E_Drone_RevealDart$/, { ability: "Owl Drone", shape: "badge", small: true, label: "Owl Drone dart" }],
     // Waylay
     [/^Terra_E_RewindTime_RewindTarget$/, { ability: "Refract", shape: "badge", label: "Refract (return point)" }],
     [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500, pop: 1.0 }],
-    [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "badge" }],
+    // Convergent Paths: 36 by 13.5 m, from 3 m ahead of Waylay (its object spawns 3.5 m ahead), 1 s windup.
+    [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "box", len: 3600, width: 1350, sweep: 1.0 }],
     // Iso
     [/^Sequoia_E_Shield$/, { ability: "Double Tap", shape: "hidden" }],
-    [/^Sequoia_E_Orb$/, { ability: "Double Tap", shape: "badge", label: "Double Tap orb" }],
-    [/^Sequoia_4_MovingCover$/, { ability: "Contingency", shape: "badge" }],
-    [/^Sequoia_Q_FragileMissile_TrajectoryWarning$/, { ability: "Undercut", shape: "badge" }],
-    [/^Sequoia_X_LineCapture$/, { ability: "Kill Contract", shape: "badge" }],
+    [/^Sequoia_E_Orb$/, { ability: "Double Tap", shape: "badge", part: true, label: "Double Tap orb" }],
+    // Contingency: the wall forms 5 m ahead of Iso (its object, 4.5 m) and travels 27.5 m along his aim over its
+    // 5.4 s: the band it sweeps, with the wall as the sweep's front. The alt cast is its own object (`_Slower`),
+    // half the speed over the same 5.4 s: 13.75 m. The wiki gives no width: 4.75 m is measured off valoplant's
+    // drawing of it beside Tejo's ult (12 m wide on the wiki), 2026-10-17.
+    [/^Sequoia_4_MovingCover$/, { ability: "Contingency", shape: "box", len: 2750, width: 475, sweep: 5.4 }],
+    [/^Sequoia_4_MovingCover_Slower$/, { ability: "Contingency", shape: "box", len: 1375, width: 475, sweep: 5.4,
+                                         label: "Contingency (alt cast, half speed)" }],
+    // Undercut's bolt: 3 m radius, 22.5 m/s for 1.55 s (34.9 m), from Iso. Kill Contract: a 36 by 15 m column
+    // from Iso, 0.9 s windup. Contingency is with the box shapes below.
+    [/^Sequoia_Q_FragileMissile_TrajectoryWarning$/, { ability: "Undercut", shape: "box", len: 3488, width: 600, sweep: 1.55 }],
+    [/^Sequoia_X_LineCapture$/, { ability: "Kill Contract", shape: "box", len: 3600, width: 1500, sweep: 0.9 }],
     // Phoenix
     [/^Phoenix_MolotovFire$/, { ability: "Hot Hands", shape: "area", r: 450 }],
     // Blaze: its laid line (the condenser's `points`, along its projectile's flight); a badge when it has none.
     [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "wall", fire: true }],
-    [/^Phoenix_X_ResTarget/, { ability: "Run it Back", shape: "badge", label: "Run it Back (return point)" }],
+    // Run it Back: the return point, and round Phoenix the 11 s he has (140 live rows: 66 ran to 11.0, the rest he died).
+    [/^Phoenix_X_ResTarget/, { ability: "Run it Back", shape: "badge", label: "Run it Back (return point)", carried: 11.0 }],
     // Skye
     [/^Guide_4_Heal_AOE$/, { ability: "Regrowth", shape: "area", r: 900 }],
     [/^Guide_E_HawkFlash_FlashSource$/, { ability: "Guiding Light", shape: "badge", unlisted: true }],
-    [/^Guide_Q_PossessableScout$/, { ability: "Trailblazer", shape: "badge" }],
+    [/^Guide_Q_PossessableScout$/, { ability: "Trailblazer", shape: "badge", life: 6.1 }],
     // Astra: stars are placed markers; a fake nebula is a dissipate (a thin, fading smoke).
     [/^Rift_E_SmokeZone$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, label: "Nebula" }],
     [/^Rift_E_SmokeZone_Fake$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, faint: true, label: "Dissipate" }],
@@ -146,14 +172,14 @@
     // Gekko: globules are what's left to reclaim.
     [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 550 }],
     [/^Aggrobot_SeekerNade$/, { ability: "Wingman", shape: "badge" }],
-    [/^Aggrobot_RollyPolly$/, { ability: "Thrash", shape: "badge" }],
+    [/^Aggrobot_RollyPolly$/, { ability: "Thrash", shape: "badge", life: 6.0 }],
     [/^Aggrobot_(X_)?Reclaim_Orb/, { ability: "Wingman", shape: "badge", small: true, unlisted: true, label: "Gekko globule" }],
     // Raze
     [/^Clay_Q_Explosion$/, { ability: "Blast Pack", shape: "area", r: 450 }],
-    [/^Clay_E_Boomba$/, { ability: "Boom Bot", shape: "badge" }],
+    [/^Clay_E_Boomba$/, { ability: "Boom Bot", shape: "badge", life: 5.1 }],
     // Chamber
-    [/^Deadeye_E_Trap$/, { ability: "Trademark", shape: "badge" }],
-    [/^Deadeye_E_Slow_Large$/, { ability: "Trademark", shape: "area", r: 550, label: "Trademark slow" }],
+    [/^Deadeye_E_Trap$/, { ability: "Trademark", shape: "badge", trip: 700 }],
+    [/^Deadeye_E_Slow_Large$/, { ability: "Trademark", shape: "area", r: 550, part: true, label: "Trademark slow" }],
     [/^Deadeye_E_Teleporter_Tether$/, { ability: "Rendezvous", shape: "badge" }],
     // Sage: the wall runs across its yaw (every Summit wall's four segments did); segments hidden.
     [/^Thorne_E_Wall_Fortifying$/, { ability: "Barrier Orb", shape: "line", dir: "across", len: 1040 }],
@@ -165,25 +191,64 @@
     // Fade
     [/^BountyHunter_E_LoSReveal_Source_Reactivate$/, { ability: "Haunt", shape: "reveal", r: 1500 }],
     [/^BountyHunter_Q_Tether_SphereExpansion$/, { ability: "Seize", shape: "area", r: 600 }],
-    [/^BountyHunter_X_WaveForm$/, { ability: "Nightfall", shape: "badge" }],
+    // Nightfall: 40 by 20 m from its object (2 m ahead of Fade), crossed in 10 ticks 0.355 s apart. Its object
+    // lives on for the marks; the wave shows for the sweep and a fade after it.
+    [/^BountyHunter_X_WaveForm$/, { ability: "Nightfall", shape: "box", len: 4000, width: 2000, sweep: 3.55, pop: 4.2 }],
+    [/^BountyHunter_4_WolfHound$/, { ability: "Prowler", shape: "badge", life: 2.5 }],
     // Veto
     [/^Pine_4_UsableTeleport$/, { ability: "Crosscut", shape: "badge" }],
     [/^Pine_Q_SeizeTrap$/, { ability: "Chokehold", shape: "badge" }],
-    [/^Pine_Q_Tether_SphereExpansion$/, { ability: "Chokehold", shape: "area", r: 500 }],
-    [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge" }],
+    [/^Pine_Q_Tether_SphereExpansion$/, { ability: "Chokehold", shape: "area", r: 500, part: true }],
+    [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge", activeFor: 9.0 }],
     // Viper: the screen is the line it was laid along (`points`), solid while up (`on`).
     [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "wall" }],
     // Deadlock (2026-10-05: her actors were dropped before; extras.py ARCHETYPE_ALIASES). The mesh is its arms
     // from the root to each node (`arms`), solid while `on`; a sensor's trigger is a short pop.
     [/^Cable_E_CableJam_Root$/, { ability: "Barrier Mesh", shape: "mesh" }],
     [/^Cable_Q_SoundSensor$/, { ability: "Sonic Sensor", shape: "badge" }],
-    [/^Cable_Q_SoundSensor_Fissure$/, { ability: "Sonic Sensor", shape: "area", r: 350, pop: 0.6, label: "Sonic Sensor (went off)" }],
+    [/^Cable_Q_SoundSensor_Fissure$/, { ability: "Sonic Sensor", shape: "area", r: 350, part: true, pop: 0.6, label: "Sonic Sensor (went off)" }],
     [/^Cable_4_NetToss$/, { ability: "GravNet", shape: "area", r: 450 }],
     [/^Cable_4_RemovableNet$/, { ability: "GravNet", shape: "hidden" }],
     [/^Cable_X_FishingHook$/, { ability: "Annihilation", shape: "badge" }],
-    [/^Cable_X_FishingHook_Cage$/, { ability: "Annihilation", shape: "area", r: 250, label: "Annihilation (caught)" }],
-    // Vyse's Shear: its line (`line`), dashed until raised, solid while `raised`.
+    [/^Cable_X_FishingHook_Cage$/, { ability: "Annihilation", shape: "area", r: 250, part: true, label: "Annihilation (caught)" }],
+    // Vyse's Shear: its line (`line`), dashed until raised, solid while `raised` (Nox_Wall is that raised wall).
     [/^Nox_WallTrap$/, { ability: "Shear", shape: "shear" }],
+    [/^Nox_Wall$/, { ability: "Shear", shape: "hidden" }],
+    // Razorvine lies set from placement until it's triggered, so its close says nothing ahead: no timer.
+    [/^Nox_BarbedWire$/, { ability: "Razorvine", shape: "area", r: 625, untimed: true }],
+    // Arc Rose: a burst at each flash (`fx`, when the extractor saw Vyse trigger it). Flashing doesn't use it up (the
+    // owner): it stays until it closes, shot or pulled back, or at the round's end.
+    [/^Nox_StealthingTrap_Flash/, { ability: "Arc Rose", shape: "badge", burst: 0.8 }],
+    [/^Nox_DisarmPulse$/, { ability: "Steel Garden", shape: "area", r: 2800 }],
+    // Killjoy: Lockdown's 32.5 m dome counts down its 13 s windup; the detain is a burst over the same dome.
+    [/^Killjoy_E_Turret$/, { ability: "TURRET", shape: "badge", cone: 50, coneLen: 2000 }],
+    [/^Killjoy_Q_StealthAlarmbot$/, { ability: "ALARMBOT", shape: "badge", trip: 550 }],
+    [/^Killjoy_4_BeeSwarm_Damage$/, { ability: "Nanoswarm", shape: "area", r: 450 }],
+    [/^Killjoy_X_Bomb$/, { ability: "Lockdown", shape: "area", r: 3250 }],
+    [/^Killjoy_X_Shockwave$/, { ability: "Lockdown", shape: "area", r: 3250, pop: 1.0, unlisted: true, label: "Lockdown (detain)" }],
+    // Harbor: High Tide's wall rises along its orb's flight, from Harbor to wherever the orb is.
+    [/^Mage_Q_WallManager$/, { ability: "High Tide", shape: "wall", trace: "Mage_Q_Wall" }],
+    // Reckoning: a wave 21 m wide that rolls 34 m out at 8 m/s (its five chunks are the wave's width).
+    [/^Mage_X_TidalWave$/, { ability: "Reckoning", shape: "box", len: 3400, width: 2100, sweep: 4.25, pop: 4.8 }],
+    [/^Mage_X_TidalWave_Chunk$/, { ability: "Reckoning", shape: "hidden" }],
+    // Cove: a 4.6 m sphere (wiki) where the orb lands, its object living as long as it stands (about 20 s, less when
+    // its shield is broken). Storm Surge: its object is the 0.6 s windup before a 6 m nearsight and slow (wiki), so its
+    // timer runs down to the burst. Both are objects only in 13.08 replays; their thrown orbs are projectiles.
+    [/^Mage_E_WorldSmoke$/, { ability: "Cove", shape: "smoke", r: 460 }],
+    [/^Mage_4_SplashGrenade$/, { ability: "Storm Surge", shape: "area", r: 600 }],
+    // Neon: Fast Lane's two walls, 3.5 m apart, from 1.5 m behind Neon to 45 m ahead; its object is on her.
+    // Terrain stops the walls short in game; the replay doesn't record where, so they're drawn at full length.
+    [/^Sprinter_4_Tunnel$/, { ability: "Fast Lane", shape: "lanes", from: -150, len: 4650, width: 350 }],
+    // Relay Bolt: a 5 m concuss where it lands, 1 s after (its object's life): the timer counts that down.
+    [/^Sprinter_Q_ElectricSphere$/, { ability: "Relay Bolt", shape: "area", r: 500 }],
+    // KAY/O: NULL/cmd's pulses (42.5 m, one every 3 s) go out from him; the manager is the cast, drawn as a timer
+    // round him (12.75 s: 16 of the 17 live casts the round didn't end). A downed KAY/O is his revive point.
+    [/^Grenadier_X_UltPulseManager$/, { ability: "NULL/cmd", shape: "carried", carried: 12.75 }],
+    [/^Grenadier_X_UltPulse$/, { ability: "NULL/cmd", shape: "area", r: 4250, pop: 1.0, unlisted: true, label: "NULL/cmd pulse" }],
+    [/^Grenadier_X_RechargeUsable$/, { ability: "NULL/cmd", shape: "badge", part: true, label: "NULL/cmd (downed KAY/O)" }],
+    // Skye's ult; Yoru's teleport beacon.
+    [/^Guide_X_Pack$/, { ability: "Seekers", shape: "badge", life: 15.25 }],
+    [/^Stealth_E_Teleporter(Moving|Stationary)_FakeTP$/, { ability: "GATECRASH", shape: "badge" }],
     // Omen's ult destination while he channels; Waylay's return point.
     [/^Wraith_X_GlobalTeleport_Intention$/, { ability: "From the Shadows", shape: "badge", label: "From the Shadows (destination)" }],
     [/^Pandemic_4_SmokeZone$/, { ability: "Poison Cloud", shape: "smoke", r: 450 }],
@@ -191,23 +256,30 @@
     [/^Pandemic_AcidMolotov_NewMolotov$/, { ability: "Snake Bite", shape: "area", r: 450 }],
     // Jett
     [/^Wushu_4_SmokeZone$/, { ability: "Cloudburst", shape: "smoke", r: 335 }],
-    // Breach: both objects spawn 800 units ahead of Breach along its aim (every cast on Sunset);
-    // the reach isn't decoded, so they are drawn as an aim from Breach, not a blast zone.
-    // Fault Line fires 1.1 s after the cast (its own effect); Rolling Thunder records none, so its
-    // wave shows 1.5 s. Aftershock's blasts hit 2.2 and 2.8 s after it sticks: 3 s in all.
-    [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "line", dir: "along", from: -800, len: 800, aim: true, pop: 0.8 }],
-    [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "line", dir: "along", from: -800, len: 800, aim: true, pop: 1.5 }],
+    // Breach: both objects spawn 800 units ahead of Breach along its aim, where the wiki starts both areas.
+    // Fault Line is 8 m wide and 8 to 56 m long over a 1 s charge, taken as even: with the row's `charge` (condenser
+    // revision 19, extras.fault_line_charge) that length, solid; without it the full reach, dashed (`reach`). It fires
+    // 1.1 s after the cast (its own effect). Rolling Thunder: 32 by 18 m, 8 ticks 0.255 s
+    // apart after a 0.6 s delay. Aftershock's blasts hit 2.2 and 2.8 s after it sticks: 3 s in all.
+    [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "box", len: 5600, width: 800, reach: true, pop: 0.8,
+                                                chargeLen: [800, 5600], label: "Fault Line (reach drawn at full charge)" }],
+    [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "box", len: 3200, width: 1800, sweep: 2.6, pop: 3.0 }],
     [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, pop: 3.0 }],
     // KAY/O: ZERO/point's knife pulses 1 s after it sticks; its object lingers 15 s in the replay.
     [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
+    [/^Cashew_4_Spider_LockOn$/, { ability: "Stealth Drone", shape: "badge", life: 6.6 }],
     [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 450 }],
     [/^Cashew_E_MapMissileMarker/, { ability: "Guided Salvo", shape: "badge", small: true, unlisted: true, label: "Guided Salvo target" }],
     [/^Cashew_E_AirStrikeMortar$/, { ability: "Guided Salvo", shape: "hidden" }],
     [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500, pop: 0.8 }],
-    [/^Cashew_X_Segment$/, { ability: "Armageddon", shape: "area", r: 350 }],
-    [/^Cashew_X_SegmentManager$/, { ability: "Armageddon", shape: "hidden" }],
+    // Armageddon: the manager is the cast, at the strip's start with the strike's yaw: the 32 by 12 m strip it
+    // targets, dashed. Each segment that strikes spawns 0.25 s after the last, 2 m on along the yaw (centred on
+    // its object), a 2 by 12 m bar; only the ones that struck exist. Measured on three local exports, 2026-10-18.
+    [/^Cashew_X_Segment$/, { ability: "Armageddon", shape: "box", from: -100, len: 200, width: 1200, bare: true,
+                             unlisted: true, label: "Armageddon strike" }],
+    [/^Cashew_X_SegmentManager$/, { ability: "Armageddon", shape: "box", len: 3200, width: 1200, reach: true }],
     // Brimstone
     [/^Sarge_4_Smoke_Production/, { ability: "Sky Smoke", shape: "smoke", r: 415 }],
     [/^Sarge_4_SmokeManager/, { ability: "Sky Smoke", shape: "hidden" }],
@@ -215,11 +287,12 @@
     [/^Sarge_E_SpeedStim$/, { ability: "Stim Beacon", shape: "area", r: 500 }],
     [/^Sarge_X_OrbitalStrike/, { ability: "Orbital Strike", shape: "area", r: 900 }],
     // Yoru
-    [/^Stealth_4_Decoy_V2$/, { ability: "FAKEOUT", shape: "badge" }],
+    [/^Stealth_4_Decoy_V2$/, { ability: "FAKEOUT", shape: "badge", life: 11.0 }],
     [/^Stealth_DecoySpawner$/, { ability: "FAKEOUT", shape: "hidden" }],
     // Miks (`Thumper` objects are read as Miks's: see extras.CODE_ALIASES)
     [/^Iris_E_Smoke$/, { ability: "Waveform", shape: "smoke", r: 400 }],
-    [/^Iris_X_SonicWave$/, { ability: "Bassquake", shape: "badge" }],
+    // Bassquake: a 60° cone 40 m out from Miks, released after a 1.6 s channel.
+    [/^Iris_X_SonicWave$/, { ability: "Bassquake", shape: "cone", r: 4000, angle: 60, sweep: 1.6, pop: 2.2 }],
     // M-pulse pulses at +0, +2 and +4 s (its own effects): a ring each, not a 5 s disc.
     [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8 }],
     [/^Iris_ConcussPulse$/, { ability: "M-pulse", shape: "hidden" }],
@@ -238,6 +311,38 @@
     else if (style.dir === "across") { lo = -style.len * uvPerUnit / 2; hi = style.len * uvPerUnit / 2; }
     else { lo = (style.from || 0) * uvPerUnit; hi = lo + style.len * uvPerUnit; }
     return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
+  }
+
+  // A box ability's corners in minimap uv, from its yaw like lineEnds: `from` to `from + len` world units along
+  // it and `width` across, centred. f0..f1 cut a share of that length (a sweep's front). In order: near left,
+  // far left, far right, near right, so the two long sides are 0-1 and 3-2 (Fast Lane's walls). Null without a yaw.
+  function boxCorners(a, style, uvPerUnit, f0, f1) {
+    if (a.yaw === null || a.yaw === undefined) return null;
+    var rad = a.yaw * Math.PI / 180, du = Math.cos(rad), dv = Math.sin(rad);
+    var from = (style.from || 0) * uvPerUnit, len = style.len * uvPerUnit, half = style.width * uvPerUnit / 2;
+    var lo = from + len * (f0 === undefined ? 0 : f0), hi = from + len * (f1 === undefined ? 1 : f1);
+    var pu = -dv * half, pv = du * half;
+    return [[a.u + du * lo + pu, a.v + dv * lo + pv], [a.u + du * hi + pu, a.v + dv * hi + pv],
+            [a.u + du * hi - pu, a.v + dv * hi - pv], [a.u + du * lo - pu, a.v + dv * lo - pv]];
+  }
+
+  // A wall laid along a projectile's flight (Harbor's High Tide follows its orb): {index of the wall: that
+  // flight}, from the same owner's projectile of the style's `trace` archetype spawned closest to it, within 0.5 s.
+  function traceWalls(abilities) {
+    var out = {};
+    (abilities || []).forEach(function (a, i) {
+      if (a.kind === "Projectile" || a.kind === "Bomb" || !a.name) return;
+      var trace = abilityStyle(a).trace;
+      if (!trace) return;
+      var best = null;
+      abilities.forEach(function (p) {
+        if (p.kind !== "Projectile" || p.code + "_" + p.name !== trace || p.slot !== a.slot || !p.flight) return;
+        var gap = Math.abs(p.t0 - a.t0);
+        if (gap <= 0.5 && (!best || gap < Math.abs(best.t0 - a.t0))) best = p;
+      });
+      if (best) out[i] = best.flight;
+    });
+    return out;
   }
 
   // A projectile in flight (2026-10-05): drawn on its own layer ("projectiles", on by default), at its recorded
@@ -315,11 +420,22 @@
     for (var i = 0; i < ABILITY_STYLES.length; i++) {
       if (ABILITY_STYLES[i][0].test(key)) {
         var style = ABILITY_STYLES[i][1];
+        // A charged reach (Fault Line): its length from the row's `charge` (s, at most 1), when the extractor found it.
+        var charged = style.chargeLen && typeof ability.charge === "number";
+        var len = charged ? style.chargeLen[0] + (style.chargeLen[1] - style.chargeLen[0]) * Math.min(1, ability.charge)
+          : style.len;
+        var label = style.label || style.ability;
+        if (charged) label = style.ability + " (charged " + ability.charge.toFixed(2) + " s: " + Math.round(len / 100) + " m)";
         return {
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
-          small: !!style.small, unlisted: !!style.unlisted, label: style.label || style.ability,
-          faint: !!style.faint, dir: style.dir, len: style.len, from: style.from, full: !!style.full, aim: !!style.aim,
-          pop: style.pop
+          small: !!style.small, unlisted: !!style.unlisted, label: label,
+          faint: !!style.faint, dir: style.dir, len: len, from: style.from, full: !!style.full, aim: !!style.aim,
+          pop: style.pop, burst: style.burst, part: !!style.part,
+          width: style.width, sweep: style.sweep, trace: style.trace, bare: !!style.bare,
+          reach: !!style.reach && !(style.chargeLen && typeof ability.charge === "number"),
+          angle: style.angle, untimed: !!style.untimed, tail: style.tail !== false,
+          life: style.life, carried: style.carried, trip: style.trip, cone: style.cone, coneLen: style.coneLen,
+          activeFor: style.activeFor
         };
       }
     }
@@ -356,9 +472,17 @@
   // A brief one (Regrowth's heal pulse lives 0.3 s) stays for ABILITY_MIN_S, fading after its close.
   var ABILITY_MIN_S = 1.0;
 
+  // When an ability is gone: its close, or for a Shear its raised wall's (the trap row closes as the wall rises, and
+  // `raised` = [up, down | null] carries the wall on); null for the round's end.
+  function closeOf(a) {
+    if (a.raised && a.raised.length === 2) return a.raised[1] === null || a.raised[1] === undefined ? null : Math.max(a.raised[1], a.t1);
+    return a.t1 === null || a.t1 === undefined ? null : a.t1;
+  }
+
   function abilitiesAt(abilities, t, tEnd) {
     return (abilities || []).filter(function (a) {
-      var until = a.t1 === null || a.t1 === undefined ? tEnd : Math.max(a.t1, a.t0 + ABILITY_MIN_S);
+      var close = closeOf(a);
+      var until = close === null ? tEnd : Math.max(close, a.t0 + ABILITY_MIN_S);
       var pop = a.kind === "Projectile" || a.kind === "Bomb" || !a.name ? undefined : abilityStyle(a).pop;
       if (pop !== undefined) until = Math.min(until, popUntil(a, pop));
       // Shot and destroyed before its object closed (a camera, a trip): going off never counts.
@@ -368,6 +492,7 @@
   }
 
   var GONE_S = 0.6;
+  var INTERCEPT_LINE_S = 1.0;   // how long the line to what an Interceptor stopped stays, fading
 
   // Placed sentinel utility that dies with its owner (the control engine's Q71 set: Cypher's trip and
   // camera, Killjoy's turret and alarmbot, Chamber's trap). Drawn grey from the owner's death on.
@@ -564,11 +689,87 @@
   // How opaque an ability is at t: fading in over its first 0.25 s, and out after its close
   // while it lingers (see abilitiesAt).
   function abilityAlpha(a, t) {
-    var alpha = Math.min(1, Math.max(0, (t - a.t0) / 0.25));
-    if (a.t1 !== null && a.t1 !== undefined && t > a.t1) {
-      alpha *= Math.max(0, 1 - (t - a.t1) / Math.max(0.2, a.t0 + ABILITY_MIN_S - a.t1));
+    var alpha = Math.min(1, Math.max(0, (t - a.t0) / 0.25)), close = closeOf(a);
+    if (close !== null && t > close) {
+      alpha *= Math.max(0, 1 - (t - close) / Math.max(0.2, a.t0 + ABILITY_MIN_S - close));
     }
     return alpha;
+  }
+
+  // How much of a timed ability's life is left at t: runLeft over its `full` run (the longest of its kind in the
+  // match, from extras), never its own close, which would tell a smoke shot down early before it is. null when there
+  // is no fixed run to show: no `full` (rows stored before it), no close (it lasts the round), `on` spans (Viper's
+  // toggles, so its close says nothing ahead), or once it has closed.
+  function timeLeft(a, t) {
+    if (a.on || typeof a.t1 !== "number" || !(a.t1 > a.t0) || t > a.t1) return null;
+    return typeof a.full === "number" ? runLeft(a.t0, a.full, t) : null;
+  }
+
+  // How much of a fixed run of `life` seconds from `from` is left at t: 1 as it starts, 0 at its end; null outside it.
+  // A unit's full run (a style's `life`), whatever its row's close says: one cut short is gone before it runs out.
+  function runLeft(from, life, t) {
+    if (typeof from !== "number" || !(life > 0) || t < from || t > from + life) return null;
+    return (from + life - t) / life;
+  }
+
+  // A turret's facing at t: its last `yaws` sample at or before t, the first before any (the engine's _yaw_at),
+  // else its placed yaw; null with neither.
+  function yawAt(a, t) {
+    var yaws = a.yaws;
+    if (yaws && yaws.length) {
+      var yaw = yaws[0][1];
+      for (var i = 0; i < yaws.length && yaws[i][0] <= t; i++) yaw = yaws[i][1];
+      return yaw;
+    }
+    return typeof a.yaw === "number" ? a.yaw : null;
+  }
+
+  // A Killjoy turret or alarmbot switched off at t (Killjoy out of its range): inside one of its `off` spans.
+  function deviceOffAt(a, t) {
+    return (a.off || []).some(function (sp) { return sp[0] <= t && (sp[1] === null || sp[1] === undefined || t < sp[1]); });
+  }
+
+  // Clove's Not Dead Yet: a life that starts within CLOVE_REVIVE_S of her death (a life ended "kill", not a
+  // reconnect) is her ult, and it runs out CLOVE_ULT_S after it starts unless she gets a kill or an assist first
+  // (14.11, 14.12 and 14.13 s in the three local exports where it ran out, 2026-10-18). The 3 s is inferred: the
+  // three Sage revives seen in live replays came over 5 s after the death, which sets no floor on a Sage revive.
+  // Assists are the kill's `assists` (the match's own kill rows, linked by the page); without them, an assist that
+  // saved her leaves the timer running out with her still alive.
+  var CLOVE_ULT_S = 14.1, CLOVE_REVIVE_S = 3.0;
+
+  // The ults on players at t, each drawn as a timer round its owner: rows whose style is `carried` (NULL/cmd, Run it
+  // Back) while open and their owner alive, and Clove's Not Dead Yet from her lives. [{slot, left, until, full, agent,
+  // ability}]: `left` as runLeft over `full` seconds, `until` when it ends (sooner when cut short).
+  function carriedAt(abilities, blob, t) {
+    var out = [], alive = blob.alive || {};
+    (abilities || []).forEach(function (a) {
+      if (a.kind === "Projectile" || a.kind === "Bomb" || !a.name || a.slot === null || a.slot === undefined) return;
+      var style = abilityStyle(a);
+      if (!style.carried) return;
+      var close = closeOf(a), left = runLeft(a.t0, style.carried, t);
+      if (left === null || (close !== null && t > close) || !aliveAt(alive[String(a.slot)], t, blob.t_end)) return;
+      out.push({ slot: a.slot, left: left, until: close === null ? a.t0 + style.carried : Math.min(close, a.t0 + style.carried),
+                 full: style.carried, agent: style.agent, ability: style.ability });
+    });
+    (blob.players || []).forEach(function (p) {
+      if (p.agent !== "Clove") return;
+      var lives = alive[String(p.slot)] || [];
+      for (var i = 1; i < lives.length; i++) {
+        var died = lives[i - 1][1], from = lives[i][0];
+        if (typeof died !== "number" || lives[i - 1][2] !== "kill" || from - died > CLOVE_REVIVE_S) continue;
+        var until = from + CLOVE_ULT_S;
+        if (typeof lives[i][1] === "number") until = Math.min(until, lives[i][1]);
+        (blob.kills || []).forEach(function (k) {
+          var hers = (k.killer === p.slot || (k.assists || []).indexOf(p.slot) >= 0) && k.victim !== p.slot;
+          if (hers && k.t >= from && k.t < until) until = k.t;
+        });
+        if (t >= from && t <= until) {
+          out.push({ slot: p.slot, left: runLeft(from, CLOVE_ULT_S, t), until: until, full: CLOVE_ULT_S, agent: "Clove",
+                     ability: "Not Dead Yet" });
+        }
+      }
+    });
+    return out;
   }
 
   // Trapwire: each first anchor pairs with the unpaired second anchor of the same owner
@@ -697,7 +898,8 @@
   // in tests/replays/test_viewer_player_state.py runs both).
   var PLAYER_STATE = {
     version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
-    t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000
+    t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000,
+    ult_max: 20, max_orbs: 16, orb_ends: ["taken", "plant", "round"]
   };
   var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
 
@@ -773,10 +975,44 @@
   }
 
   // A normalized copy of a `player_state` subsection, or null when it is unavailable.
+  function psUltPoint(e) {
+    if (!condIsRow(e)) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    return t !== null && psInt(e.n, 0, PLAYER_STATE.ult_max) ? { t: t, n: e.n } : null;
+  }
+
+  function psOrb(e) {
+    if (!condIsRow(e) || PLAYER_STATE.orb_ends.indexOf(e.end) < 0) return null;
+    if (!psInt(e.u, 0, PLAYER_STATE.uv_max) || !psInt(e.v, 0, PLAYER_STATE.uv_max)) return null;
+    var t0 = psNum(e.t0, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    var t1 = e.t1 === null || e.t1 === undefined ? null : psNum(e.t1, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t0 === null || (e.t1 !== null && e.t1 !== undefined && (t1 === null || t1 < t0))) return null;
+    var out = { u: e.u, v: e.v, t0: t0, t1: t1, end: e.end };
+    if (e.end === "taken" && e.slot !== null && e.slot !== undefined) {
+      if (!psInt(e.slot, 0, 9)) return null;
+      out.slot = e.slot;
+    }
+    if (Array.isArray(e.tries)) {
+      var tries = e.tries.map(psOrbTry).filter(function (x) { return x !== null; });
+      if (tries.length) out.tries = tries;
+    }
+    return out;
+  }
+
+  // A capture started on an orb and let go: [t, t1 (null: never seen let go), slot].
+  function psOrbTry(e) {
+    if (!Array.isArray(e) || e.length !== 3) return null;
+    var t = psNum(e[0], PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    var t1 = e[1] === null ? null : psNum(e[1], PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t === null || !psInt(e[2], 0, 9) || (e[1] !== null && (t1 === null || t1 < t))) return null;
+    return [t, t1, e[2]];
+  }
+
   function validatePlayerState(obj) {
     if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
     if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
-        (psHas(obj, "spike") && !Array.isArray(obj.spike))) return null;
+        (psHas(obj, "spike") && !Array.isArray(obj.spike)) || (psHas(obj, "ult") && !condIsRow(obj.ult)) ||
+        (psHas(obj, "orbs") && !Array.isArray(obj.orbs))) return null;
     var out = { version: PLAYER_STATE.version };
     if (psHas(obj, "vitals")) {
       out.vitals = {};
@@ -802,6 +1038,18 @@
     }
     if (psHas(obj, "spike") && obj.spike.length <= PLAYER_STATE.max_spike) {
       out.spike = psSpikeOrder(obj.spike.map(psSpike).filter(function (e) { return e !== null; }));
+    }
+    if (psHas(obj, "ult")) {
+      out.ult = {};
+      Object.keys(obj.ult).forEach(function (slot) {
+        var line = obj.ult[slot];
+        if (!psSlotKey(slot) || !Array.isArray(line) || line.length > PLAYER_STATE.max_events) return;
+        out.ult[slot] = line.map(psUltPoint).filter(function (e) { return e !== null; })
+          .sort(function (a, b) { return a.t - b.t; });
+      });
+    }
+    if (psHas(obj, "orbs") && obj.orbs.length <= PLAYER_STATE.max_orbs) {
+      out.orbs = obj.orbs.map(psOrb).filter(function (e) { return e !== null; }).sort(function (a, b) { return a.t0 - b.t0; });
     }
     return out;
   }
@@ -847,6 +1095,12 @@
     }
     if (ps && ps.damage_taken) damage = ps.damage_taken;
     if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
+    var ult = null, orbs = null;
+    if (ps && ps.ult) {
+      ult = {};
+      Object.keys(ps.ult).forEach(function (slot) { ult[slot] = psTimeline(ps.ult[slot], "t"); });
+    }
+    if (ps && ps.orbs) orbs = ps.orbs;
     if (condIsRow(blob.alive)) {
       alive = {};
       Object.keys(blob.alive).forEach(function (slot) {
@@ -864,7 +1118,35 @@
     });
     return Object.freeze({
       available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
-      alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs)
+      alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs),
+      ult: psFreeze(ult), orbs: psFreeze(orbs)
+    });
+  }
+
+  // Each agent's ult cost, from wiki.playvalorant.com/en-us/Abilities (2026-10-18). Agreed with the replays: a full ult
+  // is cast at this many points.
+  var ULT_COST = {
+    Astra: 7, Breach: 8, Brimstone: 8, Chamber: 8, Clove: 8, Cypher: 7, Deadlock: 7, Fade: 8, Gekko: 8, Harbor: 7,
+    Iso: 7, Jett: 8, "KAY/O": 8, Killjoy: 9, Miks: 8, Neon: 8, Omen: 7, Phoenix: 7, Raze: 8, Reyna: 7, Sage: 7,
+    Skye: 8, Sova: 8, Tejo: 9, Veto: 7, Viper: 9, Vyse: 8, Waylay: 8, Yoru: 8
+  };
+
+  // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).
+  function ultAt(index, slot, t) {
+    var line = index && index.ult ? condOwn(index.ult, String(slot)) : undefined;
+    if (!line) return null;
+    var i = psBisect(line.t, t);
+    return i ? line.ev[i - 1].n : null;
+  }
+
+  // The orbs lying at t: appeared by t and not yet gone. An orb taken in the last ORB_TAKEN_S stays, marked taken,
+  // so its pickup shows.
+  var ORB_TAKEN_S = 1.0;
+  var ORB_CAPTURE_S = 2.0;    // capturing is a 2 s channel (wiki)
+
+  function orbsAt(index, t) {
+    return ((index && index.orbs) || []).filter(function (o) {
+      return o.t0 <= t && (o.t1 === null || t < o.t1 || (o.end === "taken" && t < o.t1 + ORB_TAKEN_S));
     });
   }
 
@@ -932,6 +1214,71 @@
       out.pct = healthPct(event);
     }
     out.state = out.pct === null ? "unavailable" : "known";
+    return out;
+  }
+
+  // A player row's health at t, for the players panel: {dead, pct, total, armor}. `total` is HP plus shield and
+  // `armor` the shield bought (25 or 50; 0 none), both null unless proven: after a hit, from that hit; before any,
+  // from a round-start seed (full). `pct` is null when there's a timeline but no proven figure.
+  function hudVitals(index, slot, t) {
+    var h = healthAt(index, slot, t);
+    if (h.state === "dead") return { dead: true, pct: 0, total: null, armor: null };
+    if (h.state === "known") return { dead: false, pct: h.pct, total: Math.round(h.hp + h.sh), armor: h.msh };
+    if (h.state === "undamaged") {
+      var seed = vitalsAt(index, slot, t, h.life === null ? undefined : h.life);
+      var proven = !!seed && healthPct(seed) !== null;
+      return { dead: false, pct: 100, total: proven ? Math.round(seed.mhp + seed.msh) : null, armor: proven ? seed.msh : null };
+    }
+    return { dead: false, pct: null, total: null, armor: null };
+  }
+
+  // An agent's abilities in key order, C, Q, E and then the ult X, from the icon table: each icon's file name says its
+  // slot (static/img/abilities/<agent>/grenade|ability1|ability2|ultimate.png, scripts/vendor_ability_icons.py).
+  var ICON_KEYS = { grenade: "C", ability1: "Q", ability2: "E", ultimate: "X" };
+
+  function abilitySlots(table, agent) {
+    var own = (table || {})[agent] || {};
+    return Object.keys(own).map(function (name) {
+      var file = String(own[name]).split("/").pop().replace(/\.\w+$/, "");
+      return { key: ICON_KEYS[file], name: name, url: own[name] };
+    }).filter(function (k) { return k.key; }).sort(function (a, b) {
+      return "CQEX".indexOf(a.key) - "CQEX".indexOf(b.key);
+    });
+  }
+
+  // The ult ring: `cost` arcs round the icon with a small gap between, the first `points` of them filled.
+  function ultRing(points, cost) {
+    var r = 15, c = 18, gap = 0.18, step = 2 * Math.PI / cost, arcs = "";
+    for (var i = 0; i < cost; i++) {
+      var a0 = -Math.PI / 2 + i * step + gap / 2, a1 = a0 + step - gap;
+      var x0 = c + r * Math.cos(a0), y0 = c + r * Math.sin(a0), x1 = c + r * Math.cos(a1), y1 = c + r * Math.sin(a1);
+      arcs += '<path class="' + (i < points ? "is-on" : "") + '" d="M' + x0.toFixed(2) + " " + y0.toFixed(2) + "A" + r + " " + r +
+        " 0 0 1 " + x1.toFixed(2) + " " + y1.toFixed(2) + '"/>';
+    }
+    return '<svg class="replay-pl-ring" viewBox="0 0 36 36" aria-hidden="true">' + arcs + "</svg>";
+  }
+
+  // How many times each slot used each ability by t, from the round's utility list (utilItems): {slot: {ability: n}}.
+  // Only its `cast` rows count (not a reveal's or a status's own row, nor a later stage of a placed one). A typed cast
+  // (`typed`: a flash or nearsight cast) within CAST_SAME_S of an object of the same ability and player is that
+  // object's use seen twice (an Arc Rose) and counts once; objects never merge (Brimstone drops his smokes together).
+  // Only what the replay records: a dash or a self-buff leaves no object, so it never counts.
+  var CAST_SAME_S = 0.5;
+
+  function abilityUses(items, t) {
+    var out = {}, objects = {};
+    var counted = (items || []).filter(function (it) {
+      return it.cast && it.slot !== null && it.slot !== undefined && it.ability && it.t <= t;
+    });
+    counted.forEach(function (it) {
+      if (!it.typed) (objects[it.slot + "|" + it.ability] = objects[it.slot + "|" + it.ability] || []).push(it.t);
+    });
+    counted.forEach(function (it) {
+      var seen = objects[it.slot + "|" + it.ability] || [];
+      if (it.typed && seen.some(function (o) { return Math.abs(o - it.t) <= CAST_SAME_S; })) return;
+      var mine = out[it.slot] = out[it.slot] || {};
+      mine[it.ability] = (mine[it.ability] || 0) + 1;
+    });
     return out;
   }
 
@@ -1216,7 +1563,7 @@
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
         return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities),
-                 state: indexRoundState(blob, extras.abilities) };
+                 traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
       });
     }
     return this.cache[n];
@@ -1659,38 +2006,74 @@
     if (!board || !this.linked) return;
     var tally = tallyAt(blob.kills, t);
     var live = impactAt(blob.kills, t), over = t >= blob.t_end;
-    var stats = blob.stats || {};
-    var rows = { "team-1": [], "team-2": [] };
+    var stats = blob.stats || {}, icons = this.options.abilityIcons || {};
+    // The round's utility list is fixed once the round loads; counted up to t on every frame.
+    if (!this.current.utilList) this.current.utilList = this.utilItems();
+    var uses = abilityUses(this.current.utilList, t);
+    var money = function (n) { return typeof n === "number" ? n.toLocaleString("en-US") : "–"; };
+    var rows = { "team-1": [], "team-2": [] }, alive = { "team-1": 0, "team-2": 0 };
+    var impactTitle = live && !over
+      ? "Impact from kills and deaths so far this round; at the round's end, the stored round Impact (adding damage, assists and trade credit)"
+      : "Stored Impact for the whole round";
     blob.players.forEach(function (p) {
-      var info = self.linked.players[String(p.slot)] || {};
+      var info = self.linked.players[String(p.slot)] || {}, team = rows[info.team] ? info.team : "team-1";
       var life = aliveAt(blob.alive[String(p.slot)], t, blob.t_end);
       var s = stats[String(p.slot)] || {};
       var mine = tally[p.slot] || { k: 0, d: 0, a: 0 };
+      if (life) alive[team] += 1;
       // Live: the kills' and deaths' Impact so far; at the round's end, the stored round Impact
       // (which adds damage, assists and trade credit). Without a per-kill split: the stored value.
       var value = live && !over ? (live[p.slot] || 0) : s.impact;
       var impact = typeof value === "number"
-        ? '<td class="num ' + (value > 0 ? "pos" : value < 0 ? "neg" : "") + '">' + signed(value) + "</td>"
-        : "<td></td>";
-      (rows[info.team] || rows["team-1"]).push(
-        '<tr class="' + (life ? "" : "is-dead") + '"><td class="replay-board-name">' +
-        '<span class="replay-dot" style="background:' + self.slotColor(p.slot) + '"></span>' +
-        escapeHtml(info.name || p.agent) + ' <span class="replay-board-agent">' + escapeHtml(p.agent) + "</span>" +
-        (life ? "" : ' <span class="replay-board-dead">dead</span>') + "</td>" +
-        '<td class="num">' + mine.k + "/" + mine.d + "/" + mine.a + "</td>" +
-        '<td class="num">' + (typeof s.loadout === "number" ? s.loadout : "") + "</td>" + impact + "</tr>");
+        ? '<span class="replay-pl-impact ' + (value > 0 ? "pos" : value < 0 ? "neg" : "") + '" title="' +
+          escapeHtml(impactTitle) + '">' + signed(value) + "</span>" : "";
+      var v = life ? hudVitals(self.current.state, p.slot, t) : { dead: true, pct: 0, total: null, armor: null };
+      var bar = v.pct === null
+        ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
+        : '<span class="replay-pl-bar"><span style="width:' + v.pct.toFixed(1) + '%"></span></span>';
+      var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
+      var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
+      var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
+      var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
+        var n = used[k.name] || 0;
+        return '<span class="replay-pl-ability' + (n ? " is-used" : "") + '" title="' + escapeHtml(k.key + " · " + k.name +
+          " · used " + n + "× so far (as the replay records it)") + '"><img src="' + escapeHtml(k.url) + '" alt=""><b>' + n + "</b></span>";
+      }).join("");
+      var ult = kit.filter(function (k) { return k.key === "X"; })[0];
+      var points = ultAt(self.current.state, p.slot, t), cost = ULT_COST[p.agent];
+      var ultHtml = "";
+      if (ult) {
+        var full = points !== null && cost !== undefined && points >= cost;
+        var about = ult.name + (points !== null && cost !== undefined ? " · " + Math.min(points, cost) + " of " + cost + " points"
+          : "") + (full ? " · ready" : "") + (used[ult.name] ? " · cast this round" : "");
+        ultHtml = '<span class="replay-pl-ult' + (full ? " is-ready" : "") + (used[ult.name] ? " is-used" : "") +
+          (points === null || cost === undefined ? " is-unknown" : "") + '" title="' + escapeHtml(about) + '">' +
+          (points === null || cost === undefined ? "" : ultRing(Math.min(points, cost), cost)) +
+          '<img src="' + escapeHtml(ult.url) + '" alt=""></span>';
+      }
+      var portrait = self.options.agentIcon ? self.options.agentIcon(p.agent) : null;
+      rows[team].push(
+        '<div class="replay-pl-row' + (life ? "" : " is-dead") + '">' +
+        '<span class="replay-pl-agent" style="border-color:' + self.slotColor(p.slot) + '">' +
+        (portrait ? '<img src="' + escapeHtml(portrait) + '" alt="">' : "") + "</span>" +
+        '<div class="replay-pl-main"><div class="replay-pl-top"><span class="replay-pl-name" title="' +
+        escapeHtml((info.name || p.agent) + " · " + p.agent) + '">' + escapeHtml((info.name || p.agent).split("#")[0]) + "</span>" +
+        (life ? armor + hp : '<span class="replay-pl-dead">dead</span>') + "</div>" + bar + "</div>" +
+        '<div class="replay-pl-kit">' + abilities + ultHtml + "</div>" +
+        '<div class="replay-pl-nums"><span title="Kills / deaths / assists so far this round">' + mine.k + "/" + mine.d + "/" +
+        mine.a + "</span>" + impact + '<span class="replay-pl-money" title="Loadout value and credits left at the round&#39;s ' +
+        'start (tracker.gg): the replay has no live weapon or credits">¤ ' + money(s.loadout) + " · " + money(s.remaining) +
+        " left</span></div></div>");
     });
-    var impactTitle = live && !over
-      ? "Impact from kills and deaths so far this round; at the round's end, the stored round Impact (adding damage, assists and trade credit)"
-      : "Stored Impact for the whole round";
-    var head = '<thead><tr><th>Player</th><th class="num" title="Kills / deaths / assists so far this round">K/D/A</th>' +
-      '<th class="num" title="Loadout value at the round&#39;s start (credits): the replay has no live value">Loadout</th>' +
-      '<th class="num" title="' + impactTitle.replace(/'/g, "&#39;") + '">' + (live && !over ? "Impact so far" : "Round Impact") +
-      "</th></tr></thead>";
-    board.innerHTML = ["team-1", "team-2"].map(function (team) {
-      return '<table class="replay-board-team team-' + team.slice(-1) + '">' + head + "<tbody>" + rows[team].join("") +
-        "</tbody></table>";
+    var html = ["team-1", "team-2"].map(function (team) {
+      return '<div class="replay-pl-team team-' + team.slice(-1) + '"><h3 class="replay-pl-head">Team ' + team.slice(-1) +
+        ' <span>' + alive[team] + " alive</span></h3>" + rows[team].join("") + "</div>";
     }).join("");
+    // Every frame calls this; the DOM is replaced only when what it shows changed (health, a use, a kill, a death).
+    if (html !== this.boardHtml) {
+      board.innerHTML = html;
+      this.boardHtml = html;
+    }
   };
 
   // The round's utility, in time order: placed objects (one row per trapwire, none for hidden
@@ -1702,8 +2085,11 @@
       var style = abilityStyle(a);
       if (style.shape === "hidden" || style.shape === "spike" || style.shape === "projectile" || style.small ||
           style.unlisted) return;
+      // `cast`: a use of the ability for the players panel's counts, unless the object is a later stage of one already
+      // placed (`part`: a Cyber Cage going up from its trap).
       items.push({ t: a.thrown ? a.thrown.t0 : a.t0, slot: a.slot, agent: style.agent, ability: style.ability,
-        label: style.label, guess: a.owner_by === "nearest", reveals: style.shape === "reveal" ? [] : null });
+        label: style.label, guess: a.owner_by === "nearest", reveals: style.shape === "reveal" ? [] : null,
+        cast: !style.part });
     });
     // Reveals: named on the revealing ability's row (the same owner and agent, cast up to 5 s
     // before), or a row of their own (a dart, Neural Theft).
@@ -1748,7 +2134,7 @@
     castUtil(blob.util).forEach(function (u) {
       var which = utilAbility(u.ability);
       var hit = (u.targets || []).length;
-      items.push({ t: u.t, slot: u.by, agent: which.agent, ability: which.ability, label: which.ability,
+      items.push({ t: u.t, slot: u.by, agent: which.agent, ability: which.ability, label: which.ability, cast: true, typed: true,
         note: u.k === "flash" ? (hit ? "flashed " + hit : "flashed nobody") : (hit ? "nearsighted " + hit : "hit nobody") });
     });
     return items.sort(function (a, b) { return a.t - b.t; });
@@ -1863,6 +2249,27 @@
     ctx.restore();
   };
 
+  // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
+  ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
+    if (!glyph) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
+    ctx.restore();
+  };
+
+  // The time left on a timed ability (timeLeft): a light arc from twelve o'clock, clockwise, that runs down to
+  // nothing as it closes, over a dark under-stroke so it reads on any floor.
+  ReplayViewer.prototype.drawTimer = function (ctx, x, y, radius, left, width, alpha) {
+    if (left === null || left <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = alpha; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * left);
+    ctx.strokeStyle = "rgba(12, 12, 16, 0.6)"; ctx.lineWidth = width + 2; ctx.stroke();
+    ctx.strokeStyle = this.css("--replay-timer", "rgba(240, 242, 248, 0.95)"); ctx.lineWidth = width; ctx.stroke();
+    ctx.restore();
+  };
+
   // Where an ability is drawn at t: a moving pawn follows its path, anything else stays put.
   ReplayViewer.prototype.abilityPoint = function (a, t, s) {
     var at = a.path ? pathAt(a.path, t) : null;
@@ -1877,7 +2284,8 @@
     var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them. The spike (shape "spike") is not drawn here: drawSpikeGround and
     // the carrier badge own it, outside the abilities toggle.
-    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge"].forEach(function (pass) {
+    var upu = (self.linked && self.linked.uvPerUnit) || 0.75;
+    ["wall", "lanes", "box", "cone", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -1885,14 +2293,31 @@
         var color = self.ownerColor(a.slot);
         var glyph = self.abilityIcon(style.agent, style.ability);
         var text = self.abilityText(a, style);
+        var watching = true;   // a sentinel device that is neither down nor off
         if (utilDownAt(a, blob.alive, t, blob.t_end)) {
           color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
+          watching = false;
         } else if (utilSuppressedAt(a, self.current.extras.statuses, t)) {
           color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
           text += " · off (owner suppressed)";
+          watching = false;
+        } else if (deviceOffAt(a, t)) {
+          color = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
+          text += " · off (Killjoy out of range)";
+          watching = false;
         }
         var age = t - a.t0, fadeIn = abilityAlpha(a, t);
+        // A timer on what stays up for a run (smokes, mollies, walls), not on a pop or a placed device.
+        var left = style.pop === undefined && !style.untimed && pass !== "badge" && pass !== "wire" && pass !== "shear"
+          ? timeLeft(a, t) : null;
+        if (pass === "shear" && a.raised && typeof a.raised[1] === "number" && a.raised[1] > a.raised[0] && t >= a.raised[0]) {
+          // A Shear's timer runs only while its wall is up: a set trap has no close ahead of it.
+          left = Math.min(1, Math.max(0, (a.raised[1] - t) / (a.raised[1] - a.raised[0])));
+        }
+        var tw = Math.max(2.5, r / 4.5);
+        if (left !== null && pass === "shear") text += " · " + (left * (a.raised[1] - a.raised[0])).toFixed(1) + " s left";
+        else if (left !== null) text += " · " + (left * a.full).toFixed(1) + " s of its " + a.full.toFixed(1) + " s left";
         ctx.save();
         if ((pass === "smoke" || pass === "area") && style.pop !== undefined) {
           // A pop: a dashed outline while it is set (before its first pop), then a burst at each pop.
@@ -1912,29 +2337,40 @@
           ctx.restore(); ctx.save();
           var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
           self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
-          hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), text: text + " · went off at " +
-            pops.map(function (p) { return p.toFixed(1); }).join(", ") + " s", area: true });
+          var popped = pops.filter(function (p) { return p <= t; });
+          hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), area: true, text: text + (popped.length ? " · went off at " +
+            popped.map(function (p) { return p.toFixed(1); }).join(", ") + " s" : "") });
         } else if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
           ctx.globalAlpha = fadeIn;
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (pass === "smoke") {
-            if (style.faint) ctx.globalAlpha = 0.45 * fadeIn;
+            var body = (style.faint ? 0.45 : 1) * fadeIn;
+            ctx.globalAlpha = body;
             var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
             grad.addColorStop(0, smokeCore);   // a dark tint: a smoke reads apart from other util
             grad.addColorStop(1, smoke);
             ctx.fillStyle = grad; ctx.fill();
+            // A wash of the owner's colour, so whose smoke it is reads without a badge.
+            ctx.globalAlpha = 0.22 * body; ctx.fillStyle = color; ctx.fill();
+            ctx.globalAlpha = 0.85 * body; ctx.lineWidth = 1.5;
           } else {
             ctx.globalAlpha = 0.3 * fadeIn; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = fadeIn;
+            ctx.lineWidth = 2.5;
           }
-          ctx.lineWidth = 2.5; ctx.strokeStyle = color;
+          ctx.strokeStyle = color;
           if (style.faint) ctx.setLineDash([r / 3, r / 4]);
           ctx.stroke();
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn);
+          self.drawTimer(ctx, x, y, Math.max(tw, rad - tw / 2 - 1), left, tw, fadeIn);
+          if (pass === "smoke") self.drawGlyph(ctx, x, y, r * 0.8, glyph, 0.6 * fadeIn);
+          else self.drawBadge(ctx, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
         } else if (pass === "wall") {
-          var pts = a.points || [], up = wallUp(a, t);
+          // A traced wall (High Tide) stands as far as its orb has flown, and stays up until it closes.
+          var trace = self.current.traces && self.current.traces[all.indexOf(a)];
+          var pts = a.points || (trace || []).filter(function (p) { return p[0] <= t; }).map(function (p) { return [p[1], p[2]]; });
+          var up = trace && !a.on ? true : wallUp(a, t);
           if (pts.length > 1) {
             ctx.globalAlpha = fadeIn; ctx.lineCap = "round"; ctx.lineJoin = "round";
             ctx.beginPath(); ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
@@ -1951,7 +2387,73 @@
           }
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (up ? " · up now" : " · down now") });
+        } else if (pass === "cone") {
+          // Bassquake: a wedge `angle` wide and `r` long from the object along its yaw; a `sweep` fills it out to
+          // its edge, then it fades with its pop.
+          var cshown = fadeIn * Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.4));
+          if (a.yaw !== null && a.yaw !== undefined) {
+            var reachPx = self.uvRadius(style.r) * s, mid = a.yaw * Math.PI / 180, halfAng = style.angle * Math.PI / 360;
+            var wedge = function (rad) {
+              ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, rad, mid - halfAng, mid + halfAng); ctx.closePath();
+            };
+            ctx.globalAlpha = 0.16 * cshown; ctx.fillStyle = color; wedge(reachPx); ctx.fill();
+            ctx.globalAlpha = 0.85 * cshown; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+            var cf = Math.min(1, Math.max(0, (t - a.t0) / style.sweep));
+            if (cf > 0) { ctx.globalAlpha = 0.24 * cshown; wedge(reachPx * cf); ctx.fill(); }
+          }
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, cshown);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text });
+        } else if (pass === "box" || pass === "lanes") {
+          // Out to where it pops, then gone over 0.4 s.
+          var shown = fadeIn * (style.pop === undefined ? 1 : Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.4)));
+          var full = boxCorners(a, style, upu);
+          var outline = function (c) {
+            ctx.beginPath(); ctx.moveTo(c[0][0] * s, c[0][1] * s);
+            for (var k = 1; k < 4; k++) ctx.lineTo(c[k][0] * s, c[k][1] * s);
+            ctx.closePath();
+          };
+          if (full && pass === "box" && style.reach) {
+            // A reach, dashed: Fault Line's farthest extent (the charge isn't recorded), Armageddon's target strip.
+            // With a `pop`, a flash at each.
+            ctx.globalAlpha = 0.08 * shown; ctx.fillStyle = color; outline(full); ctx.fill();
+            ctx.globalAlpha = 0.8 * shown; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
+            ctx.stroke(); ctx.setLineDash([]);
+            if (style.pop !== undefined) popTimes(a).forEach(function (p) {
+              if (t < p || t > p + style.pop) return;
+              ctx.globalAlpha = 0.35 * (1 - (t - p) / style.pop) * shown; outline(full); ctx.fill();
+            });
+          } else if (full && pass === "box") {
+            ctx.globalAlpha = 0.16 * shown; ctx.fillStyle = color; outline(full); ctx.fill();
+            ctx.globalAlpha = 0.85 * shown; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+            if (style.sweep) {
+              // The ground the wave has crossed, deeper, and its front as a bright bar.
+              var f = Math.min(1, Math.max(0, (t - a.t0) / style.sweep));
+              if (f > 0) { ctx.globalAlpha = 0.24 * shown; outline(boxCorners(a, style, upu, 0, f)); ctx.fill(); }
+              if (f > 0 && f < 1) {
+                var front = boxCorners(a, style, upu, f, f);
+                ctx.globalAlpha = shown; ctx.lineWidth = Math.max(3, r / 3.5); ctx.lineCap = "round";
+                ctx.beginPath(); ctx.moveTo(front[0][0] * s, front[0][1] * s); ctx.lineTo(front[3][0] * s, front[3][1] * s); ctx.stroke();
+              }
+            }
+          } else if (full) {
+            // Fast Lane: its two long sides, drawn as Viper's screen is (a smoke band, the owner's colour down it).
+            ctx.globalAlpha = shown; ctx.lineCap = "round";
+            [[full[0], full[1]], [full[3], full[2]]].forEach(function (side) {
+              ctx.beginPath(); ctx.moveTo(side[0][0] * s, side[0][1] * s); ctx.lineTo(side[1][0] * s, side[1][1] * s);
+              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(6, r * 0.7); ctx.stroke();
+              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r / 5); ctx.stroke();
+            });
+          }
+          ctx.restore(); ctx.save();
+          if (!style.bare) {
+            // A bare piece (an Armageddon strike) is part of its cast's drawing: no badge or timer of its own.
+            self.drawBadge(ctx, x, y, r * 0.5, color, glyph, shown);
+            self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, shown);
+          }
+          hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "reveal") {
           var reach = self.uvRadius(style.r) * s, pulse = (age % 1.2) / 1.2;
           ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = 2.5; ctx.strokeStyle = color;
@@ -1982,6 +2484,7 @@
           ctx.setLineDash([]);
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
             (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
         } else if (pass === "line" && a.segments) {
@@ -1997,6 +2500,7 @@
           });
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
           var ends = lineEnds(a, style, (self.linked && self.linked.uvPerUnit) || 0.75);
@@ -2010,10 +2514,13 @@
               var ang = Math.atan2(y1 - y0, x1 - x0), head = r * 0.7;
               var tail = Math.hypot(x1 - x0, y1 - y0) * 2.5;
               var tx = x1 + tail * Math.cos(ang), ty = y1 + tail * Math.sin(ang);
-              var fadeTail = ctx.createLinearGradient(x1, y1, tx, ty);
-              fadeTail.addColorStop(0, color); fadeTail.addColorStop(1, "rgba(0, 0, 0, 0)");
-              ctx.save(); ctx.strokeStyle = fadeTail; ctx.setLineDash([r / 3, r / 4]);
-              ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(tx, ty); ctx.stroke(); ctx.restore();
+              if (style.tail) {
+                // Past the arrowhead, fading: where an aim of unknown reach may carry on.
+                var fadeTail = ctx.createLinearGradient(x1, y1, tx, ty);
+                fadeTail.addColorStop(0, color); fadeTail.addColorStop(1, "rgba(0, 0, 0, 0)");
+                ctx.save(); ctx.strokeStyle = fadeTail; ctx.setLineDash([r / 3, r / 4]);
+                ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(tx, ty); ctx.stroke(); ctx.restore();
+              }
               ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x1, y1);
               ctx.lineTo(x1 - head * Math.cos(ang - 0.45), y1 - head * Math.sin(ang - 0.45));
               ctx.lineTo(x1 - head * Math.cos(ang + 0.45), y1 - head * Math.sin(ang + 0.45));
@@ -2034,6 +2541,7 @@
           }
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
           // The far end: the second anchor its placement listed (`end`), else a same-owner pairing.
@@ -2054,6 +2562,47 @@
           hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
+          if (style.trip) {
+            // A device's trigger radius: dashed, the owner's colour while it watches, grey while it is down or off.
+            var tripPx = self.uvRadius(style.trip) * s;
+            ctx.beginPath(); ctx.arc(x, y, tripPx, 0, 2 * Math.PI);
+            ctx.globalAlpha = 0.12 * fadeIn; ctx.fillStyle = color; ctx.fill();
+            ctx.globalAlpha = 0.8 * fadeIn; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
+            ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+          }
+          var facing = style.cone ? yawAt(a, t) : null;
+          if (facing !== null && watching) {
+            // A turret's view: a wedge along its facing at t, fading out (it sees as far as its line of sight).
+            var conePx = self.uvRadius(style.coneLen) * s, mid = facing * Math.PI / 180, half = style.cone * Math.PI / 180;
+            var fadeCone = ctx.createRadialGradient(x, y, radius, x, y, conePx);
+            fadeCone.addColorStop(0, color); fadeCone.addColorStop(1, "rgba(0, 0, 0, 0)");
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, conePx, mid - half, mid + half); ctx.closePath();
+            ctx.globalAlpha = 0.3 * fadeIn; ctx.fillStyle = fadeCone; ctx.fill(); ctx.globalAlpha = 1;
+          }
+          if (style.activeFor && typeof a.active === "number") {
+            // Interceptor: a line to each enemy utility it stopped (inferred), fading over INTERCEPT_LINE_S.
+            (a.intercepts || []).forEach(function (hit) {
+              if (t < hit[0] || t > hit[0] + INTERCEPT_LINE_S) return;
+              var f = (t - hit[0]) / INTERCEPT_LINE_S, hx = hit[1] * s, hy = hit[2] * s;
+              ctx.save(); ctx.globalAlpha = 1 - f; ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r / 5); ctx.lineCap = "round";
+              ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(hx, hy); ctx.stroke();
+              ctx.beginPath(); ctx.arc(hx, hy, r * (0.25 + 0.5 * f), 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+            });
+            if (t >= a.active) text += " · set off at " + a.active.toFixed(1) + " s";
+            var stopped = (a.intercepts || []).filter(function (hit) { return hit[0] <= t; }).length;
+            if (stopped) text += " · stopped " + stopped + " enemy utility (inferred: cut short in its range)";
+          }
+          if (style.burst !== undefined && a.fx && a.fx.length) {
+            // A badge that goes off and stays (Arc Rose): a ring opening from it at each `fx`.
+            a.fx.forEach(function (p) {
+              if (t < p || t > p + style.burst) return;
+              var f = (t - p) / style.burst;
+              ctx.save(); ctx.globalAlpha = 1 - f; ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4);
+              ctx.beginPath(); ctx.arc(x, y, radius * (1.2 + 3 * f), 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+            });
+            var went = a.fx.filter(function (p) { return p <= t; });
+            if (went.length) text += " · went off at " + went.map(function (p) { return p.toFixed(1); }).join(", ") + " s";
+          }
           if (a.path) {
             // The trail of the last 3 s behind a drone or Trailblazer.
             ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = 0.55; ctx.setLineDash([r / 4, r / 5]);
@@ -2067,10 +2616,56 @@
             ctx.setLineDash([]); ctx.globalAlpha = 1;
           }
           self.drawBadge(ctx, x, y, radius, color, glyph, fadeIn);
+          // A unit's full run from its spawn, or a device's from when it was set off.
+          var run = style.life ? runLeft(a.t0, style.life, t)
+            : style.activeFor && typeof a.active === "number" ? runLeft(a.active, style.activeFor, t) : null;
+          self.drawTimer(ctx, x, y, radius + 2 + tw * 0.4 + 1, run, tw * 0.8, fadeIn);
+          if (run !== null) text += " · " + (run * (style.life || style.activeFor)).toFixed(1) + " s of its " +
+            (style.life || style.activeFor) + " s left";
           hits.push({ x: x, y: y, r: radius * 1.4, text: text });
         }
         ctx.restore();
       });
+    });
+  };
+
+  // The ult orbs lying at t (player_state `orbs`): a small gold orb with a dark ring; one just taken, a ring in the
+  // taker's colour opening out from it as it fades.
+  ReplayViewer.prototype.drawOrbs = function (ctx, s, r, hits, index) {
+    var t = this.t, self = this, gold = this.css("--replay-orb", "#f2c94c");
+    orbsAt(index, t).forEach(function (o) {
+      var x = o.u * s, y = o.v * s, k = Math.max(4, r * 0.32);
+      var taken = o.end === "taken" && o.t1 !== null && t >= o.t1;
+      ctx.save();
+      if (taken) {
+        var f = Math.min(1, (t - o.t1) / ORB_TAKEN_S);
+        ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2, r / 5);
+        ctx.strokeStyle = o.slot === undefined ? gold : self.slotColor(o.slot);
+        ctx.beginPath(); ctx.arc(x, y, k * (1 + 2.5 * f), 0, 2 * Math.PI); ctx.stroke();
+      }
+      ctx.globalAlpha = taken ? 1 - Math.min(1, (t - o.t1) / ORB_TAKEN_S) : 1;
+      ctx.beginPath(); ctx.arc(x, y, k + 2, 0, 2 * Math.PI); ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, k, 0, 2 * Math.PI); ctx.fillStyle = gold; ctx.fill();
+      // A capture: a 2 s channel (wiki), a ring in the capturer's colour filling until it's theirs or let go,
+      // drawn outside a player's marker (the capturer stands on the orb, over it).
+      function channel(from, slot) {
+        var f = Math.min(1, (t - from) / ORB_CAPTURE_S);
+        ctx.strokeStyle = slot === undefined ? gold : self.slotColor(slot); ctx.lineWidth = Math.max(2.5, r / 5);
+        ctx.beginPath(); ctx.arc(x, y, Math.max(k + 5, r * 1.35), -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * f); ctx.stroke();
+      }
+      if (o.end === "taken" && o.t1 !== null && t < o.t1 && t >= o.t1 - ORB_CAPTURE_S) channel(o.t1 - ORB_CAPTURE_S, o.slot);
+      (o.tries || []).forEach(function (a) {
+        if (t >= a[0] && t < (a[1] === null ? a[0] + ORB_CAPTURE_S : a[1])) channel(a[0], a[2]);
+      });
+      ctx.restore();
+      var text = "Ult orb";
+      if (o.end === "taken" && o.t1 !== null && t >= o.t1) {
+        text += " · taken" + (o.slot === undefined ? "" : " by " + self.nameOf(o.slot)) + " at " + o.t1.toFixed(1) + " s";
+      }
+      (o.tries || []).forEach(function (a) {
+        if (t >= (a[1] === null ? a[0] : a[1])) text += " · " + self.nameOf(a[2]) + " let go a capture at " + a[0].toFixed(1) + " s";
+      });
+      hits.push({ x: x, y: y, r: k * 1.6, text: text });
     });
   };
 
@@ -2187,6 +2782,22 @@
       self.drawBadge(ctx, x + r * 1.15, y - r * 1.15, r * 0.42, color, self.abilityIcon(style.agent, style.ability));
       hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(rv.target) + " revealed by " + self.nameOf(rv.slot) +
         "'s " + style.label + " · " + rv.t0.toFixed(1) + "–" + (typeof rv.t1 === "number" ? rv.t1.toFixed(1) : "?") + " s" });
+    });
+  };
+
+  // An ult its owner carries (carriedAt: NULL/cmd, Run it Back, Not Dead Yet): a timer round them, as a smoke's
+  // runs, over its full length; one cut short goes with it.
+  ReplayViewer.prototype.drawCarried = function (ctx, s, r, hits) {
+    var t = this.t, tracks = this.current.tracks, self = this;
+    carriedAt(this.current.extras.abilities, this.current.blob, t).forEach(function (c) {
+      var at = trackAt(tracks[String(c.slot)], t);
+      if (!at || !at.live) return;
+      var x = at.u * s, y = at.v * s, w = Math.max(2.5, r / 4);
+      self.drawTimer(ctx, x, y, r * 1.25 + w / 2, c.left, w, 1);
+      // The time left on the ult itself, not to `until`: that would tell of a death still to come.
+      hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(c.slot) + " · " + c.ability + " · " +
+        (c.left * c.full).toFixed(1) + " s of its " + c.full + " s left" +
+        (c.ability === "Not Dead Yet" ? " to get a kill or assist" : "") });
     });
   };
 
@@ -3373,6 +3984,7 @@
     if (!this.current.state) this.current.state = indexRoundState(blob, this.current.extras.abilities);
     var index = this.current.state;
     var spike = spikeStateAt(index, t);
+    this.drawOrbs(ctx, s, r, hits, index);
     this.drawSpikeGround(ctx, s, r, hits, spike);   // planted or placed on the ground: under the players
 
     blob.kills.forEach(function (k) {
@@ -3464,7 +4076,10 @@
     });
     ctx.globalAlpha = 1;
 
-    if (this.layers.abilities) this.drawReveals(ctx, s, r, hits);
+    if (this.layers.abilities) {
+      this.drawReveals(ctx, s, r, hits);
+      this.drawCarried(ctx, s, r, hits);
+    }
 
     // The player annotations last, over the circles, whatever the abilities toggle says: condition chips, the
     // carrier's badge, then the health/name blocks on dark plates so they read over any part of the map.
@@ -3540,14 +4155,15 @@
   var api = {
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
+    runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
-    healthPct: healthPct, healthAt: healthAt, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
+    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,

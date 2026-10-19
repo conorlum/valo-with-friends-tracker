@@ -310,7 +310,7 @@ def placement(t_ms, equip, listed):
 def run5(tmp_path, rows, table=None, positions=None):
     path = tmp_path / "events.ndjson"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    return build_extras(path, table or two_cyphers(), WINDOWS, GAME_MAP, AGENTS5, lambda t_ms: positions or {})
+    return build_extras(path, table or two_cyphers(), WINDOWS, GAME_MAP, AGENTS_FL if table is not None else AGENTS5, lambda t_ms: positions or {})
 
 
 def test_packed_ints_reads_unreal_packed_values():
@@ -641,7 +641,7 @@ from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
              "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
-             "status", "from", "z", "end_z", "off"}
+             "status", "from", "z", "end_z", "off", "full"}
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -864,3 +864,168 @@ def test_every_condensed_round_says_its_casts_were_recorded(tmp_path):
     assert replay.rounds and all(blob["movement_casts"] == 1 for blob in replay.rounds.values()), \
         "a round nobody cast in is known to have had no cast"
     assert not any(e["k"] == "cast" for blob in replay.rounds.values() for e in blob["util"])
+
+
+# ---------------------------------------------------------------- Fault Line's charge and Arc Rose's trigger (2026-10-18)
+
+AGENTS_FL = {**AGENTS5, "Breach": "Breach", "Nox": "Vyse"}
+
+
+def vyse_and_breach() -> PlayerTable:
+    table = two_cyphers()
+    table.agents[3] = "Vyse"            # slot 8 is already Breach (pawn 108)
+    return table
+
+
+def fissure(t_ms, guid):
+    return [spawned(t_ms, guid, "Default__GameObject_Breach_E_SweetSpotFissure_C", 0, 0), instigated(t_ms, guid, 108),
+            closed(t_ms + 6_100, guid)]
+
+
+def test_fault_lines_charge_is_learnt_from_breachs_charge_and_full_charge_effects(tmp_path):
+    rows = [
+        effect(18_500, 108, 1, [5000], container=700), effect(19_500, 108, 2, [5000], container=701), *fissure(20_000, 41),
+        effect(28_000, 108, 3, [5000], container=700), effect(29_000, 108, 4, [5000], container=701), *fissure(30_000, 42),
+        effect(39_600, 108, 5, [5000], container=700), *fissure(40_000, 43),            # released 0.4 s into a charge
+        # a busy pair of effects a second apart, far from any release: never taken for the charge
+        *[e for i in range(5) for e in (effect(45_000 + 2_000 * i, 108, 10 + i, [5000], container=900),
+                                         effect(46_000 + 2_000 * i, 108, 20 + i, [5000], container=901))],
+    ]
+    lines = [a for a in run5(tmp_path, rows, table=vyse_and_breach()).rounds[1]["abilities"] if a["name"] == "E_SweetSpotFissure"]
+    assert [a["charge"] for a in lines] == [1.0, 1.0, 0.4]
+
+
+def test_without_full_charges_to_learn_from_fault_line_has_no_charge(tmp_path):
+    rows = [effect(39_600, 108, 5, [5000], container=700), *fissure(40_000, 43)]
+    [line] = [a for a in run5(tmp_path, rows, table=vyse_and_breach()).rounds[1]["abilities"]
+              if a["name"] == "E_SweetSpotFissure"]
+    assert "charge" not in line
+
+
+# ---------------------------------------------------------------- ult orb captures let go (2026-10-18)
+
+ORB = "Default__UltPointOrb_C"
+
+
+def orb_pickup(t_ms, orb, pawn):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": 264, "function_name": "OrbPickedUpRPC",
+            "payload": {"CollectableOrb": orb, "OrbGatherer": pawn}}
+
+
+def capture(t_ms, orb, pawn, effect_id):
+    """A completed capture: the channel's two effects on the capturer, the pickup (sent twice) 2 s later."""
+    return [effect(t_ms, pawn, effect_id, [pawn], container=800), effect(t_ms + 15, pawn, effect_id + 1, [7], container=801),
+            orb_pickup(t_ms + 2_000, orb, pawn), orb_pickup(t_ms + 2_000, orb, pawn), closed(t_ms + 2_000, orb)]
+
+
+def test_a_capture_let_go_is_learnt_from_the_completed_ones_and_placed_on_its_orb(tmp_path):
+    rows = [spawned(11_000, 50, ORB, 0, 0), spawned(11_000, 51, ORB, 5000, 0), spawned(11_000, 52, ORB, 0, 3000),
+            *capture(18_000, 50, 102, 1), *capture(30_000, 51, 103, 3),
+            effect(25_000, 102, 7, [102], container=900),                          # unrelated: never a try
+            effect(40_000, 104, 9, [104], container=800), stop(40_700, 104, 9),    # slot 4 lets go, on orb 52
+            effect(45_000, 105, 9, [105], container=800)]                          # slot 5 nowhere near an orb
+    out = run5(tmp_path, rows, positions={4: (0.0, 3050.0), 5: (9000.0, 9000.0)})
+    u, v = GAME_MAP.to_uv(0.0, 3000.0)
+    assert out.rounds[1]["orb_tries"] == [{"t": 30.0, "t1": 30.7, "slot": 4, "u": u, "v": v}]
+    assert out.report["orb tries"] == 1 and out.report["orb tries: no orb within reach"] == 1
+
+
+def test_a_try_let_go_after_the_round_ends_stops_at_its_end_and_a_reused_guid_is_a_new_orb(tmp_path):
+    # orb 50 is taken in round 1, then its guid comes back in round 2 for an orb elsewhere; slot 4 starts a capture
+    # on that one a second before round 2 ends and lets go after it
+    end = WINDOWS[1][2]
+    rows = [spawned(11_000, 50, ORB, 0, 0), *capture(18_000, 50, 102, 1), spawned(11_000, 51, ORB, 5000, 0),
+            *capture(30_000, 51, 103, 3), spawned(70_000, 50, ORB, 0, 3000),
+            effect(end - 1_000, 104, 9, [104], container=800), stop(end + 5_000, 104, 9)]
+    out = run5(tmp_path, rows, positions={4: (0.0, 3050.0)})
+    [attempt] = out.rounds[2]["orb_tries"]
+    assert (attempt["u"], attempt["v"]) == GAME_MAP.to_uv(0.0, 3000.0)
+    assert attempt["t1"] == round((end - WINDOWS[1][0]) / 1000, 3)
+
+
+def test_with_one_capture_to_learn_from_no_try_is_found(tmp_path):
+    rows = [spawned(11_000, 50, ORB, 0, 0), spawned(11_000, 52, ORB, 0, 3000), *capture(18_000, 50, 102, 1),
+            effect(40_000, 104, 9, [104], container=800)]
+    assert "orb_tries" not in run5(tmp_path, rows, positions={4: (0.0, 3050.0)}).rounds.get(1, {})
+
+
+def test_an_arc_rose_flashes_half_a_second_after_vyse_triggers_it(tmp_path):
+    rose = "Default__GameObject_Nox_StealthingTrap_Flash_2_C"
+    rows = [spawned(12_000, 70, rose, 0, 0), instigated(12_000, 70, 103),
+            {"type": "rpc_received", "time_ms": 12_200, "actor_net_guid": 70, "function_name": "MulticastPlayOneShotEffect",
+             "payload": {"EffectContainer": 4219}},                                    # its deploy, not a trigger
+            effect(30_000, 70, 9, [], container=5513), closed(37_000, 70),
+            spawned(13_000, 71, rose, 100, 0), instigated(13_000, 71, 103), closed(55_000, 71)]   # never triggered
+    roses = run5(tmp_path, rows, table=vyse_and_breach()).rounds[1]["abilities"]
+    assert [r.get("fx") for r in roses] == [[20.5], None]
+
+
+# ---------------------------------------------------------------- Veto's Interceptor (2026-10-18)
+
+INTERCEPTOR = "Default__Pawn_Pine_E_RadEater_C"
+BOOM_BOT = "Default__Pawn_Clay_E_Boomba_C"
+
+
+def veto_and_raze() -> PlayerTable:
+    """Slot 2 plays Veto (side A, with slot 0's Omen); slot 7 plays Raze (side B)."""
+    table = players()
+    table.agents[2], table.agents[7] = "Veto", "Raze"
+    return table
+
+
+def goes_active(t_ms, guid, seconds=9):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": guid, "function_name": "MulticastPlayContinuousEffect",
+            "payload": {"EffectId": 1, "EffectContainer": 7,
+                        "FunctionFloatValues": [{"Name": {"TagName": "FXC.Duration"}, "Value": seconds}]}}
+
+
+def run_veto(tmp_path, rows):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    teams = {s: "A" if s < 5 else "B" for s in range(10)}
+    return build_extras(path, veto_and_raze(), WINDOWS, GAME_MAP, {**AGENTS, "Pine": "Veto", "Clay": "Raze"},
+                        lambda t_ms: {}, teams=teams)
+
+
+def bot(guid, t0, t1, x, by=107):
+    return [spawned(t0, guid, BOOM_BOT, x, 0), instigated(t0, guid, by), closed(t1, guid)]
+
+
+def test_an_interceptor_is_set_off_and_stops_enemy_utility_cut_short_in_its_range(tmp_path):
+    rows = [spawned(20_000, 50, INTERCEPTOR, 0, 0), instigated(20_000, 50, 102), goes_active(22_000, 50),
+            closed(31_000, 50),
+            *bot(60, 21_000, 22_100, 500),            # stopped: 1.1 s of a bot's 5, 5 m off
+            *bot(62, 21_000, 23_000, 5000),           # cut short too, but 50 m off
+            *bot(65, 18_000, 23_000, 300),            # ran its full 5 s beside it
+            *bot(66, 21_000, 22_500, 400, by=100),    # a teammate's (Omen's slot, for the test)
+            *bot(67, 32_000, 33_000, 200),            # after the Interceptor had gone
+            *bot(61, 75_000, 80_000, 9000)]           # round 2: the longest life a bot has
+    out = run_veto(tmp_path, rows)
+    [interceptor] = [a for a in out.rounds[1]["abilities"] if a["name"] == "E_RadEater"]
+    assert interceptor["active"] == 12.0
+    assert interceptor["intercepts"] == [[12.1, *GAME_MAP.to_uv(500, 0)]]
+    assert out.report["interceptors_active"] == 1 and out.report["intercepts"] == 1
+
+
+def test_an_interceptor_counts_one_use_once(tmp_path):
+    shell, cluster = "Default__Projectile_Clay_4_Projectile_Primary_C", "Default__GameObject_Clay_4_Cluster_C"
+
+    def actor(guid, kind, t0, t1, x):
+        return [spawned(t0, guid, kind, x, 0), instigated(t0, guid, 107), closed(t1, guid)]
+    rows = [spawned(20_000, 50, INTERCEPTOR, 0, 0), instigated(20_000, 50, 102), goes_active(22_000, 50),
+            closed(31_000, 50),
+            *actor(70, shell, 21_000, 22_000, 300),     # it landed: its object spawned 0.1 s after, only a stage
+            *actor(71, cluster, 22_100, 22_400, 300),   # stopped
+            *actor(73, cluster, 22_000, 23_000, 400), *actor(74, cluster, 22_000, 23_000, 450),   # one use, two parts
+            *actor(75, shell, 75_000, 80_000, 9000), *actor(76, cluster, 75_000, 80_000, 9000)]   # round 2: full lives
+    [interceptor] = [a for a in run_veto(tmp_path, rows).rounds[1]["abilities"] if a["name"] == "E_RadEater"]
+    assert [hit[0] for hit in interceptor["intercepts"]] == [12.4, 13.0]
+
+
+def test_an_interceptor_never_set_off_has_no_active_time(tmp_path):
+    rows = [spawned(20_000, 50, INTERCEPTOR, 0, 0), instigated(20_000, 50, 102), goes_active(21_000, 50, seconds=0.5),
+            *bot(60, 21_000, 22_100, 500), *bot(61, 75_000, 80_000, 9000)]
+    out = run_veto(tmp_path, rows)
+    [interceptor] = [a for a in out.rounds[1]["abilities"] if a["name"] == "E_RadEater"]
+    assert "active" not in interceptor and "intercepts" not in interceptor
+    assert out.report["interceptors_never_active"] == 1

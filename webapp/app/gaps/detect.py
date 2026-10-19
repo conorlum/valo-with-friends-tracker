@@ -47,7 +47,8 @@ GAPS_REVISION = 3    # 3: feature occlusion in exposure and release attribution
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
-LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "seen", "revived"})
+# Control revision 18 adds two: a spike tap ("tap") and an ult orb taken ("orb").
+LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "tap", "orb", "seen", "revived"})
 REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other", "map_feature_closed")
 _CODE = {r: i for i, r in enumerate(REASONS)}
 FULL_CIRCLE = np.arange(0.0, 360.0, RAY_STEP_DEG)

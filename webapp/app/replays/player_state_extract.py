@@ -26,6 +26,15 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   place (D5, answered 2026-10-09). A voluntary drop's place and the carrier before it are not decoded, so they
   stay absent. Never a pickup by distance.
 
+- **Ult points (2026-10-18).** Each player state's `NumUltimatePoints`, as the game replicates it (a change, not
+  a timeline): the round's seed is the value before the round's window, then every change in it.
+- **Ult orbs (2026-10-18).** `UltPointOrb` actors: where they lie and when they close. An orb closes when a
+  player captures it (a 2 s channel, crouched beside it; a full ult can still capture), at the plant, or as the
+  round enters its end phase (the wiki and the owner). Taken means the game state's OrbPickedUpRPC named it and
+  its capturer's pawn (sent as it closes, on every capture of 14 exports), so a buy-phase capture, one at the plant
+  and one by a player at full ult are named like any other. Captures started and let go are the extras pass's
+  (`orb_tries`).
+
 Diagnostics are anonymous counts (no names, Subjects or guids) for the condense report."""
 
 from __future__ import annotations
@@ -37,7 +46,7 @@ import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from app.replays.contract import GAME_STATE_PATH, RPC_DAMAGE
+from app.replays.contract import GAME_STATE_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_ORB_PICKUP
 
 # W3 EVIDENCE B: the HP section's value before a slot's first hit of a round was 100 on 202 of 202; the export
 # has no MaxLife field. Measured, not a game constant typed in.
@@ -54,6 +63,12 @@ SUM_TOLERANCE = 0.01              # sections' changes vs DamageTaken (float32 va
 VALUE_TOLERANCE = 0.01
 PROVEN_PLANTER = frozenset({"instigator", "planted"})   # extras' owner_by values that name the planter
 SPIKE_LOOKBACK_MS = 200_000       # player_state.T_MIN: a round's transitions start at most this long before it
+ORB_ARCHETYPE = "Default__UltPointOrb_C"
+# World units: a capture started this near an orb was on it (extras.orb_tries). Every capturer of two exports
+# stood within 1.4 m of the orb as it closed, every other player at least 11.7 m away.
+ORB_REACH = 200.0
+ORB_PLANT_MS = 300                # an orb closing this near the plant, with no capture, went with it
+ULT_MAX = 20                      # ult points above this are unreadable (every ult costs 6 to 9)
 
 # LifeChangeEvents handles (the parser's export of the struct).
 H_COMPONENT, H_RESULT, H_DELTA, H_ALIVE = 11, 12, 13, 14
@@ -146,9 +161,14 @@ class PlayerStateInputs:
     hp_section: dict[int, int] = field(default_factory=dict)            # pawn -> its HP section's component
     armor: dict[int, list[tuple[int, float]]] = field(default_factory=dict)  # actor guid -> [(spawn ms, capacity)]
     spike: list[tuple[int, str]] = field(default_factory=list)          # (ms, state), changes only
+    ult: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # slot -> [(ms, points)], as replicated
+    # Each orb as it spawned: [spawn ms, x, y, close ms | None, taken, capturer's slot | None]. A guid can come back
+    # for a later orb, so each spawn is its own entry and a capture goes on the one open under that guid.
+    orbs: list[list] = field(default_factory=list)
     has_life_changes: bool = False
     has_damage: bool = False
     has_spike: bool = False
+    has_ult: bool = False
     diagnostics: Counter = field(default_factory=Counter)
 
     def capacity(self, section: int, t_ms: int) -> float | None:
@@ -169,13 +189,40 @@ def read_player_state(export, players) -> PlayerStateInputs:
     seen: set[tuple[int, int, int]] = set()
     lethal: dict[int, list[set[int]]] = defaultdict(list)
     bomb: list[tuple[int, int]] = []
+    orb_now: dict[int, list] = {}                     # guid -> its latest orb
     for row in export.events:
         data = row.data
         kind = data.get("type")
         if kind == "actor_spawned":
-            capacity = ARMOR_CAPACITY.get(str(data.get("archetype_path") or ""))
+            archetype = str(data.get("archetype_path") or "")
+            capacity = ARMOR_CAPACITY.get(archetype)
             if capacity is not None:
                 out.armor.setdefault(int(data.get("actor_net_guid") or 0), []).append((row.time_ms, capacity))
+            elif archetype == ORB_ARCHETYPE:
+                where = data.get("location") or {}
+                if where.get("x") is None or where.get("y") is None:
+                    out.diagnostics["orbs: no spawn location (dropped)"] += 1
+                else:
+                    entry = [row.time_ms, float(where["x"]), float(where["y"]), None, False, None]
+                    orb_now[int(data.get("actor_net_guid") or 0)] = entry
+                    out.orbs.append(entry)
+            continue
+        if kind == "actor_closed":
+            orb = orb_now.get(int(data.get("actor_net_guid") or 0))
+            if orb is not None and orb[3] is None:
+                orb[3] = row.time_ms
+            continue
+        if kind == "export_group_received" and data.get("export_group_path") == PLAYER_STATE_PATH:
+            payload = data.get("payload")
+            points = payload.get("NumUltimatePoints") if isinstance(payload, dict) else None
+            if points is None:
+                continue
+            slot = players.other_slot.get(int(data.get("actor_net_guid") or 0))
+            if slot is None or isinstance(points, bool) or not isinstance(points, int) or not 0 <= points <= ULT_MAX:
+                out.diagnostics["ult: unreadable or unowned NumUltimatePoints"] += 1
+                continue
+            out.has_ult = True
+            out.ult.setdefault(slot, []).append((row.time_ms, points))
             continue
         if kind == "export_group_received" and data.get("export_group_path") == GAME_STATE_PATH:
             payload = data.get("payload")
@@ -185,6 +232,16 @@ def read_player_state(export, players) -> PlayerStateInputs:
                     bomb.append((row.time_ms, value))
                 else:
                     out.diagnostics["spike: unreadable BombState"] += 1
+            continue
+        if kind == "rpc_received" and data.get("function_name") == RPC_ORB_PICKUP:
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            orb = orb_now.get(int(payload.get("CollectableOrb") or 0))
+            if orb is None:
+                out.diagnostics["orbs: capture of an orb never seen"] += 1
+            elif not orb[4]:                                 # sent twice
+                orb[4], orb[5] = True, players.pawn_slot.get(int(payload.get("OrbGatherer") or 0))
+                if orb[5] is None:
+                    out.diagnostics["orbs: capturer's pawn unknown"] += 1
             continue
         if kind != "rpc_received" or data.get("function_name") not in RPC_DAMAGE:
             continue
@@ -299,14 +356,15 @@ def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: di
             "msh": msh}
 
 
-def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end: int | None, life_of) -> dict | None:
+def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end: int | None, life_of,
+                       to_uv=None) -> dict | None:
     """One round's `player_state` (format version 1), or None when the export has none of its sources.
 
     `life_of(slot, t_ms)` -> the life index (the round's alive interval holding `t_ms`) or None. Hits count from
     InRound to the window's end, like the blob's other rows; spike transitions from after the previous round's
     window (the buy phase, negative times). A part is present when the export has its source at all, so an empty
-    part means "none this round", and a missing one "never decoded"."""
-    if not (inputs.has_damage or inputs.has_spike):
+    part means "none this round", and a missing one "never decoded". Orbs need `to_uv(x, y)` -> (u, v)."""
+    if not (inputs.has_damage or inputs.has_spike or inputs.has_ult or inputs.orbs):
         return None
     out: dict = {"version": 1}
     hits = [h for h in inputs.hits if start <= h.t_ms <= end]
@@ -337,7 +395,55 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
             if lo < t_ms <= end and (not spike or spike[-1]["s"] != state):
                 spike.append({"t": _seconds(t_ms, start), "s": state})
         out["spike"] = spike
+    if inputs.has_ult:
+        lo = max(prev_end if prev_end is not None else -math.inf, start - SPIKE_LOOKBACK_MS)
+        ult: dict[str, list] = {}
+        for slot, rows in sorted(inputs.ult.items()):
+            before = [p for t_ms, p in rows if t_ms <= lo]
+            # The game replicates a change, not a value: before the first round's first change, every player has 0.
+            seed = before[-1] if before else (0 if prev_end is None else None)
+            line = [] if seed is None else [{"t": _seconds(int(lo), start), "n": seed}]
+            for t_ms, points in rows:
+                if lo < t_ms <= end and (not line or line[-1]["n"] != points):
+                    line.append({"t": _seconds(t_ms, start), "n": points})
+            ult[str(slot)] = line
+        out["ult"] = ult
+    if inputs.orbs and to_uv is not None:
+        lo = max(prev_end if prev_end is not None else -math.inf, start - SPIKE_LOOKBACK_MS)
+        plants = [t_ms for t_ms, state in inputs.spike if state == "planted"]
+        orbs = []
+        for spawned, x, y, closed, taken, slot in sorted(inputs.orbs, key=lambda o: o[0]):
+            # An orb is its spawning round's: one whose close was never seen ends with that round, never the next.
+            if not lo < spawned <= end:
+                continue
+            u, v = to_uv(x, y)
+            entry = {"u": u, "v": v, "t0": _seconds(spawned, start), "t1": None, "end": "round"}
+            if closed is not None and closed <= end:
+                entry["t1"] = _seconds(closed, start)
+                if taken:
+                    entry["end"] = "taken"
+                    if slot is not None:
+                        entry["slot"] = slot
+                elif any(abs(closed - p) <= ORB_PLANT_MS for p in plants):
+                    entry["end"] = "plant"
+                inputs.diagnostics[f"orbs: closed ({entry['end']})"] += 1
+            orbs.append(entry)
+        out["orbs"] = orbs
     return out
+
+
+def attach_orb_tries(state: dict | None, tries: list[dict], diagnostics: Counter | dict) -> None:
+    """Captures started and let go (extras `orb_tries`: {t, t1, slot, u, v}, `t1` when it was let go, None if never
+    seen), in place on a round's `player_state`: each goes on the orb at its place that was open as it began, as
+    `tries` [[t, t1, slot], ...]."""
+    orbs = (state or {}).get("orbs")
+    for attempt in tries:
+        orb = next((o for o in orbs or [] if (o["u"], o["v"]) == (attempt["u"], attempt["v"])
+                    and o["t0"] <= attempt["t"] and (o["t1"] is None or attempt["t"] <= o["t1"])), None)
+        key = "orbs: capture let go" if orb is not None else "orbs: capture let go on no orb of the round"
+        diagnostics[key] = diagnostics.get(key, 0) + 1
+        if orb is not None:
+            orb.setdefault("tries", []).append([attempt["t"], attempt["t1"], attempt["slot"]])
 
 
 def attribute_planter(state: dict | None, util: list[dict], diagnostics: Counter | dict) -> None:

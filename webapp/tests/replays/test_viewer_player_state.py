@@ -91,6 +91,17 @@ PLAYER_STATE = {
     },
     "damage_taken": {"0": [5, 39.9, 60], "1": [12, 14], "2": [8], "3": [7], "4": [3.0, 3.0625, 3.0625], "5": [1]},
     "spike": SPIKE,
+    "ult": {"0": [{"t": -60.0, "n": 6}, {"t": 12.0, "n": 7}, {"t": 30.0, "n": 0}, {"t": 40.0, "n": 8.0}],  # a whole float
+            "1": [{"t": 5.0, "n": 25}, {"t": 6.0, "n": 2.5}, {"t": 7.0, "n": 3}, "junk"],      # out of range, not whole
+            "12": [{"t": 1.0, "n": 1}]},                                                     # not a slot
+    "orbs": [{"u": 300, "v": 400, "t0": 1.0, "t1": 20.0, "end": "taken", "slot": 3},
+             {"u": 500, "v": 600, "t0": 1.0, "t1": None, "end": "round",                     # captures let go:
+              "tries": [[2.0, 2.5, 4], [3.0, None, 5.0], [4.0, 3.0, 5], [5.0, None, 10], [6.0, 7.0], "x"]},
+             {"u": 500, "v": 600, "t0": 1.0, "t1": 0.5, "end": "plant"},                     # gone before it came
+             {"u": 99999, "v": 600, "t0": 1.0, "t1": None, "end": "round"},                  # off the map
+             {"u": 700.0, "v": 800, "t0": 50.0, "t1": None, "end": "round"},                 # a whole float: kept
+             {"u": 1, "v": 2, "t0": 50.0, "t1": None, "end": []},                            # not a name: dropped
+             {"u": 1, "v": 2, "t0": 50.0, "t1": None, "end": {}}],
 }
 
 UTIL = [
@@ -397,11 +408,34 @@ def test_the_js_selectors_match_player_state_py_at_many_times():
 
 
 @needs_node
+def test_ult_points_and_orbs_at_a_moment():
+    """Ult points hold from each change on, none before the first; an orb lies from t0 until it goes, and one that was
+    taken stays a second longer (its pickup shows); one gone with the plant or the round doesn't."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const p = JSON.parse(input);
+        const index = R.indexRoundState({player_state: p}, []);
+        const orbs = t => R.orbsAt(index, t).map(o => o.u);
+        process.stdout.write(JSON.stringify({
+          ult: [R.ultAt(index, 0, -61), R.ultAt(index, 0, 0), R.ultAt(index, 0, 12), R.ultAt(index, 0, 31), R.ultAt(index, 9, 5)],
+          orbs: [orbs(0.5), orbs(5), orbs(20.5), orbs(21.5)],
+          cost: [R.ULT_COST.Killjoy, R.ULT_COST["KAY/O"], R.ULT_COST.Omen]
+        }));
+      });"""
+    got = run_node(script, PLAYER_STATE)
+    assert got["ult"] == [None, 6, 7, 0, None]
+    assert got["orbs"] == [[], [300, 500], [300, 500], [500]]
+    assert got["cost"] == [9, 8, 7]
+
+
+@needs_node
 def test_the_js_contract_constants_are_player_state_py_s():
     got = run_node("""const R = require(process.argv[1]); process.stdout.write(JSON.stringify(R.PLAYER_STATE));""", None)
     assert got == {"version": ps_py.VERSION, "spike_states": list(ps_py.SPIKE_STATES), "t_min": ps_py.T_MIN,
                    "t_max": ps_py.T_MAX, "value_max": ps_py.VALUE_MAX, "life_max": ps_py.LIFE_MAX,
-                   "max_events": ps_py.MAX_EVENTS, "max_spike": ps_py.MAX_SPIKE, "uv_max": ps_py.UV_MAX}
+                   "max_events": ps_py.MAX_EVENTS, "max_spike": ps_py.MAX_SPIKE, "uv_max": ps_py.UV_MAX,
+                   "ult_max": ps_py.ULT_MAX, "max_orbs": ps_py.MAX_ORBS, "orb_ends": sorted(ps_py.ORB_ENDS, key=["taken", "plant", "round"].index)}
 
 
 @needs_node

@@ -269,6 +269,264 @@ def test_sentinel_utility_goes_down_when_its_owner_dies():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_timed_ability_runs_its_timer_over_its_kinds_full_run():
+    """The ring on a smoke: the share of its kind's `full` run left, 1 at its spawn, gone at its close. Two casts of
+    the same kind show the same ring until one closes, so a smoke cut short tells nothing early. No ring for a row
+    without `full`, one that lasts the round, or one that toggles (`on` spans), whose close says nothing ahead."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const smoke = {t0: 10, t1: 25, full: 15}, cut = {t0: 10, t1: 15, full: 15};
+        process.stdout.write(JSON.stringify({
+          smoke: [R.timeLeft(smoke, 10), R.timeLeft(smoke, 17.5), R.timeLeft(smoke, 25), R.timeLeft(smoke, 26)],
+          cut: [R.timeLeft(cut, 12), R.timeLeft(smoke, 12), R.timeLeft(cut, 16)],
+          early: R.timeLeft(smoke, 8),
+          old: R.timeLeft({t0: 10, t1: 25}, 12),
+          round: [R.timeLeft({t0: 10, t1: null, full: 15}, 20), R.timeLeft({t0: 10, full: 15}, 20)],
+          toggled: R.timeLeft({t0: 10, t1: 40, full: 30, on: [[10, 20], [30, 40]]}, 15),
+          instant: R.timeLeft({t0: 10, t1: 10, full: 15}, 10)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["smoke"] == [1, 0.5, 0, None]
+    assert got["cut"][0] == got["cut"][1] == pytest.approx(13 / 15) and got["cut"][2] is None
+    assert got["early"] is None
+    assert got["old"] is None
+    assert got["round"] == [None, None]
+    assert got["toggled"] is None
+    assert got["instant"] is None
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_unit_runs_its_full_life_and_devices_face_and_switch_off():
+    """A drone's timer runs over its full life from its spawn (an Owl Drone's 7.1 s) whatever its row's close says; a
+    turret faces its last yaw sample by t (the first before any); a Killjoy device is off inside its `off` spans."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const drone = R.abilityStyle({kind: "Pawn", code: "Hunter", name: "E_Drone"});
+        const turret = {yaw: 90, yaws: [[5, 10], [8, 200]]};
+        const off = {off: [[10, 12], [20, null]]};
+        process.stdout.write(JSON.stringify({
+          life: drone.life, run: [R.runLeft(3, 7.1, 3), R.runLeft(3, 7.1, 6.55), R.runLeft(3, 7.1, 10.2), R.runLeft(3, 7.1, 2)],
+          yaw: [R.yawAt(turret, 4), R.yawAt(turret, 6), R.yawAt(turret, 9), R.yawAt({yaw: 90}, 4), R.yawAt({}, 4)],
+          off: [R.deviceOffAt(off, 9), R.deviceOffAt(off, 11), R.deviceOffAt(off, 12), R.deviceOffAt(off, 50),
+                R.deviceOffAt({}, 11)]
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["life"] == 7.1
+    assert got["run"][0] == 1 and got["run"][1] == pytest.approx(0.5) and got["run"][2:] == [None, None]
+    assert got["yaw"] == [10, 10, 200, 90, None]
+    assert got["off"] == [False, True, False, True, False]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_device_ranges_drawn_are_map_controls():
+    """The turret's cone and the alarmbot's and Trademark's trigger radii are the engine's (app/control/engine.py)."""
+    from app.control import engine as ce
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const style = (code, name) => R.abilityStyle({kind: "GameObject", code: code, name: name});
+        process.stdout.write(JSON.stringify({cone: style("Killjoy", "E_Turret").cone,
+          alarmbot: style("Killjoy", "Q_StealthAlarmbot").trip, trap: style("Deadeye", "E_Trap").trip}));
+      });"""
+    got = run_node(script, {})
+    assert got == {"cone": ce.TURRET_HALF, "alarmbot": ce.ALARMBOT_M * 100, "trap": ce.CHAMBER_TRAP_M * 100}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_carried_ults_ring_their_owner_for_their_full_length():
+    """NULL/cmd (12.75 s) and Run it Back (11 s) ring their owner from the cast while the row is open and the owner
+    lives; Clove's Not Dead Yet rings her for 14.1 s from a revive within 3 s of her death, until a kill. A life that
+    starts later (a Sage revive) isn't her ult."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const blob = {t_end: 90,
+          players: [{slot: 1, agent: "KAY/O"}, {slot: 2, agent: "Phoenix"}, {slot: 3, agent: "Clove"}, {slot: 4, agent: "Clove"}],
+          alive: {"1": [[0, 15, "kill"]], "2": [[0, null, "round_end"]],
+                  "3": [[0, 20, "kill"], [20.6, 40, "kill"], [50, null, "round_end"]],
+                  "4": [[0, 30, "kill"], [30.5, null, "round_end"]]},
+          kills: [{t: 26, killer: 4, victim: 9}, {t: 31, killer: 4, victim: 8}]};
+        const abilities = [
+          {kind: "GameObject", code: "Grenadier", name: "X_UltPulseManager", slot: 1, t0: 10, t1: 22.75},
+          {kind: "GameObject", code: "Phoenix", name: "X_ResTarget_Production", slot: 2, t0: 30, t1: 36}];
+        const at = (t, slots) => R.carriedAt(abilities, blob, t).filter(c => slots.includes(c.slot))
+          .map(c => [c.slot, c.ability, +c.left.toFixed(3), +c.until.toFixed(3)]);
+        process.stdout.write(JSON.stringify({kayo: [at(12, [1]), at(16, [1])], phoenix: [at(33, [2]), at(37, [2])],
+          clove: [at(27.65, [3, 4]), at(30.8, [4]), at(31.5, [4]), at(35, [3]), at(52, [3])], ult: R.CLOVE_ULT_S}));
+      });"""
+    got = run_node(script, {})
+    assert got["kayo"] == [[[1, "NULL/cmd", round((22.75 - 12) / 12.75, 3), 22.75]], []]   # dead at 15: no ring
+    assert got["phoenix"] == [[[2, "Run it Back", round(8 / 11, 3), 36]], []]                # back at 36: gone
+    assert got["ult"] == 14.1
+    # slot 3 revived 0.6 s after dying: a ring to 34.7 (14.1 s on), past which she lives on to 40 with no ring
+    assert got["clove"][0] == [[3, "Not Dead Yet", round((34.7 - 27.65) / 14.1, 3), 34.7]]
+    assert got["clove"][3] == []
+    # slot 4 revived at 30.5 and got a kill at 31 (her kill at 26 was before): the ring ends with it
+    assert got["clove"][1] == [[4, "Not Dead Yet", round((44.6 - 30.8) / 14.1, 3), 31]]
+    assert got["clove"][2] == []
+    assert got["clove"][4] == []        # slot 3's third life came 10 s after her death: not the ult
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_clove_is_saved_by_an_assist_and_a_reconnect_is_not_her_ult():
+    """An assist during Not Dead Yet ends its ring as a kill does (the kill's `assists`); a kill at exactly the
+    revive counts; a life after a reconnect (the one before ended "left") is no ult."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const blob = {t_end: 90, players: [{slot: 3, agent: "Clove"}, {slot: 4, agent: "Clove"}, {slot: 5, agent: "Clove"}],
+          alive: {"3": [[0, 20, "kill"], [20.5, null, "round_end"]], "4": [[0, 10, "left"], [11, null, "round_end"]],
+                  "5": [[0, 30, "kill"], [30.5, null, "round_end"]]},
+          kills: [{t: 24, killer: 7, victim: 9, assists: [3]}, {t: 30.5, killer: 5, victim: 8}]};
+        const at = t => R.carriedAt([], blob, t).map(c => [c.slot, +c.until.toFixed(3)]);
+        process.stdout.write(JSON.stringify({early: at(22), late: at(25), reconnect: at(12), same: at(30.5)}));
+      });"""
+    got = run_node(script, {})
+    assert got["early"] == [[3, 24]]          # her assist at 24 saved her
+    assert got["late"] == []
+    assert got["reconnect"] == []
+    assert got["same"] == [[5, 30.5]]         # a kill as she comes back ends it there
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_box_abilities_lie_along_the_yaw_and_high_tide_follows_its_orb():
+    """A box runs `len` along the object's yaw from `from` (Fast Lane starts 150 units behind Neon) and `width`
+    across it; f0..f1 cut a share of the length. High Tide's wall takes the flight of the same owner's orb thrown
+    with it, not another player's or a later one."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const round = c => c.map(p => p.map(x => Math.round(x * 100) / 100));
+        const night = R.abilityStyle({kind: "GameObject", code: "BountyHunter", name: "X_WaveForm", agent: "Fade"});
+        const lane = R.abilityStyle({kind: "GameObject", code: "Sprinter", name: "4_Tunnel", agent: "Neon"});
+        const a = {u: 1000, v: 1000, yaw: 0};
+        const tide = {kind: "GameObject", code: "Mage", name: "Q_WallManager", slot: 2, t0: 5.9};
+        const orb = (slot, t0, u) => ({kind: "Projectile", code: "Mage", name: "Q_Wall", slot, t0, flight: [[t0, u, 0, 0]]});
+        process.stdout.write(JSON.stringify({
+          night: [night.shape, night.from, night.len, night.width],
+          box: round(R.boxCorners(a, night, 0.5)),
+          half: round(R.boxCorners({u: 0, v: 0, yaw: 90}, {len: 100, width: 20}, 1, 0.5, 1)),
+          lane: [lane.shape, round(R.boxCorners(a, lane, 1))],
+          noyaw: R.boxCorners({u: 0, v: 0}, night, 1),
+          traces: R.traceWalls([tide, orb(3, 5.9, 1), orb(2, 9.0, 2), orb(2, 6.0, 3), orb(2, 5.7, 4)])
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["night"] == ["box", None, 4000, 2000]
+    # 0.5 uv per unit: from the object to 2000 ahead along +u, 500 either side along v
+    assert got["box"] == [[1000, 1500], [3000, 1500], [3000, 500], [1000, 500]]
+    # yaw 90 runs along +v; the second half of a 100 long, 20 wide box
+    assert got["half"] == [[-10, 50], [-10, 100], [10, 100], [10, 50]]
+    assert got["lane"] == ["lanes", [[850, 1175], [5500, 1175], [5500, 825], [850, 825]]]
+    assert got["noyaw"] is None
+    assert got["traces"] == {"0": [[6.0, 3, 0, 0]]}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_kit_uses_and_health():
+    """The players panel: an agent's kit in C, Q, E, X order from the icon file names; each slot's recorded uses up to
+    t (a row with no owner never counts); and health only as proven (full with a round-start seed's total before any
+    hit, the hit's figures after one, unknown when the shield isn't proven)."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const icons = {Fade: {"Nightfall": "/i/fade/ultimate.png", "Seize": "/i/fade/ability1.png",
+                              "Haunt": "/i/fade/ability2.png", "Prowler": "/i/fade/grenade.png", "Odd": "/i/fade/x.png"}};
+        const items = [{t: 2, slot: 1, ability: "Haunt", cast: true}, {t: 9, slot: 1, ability: "Haunt", cast: true},
+                       {t: 4, slot: 1, ability: "Nightfall", cast: true}, {t: 3, slot: null, ability: "Seize", cast: true}];
+        const ps = {version: 1, vitals: {"1": [{t: -10, life: 0, hp: 100, sh: 50, mhp: 100, msh: 50, q: "start"},
+                                               {t: 5, life: 0, hp: 60, sh: 0, mhp: 100, msh: 50}],
+                                         "2": [{t: 5, life: 0, hp: 60, sh: null, mhp: 100, msh: null}]},
+                    damage_taken: {"1": [5], "2": [5]}};
+        const blob = {players: [{slot: 1}, {slot: 2}], alive: {"1": [[0, null, "round_end"]], "2": [[0, 8, "kill"]]},
+                      t_end: 90, player_state: ps};
+        const index = R.indexRoundState(blob, []);
+        process.stdout.write(JSON.stringify({
+          kit: R.abilitySlots(icons, "Fade").map(k => k.key + ":" + k.name),
+          none: R.abilitySlots(icons, "Omen"),
+          uses: [R.abilityUses(items, 5), R.abilityUses(items, 10)],
+          before: R.hudVitals(index, 1, 3), after: R.hudVitals(index, 1, 6),
+          unproven: R.hudVitals(index, 2, 6), dead: R.hudVitals(index, 2, 9)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["kit"] == ["C:Prowler", "Q:Seize", "E:Haunt", "X:Nightfall"]
+    assert got["none"] == []
+    assert got["uses"] == [{"1": {"Haunt": 1, "Nightfall": 1}}, {"1": {"Haunt": 2, "Nightfall": 1}}]
+    assert got["before"] == {"dead": False, "pct": 100, "total": 150, "armor": 50}
+    assert got["after"] == {"dead": False, "pct": 40, "total": 60, "armor": 50}
+    assert got["unproven"] == {"dead": False, "pct": None, "total": None, "armor": None}
+    assert got["dead"]["dead"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_shear_lasts_while_its_wall_is_raised_and_uses_count_casts_only():
+    """A Shear's trap row closes as its wall rises; the drawing lasts until the wall comes down (`raised`). The panel
+    counts casts: not a later stage of a placed object (`part`), not a reveal's or status's own row, and one use seen
+    twice within half a second once."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const shear = {kind: "GameObject", code: "Nox", name: "WallTrap", agent: "Vyse", t0: 0, t1: 15, raised: [15, 21],
+                       line: [[0, 0], [10, 10]]};
+        const set = {kind: "GameObject", code: "Nox", name: "WallTrap", agent: "Vyse", t0: 0, t1: 15, line: [[0, 0], [10, 10]]};
+        const shown = (a, t) => R.abilitiesAt([a], t, 100).length;
+        const cage = R.abilityStyle({kind: "Zone", code: "Gumshoe", name: "Q_Cage", agent: "Cypher"});
+        const items = [
+          {t: 1, slot: 2, ability: "Cyber Cage", cast: true}, {t: 10, slot: 2, ability: "Cyber Cage", cast: false},
+          {t: 5, slot: 3, ability: "Arc Rose", cast: true}, {t: 5.2, slot: 3, ability: "Arc Rose", cast: true, typed: true},
+          {t: 30, slot: 3, ability: "Arc Rose", cast: true},
+          {t: 8, slot: 6, ability: "Sky Smoke", cast: true}, {t: 8, slot: 6, ability: "Sky Smoke", cast: true},  // dropped together
+          {t: 12, slot: 4, ability: "NULL/cmd"}                       // a status's own row: not a cast
+        ];
+        process.stdout.write(JSON.stringify({
+          shear: [shown(shear, 16), shown(shear, 20.5), shown(shear, 22), R.closeOf(shear), R.abilityAlpha(shear, 16)],
+          set: [shown(set, 14), shown(set, 16.5), R.closeOf(set)],
+          cagePart: cage.part, uses: R.abilityUses(items, 40)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["shear"] == [1, 1, 0, 21, 1]
+    assert got["set"] == [1, 0, 15]
+    assert got["cagePart"] is True
+    assert got["uses"] == {"2": {"Cyber Cage": 1}, "3": {"Arc Rose": 2}, "6": {"Sky Smoke": 2}}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_fault_line_length_from_its_charge_a_rose_pops_only_once_fired_and_harbors_objects():
+    """A charged Fault Line is 8 m + 48 m x charge, solid; without a charge, the dashed 56 m reach. An Arc Rose stays
+    until it closes, fired or not (flashing doesn't use it up). Cove and Storm Surge objects get their shapes."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const fl = c => R.abilityStyle({kind: "GameObject", code: "Breach", name: "E_SweetSpotFissure", agent: "Breach", charge: c});
+        const rose = fx => ({kind: "GameObject", code: "Nox", name: "StealthingTrap_Flash_2", agent: "Vyse", t0: 0, t1: 90, fx});
+        const fired = rose([20.5]), idle = rose(undefined);
+        const shown = (a, t) => R.abilitiesAt([a], t, 100).length;
+        const cove = R.abilityStyle({kind: "GameObject", code: "Mage", name: "E_WorldSmoke", agent: "Harbor"});
+        const surge = R.abilityStyle({kind: "GameObject", code: "Mage", name: "4_SplashGrenade", agent: "Harbor"});
+        const orb = R.abilityStyle({kind: "Projectile", code: "Mage", name: "E_WorldSmoke", agent: "Harbor"});
+        process.stdout.write(JSON.stringify({
+          half: [fl(0.5).len, fl(0.5).reach, fl(0.5).label], none: [fl(undefined).len, fl(undefined).reach],
+          over: fl(1.4).len,
+          rose: [shown(fired, 20), shown(fired, 21), shown(fired, 60), shown(fired, 91.5), shown(idle, 60),
+                 R.abilityStyle(fired).pop, R.abilityStyle(fired).burst],
+          harbor: [cove.shape, cove.r, surge.shape, surge.r, orb.shape]
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["half"] == [3200, False, "Fault Line (charged 0.50 s: 32 m)"]
+    assert got["none"] == [5600, True]
+    assert got["over"] == 5600
+    assert got["rose"] == [1, 1, 1, 0, 1, None, 0.8]
+    assert got["harbor"] == ["smoke", 460, "area", 600, "projectile"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_ability_names_icons_and_drone_paths():
     script = """
       const R = require(process.argv[1]);
