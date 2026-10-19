@@ -1679,13 +1679,30 @@ table.compact-table .badge-score {
 /* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
 .replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
   --replay-smoke-core: rgba(16, 18, 24, 0.84); }
-.replay.is-linked { max-width: 1400px; }
+.replay.is-linked { --replay-side-w: minmax(320px, 400px); max-width: none; }
 .replay-body { display: block; }
+/* Medium screens: the map with the tabs beside it, the players panel under the map. */
 .replay.is-linked .replay-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  grid-template-columns: minmax(0, 1fr) var(--replay-side-w);
+  grid-template-areas: "main side" "board side";
   gap: 1.25rem;
   align-items: start;
+}
+.replay.is-linked .replay-main { grid-area: main; }
+.replay.is-linked .replay-board { grid-area: board; }
+.replay.is-linked .replay-side { grid-area: side; }
+/* Wide screens: the players panel left of the map, team 1 above team 2; the map column is as wide as the map is
+   tall, and the tabs take what's left (up to a cap), so the page fills the monitor rather than a fixed width. */
+@media (min-width: 1400px) {
+  .replay.is-linked { --replay-side-w: minmax(320px, 560px); }
+  .replay.is-linked .replay-body {
+    grid-template-columns: minmax(26rem, 32rem) minmax(0, max(280px, calc(100vh - 240px))) var(--replay-side-w);
+    grid-template-areas: "board main side";
+    justify-content: center;
+  }
+  .replay.is-linked .replay-board { grid-template-columns: minmax(0, 1fr); margin: 0; }
+  .replay.is-linked .replay-board .replay-pl-row { padding: 0.3rem 0; }
 }
 .replay-title-suffix { color: var(--ink-muted); font-size: 0.6em; font-weight: 500; }
 .replay-crumbs { color: var(--ink-muted); margin: 0 0 0.5rem; }
@@ -1840,7 +1857,8 @@ table.compact-table .badge-score {
 .replay-hud-bar { display: block; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
 .replay-hud-bar > span { display: block; height: 100%; }
 .replay-dot { display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%; margin-right: 0.35em; }
-/* The players panel under the map (renderBoard): a card per team, a row per player. */
+/* The players panel (renderBoard): a card per team, a row per player; two cards side by side under the map, or
+   stacked left of it on a wide screen (the layout above). */
 .replay-board {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
   gap: 0.75rem; margin: 0.75rem 0;
@@ -1869,7 +1887,7 @@ table.compact-table .badge-score {
 .replay-pl-agent img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .replay-pl-main { grid-area: main; min-width: 0; }
 .replay-pl-top { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.3rem; }
-.replay-pl-name { flex: 1; min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.replay-pl-name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .replay-pl-armor {
   padding: 0 0.25rem; border: 1px solid var(--ink-secondary); border-radius: 4px; color: var(--ink-secondary);
   font-size: 0.72rem; font-variant-numeric: tabular-nums;
@@ -1915,7 +1933,7 @@ table.compact-table .badge-score {
 .replay-list th, .replay-list td { padding: 0.35rem 0.75rem; border-top: 1px solid var(--border); text-align: left; }
 
 @media (max-width: 960px) {
-  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); }
+  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "board" "side"; }
   .replay-feed { max-height: 320px; }
 }
 
@@ -1940,7 +1958,7 @@ table.compact-table .badge-score {
 .replay-link { font-size: 0.85em; font-weight: 600; margin-left: 0.5rem; }
 
 /* The replay page gets the full width: the map is the content. */
-main:has(.replay.is-linked) { max-width: 1440px; }
+main:has(.replay.is-linked) { max-width: none; }
 .replay.is-linked .replay-canvas { width: min(100%, calc(100vh - 240px)); min-width: 280px; margin: 0 auto; }
 
 /* Replay upload: the file's upload progress, then the parse's elapsed time (templates/replays/upload*.html). */
@@ -2082,7 +2100,7 @@ main:has(.replay.is-linked) { max-width: 1440px; }
    and the map are on screen together. */
 .replay.has-coach .replay-tabs { flex-wrap: wrap; }
 @media (min-width: 961px) {
-  .replay.has-coach .replay-body { grid-template-columns: minmax(0, 1fr) minmax(360px, 480px); }
+  .replay.has-coach { --replay-side-w: minmax(360px, 480px); }
   .coach-panel { max-height: max(320px, calc(100vh - 240px)); overflow-y: auto; padding-right: 0.5rem; }
 }
 .coach-panel { margin-bottom: 1.25rem; }
