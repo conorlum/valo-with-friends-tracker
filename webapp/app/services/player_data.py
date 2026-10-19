@@ -6,6 +6,8 @@ player_views, players, economy_graphs and the player_view_cache module can
 all import from here without creating an import cycle.
 """
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
@@ -29,6 +31,21 @@ def one_row_per_match(player_ids):
         .scalar_subquery()
     )
     return MatchPlayer.player_id == lowest
+
+
+def played_agent_counts(db: Session, player_id: int, player_ids=None) -> list[tuple[str, int, datetime | None]]:
+    """(agent, matches, last played_at) per agent the player (or every one of
+    `player_ids`, an account group, a shared match counting once) has played.
+    NULL agents are skipped; the order is unspecified (rank with rank_agents)."""
+    ids = player_ids or {player_id}
+    query = (
+        db.query(MatchPlayer.agent, func.count(), func.max(Match.played_at))
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .filter(MatchPlayer.player_id.in_(ids), MatchPlayer.agent.isnot(None))
+    )
+    if player_ids:
+        query = query.filter(one_row_per_match(player_ids))
+    return [(agent, count, last) for agent, count, last in query.group_by(MatchPlayer.agent).all()]
 
 
 def load_player_match_data(

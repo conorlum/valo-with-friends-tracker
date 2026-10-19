@@ -27,7 +27,8 @@ from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
 from app.services.friends import get_current_player_and_friendship
 from app.services.map_streaks import compute_map_streaks
 from app.services.match_streaks import compute_form, form_entry
-from app.services.player_data import RECENT_MATCH_LIMIT
+from app.services.agent_roles import filter_agents, parse_filter
+from app.services.player_data import RECENT_MATCH_LIMIT, played_agent_counts
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
 from app.services.player_view_cache import CachedPlayerViews, get_cached_views, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
@@ -316,14 +317,22 @@ def player_detail(
 
 @router.get("/{display_name}/recent-matches")
 def player_recent_matches_fragment(
-    request: Request, display_name: str, accounts: str | None = None, db: Session = Depends(get_db)
+    request: Request, display_name: str, accounts: str | None = None, filter: str | None = None,
+    db: Session = Depends(get_db),
 ):
     """The Form card's recent-match rows, loaded after the page itself (via
-    htmx) since the badges need per-round data the page cache doesn't hold."""
+    htmx) since the badges need per-round data the page cache doesn't hold.
+    `filter` ("role:<role>" or "agent:<Name>") limits them to those agents; a
+    key that is not a role or an agent the player has played is ignored."""
     player = get_player_or_404(db, display_name)
     player_ids = _account_view(db, player, accounts).player_ids if accounts == "all" else None
-    entries = recent_form_entries(db, player.id, player_ids=player_ids)
-    rows = build_recent_match_rows(db, player.id, entries, player_ids=player_ids)
+    agents = None
+    if filter:
+        agents_played = [agent for agent, _, _ in played_agent_counts(db, player.id, player_ids)]
+        key = parse_filter(filter, agents_played)
+        agents = filter_agents(key, agents_played) if key else None
+    entries = recent_form_entries(db, player.id, player_ids=player_ids, agents=agents)
+    rows = build_recent_match_rows(db, player.id, entries, player_ids=player_ids, agents=agents)
     return templates.TemplateResponse(request, "_recent_match_rows.html", {"recent_rows": rows})
 
 

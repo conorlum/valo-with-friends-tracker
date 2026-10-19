@@ -127,15 +127,19 @@ def _round_first_kill_and_clutch(round_row: Round, player_mp_id: int, own_ids: s
 
 
 def recent_form_entries(
-    db: Session, player_id: int, limit: int = RECENT_FORM_COUNT, player_ids: frozenset[int] | None = None
+    db: Session, player_id: int, limit: int = RECENT_FORM_COUNT, player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
 ) -> list[FormEntry]:
     """The player's `limit` most recent matches as FormEntry rows, newest first
     -- the same matches the Form card's streak strip covers. `player_ids`
-    covers every one of an account group's accounts instead."""
+    covers every one of an account group's accounts instead. `agents`, if
+    given, keeps only matches played as one of those agents (before the LIMIT)."""
     query = db.query(MatchPlayer).join(Match, Match.id == MatchPlayer.match_id)
     query = query.filter(MatchPlayer.player_id.in_(player_ids or {player_id}))
     if player_ids:
         query = query.filter(one_row_per_match(player_ids))
+    if agents is not None:
+        query = query.filter(MatchPlayer.agent.in_(agents))
     mps = (
         query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
@@ -146,10 +150,13 @@ def recent_form_entries(
 
 
 def build_recent_match_rows(
-    db: Session, player_id: int, entries: list[FormEntry], player_ids: frozenset[int] | None = None
+    db: Session, player_id: int, entries: list[FormEntry], player_ids: frozenset[int] | None = None,
+    agents: frozenset[str] | None = None,
 ) -> list[RecentMatchRow]:
     """One row per entry (same order), with stats and badges for `player_id`,
-    or for whichever of `player_ids` (an account group) played each match."""
+    or for whichever of `player_ids` (an account group) played each match.
+    `agents`, if given, limits the stand-out baseline to those agents' matches
+    (the entries are already filtered by the caller)."""
     if not entries:
         return []
 
@@ -162,6 +169,8 @@ def build_recent_match_rows(
     )
     if player_ids:
         baseline_query = baseline_query.filter(one_row_per_match(player_ids))
+    if agents is not None:
+        baseline_query = baseline_query.filter(MatchPlayer.agent.in_(agents))
     baseline_mps = (
         baseline_query
         .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
