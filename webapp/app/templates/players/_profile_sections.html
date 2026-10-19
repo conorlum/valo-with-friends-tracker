@@ -1,3 +1,6 @@
+{% if filter_empty %}
+<p class="page-meta">No matches as {{ filter_label }}.</p>
+{% else %}
 {% set top_agent = profile.agent_counts.most_common(1) %}
 <p class="page-meta">
   {% if scope == 'recent' %}Stats below are over this player's last 30 matches.{% else %}Stats below are over this player's full match history.{% endif %}
@@ -42,7 +45,7 @@
 </div>
 
 {% set form_title = "Form" %}
-{% set recent_rows_url = "/players/" ~ (profile.player.display_name | urlencode) ~ "/recent-matches" ~ (accounts_query or "") %}
+{% set recent_rows_url = "/players/" ~ (profile.player.display_name | urlencode) ~ "/recent-matches" ~ (view_query or "") %}
 {% set form_meta = "Match win/loss streaks over this player's last 30 matches." if scope == 'recent' else "Match win/loss streaks over this player's full match history." %}
 {% include "_form_card.html" %}
 
@@ -325,3 +328,4 @@
 <script type="application/json" id="chart-data-{{ scope }}">
 {{ {"impact": chart_data, "highlights": highlights_chart_data, "map": map_chart_data} | tojson }}
 </script>
+{% endif %}
