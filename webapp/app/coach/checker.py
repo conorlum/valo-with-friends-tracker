@@ -24,11 +24,11 @@ _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining",
-    "spike_left_s"})      # PROVISIONAL(D3)
+    "spike_left_s"})
 # A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
 # round that happens to be 20 (PR 132 review, finding 1).
 _METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max"})
-_SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s"})   # PROVISIONAL(D3)
+_SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s"})
 SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")

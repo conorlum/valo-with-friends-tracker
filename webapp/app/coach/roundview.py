@@ -14,7 +14,7 @@ SAME_DEATH_S = 1.0      # app/control/engine.py's: a site death this close to th
 STALE_SAMPLE_S = 1.0    # a living player's nearest earlier sample older than this is not a position (tracks are
                         # condensed at sub-second steps, so a real track never trips it)
 HALF_S = 3.5            # an unfinished defuse attempt this long (as displayed, 2 decimals) is a half, else a tap
-SPIKE_TIMER_S = 45.0    # PROVISIONAL(D3): the spike's fuse, from plant to detonation
+SPIKE_TIMER_S = 45.0    # the spike's fuse, from plant to detonation
 _UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
 
@@ -152,11 +152,11 @@ class RoundView:
             out_row = {"t": round(start, 3), "t1": round(stop, 3), "kind": "defuse", "by": self.names.get(slot),
                        "seconds": seconds, "result": result}
             if bomb.get("t") is not None:
-                # PROVISIONAL(D3): time left on the spike's fuse when the attempt began
+                # time left on the spike's fuse when the attempt began
                 out_row["spike_left_s"] = round(float(bomb["t"]) + SPIKE_TIMER_S - start, 2)
             out_row.update(row)
             if halved:
-                out_row["resumed"] = True      # PROVISIONAL(D3): an attempt after an earlier half
+                out_row["resumed"] = True      # an attempt after an earlier half
             halved = halved or result == "half"
             out.append(out_row)
         return out
