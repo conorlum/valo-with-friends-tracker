@@ -46,7 +46,7 @@ def test_stats_match_count_sums_map_buckets():
     assert stats_match_count({"map_side_stats": {}}) == 0
 
 
-def test_pick_filter_key_prefers_duelist_else_biggest_role():
-    assert pick_filter_key({"duelist": 2, "sentinel": 9}) == "role:duelist"
+def test_pick_filter_key_takes_the_biggest_role():
+    assert pick_filter_key({"duelist": 1, "initiator": 276, "sentinel": 9}) == "role:initiator"
     assert pick_filter_key({"duelist": 0, "sentinel": 9, "controller": 3}) == "role:sentinel"
     assert pick_filter_key({}) == "role:duelist"

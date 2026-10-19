@@ -84,8 +84,8 @@ REACH_KEYS = ("circle_size", "circle_matches", "stats_friends_players", "stats_f
 
 
 def pick_filter_key(role_counts):
-    """role:duelist unless the player has no duelist matches, then the role with the most matches."""
-    if role_counts.get("duelist", 0) > 0 or not role_counts:
+    """The role with the most matches (a filter that keeps one match times nothing); duelist when none."""
+    if not role_counts:
         return "role:duelist"
     return "role:" + max(role_counts, key=lambda r: role_counts[r])
 
