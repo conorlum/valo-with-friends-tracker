@@ -425,6 +425,9 @@ def _command(monkeypatch, gaps_result):
     monkeypatch.setattr(geometry, "load_geometry", lambda name, heights=None, **kwargs: name)
     monkeypatch.setattr(geometry, "visibility", lambda geo: SimpleNamespace(visibility_source="fake"))
     monkeypatch.setattr(compute_control, "POLL_S", 0)
+    # the fake task takes no memory: without this the command waits, forever, for the 4 GB headroom
+    # whenever the machine has less free (another suite or a game running)
+    monkeypatch.setattr(compute_control, "free_memory", lambda: None)
     tasks = []
 
     def fake(task):
