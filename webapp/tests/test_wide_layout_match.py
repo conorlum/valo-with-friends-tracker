@@ -100,7 +100,6 @@ def _ctx(shoutouts=10, graph=True, demo_mode=False, team2_rounds=2):
         "round_bars": {"height": 10, "zero_top": 5, "rounds": {1: {"team-1": tp()}}},
         "loadout_bars": {"height": 10, "rounds": {1: {"team-1": tp()}}},
         "initial_round_detail": None,
-        "chart_data": {"labels": [1], "series": [], "viewer_player_id": None},
         "highlights_chart_data": {"labels": [], "default_player_id": "10", "players": {}},
         "team1_win_graph": _graph() if graph else SimpleNamespace(nodes=[], edges=[], view_box=""),
         "team2_win_graph": _graph() if graph else SimpleNamespace(nodes=[], edges=[], view_box=""),
@@ -148,7 +147,7 @@ def test_card_order_and_rows(root):
         "Match Data Highlights", "Economy win rate by buy tier"]
     assert state.h2() == "Round win rate by game state"
     after = [c.h2() for c in wide.children if "card" in c.classes]
-    assert after == ["Rounds", "Cumulative Impact"]
+    assert after == ["Rounds"]
     assert wide.children.index(row2) < wide.children.index(_cards(wide)[0])
 
 
@@ -178,8 +177,9 @@ def test_no_script_inside_a_row_or_stack(root):
 def test_every_getelementbyid_target_exists_once(root):
     ids = [n.attrs["id"] for n in root.walk() if "id" in n.attrs]
     for needed in ("scoreboard-combined", "scoreboard-split", "team-win-graph-1",
-                   "round-detail", "impact-chart", "impact-highlights-chart"):
+                   "round-detail", "impact-highlights-chart"):
         assert ids.count(needed) == 1
+    assert 'impact-chart' not in ids
 
 
 def test_no_shoutouts_leaves_scoreboard_alone_in_row_one():

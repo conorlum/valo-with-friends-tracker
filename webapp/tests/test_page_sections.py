@@ -37,7 +37,6 @@ ECON = '{{ econ_tier_heading | default("Economy win rate by buy tier") }}'
 
 EXPECTED = {
     "matches/detail.html": {
-        "Cumulative Impact": 1,
         "Economy win rate by buy tier": 1,
         "Match Data Highlights": 1,
         "Round win rate by game state": 1,
@@ -90,6 +89,10 @@ EXPECTED = {
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_page_sections_unchanged(name):
     assert collect_h2(name) == Counter(EXPECTED[name])
+
+
+def test_match_page_has_no_cumulative_impact_card():
+    assert "Cumulative Impact" not in collect_h2("matches/detail.html")
 
 
 # ---- the shared CSS ----

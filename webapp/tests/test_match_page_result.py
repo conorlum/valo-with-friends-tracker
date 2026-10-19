@@ -12,7 +12,6 @@ from app.services.matches import (
     round_end_type,
     round_impact_bars,
     round_loadout_bars,
-    cumulative_impact_series,
 )
 
 
@@ -119,16 +118,6 @@ def test_round_loadout_bars_scale_from_zero_to_the_match_max():
     assert bars["rounds"][2]["team-2"]["height"] == 0
     assert bars["rounds"][1]["team-1"]["height"] == 8
     assert bars["rounds"][1]["team-2"]["top"] == 36
-
-
-def test_cumulative_impact_carries_missing_rounds_forward():
-    p = _player(1, "team-1")
-    p.impact_by_round = {1: 100.0, 3: -40.0}
-    summary = _summary([p])
-    summary.round_numbers = [1, 2, 3]
-    [series] = cumulative_impact_series(summary)
-    assert series["data"] == [100.0, 100.0, 60.0]
-    assert (series["label"], series["team"], series["player_id"]) == ("p1", "team-1", 1)
 
 
 def pytest_fail():
