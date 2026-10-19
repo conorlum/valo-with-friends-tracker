@@ -135,6 +135,7 @@
         <button type="button" role="tab" class="replay-tab{% if not coach_tabs %} is-active{% endif %}" data-replay-tab="feed" aria-selected="{{ 'false' if coach_tabs else 'true' }}">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
+        {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="moments" aria-selected="false">Critical Moments</button>{% endif %}
         {% endif %}
         {% if feature_label %}<button type="button" role="tab" class="replay-tab{% if not linked %} is-active{% endif %}" data-replay-tab="features" aria-selected="{{ 'false' if linked else 'true' }}">{{ feature_label }}</button>{% endif %}
         {% if linked and control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
@@ -169,6 +170,12 @@
         <div class="replay-control-table" data-replay-control-table></div>
         <p class="replay-side-note">Why the unknown changed: what each team learnt about an enemy in the last 10 seconds, newest first. Click one to jump to it.</p>
         <ol class="replay-feed" data-replay-control-reasons></ol>
+      </div>
+      {% endif %}
+      {% if linked and control %}
+      <div data-replay-panel="moments" role="tabpanel" hidden>
+        <p class="replay-side-note">Every fight this player was in, grouped by what was measured: speed, teammates, utility, sight, trades. Measurements, not verdicts.</p>
+        <div data-replay-moments></div>
       </div>
       {% endif %}
       {% if linked and gaps %}

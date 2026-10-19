@@ -64,6 +64,31 @@ def test_a_detector_failure_leaves_control_ok(tmp_path, monkeypatch):
     assert result["status"] == "ok" and result["data"]
     assert result["gaps"]["run"]["status"] == "failed" and "boom" in result["gaps"]["run"]["error"]
     assert result["gaps"]["rows"] == []
+    moments = result["gaps"]["moments"]
+    assert moments["status"] == "failed" and moments["fights"] == [] and "boom" in moments["error"]
+    assert moments["error"] == result["gaps"]["run"]["error"], "a failed gap run carries the same text"
+
+
+def test_a_gap_run_carries_the_rounds_moments(tmp_path, monkeypatch):
+    result = compute_task(_task(tmp_path, monkeypatch))
+    moments = result["gaps"]["moments"]
+    assert result["gaps"]["run"]["status"] == "ok"
+    assert moments["status"] == "ok" and isinstance(moments["fights"], list) and moments["error"] is None
+    assert json.loads(json.dumps(result["gaps"]["moments"])) == moments, "plain JSON"
+    only = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
+    assert only["gaps"]["moments"] == moments, "a gaps-only run gives the same moments"
+
+
+def test_a_moments_failure_never_fails_the_gap_run(tmp_path, monkeypatch):
+    from app.moments import fights
+
+    def broken(*args, **kwargs):
+        raise ValueError("no moments today")
+
+    monkeypatch.setattr(fights, "round_moments", broken)
+    result = compute_task(_task(tmp_path, monkeypatch))
+    assert result["status"] == "ok" and result["gaps"]["run"]["status"] == "ok" and result["gaps"]["rows"]
+    assert result["gaps"]["moments"] == {"status": "failed", "fights": [], "error": "ValueError: no moments today"}
 
 
 def test_gaps_only_uses_the_cache_written_by_a_full_run(tmp_path, monkeypatch):
@@ -315,7 +340,7 @@ def _gap_run(factory, replay, n, status="ok", fingerprint=None):
     run = {"status": status, "fingerprint": fingerprint or replay_gaps.gap_fingerprint(p.fingerprint, p.map_name),
            "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": None, "notes": {},
            "error": None if status == "ok" else "RuntimeError: boom"}
-    assert store_gaps(factory, replay.id, n, run, []) == "stored"
+    assert store_gaps(factory, replay.id, n, run, [], moments=dict(status="ok", v=1, sight=True, fights=[], error=None)) == "stored"
 
 
 def _plan_gaps(db, retry_failed=False):
@@ -416,7 +441,8 @@ def _command(monkeypatch, gaps_result):
         job = task["gaps"]
         run = {"fingerprint": replay_gaps.gap_fingerprint(job["fingerprint"], task["map"]),
                "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": choke_assets.asset_hash(task["map"]), **gaps_result}
-        result = {"status": "ok", "geometry": rc.geometry_inputs(task["map"]), "gaps": {"run": run, "rows": []}, "key": task["key"],
+        result = {"status": "ok", "geometry": rc.geometry_inputs(task["map"]), "gaps": {"run": run, "rows": [],
+                                                                           "moments": {"status": "ok", "fights": [], "error": None}}, "key": task["key"],
                   "seconds": 0.0, "peak": None}
         if not task["gaps_only"]:
             result.update({"data": b"d", "summary": b"s", "missing": {}})

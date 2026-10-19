@@ -24,7 +24,7 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun,
+from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                 ControlFeatureArtifact)  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
@@ -33,7 +33,7 @@ from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
-CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
+CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
                                   ReplayMatchState.__table__]
 
 

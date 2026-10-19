@@ -59,9 +59,11 @@ from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import replay_moments
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
+from app.services.auth import get_current_player
 from app.services.coach import coached_external_ids
 from app.services.matches import get_match_or_404
 from app.templates import templates
@@ -341,6 +343,18 @@ def replay_round_gaps(request: Request, match_uuid: str, round_number: int, db: 
     return _json_with_etag(request, body, etag_of(canonical))
 
 
+@router.get("/replays/{match_uuid}/moments.json")
+def replay_moments_json(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    """The match's critical moments, with each player's summary (app/services/replay_moments.py); the same 404s as
+    gaps.json. The ETag is over the whole body."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    body = replay_moments.load_moments_payload(db, replay)
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
 @router.get("/replays/{match_uuid}/control/heatmap.json")
 def replay_control_heatmap(request: Request, match_uuid: str, view: str = "side", db: Session = Depends(get_db)):
     """The match heatmap (Stage 5): per time section, the share of time each cell was held by
@@ -365,7 +379,11 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     if start not in context["match"]["rounds"]:
         start = 1
     linked = context["match"]["linked"]
+    viewer = get_current_player(request, db) if "session" in request.scope else None
+    viewer_slot = next((p["slot"] for p in context["players"].values()
+                        if viewer is not None and p.get("player_id") == viewer.id), None)
     return {
+        "viewer_slot": viewer_slot,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),

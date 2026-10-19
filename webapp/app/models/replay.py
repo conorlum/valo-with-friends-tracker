@@ -174,6 +174,27 @@ class ReplayRoundGapRun(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ReplayRoundMoments(Base):
+    """Critical moments for one round (migration 0026): the worker's per-fight tags, stored with the gap run
+    under the same keys. Written only by app/services/replay_gaps_store.py."""
+
+    __tablename__ = "replay_round_moments"
+    __table_args__ = (
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_replay_round_moments_status"),
+        ForeignKeyConstraint(["replay_id", "round_number"], ["replay_rounds.replay_id", "replay_rounds.round_number"],
+                             ondelete="CASCADE", name="fk_replay_round_moments_round"),
+    )
+
+    replay_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    round_number: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
+    gaps_revision: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    fights: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"v", "sight", "fights"} when ok
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ReplayMatchState(Base):
     """What `replay_progress.compute` says of one match with a stored replay (migration 0024;
     docs/superpowers/specs/2026-10-14-match-list-speed-design.md, section 2). Written only by

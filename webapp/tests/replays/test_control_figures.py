@@ -89,7 +89,7 @@ def test_the_revisions_of_this_release():
     from app.replays import format as fmt
 
     assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (19, 18)
-    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 3, "mixed ground gap consumers"
+    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 4, "mixed ground gap consumers"
 
 
 def test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal():

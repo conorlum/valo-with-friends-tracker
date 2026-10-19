@@ -17,7 +17,7 @@ it matches its own.
 
 Timing gaps (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7, "Writer"): a task with
 `"gaps": {"replay_id", "round", "fingerprint" (the control fingerprint)}` also writes the round's tick cache
-and returns `result["gaps"] = {"run", "rows"}`; with `"gaps_only": True` it returns only `status`, `geometry`
+and returns `result["gaps"] = {"run", "rows", "moments"}`; with `"gaps_only": True` it returns only `status`, `geometry`
 and `gaps` (from the tick cache when it is there, else through the engine) and no control `data`. A gap
 failure is the gap run's (`gaps.run.status == "failed"`) and never changes control's result.
 The replay worker's tasks also carry `gap_fingerprint` and `engine_key` in that block (the web app computes
@@ -335,13 +335,24 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
                 raise _CacheFailed(writer.error)
         gaps = det.finish()
         run.update({"status": "ok", "notes": _plain(dict(det.notes) | dict(missing))})
-        return {"run": run, "rows": _plain(rows.to_rows(gaps, rnd, geo))}
+        out_rows = _plain(rows.to_rows(gaps, rnd, geo))
+        # Critical moments ride the gap run but fail alone: a fresh RoundInputs from the prepared geometry, so
+        # nothing the detector did to `rnd` leaks in, and an error here never fails the gap run.
+        try:
+            from app.moments import fights
+
+            made = fights.round_moments(engine.RoundInputs(blob, geo, link), blob)
+            moments = _plain({"status": "ok", "v": made.get("v"), "sight": made.get("sight"),
+                              "fights": made["fights"], "error": None})
+        except Exception as error:  # noqa: BLE001 - the moments' failure, not the gap run's
+            moments = {"status": "failed", "fights": [], "error": f"{type(error).__name__}: {error}"}
+        return {"run": run, "rows": out_rows, "moments": moments}
     except _CacheFailed as error:
         run.update({"status": "failed", "notes": {}, "error": str(error)})
     except Exception as error:  # noqa: BLE001 - the gap run's failure, stored with its error
         run.update({"status": "failed", "notes": {},
                     "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"})
-    return {"run": run, "rows": []}
+    return {"run": run, "rows": [], "moments": {"status": "failed", "fights": [], "error": run["error"]}}
 
 
 def compute_task(task: dict) -> dict:

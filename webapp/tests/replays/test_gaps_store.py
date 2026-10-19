@@ -24,7 +24,7 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.gaps.rows import to_rows  # noqa: E402
-from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
+from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -39,7 +39,8 @@ def session_factory(monkeypatch):
     feature_free_source(monkeypatch)
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__])
+    Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__,
+                                                   ReplayRoundMoments.__table__])
     return sessionmaker(bind=engine)
 
 
@@ -52,6 +53,7 @@ def stored_round(session_factory, condensed):
     return replay_id, 1
 
 
+MOMENTS = {"status": "ok", "v": 1, "sight": True, "fights": [], "error": None}
 RUN = {"status": "ok", "fingerprint": "f" * 16, "gaps_revision": 1, "chokes_hash": None, "notes": {}, "error": None}
 ROW = {"seq": 0, "kind": "predicted", "map": "Toy", "victim_slot": 0, "victim_side": None, "t_open": 1.0,
        "t_last_exposed": 2.0, "t_close": 7.0, "spot_cell": 5, "victim_cell": 6, "distance_m": 3.0,
@@ -63,8 +65,8 @@ ROW = {"seq": 0, "kind": "predicted", "map": "Toy", "victim_slot": 0, "victim_si
 
 def test_store_replaces_a_rounds_gaps_in_one_go(session_factory, stored_round):
     replay_id, n = stored_round
-    assert store_gaps(session_factory, replay_id, n, RUN, [ROW, {**ROW, "seq": 1}]) == "stored"
-    assert store_gaps(session_factory, replay_id, n, RUN, [ROW]) == "stored"
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW, {**ROW, "seq": 1}], moments=MOMENTS) == "stored"
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS) == "stored"
     s = session_factory()
     assert s.query(ReplayGap).filter_by(replay_id=replay_id, round_number=n).count() == 1
     assert s.get(ReplayRoundGapRun, (replay_id, n)).gap_count == 1
@@ -72,8 +74,8 @@ def test_store_replaces_a_rounds_gaps_in_one_go(session_factory, stored_round):
 
 def test_a_failed_run_stores_no_rows(session_factory, stored_round):
     replay_id, n = stored_round
-    store_gaps(session_factory, replay_id, n, RUN, [ROW])
-    assert store_gaps(session_factory, replay_id, n, {**RUN, "status": "failed", "error": "boom"}, []) == "stored"
+    store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS)
+    assert store_gaps(session_factory, replay_id, n, {**RUN, "status": "failed", "error": "boom"}, [], moments=MOMENTS) == "stored"
     s = session_factory()
     assert s.get(ReplayRoundGapRun, (replay_id, n)).status == "failed"
     assert s.query(ReplayGap).count() == 0
@@ -104,7 +106,7 @@ def test_to_rows_assigns_seq_links_and_json_ready_fields(session_factory, stored
     assert rows[0]["choke_seq"] == [2, 4] and rows[1]["choke_seq"] is None
     assert rows[0]["candidate_slots"] == [2, 5] and rows[0]["candidate_distances"] == {"5": 4.0, "2": 6.5}
     assert rows[0]["checked_at"] is None and rows[0]["spot_cell"] == 7
-    assert store_gaps(session_factory, replay_id, n, RUN, rows) == "stored"
+    assert store_gaps(session_factory, replay_id, n, RUN, rows, moments=MOMENTS) == "stored"
     s = session_factory()
     assert s.query(ReplayGap).count() == 2
 
@@ -141,7 +143,7 @@ def test_a_guarded_write_stores_rows_that_came_through_json(session_factory, sto
     s.close()
     rows = json.loads(json.dumps([dict(ROW, cause_detail={1: 2.5}, context={3: [1, 2]}), {**ROW, "seq": 1}]))
     run = json.loads(json.dumps({**run, "notes": {7: 1}}))
-    assert store_gaps(session_factory, replay_id, n, run, rows, expected_control_fingerprint=fingerprint) == "stored"
+    assert store_gaps(session_factory, replay_id, n, run, rows, moments=MOMENTS, expected_control_fingerprint=fingerprint) == "stored"
     assert _stored(session_factory, replay_id, n) == (("ok", run["fingerprint"]), 2)
 
 
@@ -151,7 +153,7 @@ def test_a_guarded_write_stores_the_rounds_own_gap_failure(session_factory, stor
     fingerprint, run = _current(s, replay_id, n)
     s.close()
     failed = {**run, "status": "failed", "error": "ValueError: boom"}
-    assert store_gaps(session_factory, replay_id, n, failed, [], expected_control_fingerprint=fingerprint) == "stored"
+    assert store_gaps(session_factory, replay_id, n, failed, [], moments=MOMENTS, expected_control_fingerprint=fingerprint) == "stored"
     assert _stored(session_factory, replay_id, n) == (("failed", run["fingerprint"]), 0)
 
 
@@ -165,8 +167,8 @@ def test_a_result_whose_control_moved_is_skipped_and_newer_gaps_survive(session_
     newer, newer_run = _current(s, replay_id, n)
     s.close()
     assert newer != fingerprint
-    assert store_gaps(session_factory, replay_id, n, newer_run, [ROW, {**ROW, "seq": 1}]) == "stored"   # the local command
-    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], expected_control_fingerprint=fingerprint)
+    assert store_gaps(session_factory, replay_id, n, newer_run, [ROW, {**ROW, "seq": 1}], moments=MOMENTS) == "stored"   # the local command
+    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert outcome.startswith("skipped") and "changed" in outcome
     assert _stored(session_factory, replay_id, n) == (("ok", newer_run["fingerprint"]), 2)
 
@@ -178,7 +180,7 @@ def test_a_result_for_a_replay_that_is_gone_is_skipped(session_factory, stored_r
     store._delete(s, s.get(Replay, replay_id))                  # a re-ingest or a deletion took the replay
     s.commit()
     s.close()
-    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], expected_control_fingerprint=fingerprint)
+    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert outcome.startswith("skipped") and _stored(session_factory, replay_id, n) == (None, 0)
 
 
@@ -198,7 +200,7 @@ def test_a_guarded_write_needs_current_ok_control(session_factory, stored_round,
         row.fingerprint = "0" * 16
     s.commit()
     s.close()
-    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], expected_control_fingerprint=fingerprint)
+    outcome = store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert outcome.startswith("skipped") and _stored(session_factory, replay_id, n) == (None, 0)
 
 
@@ -209,7 +211,7 @@ def test_a_guarded_write_checks_the_runs_own_keys(session_factory, stored_round,
     fingerprint, run = _current(s, replay_id, n)
     s.close()
     outcome = store_gaps(session_factory, replay_id, n, {**run, field: value}, [ROW],
-                         expected_control_fingerprint=fingerprint)
+                         moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert outcome.startswith("skipped") and _stored(session_factory, replay_id, n) == (None, 0)
 
 
@@ -220,9 +222,9 @@ def test_a_guarded_write_never_replaces_a_run_already_current(session_factory, s
     fingerprint, run = _current(s, replay_id, n)
     s.close()
     first = {**run, "status": status, "error": None if status == "ok" else "ValueError: boom"}
-    assert store_gaps(session_factory, replay_id, n, first, [ROW] if status == "ok" else []) == "stored"
+    assert store_gaps(session_factory, replay_id, n, first, [ROW] if status == "ok" else [], moments=MOMENTS) == "stored"
     outcome = store_gaps(session_factory, replay_id, n, run, [ROW, {**ROW, "seq": 1}],
-                         expected_control_fingerprint=fingerprint)
+                         moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert outcome == "skipped: already stored"
     assert _stored(session_factory, replay_id, n) == ((status, run["fingerprint"]), 1 if status == "ok" else 0)
 
@@ -233,11 +235,87 @@ def test_a_failed_guarded_write_leaves_the_old_rows(session_factory, stored_roun
     fingerprint, run = _current(s, replay_id, n)
     s.close()
     stale = {**run, "fingerprint": "1" * 16}
-    assert store_gaps(session_factory, replay_id, n, stale, [ROW]) == "stored"          # an older run's rows
+    assert store_gaps(session_factory, replay_id, n, stale, [ROW], moments=MOMENTS) == "stored"          # an older run's rows
     with pytest.raises(TypeError):                                                      # a row the model refuses
         store_gaps(session_factory, replay_id, n, run, [{**ROW, "no_such_column": 1}],
-                   expected_control_fingerprint=fingerprint)
+                   moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert _stored(session_factory, replay_id, n) == (("ok", "1" * 16), 1), "the delete rolled back with the rest"
+
+
+# ---- critical moments (migration 0026)
+
+
+def _moments_row(session_factory, replay_id, n):
+    s = session_factory()                                       # a fresh session, not the writer's
+    try:
+        row = s.get(ReplayRoundMoments, (replay_id, n))
+        return None if row is None else (row.status, row.fingerprint, row.gaps_revision, row.fights, row.error,
+                                         row.computed_at)
+    finally:
+        s.close()
+
+
+def test_a_store_writes_the_rounds_moments(session_factory, stored_round):
+    replay_id, n = stored_round
+    moments = {**MOMENTS, "v": 3, "sight": False, "fights": [{"t": 1.5}]}
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=moments) == "stored"
+    status, fingerprint, revision, fights, error, computed_at = _moments_row(session_factory, replay_id, n)
+    assert (status, fingerprint, revision, error) == ("ok", RUN["fingerprint"], RUN["gaps_revision"], None)
+    assert fights == {"v": 3, "sight": False, "fights": [{"t": 1.5}]}
+    assert computed_at is not None
+
+
+def test_failed_moments_store_no_fights_and_the_error(session_factory, stored_round):
+    replay_id, n = stored_round
+    moments = {"status": "failed", "v": 1, "sight": True, "fights": [], "error": "ValueError: boom"}
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=moments) == "stored"
+    status, _, _, fights, error, _ = _moments_row(session_factory, replay_id, n)
+    assert (status, fights, error) == ("failed", None, "ValueError: boom")
+
+
+def test_a_second_store_replaces_the_moments_row(session_factory, stored_round):
+    replay_id, n = stored_round
+    store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS)
+    second = {**MOMENTS, "fights": [{"t": 9.0}]}
+    store_gaps(session_factory, replay_id, n, {**RUN, "fingerprint": "e" * 16}, [ROW], moments=second)
+    s = session_factory()
+    rows = s.query(ReplayRoundMoments).filter(ReplayRoundMoments.replay_id == replay_id).all()
+    assert len(rows) == 1 and rows[0].fingerprint == "e" * 16 and rows[0].fights["fights"] == [{"t": 9.0}]
+    s.close()
+
+
+def test_a_skipped_store_leaves_the_moments_alone(session_factory, stored_round):
+    replay_id, n = stored_round
+    s = session_factory()
+    fingerprint, run = _current(s, replay_id, n)
+    s.close()
+    skipped = store_gaps(session_factory, replay_id, n, {**run, "fingerprint": "0" * 16}, [ROW],
+                         moments=MOMENTS, expected_control_fingerprint=fingerprint)
+    assert skipped.startswith("skipped") and _moments_row(session_factory, replay_id, n) is None
+    assert store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS) == "stored"
+    before = _moments_row(session_factory, replay_id, n)
+    again = store_gaps(session_factory, replay_id, n, run, [ROW], moments={**MOMENTS, "fights": [{"t": 2.0}]},
+                       expected_control_fingerprint=fingerprint)
+    assert again == "skipped: already stored" and _moments_row(session_factory, replay_id, n) == before
+
+
+def test_moments_are_required():
+    with pytest.raises(TypeError):
+        store_gaps(None, 1, 1, RUN, [])
+
+
+def test_pg_deleting_the_round_deletes_its_moments(pg, condensed):
+    from sqlalchemy import text
+
+    replay_id, uuid, fingerprint, run = _pg_round(pg, condensed)
+    assert store_gaps(pg, replay_id, 1, run, [ROW], moments=MOMENTS) == "stored"
+    s = pg()
+    s.execute(text("DELETE FROM replay_rounds WHERE replay_id = :r AND round_number = 1"), {"r": replay_id})
+    s.commit()
+    s.close()
+    s = pg()
+    assert s.get(ReplayRoundMoments, (replay_id, 1)) is None
+    s.close()
 
 
 # ---- PostgreSQL only: the replay lock serialises the check and the write with a replace or a relink
@@ -263,7 +341,7 @@ def test_pg_a_gap_write_and_a_replace_of_the_replay_take_turns(pg, condensed, mo
 
     monkeypatch.setattr(gaps_store, "_after_lock", pause)
     writer = threading.Thread(target=lambda: out.update(
-        gaps=store_gaps(pg, replay_id, 1, run, [ROW], expected_control_fingerprint=fingerprint)))
+        gaps=store_gaps(pg, replay_id, 1, run, [ROW], moments=MOMENTS, expected_control_fingerprint=fingerprint)))
     writer.start()
     assert holding.wait(30), "the writer holds the replay's lock"
 
@@ -295,7 +373,7 @@ def test_pg_a_writer_that_waited_for_the_lock_reads_everything_again(pg, condens
     holder.execute(text("SELECT pg_advisory_xact_lock(hashtext(:u))"), {"u": uuid.lower()})   # another writer
     out = {}
     writer = threading.Thread(target=lambda: out.update(
-        gaps=store_gaps(pg, replay_id, 1, run, [ROW], expected_control_fingerprint=fingerprint)))
+        gaps=store_gaps(pg, replay_id, 1, run, [ROW], moments=MOMENTS, expected_control_fingerprint=fingerprint)))
     writer.start()
     writer.join(1.5)
     assert writer.is_alive(), "it waits for the replay's lock"

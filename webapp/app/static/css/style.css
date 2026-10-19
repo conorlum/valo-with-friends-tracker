@@ -1729,7 +1729,8 @@ table.compact-table .badge-score {
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
 .replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
 .replay { --replay-unknown: #77787f; }
-.replay-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
+/* Wrap, as the coach page's row does, since Critical Moments makes the row wider than the column */
+.replay-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
 .replay-tab {
   font: inherit;
   font-weight: 600;
@@ -2038,6 +2039,11 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-gaps-field { color: var(--ink-secondary); line-height: 1.35; }
 .replay-gaps-label { color: var(--ink-tertiary, var(--ink-secondary)); font-weight: 600; }
 .replay-gaps-row:hover, .replay-gaps-row:focus-visible { background: var(--surface-raised); outline: none; }
+.replay-moments-picker { width: 100%; margin-bottom: 0.5rem; }
+.replay-moments-heading { font-size: 0.9rem; margin: 0.9rem 0 0.3rem; }
+.replay-moment-row { list-style: none; }
+.replay-moment-button { all: unset; display: block; width: 100%; box-sizing: border-box; cursor: pointer; font-size: 0.8rem; padding: 0.3rem 0.4rem; overflow-wrap: anywhere; }
+.replay-moment-button:hover, .replay-moment-button:focus-visible { background: var(--surface-raised); }
 .replay-gaps-row.is-open { background: color-mix(in srgb, var(--brand) 14%, var(--surface)); }
 .replay-gaps-row.is-flicker { opacity: 0.7; }
 .replay-gaps-kind { display: inline-block; font-size: 0.72rem; padding: 0 0.35rem; border-radius: 999px; border: 1px solid currentColor; }
