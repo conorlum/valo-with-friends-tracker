@@ -20,14 +20,16 @@
 {% set form = overview.form %}
 {% set form_title = "Squad form" %}
 {% set form_meta = "Match win/loss streaks over your " ~ ("last 30 matches" if scope == 'recent' else "full match history") ~ ", counting only matches with at least one friend on your team." %}
+
+<div class="page-row page-row--60-40">
 {% include "_form_card.html" %}
 
 {% if overview.shoutouts %}
 <div class="card">
   <h2>Shoutouts</h2>
   <p class="page-meta">One highlight per friend with at least 20 rounds played together.</p>
-  <div class="shoutout-rows">
-    {% for row in overview.shoutouts | balanced_rows %}
+  <div class="shoutout-rows shoutout-rows--side">
+    {% for row in overview.shoutouts | balanced_rows(3) %}
     <div class="shoutout-row">
       {% for shoutout in row %}
       {% set icon = agent_icon_slug(shoutout.agent) %}
@@ -52,6 +54,7 @@
   </div>
 </div>
 {% endif %}
+</div>
 
 <div class="card">
   <h2>Your friends, ranked</h2>

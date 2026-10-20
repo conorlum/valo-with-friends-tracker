@@ -1,21 +1,29 @@
 {% set pistol_card_title = "Pistols won into match wins" %}
 {% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, across " ~ subject_label ~ "." %}
+<div class="page-row page-row--halves">
 {% include "_pistol_match_stats_card.html" %}
 
 {% include "_eco_followup_card.html" %}
+</div>
 
+<div class="page-row page-row--halves">
 {% include "_force_buy_card.html" %}
 
 {% include "_enemy_at_11_response_card.html" %}
+</div>
 
 {% include "_round_combo_card.html" %}
 
+<div class="page-row page-row--halves">
 {% include "_round_streak_card.html" %}
 
 {% include "_halftime_conversion_card.html" %}
+</div>
 
+<div class="page-row page-row--halves">
 {% include "_score_reached_card.html" %}
 
 {% include "_map_side_card.html" %}
+</div>
 
 {% include "_map_control_card.html" %}

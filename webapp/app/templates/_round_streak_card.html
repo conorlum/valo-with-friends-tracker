@@ -4,6 +4,7 @@
   <h2>Round-win momentum</h2>
   <p class="page-meta">For {{ subject_label }}: given a team won a round, what fraction of the time did they also win each of the next N rounds in a row. Stops at a side swap (round 13, and every round in overtime) since winning while attacking says nothing about winning on defense next. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -24,5 +25,6 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}

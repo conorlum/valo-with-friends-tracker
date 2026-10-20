@@ -34,6 +34,7 @@
     </div>
   </div>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -70,6 +71,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   <p class="page-meta">{{ enemy_at_11_response_stats.total_samples }} responses total. A full team save is uncommon in practice -- most teams with money banked still spend some of it -- so the Full Save row is naturally thinner than Force Buy, especially in the "Friends" scope; "All Players" is the more reliable read for that row. "Best" callouts only consider a strategy with at least {{ enemy_at_11_response_min_samples }} samples.</p>
 </div>
 {% endif %}
