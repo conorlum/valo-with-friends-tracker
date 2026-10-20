@@ -293,14 +293,6 @@
 </div>
 {% endif %}
 
-{% set econ_tier_description = "Win rate of rounds where " ~ (profile.player.display_name | strip_tag) ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
-{% set pistol_card_title = "Pistols won into match wins" %}
-{% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for " ~ (profile.player.display_name | strip_tag) ~ "." %}
-<div class="page-row page-row--halves">
-{% include "_econ_tier_matrix.html" %}
-{% include "_pistol_match_stats_card.html" %}
-</div>
-
 <div class="card">
   <h2>Maps</h2>
   <p class="page-meta">Match record by map, across every agent played. Avg kill/death impact by map shown below.</p>
@@ -331,6 +323,14 @@
     <canvas id="player-map-radar-chart-{{ scope }}"></canvas>
   </div>
   {% endif %}
+</div>
+
+{% set econ_tier_description = "Win rate of rounds where " ~ (profile.player.display_name | strip_tag) ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
+{% set pistol_card_title = "Pistols won into match wins" %}
+{% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for " ~ (profile.player.display_name | strip_tag) ~ "." %}
+<div class="page-row page-row--halves">
+{% include "_econ_tier_matrix.html" %}
+{% include "_pistol_match_stats_card.html" %}
 </div>
 
 <div class="card">

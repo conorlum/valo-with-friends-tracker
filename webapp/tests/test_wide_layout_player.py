@@ -151,6 +151,13 @@ def test_full_width_cards_are_not_in_a_row(root):
             p = p.parent
 
 
+def test_maps_comes_before_the_economy_row(root):
+    order = [n for n in root.walk() if "card" in n.classes and n.h2() in
+             ("Maps", "Economy win rate by buy tier", "Kill impact vs. death impact by match")]
+    assert [c.h2() for c in order] == ["Maps", "Economy win rate by buy tier",
+                                        "Kill impact vs. death impact by match"]
+
+
 def test_no_script_inside_a_row_or_stack(root):
     assert _rows(root)
     for n in root.walk():
