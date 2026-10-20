@@ -309,6 +309,8 @@ main:has(.page-wide) { max-width: 2400px; }
 .page-stack { display: flex; flex-direction: column; gap: 1.5rem; }
 .page-row > *, .page-stack > * { min-width: 0; }
 .page-row > .card, .page-stack > .card { margin-bottom: 0; }
+/* A row whose cards all rendered nothing (sparse data) takes no space. */
+.page-row:not(:has(> *)) { display: none; }
 /* Match page round detail: kill table left, round Impact right. */
 .round-detail-cols { display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .round-detail-cols > * { min-width: 0; }
@@ -465,6 +467,13 @@ a {
   }
 }
 
+/* Tiles with a winner and a runner-up in a half-width card: as many ~260px columns as fit. */
+@media (min-width: 701px) {
+  .stat-grid--fit { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
+.stat-grid--fit .stat-pair { min-width: 0; }
+.stat-grid--fit .stat-name { overflow-wrap: anywhere; }
+
 .stat-tile {
   background: var(--surface);
   padding: 1rem 1.25rem;
@@ -608,7 +617,7 @@ a {
 /* Shoutouts in a side column: each row of up to 3 shares the width evenly. */
 @media (min-width: 701px) {
   .shoutout-rows--side .shoutout-row { flex-wrap: nowrap; }
-  .shoutout-rows--side .shoutout-card { flex: 1 1 0; min-width: 0; }
+  .shoutout-rows--side .shoutout-card { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
 }
 
 .shoutout-portrait-frame {

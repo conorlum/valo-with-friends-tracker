@@ -120,6 +120,27 @@ def test_wide_page_css():
     assert "grid-column: 1 / -1" in by_sel[".page-row > :only-child"]
     assert ".page-row > *, .page-stack > *" in by_sel
 
+    def decl(sel, prop):
+        m = re.search(rf"(?:^|;)\s*{re.escape(prop)}\s*:\s*([^;]+?)\s*(?:;|$)", by_sel[sel])
+        return re.sub(r"\s+", " ", m.group(1)) if m else None
+
+    # the layout itself: wide pages grow to 2400px, rows are grids, the two splits are exact
+    assert decl("main:has(.page-wide)", "max-width") == "2400px"
+    assert decl(".page-row", "display") == "grid"
+    assert decl(".page-row--60-40", "grid-template-columns") == "minmax(0, 3fr) minmax(0, 2fr)"
+    assert decl(".page-row--halves", "grid-template-columns") == "repeat(2, minmax(0, 1fr))"
+    assert decl(".page-stack", "display") == "flex"
+    assert decl(".page-stack", "flex-direction") == "column"
+    assert decl(".page-row > *, .page-stack > *", "min-width") == "0"
+    # a row whose cards all rendered nothing takes no space
+    assert decl(".page-row:not(:has(> *))", "display") == "none"
+    # half-width Fun Stats: columns fit the card, names wrap; side shoutouts wrap long names
+    fit = re.search(r"@media\s*\(min-width:\s*701px\)\s*\{\s*\.stat-grid--fit\s*\{([^}]*)\}", css)
+    assert fit and "repeat(auto-fill, minmax(260px, 1fr))" in fit.group(1)
+    assert decl(".stat-grid--fit .stat-name", "overflow-wrap") == "anywhere"
+    side = re.search(r"\.shoutout-rows--side \.shoutout-card\s*\{([^}]*)\}", css)
+    assert side and "overflow-wrap: anywhere" in side.group(1)
+
     # every grid-template-columns in a .page-row rule uses minmax(0, and no bare 1fr
     checked = 0
     for sel, body in rules:

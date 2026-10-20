@@ -146,6 +146,12 @@ def test_card_order_and_rows(root):
     assert wide.children.index(row3) < wide.children.index(cards[0])
 
 
+def test_fun_stats_grid_fits_its_half_width_card(root):
+    fun = [n for n in root.walk() if "card" in n.classes and n.h2() == "Fun Stats"][0]
+    grids = [n for n in fun.walk() if "stat-grid" in n.classes]
+    assert len(grids) == 1 and "stat-grid--fit" in grids[0].classes
+
+
 def test_shoutouts_are_balanced_in_threes_in_the_side_column(root):
     wide = _wide(root)
     cont = [n for n in wide.walk() if "shoutout-rows" in n.classes]
