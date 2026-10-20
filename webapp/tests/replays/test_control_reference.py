@@ -15,9 +15,9 @@ over 3.0-7.0, moved, data 33a55d33f36e2564 -> 12c79de24d1d2ba6, summary 2ad11a1a
 Re-recorded 2026-10-14 for CONTROL_REVISION 16: a heard sound names nobody unless only one enemy could have made it
 (R1/R2): only `midwall` moved, data 29904050ccedd810 -> 15ec9ad176eb5c7d, summary 949b2b794d21bd4b ->
 c37f692a8644741a; the old-rule tests below patch `Unknown._attributable` to True.
-Re-recorded 2026-10-20 for CONTROL_REVISION 19: lost control at a death is the statue's (DEATH_WINDOW_S), not the
-instant counterfactual's. Only the summaries of the rounds with a death moved (`midwall` and `pawns`); no data
-digest did. The old-rule tests below run the instant rule (`death_window_s` 0), and the statue test proves the move
+Re-recorded 2026-10-20 for CONTROL_REVISION 20: lost control at a death is the statue's (DEATH_WINDOW_S), not the
+instant counterfactual's. Only the summaries of the rounds with a death moved (`barrier`, `midwall`, `pawns`); no
+data digest did. The old-rule tests below run the instant rule (`death_window_s` 0), and the statue test proves the move
 is that and nothing else."""
 
 import json
@@ -40,7 +40,8 @@ from app.control import engine as ce  # noqa: E402
 REFERENCE = json.loads(ref.FIXTURE.read_text(encoding="utf-8"))["rounds"]
 
 # The digests that moved for the statue (2026-10-20), as they were before it (CONTROL_REVISION 18's fixture).
-BEFORE_STATUE = {"midwall": {"data": "15ec9ad176eb5c7d", "summary": "c37f692a8644741a"},
+BEFORE_STATUE = {"barrier": {"data": "2266bca9ae5ccf43", "summary": "dcda96ff69faf127"},
+                 "midwall": {"data": "15ec9ad176eb5c7d", "summary": "c37f692a8644741a"},
                  "pawns": {"data": "2d2611af5ee23d62", "summary": "e3cb275d07b85a25"}}
 
 

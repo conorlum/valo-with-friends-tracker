@@ -3012,10 +3012,9 @@ class TickRunner:
 
     def fork(self) -> "TickRunner":
         """A copy to step beside this one (a statue's run): the unknown and memory copied, the map's fixed parts
-        shared, and a fresh route log (bookkeeping the copy never reports)."""
+        shared. The route log is copied too: the unknown's entries point into it."""
         u = self.unknown
         memo = {id(x): x for x in (self.geo, u.geo, u.topo, u.links, u.face, u.to_wall_px, u.chokes)}
-        memo.update({id(log): RouteLog() for log in u.log.values()})
         return copy.deepcopy(self, memo)
 
 

@@ -3671,7 +3671,7 @@
       '<th class="num" title="What the team lost at this player&#39;s death' + (scope === "match"
         ? "s: m² per death on average, and all of it as a share of what the team held at those deaths"
         : ": m², and as a share of what the team held then") +
-      '. The share can pass 100%: ground that flips to the enemy counts twice, and ground the enemy gains that the team never held counts too.">' +
+      '. Measured over the seconds after the death: ground the team would still hold if the player had stayed where they were, and does not.">' +
       (scope === "match" ? "Lost/death" : "Lost") + "</th>" +
       '<th class="num" title="Average m² in their held cone / of passive vision and their own live utility">Cover a/p</th>' +
       '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th>' +

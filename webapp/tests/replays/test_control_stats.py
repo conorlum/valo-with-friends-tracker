@@ -139,6 +139,25 @@ def test_a_statue_stands_where_the_player_was_unflashed_and_leaves_the_round_alo
     assert dict(rnd.missing) == before, "the statue's run reports nothing"
 
 
+def test_a_fork_steps_on_its_own_copy_of_the_round():
+    geo = door_hall()
+    rnd = ce.RoundInputs(blob(rotator_and_lurker(), t_end=4.0, deaths={2: 1.2}), geo)
+    runner = ce.TickRunner(geo)
+    for t in (0.0, 0.5, 1.0):
+        runner.step(ce.Tick(rnd, t))
+    fork = runner.fork()
+    assert fork.unknown.geo is geo and fork.unknown.topo is runner.unknown.topo, "the map's parts are shared"
+    for side in ("A", "B"):
+        # the unknown's route entries point into its log: the copy keeps every one of them
+        assert fork.unknown.log[side] is not runner.unknown.log[side]
+        assert len(fork.unknown.log[side]) == len(runner.unknown.log[side])
+        assert fork.unknown.cells[side] is not runner.unknown.cells[side]
+    statue = ce.statue_inputs(rnd, {2: 1.2}, 4.0)
+    fork.step(ce.Tick(statue, 1.5))
+    runner.step(ce.Tick(rnd, 1.5))
+    assert 2 in fork.memory.cells and 2 not in runner.memory.cells, "the statue remembers; the real round forgets"
+
+
 def test_the_last_player_alive_gives_up_nothing():
     geo = open_hall()
     rc = ce.compute_round(blob({0: still("A", 150, 200, 0), 5: still("B", 400, 110, 90)}, t_end=10.0,

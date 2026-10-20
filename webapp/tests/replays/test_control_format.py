@@ -71,7 +71,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # Unreleased, so re-pinned in place when the capture's start (ORB_CAPTURE_S before it) became a sound too.
           18: "64b0e0cdf5418980",
           # 19 (2026-10-19): BLIND_STATUSES, `nearsighted` status rows (Harbor's Reckoning) read as nearsight.
-          19: "328288d9f5e9537f"}
+          19: "328288d9f5e9537f",
+          # 20 (2026-10-20): lost control at a death is the statue's (DEATH_WINDOW_S, STATUS_FIELDS).
+          20: "b97f59d34bd57a3f"}
 
 
 def _constants_digest() -> str:

@@ -234,9 +234,15 @@ The plan's examples:
 - A player killed out on the edge of the map by a lurker was controlling a lot and gives it all up. The lurker's
   control is high because removing them would give the team back its safe space.
 
-**Lost control** is the same counterfactual at the tick of a real death, reported in m² and as a % of the team's
-control. It is split by level (active, safe or passive) and by where the space went: to the enemy, to contested or
-to nobody.
+**Lost control** (the statue, CONTROL_REVISION 20, 2026-10-20; it replaced the same counterfactual at the tick of a
+real death) is what the death gave up over the next `DEATH_WINDOW_S` (8 s). The player is frozen on their last tick
+before the death: same place and view angle, their utility still watching, never flashed. A copy of the round's
+unknown and memory is stepped beside the real round, and each tick the ground the team holds with the statue and
+not in the real round counts, ground the team held only, each cell once. Shared Safe (nobody's) and the enemy's
+gains on ground the team didn't hold count nothing. The total is averaged over the window and reported in m² and as
+a % of what the team held at the death, split by level (active, safe or passive) and by where the space went: to
+the enemy, to contested or to nobody. Teammates who die within the window of each other are frozen together, and
+the joint loss is split in proportion to each one's own. The last player alive gives up nothing.
 
 **Rate.** The counterfactual runs on every control tick (Q75: every 0.5 s plus event ticks), with the
 incremental method (see [Compute](#compute)). Stage 0b measured it at 0.22–0.74x the base engine. Lost control is
