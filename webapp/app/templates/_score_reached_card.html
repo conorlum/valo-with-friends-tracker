@@ -4,6 +4,7 @@
   <h2>Match win rate by rounds reached</h2>
   <p class="page-meta">For {{ subject_label }}: once a team has won N rounds -- at any point in the match, regardless of the opponent's score -- what fraction of the time do they go on to win overall. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -24,6 +25,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% if score_reached_stats.ot_pct is not none %}
   <p class="page-meta">Of those {{ score_reached_stats.ot_total }} decisive matches, <strong>{{ (score_reached_stats.ot_pct * 100) | round | int }}%</strong> reached a 12-12 tie and went to overtime.</p>
   {% endif %}

@@ -4,6 +4,7 @@
   <h2>Match win rate by halftime score</h2>
   <p class="page-meta">For {{ subject_label }}: given a team won this many of the first 12 rounds, what fraction of those matches did they go on to win overall. Round 13 onward isn't looked at. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -24,5 +25,6 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}

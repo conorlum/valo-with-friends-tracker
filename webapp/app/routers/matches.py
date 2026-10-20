@@ -9,7 +9,6 @@ from app.services.matches import (
     get_match_shoutouts,
     get_match_summary,
     get_round_detail,
-    cumulative_impact_series,
     get_viewer_team,
     match_round_timeline,
     round_impact_bars,
@@ -73,11 +72,6 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
     initial_round_detail = (
         get_round_detail(db, match, timeline_rounds[0]["round_number"]) if timeline_rounds else None
     )
-    chart_data = {
-        "labels": summary.round_numbers,
-        "series": cumulative_impact_series(summary),
-        "viewer_player_id": current_player.id if current_player else None,
-    }
     highlights_chart_data = {
         "labels": ["Econ", "Clutch / High-Impact", "Post-Plant"],
         "default_player_id": str(summary.players[0].match_player_id) if summary.players else None,
@@ -116,7 +110,6 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "round_bars": round_bars,
             "loadout_bars": loadout_bars,
             "initial_round_detail": initial_round_detail,
-            "chart_data": chart_data,
             "highlights_chart_data": highlights_chart_data,
             "team1_win_graph": team1_win_graph,
             "team2_win_graph": team2_win_graph,

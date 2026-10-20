@@ -4,6 +4,7 @@
   <h2>Forcing after losing a pistol</h2>
   <p class="page-meta">For {{ subject_label }}: after losing a pistol round (round 1 or 13), how often does spending at least 70% of the team's available money on the very next round (a force buy) pay off. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -24,6 +25,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   <p class="page-meta">{{ force_buy_stats.total_samples }} force-buy rounds total (loser spent >= 70% of its available money the round right after losing a pistol).</p>
 </div>
 {% endif %}

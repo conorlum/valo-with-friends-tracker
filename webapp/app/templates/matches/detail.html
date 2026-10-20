@@ -6,6 +6,7 @@
 {% block content %}
 {% set viewer_won = viewer_team is not none and summary.winner_team == viewer_team %}
 {% set viewer_lost = viewer_team is not none and summary.winner_team is not none and summary.winner_team != viewer_team %}
+<div class="page-wide">
 <section class="result-banner {{ 'result-win' if viewer_won else 'result-loss' if viewer_lost else 'result-neutral' }}">
   <div class="result-main">
     <h1>{{ match.map_name or match.external_id }}</h1>{% if replay_url %}
@@ -84,6 +85,7 @@
 </div>
 {% endmacro %}
 
+<div class="page-row page-row--60-40">
 <div class="card">
   <div class="card-head">
     <h2>Scoreboard</h2>
@@ -116,6 +118,37 @@
     {% endfor %}
   </div>
 </div>
+{% if shoutouts %}
+<div class="card">
+  <h2>Shoutouts</h2>
+  <p class="page-meta">{% if current_player %}One highlight for you and every friend in this match.{% else %}One highlight for every player in this match.{% endif %}</p>
+  <div class="shoutout-rows shoutout-rows--side">
+    {% for row in shoutouts | balanced_rows(3) %}
+    <div class="shoutout-row">
+      {% for shoutout in row %}
+      {% set icon = agent_icon_slug(shoutout.agent) %}
+      <div class="shoutout-card">
+        <div class="shoutout-portrait-frame">
+          {% if icon %}
+          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
+          {% else %}
+          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
+          {% endif %}
+        </div>
+        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+        {% if shoutout.agent %}
+        <div class="shoutout-agent">{{ shoutout.agent }}</div>
+        {% endif %}
+        <div class="shoutout-headline">{{ shoutout.headline }}</div>
+        <div class="shoutout-detail">{{ shoutout.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+</div>
 
 <script>
   // Within each run of consecutive same-team rows, alternate lighter/darker
@@ -146,36 +179,104 @@
   });
 </script>
 
-{% if shoutouts %}
+<div class="page-row page-row--halves">
+  <div class="page-stack">
 <div class="card">
-  <h2>Shoutouts</h2>
-  <p class="page-meta">{% if current_player %}One highlight for you and every friend in this match.{% else %}One highlight for every player in this match.{% endif %}</p>
-  <div class="shoutout-rows">
-    {% for row in shoutouts | balanced_rows %}
-    <div class="shoutout-row">
-      {% for shoutout in row %}
-      {% set icon = agent_icon_slug(shoutout.agent) %}
-      <div class="shoutout-card">
-        <div class="shoutout-portrait-frame">
-          {% if icon %}
-          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
-          {% else %}
-          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
-          {% endif %}
-        </div>
-        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
-        {% if shoutout.agent %}
-        <div class="shoutout-agent">{{ shoutout.agent }}</div>
-        {% endif %}
-        <div class="shoutout-headline">{{ shoutout.headline }}</div>
-        <div class="shoutout-detail">{{ shoutout.detail }}</div>
-      </div>
-      {% endfor %}
-    </div>
+  <h2>Match Data Highlights</h2>
+  <p class="page-meta">Match-summed impact by category, split into kill impact and death impact.</p>
+  <div class="tab-row" role="tablist">
+    {% for p in summary.players %}
+    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name | strip_tag }}</button>
     {% endfor %}
+  </div>
+  <div style="max-width: 620px; height: 320px; margin: 0 auto;">
+    <canvas id="impact-highlights-chart"></canvas>
+  </div>
+  <div class="stat-grid">
+    <div class="stat-tile">
+      <div class="stat-label">Traded for teammate</div>
+      <div class="stat-value" id="traded-teammate-value">-</div>
+      <div class="stat-sub" id="traded-teammate-sub"></div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Traded by teammate</div>
+      <div class="stat-value" id="traded-by-teammate-value">-</div>
+      <div class="stat-sub" id="traded-by-teammate-sub"></div>
+    </div>
+  </div>
+</div>
+{% if team1_econ_tier_matrix.total_rounds or team2_econ_tier_matrix.total_rounds %}
+<div class="card econ-compact">
+  <h2>Economy win rate by buy tier</h2>
+  <p class="page-meta">Win rate of rounds where each team bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
+  <div class="econ-teams">
+    <div class="team-panel team-panel-team-1">
+      <h3 class="team-name-team-1">Team 1{% if viewer_team == 'team-1' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</h3>
+      {% set econ_tier_matrix = team1_econ_tier_matrix %}
+      {% set econ_pistol_stats = team1_econ_pistol_stats %}
+      {% set econ_pistol_label = "Pistol rounds:" %}
+      {% if not econ_tier_matrix.total_rounds %}<p class="page-meta">No rounds.</p>{% endif %}
+      {% include "_econ_tier_matrix_body.html" %}
+    </div>
+    <div class="team-panel team-panel-team-2">
+      <h3 class="team-name-team-2">Team 2{% if viewer_team == 'team-2' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</h3>
+      {% set econ_tier_matrix = team2_econ_tier_matrix %}
+      {% set econ_pistol_stats = team2_econ_pistol_stats %}
+      {% set econ_pistol_label = "Pistol rounds:" %}
+      {% if not econ_tier_matrix.total_rounds %}<p class="page-meta">No rounds.</p>{% endif %}
+      {% include "_econ_tier_matrix_body.html" %}
+    </div>
   </div>
 </div>
 {% endif %}
+  </div>
+{% if team1_win_graph.nodes or team2_win_graph.nodes %}
+<div class="card">
+  <h2>Round win rate by game state</h2>
+  <div class="tab-row" role="tablist">
+    <button type="button" class="tab-btn active" data-team-tab="1">Team 1</button>
+    <button type="button" class="tab-btn" data-team-tab="2">Team 2</button>
+  </div>
+  <p class="page-meta" id="team-win-graph-meta">Win rate of rounds Team 1 reached at each man-advantage state (own side v opponent side).</p>
+  <div class="chart-scroll">
+    <div id="team-win-graph-1">
+      <svg viewBox="{{ team1_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
+        {% for edge in team1_win_graph.edges %}
+        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
+        {% endfor %}
+        {% for node in team1_win_graph.nodes %}
+        <g>
+          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
+          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
+          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
+          {% if node.short_label %}
+          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
+          {% endif %}
+        </g>
+        {% endfor %}
+      </svg>
+    </div>
+    <div id="team-win-graph-2" style="display: none;">
+      <svg viewBox="{{ team2_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
+        {% for edge in team2_win_graph.edges %}
+        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
+        {% endfor %}
+        {% for node in team2_win_graph.nodes %}
+        <g>
+          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
+          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
+          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
+          {% if node.short_label %}
+          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
+          {% endif %}
+        </g>
+        {% endfor %}
+      </svg>
+    </div>
+  </div>
+</div>
+{% endif %}
+</div>
 
 <div class="card">
   <h2>Rounds</h2>
@@ -233,133 +334,6 @@
     });
   });
 </script>
-
-<div class="card">
-  <h2>Match Data Highlights</h2>
-  <p class="page-meta">Match-summed impact by category, split into kill impact and death impact.</p>
-  <div class="tab-row" role="tablist">
-    {% for p in summary.players %}
-    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name | strip_tag }}</button>
-    {% endfor %}
-  </div>
-  <div style="max-width: 620px; height: 320px; margin: 0 auto;">
-    <canvas id="impact-highlights-chart"></canvas>
-  </div>
-  <div class="stat-grid">
-    <div class="stat-tile">
-      <div class="stat-label">Traded for teammate</div>
-      <div class="stat-value" id="traded-teammate-value">-</div>
-      <div class="stat-sub" id="traded-teammate-sub"></div>
-    </div>
-    <div class="stat-tile">
-      <div class="stat-label">Traded by teammate</div>
-      <div class="stat-value" id="traded-by-teammate-value">-</div>
-      <div class="stat-sub" id="traded-by-teammate-sub"></div>
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Cumulative Impact</h2>
-  <p class="page-meta">Each player's running Impact total after every round. Lines are colored by team. Click a name on the right or a line to highlight that player; select several to compare them.</p>
-  <div class="round-strip-legend">
-    {% for team in ["team-1", "team-2"] %}
-    <span class="badge badge-{{ team }}">{{ 'Team 1' if team == 'team-1' else 'Team 2' }}{% if team == viewer_team %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</span>
-    {% endfor %}
-    <button type="button" class="tab-btn" id="impact-chart-clear" style="visibility: hidden;">Clear selection</button>
-  </div>
-  <div style="position: relative; height: 380px;">
-    <canvas id="impact-chart"></canvas>
-  </div>
-</div>
-
-{% if team1_econ_tier_matrix.total_rounds or team2_econ_tier_matrix.total_rounds %}
-<div class="card">
-  <h2>Economy win rate by buy tier</h2>
-  <div class="tab-row" role="tablist">
-    <button type="button" class="tab-btn tab-btn-team-1 active" data-econ-team-tab="1">Team 1{% if viewer_team == 'team-1' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
-    <button type="button" class="tab-btn tab-btn-team-2" data-econ-team-tab="2">Team 2{% if viewer_team == 'team-2' %} &middot; {{ 'You' if viewer_team_label == 'You' else 'Friends' }}{% endif %}</button>
-  </div>
-  <div class="team-panel team-panel-team-1" id="econ-matrix-panel">
-  <p class="page-meta" id="econ-matrix-meta">Win rate of rounds where <span class="team-name-team-1">Team 1</span> bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
-  <div id="econ-matrix-1">
-    {% set econ_tier_matrix = team1_econ_tier_matrix %}
-    {% set econ_pistol_stats = team1_econ_pistol_stats %}
-    {% set econ_pistol_label = "Pistol rounds:" %}
-    {% include "_econ_tier_matrix_body.html" %}
-  </div>
-  <div id="econ-matrix-2" style="display: none;">
-    {% set econ_tier_matrix = team2_econ_tier_matrix %}
-    {% set econ_pistol_stats = team2_econ_pistol_stats %}
-    {% set econ_pistol_label = "Pistol rounds:" %}
-    {% include "_econ_tier_matrix_body.html" %}
-  </div>
-  </div>
-</div>
-
-<script>
-  document.querySelectorAll(".tab-btn[data-econ-team-tab]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const team = btn.dataset.econTeamTab;
-      document.querySelectorAll(".tab-btn[data-econ-team-tab]").forEach((b) => b.classList.toggle("active", b === btn));
-      document.getElementById("econ-matrix-1").style.display = team === "1" ? "" : "none";
-      document.getElementById("econ-matrix-2").style.display = team === "2" ? "" : "none";
-      document.getElementById("econ-matrix-meta").innerHTML =
-        `Win rate of rounds where <span class="team-name-team-${team}">Team ${team}</span> bought at each tier (rows), split by what the enemy bought that same round (columns).`;
-      const panel = document.getElementById("econ-matrix-panel");
-      panel.classList.toggle("team-panel-team-1", team === "1");
-      panel.classList.toggle("team-panel-team-2", team === "2");
-    });
-  });
-</script>
-{% endif %}
-
-{% if team1_win_graph.nodes or team2_win_graph.nodes %}
-<div class="card">
-  <h2>Round win rate by game state</h2>
-  <div class="tab-row" role="tablist">
-    <button type="button" class="tab-btn active" data-team-tab="1">Team 1</button>
-    <button type="button" class="tab-btn" data-team-tab="2">Team 2</button>
-  </div>
-  <p class="page-meta" id="team-win-graph-meta">Win rate of rounds Team 1 reached at each man-advantage state (own side v opponent side).</p>
-  <div class="chart-scroll">
-    <div id="team-win-graph-1">
-      <svg viewBox="{{ team1_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
-        {% for edge in team1_win_graph.edges %}
-        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
-        {% endfor %}
-        {% for node in team1_win_graph.nodes %}
-        <g>
-          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
-          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
-          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
-          {% if node.short_label %}
-          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
-          {% endif %}
-        </g>
-        {% endfor %}
-      </svg>
-    </div>
-    <div id="team-win-graph-2" style="display: none;">
-      <svg viewBox="{{ team2_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
-        {% for edge in team2_win_graph.edges %}
-        <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
-        {% endfor %}
-        {% for node in team2_win_graph.nodes %}
-        <g>
-          <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
-          <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
-          <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
-          {% if node.short_label %}
-          <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
-          {% endif %}
-        </g>
-        {% endfor %}
-      </svg>
-    </div>
-  </div>
-</div>
-{% endif %}
 
 <script>
   const highlightsChartData = {{ highlights_chart_data | tojson }};
@@ -437,175 +411,6 @@
   });
 </script>
 
-<script>
-  const chartData = {{ chart_data | tojson }};
-  const TEAM_LINE_COLORS = { "team-1": "#3987e5", "team-2": "#d95926" };
-  const FADED = { "team-1": "rgba(57, 135, 229, 0.18)", "team-2": "rgba(217, 89, 38, 0.18)" };
-  let hoveredIndex = null;
-  const selected = new Set();
-  let labelBoxes = [];
-
-  // A line is lit when it's selected or hovered; with nothing selected or
-  // hovered, every line is lit.
-  function isLit(i) {
-    if (selected.size === 0 && hoveredIndex === null) return true;
-    return selected.has(i) || hoveredIndex === i;
-  }
-
-  function lineColor(i) {
-    const s = chartData.series[i];
-    return isLit(i) ? TEAM_LINE_COLORS[s.team] : FADED[s.team];
-  }
-
-  function lineWidth(i) {
-    const base = chartData.series[i].player_id === chartData.viewer_player_id ? 3.5 : 2;
-    return selected.has(i) ? base + 1.5 : base;
-  }
-
-  function restyle() {
-    impactChart.data.datasets.forEach((ds, i) => {
-      ds.borderColor = lineColor(i);
-      ds.borderWidth = lineWidth(i);
-      ds.order = isLit(i) ? 0 : 1;  // lit lines draw on top
-    });
-    // visibility, not display, so showing the button doesn't shift the chart.
-    document.getElementById("impact-chart-clear").style.visibility = selected.size ? "visible" : "hidden";
-    impactChart.update("none");
-  }
-
-  function toggleSelected(i) {
-    if (selected.has(i)) selected.delete(i); else selected.add(i);
-    restyle();
-  }
-
-  // The nearest line under the pointer, only if the pointer is actually close
-  // to it -- a click on empty chart space shouldn't select anyone.
-  function lineAt(event, elements) {
-    if (!elements.length) return null;
-    const { element, datasetIndex } = elements[0];
-    return Math.hypot(element.x - event.x, element.y - event.y) <= 25 ? datasetIndex : null;
-  }
-
-  // Labels can sit as little as 13px apart, so take the vertically closest.
-  function labelAt(x, y) {
-    let best = null;
-    labelBoxes.forEach((b) => {
-      const dy = Math.abs(y - b.y);
-      if (x >= b.x - 4 && x <= b.x + b.w + 4 && dy <= 7 && (best === null || dy < best.dy)) best = { i: b.i, dy };
-    });
-    return best ? best.i : null;
-  }
-
-  // Name labels at each line's right end, nudged apart so they don't overlap.
-  const endLabels = {
-    id: "endLabels",
-    afterDatasetsDraw(chart) {
-      const { ctx } = chart;
-      const minGap = 13;
-      const labels = chart.data.datasets.map((ds, i) => {
-        const meta = chart.getDatasetMeta(i);
-        const last = meta.data[meta.data.length - 1];
-        return last ? { i, x: last.x, y: last.y, text: ds.label } : null;
-      }).filter(Boolean).sort((a, b) => a.y - b.y);
-      for (let k = 1; k < labels.length; k++) {
-        if (labels[k].y - labels[k - 1].y < minGap) labels[k].y = labels[k - 1].y + minGap;
-      }
-      ctx.save();
-      ctx.textBaseline = "middle";
-      labelBoxes = [];
-      labels.forEach((l) => {
-        const isSelected = selected.has(l.i);
-        ctx.font = `${isSelected ? "700 " : ""}12px system-ui, -apple-system, 'Segoe UI', sans-serif`;
-        ctx.fillStyle = isLit(l.i) ? (isSelected ? "#ffffff" : "#c3c2b7") : "rgba(195, 194, 183, 0.3)";
-        const x = l.x + 8;
-        ctx.fillText(l.text, x, l.y);
-        labelBoxes.push({ i: l.i, x, y: l.y, w: ctx.measureText(l.text).width });
-      });
-      ctx.restore();
-    },
-  };
-
-  const impactChart = new Chart(document.getElementById("impact-chart"), {
-    type: "line",
-    data: {
-      labels: chartData.labels,
-      datasets: chartData.series.map((s, i) => ({
-        label: s.label.split("#")[0],
-        data: s.data,
-        borderColor: TEAM_LINE_COLORS[s.team],
-        backgroundColor: TEAM_LINE_COLORS[s.team],
-        borderWidth: s.player_id === chartData.viewer_player_id ? 3.5 : 2,
-        order: 0,
-        pointRadius: 0,
-        pointHoverRadius: 5,
-        tension: 0,
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      layout: { padding: { right: 110 } },
-      interaction: { mode: "nearest", intersect: false, axis: "xy" },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => `Round ${items[0].label}`,
-            label: (item) => {
-              const s = chartData.series[item.datasetIndex];
-              const v = Math.round(item.parsed.y);
-              return `${item.dataset.label} (${s.agent}): ${v >= 0 ? "+" : ""}${v}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          title: { display: true, text: "Round", color: "#898781" },
-          ticks: { color: "#898781" },
-          grid: { display: false },
-        },
-        y: {
-          title: { display: true, text: "Running Impact total", color: "#898781" },
-          ticks: { color: "#898781" },
-          grid: { color: (c) => (c.tick.value === 0 ? "#898781" : "#2c2c2a") },
-        },
-      },
-    },
-    plugins: [endLabels],
-  });
-  // Pointer handling lives on the canvas itself rather than in Chart.js's
-  // onHover/onClick, which ignore events outside the plot area -- and the
-  // name labels sit in the right-hand padding, outside it.
-  function playerUnderPointer(evt) {
-    const rect = evt.target.getBoundingClientRect();
-    const x = evt.clientX - rect.left;
-    const y = evt.clientY - rect.top;
-    const label = labelAt(x, y);
-    if (label !== null) return label;
-    const elements = impactChart.getElementsAtEventForMode(evt, "nearest", { intersect: false, axis: "xy" }, false);
-    return lineAt({ x, y }, elements);
-  }
-  const impactCanvas = document.getElementById("impact-chart");
-  impactCanvas.addEventListener("mousemove", (evt) => {
-    const next = playerUnderPointer(evt);
-    impactCanvas.style.cursor = next !== null ? "pointer" : "default";
-    if (next === hoveredIndex) return;
-    hoveredIndex = next;
-    restyle();
-  });
-  impactCanvas.addEventListener("click", (evt) => {
-    const target = playerUnderPointer(evt);
-    if (target !== null) toggleSelected(target);
-  });
-  impactCanvas.addEventListener("mouseleave", () => {
-    hoveredIndex = null;
-    restyle();
-  });
-  document.getElementById("impact-chart-clear").addEventListener("click", () => {
-    selected.clear();
-    restyle();
-  });
-</script>
+</div>
 
 {% endblock %}

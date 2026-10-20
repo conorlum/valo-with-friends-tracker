@@ -395,23 +395,6 @@ def round_loadout_bars(econ_by_round: dict, height_px: int = LOADOUT_BAR_HEIGHT_
     return {"height": height_px, "rounds": rounds}
 
 
-def cumulative_impact_series(summary: MatchSummary) -> list[dict]:
-    """Per player, their running Impact total after each round, for the
-    match page's line chart. A round a player has no score for carries
-    their previous total forward."""
-    series = []
-    for p in sorted(summary.players, key=lambda p: (p.team, -p.average_impact)):
-        running = 0.0
-        data = []
-        for rn in summary.round_numbers:
-            running += p.impact_by_round.get(rn) or 0.0
-            data.append(round(running, 1))
-        series.append(
-            {"label": p.display_name, "agent": p.agent, "team": p.team, "player_id": p.player_id, "data": data}
-        )
-    return series
-
-
 def get_viewer_team(db: Session, summary: MatchSummary, viewer_player_id: int | None) -> tuple[str | None, str | None]:
     """(team, label) for the team the logged-in viewer should read as
     "theirs": the team they played on ("You"), otherwise the team with the

@@ -16,6 +16,12 @@
     </p>
   </header>
   <div class="replay-body">
+    {% if linked %}
+    {# The players panel at the current moment: health and shield, utility used so far, the ult once cast, K/D/A,
+       Impact, and tracker.gg's round-start loadout and credits (renderBoard). Left of the map on a wide screen,
+       under it otherwise. #}
+    <div class="replay-board" data-replay-board aria-label="Players"></div>
+    {% endif %}
     <div class="replay-main">
       {% if linked %}<p class="replay-banner" data-replay-banner aria-live="polite"></p>{% endif %}
       <div class="replay-stage">
@@ -42,9 +48,6 @@
         <button type="button" class="replay-button" data-replay-next aria-label="Next round">&rarr;</button>
       </div>
       {% if linked %}
-      {# The players panel at the current moment: health and shield, utility used so far, the ult once cast, K/D/A,
-         Impact, and tracker.gg's round-start loadout and credits (renderBoard). #}
-      <div class="replay-board" data-replay-board aria-label="Players"></div>
       <fieldset class="replay-layers">
         <legend>Show</legend>
         <label><input type="checkbox" data-replay-layer="names" checked> Names</label>

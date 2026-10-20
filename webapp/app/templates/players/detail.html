@@ -3,6 +3,7 @@
 {% block title %}{{ page_player.display_name | strip_tag }} - {{ site_name }}{% endblock %}
 
 {% block content %}
+<div class="page-wide">
 <h1>
   {{ page_player.display_name | strip_tag }}
   {% if current_player and not is_own_profile and not is_own_account %}
@@ -77,6 +78,7 @@
 {% endif %}
 
 {% include "players/_map_streaks.html" %}
+</div>
 
 <script>
   function renderProfileCharts(scope) {

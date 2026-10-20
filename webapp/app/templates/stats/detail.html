@@ -18,6 +18,7 @@
 <p class="page-meta">{{ friends_login_note }}</p>
 {% endif %}
 
+<div class="page-wide">
 {% if group == 'friends' %}
 <div class="scope-toggle">
   <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
@@ -49,4 +50,5 @@
 <p class="page-meta">All-time, across every player ever recorded in the database (not just you and your friends).</p>
 {% include "stats/_stats_sections.html" %}
 {% endif %}
+</div>
 {% endblock %}

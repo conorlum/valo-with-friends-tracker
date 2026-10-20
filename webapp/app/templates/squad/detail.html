@@ -11,6 +11,7 @@
   <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
 </div>
 
+<div class="page-wide">
 <div id="recent-sections">
   {% include "squad/_squad_sections.html" %}
 </div>
@@ -20,6 +21,7 @@
      hx-trigger="load"
      hx-swap="innerHTML">
   <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
+</div>
 </div>
 
 <script>
