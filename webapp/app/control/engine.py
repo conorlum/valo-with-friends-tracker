@@ -70,6 +70,13 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   reuses the base tick's fills where it can; a removed player who stood in enemy vision may have
   bridged their own team's fill, so that fill is recomputed (the 0b bridge fix).
   `full_every` also runs the full recompute, to measure the difference.
+- **Lost control at a death (the statue; the user's call, 2026-10-20).** Not the instant counterfactual: the
+  player is frozen on their last tick before the death (place, view angle, utility still watching, never
+  flashed), and a copy of the round's unknown and memory is stepped beside the real one for DEATH_WINDOW_S.
+  What the team holds with the statue and not in the real round, ground the team held only, each cell once,
+  averaged over the window, is what the death gave up; shared Safe and the enemy's gains elsewhere count
+  nothing. Teammates who die within the window of each other are frozen together, and the joint loss is split
+  in proportion to each one's own. The last player alive gives up nothing.
 - **Stats (Q50, Q66)** count the live round only (`t_start` to `t_decided`).
 
 **Heights** (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4). On a map with a
@@ -113,6 +120,9 @@ TICK_STEP_S = 0.5
 GRID_HZ = 16
 SHOT_WINDOW_S = 0.25
 SECTION_S = 10.0
+# Lost control at a death: how long the statue stands (the user's call, 2026-10-20; 5 and 10 compared).
+# compute_round's `death_window_s` overrides it.
+DEATH_WINDOW_S = 8.0
 
 FOV_HALF = 51.5
 RUN_MPS, WALK_MPS = 5.0, 1.5
@@ -3000,11 +3010,147 @@ class TickRunner:
             tick.hazard = {side: rnd.hazard_at(side, tick.t) for side in ("A", "B")}
         return tick
 
+    def fork(self) -> "TickRunner":
+        """A copy to step beside this one (a statue's run): the unknown and memory copied, the map's fixed parts
+        shared, and a fresh route log (bookkeeping the copy never reports)."""
+        u = self.unknown
+        memo = {id(x): x for x in (self.geo, u.geo, u.topo, u.links, u.face, u.to_wall_px, u.chokes)}
+        memo.update({id(log): RouteLog() for log in u.log.values()})
+        return copy.deepcopy(self, memo)
+
+
+# ---------------------------------------------------------------- lost control at a death: the statue
+
+STATUS_FIELDS = ("flashed", "nearsight", "downgraded", "contest_status", "hit_contest")
+
+
+def statue_inputs(rnd: RoundInputs, statues: dict[int, float], until: float) -> RoundInputs:
+    """The round with each `statues` slot (slot -> time of death) still alive after their death until `until`:
+    standing where they were on the last tick before it, looking the same way, with no status from the death on.
+    A shallow copy: only the changed tables are new, so `rnd` is untouched."""
+    out = copy.copy(rnd)
+    out.missing, out._missed = defaultdict(int), set()     # the statue's run reports nothing
+    out.lives, out.tracks, out._segment, out.heights = dict(rnd.lives), dict(rnd.tracks), dict(rnd._segment), \
+        dict(rnd.heights)
+    for name in STATUS_FIELDS:
+        setattr(out, name, defaultdict(list, getattr(rnd, name)))
+    for slot, t_death in statues.items():
+        out.lives[slot] = [(a, until + 1.0) if a <= t_death <= b else (a, b) for a, b in rnd.lives.get(slot, [])]
+        tr = rnd.tracks.get(slot)
+        if tr is not None and len(tr[0]):
+            ts = tr[0]
+            j = rnd._sample(slot, snap_before(t_death))
+            if j is None:
+                j = max(int(np.searchsorted(ts, t_death, side="right")) - 1, 0)
+            keep = ts <= t_death
+            tail = t_death + np.arange(1, int(math.ceil((until + 1.0 - t_death) * rnd.hz)) + 1) / rnd.hz
+            out.tracks[slot] = (np.concatenate([ts[keep], tail]),) + tuple(
+                np.concatenate([a[keep], np.full(len(tail), a[j])]) for a in tr[1:])
+            out._segment[slot] = np.concatenate([rnd._segment[slot][keep], np.full(len(tail), rnd._segment[slot][j])])
+            if slot in rnd.heights:
+                z = rnd.heights[slot]
+                out.heights[slot] = np.concatenate([z[keep], np.full(len(tail), z[j])])
+        for name in STATUS_FIELDS:
+            table = getattr(out, name)
+            table[slot] = [(a, min(b, t_death)) for a, b in table[slot] if a < t_death]
+    return out
+
+
+@dataclass
+class StatueRun:
+    """One statue run: `statues` (slot -> time of death) frozen in a fork of the round from `t_fork`, measured
+    over [t0, t1). `lost_m2s` is the team's held ground the real round doesn't hold, m²·s; `by_level` splits it
+    by how the statue's run held it, `went_to` by what it is in the real round."""
+    side: str
+    statues: dict
+    t_fork: float
+    t0: float
+    t1: float
+    rnd: RoundInputs = None
+    runner: TickRunner = None
+    lost_m2s: float = 0.0
+    by_level: dict = field(default_factory=lambda: {"active": 0.0, "safe": 0.0, "passive": 0.0})
+    went_to: dict = field(default_factory=lambda: {"enemy": 0.0, "contested": 0.0, "nobody": 0.0})
+
+    def step(self, t: float, w: float, real: np.ndarray, rnd: RoundInputs, cell_m2: float) -> None:
+        """Step the fork to `t` and add what the team lost over this tick's share of the window (`real` is the
+        real round's state at `t`)."""
+        tick = self.runner.step(Tick(self.rnd, t))
+        span = min(t + w, self.t1, rnd.t_decided) - max(t, self.t0, rnd.t_start)
+        if span <= 0:
+            return
+        geo = rnd.geo
+        state = tick.compose()["state"]
+        lost = (score(state, self.side) > 0) & ~(score(real, self.side) > 0)
+        if not lost.any():
+            return
+        self.lost_m2s += geo.area(lost) * cell_m2 * span
+        lv = level_of(state, self.side)
+        for name, code in (("active", 3), ("safe", 2), ("passive", 1)):
+            self.by_level[name] += geo.area(lost & (lv == code)) * cell_m2 * span
+        theirs = lost & (score(real, self.side) < 0)
+        contested = lost & ((real == CONTESTED) | (real == CONTESTED_ACTIVE))
+        self.went_to["enemy"] += geo.area(theirs) * cell_m2 * span
+        self.went_to["contested"] += geo.area(contested) * cell_m2 * span
+        self.went_to["nobody"] += geo.area(lost & ~theirs & ~contested) * cell_m2 * span
+
+
+def plan_statues(rnd: RoundInputs, window: float) -> tuple[list[StatueRun], dict]:
+    """Every statue run a round needs, and for each death (slot, t) that gives anything up: its own run and
+    its group's joint run (None when it died alone). The last player alive gives up nothing (no run), nor does
+    a death after the round is decided. Same-side deaths within `window` of the one before are one group."""
+    runs: list[StatueRun] = []
+    plan: dict = {}
+    by_side: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    for slot, t in rnd.deaths():
+        side = rnd.team.get(slot)
+        if side is None or t > rnd.t_decided:
+            continue
+        if not any(rnd.alive(o, t) for o, s in rnd.team.items() if s == side and o != slot):
+            continue
+        by_side[side].append((slot, t))
+    for side, deaths in by_side.items():
+        groups: list[list[tuple[int, float]]] = []
+        for d in deaths:
+            if groups and d[1] - groups[-1][-1][1] <= window:
+                groups[-1].append(d)
+            else:
+                groups.append([d])
+        for group in groups:
+            joint = None
+            if len(group) > 1:
+                joint = StatueRun(side, dict(group), snap_before(group[0][1]), group[0][1], group[-1][1] + window)
+                runs.append(joint)
+            for slot, t in group:
+                own = StatueRun(side, {slot: t}, snap_before(t), t, t + window)
+                runs.append(own)
+                plan[(slot, t)] = (own, joint, [d for d in group])
+    return runs, plan
+
+
+def statue_lost(death: tuple[int, float], plan: dict, owned_m2: float, window: float) -> dict:
+    """A death's lost control from its runs, as m² averaged over the window: its own run's, or, in a group,
+    the joint run's split in proportion to each member's own (evenly when none of them lost anything alone)."""
+    own, joint, group = plan[death]
+    run, part = own, 1.0
+    if joint is not None:
+        alone = {d: plan[d][0].lost_m2s for d in group}
+        total = sum(alone.values())
+        run, part = joint, (alone[death] / total if total > 0 else 1.0 / len(group))
+    value = run.lost_m2s * part / window
+    return {"control_m2": round(value, 1),
+            "share_of_team": round(value / owned_m2, 4) if owned_m2 > 0 else None,
+            "by_level_m2": {k: round(v * part / window, 1) for k, v in run.by_level.items()},
+            "went_to_m2": {k: round(v * part / window, 1) for k, v in run.went_to.items()},
+            "window_s": window, "group": len(group)}
+
 
 def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                   ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True,
-                  observer=None, infos=None) -> RoundControl:
+                  observer=None, infos=None, death_window_s: float = DEATH_WINDOW_S) -> RoundControl:
     """Control for one round. `ticks` overrides the Q75 schedule (tests, parity checks);
+    `death_window_s` how long a dead player's statue stands (lost control at a death; 0 is the instant
+    counterfactual it replaced, `instant_lost`);
     `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares. `knowledge`
     also builds each team's picture of the round (R3.3): what it knew, not the true positions.
     `observer`, when given, is called as observer(record, unknown) after each tick's unknown
@@ -3048,6 +3194,13 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         i = index.get(round(snap_before(t), 6))
         if i is not None:
             death_ticks[i].append((slot, t))
+    statue_runs, statue_plan = plan_statues(rnd, death_window_s) if death_window_s > 0 else ([], {})
+    fork_at: dict[int, list[StatueRun]] = defaultdict(list)    # frame -> the statue runs forked after it
+    for run in statue_runs:
+        i = index.get(round(run.t_fork, 6))
+        if i is not None:
+            fork_at[i].append(run)
+    standing: list[StatueRun] = []
     prev_state = None
     runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
@@ -3089,6 +3242,15 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
             _credit_taken(tick, cov, prev_state, state, players, cell_m2, node_area=geo.node_area)
         prev_state = state
+        s0 = time.perf_counter()
+        for run in standing:
+            run.step(t, w, state, rnd, cell_m2)
+        standing = [run for run in standing if t + w < run.t1]
+        for run in fork_at.get(n, []) if n is not None else []:
+            # forked after this tick's step: the statues are still alive here
+            run.rnd, run.runner = statue_inputs(rnd, run.statues, run.t1), runner.fork()
+            standing.append(run)
+        timings["statues"] += time.perf_counter() - s0
         if know:
             k0 = time.perf_counter()
             for side, kn in know.items():
@@ -3130,9 +3292,13 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 control[n, s] = value * cell_m2
                 control_masks[n, s] = geo.to_cells(drop > 0)[walk_flat]
             ctl_sum[side] += value
-            if s in dying:
-                players[s].deaths.append(_lost(state, cf["state"], side, drop, last, owned[side], cell_m2,
-                                               dying[s], rnd))
+            if s in dying and death_window_s <= 0:
+                players[s].deaths.append(instant_lost(state, cf["state"], side, drop, last, owned[side], cell_m2,
+                                                      dying[s], rnd))
+            elif s in dying:      # filled in from its statue runs once they are done
+                players[s].deaths.append({"t": round(dying[s], 3),
+                                          "live": rnd.t_start <= dying[s] <= rnd.t_decided,
+                                          "_death": (s, dying[s]), "_owned": owned[side] * cell_m2})
             # this player's share of the step: up to their death, inside the live round
             own_w = max(0.0, min(t + w, rnd.t_decided, rnd.life_end(s, t)) - max(t, rnd.t_start))
             if own_w > 0:
@@ -3162,6 +3328,16 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         np.add.at(sec.totals, (code[grid[selected]], columns), overlap / 4)
                     else:
                         np.add.at(sec.totals, (cells_now, cols), overlap)
+    for ps in players.values():
+        for d in ps.deaths:
+            if "_death" not in d:      # the instant rule's (death_window_s 0), already whole
+                continue
+            death, owned_m2 = d.pop("_death"), d.pop("_owned")
+            d.update(statue_lost(death, statue_plan, owned_m2, death_window_s) if death in statue_plan else
+                     {"control_m2": 0.0, "share_of_team": 0.0 if owned_m2 > 0 else None,
+                      "by_level_m2": {"active": 0.0, "safe": 0.0, "passive": 0.0},
+                      "went_to_m2": {"enemy": 0.0, "contested": 0.0, "nobody": 0.0},
+                      "window_s": death_window_s, "group": 1})
     missing = dict(rnd.missing)
     if geo.movement_only:
         missing['local rope walking floors; terrain sight uses 2D fallback'] = 1
@@ -3210,9 +3386,11 @@ def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, pl
                 players[h.slot].taken_m2 += float((weights / count[mine]).sum()) * cell_m2
 
 
-def _lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, last: bool, owned: float,
-          cell_m2: float, t_death: float, rnd: RoundInputs) -> dict:
-    """Lost control at a real death: what the team lost, by the level it held and where it went."""
+def instant_lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, last: bool, owned: float,
+                 cell_m2: float, t_death: float, rnd: RoundInputs) -> dict:
+    """Lost control at a death as it was before the statue (`death_window_s` 0): the instant counterfactual on the
+    last tick before it, by the level the team held and where it went. Kept so the reference tests can show a
+    move is the statue's and nothing else's."""
     lost = drop > 0
     lv = level_of(state, side)
     by_level = {name: rnd.geo.area(lost & (lv == code)) * cell_m2

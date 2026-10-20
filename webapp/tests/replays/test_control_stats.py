@@ -98,13 +98,14 @@ def test_lost_control_at_a_death_and_the_redundant_total():
     geo = door_hall()
     rc = ce.compute_round(blob(rotator_and_lurker(), t_end=2.0, deaths={2: 1.2}), geo)
     [death] = rc.players[2].deaths
-    i = rc.ticks.tolist().index(1.1875)
-    assert death["control_m2"] == pytest.approx(float(rc.control[i, 2]), abs=0.1)
-    area = death["control_m2"]
-    assert 0 < death["share_of_team"]
-    lost_area = sum(death["went_to_m2"].values())
-    assert sum(death["by_level_m2"].values()) == pytest.approx(lost_area, abs=0.5)
-    assert lost_area <= area + 0.5, "ours->theirs counts twice in control, once in area"
+    assert death["control_m2"] > 0 and 0 < death["share_of_team"]
+    assert death["window_s"] == ce.DEATH_WINDOW_S and death["group"] == 1
+    # ground the team held, each cell once: by level and by where it went, both the whole loss
+    assert sum(death["by_level_m2"].values()) == pytest.approx(death["control_m2"], abs=0.5)
+    assert sum(death["went_to_m2"].values()) == pytest.approx(death["control_m2"], abs=0.5)
+    # the round ends 0.8 s after the death: the window's average counts only that
+    longer = ce.compute_round(blob(rotator_and_lurker(), t_end=10.0, deaths={2: 1.2}), geo)
+    assert longer.players[2].deaths[0]["control_m2"] > death["control_m2"]
     # redundant = the team's own area minus its players' control, over the live ticks
     expect = 0.0
     for n, w in enumerate(rc.weights):
@@ -116,6 +117,70 @@ def test_lost_control_at_a_death_and_the_redundant_total():
     stats = rc.players[2].as_dict()
     assert stats["control_m2"] == pytest.approx(rc.players[2].control_m2s / 1.2, abs=0.1)
     assert stats["active_ratio"] is not None and 0 <= stats["active_ratio"] <= 1
+
+
+# ---------------------------------------------------------------- lost control: the statue (2026-10-20)
+
+
+def test_a_statue_stands_where_the_player_was_unflashed_and_leaves_the_round_alone():
+    geo = open_hall()
+    players = {0: ("A", [(0.0, 150, 200, 0), (3.0, 300, 200, 90)]), 1: still("A", 150, 280, 270),
+               5: still("B", 400, 200, 180)}
+    flash = {"k": "flash", "t": 1.7, "by": 5, "ability": "phoenix_curveball_left", "targets": [0],
+             "hits": [[0, 2.0, 3.0]]}
+    rnd = ce.RoundInputs(blob(players, t_end=10.0, util=[flash], deaths={0: 2.2}), geo)
+    statue = ce.statue_inputs(rnd, {0: 2.2}, 10.2)
+    assert not rnd.alive(0, 5.0) and statue.alive(0, 5.0) and statue.alive(0, 10.0)
+    assert statue.pos(0, 6.0) == rnd.pos(0, ce.snap_before(2.2)), "frozen on the last tick before the death"
+    assert statue.movement(0, 6.0, statue.pos(0, 6.0)) == "hold"
+    assert not ce._during(statue.flashed[0], 3.0) and statue.flashed is not rnd.flashed
+    before = dict(rnd.missing)
+    statue.miss("a case", 0)
+    assert dict(rnd.missing) == before, "the statue's run reports nothing"
+
+
+def test_the_last_player_alive_gives_up_nothing():
+    geo = open_hall()
+    rc = ce.compute_round(blob({0: still("A", 150, 200, 0), 5: still("B", 400, 110, 90)}, t_end=10.0,
+                               deaths={0: 2.0}), geo)
+    [death] = rc.players[0].deaths
+    assert death["control_m2"] == 0.0 and death["group"] == 1
+
+
+def test_teammates_dying_within_the_window_are_one_group():
+    geo = door_hall()
+    rnd = ce.RoundInputs(blob(rotator_and_lurker(), t_end=30.0, deaths={0: 2.0, 2: 6.0, 1: 15.0}), geo)
+    runs, plan = ce.plan_statues(rnd, 8.0)
+    own, joint, group = plan[(0, 2.0)]
+    assert joint is plan[(2, 6.0)][1] and joint.statues == {0: 2.0, 2: 6.0}
+    assert (joint.t0, joint.t1) == (2.0, 14.0) and (own.t0, own.t1) == (2.0, 10.0)
+    assert (1, 15.0) not in plan, "the last player alive"
+    assert len(runs) == 3
+    _, plan5 = ce.plan_statues(rnd, 3.0)
+    assert plan5[(0, 2.0)][1] is None, "4 s apart: alone at a 3 s window"
+
+
+def test_a_group_splits_its_joint_loss_by_each_ones_own():
+    def run(lost):
+        r = ce.StatueRun("A", {}, 0.0, 0.0, 8.0)
+        r.lost_m2s = lost
+        r.by_level = {"active": 0.0, "safe": lost, "passive": 0.0}
+        r.went_to = {"enemy": 0.0, "contested": 0.0, "nobody": lost}
+        return r
+
+    joint, group = run(800.0), [(0, 1.0), (2, 1.5)]
+    plan = {(0, 1.0): (run(300.0), joint, group), (2, 1.5): (run(100.0), joint, group)}
+    a, b = (ce.statue_lost(d, plan, 1000.0, 8.0) for d in group)
+    assert (a["control_m2"], b["control_m2"]) == (75.0, 25.0), "800 m²·s over 8 s, split 3:1"
+    assert a["share_of_team"] == 0.075 and a["by_level_m2"]["safe"] == 75.0 and a["group"] == 2
+    plan = {(0, 1.0): (run(0.0), joint, group), (2, 1.5): (run(0.0), joint, group)}
+    assert ce.statue_lost((0, 1.0), plan, 1000.0, 8.0)["control_m2"] == 50.0, "evenly when neither lost alone"
+
+
+def test_the_window_is_a_setting():
+    geo = door_hall()
+    rc = ce.compute_round(blob(rotator_and_lurker(), t_end=12.0, deaths={2: 1.2}), geo, death_window_s=4.0)
+    assert rc.players[2].deaths[0]["window_s"] == 4.0 and rc.players[2].deaths[0]["control_m2"] > 0
 
 
 # ---------------------------------------------------------------- space taken (CONTROL_REVISION 2)

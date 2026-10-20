@@ -14,7 +14,11 @@ same revision, unreleased: an enemy's damaging molly holds the unknown): only `m
 over 3.0-7.0, moved, data 33a55d33f36e2564 -> 12c79de24d1d2ba6, summary 2ad11a1afe23dae6 -> a5741819229a66d0.
 Re-recorded 2026-10-14 for CONTROL_REVISION 16: a heard sound names nobody unless only one enemy could have made it
 (R1/R2): only `midwall` moved, data 29904050ccedd810 -> 15ec9ad176eb5c7d, summary 949b2b794d21bd4b ->
-c37f692a8644741a; the old-rule tests below patch `Unknown._attributable` to True."""
+c37f692a8644741a; the old-rule tests below patch `Unknown._attributable` to True.
+Re-recorded 2026-10-20 for CONTROL_REVISION 19: lost control at a death is the statue's (DEATH_WINDOW_S), not the
+instant counterfactual's. Only the summaries of the rounds with a death moved (`midwall` and `pawns`); no data
+digest did. The old-rule tests below run the instant rule (`death_window_s` 0), and the statue test proves the move
+is that and nothing else."""
 
 import json
 import sys
@@ -34,6 +38,30 @@ from control_toys import reference_rounds  # noqa: E402
 from app.control import engine as ce  # noqa: E402
 
 REFERENCE = json.loads(ref.FIXTURE.read_text(encoding="utf-8"))["rounds"]
+
+# The digests that moved for the statue (2026-10-20), as they were before it (CONTROL_REVISION 18's fixture).
+BEFORE_STATUE = {"midwall": {"data": "15ec9ad176eb5c7d", "summary": "c37f692a8644741a"},
+                 "pawns": {"data": "2d2611af5ee23d62", "summary": "e3cb275d07b85a25"}}
+
+
+def _instant_deaths(monkeypatch):
+    """Lost control at a death as it was before the statue: the instant counterfactual (`death_window_s` 0)."""
+    compute = ce.compute_round
+    monkeypatch.setattr(ce, "compute_round", lambda *a, **k: compute(*a, **{"death_window_s": 0.0, **k}))
+
+
+@pytest.mark.parametrize("name", sorted(REFERENCE))
+def test_with_the_instant_rule_every_round_is_its_pre_statue_reference(name, monkeypatch):
+    """The statue's move is the statue's and nothing else's: with the instant rule back, every round gives its
+    revision-18 bytes, and the rounds that moved moved only in their summary (the deaths)."""
+    from app.replays import control_format
+    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 8)
+    _instant_deaths(monkeypatch)
+    geo, blob, link = reference_rounds()[name]
+    before = BEFORE_STATUE.get(name, REFERENCE[name])
+    assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == before
+    if name in BEFORE_STATUE:
+        assert REFERENCE[name]["data"] == before["data"] and REFERENCE[name]["summary"] != before["summary"]
 
 
 @pytest.mark.slow
@@ -110,6 +138,7 @@ def test_midwall_without_the_blind_rule_and_exact_intervals_is_its_old_reference
     engine gives the pre-P07 bytes again."""
     monkeypatch.setattr(ce.RoundInputs, "_blinds", _pre_p07_blinds)
     _pre_d11_nearsight(monkeypatch)
+    _instant_deaths(monkeypatch)
     for rule in ("credited", "contributes", "remembers"):
         monkeypatch.setattr(ce, rule, lambda h: True)
     monkeypatch.setattr(ce, "device_sees", lambda kind, blind: True)
@@ -151,6 +180,7 @@ def test_midwall_without_the_molly_rule_is_its_p07_reference(monkeypatch):
     bytes again."""
     monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
     _pre_d11_nearsight(monkeypatch)     # also patches Unknown._attributable (the old rule)
+    _instant_deaths(monkeypatch)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_P07A
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_P07A
@@ -176,6 +206,7 @@ def test_midwall_without_the_nearsight_change_is_its_p07a_reference(monkeypatch)
     """The third move is D11's and nothing else's: B5 is nearsighted over [4.2, 5.2); with the 4 m bubble and hearing
     back, the engine gives W10's bytes again."""
     _pre_d11_nearsight(monkeypatch)
+    _instant_deaths(monkeypatch)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_D11
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_D11
@@ -191,6 +222,7 @@ def test_midwall_with_every_heard_sound_naming_its_maker_is_its_pre_r1_reference
     """The move is R1/R2's and nothing else's: with attribution always allowed (the old rule), the engine gives
     the pre-R1 bytes again."""
     monkeypatch.setattr(ce.Unknown, "_attributable", lambda *a, **k: True)
+    _instant_deaths(monkeypatch)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_R1
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_R1

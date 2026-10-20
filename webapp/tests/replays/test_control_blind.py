@@ -247,16 +247,20 @@ def test_no_locate_or_death_event_comes_from_a_blind():
     assert x.players[0].deaths == [] and y.players[0].deaths == []
 
 
-def test_dying_while_blinded_charges_no_loss():
-    geo = open_hall()
-    players = {0: still("A", 150, 200, 0), 1: still("A", 150, 280, 270), 5: still("B", 400, 200, 180)}
-    hurt = {"k": "damage", "t": 2.0, "t1": 2.1, "by": 5, "target": 0, "src": "gun", "wall": False, "n": 2}
-    x = ce.compute_round(blob(players, t_end=5.0, util=[flash(0, 1.03, 3.0), hurt], deaths={0: 2.2}), geo)
-    y = ce.compute_round(blob(players, t_end=5.0, util=[hurt], deaths={0: 2.2}), geo)
-    assert x.players[0].alive_s == pytest.approx(2.2) and y.players[0].alive_s == pytest.approx(2.2)
-    [dx], [dy] = x.players[0].deaths, y.players[0].deaths
-    assert dx["control_m2"] == 0.0 and dy["control_m2"] > 0.0
-    assert x.players[1].control_m2s > 0
+def test_dying_while_blinded_still_gives_up_the_ground():
+    """The statue stands unflashed (the user's call, 2026-10-20): a flash doesn't make a death free."""
+    geo = door_hall()
+    # A0 holds the door, A1 turns in the west room, A2 lurks behind B (test_control_stats.rotator_and_lurker)
+    players = {0: still("A", 204, 292, 0), 1: still("A", 120, 150, 180), 2: still("A", 400, 280, 240),
+               5: still("B", 300, 200, 225)}
+    hurt = {"k": "damage", "t": 2.0, "t1": 2.1, "by": 5, "target": 2, "src": "gun", "wall": False, "n": 2}
+    x = ce.compute_round(blob(players, t_end=6.0, util=[flash(2, 1.03, 3.0), hurt], deaths={2: 2.2}), geo)
+    y = ce.compute_round(blob(players, t_end=6.0, util=[hurt], deaths={2: 2.2}), geo)
+    assert x.players[2].alive_s == pytest.approx(2.2) and y.players[2].alive_s == pytest.approx(2.2)
+    [dx], [dy] = x.players[2].deaths, y.players[2].deaths
+    # about the same: the round before the death differs (a blind player's sight and memory are off)
+    assert dy["control_m2"] > 0.0 and dx["control_m2"] == pytest.approx(dy["control_m2"], rel=0.05)
+    assert x.players[0].control_m2s > 0
 
 
 def test_a_whole_team_blinded_is_credited_nothing_and_still_holds_ground():
