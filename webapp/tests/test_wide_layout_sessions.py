@@ -1,5 +1,5 @@
 """The session page's wide layout (S10): row 1 a stack of Roster and Impact Leaderboard | Shoutouts,
-row 2 Round win rate | Economy, row 3 Fun Stats | KDA by match, Matches below. Rendered with
+row 2 Round win rate | Fun Stats, row 3 Economy | KDA by match, Matches below. Rendered with
 StrictUndefined so a sparse context can't pass."""
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -139,8 +139,8 @@ def test_card_order_and_rows(root):
     assert "page-stack" in stack.classes
     assert [c.h2() for c in stack.children] == ["Roster", "Impact Leaderboard"]
     assert shout.h2() == "Shoutouts"
-    assert [c.h2() for c in row2.children] == ["Round win rate by game state", "Economy win rate by buy tier"]
-    assert [c.h2() for c in row3.children] == ["Fun Stats", "KDA by match"]
+    assert [c.h2() for c in row2.children] == ["Round win rate by game state", "Fun Stats"]
+    assert [c.h2() for c in row3.children] == ["Economy win rate by buy tier", "KDA by match"]
     cards = [c for c in wide.children if "card" in c.classes]
     assert [c.h2() for c in cards] == ["Matches"]
     assert wide.children.index(row3) < wide.children.index(cards[0])
