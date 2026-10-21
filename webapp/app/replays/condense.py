@@ -51,6 +51,7 @@ from app.replays.contract import (
     load_pin,
     map_codes_in_file,
 )
+from app.replays.causes import Archetypes, cause_key, cause_of
 from app.replays.player_state_extract import (attach_orb_tries, attribute_death_drops, attribute_planter,
                                               read_player_state, round_player_state)
 
@@ -932,16 +933,21 @@ class DamageRun:
     src: str        # "gun" (MulticastNotifyDamage_Point) or "ability" (_Base: mollies and the like)
     wall: bool      # a wallbang (IsWallPenetration; only gun hits carry it)
     n: int = 1
+    cause: dict | None = None    # revision 21: the ability that did it (causes.py), None for a gun
 
 
-def read_damage(export: Export, players: PlayerTable) -> tuple[list[DamageRun], dict]:
+def read_damage(export: Export, players: PlayerTable, archetypes: Archetypes | None = None,
+                agents_by_code: dict[str, str] | None = None) -> tuple[list[DamageRun], dict]:
     """Every damage notify on a player's own character, as runs (DamageRun), and counts.
 
     The attacker is the instigating pawn's player (a drone or pet resolves to its possessor), else
     the `DamagerPlayerState`'s. A hit whose attacker resolves to no player is dropped, and so is one
-    a player took from themself (their own molly; spike and fall damage name no other player)."""
+    a player took from themself (their own molly; spike and fall damage name no other player).
+    Revision 21: with `archetypes`, each hit's `DamageCauser` (or `EquippableUsed`) names the ability that did it,
+    and hits with different causes are different runs. `src` stays the notify's kind: a few `_Point` hits are
+    abilities (Tejo's grenades, Jett's ult knives), and their cause says so."""
     counts: Counter[str] = Counter()
-    hits: list[tuple[int, int, int, str, bool]] = []
+    hits: list[tuple[int, int, int, str, bool, tuple, dict | None]] = []
     for row in export.events:
         data = row.data
         if data.get("type") != "rpc_received" or data.get("function_name") not in RPC_DAMAGE:
@@ -960,17 +966,24 @@ def read_damage(export: Export, players: PlayerTable) -> tuple[list[DamageRun], 
             counts["damage_self"] += 1
             continue
         point = data.get("function_name") == "MulticastNotifyDamage_Point"
-        hits.append((row.time_ms, by, target, "gun" if point else "ability", payload.get("IsWallPenetration") is True))
+        cause = None
+        if archetypes is not None:
+            cause = cause_of(archetypes, agents_by_code or {}, row.time_ms, payload.get("DamageCauser"),
+                             (payload.get("EquippableUsed") or {}).get("NetGuid")
+                             if isinstance(payload.get("EquippableUsed"), dict) else None)
+            counts[f"damage_hits_cause_{cause['from'] if cause else 'none'}_{'gun' if point else 'ability'}"] += 1
+        hits.append((row.time_ms, by, target, "gun" if point else "ability", payload.get("IsWallPenetration") is True,
+                     cause_key(cause), cause))
         counts["damage_hits"] += 1
     runs: list[DamageRun] = []
     open_runs: dict[tuple, DamageRun] = {}
-    for t_ms, by, target, src, wall in sorted(hits):
-        key = (by, target, src, wall)
+    for t_ms, by, target, src, wall, why, cause in sorted(hits, key=lambda h: h[:6]):
+        key = (by, target, src, wall, why)
         run = open_runs.get(key)
         if run is not None and t_ms - run.t1_ms <= DAMAGE_MERGE_MS:
             run.t1_ms, run.n = t_ms, run.n + 1
             continue
-        run = DamageRun(t_ms, t_ms, by, target, src, wall)
+        run = DamageRun(t_ms, t_ms, by, target, src, wall, cause=cause)
         open_runs[key] = run
         runs.append(run)
     counts["damage_runs"] = len(runs)
@@ -980,7 +993,56 @@ def read_damage(export: Export, players: PlayerTable) -> tuple[list[DamageRun], 
 
 def _damage_entry(run: DamageRun, start: int) -> dict:
     return {"k": "damage", "t": _seconds(run.t_ms, start), "t1": _seconds(run.t1_ms, start), "by": run.by,
-            "target": run.target, "src": run.src, "wall": run.wall, "n": run.n}
+            "target": run.target, "src": run.src, "wall": run.wall, "n": run.n, **(run.cause or {})}
+
+
+# Revision 21: heals in a row from one healer on one player, of one cause and section, this close together are one
+# run (a Sage orb ticks every 150 ms, Skye's Regrowth and Miks's every 30-60 ms).
+HEAL_MERGE_MS = DAMAGE_MERGE_MS
+
+
+@dataclass
+class HealRun:
+    t_ms: int
+    t1_ms: int
+    by: int | None       # the healer (a self-heal names the target), None when no pawn instigated it
+    target: int
+    pool: str            # the section healed: "hp", "armor", "other", "unknown" (PlayerStateInputs.heal_pool)
+    cause: dict | None
+    amount: float
+    after: float         # the section's value after the run's last heal
+    n: int = 1
+
+
+def read_heals(state_inputs, archetypes: Archetypes, agents_by_code: dict[str, str]) -> tuple[list[HealRun], dict]:
+    """Every heal on a player's own character (read_player_state's), as runs (HealRun), and counts. Self-heals are
+    kept, and so is a heal no pawn instigated (KAY/O brought back by his ult names nobody)."""
+    counts: Counter[str] = Counter()
+    runs: list[HealRun] = []
+    open_runs: dict[tuple, HealRun] = {}
+    for heal in state_inputs.heals:         # in time order
+        cause = cause_of(archetypes, agents_by_code, heal.t_ms, heal.causer)
+        pool = state_inputs.heal_pool(heal)
+        counts[f"heals_{pool}"] += 1
+        counts[f"heals_cause_{cause['from'] if cause else 'none'}"] += 1
+        key = (heal.by, heal.slot, pool, cause_key(cause))
+        run = open_runs.get(key)
+        if run is not None and heal.t_ms - run.t1_ms <= HEAL_MERGE_MS:
+            run.t1_ms, run.n, run.amount, run.after = heal.t_ms, run.n + 1, run.amount + heal.d, heal.res
+            continue
+        run = HealRun(heal.t_ms, heal.t_ms, heal.by, heal.slot, pool, cause, heal.d, heal.res)
+        open_runs[key] = run
+        runs.append(run)
+    counts["heal_runs"] = len(runs)
+    return runs, dict(sorted(counts.items()))
+
+
+def _heal_entry(run: HealRun, start: int) -> dict:
+    entry = {"k": "heal", "t": _seconds(run.t_ms, start), "t1": _seconds(run.t1_ms, start), "by": run.by,
+             "target": run.target, "pool": run.pool, "amount": round(run.amount, 3), "n": run.n, **(run.cause or {})}
+    if run.pool == "hp":
+        entry["hp_after"] = round(max(0.0, run.after), 3)
+    return entry
 
 
 def _seconds(t_ms: int, start_ms: int) -> float:
@@ -1443,9 +1505,11 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     util_casts, util_counts = read_util(export, players)
     util_counts["outside_rounds"] = sum(1 for c in util_casts
                                         if not any(s <= c.t_ms <= e for s, _, e in game.windows))
-    damage_runs, damage_counts = read_damage(export, players)
+    archetypes = Archetypes(export)
+    damage_runs, damage_counts = read_damage(export, players, archetypes, agents_by_code)
     # Revision 15: health and the spike's state (player_state_extract.py), from rows already in the stream.
     state_inputs = read_player_state(export, players)
+    heal_runs, heal_counts = read_heals(state_inputs, archetypes, agents_by_code)
     # P-a: every kill falls in one playback window, or in the dropped final round (excluded
     # with its reason); any other kill refuses.
     excluded = {"dropped_final_round": 0}
@@ -1501,9 +1565,10 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             # No plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
             # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump. Map control
-            # (revision 10): the damage runs that start in it.
+            # (revision 10): the damage runs that start in it; revision 21, the heal runs.
             "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end]
-                    + [_damage_entry(r, start) for r in damage_runs if start <= r.t_ms <= end],
+                    + [_damage_entry(r, start) for r in damage_runs if start <= r.t_ms <= end]
+                    + [_heal_entry(r, start) for r in heal_runs if start <= r.t_ms <= end],
         }
         state = round_player_state(state_inputs, start, end, game.windows[n - 2][2] if n > 1 else None,
                                    lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
@@ -1540,6 +1605,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "ownership": players.ownership,
         "util": util_counts,
         "damage": damage_counts,
+        "heals": heal_counts,
         "player_state": dict(sorted(state_inputs.diagnostics.items())),
         "sides": sides_report,
         "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
@@ -1688,6 +1754,20 @@ def statuses_while_alive(util: list[dict], alive: dict | None) -> list[dict]:
     return out
 
 
+def join_causes(util: list[dict], counts: Counter) -> None:
+    """In place: a `damage` or `heal` row keeps its cause's `id` only when an `ability` row of the round has that `id`
+    and the same `code` and `name` (revision 21; a guid can come back for another actor): the extras leave out some
+    causers (an object no agent's code names, one outside every round), and an `id` must always name its row. Its
+    `code` and `name` stay."""
+    ids = {(e["id"], e.get("code"), e.get("name")) for e in util if e.get("k") == "ability" and "id" in e}
+    for entry in util:
+        if entry.get("k") in ("damage", "heal") and "id" in entry:
+            joined = (entry["id"], entry.get("code"), entry.get("name")) in ids
+            counts[f"{entry['k']}_{'joined' if joined else 'not_drawn'}"] += 1
+            if not joined:
+                del entry["id"]
+
+
 def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, game_map: MapInfo,
                   agents_by_code: dict[str, str]) -> None:
     """Adds each round's ability objects and shots (app/replays/extras.py) to its blob's `util`
@@ -1704,13 +1784,16 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
                           teams=teams, pawn_yaws=positions.yaws)
     spike_counts: dict[str, int] = {}
+    joins: Counter[str] = Counter()
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
         blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
+        join_causes(blob["util"], joins)
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
         attach_orb_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("orb_tries", []), spike_counts)
     replay.report["extras"] = extras.report
+    replay.report["cause_joins"] = dict(sorted(joins.items()))
     replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())

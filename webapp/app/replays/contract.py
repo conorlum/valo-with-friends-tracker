@@ -52,6 +52,18 @@ RPC_ORB_PICKUP = "OrbPickedUpRPC"
 # pawn (`Character`) and the killer's (`EventInstigatorPawn`). Three of its kills (all Gekko's) had
 # this and no MulticastNotifyKilledEnemy; every other player kill in it and in the Ascent export had both.
 RPC_DAMAGE = frozenset({"MulticastNotifyDamage_Point", "MulticastNotifyDamage_Base"})
+# Revision 21 (measured on four 13.08 exports, 2026-10-21): a heal on a damageable's component (`Amount`, `Causer`,
+# `EventInstigatorPawn`, `LifeChanges`: [{ChangedComponent, DeltaLife, LifeResult, AliveAfterChange}]); the RPC's
+# actor is the healed pawn.
+RPC_HEAL = "MulticastNotifyHeal"
+# An ability's charges (`AuthResourceAmount`), on a component whose outer is the ability's equippable; a signature
+# ability's is the subclass. A player's inventory names its slot objects (`GrenadeAbilitySlot`, ...), and a slot
+# object's `Contents` is the equippable in it: together they prove whose charges they are (player_state_extract).
+CHARGE_GROUP_PATHS = frozenset({"/Script/ShooterGame.EquipmentChargeComponent",
+                                "/Script/ShooterGame.SignatureAbilityResourceComponent"})
+INVENTORY_PATH = "/Script/ShooterGame.AresInventory"
+ITEM_SLOT_PATH = "/Script/ShooterGame.ItemSlot"
+ABILITY_SLOT_KEYS = ("GrenadeAbilitySlot", "Ability1Slot", "Ability2Slot", "UltimateSlot")
 
 # A malformed packet blocks. Partial-bunch errors don't: they drop data on
 # one channel, and the condenser's per-player coverage and gap checks measure what that
@@ -282,15 +294,17 @@ UTIL_EVENT_TYPES = frozenset({"valorant_flash_cast", "valorant_flash_player_hit"
 STREAM_EVENT_TYPES = frozenset({"actor_spawned", "actor_closed", *UTIL_EVENT_TYPES})
 STREAM_PAYLOAD_KEYS = frozenset({CHARACTER_PLAYER_STATE, "Subject", "SpawnedCharacter", "PossessedCharacter"})
 STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT,
-                         RPC_ORB_PICKUP})
-STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH})
+                         RPC_ORB_PICKUP, RPC_HEAL})
+STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH, *CHARGE_GROUP_PATHS})
 PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
 # Substrings that every kept row's line contains; a line with none of them can't be kept, so it
 # is never parsed. The exact test (`keep_event`) runs on the parsed rows.
 # Revision 15: every damage notify by its function name too (player_state reads them all, not only those that
 # carry `DamageKilledTarget`); armor items and BombState already pass as `actor_spawned` and BombGameState.
+# Revision 21: heals, charge components, and the inventory and slot rows that prove whose charges they are.
 _NEEDLES = tuple(f'"{name}"' for name in (*STREAM_EVENT_TYPES, *STREAM_PAYLOAD_KEYS, *STREAM_RPCS, *sorted(RPC_DAMAGE))) + (
-    "BombPlayerState", "BombGameState", "Maps", '"DamageKilledTarget"')
+    "BombPlayerState", "BombGameState", "Maps", '"DamageKilledTarget"', "ChargeComponent", "AbilityResourceComponent",
+    "ShooterGame.AresInventory", "ShooterGame.ItemSlot")
 
 
 def keep_event(data: dict) -> bool:
@@ -307,6 +321,13 @@ def keep_event(data: dict) -> bool:
     if kind == "export_group_received":
         payload = data.get("payload")
         if data.get("export_group_path") in STREAM_GROUP_PATHS:
+            return True
+        # Revision 21: an inventory's ability slots and a slot's contents (about 12k rows a match, most of the
+        # inventory's being `NewCurrentEquippable` alone, which are skipped).
+        if data.get("export_group_path") == INVENTORY_PATH and isinstance(payload, dict) \
+                and any(key in payload for key in ABILITY_SLOT_KEYS):
+            return True
+        if data.get("export_group_path") == ITEM_SLOT_PATH and isinstance(payload, dict) and "Contents" in payload:
             return True
         if isinstance(payload, dict) and STREAM_PAYLOAD_KEYS.intersection(payload):
             return True

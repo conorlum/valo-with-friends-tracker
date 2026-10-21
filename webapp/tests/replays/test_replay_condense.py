@@ -2,6 +2,7 @@
 
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -777,6 +778,99 @@ def test_without_extras_the_spike_has_no_planter(tmp_path):
     # The death-drop (D5) needs only the kills; the planter and the plant's place need the extras' Bomb row.
     assert [e.get("slot") for e in state["spike"]] == [None, 7, None, None, None, None]
     assert [("u" in e) for e in state["spike"]] == [False, False, True, False, False, False]
+
+
+def _spawn(t_ms, guid, archetype):
+    return {"type": "actor_spawned", "time_ms": t_ms, "actor_net_guid": guid, "channel": 95, "archetype_path": archetype,
+            "location": {"x": 0.0, "y": 0.0, "z": 0.0}, "rotation": {"pitch": 0, "yaw": 0, "roll": 0}}
+
+
+def test_damage_names_its_cause_and_heals_are_runs_that_raise_hp(tmp_path):
+    """Revision 21. Swiftplay pawns are 1000 + slot; slot 5 (Reyna) is the one player_state_events hits at 5.0 s
+    (HP 55) and kills at 10.0 s, which names its HP section (1075)."""
+    from replay_synthetic import damage_notify, heal_notify, player_state_events
+
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    sections = [(1067, 80.0, -20.0, 1)]
+    match.extra_events += player_state_events(match) + [
+        # a molly patch (an ability object the extras draw) burning slot 6 three times, then a gun hit by slot 0
+        # whose only ability evidence is Jett's knives equippable, then a plain gun hit
+        _spawn(start + 11_500, 7100, "Default__Patch_Phoenix_MolotovFire_C"),
+        {"type": "actor_closed", "time_ms": start + 18_000, "actor_net_guid": 7100, "channel": 95, "reason": "destroyed"},
+        *[damage_notify(start + t, 1006, 1007, 5.0, sections, index=10 + i, point=False, causer=7100)
+          for i, t in enumerate((12_000, 12_200, 12_400))],
+        _spawn(start - 20_000, 7300, "Default__Ability_Wushu_X_Dagger_Production_C"),
+        damage_notify(start + 14_000, 1006, 1000, 50.0, sections, index=20, causer=7200, equippable=7300),
+        damage_notify(start + 14_100, 1006, 1000, 30.0, sections, index=21, causer=7200, equippable=7400),
+        # Reyna's Devour (its equippable is the causer): two HP ticks, then the overheal section
+        _spawn(start - 20_000, 7500, "Default__Ability_Vampire_Q_Heal_C"),
+        heal_notify(start + 6_000, 1005, 1005, 7500, [(1075, 2.0, 57.0)]),
+        heal_notify(start + 6_200, 1005, 1005, 7500, [(1075, 2.0, 59.0)]),
+        heal_notify(start + 6_400, 1005, 1005, 7500, [(1999, 0.5, 0.5)]),
+    ]
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    out = run(tmp_path, match, vrf_path=vrf)
+    blob = fmt.decode_blob(out.encoded_rounds()[1])
+    damage = sorted((u for u in blob["util"] if u["k"] == "damage" and u["target"] == 6), key=lambda u: u["t"])
+    assert damage == [
+        {"k": "damage", "t": 12.0, "t1": 12.4, "by": 7, "target": 6, "src": "ability", "wall": False, "n": 3,
+         "code": "Phoenix", "name": "MolotovFire", "from": "causer", "id": 7100},
+        {"k": "damage", "t": 14.0, "t1": 14.0, "by": 0, "target": 6, "src": "gun", "wall": False, "n": 1,
+         "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"},
+        {"k": "damage", "t": 14.1, "t1": 14.1, "by": 0, "target": 6, "src": "gun", "wall": False, "n": 1}]
+    [patch] = [u for u in blob["util"] if u["k"] == "ability" and u["id"] == 7100]
+    assert (patch["code"], patch["name"]) == ("Phoenix", "MolotovFire"), "the damage row's id names this row"
+    heals = sorted((u for u in blob["util"] if u["k"] == "heal"), key=lambda u: u["t"])
+    assert heals == [
+        {"k": "heal", "t": 6.0, "t1": 6.2, "by": 5, "target": 5, "pool": "hp", "amount": 4.0, "n": 2,
+         "code": "Vampire", "name": "Q_Heal", "from": "causer", "hp_after": 59.0},
+        {"k": "heal", "t": 6.4, "t1": 6.4, "by": 5, "target": 5, "pool": "other", "amount": 0.5, "n": 1,
+         "code": "Vampire", "name": "Q_Heal", "from": "causer"}]
+    assert [(e["t"], e["hp"]) for e in blob["player_state"]["vitals"]["5"]] == [(5.0, 55.0), (6.0, 57.0), (6.2, 59.0),
+                                                                                (10.0, 0.0)]
+    assert out.report["cause_joins"] == {"damage_joined": 1}
+    assert out.report["heals"]["heal_runs"] == 2
+
+
+def test_a_cause_whose_object_isnt_drawn_keeps_its_name_but_no_id(tmp_path):
+    from replay_synthetic import damage_notify
+
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    # an ability object whose code is no agent's: the extras count it and draw no row (`skipped_not_agent`)
+    match.extra_events += [_spawn(start + 11_000, 7600, "Default__Patch_Nobody_X_Fire_C"),
+                           damage_notify(start + 12_000, 1006, 1007, 5.0, [(1067, 80.0, -20.0, 1)], index=1,
+                                         point=False, causer=7600)]
+    out = run(tmp_path, match, vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    [row] = [u for u in out.rounds[1]["util"] if u["k"] == "damage" and u["target"] == 6]
+    assert (row["code"], row["name"], row["from"]) == ("Nobody", "X_Fire", "causer") and "id" not in row
+    assert out.report["cause_joins"] == {"damage_not_drawn": 1}
+
+
+def test_a_cause_joins_only_the_row_of_the_same_actor():
+    util = [{"k": "ability", "t": 1.0, "by": 2, "id": 50, "code": "Phoenix", "name": "MolotovFire"},
+            {"k": "damage", "t": 2.0, "by": 2, "target": 7, "id": 50, "code": "Phoenix", "name": "MolotovFire"},
+            {"k": "damage", "t": 9.0, "by": 3, "target": 7, "id": 50, "code": "Breach", "name": "4_FusionBlast"},
+            {"k": "heal", "t": 3.0, "by": 2, "target": 2, "id": 51, "code": "Phoenix", "name": "Q_FlameWallManager"}]
+    counts = Counter()
+    cd.join_causes(util, counts)
+    assert [u.get("id") for u in util] == [50, 50, None, None], "a reused guid naming another actor doesn't join"
+    assert counts == {"damage_joined": 1, "damage_not_drawn": 1, "heal_not_drawn": 1}
+
+
+def test_mikss_thumper_objects_are_named_as_miks(tmp_path):
+    from replay_synthetic import heal_notify
+
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    match.extra_events += [_spawn(start + 11_000, 7600, "Default__GameObject_Thumper_Heal_C"),
+                           heal_notify(start + 12_000, 1006, 1007, 7600, [(1067, 1.0, 81.0)])]
+    out = run(tmp_path, match, vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    [row] = [u for u in out.rounds[1]["util"] if u["k"] == "heal"]
+    # extras.CODE_ALIASES: `Thumper` objects are Miks's (`Iris`); the HP section of slot 6 is unproven (never killed)
+    assert row == {"k": "heal", "t": 12.0, "t1": 12.0, "by": 7, "target": 6, "pool": "unknown", "amount": 1.0, "n": 1,
+                   "code": "Iris", "name": "Heal", "from": "causer", "id": 7600}
 
 
 def test_an_export_with_no_player_state_sources_keeps_the_old_blob_shape(tmp_path):

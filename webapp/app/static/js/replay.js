@@ -900,7 +900,7 @@
   var PLAYER_STATE = {
     version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
     t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000,
-    ult_max: 20, max_orbs: 16, orb_ends: ["taken", "plant", "round"]
+    ult_max: 20, max_orbs: 16, orb_ends: ["taken", "plant", "round"], charge_keys: ["C", "Q", "E", "X"], charge_max: 9
   };
   var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
 
@@ -982,6 +982,13 @@
     return t !== null && psInt(e.n, 0, PLAYER_STATE.ult_max) ? { t: t, n: e.n } : null;
   }
 
+  // An ability's charges at t (revision 21): {t, n}.
+  function psChargePoint(e) {
+    if (!condIsRow(e)) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    return t !== null && psInt(e.n, 0, PLAYER_STATE.charge_max) ? { t: t, n: e.n } : null;
+  }
+
   function psOrb(e) {
     if (!condIsRow(e) || PLAYER_STATE.orb_ends.indexOf(e.end) < 0) return null;
     if (!psInt(e.u, 0, PLAYER_STATE.uv_max) || !psInt(e.v, 0, PLAYER_STATE.uv_max)) return null;
@@ -1013,7 +1020,7 @@
     if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
     if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
         (psHas(obj, "spike") && !Array.isArray(obj.spike)) || (psHas(obj, "ult") && !condIsRow(obj.ult)) ||
-        (psHas(obj, "orbs") && !Array.isArray(obj.orbs))) return null;
+        (psHas(obj, "orbs") && !Array.isArray(obj.orbs)) || (psHas(obj, "charges") && !condIsRow(obj.charges))) return null;
     var out = { version: PLAYER_STATE.version };
     if (psHas(obj, "vitals")) {
       out.vitals = {};
@@ -1051,6 +1058,21 @@
     }
     if (psHas(obj, "orbs") && obj.orbs.length <= PLAYER_STATE.max_orbs) {
       out.orbs = obj.orbs.map(psOrb).filter(function (e) { return e !== null; }).sort(function (a, b) { return a.t0 - b.t0; });
+    }
+    if (psHas(obj, "charges")) {
+      out.charges = {};
+      Object.keys(obj.charges).forEach(function (slot) {
+        var keys = obj.charges[slot];
+        if (!psSlotKey(slot) || !condIsRow(keys)) return;
+        var lines = {};
+        Object.keys(keys).forEach(function (key) {
+          var line = keys[key];
+          if (PLAYER_STATE.charge_keys.indexOf(key) < 0 || !Array.isArray(line) || line.length > PLAYER_STATE.max_events) return;
+          lines[key] = line.map(psChargePoint).filter(function (e) { return e !== null; })
+            .sort(function (a, b) { return a.t - b.t; });
+        });
+        out.charges[slot] = lines;
+      });
     }
     return out;
   }

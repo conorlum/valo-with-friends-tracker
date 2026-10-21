@@ -88,7 +88,9 @@ def test_the_revisions_of_this_release():
     from app.gaps import detect
     from app.replays import format as fmt
 
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (20, 19)
+    # Condense 21 adds damage causes and heals; control reads damage runs by `src`, which is unchanged (a run with two
+    # causes is now two runs), and its rows are fingerprinted on the recipe, so they recompute without a control bump.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (21, 19)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 4, "mixed ground gap consumers"
 
 

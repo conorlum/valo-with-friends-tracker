@@ -108,18 +108,39 @@ def life_change_events(sections: list[tuple[int, float, float, int | None]]) -> 
 
 
 def damage_notify(t_ms: int, victim_pawn: int, by_pawn: int, taken: float, sections, *, index: int, respawn: int = 0,
-                  lethal: bool = False, point: bool = True, killed_key: bool = True) -> dict:
+                  lethal: bool = False, point: bool = True, killed_key: bool = True, causer: int | None = None,
+                  equippable: int | None = None) -> dict:
     """A real-shaped damage notify on a player's pawn (the fields the condenser reads; the rest of the real
-    payload is omitted). `killed_key=False` leaves `DamageKilledTarget` out of the row."""
+    payload is omitted). `killed_key=False` leaves `DamageKilledTarget` out of the row. `causer` and `equippable`
+    (revision 21) are `DamageCauser` and `EquippableUsed.NetGuid`."""
     payload = {"AliveAfterDamage": not lethal, "Character": victim_pawn, "DamageTaken": taken, "DamageDealt": taken,
                "EventInstigatorPawn": by_pawn, "LifeChangeEventIndex": index, "VictimRespawnNumber": respawn,
                "LifeChangeEvents": life_change_events(sections), "DamageType": 4263}
     if killed_key:
         payload["DamageKilledTarget"] = lethal
+    if causer is not None:
+        payload["DamageCauser"] = causer
+    if equippable is not None:
+        payload["EquippableUsed"] = {"Category": "unknown", "ClassPath": None, "Name": None, "NetGuid": equippable}
     name = "MulticastNotifyDamage_Point" if point else "MulticastNotifyDamage_Base"
     return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 30, "actor_net_guid": victim_pawn,
             "object_net_guid": victim_pawn + 52, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
             "function_name": name, "payload": payload}
+
+
+def heal_notify(t_ms: int, pawn: int, by_pawn: int | None, causer: int | None, sections) -> dict:
+    """A real-shaped `MulticastNotifyHeal` on `pawn` (revision 21; the shape of 0b137bdb's rows): `sections` is
+    [(component guid, delta, result)], and `Amount` their sum. KAY/O's ult revive names no instigator or causer."""
+    payload = {"Amount": sum(d for _, d, _ in sections),
+               "LifeChanges": [{"AliveAfterChange": True, "ChangedComponent": g, "DeltaLife": d, "LifeResult": res}
+                               for g, d, res in sections]}
+    if by_pawn is not None:
+        payload.update(EventInstigator=180, EventInstigatorPawn=by_pawn)
+    if causer is not None:
+        payload["Causer"] = causer
+    return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 32, "actor_net_guid": pawn,
+            "object_net_guid": pawn + 52, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
+            "function_name": "MulticastNotifyHeal", "payload": payload}
 
 
 def bomb_state(t_ms: int, state: int) -> dict:

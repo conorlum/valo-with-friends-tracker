@@ -111,6 +111,12 @@ the repo for comparison.
 
 - **Spike carrier and drop position** need a parser session: decode `ItemSlot.Contents` and the spike's
   `ReplicatedMovement`, rebuild, re-export one replay and check it.
-- **Heals** have no records, so the bar follows a heal only at the next hit.
+- ~~**Heals** have no records, so the bar follows a heal only at the next hit.~~ Wrong (decision D4), corrected
+  2026-10-21 by CONDENSE 21: heals exist, just not in AresAttributeSet properties. They are `MulticastNotifyHeal`
+  RPCs on the healed pawn's DamageableComponent (`Amount`, `Causer`, `EventInstigatorPawn`, `LifeChanges` with
+  `LifeResult` per section; 8,354 rows over four 13.08 exports, the changes summing to `Amount` on every one). A heal
+  of the HP section is now a `vitals` event, so HP rises after a heal. Still not followed: Reyna's Devour overheal
+  and Clove's Pick-Me-Up (a section of their own) and the Regen Shield's refill (no heal row; its item's
+  `CurrentRegenPool` drains instead).
 - **Molly figures** are provisional (burn times for all five, the 4.5 m radius). An in-game test settles each.
 - **Only Hot Hands** appears in the sample. The other four mollies have fixtures only.

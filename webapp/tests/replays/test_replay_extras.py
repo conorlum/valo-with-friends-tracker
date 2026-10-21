@@ -743,7 +743,8 @@ from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
              "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
-             "status", "from", "z", "end_z", "off", "full"}
+             "status", "from", "z", "end_z", "off", "full",
+             "id"}   # revision 21: an ability row's actor guid, which damage and heal causes name
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -777,6 +778,7 @@ def test_condense_stores_ability_objects_in_util_deterministically(tmp_path):
     stored = [u for u in first.rounds[1]["util"] if u["k"] == "ability"]
     assert len(stored) == 1 and stored[0]["t"] == 5.0 and stored[0]["t1"] == 20.0
     assert stored[0]["agent"] == "Omen" and stored[0]["by"] == 6 and stored[0]["owner_by"] == "agent"
+    assert stored[0]["id"] == 9_001, "the actor's guid: what a damage or heal cause joins on"
     assert first.report["extras"]["abilities"] == 1
     assert first.report["sizes"]["total_bytes"] == sum(len(b) for b in first.encoded_rounds().values())
     for blob in first.rounds.values():

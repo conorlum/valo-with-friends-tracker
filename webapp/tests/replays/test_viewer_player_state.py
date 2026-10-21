@@ -435,7 +435,8 @@ def test_the_js_contract_constants_are_player_state_py_s():
     assert got == {"version": ps_py.VERSION, "spike_states": list(ps_py.SPIKE_STATES), "t_min": ps_py.T_MIN,
                    "t_max": ps_py.T_MAX, "value_max": ps_py.VALUE_MAX, "life_max": ps_py.LIFE_MAX,
                    "max_events": ps_py.MAX_EVENTS, "max_spike": ps_py.MAX_SPIKE, "uv_max": ps_py.UV_MAX,
-                   "ult_max": ps_py.ULT_MAX, "max_orbs": ps_py.MAX_ORBS, "orb_ends": sorted(ps_py.ORB_ENDS, key=["taken", "plant", "round"].index)}
+                   "ult_max": ps_py.ULT_MAX, "max_orbs": ps_py.MAX_ORBS, "orb_ends": sorted(ps_py.ORB_ENDS, key=["taken", "plant", "round"].index),
+                   "charge_keys": list(ps_py.CHARGE_KEYS), "charge_max": ps_py.CHARGE_MAX}
 
 
 @needs_node
