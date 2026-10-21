@@ -58,8 +58,9 @@ def test_a_segments_heights_must_cover_every_sample():
 
 
 def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
-    assert fmt.CONDENSE_REVISION == 20 and fmt.FORMAT_VERSION == 1
-    assert ".c20.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # Revision 21 (damage causes, heals, charges) is a new recipe too: replay_reparse_auto re-parses every upload.
+    assert fmt.CONDENSE_REVISION == 21 and fmt.FORMAT_VERSION == 1
+    assert ".c21.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def _blob(**extra):

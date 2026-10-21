@@ -11,7 +11,9 @@ A round blob is `gzip(json)` of:
      "util": [{"k": "flash", "t": 12.4, "by": 3, "u": 5120, "v": 4410, "ability": "...", "targets": [6, 8]},
               {"k": "ability", "t": 3.1, "by": 3, "t1": 21.0, "kind": "Zone", "code": "Wraith", ...},
               {"k": "shot", "t": 40.2, "by": 5, "u": 4100, "v": 3300, "u1": 4390, "v1": 3310, ...},
-              {"k": "damage", "t": 40.1, "t1": 40.3, "by": 5, "target": 1, "src": "gun", "wall": false, "n": 3}]}
+              {"k": "damage", "t": 40.1, "t1": 40.3, "by": 5, "target": 1, "src": "gun", "wall": false, "n": 3},
+              {"k": "heal", "t": 52.0, "t1": 53.6, "by": 3, "target": 1, "pool": "hp", "amount": 33.0, "n": 11,
+               "code": "Thorne", "name": "Q_Heal_Production_New", "from": "causer", "hp_after": 96.2}]}
 
 A `flash`/`nearsight` row's `hits` is `[[target slot, hit t, duration s | null], ...]` (revision 10).
 
@@ -56,12 +58,33 @@ mean it hit nobody. A row without `activation` (stored before this) proves nothi
 whatever its duration, zero included. KAY/O's landed knife (`Grenadier_E_SuppressionPulse`, an `ability` row)
 has the same `activation` and, when it pulsed, `"pulse": {"t", "hits": [slots], ["r": radius in uv units]}`.
 
+Causes and heals (revision 21; app/replays/causes.py). A `damage` row whose hits an ability did also carries
+`"code"` and `"name"` (the ability, named like an `ability` row's), `"from"`: "causer" (the notify's `DamageCauser`)
+or "equippable" (only its `EquippableUsed`: Jett's ult knives), and `"id"` when the causer is an ability object that
+the round draws: the `ability` row with that `"id"` (every `ability` row now has its actor's guid as `"id"`). A gun
+hit has none of these. `src` is unchanged ("gun" for a `_Point` notify, "ability" for `_Base`), so a few "gun" rows
+are abilities (Tejo's grenades, a trapwire, Jett's knives): their `code` says so. Hits with different causes are
+different runs. A heal is its own kind, grouped like damage (HEAL_MERGE_MS):
+
+    {"k": "heal", "t", "t1", "by": <healer | null>, "target", "pool", "amount", "n", ["code", "name", "from", "id"],
+     ["hp_after"]}
+
+`by` is the healer (the target itself for a self-heal; null when no pawn instigated it, KAY/O's ult revive), `amount`
+the run's total, `pool` the section healed: "hp", "armor", "other" (a section that is neither: Reyna's Devour
+overheal, Clove's Pick-Me-Up) or "unknown" (the target's HP section isn't proven), and `hp_after` the target's HP
+after the run (pool "hp" only). The cause fields are as on damage; a heal's causer is often the ability's equippable
+(Sage's orb, Hot Hands, Devour), which has no `id`; Miks's heal object (`GameObject_Thumper_Heal`) is named `Iris`,
+as the extras name it (extras.CODE_ALIASES). The Regen Shield's refill sends no heal at all.
+
 Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a
-top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike"}`, defined and validated by
+top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike", "ult", "orbs", "charges"}`, defined and
+validated by
 app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized copy, and drop the key when it is an
 unsupported version or malformed, so the subsection is unavailable and the rest of the round plays as stored.
 Revision 15 fills it (app/replays/player_state_extract.py) when the export has damage notifies or BombState: a
 part is present when its source is, so an empty part means none this round and a missing key never decoded.
+Revision 21 adds a `vitals` event after each heal of the HP or armor section (HP rises), and `charges`: each player's
+ability charges over time per key (C, Q, E, X), only for the components whose owner and slot the export proves.
 
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
@@ -78,7 +101,9 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 20   # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's
+CONDENSE_REVISION = 21   # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
+                         #     heals in `vitals`, `player_state` charges (2026-10-21);
+                         # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's
                          #     slow from track crossings, Reckoning's re-touches, none on the dead (2026-10-19);
                          # 19: `player_state` ult points (`ult`) and ult orbs (`orbs`) (2026-10-18);
                          # 18: combined player-state and map-message/state-witness inputs;

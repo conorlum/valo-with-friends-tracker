@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from replay_synthetic import bomb_state, damage_notify, life_change_events  # noqa: E402
+from replay_synthetic import bomb_state, damage_notify, heal_notify, life_change_events  # noqa: E402
 
 from app.replays import player_state as ps  # noqa: E402
 from app.replays import player_state_extract as pse  # noqa: E402
@@ -537,3 +537,167 @@ def test_the_validator_drops_bad_ult_points_and_orbs():
                                     {"u": 1, "v": 2, "t0": 1.0, "t1": 2.0, "end": "taken", "slot": 12}]})
     assert checked["ult"] == {"0": [{"t": 1.0, "n": 3}]}
     assert checked["orbs"] == [{"u": 1, "v": 2, "t0": 1.0, "t1": None, "end": "round", "tries": [[3.0, 3.5, 4]]}]
+
+
+# ---------------------------------------------------------------- heals (revision 21; corrects D4)
+
+SAGE_ORB = 702             # Sage's heal-orb equippable (the heal's `Causer`)
+
+
+def armored_hit():
+    """Slot 0 at 27.363 s: HP 91.334, Light shield 7.666 (as in the first extraction test)."""
+    return [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(127_363, 1000, 1005, 26.0, [(ZERO0, 0.0, 0.0, 1), (ARMOR0 + 2, 7.666, -17.334, 1),
+                                                      (HP0, 91.334, -8.666, 1)], index=53)]
+
+
+def test_a_heal_on_hp_raises_it_and_keeps_the_lifes_last_shield():
+    rows = [*armored_hit(), heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)]),
+            heal_notify(130_150, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 97.334)])]
+    got, inputs = extract(rows)
+    assert got["vitals"]["0"] == [
+        {"t": 27.363, "life": 0, "hp": 91.334, "sh": 7.666, "mhp": 100.0, "msh": 25.0},
+        {"t": 30.0, "life": 0, "hp": 94.334, "sh": 7.666, "mhp": 100.0, "msh": 25.0},
+        {"t": 30.15, "life": 0, "hp": 97.334, "sh": 7.666, "mhp": 100.0, "msh": 25.0}]
+    assert got["damage_taken"] == {"0": [27.363]}, "a heal is not damage"
+    assert ps.validate(got) == got
+    assert inputs.diagnostics["vitals: snapshot after a heal"] == 2
+    assert [(h.slot, h.by, h.causer, inputs.heal_pool(h)) for h in inputs.heals] == [(0, 3, SAGE_ORB, "hp")] * 2
+
+
+def test_a_hit_after_a_heal_is_its_own_snapshot():
+    rows = [*armored_hit(), heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)]),
+            damage_notify(131_000, 1000, 1005, 10.0, [(ARMOR0 + 2, 0.0, -7.666, 1), (HP0, 92.0, -2.334, 1)], index=54)]
+    got, _ = extract(rows)
+    assert [(e["t"], e["hp"], e["sh"]) for e in got["vitals"]["0"]] == [(27.363, 91.334, 7.666), (30.0, 94.334, 7.666),
+                                                                         (31.0, 92.0, 0.0)]
+
+
+@pytest.mark.parametrize("unread", ["undecodable", "no HP section"])
+def test_a_hit_that_left_no_snapshot_makes_a_later_heals_shield_unknown(unread):
+    # the hit at 29 s took shield too, so carrying 27.363 s's 7.666 into the heal would be a guess
+    hit = damage_notify(129_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 2.666, -5.0, 1)], index=54)
+    if unread == "undecodable":
+        hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    got, _ = extract([*armored_hit(), hit, heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
+    assert got["vitals"]["0"][-1] == {"t": 30.0, "life": 0, "hp": 94.334, "sh": None, "mhp": 100.0, "msh": None}
+
+
+def test_a_heal_with_no_earlier_snapshot_in_its_life_has_an_unproven_shield():
+    rows = [*lethal_hits(), heal_notify(130_000, 1001, 1003, SAGE_ORB, [(HP1, 3.0, 63.0)])]
+    got, inputs = extract(rows)
+    assert got["vitals"]["1"] == [{"t": 30.0, "life": 0, "hp": 63.0, "sh": None, "mhp": 100.0, "msh": None}]
+    assert ps.health_pct(got["vitals"]["1"][0]) is None, "the bar is unavailable, never a guessed shield"
+    assert inputs.diagnostics["vitals: heal with no earlier snapshot in its life (shield unknown)"] == 1
+
+
+def test_an_overheal_section_makes_a_heal_but_no_snapshot():
+    # Reyna's Devour past 100 and Clove's Pick-Me-Up heal a section that is neither HP nor armor
+    rows = [*armored_hit(), heal_notify(130_000, 1000, 1000, 960, [(9_999, 0.13, 0.13)])]
+    got, inputs = extract(rows)
+    assert [e["t"] for e in got["vitals"]["0"]] == [27.363]
+    assert inputs.heal_pool(inputs.heals[0]) == "other"
+    assert inputs.diagnostics["vitals: heal of a section that is other (no snapshot)"] == 1
+
+
+def test_a_heal_on_an_unproven_hp_section_is_unknown_and_makes_no_snapshot():
+    rows = [heal_notify(130_000, 1002, 1003, SAGE_ORB, [(270, 3.0, 63.0)])]       # slot 2 never dies
+    got, inputs = extract([*rows, damage_notify(129_000, 1002, 1005, 40.0, [(270, 60.0, -40.0, 1)], index=1)])
+    assert got["vitals"] == {}
+    assert inputs.heal_pool(inputs.heals[0]) == "unknown"
+
+
+def test_a_heal_whose_changes_dont_sum_to_its_amount_or_isnt_on_a_player_is_dropped():
+    bad = heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])
+    bad["payload"]["Amount"] = 5.0
+    wall = heal_notify(130_000, 7_777, None, None, [(7_800, 500.0, 500.0)])     # a wall segment healing in
+    _, inputs = extract([*armored_hit(), bad, wall])
+    assert inputs.heals == []
+    assert inputs.diagnostics["heals: changes don't sum to Amount (dropped)"] == 1
+    assert inputs.diagnostics["heals: not on a player's pawn"] == 1
+
+
+def test_a_heal_nobody_instigated_is_kept_with_no_healer():
+    _, inputs = extract([*lethal_hits(), heal_notify(130_000, 1001, None, None, [(HP1, 87.6, 87.6)])])   # KAY/O's ult
+    assert [(h.slot, h.by, h.causer) for h in inputs.heals] == [(1, None, 0)]
+
+
+# ---------------------------------------------------------------- ability charges (revision 21)
+
+def inventory(t_ms, pawn, **slots):
+    """A player's AresInventory naming its slot objects (`GrenadeAbilitySlot`, ...)."""
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": pawn, "object_net_guid": pawn + 6,
+            "outer_net_guid": pawn, "export_group_path": "/Script/ShooterGame.AresInventory",
+            "payload": {"Character": pawn, **slots}}
+
+
+def item_slot(t_ms, pawn, obj, contents):
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": pawn, "object_net_guid": obj,
+            "outer_net_guid": pawn + 6, "export_group_path": "/Script/ShooterGame.ItemSlot",
+            "payload": {"Contents": contents}}
+
+
+def charge(t_ms, component, equippable, n=None, signature=False, **more):
+    path = "SignatureAbilityResourceComponent" if signature else "EquipmentChargeComponent"
+    payload = {**({} if n is None else {"AuthResourceAmount": n}), **more}
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": equippable, "object_net_guid": component,
+            "outer_net_guid": equippable, "export_group_path": f"/Script/ShooterGame.{path}", "payload": payload}
+
+
+def sage_kit(pawn=1003):
+    """Slot 3's inventory: grenade slot 30 holds equippable 31 (charge component 32), Ability2 slot 40 holds the heal
+    orb 41 (component 42, a signature's)."""
+    return [inventory(70, pawn, GrenadeAbilitySlot=30, Ability1Slot=35, Ability2Slot=40, UltimateSlot=45),
+            item_slot(70, pawn, 30, 31), item_slot(70, pawn, 40, 41)]
+
+
+def test_charges_follow_the_proven_owner_and_slot():
+    rows = [*sage_kit(), charge(70, 32, 31, TotalChargesAllowedToPurchaseThisRound=1), charge(70, 42, 41, 1, True),
+            charge(85_000, 32, 31, 1, ChargesBoughtThisRound=1),
+            charge(120_000, 42, 41, 0), charge(120_000, 42, 41, 0), charge(150_000, 32, 31, 0),
+            charge(265_000, 42, 41, 1)]
+    inputs = pse.read_player_state(export(rows), table())
+    first = pse.round_player_state(inputs, *WINDOWS_2[0][::2], None, lives_whole_round)
+    second = pse.round_player_state(inputs, WINDOWS_2[1][0], WINDOWS_2[1][2], WINDOWS_2[0][2], lives_whole_round)
+    assert first["charges"] == {"3": {"C": [{"t": -15.0, "n": 1}, {"t": 50.0, "n": 0}],
+                                      "E": [{"t": -99.93, "n": 1}, {"t": 20.0, "n": 0}]}}
+    # round 2 starts from what each slot held at round 1's end, then each change
+    assert second["charges"] == {"3": {"C": [{"t": -60.0, "n": 0}], "E": [{"t": -60.0, "n": 0}, {"t": 5.0, "n": 1}]}}
+    assert ps.validate(first) == first
+    assert inputs.diagnostics["charges: component proven"] == 2
+
+
+def test_a_component_whose_owner_isnt_proven_is_left_out():
+    rows = [*sage_kit(),
+            item_slot(70, 1004, 50, 31), inventory(70, 1004, GrenadeAbilitySlot=50),    # 31 is in two players' slots
+            item_slot(70, 1003, 46, 61),                                                # 46 is no ability slot
+            item_slot(70, 1003, 40, 71), inventory(70, 1005, Ability1Slot=40),          # 40 named by two inventories
+            inventory(70, 1100, GrenadeAbilitySlot=80), item_slot(70, 1100, 80, 81),    # 1100 is no player's pawn
+            charge(90_000, 32, 31, 1), charge(90_000, 62, 61, 1), charge(90_000, 72, 71, 1), charge(90_000, 82, 81, 1),
+            charge(90_000, 92, 91, 1),                                                  # 91 is in no slot at all
+            charge(90_000, 42, 41, 1)]
+    inputs = pse.read_player_state(export(rows), table())
+    assert inputs.charges == {}
+    assert inputs.diagnostics["charges: component not proven (left out)"] == 6
+    state = pse.round_player_state(inputs, START, END, None, lives_whole_round)
+    assert state is None, "no source at all: no player_state"
+
+
+def test_a_slot_whose_components_overlap_in_time_is_left_out():
+    # halftime gives each ability a new equippable; one that still changes after the next one began isn't proven current
+    rows = [*sage_kit(), item_slot(70, 1003, 40, 141), item_slot(70, 1003, 30, 131),
+            charge(90_000, 42, 41, 1), charge(95_000, 142, 141, 2), charge(99_000, 42, 41, 0),
+            charge(90_000, 32, 31, 1), charge(99_000, 32, 31, 0), charge(150_000, 132, 131, 2)]
+    inputs = pse.read_player_state(export(rows), table())
+    assert inputs.diagnostics["charges: a slot's components overlap (slot left out)"] == 1
+    # E's two components (41's, 141's) both change between 95 and 99 s: left out. C's follow one another: kept.
+    assert set(inputs.charges) == {(3, "C")}
+    assert inputs.charges[(3, "C")] == [(90_000, 1), (99_000, 0), (150_000, 2)]
+
+
+def test_the_validator_drops_bad_charges():
+    checked = ps.validate({"version": 1, "charges": {"0": {"C": [{"t": 1.0, "n": 2}, {"t": 2.0, "n": 10}],
+                                                           "V": [{"t": 1.0, "n": 1}], "Q": "x"},
+                                                     "x": {"C": []}, "1": []}})
+    assert checked["charges"] == {"0": {"C": [{"t": 1.0, "n": 2}]}}
+    assert ps.validate({"version": 1, "charges": []}) is None

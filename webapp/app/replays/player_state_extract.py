@@ -13,9 +13,15 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   one: its component is the armor item's actor guid + 2, and the item's archetype gives its capacity (the max
   shield). A hit with no armor section has no armor (a depleted armor keeps its section at 0, and armored players
   had one on every hit, falls included). Max HP has no field: MAX_HP is the measured pre-hit value (below).
-- **No heals.** The export has no heal, regen or overheal rows (D4): a vitals event is the state after a hit and
-  stays until the next one; a rise seen at the next hit is that hit's snapshot. Nothing is calculated from
-  outgoing damage and nothing is invented between hits.
+- **Heals (revision 21; corrects D4).** Decision D4 said the export had no heal rows. It has them, just not as
+  AresAttributeSet properties: `MulticastNotifyHeal` on the healed pawn's DamageableComponent, with `Amount`, `Causer`,
+  `EventInstigatorPawn` and `LifeChanges`, one {ChangedComponent, DeltaLife, LifeResult} per section changed (the
+  changes summed to `Amount` on 8,354 of 8,354 rows of four exports, 2026-10-21). A heal on the HP section is a vitals
+  event too: HP after it is its `LifeResult`, the shield the life's last snapshot's (null when the life has none
+  yet). Reyna's Devour overheal and Clove's Pick-Me-Up heal a section of their own that is neither HP nor armor: those
+  make no vitals event. The Regen Shield's refill is no heal row at all (its item's `CurrentRegenPool` drains
+  instead), so a shield rise is still seen only at the next hit. Nothing is calculated from outgoing damage and
+  nothing is invented between rows.
 - **Damage taken.** Every damage notify on a player's own pawn with positive `DamageTaken`: self, friendly, fall
   and spike damage included, zero dropped. One hit is one (victim pawn, `VictimRespawnNumber`,
   `LifeChangeEventIndex`); a repeat of that key is the same hit and counts once.
@@ -34,6 +40,13 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   its capturer's pawn (sent as it closes, on every capture of 14 exports), so a buy-phase capture, one at the plant
   and one by a player at full ult are named like any other. Captures started and let go are the extras pass's
   (`orb_tries`).
+- **Ability charges (revision 21).** Each ability's `AuthResourceAmount` (charges held: the free signature charge,
+  bought ones, a kill recharge) on its EquipmentChargeComponent (SignatureAbilityResourceComponent for a signature).
+  A component is a player's only when a chain proves it: its outer is an equippable, exactly one inventory slot
+  object ever holds that equippable (`ItemSlot.Contents`), and exactly one player's `AresInventory` names that object
+  as its GrenadeAbilitySlot (C), Ability1Slot (Q), Ability2Slot (E) or UltimateSlot (X). Every one of 236
+  components of four exports was proven that way, to the slot's own agent; any that isn't is left out and counted.
+  Like ult points, a change, not a timeline.
 
 Diagnostics are anonymous counts (no names, Subjects or guids) for the condense report."""
 
@@ -46,7 +59,8 @@ import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from app.replays.contract import GAME_STATE_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_ORB_PICKUP
+from app.replays.contract import (ABILITY_SLOT_KEYS, CHARGE_GROUP_PATHS, GAME_STATE_PATH, INVENTORY_PATH,
+                                  ITEM_SLOT_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_HEAL, RPC_ORB_PICKUP)
 
 # W3 EVIDENCE B: the HP section's value before a slot's first hit of a round was 100 on 202 of 202; the export
 # has no MaxLife field. Measured, not a game constant typed in.
@@ -69,6 +83,9 @@ ORB_ARCHETYPE = "Default__UltPointOrb_C"
 ORB_REACH = 200.0
 ORB_PLANT_MS = 300                # an orb closing this near the plant, with no capture, went with it
 ULT_MAX = 20                      # ult points above this are unreadable (every ult costs 6 to 9)
+# An inventory's ability slot -> its key as the game binds it by default.
+SLOT_KEYS = dict(zip(ABILITY_SLOT_KEYS, ("C", "Q", "E", "X")))
+CHARGE_MAX = 9                    # charges above this are unreadable (the most measured was 2)
 
 # LifeChangeEvents handles (the parser's export of the struct).
 H_COMPONENT, H_RESULT, H_DELTA, H_ALIVE = 11, 12, 13, 14
@@ -155,6 +172,20 @@ class _Hit:
 
 
 @dataclass
+class _Heal:
+    """One section a heal notify changed."""
+    t_ms: int
+    order: int
+    slot: int                         # the healed player
+    pawn: int
+    by: int | None                    # the healer: the instigating pawn's player, else None
+    causer: int                       # `Causer`'s guid, 0 when the row has none
+    g: int                            # the section's component
+    res: float                        # its value after the heal
+    d: float
+
+
+@dataclass
 class PlayerStateInputs:
     """What `read_player_state` found over the whole export, before it is cut into rounds."""
     hits: list[_Hit] = field(default_factory=list)
@@ -165,15 +196,30 @@ class PlayerStateInputs:
     # Each orb as it spawned: [spawn ms, x, y, close ms | None, taken, capturer's slot | None]. A guid can come back
     # for a later orb, so each spawn is its own entry and a capture goes on the one open under that guid.
     orbs: list[list] = field(default_factory=list)
+    heals: list[_Heal] = field(default_factory=list)
+    # (slot, key) -> [(ms, charges)], changes only, from the proven components of that slot.
+    charges: dict[tuple[int, str], list[tuple[int, int]]] = field(default_factory=dict)
     has_life_changes: bool = False
     has_damage: bool = False
     has_spike: bool = False
     has_ult: bool = False
+    has_charges: bool = False
     diagnostics: Counter = field(default_factory=Counter)
 
     def capacity(self, section: int, t_ms: int) -> float | None:
         spawns = [cap for at, cap in self.armor.get(section - ARMOR_SECTION_OFFSET, []) if at <= t_ms]
         return spawns[-1] if spawns else None
+
+    def heal_pool(self, heal: _Heal) -> str:
+        """The section a heal changed: "hp" (the pawn's learnt HP section), "armor" (an armor item's), "other" (a
+        section that is neither: Reyna's overheal, Clove's Pick-Me-Up), or "unknown" (the pawn's HP section is
+        unproven, so it can't be told apart)."""
+        hp = self.hp_section.get(heal.pawn)
+        if hp is not None and heal.g == hp:
+            return "hp"
+        if self.capacity(heal.g, heal.t_ms) is not None:
+            return "armor"
+        return "other" if hp is not None else "unknown"
 
 
 def _number(value) -> float | None:
@@ -183,16 +229,46 @@ def _number(value) -> float | None:
 
 
 def read_player_state(export, players) -> PlayerStateInputs:
-    """One pass over the export's events (the rows the condenser already keeps): damage notifies on players' own
-    pawns, armor items' spawns and the game state's BombState."""
+    """One pass over the export's events (the rows the condenser already keeps): damage and heal notifies on players'
+    own pawns, armor items' spawns, the game state's BombState, and ability charges with the inventory rows that
+    prove whose they are."""
     out = PlayerStateInputs()
     seen: set[tuple[int, int, int]] = set()
     lethal: dict[int, list[set[int]]] = defaultdict(list)
     bomb: list[tuple[int, int]] = []
     orb_now: dict[int, list] = {}                     # guid -> its latest orb
+    named_slots: dict[int, set[tuple[int, str]]] = defaultdict(set)   # slot object -> {(pawn, inventory key)}
+    holders: dict[int, set[int]] = defaultdict(set)                   # equippable -> the slot objects holding it
+    outers: dict[int, set[int]] = defaultdict(set)                    # charge component -> its outers
+    amounts: dict[int, list[tuple[int, int]]] = defaultdict(list)     # charge component -> [(ms, charges)]
     for row in export.events:
         data = row.data
         kind = data.get("type")
+        if kind == "export_group_received" and data.get("export_group_path") in CHARGE_GROUP_PATHS:
+            component = int(data.get("object_net_guid") or 0)
+            outers[component].add(int(data.get("outer_net_guid") or 0))
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            if "AuthResourceAmount" in payload:
+                value = payload["AuthResourceAmount"]
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= CHARGE_MAX:
+                    out.diagnostics["charges: unreadable AuthResourceAmount"] += 1
+                else:
+                    amounts[component].append((row.time_ms, value))
+            continue
+        if kind == "export_group_received" and data.get("export_group_path") == INVENTORY_PATH:
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            for key in ABILITY_SLOT_KEYS:
+                if isinstance(payload.get(key), int) and payload[key]:
+                    named_slots[payload[key]].add((int(data.get("actor_net_guid") or 0), key))
+            continue
+        if kind == "export_group_received" and data.get("export_group_path") == ITEM_SLOT_PATH:
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            if isinstance(payload.get("Contents"), int) and payload["Contents"]:
+                holders[payload["Contents"]].add(int(data.get("object_net_guid") or 0))
+            continue
+        if kind == "rpc_received" and data.get("function_name") == RPC_HEAL:
+            _read_heal(row, players, out)
+            continue
         if kind == "actor_spawned":
             archetype = str(data.get("archetype_path") or "")
             capacity = ARMOR_CAPACITY.get(archetype)
@@ -298,7 +374,68 @@ def read_player_state(export, players) -> PlayerStateInputs:
                 out.diagnostics["spike: unknown BombState value"] += 1
             state = "unknown"
         out.spike.append((t_ms, state))       # repeats collapse per round (round_player_state)
+    out.heals.sort(key=lambda h: (h.t_ms, h.order))
+    _prove_charges(out, players, named_slots, holders, outers, amounts)
     return out
+
+
+def _read_heal(row, players, out: PlayerStateInputs) -> None:
+    """A `MulticastNotifyHeal` on a player's own pawn, one `_Heal` per section it changed."""
+    data = row.data
+    payload = data.get("payload")
+    pawn = int(data.get("actor_net_guid") or 0)
+    slot = players.pawn_slot.get(pawn)
+    if slot is None or not isinstance(payload, dict):
+        out.diagnostics["heals: not on a player's pawn"] += 1      # a wall segment, a possessed pawn
+        return
+    changes = payload.get("LifeChanges")
+    sections = []
+    for change in changes if isinstance(changes, list) else []:
+        change = change if isinstance(change, dict) else {}
+        g, res, d = change.get("ChangedComponent"), _number(change.get("LifeResult")), _number(change.get("DeltaLife"))
+        if isinstance(g, bool) or not isinstance(g, int) or res is None or d is None:
+            out.diagnostics["heals: unreadable LifeChanges (dropped)"] += 1
+            return
+        sections.append((g, res, d))
+    amount = _number(payload.get("Amount"))
+    if not sections or amount is None or abs(sum(d for _, _, d in sections) - amount) > SUM_TOLERANCE:
+        out.diagnostics["heals: changes don't sum to Amount (dropped)"] += 1
+        return
+    instigator = int(payload.get("EventInstigatorPawn") or 0)
+    by = players.resolve(instigator, row.time_ms) if instigator else None
+    for g, res, d in sections:
+        out.heals.append(_Heal(row.time_ms, row.index, slot, pawn, by, int(payload.get("Causer") or 0), g, res, d))
+
+
+def _prove_charges(out: PlayerStateInputs, players, named_slots, holders, outers, amounts) -> None:
+    """Each charge component whose owner the inventory proves, as its player's slot timeline (`out.charges`). A
+    component with more than one outer, an equippable held by more than one slot object or by one no inventory
+    names as an ability slot, or a slot object named by more than one inventory or key, is left out and counted.
+    So is a slot whose proven components overlap in time (which of them is current isn't proven)."""
+    by_slot: dict[tuple[int, str], list[list[tuple[int, int]]]] = defaultdict(list)
+    for component, rows in amounts.items():
+        owner = None
+        if len(outers[component]) == 1:
+            objects = holders.get(next(iter(outers[component])), set())
+            claims = {claim for obj in objects for claim in named_slots.get(obj, set())}
+            if objects and len(claims) == 1 and all(len(named_slots.get(obj, ())) == 1 for obj in objects):
+                pawn, key = claims.pop()
+                owner = players.pawn_slot.get(pawn)
+                if owner is not None:
+                    by_slot[(owner, SLOT_KEYS[key])].append(sorted(rows, key=lambda r: r[0]))
+        proven = owner is not None
+        out.diagnostics["charges: component proven" if proven else "charges: component not proven (left out)"] += 1
+    for key, components in sorted(by_slot.items()):
+        components.sort(key=lambda rows: rows[0][0])
+        if any(later[0][0] < earlier[-1][0] for earlier, later in zip(components, components[1:])):
+            out.diagnostics["charges: a slot's components overlap (slot left out)"] += 1
+            continue
+        line: list[tuple[int, int]] = []
+        for t_ms, n in (row for rows in components for row in rows):
+            if not line or line[-1][1] != n:
+                line.append((t_ms, n))
+        out.charges[key] = line
+    out.has_charges = bool(out.charges)
 
 
 def _seconds(t_ms: int, start: int) -> float:
@@ -356,6 +493,33 @@ def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: di
             "msh": msh}
 
 
+def _healed(heal: _Heal, inputs: PlayerStateInputs, last: dict | None, life_armor: dict, life_key) -> dict | None:
+    """The snapshot after a heal, or None when it makes none. A heal on HP sets `hp` to its result and keeps the
+    life's last shield (null when the life has no snapshot yet: the heal row says nothing of armor); one on the
+    armor sets `sh` and keeps the last HP (none without an earlier snapshot). A heal of any other section (an
+    overheal, Clove's Pick-Me-Up) or of an unproven one changes no vitals."""
+    diagnostics = inputs.diagnostics
+    pool = inputs.heal_pool(heal)
+    if pool == "hp":
+        if heal.res > MAX_HP + VALUE_TOLERANCE:
+            diagnostics["vitals: HP above the measured max"] += 1
+        if last is None:
+            diagnostics["vitals: heal with no earlier snapshot in its life (shield unknown)"] += 1
+        diagnostics["vitals: snapshot after a heal"] += 1
+        return {"hp": round(max(0.0, heal.res), 3), "sh": last["sh"] if last else None, "mhp": MAX_HP,
+                "msh": last["msh"] if last else None}
+    if pool == "armor":
+        if last is None:
+            diagnostics["vitals: armor heal with no earlier snapshot (dropped)"] += 1
+            return None
+        capacity = inputs.capacity(heal.g, heal.t_ms)
+        life_armor[life_key] = (capacity, max(0.0, heal.res))
+        diagnostics["vitals: snapshot after a heal"] += 1
+        return {**last, "sh": round(max(0.0, heal.res), 3), "msh": capacity}
+    diagnostics[f"vitals: heal of a section that is {pool} (no snapshot)"] += 1
+    return None
+
+
 def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end: int | None, life_of,
                        to_uv=None) -> dict | None:
     """One round's `player_state` (format version 1), or None when the export has none of its sources.
@@ -364,24 +528,40 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
     InRound to the window's end, like the blob's other rows; spike transitions from after the previous round's
     window (the buy phase, negative times). A part is present when the export has its source at all, so an empty
     part means "none this round", and a missing one "never decoded". Orbs need `to_uv(x, y)` -> (u, v)."""
-    if not (inputs.has_damage or inputs.has_spike or inputs.has_ult or inputs.orbs):
+    if not (inputs.has_damage or inputs.has_spike or inputs.has_ult or inputs.orbs or inputs.has_charges):
         return None
     out: dict = {"version": 1}
     hits = [h for h in inputs.hits if start <= h.t_ms <= end]
     if inputs.has_life_changes:
         vitals: dict[str, list] = defaultdict(list)
         life_armor: dict = {}
-        for hit in hits:
-            hp_section = inputs.hp_section.get(hit.pawn)
-            if hit.sections is None or hp_section is None:
+        last: dict[tuple[int, int], dict] = {}        # (slot, life) -> its latest snapshot's values
+        heals = [h for h in inputs.heals if start <= h.t_ms <= end]
+        for item in sorted([*hits, *heals], key=lambda e: (e.t_ms, e.order)):      # stable: a heal's sections in order
+            hp_section = inputs.hp_section.get(item.pawn)
+            if hp_section is None:
                 continue
-            life = life_of(hit.slot, hit.t_ms)
+            if isinstance(item, _Hit) and item.sections is None:
+                # Unreadable, so no snapshot; it may still have changed the shield, so a later heal can't carry the
+                # last one's (a heal row says nothing of armor).
+                life = life_of(item.slot, item.t_ms)
+                if life is not None:
+                    last.pop((item.slot, life), None)
+                continue
+            life = life_of(item.slot, item.t_ms)
             if life is None:
-                inputs.diagnostics["vitals: hit outside a life"] += 1
+                inputs.diagnostics[f"vitals: {'hit' if isinstance(item, _Hit) else 'heal'} outside a life"] += 1
                 continue
-            values = _vital(hit, hp_section, inputs, life_armor, (hit.slot, life))
+            key = (item.slot, life)
+            if isinstance(item, _Hit):
+                values = _vital(item, hp_section, inputs, life_armor, key)
+            else:
+                values = _healed(item, inputs, last.get(key), life_armor, key)
             if values is not None:
-                vitals[str(hit.slot)].append({"t": _seconds(hit.t_ms, start), "life": life, **values})
+                last[key] = values
+                vitals[str(item.slot)].append({"t": _seconds(item.t_ms, start), "life": life, **values})
+            elif isinstance(item, _Hit):
+                last.pop(key, None)         # a hit that left no snapshot: the last one's shield is no longer known
         out["vitals"] = dict(sorted(vitals.items(), key=lambda kv: int(kv[0])))
     if inputs.has_damage:
         taken: dict[str, set] = defaultdict(set)
@@ -408,6 +588,18 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
                     line.append({"t": _seconds(t_ms, start), "n": points})
             ult[str(slot)] = line
         out["ult"] = ult
+    if inputs.has_charges:
+        lo = max(prev_end if prev_end is not None else -math.inf, start - SPIKE_LOOKBACK_MS)
+        charges: dict[str, dict[str, list]] = defaultdict(dict)
+        for (slot, key), rows in sorted(inputs.charges.items()):
+            # A change, like ult points; unlike them, nothing is assumed before the first one.
+            before = [n for t_ms, n in rows if t_ms <= lo]
+            line = [{"t": _seconds(int(lo), start), "n": before[-1]}] if before else []
+            for t_ms, n in rows:
+                if lo < t_ms <= end and (not line or line[-1]["n"] != n):
+                    line.append({"t": _seconds(t_ms, start), "n": n})
+            charges[str(slot)][key] = line
+        out["charges"] = dict(charges)
     if inputs.orbs and to_uv is not None:
         lo = max(prev_end if prev_end is not None else -math.inf, start - SPIKE_LOOKBACK_MS)
         plants = [t_ms for t_ms, state in inputs.spike if state == "planted"]

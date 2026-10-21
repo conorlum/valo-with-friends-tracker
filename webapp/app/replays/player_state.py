@@ -7,13 +7,16 @@ sections 3-4; the plan's P02 and its amendments). Stdlib only: the upload worker
       "damage_taken": {"<slot>": [t, ...]},
       "spike": [{"t", "s", ["slot"], ["u", "v"]}, ...],
       "ult": {"<slot>": [{"t", "n"}, ...]},
-      "orbs": [{"u", "v", "t0", "t1", "end", ["slot"], ["tries"]}, ...]
+      "orbs": [{"u", "v", "t0", "t1", "end", ["slot"], ["tries"]}, ...],
+      "charges": {"<slot>": {"C" | "Q" | "E" | "X": [{"t", "n"}, ...]}}
     }
 
 Every `t` is round seconds from InRound (format.py), negative in the buy phase. Slots are "0".."9" as JSON keys.
 
-`vitals`: one event per confirmed hit (the damage notify's `LifeChangeEvents`, the only source: the replay has no
-heal, regen or overheal records, decision D4), each a full snapshot of the values AFTER the hit at `t`: `hp` and
+`vitals`: one event per confirmed hit (the damage notify's `LifeChangeEvents`) and, from revision 21, per heal of the
+HP or armor section (the heal notify's `LifeChanges`: decision D4 said the replay had no heal records; it has them,
+just not as AresAttributeSet properties, player_state_extract.py), each a full snapshot of the values AFTER the hit
+or heal at `t`: `hp` and
 `sh` (shield) current, `mhp` the life's measured max HP (100 in every observed first hit), `msh` its measured max
 shield (the armor bought: Light 25, Heavy 50, Regen 25; 0 when none). `life` is the life index within the round (0,
 then 1 after a revival). All four keys are required (the plan's amendment F12: combined HP + shield). `hp` and `mhp`
@@ -36,6 +39,11 @@ look-back start), then each change. `orbs`: the round's ult orbs, `u`/`v` where 
 `t1` when they went (null: there to the round's end), and `end`: "taken" (by `slot`, the capturer the game named),
 "plant" or "round". `tries`: captures started on it and let go, [t, t1, slot] each (`t1` when let go, null if never
 seen); a bad one is dropped.
+
+`charges` (revision 21): each slot's ability charges held, `n`, per ability key: "C", "Q", "E" (the inventory's
+GrenadeAbilitySlot, Ability1Slot, Ability2Slot) and "X" (UltimateSlot; no export has had one yet), only where the
+export proves whose they are. Like `ult`, the value before the round (its `t` the look-back start) when known, then
+each change; nothing is assumed before the first one. A bad point is dropped.
 
 `validate` returns a normalized copy or None (unavailable: not a dict, an unsupported version, a part of the wrong
 shape). A bad entry is dropped; an absurd count makes that slot's list (or the spike) unavailable. Missing parts are
@@ -149,6 +157,8 @@ def _spike_order(entries: list[dict], diagnostics: dict | None = None) -> list[d
 ULT_MAX = 20
 MAX_ORBS = 16           # per round: a map has two or three spots
 ORB_ENDS = frozenset({"taken", "plant", "round"})
+CHARGE_KEYS = ("C", "Q", "E", "X")
+CHARGE_MAX = 9
 
 
 def _whole(value, lo: int, hi: int) -> int | None:
@@ -167,6 +177,15 @@ def _ult_point(entry) -> dict | None:
     if not isinstance(entry, dict):
         return None
     t, n = _num(entry.get("t"), T_MIN, T_MAX), _whole(entry.get("n"), 0, ULT_MAX)
+    if t is None or n is None:
+        return None
+    return {"t": t, "n": n}
+
+
+def _charge_point(entry) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    t, n = _num(entry.get("t"), T_MIN, T_MAX), _whole(entry.get("n"), 0, CHARGE_MAX)
     if t is None or n is None:
         return None
     return {"t": t, "n": n}
@@ -210,7 +229,8 @@ def validate(obj, diagnostics: dict | None = None) -> dict | None:
     given, counts what was dropped."""
     if not isinstance(obj, dict) or isinstance(obj.get("version"), bool) or obj.get("version") != VERSION:
         return None
-    for key, kind in (("vitals", dict), ("damage_taken", dict), ("spike", list), ("ult", dict), ("orbs", list)):
+    for key, kind in (("vitals", dict), ("damage_taken", dict), ("spike", list), ("ult", dict), ("orbs", list),
+                      ("charges", dict)):
         if key in obj and not isinstance(obj[key], kind):
             return None
     out: dict = {"version": VERSION}
@@ -277,6 +297,23 @@ def validate(obj, diagnostics: dict | None = None) -> dict | None:
             if len(kept) < len(obj["orbs"]):
                 _count(diagnostics, "orbs: bad orb")
             out["orbs"] = sorted(kept, key=lambda o: o["t0"])
+    if "charges" in obj:
+        charges = {}
+        for slot, keys in obj["charges"].items():
+            if slot not in SLOTS or not isinstance(keys, dict):
+                _count(diagnostics, "charges: bad slot")
+                continue
+            lines = {}
+            for key, line in keys.items():
+                if key not in CHARGE_KEYS or not isinstance(line, list) or len(line) > MAX_EVENTS:
+                    _count(diagnostics, "charges: bad key")
+                    continue
+                kept = [p for p in (_charge_point(e) for e in line) if p is not None]
+                if len(kept) < len(line):
+                    _count(diagnostics, "charges: bad point")
+                lines[key] = sorted(kept, key=lambda e: e["t"])
+            charges[slot] = lines
+        out["charges"] = charges
     return out
 
 

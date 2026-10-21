@@ -1730,10 +1730,11 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         counts["abilities_buy_phase"] += actor.t_ms < start
         u, v = game_map.to_uv(actor.x, actor.y)
         counts[f"owner_by_{owner_by}"] += 1
+        # `id` (revision 21): the actor's guid, which a damage or heal row's `id` names (causes.py).
         entry = {"t0": max(0.0, _seconds(actor.t_ms, start)),
                  "t1": _seconds(min(actor.closed_ms, end), start) if actor.closed_ms is not None else None,
                  "kind": actor.kind, "code": actor.code, "name": actor.name, "agent": agent,
-                 "slot": slot, "owner_by": owner_by, "u": u, "v": v}
+                 "slot": slot, "owner_by": owner_by, "u": u, "v": v, "id": actor.guid}
         if actor.z is not None:
             entry["z"] = _dm(actor.z)
         if actor.closed_ms is not None and longest.get(f"{actor.code}_{actor.name}", 0) > 0:
