@@ -36,6 +36,8 @@ STOPPED_MPS = 1.0
 PRESENCE_STEP_S = 0.5
 SPIKE_NEAR_M = 15.0
 
+HOLD_MATCH_S = 2.0          # an unknown-probe item belongs to its owner's cast of its kind that landed this close
+
 # --- heals
 HEAL_FOLLOW_S = 10.0        # a fight or damage this soon after a heal is what the heal was for
 
@@ -44,7 +46,7 @@ ENGAGE_LOOKBACK_S = 5.0     # the death's incoming damage started within this be
 
 # --- a cast's kinds, from the names its rows carry (app/moments/constants.py ABILITY_KIND covers most)
 DEVICE_PATTERNS = ("TripWire", "PossessableCamera", "E_Turret", "StealthAlarmbot", "SoundSensor", "E_Trap",
-                   "SeizeTrap", "StealthingTrap", "BarbedWire", "Q_CageTrap", "Interceptor", "Decoy", "Clone",
+                   "SeizeTrap", "StealthingTrap", "BarbedWire", "Interceptor", "Decoy", "Clone",
                    "X_InterrogateHat", "E_Drone", "Q_PossessableScout", "WolfHound", "4_Spider")
 WALL_PATTERNS = ("Q_WallManager", "E_SmokeScreenManager", "X_GlobalWall", "4_Tunnel", "Q_FlameWallManager",
                  "Shear", "Wall", "Mesh")

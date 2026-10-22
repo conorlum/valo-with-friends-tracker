@@ -14,7 +14,7 @@ import math
 
 from app.control import engine
 from app.critutil.constants import (AGENT_KEYS, DEVICE_PATTERNS, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
-                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, LIFE_CAP_S, MOBILITY_KEYS,
+                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, LIFE_CAP_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
@@ -614,19 +614,42 @@ def _ult_cost(ps, c: _Cast):
     return n
 
 
-def _hold(c: _Cast, holds: dict | None) -> dict | None:
-    """The unknown probe's items (app/critutil/unknown.py) that are this cast's: its owner's device or molly
-    starting inside its life. Summed when there are several (a trip's two anchors are one watcher already)."""
+WATCHER_OF = (("TripWire", "trip"), ("PossessableCamera", "camera"), ("E_Turret", "turret"))
+
+
+def _probe_kind(c: _Cast) -> str | None:
+    """Which unknown-probe item kind this cast is: a molly, a trip, camera or turret, or another fixed watcher
+    ("area": an alarmbot, a sensor). None for anything the engine doesn't treat as holding ground."""
+    if "device" in c.kinds:
+        for part, kind in WATCHER_OF:
+            if any(part in n for n in c.names):
+                return kind
+        return "area"
+    if "damaging" in c.kinds:
+        return "molly"
+    return None
+
+
+def _holds_by_cast(casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
+    """Each probe item (app/critutil/unknown.py) to one cast: its owner's cast of the same kind whose landing is
+    nearest its start (a buy-phase placement starts at the round's 0), within HOLD_MATCH_S. One cast, one item."""
+    out: dict[int, dict] = {}
     if not holds:
-        return None
-    want = "device" if "device" in c.kinds else "molly" if "damaging" in c.kinds else None
-    if want is None:
-        return None
-    mine = [i for i in holds.get("items") or () if i["what"] == want and i["by"] == c.by
-            and c.t - 0.5 <= i["t0"] <= c.t_end + 0.5]
-    if not mine:
-        return None
-    return {k: round(sum(i[k] for i in mine), 2) for k in ("up_s", "front_s", "held_m2s", "crossed_s")}
+        return out
+    taken = set()
+    for item in sorted(holds.get("items") or (), key=lambda i: i["t0"]):
+        best = None
+        for c in casts:
+            if c.i in taken or c.by != item["by"] or _probe_kind(c) != item["kind"]:
+                continue
+            landed = max(c.landed_t if c.landed_t is not None else c.t, 0.0)
+            gap = abs(landed - item["t0"])
+            if gap <= HOLD_MATCH_S and (best is None or gap < best[0]):
+                best = (gap, c)
+        if best is not None:
+            taken.add(best[1].i)
+            out[best[1].i] = {k: item[k] for k in ("up_s", "front_s", "held_m2s", "crossed_s")}
+    return out
 
 
 def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
@@ -648,6 +671,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
                       "v_side": sides.get(victim), "before": [before["attack"], before["defense"]]})
     defuse = next((float(a[1]) for a in (spike or {}).get("defuses") or ()
                    if isinstance(a, list) and len(a) > 3 and a[3] and a[1] is not None), None)
+    held = _holds_by_cast(casts, holds)
     out_casts = []
     for c in casts:
         eff = effects[c.i]
@@ -674,7 +698,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "cover": _cover(rnd, sides, c),
             "presence": _presence(rnd, sides, c),
             "spike": _spike_effect(rnd, sides, c, spike) if plant is not None and c.t >= plant else None,
-            "hold": _hold(c, holds),
+            "hold": held.get(c.i),
             "ult_points": _ult_cost(ps, c),
             "activation": ((c.flash or {}).get("activation") or {}).get("targets_complete"),
         })

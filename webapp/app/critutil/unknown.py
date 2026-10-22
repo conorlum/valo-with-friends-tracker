@@ -44,7 +44,7 @@ class UnknownProbe:
                 self._add("device", w.kind, w.by, w.t0, w.t1, None)
         for side, molly, nodes in getattr(rnd, "mollies", ()):
             mask = np.asarray(nodes, bool) if np.asarray(nodes).dtype == bool else _mask_of(nodes, self.n)
-            self._add("molly", "molly", molly.by, molly.t0, molly.t1, mask, side=side)
+            self._add("molly", "molly", molly.by, molly.t0, molly.t1, mask, side=side)   # kind "molly" too
         self.prev_t: float | None = None
         self.error: str | None = None
 
