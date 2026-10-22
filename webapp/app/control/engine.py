@@ -509,6 +509,8 @@ class RoundInputs:
         geo, util = self.geo, self.blob.get("util") or []
         for e in util:
             key, k = util_key(e), e.get("k")
+            if e.get("friendly"):
+                continue        # revision 22: a status on the applier's own team (Critical Util's harm), not control's
             if k == "ability":
                 end = min(x for x in (e.get("t1"), e.get("gone"), self.t_end) if x is not None)
                 self.events += [e["t"], end]
@@ -620,7 +622,7 @@ class RoundInputs:
             k = e.get("k")
             if k == "ability":
                 rows.append(e)      # the normaliser finds an older flash row's explosion in its thrower's ability row
-            elif k == "status" and e.get("status") in BLIND_STATUSES:
+            elif k == "status" and e.get("status") in BLIND_STATUSES and not e.get("friendly"):
                 # Reckoning's nearsight is a status row (app/replays/extras.py DEBUFF_ONLY); the normaliser reads
                 # its `status` as the condition, from `t` to `t1`.
                 if not (self.evolution and e.get("target") is not None

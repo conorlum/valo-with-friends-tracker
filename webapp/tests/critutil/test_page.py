@@ -87,7 +87,7 @@ const u = require({json.dumps(str(JS))});
 const payload = {{players: {{"0": {{name: "Me"}}, "5": {{name: "the enemy Jett"}}}},
   rounds: {{"3": {{casts: [{{i: 0, slot: 0, t: 61.2, ability: "Flashpoint", kind: "blind", value: 2.5,
     effects: [{{target: 5, how: "blind"}}], kills: [{{ours: true}}], followed: true, harm: []}}],
-    unused: [{{slot: 0, t: 70, kind: "held_at_death", kinds: ["blind"], keys: ["Q"]}}]}}}},
+    unused: [{{slot: 0, t: 70, kind: "held_at_death", kinds: ["blind"], abilities: ["Flashpoint"]}}]}}}},
   summary: {{}}, stale: 0, failed: []}};
 const rows = u.castsFor(payload, 0);
 console.log(JSON.stringify([u.rowText(rows[0], payload.players), u.signed(-1.5), u.unusedText(u.unusedFor(payload, 0)[0]),
@@ -96,5 +96,5 @@ console.log(JSON.stringify([u.rowText(rows[0], payload.players), u.signed(-1.5),
     out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
     assert out[0] == "R3 1:01 · Flashpoint · blinded the enemy Jett; 1 kill on affected enemies; followed up · +2.50 pp"
     assert out[1] == "−1.50"
-    assert out[2] == "R3 1:10 · died holding blind (Q) after engaging first"
+    assert out[2] == "R3 1:10 · died holding Flashpoint after engaging first"
     assert out[3] == ["blind"]

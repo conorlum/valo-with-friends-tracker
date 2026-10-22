@@ -527,6 +527,7 @@ def match_payload(db, replay) -> dict:
                         "jobs": round(100 * r["jobs"], 2), "features": r["features"],
                         "kills": c.get("kills") or [], "harm": c.get("harm") or [], "effects": c.get("effects") or [],
                         "cover": c.get("cover"), "presence": c.get("presence"), "trigger": c.get("trigger"),
+                        "hold": c.get("hold"),
                         "heal": r.get("heal")})
         rounds_out[str(n)] = {"casts": out, "unused": data.get("unused") or [], "avail": data.get("avail") or {}}
     summary = {}

@@ -1137,6 +1137,12 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             by = owner_of.get(source.guid)
             if (debuff_only and by != target) or enemies(by, target):
                 hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source.guid, target, label, "object"))
+            elif teams and by is not None and by != target and teams.get(by) is not None:
+                # Revision 22: a teammate the object put the status on (a Breach stun, a Sage slow on their own
+                # side), kept and flagged `friendly`; readers that count only enemies skip it. Only an effect
+                # naming the object: the caster-container path below stays enemies only.
+                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source.guid, target, label,
+                             "friendly"))
             continue
         casters = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
         if not casters or not enemies(casters[0], target):
@@ -1186,8 +1192,11 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     out = []
     for (code, name, by, target, label), runs in merged.items():
         for t, t1, how in runs:
-            out.append({"t_ms": t, "t1_ms": t1, "by": by, "target": target, "code": code,
-                        "name": name, "status": label, "from": how})
+            row = {"t_ms": t, "t1_ms": t1, "by": by, "target": target, "code": code,
+                   "name": name, "status": label, "from": "object" if how == "friendly" else how}
+            if how == "friendly":
+                row["friendly"] = True
+            out.append(row)
             counts[f"statuses_{how}"] += 1
     return sorted(out, key=lambda r: (r["t_ms"], r["target"]))
 
@@ -1944,7 +1953,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams, raw.forces)
     for status in statuses:
-        if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed":
+        if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed"                 and not status.get("friendly"):
             # Going off reveals the player it caught (it's also a concuss).
             n = _round_of(status["t_ms"], windows)
             if n is not None:
@@ -1961,7 +1970,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("statuses", []).append({
             "t0": _seconds(status["t_ms"], start), "t1": _seconds(min(status["t1_ms"], end), start),
             "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
-            "status": status["status"], "from": status["from"]})
+            "status": status["status"], "from": status["from"], **({"friendly": True} if status.get("friendly") else {})})
 
     last_cast: dict[tuple[int, str], int] = {}
     for t_ms, pawn, floats in sorted(raw.movement_plays, key=lambda play: play[0]):

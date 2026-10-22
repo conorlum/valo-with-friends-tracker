@@ -76,6 +76,11 @@ after the run (pool "hp" only). The cause fields are as on damage; a heal's caus
 (Sage's orb, Hot Hands, Devour), which has no `id`; Miks's heal object (`GameObject_Thumper_Heal`) is named `Iris`,
 as the extras name it (extras.CODE_ALIASES). The Regen Shield's refill sends no heal at all.
 
+Teammate statuses (revision 22): a `status` row whose ability object put it on a player of its owner's own team
+(a Breach stun or a Sage slow on their own side) carries `"friendly": true`. Control skips these rows
+(app/control/engine.py), as do readers that count only enemies; Critical Util counts them as harm
+(app/critutil/extract.py). Only effects naming the object are kept: the caster-container path stays enemies only.
+
 Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a
 top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike", "ult", "orbs", "charges"}`, defined and
 validated by
@@ -101,7 +106,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 21   # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
+CONDENSE_REVISION = 22   # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21);
+                         # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
                          #     heals in `vitals`, `player_state` charges (2026-10-21);
                          # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's
                          #     slow from track crossings, Reckoning's re-touches, none on the dead (2026-10-19);

@@ -164,7 +164,7 @@ def test_death_holding_a_flash_after_engaging_first_is_unused_util():
     data["players"][0]["agent"] = "Breach"
     data["player_state"] = ps
     out = extract.round_util(rnd, data)
-    assert out["unused"] == [{"slot": 0, "t": 9.5, "kind": "held_at_death", "keys": ["Q"], "kinds": ["blind"]}]
+    assert out["unused"] == [{"slot": 0, "t": 9.5, "kind": "held_at_death", "abilities": ["Flashpoint"], "kinds": ["blind"]}]
 
 
 def test_ambushed_death_makes_no_unused_claim():
@@ -181,3 +181,14 @@ def test_output_is_plain_and_versioned():
     out = run([flash(8.0, 1, [[5, 8.4, 2.0]])], kills=[kill(9.2, 0, 5)])
     assert out["v"] == extract.VERSION
     json.dumps(out)
+
+
+def test_a_stun_on_a_teammate_flagged_friendly_is_harm():
+    from tests.moments.helpers import status
+
+    fault = toy_ability("Breach", "E_SweetSpotFissure", 200, 200, 1, t=8.0, t1=9.0, kind="GameObject")
+    stun = {**status(8.2, 10.0, 1, 0, name="E_SweetSpotFissure", status="concussed"), "friendly": True}
+    out = run([fault, stun], kills=[kill(9.5, 5, 0)])
+    (c,) = cast_by(out, 1)
+    assert c["harm"] == [{"mate": 0, "how": "concussed", "t": 8.2, "dur": 1.8, "died": True}]
+    assert out["avail"]["friendly_status"] is True

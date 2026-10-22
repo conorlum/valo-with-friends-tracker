@@ -40,7 +40,7 @@ def cast(i=0, slot=0, value_kills=True):
 def data(casts=None):
     return {"v": 1, "sides": {str(s): ("attack" if s < 5 else "defense") for s in range(10)}, "contact": 9.0,
             "plant": None, "defuse": None, "t_decided": 90.0, "kills": KILLS, "casts": casts or [cast()],
-            "heals": [], "unused": [{"slot": 0, "t": 30.0, "kind": "held_at_death", "keys": ["Q"], "kinds": ["blind"]}],
+            "heals": [], "unused": [{"slot": 0, "t": 30.0, "kind": "held_at_death", "abilities": ["Flashpoint"], "kinds": ["blind"]}],
             "avail": {"heals": True, "causes": True, "charges": True, "ult": True, "friendly_status": False}}
 
 

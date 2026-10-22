@@ -546,13 +546,16 @@ def test_zero_point_is_read_despite_its_casing_and_suppresses_enemies_for_the_ga
     rows = [spawned(20_000, pulse, "Default__Gameobject_Grenadier_E_SuppressionPulse_C", 0, 0), instigated(20_000, pulse, 100),
             oneshot(21_000, pulse, [], 9),                                   # the pulse goes off at +1 s
             oneshot(21_050, 101, [pulse], 31), oneshot(21_050, 102, [pulse], 31),  # two enemies suppressed
-            oneshot(21_050, 104, [pulse], 31),                               # a teammate: not a status
+            oneshot(21_050, 104, [pulse], 31),                               # a teammate: friendly (revision 22)
             closed(35_000, pulse)]
     extras = run7(tmp_path, rows)
     [knife] = extras.rounds[1]["abilities"]
     assert (knife["kind"], knife["code"], knife["name"], knife["fx"]) == ("GameObject", "Grenadier", "E_SuppressionPulse", [11.0])
-    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in extras.rounds[1]["statuses"]]
+    statuses = extras.rounds[1]["statuses"]
+    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in statuses
+           if not st.get("friendly")]
     assert got == [(1, 11.05, 19.05, "suppressed", 0, "object"), (2, 11.05, 19.05, "suppressed", 0, "object")]
+    assert [(st["target"], st["status"], st["slot"]) for st in statuses if st.get("friendly")] == [(4, "suppressed", 0)]
 
 
 def test_an_object_named_status_lasts_until_it_stops_and_duplicates_merge(tmp_path):
@@ -561,10 +564,12 @@ def test_an_object_named_status_lasts_until_it_stops_and_duplicates_merge(tmp_pa
             instigated(30_000, boom, 104),
             effect(30_000, 101, 1, [boom], container=7), stop(30_600, 101, 1),
             effect(30_100, 101, 2, [boom], container=8), stop(30_900, 101, 2),   # a second container, same hit
-            effect(30_000, 105, 3, [boom], container=7), stop(30_600, 105, 3),   # Waylay's teammate
+            effect(30_000, 105, 3, [boom], container=7), stop(30_600, 105, 3),   # Waylay's teammate: friendly
             closed(40_000, boom)]
     extras = run7(tmp_path, rows)
-    assert [(st["target"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1]["statuses"]] == [(1, 20.0, 20.9, "hindered")]
+    statuses = extras.rounds[1]["statuses"]
+    assert [(st["target"], st["t0"], st["t1"], st["status"]) for st in statuses if not st.get("friendly")] ==         [(1, 20.0, 20.9, "hindered")]
+    assert [(st["target"], st["status"], st["friendly"]) for st in statuses if st.get("friendly")] == [(5, "hindered", True)]
     assert "fx" not in extras.rounds[1]["abilities"][0], "no effect on itself: it pops at its spawn"
 
 

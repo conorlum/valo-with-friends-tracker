@@ -95,6 +95,7 @@ def test_a_gap_run_carries_the_rounds_critical_util(tmp_path, monkeypatch):
     result = compute_task(_task(tmp_path, monkeypatch))
     util = result["gaps"]["util"]
     assert util["status"] == "ok" and util["error"] is None and isinstance(util["data"]["casts"], list)
+    assert util["data"]["avail"]["unknown"] is True, "the unknown probe rode the gap run"
     assert json.loads(json.dumps(util)) == util, "plain JSON"
     only = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
     assert only["gaps"]["util"] == util, "a gaps-only run gives the same evidence"

@@ -34,7 +34,9 @@ DEFAULT_WEIGHTS = {
     "defuse_stopped": 0.0600,  # per defuse attempt that overlapped it and didn't finish
     "heal_saved": 0.0500,      # a heal that kept the player alive through damage above their health
     "heal_hp_fought": 0.0002,  # per HP healed before a fight the healed player then took
-    "harm_soft": 0.0080,       # per teammate blinded or nearsighted inside a fight, who lived (negative)
+    "harm_soft": 0.0080,       # per teammate blinded, nearsighted or statused, who lived (negative)
+    "front_s": 0.0015,         # per second the map-control unknown stopped at a device's or molly's edge
+    "held_m2s": 0.000005,      # per m2 x second of ground only that device or molly held (no teammate saw it)
 }
 NEGATIVE = frozenset({"harm_soft"})
 JUDGED_KINDS = frozenset({"blind", "smoke", "wall", "damaging", "status", "info", "device"})   # can be wasted
@@ -83,7 +85,12 @@ def features(cast: dict) -> dict:
                                if e.get("how") == "reveal" and e["target"] not in killed}))
     f["triggered"] = 1.0 if cast.get("trigger") is not None else 0.0
     f["defuse_stopped"] = float((cast.get("spike") or {}).get("stopped") or 0)
-    f["harm_soft"] = float(sum(1 for h in cast.get("harm") or () if not h.get("died")))
+    # owner, 2026-10-21: flashing or statusing a teammate matters more than damaging one
+    f["harm_soft"] = float(sum(0.5 if h.get("how") == "damage" else 1.0 for h in cast.get("harm") or ()
+                               if not h.get("died")))
+    hold = cast.get("hold") or {}
+    f["front_s"] = float(hold.get("front_s") or 0.0)
+    f["held_m2s"] = float(hold.get("held_m2s") or 0.0)
     return f
 
 

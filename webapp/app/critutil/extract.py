@@ -583,12 +583,13 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
         if not engaged or not have_charges:
             continue
         held = _held(ps, victim, t - _EPS)
-        keys = AGENT_KEYS.get(agents.get(victim) or "", {})
+        abilities = AGENT_KEYS.get(agents.get(victim) or "", {})
         planted = spike is not None and spike["t"] <= t
-        fits = [k for k in held if k in keys and (keys[k] in FITS_ANY_FIGHT or (planted and keys[k] in FITS_SPIKE))]
+        fits = [abilities[k] for k in sorted(held) if k in abilities
+                and (abilities[k][1] in FITS_ANY_FIGHT or (planted and abilities[k][1] in FITS_SPIKE))]
         if fits:
-            out.append({"slot": victim, "t": _r2(t), "kind": "held_at_death", "keys": sorted(fits),
-                        "kinds": sorted({keys[k] for k in fits})})
+            out.append({"slot": victim, "t": _r2(t), "kind": "held_at_death",
+                        "abilities": [name for name, _ in fits], "kinds": sorted({kind for _, kind in fits})})
     for slot in sides:
         cap = _ult_cap(ps, slot)
         if cap is None:
@@ -613,7 +614,23 @@ def _ult_cost(ps, c: _Cast):
     return n
 
 
-def round_util(rnd, blob: dict) -> dict:
+def _hold(c: _Cast, holds: dict | None) -> dict | None:
+    """The unknown probe's items (app/critutil/unknown.py) that are this cast's: its owner's device or molly
+    starting inside its life. Summed when there are several (a trip's two anchors are one watcher already)."""
+    if not holds:
+        return None
+    want = "device" if "device" in c.kinds else "molly" if "damaging" in c.kinds else None
+    if want is None:
+        return None
+    mine = [i for i in holds.get("items") or () if i["what"] == want and i["by"] == c.by
+            and c.t - 0.5 <= i["t0"] <= c.t_end + 0.5]
+    if not mine:
+        return None
+    return {k: round(sum(i[k] for i in mine), 2) for k in ("up_s", "front_s", "held_m2s", "crossed_s")}
+
+
+def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
+    """`holds`: the gap run's unknown probe result (app/critutil/unknown.py), None outside a gap run."""
     sides = _sides(rnd)
     agents = {p["slot"]: p.get("agent") for p in blob.get("players") or ()}
     contact = _first_contact(blob, rnd)
@@ -657,6 +674,7 @@ def round_util(rnd, blob: dict) -> dict:
             "cover": _cover(rnd, sides, c),
             "presence": _presence(rnd, sides, c),
             "spike": _spike_effect(rnd, sides, c, spike) if plant is not None and c.t >= plant else None,
+            "hold": _hold(c, holds),
             "ult_points": _ult_cost(ps, c),
             "activation": ((c.flash or {}).get("activation") or {}).get("targets_complete"),
         })
@@ -671,5 +689,7 @@ def round_util(rnd, blob: dict) -> dict:
         "unused": _unused(rnd, blob, sides, spike, agents),
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
-                  "ult": bool((ps or {}).get("ult")), "friendly_status": False},
+                  "ult": bool((ps or {}).get("ult")),
+                  "friendly_status": any(r.get("friendly") for r in blob.get("util") or ()) or None,
+                  "unknown": bool(holds) and not (holds or {}).get("error")},
     }

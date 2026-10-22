@@ -51,36 +51,37 @@ WALL_PATTERNS = ("Q_WallManager", "E_SmokeScreenManager", "X_GlobalWall", "4_Tun
 MOBILITY_KEYS = frozenset({"Clay_Q_Explosion"})   # Raze's Blast Pack: mostly a jump, never called wasted
 STALL_KINDS = frozenset({"smoke", "damaging", "status", "device"})
 
-# Ability by keybind per agent, for unused util (the charge timelines name the inventory slot, not the ability).
-# From game knowledge; the owner checks it. An agent or key not here makes no "unused" claim.
+# Each agent's abilities, by the inventory slot the charge timelines are keyed on (player_state `charges`: C, Q, E):
+# the ability's name (what the pages show; never the key) and its kind. From game knowledge; the owner checks it.
+# An agent or slot not here makes no "unused" claim.
 AGENT_KEYS = {
-    "Astra": {"C": "status", "Q": "status", "E": "smoke"},
-    "Breach": {"C": "damaging", "Q": "blind", "E": "status"},
-    "Brimstone": {"C": "other", "Q": "damaging", "E": "smoke"},
-    "Chamber": {"C": "device", "Q": "other", "E": "mobility"},
-    "Clove": {"C": "heal", "Q": "status", "E": "smoke"},
-    "Cypher": {"C": "device", "Q": "smoke", "E": "info"},
-    "Deadlock": {"C": "status", "Q": "device", "E": "other"},
-    "Fade": {"C": "status", "Q": "status", "E": "info"},
-    "Gekko": {"C": "damaging", "Q": "status", "E": "blind"},
-    "Harbor": {"C": "status", "Q": "smoke", "E": "smoke"},
-    "Iso": {"C": "other", "Q": "status", "E": "other"},
-    "Jett": {"C": "smoke", "Q": "mobility", "E": "mobility"},
-    "KAY/O": {"C": "damaging", "Q": "blind", "E": "status"},
-    "Killjoy": {"C": "damaging", "Q": "device", "E": "device"},
-    "Neon": {"C": "smoke", "Q": "status", "E": "mobility"},
-    "Omen": {"C": "mobility", "Q": "status", "E": "smoke"},
-    "Phoenix": {"C": "smoke", "Q": "blind", "E": "damaging"},
-    "Raze": {"C": "damaging", "Q": "mobility", "E": "damaging"},
-    "Reyna": {"C": "status", "Q": "heal", "E": "mobility"},
-    "Sage": {"C": "other", "Q": "status", "E": "heal"},
-    "Skye": {"C": "heal", "Q": "status", "E": "blind"},
-    "Sova": {"C": "info", "Q": "damaging", "E": "info"},
-    "Tejo": {"C": "info", "Q": "status", "E": "damaging"},
-    "Viper": {"C": "damaging", "Q": "smoke", "E": "smoke"},
-    "Vyse": {"C": "damaging", "Q": "other", "E": "blind"},
-    "Waylay": {"C": "status", "Q": "mobility", "E": "mobility"},
-    "Yoru": {"C": "other", "Q": "blind", "E": "mobility"},
+    "Astra": {"C": ("Gravity Well", "status"), "Q": ("Nova Pulse", "status"), "E": ("Nebula", "smoke")},
+    "Breach": {"C": ("Aftershock", "damaging"), "Q": ("Flashpoint", "blind"), "E": ("Fault Line", "status")},
+    "Brimstone": {"C": ("Stim Beacon", "other"), "Q": ("Incendiary", "damaging"), "E": ("Sky Smoke", "smoke")},
+    "Chamber": {"C": ("Trademark", "device"), "Q": ("Headhunter", "other"), "E": ("Rendezvous", "mobility")},
+    "Clove": {"C": ("Pick-Me-Up", "heal"), "Q": ("Meddle", "status"), "E": ("Ruse", "smoke")},
+    "Cypher": {"C": ("Trapwire", "device"), "Q": ("Cyber Cage", "smoke"), "E": ("Spycam", "info")},
+    "Deadlock": {"C": ("GravNet", "status"), "Q": ("Sonic Sensor", "device"), "E": ("Barrier Mesh", "other")},
+    "Fade": {"C": ("Prowler", "status"), "Q": ("Seize", "status"), "E": ("Haunt", "info")},
+    "Gekko": {"C": ("Mosh Pit", "damaging"), "Q": ("Wingman", "status"), "E": ("Dizzy", "blind")},
+    "Harbor": {"C": ("Storm Surge", "status"), "Q": ("High Tide", "smoke"), "E": ("Cove", "smoke")},
+    "Iso": {"C": ("Contingency", "other"), "Q": ("Undercut", "status"), "E": ("Double Tap", "other")},
+    "Jett": {"C": ("Cloudburst", "smoke"), "Q": ("Updraft", "mobility"), "E": ("Tailwind", "mobility")},
+    "KAY/O": {"C": ("FRAG/ment", "damaging"), "Q": ("FLASH/drive", "blind"), "E": ("ZERO/point", "status")},
+    "Killjoy": {"C": ("Nanoswarm", "damaging"), "Q": ("Alarmbot", "device"), "E": ("Turret", "device")},
+    "Neon": {"C": ("Fast Lane", "smoke"), "Q": ("Relay Bolt", "status"), "E": ("High Gear", "mobility")},
+    "Omen": {"C": ("Shrouded Step", "mobility"), "Q": ("Paranoia", "status"), "E": ("Dark Cover", "smoke")},
+    "Phoenix": {"C": ("Blaze", "smoke"), "Q": ("Curveball", "blind"), "E": ("Hot Hands", "damaging")},
+    "Raze": {"C": ("Boom Bot", "damaging"), "Q": ("Blast Pack", "mobility"), "E": ("Paint Shells", "damaging")},
+    "Reyna": {"C": ("Leer", "status"), "Q": ("Devour", "heal"), "E": ("Dismiss", "mobility")},
+    "Sage": {"C": ("Barrier Orb", "other"), "Q": ("Slow Orb", "status"), "E": ("Healing Orb", "heal")},
+    "Skye": {"C": ("Regrowth", "heal"), "Q": ("Trailblazer", "status"), "E": ("Guiding Light", "blind")},
+    "Sova": {"C": ("Owl Drone", "info"), "Q": ("Shock Bolt", "damaging"), "E": ("Recon Bolt", "info")},
+    "Tejo": {"C": ("Stealth Drone", "info"), "Q": ("Special Delivery", "status"), "E": ("Guided Salvo", "damaging")},
+    "Viper": {"C": ("Snake Bite", "damaging"), "Q": ("Poison Cloud", "smoke"), "E": ("Toxic Screen", "smoke")},
+    "Vyse": {"C": ("Razorvine", "damaging"), "Q": ("Shear", "other"), "E": ("Arc Rose", "blind")},
+    "Waylay": {"C": ("Saturate", "status"), "Q": ("Lightspeed", "mobility"), "E": ("Refract", "mobility")},
+    "Yoru": {"C": ("Fakeout", "other"), "Q": ("Blindside", "blind"), "E": ("Gatecrash", "mobility")},
 }
 # What util "fits" a fight the player engaged in, so dying with it held counts (owner decision: unused util).
 FITS_ANY_FIGHT = frozenset({"blind", "smoke", "status"})

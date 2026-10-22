@@ -47,7 +47,7 @@ def util_facts(round_util: dict | None, slot: int) -> list[dict]:
         out.append(fact)
     for u in (round_util or {}).get("unused") or ():
         if u.get("slot") == slot:
-            out.append({"t": u["t"], "kind": u["kind"], "held": u.get("kinds") or [], "points": u.get("points")})
+            out.append({"t": u["t"], "kind": u["kind"], "held": u.get("abilities") or [], "points": u.get("points")})
     return out
 
 

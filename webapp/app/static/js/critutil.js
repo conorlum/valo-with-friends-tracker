@@ -96,6 +96,10 @@
       bits.push(p.held_back.length + (p.held_back.length === 1 ? " enemy" : " enemies") + " held back at its edge");
     }
     if (p.waiting_s) bits.push("enemies waited " + p.waiting_s + " s");
+    var hold = row.hold || {};
+    if (hold.front_s) bits.push("held the unknown back for " + Math.round(hold.front_s) + " s");
+    if (hold.held_m2s) bits.push("held " + Math.round(hold.held_m2s / Math.max(hold.up_s || 1, 1)) + " m² no teammate watched");
+    if (hold.crossed_s) bits.push("the unknown got past it for " + Math.round(hold.crossed_s) + " s");
     if (typeof row.trigger === "number") bits.push("triggered at " + clock(row.trigger));
     (row.harm || []).forEach(function (h) {
       bits.push((HOW[h.how] || h.how) + " teammate " + nameOf(players, h.mate) + (h.died ? " (died while affected)" : ""));
@@ -116,7 +120,7 @@
 
   function unusedText(u) {
     if (u.kind === "ult_unused") return "R" + u.round + " " + clock(u.t) + " · full ult never used (" + u.points + " points)";
-    return "R" + u.round + " " + clock(u.t) + " · died holding " + (u.kinds || []).join(", ") + " (" + (u.keys || []).join(", ") + ") after engaging first";
+    return "R" + u.round + " " + clock(u.t) + " · died holding " + (u.abilities || u.kinds || []).join(", ") + " after engaging first";
   }
 
   function notes(payload) {
