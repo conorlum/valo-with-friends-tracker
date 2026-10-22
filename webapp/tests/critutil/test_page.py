@@ -66,6 +66,15 @@ def test_movement_is_never_wasted():
     assert util_values.is_wasted(dash, 0.0, util_values.features(dash)) is False
 
 
+def test_economy_conventions_match_their_sources():
+    from app.scoring.impact import FULL_BUY_THRESHOLD, econ_tier_name
+    from app.services.economy_graphs import PISTOL_ROUNDS
+
+    assert replay_util.FULL_BUY_THRESHOLD == FULL_BUY_THRESHOLD
+    assert econ_tier_name(FULL_BUY_THRESHOLD) == "FULL_BUY" and econ_tier_name(FULL_BUY_THRESHOLD - 1) != "FULL_BUY"
+    assert set(replay_util.PISTOL_ROUNDS) == set(PISTOL_ROUNDS)
+
+
 def test_buy_type_and_winner_side():
     assert replay_util.buy_type(1, 5000) == "pistol" and replay_util.buy_type(13, None) == "pistol"
     assert replay_util.buy_type(5, 4300) == "full buy" and replay_util.buy_type(5, 2000) == "other"

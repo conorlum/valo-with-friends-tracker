@@ -95,13 +95,16 @@ def area_of(map_name: str, u, v, side: str | None) -> str:
     return sup or "unknown"
 
 
-def buy_type(round_number: int, avg_loadout: float | None) -> str:
-    from app.scoring.impact import econ_tier_name
-    from app.services.economy_graphs import PISTOL_ROUNDS
+# The site's existing economy conventions, mirrored so this web-side module never imports the scorer
+# (tests/replays/test_replay_isolation.py); tests/critutil/test_page.py pins both to their sources.
+FULL_BUY_THRESHOLD = 4200       # app.scoring.impact.FULL_BUY_THRESHOLD (econ_tier_name's FULL_BUY)
+PISTOL_ROUNDS = frozenset({1, 13})   # app.services.economy_graphs.PISTOL_ROUNDS
 
+
+def buy_type(round_number: int, avg_loadout: float | None) -> str:
     if round_number in PISTOL_ROUNDS:
         return "pistol"
-    if avg_loadout is not None and econ_tier_name(int(avg_loadout)) == "FULL_BUY":
+    if avg_loadout is not None and avg_loadout >= FULL_BUY_THRESHOLD:
         return "full buy"
     return "other"
 
