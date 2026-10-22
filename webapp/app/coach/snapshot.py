@@ -19,7 +19,10 @@ class SnapshotError(Exception):
     pass
 
 
-def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], links: dict | None = None) -> dict:
+def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], links: dict | None = None,
+             util: dict | None = None) -> dict:
+    """`util`: the replay's Critical Util per round (app/services/replay_util.py match_payload's `rounds`), or None
+    when the caller has none; a round missing from it names the gap."""
     rounds = {}
     for n, blob in sorted(blobs.items()):
         status, stale, shares = controls.get(n, ("not_ready", False, None))
@@ -36,7 +39,10 @@ def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], 
             gaps.append("player_state")
         if link["db_deaths"]:
             gaps.append("db_only_deaths")
-        rounds[str(n)] = {"blob": blob, "control": shares, "link": link, "gaps": gaps}
+        round_util = (util or {}).get(str(n))
+        if util is not None and round_util is None:
+            gaps.append("critical_util")
+        rounds[str(n)] = {"blob": blob, "control": shares, "link": link, "gaps": gaps, "util": round_util}
     return {"v": VERSION, "context": context, "rounds": rounds}
 
 
@@ -65,7 +71,13 @@ def read(db, match_uuid: str) -> dict:
         answer = replay_control.round_control(db, replay, n)
         shares = control_areas.area_shares(answer.row.data, replay.map_name) if answer.status == "ok" else None
         controls[n] = (answer.status, bool(answer.stale), shares)
-    return assemble(context, blobs, controls, links)
+    try:
+        from app.services import replay_util
+
+        util = replay_util.match_payload(db, replay)["rounds"]
+    except Exception:  # noqa: BLE001 - Critical Util is extra evidence: without it the run goes on, with the gap named
+        util = {}
+    return assemble(context, blobs, controls, links, util)
 
 
 def hide_enemy_names(data: dict, player_id: int) -> dict:
@@ -118,6 +130,10 @@ class Snapshot:
 
     def control(self, n: int) -> dict | None:
         return self._round(n)["control"]
+
+    def util(self, n: int) -> dict | None:
+        """The round's Critical Util ({"casts", "unused", "avail"}), or None when the snapshot has none."""
+        return self._round(n).get("util")
 
     def gaps(self, n: int) -> list[str]:
         return list(self._round(n)["gaps"])

@@ -15,8 +15,8 @@ import math
 from app.control import engine
 from app.critutil.constants import (AGENT_KEYS, DEVICE_PATTERNS, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, LIFE_CAP_S, MERGE_M,
-                                    MERGE_S, NEAR_TRIGGER_M, PART_WORDS, PRESENCE_STEP_S, SAVE_WINDOW_S,
-                                    SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, TRIGGER_WINDOW_S,
+                                    MERGE_S, NEAR_TRIGGER_M, PART_WORDS, PRESENCE_KINDS, PRESENCE_STEP_S, SAVE_WINDOW_S,
+                                    SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
 from app.moments.constants import ABILITY_KIND
 
@@ -373,10 +373,10 @@ def _cover(rnd, sides, c: _Cast) -> dict | None:
 
 
 def _presence(rnd, sides, c: _Cast) -> dict | None:
-    """Observed enemy presence around a placed cast while it was up, to t_decided: enemy-seconds inside it,
-    enemy-seconds stopped just outside it (waiting on it), and enemies who came within the ring and never
-    entered (went around or held back)."""
-    if c.u is None:
+    """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it was up, to
+    t_decided: enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies who
+    came to its edge and then turned away without entering (held back). None for any other cast."""
+    if c.u is None or not (c.kinds & PRESENCE_KINDS):
         return None
     side = sides.get(c.by)
     kind = next((k for k in ("device", "smoke", "damaging", "status") if k in c.kinds), "default")
@@ -384,8 +384,8 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     x, y = _px(c.u, c.v)
     end = min(c.t_end, rnd.t_decided)
     inside_s = waiting_s = 0.0
-    entered, approached = set(), set()
-    prev = {}
+    entered, turned = set(), set()
+    prev, closest = {}, {}
     t = c.t
     while t < end:
         for s, sd in sides.items():
@@ -399,14 +399,17 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                 inside_s += PRESENCE_STEP_S
                 entered.add(s)
             elif d <= r + WAIT_RING_M:
-                approached.add(s)
                 q = prev.get(s)
                 if q is not None and _dist_m(rnd, p, q) / PRESENCE_STEP_S < STOPPED_MPS:
                     waiting_s += PRESENCE_STEP_S
+            if d <= r + WAIT_RING_M:
+                closest[s] = min(closest.get(s, d), d)
+            elif s in closest and d - closest[s] >= TURN_AWAY_M:
+                turned.add(s)           # came to the edge, then went back the way it came
             prev[s] = p
         t += PRESENCE_STEP_S
     return {"r_m": r, "armed_s": _r2(max(0.0, end - c.t)), "inside_s": _r2(inside_s), "waiting_s": _r2(waiting_s),
-            "entered": sorted(entered), "held_back": sorted(approached - entered)}
+            "entered": sorted(entered), "held_back": sorted(turned - entered)}
 
 
 def _spike_effect(rnd, sides, c: _Cast, spike) -> dict | None:
@@ -458,7 +461,9 @@ def _heals(rnd, blob, sides) -> list[dict]:
         survived = rnd.alive(target, horizon - _EPS) or life_end >= horizon
         saved = None
         if hp_before is not None and taken is not None:
-            saved = bool(survived and taken >= hp_before + sh_before and r.get("pool") in ("hp", "armor"))
+            # still standing once the damage after the heal passed what they had before it: without the heal that
+            # damage would have killed them (other heals in between are counted in the same walk of vitals)
+            saved = r.get("pool") in ("hp", "armor") and _outlived(ps, target, t1, horizon, hp_before + sh_before)
         out.append({"t": _r2(t0), "t1": _r2(t1), "by": r.get("by"), "target": target, "pool": r.get("pool"),
                     "amount": _r2(r.get("amount")), "name": r.get("name"), "code": r.get("code"),
                     "hp_before": _r2(hp_before), "taken_after": _r2(taken), "fought": fought,
@@ -484,6 +489,27 @@ def _damage_taken(ps, slot, t0, t1):
                 lost += drop
         prev = e
     return lost
+
+
+def _outlived(ps, slot, t0, t1, health_before) -> bool:
+    """True when, between t0 and t1 and within one life, the damage `slot` took first reached `health_before`
+    (what it had before the heal) at a hit it was still alive after."""
+    events = ((ps or {}).get("vitals") or {}).get(str(slot)) or []
+    lost, prev = 0.0, None
+    for e in events:
+        if e["t"] < t0:
+            prev = e
+            continue
+        if e["t"] > t1:
+            break
+        if prev is not None and e.get("life") == prev.get("life"):
+            drop = (prev.get("hp") or 0) + (prev.get("sh") or 0) - (e.get("hp") or 0) - (e.get("sh") or 0)
+            if drop > 0:
+                lost += drop
+                if lost >= health_before:
+                    return (e.get("hp") or 0) > 0
+        prev = e
+    return False
 
 
 def _held(ps, slot, t) -> dict[str, int]:
@@ -587,11 +613,15 @@ def round_util(rnd, blob: dict) -> dict:
         eff = effects[c.i]
         side = sides.get(c.by)
         enemy_eff = [e for e in eff if sides.get(e["target"]) not in (None, side)]
-        trigger = _trigger(c) if "device" in c.kinds else None
+        trigger = None
+        if "device" in c.kinds:     # it fired, was broken, or first touched an enemy: whichever came first
+            seen = [x for x in (_trigger(c), *(e["t0"] for e in enemy_eff)) if x is not None and x >= c.t - _EPS]
+            trigger = min(seen) if seen else None
         alive = _alive_counts(rnd, sides, c.t)
         out_casts.append({
             "i": c.i, "by": c.by, "agent": c.agent, "t": _r2(c.t), "t_end": _r2(c.t_end), "u": c.u, "v": c.v,
-            "names": sorted(set(c.names)), "kinds": sorted(c.kinds), "side": side,
+            "names": sorted(set(c.names)), "codes": sorted({r.get("code") for r in c.rows if r.get("code")}),
+            "kinds": sorted(c.kinds), "side": side,
             "phase": _phase(c.t, contact, plant), "after_decided": c.t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]],
             "trigger": _r2(trigger),

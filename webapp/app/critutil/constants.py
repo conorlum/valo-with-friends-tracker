@@ -29,6 +29,8 @@ SAVE_WINDOW_S = 3.0         # a covered teammate alive this long after the cover
 # --- space (observed enemy presence; the unknown-based measure is a follow-up, see the spec)
 ZONE_RADIUS_M = {"smoke": 4.5, "damaging": 4.0, "device": 12.0, "status": 6.0, "default": 6.0}
 WAIT_RING_M = 8.0           # an enemy stopped within this outside the zone is waiting on it
+TURN_AWAY_M = 6.0           # an enemy at the edge who then got this much farther away, never entering, held back
+PRESENCE_KINDS = frozenset({"smoke", "damaging", "wall", "device"})   # area util: the casts presence is measured for
 STOPPED_MPS = 1.0
 PRESENCE_STEP_S = 0.5
 SPIKE_NEAR_M = 15.0

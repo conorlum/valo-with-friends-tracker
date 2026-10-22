@@ -87,12 +87,30 @@ def test_molly_damage_by_id_is_zone_damage_on_the_kill():
     assert any(e["how"] == "damage" for e in c["effects"])
 
 
-def test_enemy_waiting_outside_a_molly_and_one_held_back():
+def test_enemy_waiting_outside_a_molly_is_waiting_not_held_back():
     mover = [(0.0, 400 + px(9), 160, 180), (20.0, 400 + px(9), 160, 180)]   # stands just outside the ring edge
     molly = toy_ability("Phoenix", "MolotovFire", 400, 160, 1, t=8.0, t1=14.0)
     out = run([molly], extra={5: ("B", mover)})
     p = cast_by(out, 1, "damaging")[0]["presence"]
-    assert 5 in p["held_back"] and p["waiting_s"] > 0 and 5 not in p["entered"]
+    assert p["waiting_s"] > 0 and 5 not in p["entered"] and p["held_back"] == []
+
+
+def test_enemy_who_comes_to_the_edge_and_turns_back_is_held_back():
+    mover = [(0.0, 400 + px(30), 160, 180), (9.0, 400 + px(7), 160, 180), (13.0, 400 + px(25), 160, 0)]
+    molly = toy_ability("Phoenix", "MolotovFire", 400, 160, 1, t=8.0, t1=14.0)
+    out = run([molly], extra={5: ("B", mover)})
+    assert cast_by(out, 1, "damaging")[0]["presence"]["held_back"] == [5]
+
+
+def test_a_flash_has_no_presence_and_a_device_triggers_on_its_first_enemy():
+    out = run([flash(8.0, 1, [[5, 8.4, 2.0]])])
+    assert cast_by(out, 1)[0]["presence"] is None
+    trip = toy_ability("Gumshoe", "4_TripWire", 380, 160, 1, t=2.0, t1=25.0, kind="GameObject")
+    from tests.moments.helpers import status
+
+    tether = status(11.0, 13.0, 1, 5, name="4_TripWire", status="tethered")
+    (c,) = cast_by(run([trip, tether]), 1, "device")
+    assert c["trigger"] == 11.0
 
 
 def test_heal_that_kept_a_player_alive_through_damage_above_their_health_is_saved():

@@ -1,0 +1,91 @@
+"""Critical Util's page shaping (app/services/replay_util.py page_for), names, areas, and the viewer JS in node."""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from app.services import replay_util
+
+JS = Path(__file__).resolve().parents[2] / "app" / "static" / "js" / "critutil.js"
+
+
+def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
+    base = {"replay": 1, "uuid": "u", "map": "Ascent", "match": match, "round": rnd, "i": i, "slot": 0,
+            "player_id": pid, "agent": "Breach", "ability": ability, "kind": "blind", "kinds": ["blind"],
+            "side": "attack", "area": area, "phase": "contact", "t": 20.0, "buy": "full buy", "won": True,
+            "value": value, "ledger": value, "jobs": 0.0, "wasted": False, "harm": 0, "harm_died": 0,
+            "followed": True, "ult_points": None, "enemies": 1, "features": {}, "combo": []}
+    base.update(kw)
+    return base
+
+
+def corpus(rows):
+    return {"rows": rows, "prior_mean": {"Flashpoint": 0.0}, "spread": 0.01, "fit": {"fitted": False},
+            "estimator": {}}
+
+
+def test_page_is_friends_only_and_lineups_need_five_casts():
+    rows = [row(1, 0.03, i, match=1 + i % 3, rnd=i) for i in range(6)] + [row(2, 0.05, i, rnd=i) for i in range(6)]
+    page = replay_util.page_for(corpus(rows), {1})
+    assert {c["player_id"] for c in page["lineups"]} == {1}
+    (c,) = page["lineups"]
+    assert c["n"] == 6 and c["matches"] == 3 and c["call"] == "this wins rounds, keep throwing it"
+    assert set(page["players"]) == {1}
+    few = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(4)]), {1})
+    assert few["lineups"] == []
+
+
+def test_player_block_best_worst_and_patterns():
+    rows = [row(1, v, i, rnd=i, wasted=(v == 0)) for i, v in enumerate([0.04, -0.02, 0.0, 0.01, 0.0])]
+    block = replay_util.page_for(corpus(rows), {1})["players"][1]
+    assert block["best"][0]["value"] == 4.0 and block["worst"][0]["value"] == -2.0
+    assert block["patterns"]["waste_rate"] == 40.0 and block["patterns"]["support_rate"] == 100.0
+
+
+def test_ult_value_per_point():
+    rows = [row(1, 0.10, i, rnd=i, kinds=["ult"], kind="ult", ability="Rolling Thunder", ult_points=8)
+            for i in range(3)]
+    (u,) = replay_util.page_for(corpus(rows), {1})["ults"]
+    assert u["value"] == 10.0 and u["per_point"] == 1.25
+
+
+def test_ability_names_come_from_the_viewer_table():
+    assert replay_util.ability_label({"agent": "Phoenix", "codes": ["Phoenix"], "names": ["MolotovFire"]}) == "Hot Hands"
+    assert replay_util.ability_label({"codes": [], "names": ["Unknown_Thing"]}) == "Unknown_Thing"
+    assert replay_util.ability_label({"agent": "Phoenix", "names": ["phoenix_curveball_left"]}) == "Curveball"
+    assert replay_util.ability_label({"agent": "Breach", "names": [None]}) == "utility"
+
+
+def test_movement_is_never_wasted():
+    from app.services import util_values
+
+    dash = {"kinds": ["teleport"], "enemies": [], "kills": []}
+    assert util_values.is_wasted(dash, 0.0, util_values.features(dash)) is False
+
+
+def test_buy_type_and_winner_side():
+    assert replay_util.buy_type(1, 5000) == "pistol" and replay_util.buy_type(13, None) == "pistol"
+    assert replay_util.buy_type(5, 4300) == "full buy" and replay_util.buy_type(5, 2000) == "other"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_text_is_measured_and_signed():
+    script = f"""
+const u = require({json.dumps(str(JS))});
+const payload = {{players: {{"0": {{name: "Me"}}, "5": {{name: "the enemy Jett"}}}},
+  rounds: {{"3": {{casts: [{{i: 0, slot: 0, t: 61.2, ability: "Flashpoint", kind: "blind", value: 2.5,
+    effects: [{{target: 5, how: "blind"}}], kills: [{{ours: true}}], followed: true, harm: []}}],
+    unused: [{{slot: 0, t: 70, kind: "held_at_death", kinds: ["blind"], keys: ["Q"]}}]}}}},
+  summary: {{}}, stale: 0, failed: []}};
+const rows = u.castsFor(payload, 0);
+console.log(JSON.stringify([u.rowText(rows[0], payload.players), u.signed(-1.5), u.unusedText(u.unusedFor(payload, 0)[0]),
+  u.groupsFor(payload, 0).filter(g => g.rows.length).map(g => g.key)]));
+"""
+    out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out[0] == "R3 1:01 · Flashpoint · blinded the enemy Jett; 1 kill on affected enemies; followed up · +2.50 pp"
+    assert out[1] == "−1.50"
+    assert out[2] == "R3 1:10 · died holding blind (Q) after engaging first"
+    assert out[3] == ["blind"]

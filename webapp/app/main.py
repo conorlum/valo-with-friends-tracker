@@ -14,7 +14,7 @@ from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
 from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
-                         site_stats, squad)
+                         site_stats, squad, util_page)
 from app.services.auth import get_current_player
 from app.templates import templates
 
@@ -65,6 +65,7 @@ app.include_router(replay_admin.router)
 app.include_router(coach.router)
 app.include_router(replays.router)
 app.include_router(gap_patterns.router)
+app.include_router(util_page.router)
 app.include_router(sessions.router)
 app.include_router(site_stats.router)
 app.include_router(squad.router)

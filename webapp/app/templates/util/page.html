@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Critical Util - {{ site_name }}{% endblock %}
+
+{% macro signed(v) %}{% if v is none %}–{% elif v > 0 %}+{{ '%.2f' | format(v) }}{% elif v < 0 %}−{{ '%.2f' | format(-v) }}{% else %}0.00{% endif %}{% endmacro %}
+{% macro tone(v) %}{% if v is none %}{% elif v > 0 %}util-good{% elif v < 0 %}util-bad{% endif %}{% endmacro %}
+{% macro jump(e) %}<a href="/replays/{{ e.uuid }}?round={{ e.round }}&t={{ '%.1f' | format([e.t - 2, 0] | max) }}">R{{ e.round }} {{ (e.t // 60) | int }}:{{ '%02d' | format((e.t % 60) | int) }}</a>{% endmacro %}
+
+{% block content %}
+<h1>Critical Util</h1>
+{% if login_note %}
+<p class="page-meta">{{ login_note }}</p>
+{% else %}
+<p class="page-meta">Which utility wins rounds for you and your friends, which to keep throwing, and the patterns in how you use it. {{ thin_note }}</p>
+<p class="page-meta">{{ page.n }} casts from your circle.{% if page.fit and not page.fit.fitted %} The job weights are still the starting values (fewer than {{ 300 }} rounds to fit them on).{% endif %}{% if page.estimator and page.estimator.check %} Win-odds estimator: {{ page.estimator.matches }} matches; held-out log loss {{ page.estimator.check.log_loss }} vs {{ page.estimator.check.log_loss_man }} for man advantage alone.{% endif %}</p>
+
+<section class="card">
+  <h2>Keep throwing it?</h2>
+  <p class="page-meta">Each friend's ability into one area, on one map and side, with at least 5 casts. Score: value per cast against that ability's average, pulled toward the average while casts are few.</p>
+  <table class="util-table">
+    <thead><tr><th>Player</th><th>Ability</th><th>Map · side · area</th><th>Casts (matches)</th><th>Score</th><th>Call</th></tr></thead>
+    <tbody>
+    {% for c in page.lineups %}
+      <tr><td>{{ c.name | strip_tag }}</td><td>{{ c.agent }} {{ c.ability }}</td><td>{{ c.map }} · {{ c.side }} · {{ c.area }}</td>
+        <td>{{ c.n }} ({{ c.matches }})</td><td class="{{ tone(c.score) }}">{{ signed(c.score) }}</td><td>{{ c.call }}</td></tr>
+    {% else %}<tr><td colspan="6">No lineup has 5 casts yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Which util wins rounds</h2>
+  <p class="page-meta">Value per cast by ability, map and side (5+ casts), with the share of those rounds the side went on to win. Economy and the state when it was thrown both shape these: compare like with like.</p>
+  <table class="util-table">
+    <thead><tr><th>Ability</th><th>Map</th><th>Side</th><th>Casts (matches)</th><th>Value per cast</th><th>Rounds won</th></tr></thead>
+    <tbody>
+    {% for w in page.wins_rounds %}
+      <tr><td>{{ w.agent }} {{ w.ability }}</td><td>{{ w.map }}</td><td>{{ w.side }}</td><td>{{ w.n }} ({{ w.matches }})</td>
+        <td class="{{ tone(w.value) }}">{{ signed(w.value) }}</td><td>{{ w.round_win }}%</td></tr>
+    {% else %}<tr><td colspan="6">Not enough casts yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% for p in players %}
+<section class="card">
+  <h2>{{ p.name | strip_tag }}</h2>
+  <p class="page-meta">{{ p.casts }} casts, {{ signed(p.value) }} per cast.
+    Support rate {{ p.patterns.support_rate if p.patterns.support_rate is not none else '–' }}% ·
+    wasted {{ p.patterns.waste_rate if p.patterns.waste_rate is not none else '–' }}% ·
+    hit a teammate {{ p.patterns.harm_rate if p.patterns.harm_rate is not none else '–' }}% ({{ p.patterns.harm_deaths }} died while affected){% if p.heals.n %} ·
+    heals {{ p.heals.n }}, {{ p.heals.saved }} kept someone alive{% endif %}.</p>
+  <div class="util-columns">
+    <div>
+      <h3>Best</h3>
+      <ol class="util-list">{% for e in p.best %}<li>{{ jump(e) }} {{ e.map }} · {{ e.agent }} {{ e.ability }} <span class="{{ tone(e.value) }}">{{ signed(e.value) }}</span></li>{% endfor %}</ol>
+    </div>
+    <div>
+      <h3>Worst</h3>
+      <ol class="util-list">{% for e in p.worst %}<li>{{ jump(e) }} {{ e.map }} · {{ e.agent }} {{ e.ability }} <span class="{{ tone(e.value) }}">{{ signed(e.value) }}</span>{% if e.wasted %} · wasted{% endif %}{% if e.harm_died %} · teammate died affected{% endif %}</li>{% endfor %}</ol>
+    </div>
+  </div>
+  <h3>Patterns</h3>
+  <table class="util-table">
+    <thead><tr><th>When</th><th>Casts</th><th>Value per cast</th></tr></thead>
+    <tbody>
+    {% for ph, g in p.patterns.phase.items() %}<tr><td>{{ phase_words[ph] }}</td><td>{{ g.n }}</td><td class="{{ tone(g.value) }}">{{ signed(g.value) }}</td></tr>{% endfor %}
+    {% for b, g in p.patterns.timing.items() %}<tr><td>thrown at {{ b }}</td><td>{{ g.n }}</td><td class="{{ tone(g.value) }}">{{ signed(g.value) }}</td></tr>{% endfor %}
+    {% for b, g in p.patterns.buy.items() %}<tr><td>{{ b }} rounds</td><td>{{ g.n }}</td><td class="{{ tone(g.value) }}">{{ signed(g.value) }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  {% if p.areas %}
+  <h3>Same ability, same area</h3>
+  <p class="page-meta">How often it went to the same place, and its value in the first half of those uses in a match vs the second. Area patterns, not proof of one lineup or of enemies adapting.</p>
+  <table class="util-table">
+    <thead><tr><th>Ability</th><th>Map · side · area</th><th>Casts</th><th>Per match</th><th>Earlier</th><th>Later</th></tr></thead>
+    <tbody>{% for a in p.areas %}<tr><td>{{ a.ability }}</td><td>{{ a.map }} · {{ a.side }} · {{ a.area }}</td><td>{{ a.n }}</td><td>{{ a.per_match }}</td>
+      <td class="{{ tone(a.early) }}">{{ signed(a.early) }}</td><td class="{{ tone(a.late) }}">{{ signed(a.late) }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="card">
+  <h2>Combos</h2>
+  <p class="page-meta">Two teammates' util within 3 s on the same enemy or spot (3+ times), with their value together.</p>
+  <table class="util-table">
+    <thead><tr><th>Together</th><th>Times</th><th>Value</th></tr></thead>
+    <tbody>{% for c in page.combos %}<tr><td>{{ c.pair | join(' + ') }}</td><td>{{ c.n }}</td><td class="{{ tone(c.value) }}">{{ signed(c.value) }}</td></tr>{% else %}<tr><td colspan="3">None yet.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Ults</h2>
+  <p class="page-meta">Value per use and per ult point it cost: which ults are worth charging. When it is most often used.</p>
+  <table class="util-table">
+    <thead><tr><th>Ult</th><th>Uses</th><th>Value per use</th><th>Per point</th><th>Mostly used</th></tr></thead>
+    <tbody>{% for u in page.ults %}<tr><td>{{ u.agent }} {{ u.ability }}</td><td>{{ u.n }}</td><td class="{{ tone(u.value) }}">{{ signed(u.value) }}</td>
+      <td class="{{ tone(u.per_point) }}">{{ signed(u.per_point) }}</td><td>{{ phase_words[u.phase] }}</td></tr>{% else %}<tr><td colspan="5">None yet.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}
