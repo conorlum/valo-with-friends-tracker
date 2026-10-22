@@ -1501,7 +1501,7 @@ def test_the_script_describes_a_running_queue_from_the_routes_answer(db, on, scr
     lines = script.describe(body)
     assert lines[0] == "automatic re-parse: running"
     assert lines[1] == f"recipes: site {NEW}, worker {NEW}"
-    assert lines[2] == "worker: archive on, re-parse protocol 1, map control on, gaps protocol 2"
+    assert lines[2] == "worker: archive on, re-parse protocol 1, map control on, gaps protocol 3"
     assert lines[3] == "replays: 1 current, 1 resolving, 1 gave up"
     assert lines[4] == "next attempt waits: an attempt is unfinished"
     assert lines[5].startswith(f"attempt {attempt.id}: resolving, match {match_uuid(4)}, for {NEW}, since ")
@@ -1524,7 +1524,7 @@ def test_the_script_describes_a_stopped_queue_and_a_pending_restoration(script):
     assert lines == [
         "automatic re-parse: stopped: recipe skew: the site is on a, the worker on b",
         "recipes: site a, worker b",
-        "worker: archive on, re-parse protocol not reported, map control off, gaps protocol 2",
+        "worker: archive on, re-parse protocol not reported, map control off, gaps protocol 3",
         "replays: 3 unknown",
         "attempt x: in_flight, match m, for b, since 2026-10-07T12:00:00+00:00 (left as it is: recipe skew)",
         "restoration pending: m2 still needs 4 control round(s) and 2 gap round(s)",
