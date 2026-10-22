@@ -467,13 +467,13 @@ def test_a_task_without_gaps_touches_no_tick_cache(tmp_path, monkeypatch):
 
 def test_health_advertises_the_gaps_protocol_beside_the_switch(tmp_path, runner):
     # What the web app reads before it sends a gaps block (app/services/replay_control_remote.py).
-    assert server.GAPS_PROTOCOL == 2
+    assert server.GAPS_PROTOCOL == 3
     on, _ = runner()
     control = http(serve(tmp_path, on), "/health")[1]["control"]
-    assert control["enabled"] is True and control["gaps_protocol"] == 2
+    assert control["enabled"] is True and control["gaps_protocol"] == 3
     off, _ = runner(control_enabled=False)
     control = http(serve(tmp_path, off), "/health")[1]["control"]
-    assert control["enabled"] is False and control["gaps_protocol"] == 2, "the switch and the protocol are separate"
+    assert control["enabled"] is False and control["gaps_protocol"] == 3, "the switch and the protocol are separate"
 
 
 # ---------------------------------------------------------------- heights by digest

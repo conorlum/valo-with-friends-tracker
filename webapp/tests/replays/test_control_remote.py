@@ -95,7 +95,10 @@ class FakeWorker:
                "notes": {7: 1} if status == "ok" else {}, "error": None if status == "ok" else "ValueError: boom"}
         moments = {"status": "ok" if status == "ok" else "failed", "fights": [],
                    "error": None if status == "ok" else "ValueError: boom"}
-        return {"run": run, "rows": [GAP_ROW, {**GAP_ROW, "seq": 1}] if status == "ok" else [], "moments": moments}
+        util = {"status": "ok", "data": {"v": 1, "casts": []}, "error": None} if status == "ok" else \
+            {"status": "failed", "data": None, "error": "ValueError: boom"}
+        return {"run": run, "rows": [GAP_ROW, {**GAP_ROW, "seq": 1}] if status == "ok" else [], "moments": moments,
+                "util": util}
 
     def submit(self, task):
         if task.get("height") and (task["map"], task["height"]) not in self.heights:
@@ -307,7 +310,7 @@ def test_a_round_spent_on_plain_tasks_is_not_given_up_once_the_worker_takes_gaps
     for n in range(remote.MAX_TRIES):
         remote.cycle(factory, worker, state, now=n * remote.BACKOFF_S)
     assert worker.refused == [1] * remote.MAX_TRIES and state.gave_up(p)
-    worker.refuse, worker.gaps = set(), 2
+    worker.refuse, worker.gaps = set(), remote.GAPS_PROTOCOL
     remote.cycle(factory, worker, state, now=10 * remote.BACKOFF_S)
     assert not state.gave_up(p)
     gap_print = replay_gaps.gap_fingerprint(p.fingerprint, p.map_name)
@@ -418,7 +421,7 @@ def test_gaps_source_failure_preserves_control_and_stops_retrying(factory, db, l
         remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
     assert len(rows(db, linked)) == linked.round_count
     before = len(worker.tasks)
-    worker.gaps, worker.answer = 2, source_failure
+    worker.gaps, worker.answer = remote.GAPS_PROTOCOL, source_failure
     for i in range(5, 11):
         remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
     tasks = list(worker.tasks.values())[before:]
@@ -541,13 +544,14 @@ def gap_runs(db, replay):
 
 
 @pytest.mark.parametrize("health, capable", [
-    ({"control": {"enabled": True, "gaps_protocol": 2}}, True),
+    ({"control": {"enabled": True, "gaps_protocol": 3}}, True),
     ({"control": {"enabled": True}}, False),                          # an image from before timing gaps
     ({"control": {"enabled": True, "gaps_protocol": 1}}, False),      # protocol 1: the worker image before moments
+    ({"control": {"enabled": True, "gaps_protocol": 2}}, False),      # protocol 2: the worker image before Critical Util
     ({"control": {"enabled": True, "gaps_protocol": "1"}}, False),
     ({"control": {"enabled": True, "gaps_protocol": True}}, False),
-    ({"control": {"enabled": False, "gaps_protocol": 2}}, False),     # control switched off on the worker
-    ({"control": {"gaps_protocol": 2}}, False),
+    ({"control": {"enabled": False, "gaps_protocol": 3}}, False),     # control switched off on the worker
+    ({"control": {"gaps_protocol": 3}}, False),
     ({"control": None}, False), ({}, False), (None, False), ([], False),
 ])
 def test_only_a_worker_with_control_on_and_protocol_one_supports_gaps(health, capable):
@@ -558,11 +562,11 @@ def test_only_a_worker_with_control_on_and_protocol_one_supports_gaps(health, ca
 def test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work(factory, db, linked, worker_is):
     worker, state = FakeWorker(), remote.State()
     if worker_is == "other_protocol":
-        worker.gaps = 1
+        worker.gaps = remote.GAPS_PROTOCOL - 1
     elif worker_is == "control_off":
-        worker.gaps, worker.control_on = 2, False
+        worker.gaps, worker.control_on = remote.GAPS_PROTOCOL, False
     elif worker_is == "unreachable_health":
-        worker.gaps, worker.health_error = 2, remote.Unreachable("the replay worker is unreachable")
+        worker.gaps, worker.health_error = remote.GAPS_PROTOCOL, remote.Unreachable("the replay worker is unreachable")
     first = remote.cycle(factory, worker, state, now=0)
     assert first["sent"] == remote.IN_FLIGHT == first["gaps_unavailable"] and worker.health_reads == 1
     assert all(set(t) == {"key", "map", "blob", "link", 'height_mode'} for t in worker.tasks.values())
@@ -576,7 +580,7 @@ def test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work(fact
 
 
 def test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored(factory, db, linked):
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     first = remote.cycle(factory, worker, state, now=0)
     assert first["sent"] == remote.IN_FLIGHT and first["gaps_unavailable"] == 0 and worker.health_reads == 1
     assert sent_rounds(worker) == list(range(1, remote.IN_FLIGHT + 1))
@@ -587,7 +591,7 @@ def test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored(fa
     assert task["gaps"] == {"replay_id": linked.id, "round": 1, "fingerprint": planned.fingerprint,
                             "gap_fingerprint": gap_print,
                             "engine_key": replay_gaps.engine_key(planned.fingerprint, linked.map_name)}
-    assert task["key"] == f"{linked.id}:1:{planned.fingerprint}:g2:{gap_print}"
+    assert task["key"] == f"{linked.id}:1:{planned.fingerprint}:g{remote.GAPS_PROTOCOL}:{gap_print}"
     assert task["key"] != remote.task_key(linked.id, 1, planned.fingerprint), "never a plain task's result"
     assert all(f.expect_gaps for f in state.in_flight.values())
     second = remote.cycle(factory, worker, state, now=1)
@@ -605,7 +609,7 @@ def test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok(factory, db, li
         job["result"]["gaps"] = json.loads(json.dumps(FakeWorker.gap_result(task, status="failed")))
         return job
 
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["stored"] == counts["gaps_stored"] == remote.IN_FLIGHT and counts["stored_failed"] == 0
@@ -625,6 +629,8 @@ def test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok(factory, db, li
     lambda g: g.update(moments=None),
     lambda g: g["moments"].update(status="other"),
     lambda g: g["moments"].update(status="ok", fights=None),             # ok without a list
+    lambda g: g.pop("util"),                                             # a result from before Critical Util
+    lambda g: g["util"].update(status="ok", data=None),                  # util ok without its data
 ])
 def test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept(factory, db, linked, change):
     def answer(task):
@@ -632,7 +638,7 @@ def test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept(factory
         change(job["result"]["gaps"])
         return job
 
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["stored"] == counts["gaps_dropped"] == remote.IN_FLIGHT and counts["gaps_stored"] == 0
@@ -649,7 +655,7 @@ def test_a_capable_result_without_this_deploys_figures_stores_nothing(factory, d
             job["result"]["figures"] = figures
         return job
 
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["dropped_figures"] == remote.IN_FLIGHT and counts["stored"] == counts["gaps_stored"] == 0
@@ -681,7 +687,7 @@ def test_a_link_that_moves_between_the_two_stores_skips_the_gaps(factory, db, li
         return outcome
 
     monkeypatch.setattr(remote, "store_round", store_then_relink)
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["gaps_skipped"] == 1 and counts["gaps_stored"] == remote.IN_FLIGHT - 1
@@ -696,7 +702,7 @@ def test_a_full_task_that_lands_on_an_older_worker_is_asked_again_plain(factory,
             return {"status": "failed", "error_kind": "infra", "error": "ModuleNotFoundError: No module named 'app.gaps'"}
         return FakeWorker.ok(worker, task)
 
-    worker, state = FakeWorker(old_image, gaps=2), remote.State()
+    worker, state = FakeWorker(old_image, gaps=remote.GAPS_PROTOCOL), remote.State()
     assert remote.cycle(factory, worker, state, now=0)["sent"] == remote.IN_FLIGHT
     worker.gaps = None                               # what its health says from now on
     counts = remote.cycle(factory, worker, state, now=1)
@@ -704,7 +710,7 @@ def test_a_full_task_that_lands_on_an_older_worker_is_asked_again_plain(factory,
     assert counts["sent"] == remote.IN_FLIGHT, "asked again at once, plain: the failed key was the full one"
     plain = [t for t in worker.tasks.values() if "gaps" not in t]
     assert sorted(int(t["key"].split(":")[1]) for t in plain) == list(range(1, remote.IN_FLIGHT + 1))
-    worker.gaps = 2                                  # the worker updates: the rest go out with gaps, no restart
+    worker.gaps = remote.GAPS_PROTOCOL                                  # the worker updates: the rest go out with gaps, no restart
     before = len(worker.tasks)
     assert remote.cycle(factory, worker, state, now=2)["stored"] == remote.IN_FLIGHT
     assert all(len(key.split(":")) == 5 for key in state.tries), "only the full keys carry a failure"
@@ -718,7 +724,7 @@ def test_a_full_task_that_lands_on_an_older_worker_is_asked_again_plain(factory,
 def test_once_health_names_the_protocol_rounds_still_needing_control_go_out_with_gaps(factory, db, linked):
     worker, state = FakeWorker(), remote.State()
     remote.cycle(factory, worker, state, now=0)                      # plain, to an older worker
-    worker.gaps = 2
+    worker.gaps = remote.GAPS_PROTOCOL
     counts = remote.cycle(factory, worker, state, now=1)             # the same State: no restart
     rest = linked.round_count - remote.IN_FLIGHT
     assert counts["stored"] == remote.IN_FLIGHT and counts["sent"] == rest and counts["gaps_unavailable"] == 0
@@ -729,7 +735,7 @@ def test_once_health_names_the_protocol_rounds_still_needing_control_go_out_with
 def test_a_round_in_flight_is_never_sent_again_when_the_capability_changes(factory, db, linked):
     worker, state = FakeWorker(answer=lambda task: {"status": "queued"}), remote.State()
     remote.cycle(factory, worker, state, now=0)                      # eight plain jobs, waiting on the worker
-    worker.gaps = 2
+    worker.gaps = remote.GAPS_PROTOCOL
     state.in_flight.pop(next(iter(state.in_flight)))                 # room for one more
     remote.cycle(factory, worker, state, now=1)
     assert len(worker.tasks) == remote.IN_FLIGHT + 1
@@ -743,7 +749,7 @@ def test_gap_rows_the_model_refuses_are_dropped_without_stopping_the_cycle(facto
         job["result"]["gaps"]["rows"][0]["no_such_column"] = 1
         return job
 
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["stored"] == counts["gaps_dropped"] == remote.IN_FLIGHT and not gap_runs(db, linked)
@@ -756,7 +762,7 @@ def test_the_client_reads_health_through_the_same_error_mapping():
     client = remote.ControlClient("worker:8080")
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(remote.urllib.request, "urlopen",
-                   lambda request, timeout: io.BytesIO(b'{"control": {"enabled": true, "gaps_protocol": 2}}'))
+                   lambda request, timeout: io.BytesIO(b'{"control": {"enabled": true, "gaps_protocol": 3}}'))
         assert remote.supports_gaps(client.health())
 
     def fail(request, timeout):
@@ -800,7 +806,7 @@ def control_rounds(worker):
 def test_rounds_with_current_control_and_no_gaps_are_sent_for_gaps_alone(factory, db, linked):
     all_control(db, linked)
     before = {n: r.computed_at for n, r in rows(db, linked).items()}
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     first = remote.cycle(factory, worker, state, now=0)
     assert first["gaps_sent"] == remote.IN_FLIGHT and first["sent"] == 0
     assert gaps_only_rounds(worker) == list(range(1, remote.IN_FLIGHT + 1)) and not control_rounds(worker)
@@ -808,7 +814,7 @@ def test_rounds_with_current_control_and_no_gaps_are_sent_for_gaps_alone(factory
     task = next(t for t in worker.tasks.values() if t["gaps"]["round"] == 1)
     gap_print = replay_gaps.gap_fingerprint(planned.fingerprint, linked.map_name)
     assert set(task) == {"key", "map", "blob", "link", "gaps", "gaps_only", 'height_mode'} and task["gaps_only"] is True
-    assert task["key"] == f"{linked.id}:1:{planned.fingerprint}:go2:{gap_print}"
+    assert task["key"] == f"{linked.id}:1:{planned.fingerprint}:go{remote.GAPS_PROTOCOL}:{gap_print}"
     assert task["gaps"]["gap_fingerprint"] == gap_print and task["gaps"]["engine_key"]
     assert all(f.gaps_only and f.expect_gaps for f in state.in_flight.values())
     second = remote.cycle(factory, worker, state, now=1)
@@ -828,14 +834,14 @@ def test_gaps_under_old_rules_are_sent_again_and_a_current_gap_failure_is_left(f
     put_gap_run(db, linked, 2, fingerprint="0" * 16)                 # other gap rules or assets: stale
     put_gap_run(db, linked, 3, status="failed")                      # failed under the current keys
     put_gap_run(db, linked, 4, status="failed", fingerprint="1" * 16)
-    worker = FakeWorker(gaps=2)
+    worker = FakeWorker(gaps=remote.GAPS_PROTOCOL)
     remote.cycle(factory, worker, remote.State(), now=0)
     assert gaps_only_rounds(worker) == [2, 4] and not control_rounds(worker)
 
 
 def test_control_goes_first_and_gaps_fill_what_is_left_of_the_pool(factory, db, linked):
     all_control(db, linked, but=(1, 2, 3))
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     counts = remote.cycle(factory, worker, state, now=0)
     assert counts["sent"] == 3 and counts["gaps_sent"] == remote.IN_FLIGHT - 3
     assert control_rounds(worker) == [1, 2, 3] and gaps_only_rounds(worker) == list(range(4, 4 + remote.IN_FLIGHT - 3))
@@ -846,7 +852,7 @@ def test_control_goes_first_and_gaps_fill_what_is_left_of_the_pool(factory, db, 
 
 def test_a_pool_filled_by_control_sends_no_gaps_only_work(factory, db, linked):
     all_control(db, linked, but=range(1, remote.IN_FLIGHT + 2))      # more control work than the pool holds
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     counts = remote.cycle(factory, worker, state, now=0)
     assert counts["sent"] == remote.IN_FLIGHT and counts["gaps_sent"] == 0 and not gaps_only_rounds(worker)
 
@@ -862,7 +868,7 @@ def test_no_gaps_only_work_goes_to_a_worker_without_the_protocol_until_it_has_it
     assert forced == [False], "without the capability the gaps plan is not even made"
     remote.cycle(factory, worker, state, now=remote.CYCLE_S)
     assert forced == [False], "and the idle throttle still holds"
-    worker.gaps = 2                                                  # the same worker object, updated in place
+    worker.gaps = remote.GAPS_PROTOCOL                                                  # the same worker object, updated in place
     counts = remote.cycle(factory, worker, state, now=remote.PLAN_IDLE_S + 1)     # the same State: no restart
     assert counts["gaps_sent"] == remote.IN_FLIGHT and forced == [False, False, True]
     assert remote.cycle(factory, worker, state, now=remote.PLAN_IDLE_S + 2)["gaps_stored"] == remote.IN_FLIGHT
@@ -875,7 +881,7 @@ def test_planning_is_throttled_when_control_and_gaps_are_both_current(factory, d
     calls = []
     real = rc.plan
     monkeypatch.setattr(rc, "plan", lambda session, **kw: calls.append(kw.get("force", False)) or real(session, **kw))
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     remote.cycle(factory, worker, state, now=remote.CYCLE_S)
     assert calls == [False, True] and not worker.tasks, "one control plan and one forced plan, then the throttle"
@@ -885,7 +891,7 @@ def test_planning_is_throttled_when_control_and_gaps_are_both_current(factory, d
 
 def test_a_gaps_only_result_that_arrives_after_control_moved_is_skipped(factory, db, linked):
     all_control(db, linked)
-    worker, state = FakeWorker(gaps=2), remote.State()
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     linked.db_deaths = {"1": [{"slot": 0, "t_db": 30.0}]}            # a relink while the worker computes
     db.commit()
@@ -913,7 +919,7 @@ def test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again(facto
         return job
 
     all_control(db, linked)
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts[counted] == remote.IN_FLIGHT and counts["gaps_stored"] == 0 and not gap_runs(db, linked)
@@ -932,7 +938,7 @@ def test_a_detector_failure_on_a_gaps_only_task_is_stored_and_not_asked_again(fa
         return job
 
     all_control(db, linked)
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     t = 0
     for _ in range(6):
         remote.cycle(factory, worker, state, now=t)
@@ -950,21 +956,21 @@ def test_a_machine_failure_on_a_gaps_only_task_backs_off_and_stops_after_the_bud
     put_row(db, linked, 1)
     for n in range(2, linked.round_count + 1):
         put_row(db, linked, n, status="failed")                      # the rest failed control: no gaps for them
-    worker, state = FakeWorker(answer, gaps=2), remote.State()
+    worker, state = FakeWorker(answer, gaps=remote.GAPS_PROTOCOL), remote.State()
     t = 0
     for _ in range(2 * remote.MAX_TRIES + 2):
         remote.cycle(factory, worker, state, now=t)
         t += remote.BACKOFF_S + 1
     assert gaps_only_rounds(worker) == [1] * remote.MAX_TRIES and not gap_runs(db, linked)
     [(key, (count, _))] = state.tries.items()
-    assert count == remote.MAX_TRIES and ":go2:" in key
+    assert count == remote.MAX_TRIES and f":go{remote.GAPS_PROTOCOL}:" in key
     assert rows(db, linked)[1].status == "ok", "control is untouched"
 
 
 def test_a_gaps_only_job_waits_and_times_out_like_any_other(factory, db, linked):
     phase = {"status": "queued"}
     all_control(db, linked)
-    worker, state = FakeWorker(answer=lambda task: {"status": phase["status"]}, gaps=2), remote.State()
+    worker, state = FakeWorker(answer=lambda task: {"status": phase["status"]}, gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
     remote.cycle(factory, worker, state, now=5 * remote.STALE_JOB_S)
     assert len(state.in_flight) == remote.IN_FLIGHT and not state.tries, "queued behind parses never counts (D8)"

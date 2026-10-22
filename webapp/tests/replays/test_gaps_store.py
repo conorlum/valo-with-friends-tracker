@@ -24,7 +24,7 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.gaps.rows import to_rows  # noqa: E402
-from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments  # noqa: E402
+from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -40,7 +40,7 @@ def session_factory(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__,
-                                                   ReplayRoundMoments.__table__])
+                                                   ReplayRoundMoments.__table__, ReplayRoundUtil.__table__])
     return sessionmaker(bind=engine)
 
 
@@ -240,6 +240,35 @@ def test_a_failed_guarded_write_leaves_the_old_rows(session_factory, stored_roun
         store_gaps(session_factory, replay_id, n, run, [{**ROW, "no_such_column": 1}],
                    moments=MOMENTS, expected_control_fingerprint=fingerprint)
     assert _stored(session_factory, replay_id, n) == (("ok", "1" * 16), 1), "the delete rolled back with the rest"
+
+
+# ---- Critical Util (migration 0029)
+
+
+def _util_row(session_factory, replay_id, n):
+    s = session_factory()
+    try:
+        row = s.get(ReplayRoundUtil, (replay_id, n))
+        return None if row is None else (row.status, row.fingerprint, row.gaps_revision, row.data, row.error)
+    finally:
+        s.close()
+
+
+def test_a_store_writes_the_rounds_util_with_the_run(session_factory, stored_round):
+    replay_id, n = stored_round
+    util = {"status": "ok", "data": {"v": 1, "casts": [{"i": 0}]}, "error": None}
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS, util=util) == "stored"
+    assert _util_row(session_factory, replay_id, n) == ("ok", RUN["fingerprint"], RUN["gaps_revision"],
+                                                        {"v": 1, "casts": [{"i": 0}]}, None)
+
+
+def test_a_failed_util_keeps_no_data_and_no_util_leaves_the_row(session_factory, stored_round):
+    replay_id, n = stored_round
+    store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS,
+               util={"status": "failed", "data": {"x": 1}, "error": "ValueError: no"})
+    assert _util_row(session_factory, replay_id, n)[0::3] == ("failed", None)
+    store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS)
+    assert _util_row(session_factory, replay_id, n)[0] == "failed", "a caller with no util leaves the row"
 
 
 # ---- critical moments (migration 0026)

@@ -21,7 +21,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.services import control_heights, replay_control
 
-GAPS_REVISION = 4     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it); 4: critical moments ride the gap run
+GAPS_REVISION = 5     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it); 5: Critical Util rides the gap run; 4: critical moments ride the gap run
 HEARING_FILE = Path(__file__).resolve().parents[1] / "control" / "hearing.json"
 
 

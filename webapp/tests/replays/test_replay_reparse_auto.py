@@ -290,7 +290,7 @@ class ProtocolWorker:
     def __init__(self, recipe=NEW, files: dict | None = None):
         self.health_body = {"ok": True, "queued": 0, "recipe": recipe,
                             "archive": {"enabled": True, "reparse_protocol": 1},
-                            "control": {"enabled": True, "gaps_protocol": 2, "queued": 0, "running": 0}}
+                            "control": {"enabled": True, "gaps_protocol": 3, "queued": 0, "running": 0}}
         self.files = dict(files or {})     # match uuid -> sha256 of the archived recording
         self.receipts: dict[str, dict] = {}
         self.jobs: dict[str, dict] = {}
@@ -1317,7 +1317,7 @@ def test_status_counts_every_state_and_lists_what_gave_up_and_what_is_unfinished
     assert body["waiting_on"] == "an attempt is unfinished"
     assert (body["site_recipe"], body["worker_recipe"]) == (NEW, NEW)
     assert body["worker"] == {"reachable": True, "archive_enabled": True, "reparse_protocol": 1,
-                              "control_enabled": True, "gaps_protocol": 2}
+                              "control_enabled": True, "gaps_protocol": 3}
     assert set(worker.calls) == SNAPSHOT_CALLS and frozen(db) == before, "read only: nothing sent, closed, collected"
     assert worker.receipts == {} and not db.new and not db.dirty
     import json
@@ -1515,7 +1515,7 @@ def test_the_script_describes_a_stopped_queue_and_a_pending_restoration(script):
         "running": False, "reason": "recipe skew: the site is on a, the worker on b", "site_recipe": "a",
         "worker_recipe": "b", "counts": {"current": 0, "unknown": 3},
         "worker": {"reachable": True, "archive_enabled": True, "reparse_protocol": None, "control_enabled": False,
-                   "gaps_protocol": 2},
+                   "gaps_protocol": 3},
         "attempts": [{"attempt_id": "x", "state": "in_flight", "match_uuid": "m", "target_recipe": "b",
                       "reserved_at": "2026-10-07T12:00:00+00:00", "deferred": "recipe skew"}],
         "gave_up": [], "waiting_on": None,

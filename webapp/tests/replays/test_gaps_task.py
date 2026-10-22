@@ -91,6 +91,24 @@ def test_a_moments_failure_never_fails_the_gap_run(tmp_path, monkeypatch):
     assert result["gaps"]["moments"] == {"status": "failed", "fights": [], "error": "ValueError: no moments today"}
 
 
+def test_a_gap_run_carries_the_rounds_critical_util(tmp_path, monkeypatch):
+    result = compute_task(_task(tmp_path, monkeypatch))
+    util = result["gaps"]["util"]
+    assert util["status"] == "ok" and util["error"] is None and isinstance(util["data"]["casts"], list)
+    assert json.loads(json.dumps(util)) == util, "plain JSON"
+    only = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
+    assert only["gaps"]["util"] == util, "a gaps-only run gives the same evidence"
+
+
+def test_a_util_failure_never_fails_the_gap_run_or_the_moments(tmp_path, monkeypatch):
+    from app.critutil import extract
+
+    monkeypatch.setattr(extract, "round_util", lambda *a, **k: (_ for _ in ()).throw(ValueError("no util today")))
+    result = compute_task(_task(tmp_path, monkeypatch))
+    assert result["gaps"]["run"]["status"] == "ok" and result["gaps"]["moments"]["status"] == "ok"
+    assert result["gaps"]["util"] == {"status": "failed", "data": None, "error": "ValueError: no util today"}
+
+
 def test_gaps_only_uses_the_cache_written_by_a_full_run(tmp_path, monkeypatch):
     first = compute_task(_task(tmp_path, monkeypatch))
     assert first["gaps"]["run"]["status"] == "ok" and first["gaps"]["rows"], "the toy has gaps"
@@ -442,7 +460,8 @@ def _command(monkeypatch, gaps_result):
         run = {"fingerprint": replay_gaps.gap_fingerprint(job["fingerprint"], task["map"]),
                "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": choke_assets.asset_hash(task["map"]), **gaps_result}
         result = {"status": "ok", "geometry": rc.geometry_inputs(task["map"]), "gaps": {"run": run, "rows": [],
-                                                                           "moments": {"status": "ok", "fights": [], "error": None}}, "key": task["key"],
+                                                                           "moments": {"status": "ok", "fights": [], "error": None},
+                                                                           "util": {"status": "ok", "data": {"v": 1}, "error": None}}, "key": task["key"],
                   "seconds": 0.0, "peak": None}
         if not task["gaps_only"]:
             result.update({"data": b"d", "summary": b"s", "missing": {}})
