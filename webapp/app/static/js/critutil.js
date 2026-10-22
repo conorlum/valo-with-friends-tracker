@@ -101,6 +101,7 @@
       bits.push((HOW[h.how] || h.how) + " teammate " + nameOf(players, h.mate) + (h.died ? " (died while affected)" : ""));
     });
     if (row.heal) bits.push("healed " + nameOf(players, row.heal.target) + (row.heal.saved ? ", kept them alive" : row.heal.fought ? ", before a fight" : ""));
+    if (row.found_nobody) bits.push("found nobody (the area was empty)");
     if (row.wasted) bits.push("wasted: nothing came of it");
     return bits;
   }

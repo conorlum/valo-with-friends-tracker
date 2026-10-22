@@ -155,7 +155,8 @@ def value_round(round_data: dict, model: dict | None, weights: dict | None = Non
         l = led[c["i"]]["value"]
         casts[c["i"]] = {"ledger": round(l, 4), "jobs": round(jobs, 4), "total": round(l + jobs, 4),
                          "features": {k: v for k, v in f.items() if v}, "items": led[c["i"]]["items"],
-                         "scored": True, "wasted": is_wasted(c, l, f)}
+                         "scored": True, "wasted": is_wasted(c, l, f),
+                         "found_nobody": set(c.get("kinds") or ()) <= {"info", "ult"} and not c.get("enemies")}
     heals = []
     for h in round_data.get("heals") or []:
         f = heal_features(h)
@@ -168,8 +169,11 @@ def is_wasted(cast: dict, ledger_value: float, f: dict) -> bool:
     enemy at its edge, never triggered, no defuse stopped. A device that holds a lane nobody tried still counts
     as holding it while armed (the watch), so a device is wasted only when it was gone at once and showed no
     enemy."""
-    if not set(cast.get("kinds") or ()) & JUDGED_KINDS:
+    kinds = set(cast.get("kinds") or ())
+    if not kinds & JUDGED_KINDS or kinds & {"mobility", "teleport"}:
         return False            # movement, teleports, decoys and the like: never called wasted
+    if kinds <= {"info", "ult"}:
+        return False            # recon that found nobody still told the team the area was empty (found_nobody)
     if cast.get("enemies") or cast.get("kills") or ledger_value:
         return False
     if any(v for k, v in f.items() if k != "harm_soft"):

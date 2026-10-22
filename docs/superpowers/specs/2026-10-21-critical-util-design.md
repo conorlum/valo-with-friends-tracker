@@ -4,6 +4,25 @@ Date: October 21, 2026. Status: design only; no application changes. Branch `wor
 `origin/main` at `26c2578d`. Revised the same day after an independent review (findings folded in below; the
 owner questions it raised are under "Open questions").
 
+## Built (2026-10-21)
+
+Built on branch `worktree-critical-util` on top of `CONDENSE_REVISION` 21 (PR #167). Where the build differs from
+the text below, or leaves something for later:
+
+- **Hold space for devices and mollies** is measured from observed enemy presence (enemies who came to the util's
+  edge and turned back, enemy-seconds waiting there), not from the modelled unknown. Using the engine's unknown
+  needs the gap run's tick records per cast; a follow-up.
+- **Teammate statuses** did not land in revision 21 (no `friendly` flag): teammate harm covers flashes and
+  nearsights only, and the round data says `friendly_status: false`.
+- **The coach's flash detector** (`app/coach/detectors.py` `_flashes`) is kept beside the new util facts:
+  replacing it changes existing coach output, which is the owner's call.
+- **Weights** are fitted only when the corpus beats the starting weights on held-out matches; on the first 8
+  replays measured it did not, so the starting weights (`util_values.DEFAULT_WEIGHTS`) are in use.
+- **Ult cost** is shown as value per ult point, not subtracted from the value.
+- **Measured on real data** (8 replays, read-only): about 0.3 s per round on the worker, no failures; the
+  estimator, fitted on 3,868 non-replay matches, is calibrated within 1 point in every decile on held-out matches
+  and beats man advantage alone (log loss 0.436 vs 0.440).
+
 ## Outcome
 
 Three things, all built from the stored replays (the corpus is the linked replays we have, nothing else):

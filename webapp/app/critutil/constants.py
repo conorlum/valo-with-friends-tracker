@@ -6,12 +6,13 @@ from __future__ import annotations
 
 VERSION = 1                 # the extractor's output (app/critutil/extract.py); part of the stored row
 
-# --- one cast
-MERGE_S = 0.6               # rows of one ability by one player this close together are one cast
-MERGE_M = 3.0               # ... and this close, unless a row's name says it is a part of another
-PART_WORDS = ("Manager", "Second", "Segment", "Chunk", "Pulse", "Damage", "Explosion", "Fissure", "Beam",
-              "Source", "Marker", "Expansion", "Zone", "AOE")
-FLASH_ROW_MATCH_S = 1.0     # an `ability` row of a blind or nearsight this close to a flash row is that cast
+# --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
+# about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
+MERGE_S = 0.6               # a piece starting this soon after a cast's last piece ended still belongs to it
+THROW_MATCH_S = 0.05        # a piece whose `thrown.t0` is this close to a cast's throw is that cast's
+REPEAT_S = 1.0              # the same landed piece again this much later is another use (a second smoke) ...
+REPEAT_PARTS = ("SonarPing", "RevealDart", "Pulse", "Segment", "Chunk", "Manager", "Wall", "Second")  # ... but not these
+FLASH_ROW_MATCH_S = 1.0     # a projectile or source thrown this close to a flash or nearsight row is that cast
 
 # --- windows (measure)
 GRACE_S = 1.0               # a kill this long after an effect ends still counts as on an affected enemy
@@ -47,6 +48,7 @@ DEVICE_PATTERNS = ("TripWire", "PossessableCamera", "E_Turret", "StealthAlarmbot
                    "X_InterrogateHat", "E_Drone", "Q_PossessableScout", "WolfHound", "4_Spider")
 WALL_PATTERNS = ("Q_WallManager", "E_SmokeScreenManager", "X_GlobalWall", "4_Tunnel", "Q_FlameWallManager",
                  "Shear", "Wall", "Mesh")
+MOBILITY_KEYS = frozenset({"Clay_Q_Explosion"})   # Raze's Blast Pack: mostly a jump, never called wasted
 STALL_KINDS = frozenset({"smoke", "damaging", "status", "device"})
 
 # Ability by keybind per agent, for unused util (the charge timelines name the inventory slot, not the ability).

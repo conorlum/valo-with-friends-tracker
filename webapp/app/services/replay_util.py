@@ -216,6 +216,7 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights) -> list[
                 "buy": buy_type(n, ctx["loadout"].get((n, team))),
                 "won": (ctx["rounds"].get(n) or {}).get("winner") == c.get("side") if c.get("side") else None,
                 "value": v["total"], "ledger": v["ledger"], "jobs": v["jobs"], "wasted": v.get("wasted", False),
+                "found_nobody": v.get("found_nobody", False),
                 "harm": len(c.get("harm") or ()), "harm_died": sum(1 for h in c.get("harm") or () if h.get("died")),
                 "followed": c.get("followed"), "ult_points": c.get("ult_points"),
                 "enemies": len(c.get("enemies") or ()), "features": v["features"],
@@ -516,7 +517,8 @@ def match_payload(db, replay) -> dict:
         for r in by_round.get(n, []):
             c = casts.get(r["i"]) or {}
             out.append({**{k: r[k] for k in ("i", "slot", "agent", "ability", "kind", "kinds", "side", "area", "phase",
-                                             "t", "wasted", "followed", "enemies", "harm_died", "combo")
+                                             "t", "wasted", "found_nobody", "followed", "enemies", "harm_died",
+                                             "combo")
                            if k in r},
                         "value": round(100 * r["value"], 2), "ledger": round(100 * r["ledger"], 2),
                         "jobs": round(100 * r["jobs"], 2), "features": r["features"],

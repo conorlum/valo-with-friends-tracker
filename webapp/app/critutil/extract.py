@@ -14,13 +14,12 @@ import math
 
 from app.control import engine
 from app.critutil.constants import (AGENT_KEYS, DEVICE_PATTERNS, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
-                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, LIFE_CAP_S, MERGE_M,
-                                    MERGE_S, NEAR_TRIGGER_M, PART_WORDS, PRESENCE_KINDS, PRESENCE_STEP_S, SAVE_WINDOW_S,
-                                    SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, TRIGGER_WINDOW_S, TURN_AWAY_M,
+                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, LIFE_CAP_S, MOBILITY_KEYS,
+                                    MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
+                                    SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
 from app.moments.constants import ABILITY_KIND
 
-SKIP_KINDS = ("Projectile", "Bomb")
 _EPS = 0.01
 
 
@@ -54,35 +53,43 @@ def _kinds_of(names: list[str]) -> set[str]:
     return kinds
 
 
-def _is_part(name: str | None) -> bool:
-    return bool(name) and any(w in name for w in PART_WORDS)
-
-
 class _Cast:
-    __slots__ = ("i", "by", "agent", "t", "t_end", "u", "v", "rows", "names", "ids", "kinds", "flash")
+    __slots__ = ("i", "by", "agent", "t", "t_end", "u", "v", "rows", "names", "ids", "kinds", "flash", "key",
+                 "landed_t", "landed")
 
     def __init__(self, i, row, t_cap):
         self.i, self.by, self.agent = i, row.get("by"), row.get("agent")
-        self.t = float(row["t"])
+        self.t = _throw_t(row)              # when it was thrown: a projectile's spawn, a placed piece's `thrown.t0`
         self.t_end = _end(row, t_cap)
-        self.u, self.v = row.get("u"), row.get("v")
-        self.rows, self.names, self.ids = [row], [], set()
-        self.flash = None
-        self._add_names(row)
+        self.u = self.v = None
+        self.rows, self.names, self.ids = [], [], set()
+        self.flash, self.key = None, _key_of(row.get("name"))
+        self.landed_t, self.landed = None, {}   # first landed piece's time; each landed name's first time
+        self.add(row, t_cap)
 
-    def _add_names(self, row):
+    def add(self, row, t_cap):
+        self.rows.append(row)
+        self.t_end = max(self.t_end, _end(row, t_cap))
+        if self.agent is None:
+            self.agent = row.get("agent")
         name = row.get("name") or row.get("ability")
         if name:
             self.names.append(name)
         if row.get("id") is not None:
             self.ids.add(row["id"])
+        landed = row.get("k") != "ability" or row.get("kind") != "Projectile"
+        if row.get("u") is not None and (self.u is None or (landed and self.landed_t is None)):
+            self.u, self.v = row["u"], row["v"]     # where it landed, not where the projectile left the hand
+        if landed and row.get("k") == "ability":
+            if self.landed_t is None:
+                self.landed_t = float(row["t"])
+            if name:
+                self.landed.setdefault(name, float(row["t"]))
 
-    def add(self, row, t_cap):
-        self.rows.append(row)
-        self.t_end = max(self.t_end, _end(row, t_cap))
-        if self.u is None and row.get("u") is not None:
-            self.u, self.v = row["u"], row["v"]
-        self._add_names(row)
+
+def _throw_t(row) -> float:
+    thrown = row.get("thrown") or {}
+    return float(thrown["t0"]) if thrown.get("t0") is not None else float(row["t"])
 
 
 def _end(row, t_cap) -> float:
@@ -96,41 +103,49 @@ def _dist_m(rnd, a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1]) * rnd.geo.m_per_px
 
 
+def _another_use(c: _Cast, row) -> bool:
+    """A landed piece this cast already has, landing again more than REPEAT_S later, is another use of the
+    ability (a second smoke), unless the piece is one that repeats within one use (a recon's pings)."""
+    name = row.get("name")
+    if not name or name not in c.landed or any(p in name for p in REPEAT_PARTS):
+        return False
+    return float(row["t"]) - c.landed[name] > REPEAT_S
+
+
 def build_casts(rnd, blob: dict) -> list[_Cast]:
-    """One _Cast per use of a charge: an ability row (not a projectile or the spike), or a flash/nearsight row,
-    with the pieces of one cast (a manager and its zones, a trip's second wire) merged into it."""
+    """One _Cast per use of a charge. A flash or nearsight row, or a projectile, starts one (a thrown ability); the
+    pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
+    (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
+    spike is not a cast."""
     t_cap = rnd.t_end
     util = blob.get("util") or ()
     casts: list[_Cast] = []
-    flashes = [r for r in util if r.get("k") in ("flash", "nearsight")]
-    for r in sorted(flashes, key=lambda r: r["t"]):
+    for r in sorted((r for r in util if r.get("k") in ("flash", "nearsight")), key=lambda r: r["t"]):
         c = _Cast(len(casts), r, t_cap)
         c.flash = r
         c.kinds = {"blind"} if r["k"] == "flash" else {"status"}
         casts.append(c)
-    abilities = sorted((r for r in util if r.get("k") == "ability" and r.get("kind") not in SKIP_KINDS),
-                       key=lambda r: r["t"])
+    abilities = sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
+                       key=lambda r: (r["t"], r.get("kind") != "Projectile"))
     for r in abilities:
-        name = r.get("name")
+        name, by, tt = r.get("name"), r.get("by"), _throw_t(r)
         kinds = _kinds_of([name] if name else [])
-        # the ability row of a flash or nearsight that already has its flash row
-        twin = next((c for c in casts if c.flash is not None and c.by == r.get("by")
-                     and abs(c.t - r["t"]) <= FLASH_ROW_MATCH_S and (kinds & {"blind", "status"} or not kinds)
-                     and r.get("agent") == c.agent), None)
+        twin = next((c for c in reversed(casts) if c.flash is not None and c.by == by
+                     and abs(c.t - tt) <= FLASH_ROW_MATCH_S), None)
         if twin is not None and (not kinds or kinds <= {"blind", "status"}):
-            twin.add(r, t_cap)
+            twin.add(r, t_cap)                # a flash's own projectile and source rows
             continue
         host = None
-        for c in reversed(casts):
-            if c.flash is not None or c.by != r.get("by") or r["t"] - c.t > MERGE_S:
-                continue
-            if _key_of(c.names[0] if c.names else None) != _key_of(name):
-                continue
-            near = (c.u is None or r.get("u") is None
-                    or _dist_m(rnd, _px(c.u, c.v), _px(r["u"], r["v"])) <= MERGE_M)
-            if near or _is_part(name) or any(_is_part(n) for n in c.names):
-                host = c
-                break
+        if r.get("kind") != "Projectile":
+            for c in reversed(casts):
+                if c.flash is not None or c.by != by or c.key != _key_of(name):
+                    continue
+                if (r.get("thrown") or {}).get("t0") is not None:
+                    if abs(c.t - tt) <= THROW_MATCH_S:
+                        host = c
+                elif c.t - _EPS <= r["t"] <= c.t_end + MERGE_S and not _another_use(c, r):
+                    host = c
+                break                         # only the latest use of this ability can own the piece
         if host is not None:
             host.add(r, t_cap)
             continue
@@ -141,6 +156,8 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         c.kinds = set(c.kinds) | _kinds_of(c.names)
         if any(_key_of(n) == "X" for n in c.names):
             c.kinds.add("ult")
+        if any(f"{x.get('code')}_{x.get('name')}" in MOBILITY_KEYS for x in c.rows):
+            c.kinds.add("mobility")
         if not c.kinds:
             c.kinds.add("other")
     casts.sort(key=lambda c: (c.t, c.i))
@@ -224,6 +241,10 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
             if k == "damage" and not cands:
                 cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
                          and "damaging" in c.kinds]
+            if not cands and r.get("code"):
+                # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
+                cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
+                         and r["code"] in {x.get("code") for x in c.rows}]
             if len({c.i for c in cands}) != 1:
                 cands = [c for c in cands if name and name in c.names] or cands
             if not cands:
@@ -336,9 +357,11 @@ def _cover(rnd, sides, c: _Cast) -> dict | None:
     side = sides.get(c.by)
     if side is None:
         return None
+    landed = c.landed_t if c.landed_t is not None else c.t     # the zone's time, not the throw's
+    spots = [_px(r["u"], r["v"]) for r in c.rows if r.get("u") is not None and r.get("kind") != "Projectile"]
     mine = [(t0, t1, x, y, r, solid) for t0, t1, x, y, r, solid in rnd.smokes
-            if c.u is not None and abs(t0 - c.t) <= 1.0 and math.hypot(x - _px(c.u, c.v)[0], y - _px(c.u, c.v)[1]) < 1.0]
-    walls = [(t0, t1, w) for t0, t1, w in rnd.walls if abs(t0 - c.t) <= 1.0]
+            if c.t - _EPS <= t0 <= c.t_end and any(math.hypot(x - sx, y - sy) < 1.0 for sx, sy in spots)]
+    walls = [(t0, t1, w) for t0, t1, w in rnd.walls if abs(t0 - landed) <= 1.0]
     if not mine and not walls:
         return None
     end = min(c.t_end, rnd.t_decided)

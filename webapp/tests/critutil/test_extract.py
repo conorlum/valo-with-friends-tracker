@@ -64,8 +64,40 @@ def test_flash_ability_row_merges_into_the_flash_cast():
 def test_parts_of_one_cast_merge_and_separate_uses_do_not():
     out = run([toy_ability("Pandemic", "E_SmokeScreenManager", 250, 150, 1, t=5.0, t1=20.0),
                toy_ability("Pandemic", "E_SmokeScreen_Wall", 250, 260, 1, t=5.2, t1=20.0),
-               toy_ability("Pandemic", "E_SmokeScreenManager", 250, 150, 1, t=12.0, t1=20.0)])
-    assert len(cast_by(out, 1)) == 2
+               toy_ability("Wraith", "4_SmokeZone_Placed", 250, 150, 1, t=6.0, t1=20.0),
+               toy_ability("Wraith", "4_SmokeZone_Placed", 260, 150, 1, t=12.0, t1=20.0)])
+    assert len(cast_by(out, 1)) == 3, "the wall and its manager are one; the same zone landing again is another use"
+
+
+def test_a_recon_projectile_bolt_and_pings_are_one_cast():
+    # the shape of a real Sova recon (2026-10-21 export): projectile, bolt, a ping thrown from it, then a second ping
+    proj = toy_ability("Hunter", "Q_RevealBolt", 200, 200, 1, t=13.075, t1=14.991, kind="Projectile")
+    bolt = toy_ability("Hunter", "Q_SonarBolt", 300, 200, 1, t=13.998, t1=16.296, kind="GameObject")
+    ping = toy_ability("Hunter", "Q_SonarPing", 300, 200, 1, t=14.694, t1=16.562, kind="GameObject",
+                       thrown={"t0": 13.075})
+    ping2 = toy_ability("Hunter", "Q_SonarPing", 300, 200, 1, t=16.296, t1=18.167, kind="GameObject")
+    (c,) = cast_by(run([proj, bolt, ping, ping2]), 1)
+    assert c["t"] == 13.07 and c["t_end"] == 18.17 and "info" in c["kinds"]
+
+
+def test_a_nearsight_row_and_its_projectile_and_source_are_one_cast():
+    leer = flash(13.607, 1, [[5, 14.8, None]], k="nearsight", name="reyna_leer")
+    proj = toy_ability("Vampire", "4_NearsightAoE", 200, 200, 1, t=13.607, t1=14.133, kind="Projectile")
+    src = toy_ability("Vampire", "4_NearsightAOE_Source", 300, 200, 1, t=14.133, t1=16.14, kind="GameObject",
+                      thrown={"t0": 13.607})
+    assert len(cast_by(run([leer, proj, src]), 1)) == 1
+
+
+def test_two_smokes_thrown_apart_are_two_casts_and_each_lands_where_its_zone_is():
+    util = [toy_ability("Wraith", "4_Smoke", 140, 200, 1, t=10.6, t1=13.2, kind="Projectile"),
+            toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=12.7, t1=28.7, kind="Zone"),
+            toy_ability("Wraith", "4_Smoke", 140, 200, 1, t=17.6, t1=19.8, kind="Projectile"),
+            toy_ability("Wraith", "4_Smoke", 300, 120, 1, t=19.3, t1=35.3, kind="Zone")]
+    casts = cast_by(run(util), 1, "smoke")
+    assert [c["t"] for c in casts] == [10.6, 17.6]
+    from tests.replays.control_toys import uv
+
+    assert (casts[0]["u"], casts[0]["v"]) == uv(260, 200), "the zone's spot, not the thrower's"
 
 
 def test_smoke_between_teams_cuts_sight_lines_and_covered_teammates_lived():
