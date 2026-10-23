@@ -6,14 +6,19 @@ owner questions it raised are under "Open questions").
 
 ## Built (2026-10-21)
 
-Built on branch `worktree-critical-util` on top of `CONDENSE_REVISION` 21 (PR #167). Where the build differs from
-the text below, or leaves something for later:
+Built on branch `worktree-critical-util` on top of `CONDENSE_REVISION` 21 (PR #167), which it takes to 22. Where the
+build differs from the text below, or leaves something for later:
 
-- **Hold space for devices and mollies** is measured from observed enemy presence (enemies who came to the util's
-  edge and turned back, enemy-seconds waiting there), not from the modelled unknown. Using the engine's unknown
-  needs the gap run's tick records per cast; a follow-up.
-- **Teammate statuses** did not land in revision 21 (no `friendly` flag): teammate harm covers flashes and
-  nearsights only, and the round data says `friendly_status: false`.
+- **Hold space** (owner, 2026-10-21: wired in this round) uses the map-control unknown: the gap run steps an
+  unknown probe (`app/critutil/unknown.py`) beside the gap detector, and for each trip, area watcher, camera, turret
+  and molly measures the seconds the unknown stopped at its edge (`front_s`), the ground only it held (`held_m2s`)
+  and the seconds the unknown got past it (`crossed_s`). Observed enemy presence (held back, waiting) is kept
+  beside it.
+- **Teammate statuses** (owner, 2026-10-21: every adverse status counts) are kept by the parser from
+  `CONDENSE_REVISION` 22, flagged `friendly`; control skips them, Critical Util counts them as harm. Teammate damage
+  counts half of a flash or a status.
+- **Unused util names the ability** ("died holding Flashpoint"), never its keybind; the charge timelines' slot stays
+  internal (`constants.AGENT_KEYS`).
 - **The coach's flash detector** (`app/coach/detectors.py` `_flashes`) is kept beside the new util facts:
   replacing it changes existing coach output, which is the owner's call.
 - **Weights** are fitted only when the corpus beats the starting weights on held-out matches; on the first 8
@@ -22,6 +27,48 @@ the text below, or leaves something for later:
 - **Measured on real data** (8 replays, read-only): about 0.3 s per round on the worker, no failures; the
   estimator, fitted on 3,868 non-replay matches, is calibrated within 1 point in every decile on held-out matches
   and beats man advantage alone (log loss 0.436 vs 0.440).
+
+Fixed after the branch review (2026-10-22):
+
+- **Friendly rows never reach control or Critical Moments**: `RoundInputs` reads the round through
+  `engine.control_view` (revision 22's `friendly` rows taken out), so every reader, including a suppressed
+  Cypher's devices (`_suppress_devices`), sees what revision 21 gave; the gap run hands Critical Moments the same
+  view. Critical Util alone reads the whole blob.
+- **Buy-phase placements**: the condenser starts every buy-phase placement at 0 s, so the same piece placed
+  at another place by then (over `SAME_PLACE_M`, `BUY_PLACED_S`) is another charge; a tripwire's second anchor
+  joins the wire whose `end` it sits on. Measured on 10 replays: 105 Cypher trip pairs at 0 s were one cast each;
+  mid-round, same-name pieces at two places are one use (Skye's seekers, Neon's bolt), so the rule is the buy
+  phase's only. The unknown probe's items carry their row's `id` (`Watcher.src`) and are matched by it.
+- **The unknown probe** counts a device only while the engine has it watching (not switched off, owner alive,
+  Q71), a molly while it burns, and nothing after `t_decided`; ground two of a team's items hold at once is split
+  between them.
+- **Shared outcomes once**: sight lines two smokes cut at the same instant are split, each covered teammate's
+  save goes to one cast, an enemy waiting at two edges is one enemy-second, and an enemy held back belongs to the
+  edge they came closest to. A defuse attempt is a cast's to stop only when the defuser is the caster's enemy and
+  the cast reached them during it (an effect on the defuser, or a burning zone on the spike), and each stopped
+  attempt goes to one cast.
+- **Heals**: the lowest health in the heal's own life within `HEAL_FOLLOW_S` already holds every other heal, so a
+  heal saved the life only when that low point minus its amount is at or below zero; heals each needed share the
+  save by amount (`saved_share`); without vitals it is unavailable (None).
+- **Teammate harm** is charged with the death it was on (`died_t`, inside that life), never a later life's.
+- **Unused full ults**: the worker reports each slot's ult per round (`ults`); the site proves the cost from the
+  match (the most points held before any use) and lists a round where a player ended full and never used it
+  (`replay_util.unused_ults`). No claim for a slot that never used its ult in the match.
+- **Freshness**: the tab, the coach and the corpus read only rows whose gap fingerprint is current
+  (`replay_util.current_rows`: link, clock correction, geometry, chokes, hearing), Critical Moments' rule. The
+  corpus key is computed from the rows a build read; rebuilds run one at a time (a Postgres advisory lock) and
+  build again when the rows changed meanwhile. The estimator stores the replay matches it left out and is refitted
+  before a match that later got a replay is valued (`util_model.ensure`).
+- **Weights out of sample**: when fitted weights are adopted, each match is valued with its own fold's weights.
+- **The no-util baseline** (section "Baseline") is built: every 2 s of every stored round, per side, the change in
+  that side's round-win chance over the next 10 s; a cast's `lift` is its own change minus the mean of moments in
+  other matches in the same state, phase and time bucket with no util of its kind up (falling back to state and
+  phase, then man advantage, under 30 moments; the level is shown). Lineup scores and calls use the lift, shrunk
+  toward the ability's mean lift (the ability prior, shown separately); the player's own moments without that util
+  are shown beside it ("Yours"). Per-ability overlap is in `scripts/critical_util.py measure`. On 8 replays most
+  casts compare at the full level; a cast's lift is noisy (sd about 20 points), which the shrinkage and the
+  5-cast minimum are for. The `value` (the ledger and jobs credit) is still shown, labelled as credit.
+- **After the decision**: post-`t_decided` casts are in the tab, marked not scored, and in no total or ranking.
 
 ## Outcome
 

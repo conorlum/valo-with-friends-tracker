@@ -110,6 +110,7 @@ def cmd_measure(db) -> int:
     # 6. heals and unused util
     heals = [h for _, _, d in rounds for h in d.get("heals") or ()]
     unused = Counter(u["kind"] for _, _, d in rounds for u in d.get("unused") or ())
+    unused["ult_unused"] = sum(len(v) for rs in stored.values() for v in replay_util.unused_ults(rs).values())
     print(f"6. heals: {len(heals)}, kept someone alive: {sum(1 for h in heals if h.get('saved'))}, "
           f"before a fight: {sum(1 for h in heals if h.get('fought'))}; unused: {dict(unused)}")
 
@@ -122,19 +123,11 @@ def cmd_measure(db) -> int:
             areas[replay_util.area_of(ctx[rid]["map"], c.get("u"), c.get("v"), c.get("side"))] += 1
     print(f"7. casts per area: {dict(areas.most_common())}")
 
-    # 2. overlap: casts in an estimator cell with a real comparison set
-    if model:
-        thin = 0
-        cells = model.get("cells") or {}
-        total = 0
-        for _, _, d in rounds:
-            for c in d.get("casts") or ():
-                a, dd = c.get("alive") or (0, 0)
-                planted = d.get("plant") is not None and c["t"] >= d["plant"]
-                key = util_model.keys(a, dd, planted, util_model.time_bucket(c["t"], planted, d.get("plant")))[0]
-                total += 1
-                thin += (cells.get(key) or (0, 0))[1] < 30
-        print(f"2. casts whose full estimator cell has under 30 observations: {thin} of {total}")
+    # 2. overlap: per ability, the share of casts with a no-util comparison set at the full level, a fallback, none
+    if data:
+        print("2. baseline overlap per ability (casts: full level / fallback / none):")
+        for ability, o in sorted(data["overlap"].items(), key=lambda kv: -kv[1]["casts"]):
+            print(f"   {ability:24s} {o['casts']:4d}: {o['full']} / {o['fallback']} / {o['none']}")
     kinds = Counter(k for _, _, d in rounds for c in d.get("casts") or () for k in c.get("kinds") or ())
     print(f"cast kinds: {dict(kinds.most_common())}")
     return 0
@@ -151,7 +144,8 @@ def cmd_show(db, limit: int) -> int:
     for title, rows in (("top", page["lineups"][:limit]), ("bottom", page["lineups"][-limit:])):
         print(title)
         for c in rows:
-            print(f"  {c['score']:+6.2f} pp  {names.get(c['player_id'], '?'):24s} {c['agent']} {c['ability']} "
+            score = "     –" if c["score"] is None else f"{c['score']:+6.2f}"
+            print(f"  {score} pp  {names.get(c['player_id'], '?'):24s} {c['agent']} {c['ability']} "
                   f"{c['map']} {c['side']} {c['area']}  n {c['n']} ({c['matches']} matches)  {c['call']}")
     return 0
 

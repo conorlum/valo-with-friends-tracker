@@ -21,8 +21,9 @@ router = APIRouter(tags=["util"])
 
 LOGIN_NOTE = "Critical Util shows you and your friends' utility, so it needs a login."
 THIN_NOTE = ("These come from the uploaded replays only, so samples are small: every figure shows how many casts "
-             "and matches it is out of. Values are the change in your side's chance to win the round (percentage "
-             "points) measured after each cast, against what usually happens in that state: evidence, not proof.")
+             "and matches it is out of. Values are the share of the change in your side's chance to win the round "
+             "(percentage points) credited to each cast; scores compare what followed each cast with moments in the "
+             "same state with no such util up: evidence, not proof.")
 PHASE_WORDS = {"pre_contact": "before first contact", "contact": "after contact", "post_plant": "after the plant"}
 
 

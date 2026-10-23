@@ -169,7 +169,9 @@ def replay_match_ids(db) -> set[int]:
 
 def refresh(db, *, holdout: float = 0.2) -> dict:
     """Fits the estimator on every non-replay match and stores it as util_model "win", with a held-out check
-    (the last `holdout` share of matches by id, fitted without them). Returns the stored data."""
+    (the last `holdout` share of matches by id, fitted without them). The matches it left out for having a replay
+    are stored with it (`excluded`): a match that gets a replay later was in its training, and `covers` then says
+    it must be refitted before that match is valued. Returns the stored data."""
     from datetime import datetime, timezone
 
     from app.models.replay import UtilModel
@@ -185,7 +187,10 @@ def refresh(db, *, holdout: float = 0.2) -> dict:
     model["check"] = check
     model["calibration"] = calibration(fit(train), test) if test else []
     model["matches"] = len(ids)
-    key = hashlib.sha256(f"{VERSION}:{len(ids)}:{model['n']}:{ids[-1] if ids else 0}".encode()).hexdigest()[:16]
+    model["excluded"] = sorted(excluded)
+    key = hashlib.sha256(f"{VERSION}:{len(ids)}:{model['n']}:{ids[-1] if ids else 0}:{model['excluded']}".encode()
+                         ).hexdigest()[:16]
+    model["key"] = key
     db.merge(UtilModel(name="win", version=VERSION, key=key, data=model, computed_at=datetime.now(timezone.utc)))
     db.commit()
     return model
@@ -196,3 +201,45 @@ def load(db) -> dict | None:
 
     row = db.get(UtilModel, "win")
     return None if row is None or row.version != VERSION else row.data
+
+
+def covers(model: dict | None, match_ids) -> bool:
+    """Whether `model` was fitted without every one of these matches (each had a replay when it was fitted)."""
+    return model is not None and set(match_ids) <= set(model.get("excluded") or ())
+
+
+def ensure(db) -> dict:
+    """The stored estimator, refitted first when there is none or a match that now has a replay was in its
+    training. One refit at a time (`rebuild_lock`); a request that waited on another's uses that one."""
+    model = load(db)
+    if covers(model, replay_match_ids(db)):
+        return model
+    with rebuild_lock(db, "win"):
+        db.expire_all()
+        model = load(db)
+        if covers(model, replay_match_ids(db)):
+            db.commit()             # ends the transaction, and with it the lock
+            return model
+        return refresh(db)          # commits
+
+
+LOCK_IDS = {"win": 0x7574696C01, "values": 0x7574696C02}   # "util" + 1, 2: Postgres advisory lock keys
+
+
+class rebuild_lock:
+    """A transaction-scoped Postgres advisory lock around a corpus rebuild: two requests that both find the stored
+    product stale rebuild it one after the other, and the second, re-reading after the lock, finds the first's.
+    Released when the transaction ends (the rebuild's commit). Nothing on another database (SQLite in tests)."""
+
+    def __init__(self, db, name: str):
+        self.db, self.key = db, LOCK_IDS[name]
+
+    def __enter__(self):
+        if self.db.get_bind().dialect.name == "postgresql":
+            from sqlalchemy import text
+
+            self.db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": self.key})
+        return self
+
+    def __exit__(self, *exc):
+        return False

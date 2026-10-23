@@ -77,8 +77,8 @@ after the run (pool "hp" only). The cause fields are as on damage; a heal's caus
 as the extras name it (extras.CODE_ALIASES). The Regen Shield's refill sends no heal at all.
 
 Teammate statuses (revision 22): a `status` row whose ability object put it on a player of its owner's own team
-(a Breach stun or a Sage slow on their own side) carries `"friendly": true`. Control skips these rows
-(app/control/engine.py), as do readers that count only enemies; Critical Util counts them as harm
+(a Breach stun or a Sage slow on their own side) carries `"friendly": true`. Control and Critical Moments never
+see these rows (app/control/engine.py `control_view`); Critical Util counts them as harm
 (app/critutil/extract.py). Only effects naming the object are kept: the caster-container path stays enemies only.
 
 Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a

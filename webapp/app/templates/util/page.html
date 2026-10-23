@@ -16,28 +16,29 @@
 
 <section class="card">
   <h2>Keep throwing it?</h2>
-  <p class="page-meta">Each friend's ability into one area, on one map and side, with at least 5 casts. Score: value per cast against that ability's average, pulled toward the average while casts are few.</p>
+  <p class="page-meta">Each friend's ability into one area, on one map and side, with at least 5 casts. Score: how the side's chance to win the round moved over the {{ page.base_window | int }} s after each cast, against moments in other matches in the same state and phase with no util of that kind up (the no-util baseline), pulled toward that ability's own average (its prior, shown) while casts are few. "Yours" is the same comparison against your own moments without it, where you have enough.</p>
   <table class="util-table">
-    <thead><tr><th>Player</th><th>Ability</th><th>Map · side · area</th><th>Casts (matches)</th><th>Score</th><th>Call</th></tr></thead>
+    <thead><tr><th>Player</th><th>Ability</th><th>Map · side · area</th><th>Casts (matches)</th><th>Score vs no util</th><th>Ability prior</th><th>Yours</th><th>Call</th></tr></thead>
     <tbody>
     {% for c in page.lineups %}
       <tr><td>{{ c.name | strip_tag }}</td><td>{{ c.agent }} {{ c.ability }}</td><td>{{ c.map }} · {{ c.side }} · {{ c.area }}</td>
-        <td>{{ c.n }} ({{ c.matches }})</td><td class="{{ tone(c.score) }}">{{ signed(c.score) }}</td><td>{{ c.call }}</td></tr>
-    {% else %}<tr><td colspan="6">No lineup has 5 casts yet.</td></tr>{% endfor %}
+        <td>{{ c.n }} ({{ c.matches }}){% if c.compared != c.n %}, {{ c.compared }} compared{% endif %}</td><td class="{{ tone(c.score) }}">{{ signed(c.score) }}</td>
+        <td>{{ signed(c.prior) }}</td><td class="{{ tone(c.personal) }}">{{ signed(c.personal) }}</td><td>{{ c.call }}</td></tr>
+    {% else %}<tr><td colspan="8">No lineup has 5 casts yet.</td></tr>{% endfor %}
     </tbody>
   </table>
 </section>
 
 <section class="card">
   <h2>Which util wins rounds</h2>
-  <p class="page-meta">Value per cast by ability, map and side (5+ casts), with the share of those rounds the side went on to win. Economy and the state when it was thrown both shape these: compare like with like.</p>
+  <p class="page-meta">By ability, map and side (5+ casts): value per cast (the share of the round's swings credited to it), the lift against the no-util baseline, and the share of those rounds the side went on to win. Economy and the state when it was thrown both shape these: compare like with like.</p>
   <table class="util-table">
-    <thead><tr><th>Ability</th><th>Map</th><th>Side</th><th>Casts (matches)</th><th>Value per cast</th><th>Rounds won</th></tr></thead>
+    <thead><tr><th>Ability</th><th>Map</th><th>Side</th><th>Casts (matches)</th><th>Value per cast</th><th>Vs no util</th><th>Rounds won</th></tr></thead>
     <tbody>
     {% for w in page.wins_rounds %}
       <tr><td>{{ w.agent }} {{ w.ability }}</td><td>{{ w.map }}</td><td>{{ w.side }}</td><td>{{ w.n }} ({{ w.matches }})</td>
-        <td class="{{ tone(w.value) }}">{{ signed(w.value) }}</td><td>{{ w.round_win }}%</td></tr>
-    {% else %}<tr><td colspan="6">Not enough casts yet.</td></tr>{% endfor %}
+        <td class="{{ tone(w.value) }}">{{ signed(w.value) }}</td><td class="{{ tone(w.lift) }}">{{ signed(w.lift) }}</td><td>{{ w.round_win }}%</td></tr>
+    {% else %}<tr><td colspan="7">Not enough casts yet.</td></tr>{% endfor %}
     </tbody>
   </table>
 </section>

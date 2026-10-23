@@ -58,11 +58,25 @@ def linked(page_linked):
     return page_linked
 
 
-def put_util(db, replay, n, payload=None, status="ok", revision=None):
-    db.merge(ReplayRoundUtil(replay_id=replay.id, round_number=n, status=status, fingerprint="f" * 16,
+def put_util(db, replay, n, payload=None, status="ok", revision=None, fingerprint=None):
+    """A stored util row; by default with the round's current gap fingerprint, as a gap run writes it."""
+    fingerprint = fingerprint or replay_util.Freshness(db).expected(replay, n)
+    db.merge(ReplayRoundUtil(replay_id=replay.id, round_number=n, status=status, fingerprint=fingerprint,
                              gaps_revision=gaps.GAPS_REVISION if revision is None else revision,
                              data=(payload or data()) if status == "ok" else None))
     db.commit()
+
+
+def put_model(db, data, excluded):
+    from app.services import util_model
+
+    db.merge(UtilModel(name="win", version=util_model.VERSION, key="k",
+                       data={**data, "excluded": sorted(excluded), "key": "k"}))
+    db.commit()
+
+
+ESTIMATOR_ROWS = [(a, d, False, 10.0, None, i < 20 * a // (a + d)) for a in range(1, 6) for d in range(1, 6)
+                  for i in range(20)]
 
 
 def call(db, uuid=MATCH_UUID):
@@ -101,20 +115,98 @@ def test_payload_values_casts_and_counts_stale_and_failed(db, linked):
     assert c["slot"] == 0 and c["kind"] == "blind" and c["kills"][0]["ev"] == "affected"
     assert body["rounds"]["1"]["unused"][0]["kind"] == "held_at_death"
     assert body["failed"] == [2] and body["stale"] == linked.round_count - 2
-    assert body["estimator"] is False and c["value"] == 0.0, "no estimator yet: kills are worth nothing"
+    assert body["estimator"] is False and c["value"] == 0.0, "no estimator could be fitted: kills are worth nothing"
     assert all(set(p) == {"name", "agent", "team"} for p in body["players"].values())
 
 
 def test_with_an_estimator_an_enabling_flash_is_worth_something(db, linked):
     from app.services import util_model
 
-    rows = [(a, d, False, 10.0, None, i < 20 * a // (a + d)) for a in range(1, 6) for d in range(1, 6) for i in range(20)]
-    db.merge(UtilModel(name="win", version=util_model.VERSION, key="k", data=util_model.fit(rows)))
-    db.commit()
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
     put_util(db, linked, 1)
     body = body_of(call(db))
     assert body["rounds"]["1"]["casts"][0]["value"] > 0
     assert body["summary"]["0"]["best"][0]["round"] == 1
+
+
+def test_a_row_from_an_older_link_clock_or_geometry_is_stale(db, linked):
+    put_util(db, linked, 1)
+    put_util(db, linked, 2, fingerprint="0" * 16)        # computed before a relink or a clock correction
+    body = body_of(call(db))
+    assert "2" not in body["rounds"] and body["stale"] == linked.round_count - 1
+    assert [r[1] for r in replay_util.current_rows(db)] == [1]
+    linked.clock_offset = (linked.clock_offset or 0.0) + 1.5
+    linked.db_deaths = {"1": [{"slot": 0, "t_db": 20.0}]}
+    db.commit()
+    assert replay_util.current_rows(db) == [], "the round's link changed: its stored util is stale"
+
+
+def test_an_estimator_trained_on_a_match_that_now_has_a_replay_is_refitted_first(db, linked, monkeypatch):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), set())       # fitted before this match had a replay
+    put_util(db, linked, 1)
+    refits = []
+
+    def refresh(session):
+        refits.append(1)
+        model = {**util_model.fit(ESTIMATOR_ROWS), "excluded": [linked.match_id], "key": "k2"}
+        session.merge(UtilModel(name="win", version=util_model.VERSION, key="k2", data=model))
+        session.commit()
+        return model
+
+    monkeypatch.setattr(util_model, "refresh", refresh)
+    body_of(call(db))
+    assert refits == [1]
+    body_of(call(db))
+    assert refits == [1], "refitted once: the stored one now leaves this match out"
+
+
+def test_a_build_that_raced_new_evidence_is_stored_under_its_own_inputs_and_built_again(db, linked, monkeypatch):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
+    put_util(db, linked, 1)
+    real = replay_util.build_corpus
+    builds = []
+
+    def racing(session, **kw):
+        out = real(session, **kw)
+        builds.append(len(out["rows"]))
+        if len(builds) == 1:
+            put_util(db, linked, 2)          # the worker stores another round while this build runs
+        return out
+
+    monkeypatch.setattr(replay_util, "build_corpus", racing)
+    data = replay_util.ensure_values(db)
+    assert builds == [1, 2] and len(data["rows"]) == 2, "it saw the rows change and built again"
+    key, stored = replay_util._values_row(db)
+    rows = replay_util.current_rows(db, with_data=False)
+    assert key == replay_util.corpus_key(db, rows, util_model.load(db)) and len(stored["rows"]) == 2
+    replay_util.ensure_values(db)
+    assert builds == [1, 2], "the stored build is current: no third"
+
+
+def test_a_cast_after_the_round_was_decided_is_shown_unscored(db, linked):
+    late = {**cast(i=1, value_kills=False), "t": 95.0, "after_decided": True}
+    put_util(db, linked, 1, payload=data([cast(), late]))
+    rows = {c["i"]: c for c in body_of(call(db))["rounds"]["1"]["casts"]}
+    assert rows[1]["scored"] is False and rows[1]["value"] is None
+    assert rows[0]["scored"] is True
+    assert body_of(call(db))["summary"]["0"]["casts"] == 1, "never in the totals"
+
+
+def test_a_full_ult_held_all_round_is_unused_when_the_match_proves_its_cost(db, linked):
+    used = {**data(), "ults": {"0": {"cap_seen": 7, "end": 0, "t": 40.0, "used": True}}}
+    held = {**data(), "ults": {"0": {"cap_seen": None, "end": 7, "t": 90.0, "used": False}}}
+    never = {**data(), "ults": {"1": {"cap_seen": None, "end": 8, "t": 90.0, "used": False}}}
+    put_util(db, linked, 1, payload=used)
+    put_util(db, linked, 2, payload=held)
+    put_util(db, linked, 3, payload=never)
+    body = body_of(call(db))
+    ult = lambda n: [u for u in body["rounds"][n]["unused"] if u["kind"] == "ult_unused"]  # noqa: E731
+    assert ult("2") == [{"slot": 0, "t": 90.0, "kind": "ult_unused", "points": 7}]
+    assert ult("1") == [] and ult("3") == [], "slot 1 never used its ult in the match: its cost is unproven"
 
 
 def render(db, monkeypatch, viewer=None):

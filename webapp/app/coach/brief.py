@@ -38,6 +38,8 @@ def util_facts(round_util: dict | None, slot: int) -> list[dict]:
                 "enemies_affected": c.get("enemies") or 0, "kills": len(ours),
                 "teammates_hit": len(c.get("harm") or ()), "teammate_died_affected": c.get("harm_died") or 0,
                 "followed": c.get("followed"), "wasted": bool(c.get("wasted"))}
+        if c.get("scored") is False:
+            fact["after_decided"] = True        # shown, never scored: `value` is None
         cover = c.get("cover") or {}
         if cover.get("blocked_s"):
             fact["blocked_s"] = cover["blocked_s"]

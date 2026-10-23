@@ -1,8 +1,10 @@
 """Critical Util's per-round evidence (app/critutil/extract.py) on toy rounds through the real engine."""
 
+import pytest
+
 from app.critutil import extract
-from tests.moments.helpers import damage, flash, kill, round_of, shot, toy_ability
-from tests.replays.control_toys import open_hall
+from tests.moments.helpers import damage, flash, kill, round_of, shot, status, toy_ability
+from tests.replays.control_toys import open_hall, uv
 
 GEO = open_hall()
 
@@ -46,7 +48,7 @@ def test_kill_after_grace_is_not_linked():
 def test_flash_on_teammate_who_dies_while_blind_is_harm():
     out = run([flash(8.0, 1, [[0, 8.2, 2.0]])], kills=[kill(9.0, 5, 0)])
     (c,) = cast_by(out, 1)
-    assert c["harm"] == [{"mate": 0, "how": "blind", "t": 8.2, "dur": 2.0, "died": True}]
+    assert c["harm"] == [{"mate": 0, "how": "blind", "t": 8.2, "dur": 2.0, "died": True, "died_t": 9.0}]
     assert c["enemies"] == []
 
 
@@ -100,6 +102,31 @@ def test_two_smokes_thrown_apart_are_two_casts_and_each_lands_where_its_zone_is(
     assert (casts[0]["u"], casts[0]["v"]) == uv(260, 200), "the zone's spot, not the thrower's"
 
 
+def test_two_buy_phase_trips_condensed_to_zero_are_two_casts_each_with_its_own_anchor():
+    # Lotus round 3 (2026-10-22 export, read-only): both of a Cypher's buy-phase trips start at 0 s, the condenser's
+    # clamp, with the second anchor of each on its wire's `end`. The rows in the order the condenser wrote them,
+    # and with the anchors first, to show the pairing is by place, not by order.
+    a = {"k": "ability", "t": 0.0, "t1": 28.0, "by": 1, "kind": "GameObject", "code": "Gumshoe",
+         "name": "4_TripWire", "id": 7884, "u": 4452, "v": 7950, "end": [4452, 8451]}
+    a2 = {"k": "ability", "t": 0.0, "t1": 28.0, "by": 1, "kind": "GameObject", "code": "Gumshoe",
+          "name": "4_TripWire_SecondWire", "id": 7912, "u": 4452, "v": 8451}
+    b = {"k": "ability", "t": 0.0, "t1": 28.0, "by": 1, "kind": "GameObject", "code": "Gumshoe",
+         "name": "4_TripWire", "id": 7948, "u": 7131, "v": 7139, "end": [6209, 7139]}
+    b2 = {"k": "ability", "t": 0.0, "t1": 28.0, "by": 1, "kind": "GameObject", "code": "Gumshoe",
+          "name": "4_TripWire_SecondWire", "id": 7976, "u": 6209, "v": 7139}
+    for util in ([a, a2, b, b2], [a2, b2, b, a]):
+        rnd, data = round_of(players(), util=[dict(r) for r in util], geo=GEO)
+        casts = extract.build_casts(rnd, data)
+        assert sorted(sorted(c.ids) for c in casts) == [[7884, 7912], [7948, 7976]]
+
+
+def test_one_use_whose_same_pieces_land_at_two_places_mid_round_stays_one_cast():
+    # Skye's ult: three seekers of one name at once, mid-round. Only the buy phase's clamp splits by place.
+    util = [toy_ability("Guide", "X_Pack", 200 + 30 * i, 200, 1, t=20.0 + 0.1 * i, t1=26.0, kind="Pawn", id=40 + i)
+            for i in range(3)]
+    assert len(cast_by(run(util), 1)) == 1
+
+
 def test_smoke_between_teams_cuts_sight_lines_and_covered_teammates_lived():
     smoke = toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=5.0, t1=15.0, kind="Zone")
     out = run([smoke])
@@ -107,6 +134,92 @@ def test_smoke_between_teams_cuts_sight_lines_and_covered_teammates_lived():
     assert c["cover"]["blocked_s"] > 0
     assert set(c["cover"]["covered"]) <= {0, 1}
     assert c["cover"]["covered_lived"] == c["cover"]["covered"]
+
+
+def test_two_coincident_smokes_share_the_sight_lines_and_the_save_once():
+    one = toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=5.0, t1=15.0, kind="Zone")
+    (alone,) = cast_by(run([one]), 1, "smoke")
+    two = toy_ability("Wraith", "4_Smoke", 260, 200, 0, t=5.0, t1=15.0, kind="Zone")
+    out = run([one, two])
+    (a,), (b,) = cast_by(out, 1, "smoke"), cast_by(out, 0, "smoke")
+    assert a["cover"]["blocked_s"] + b["cover"]["blocked_s"] == pytest.approx(alone["cover"]["blocked_s"], abs=0.02)
+    assert sorted(a["cover"]["covered_lived"] + b["cover"]["covered_lived"]) == alone["cover"]["covered_lived"], \
+        "each covered teammate who lived is one save, on one cast"
+
+
+def test_an_enemy_waiting_at_two_mollies_waits_once():
+    mover = [(0.0, 400 + px(9), 160, 180), (20.0, 400 + px(9), 160, 180)]
+    one = toy_ability("Phoenix", "MolotovFire", 400, 160, 1, t=8.0, t1=14.0)
+    (alone,) = cast_by(run([one], extra={5: ("B", mover)}), 1, "damaging")
+    two = toy_ability("Phoenix", "MolotovFire", 400, 160, 0, t=8.0, t1=14.0)
+    out = run([one, two], extra={5: ("B", mover)})
+    waits = [c["presence"]["waiting_s"] for c in out["casts"] if "damaging" in c["kinds"]]
+    assert sum(waits) == pytest.approx(alone["presence"]["waiting_s"], abs=0.02) and alone["presence"]["waiting_s"] > 0
+
+
+SPIKE = (300, 200)
+
+
+def planted(defuses):
+    u, v = uv(*SPIKE)
+    return {"k": "ability", "kind": "Bomb", "t": 20.0, "u": u, "v": v, "by": 0, "defuses": defuses}
+
+
+def test_a_defenders_smoke_never_stops_its_own_teams_defuse():
+    smoke = toy_ability("Wraith", "4_Smoke", *SPIKE, 5, t=25.0, t1=40.0, kind="Zone")
+    out = run([planted([[30.0, 33.0, 6, False]]), smoke], t_end=60.0)
+    (c,) = cast_by(out, 5, "smoke")
+    assert c["spike"]["stopped"] == 0 and c["spike"]["attempts"][0]["evidence"] is None
+
+
+def test_a_stopped_defuse_goes_once_to_the_cast_that_reached_the_defuser():
+    fissure = toy_ability("Breach", "E_SweetSpotFissure", *SPIKE, 1, t=29.0, t1=31.0, kind="GameObject")
+    stun = status(30.0, 31.5, 1, 6, name="E_SweetSpotFissure", status="concussed")
+    molly = toy_ability("Phoenix", "MolotovFire", *SPIKE, 0, t=28.0, t1=34.0)
+    smoke = toy_ability("Wraith", "4_Smoke", *SPIKE, 0, t=25.0, t1=40.0, kind="Zone")
+    out = run([planted([[30.0, 33.0, 6, False], [36.0, 40.0, 6, True]]), fissure, stun, molly, smoke], t_end=60.0)
+    stopped = {tuple(c["names"]): c["spike"]["stopped"] for c in out["casts"] if c["spike"]}
+    assert stopped == {("E_SweetSpotFissure",): 1, ("MolotovFire",): 0, ("4_Smoke",): 0}, \
+        "an effect on the defuser before a zone on the spike; a smoke alone stops nothing; a finished one counts for none"
+
+
+def vitals(*points):
+    return [{"t": t, "life": life, "hp": hp, "sh": 0, "mhp": 100, "msh": 0} for t, life, hp in points]
+
+
+def heal(t1, amount, by=1, target=0):
+    return {"k": "heal", "t": t1 - 0.5, "t1": t1, "by": by, "target": target, "pool": "hp", "amount": amount, "n": 5,
+            "code": "Thorne", "name": "Q_Heal_Production_New", "from": "equippable"}
+
+
+def test_a_heal_the_later_heal_covered_alone_saved_nothing():
+    # 20 HP, healed to 80, then to 100, then 25 damage: without either heal they'd still have lived
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (8.0, 0, 100), (10.0, 0, 75))}}
+    out = run([heal(6.0, 60), heal(8.0, 20), damage(10.0, 5, 0)], player_state=ps)
+    assert [(h["saved"], h["saved_share"]) for h in out["heals"]] == [(False, 0.0), (False, 0.0)]
+
+
+def test_heals_each_needed_share_the_save_by_amount():
+    # 10 HP, +40 to 50, +40 to 90, then 85 damage to 5: without either one they'd have died
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 10), (6.0, 0, 50), (8.0, 0, 90), (10.0, 0, 5))}}
+    out = run([heal(6.0, 40), heal(8.0, 40, by=0), damage(10.0, 5, 0)], player_state=ps)
+    assert [h["saved_share"] for h in out["heals"]] == [0.5, 0.5]
+
+
+def test_damage_in_a_later_life_is_not_what_a_heal_saved_them_from():
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (12.0, 1, 100), (13.0, 1, 5))}}
+    (h,) = run([heal(6.0, 60)], player_state=ps)["heals"]
+    assert h["saved"] is False
+    (h,) = run([heal(6.0, 60)], player_state={"version": 1})["heals"]
+    assert h["saved"] is None and h["saved_share"] is None, "no vitals: unavailable, never false"
+
+
+def test_each_slot_s_ult_is_reported_for_the_match_to_judge():
+    ps = {"version": 1, "ult": {"0": [{"t": -30.0, "n": 7}], "1": [{"t": -30.0, "n": 6}, {"t": 12.0, "n": 0}]}}
+    util = [toy_ability("Sarge", "X_Orbital", 300, 200, 1, t=12.0, t1=20.0)]
+    ults = run(util, player_state=ps)["ults"]
+    assert ults["0"] == {"cap_seen": None, "end": 7, "t": 30.0, "used": False}, "held all round, no drop to prove 7"
+    assert ults["1"]["cap_seen"] == 6 and ults["1"]["used"] is True
 
 
 def test_molly_damage_by_id_is_zone_damage_on_the_kill():
@@ -190,5 +303,5 @@ def test_a_stun_on_a_teammate_flagged_friendly_is_harm():
     stun = {**status(8.2, 10.0, 1, 0, name="E_SweetSpotFissure", status="concussed"), "friendly": True}
     out = run([fault, stun], kills=[kill(9.5, 5, 0)])
     (c,) = cast_by(out, 1)
-    assert c["harm"] == [{"mate": 0, "how": "concussed", "t": 8.2, "dur": 1.8, "died": True}]
+    assert c["harm"] == [{"mate": 0, "how": "concussed", "t": 8.2, "dur": 1.8, "died": True, "died_t": 9.5}]
     assert out["avail"]["friendly_status"] is True

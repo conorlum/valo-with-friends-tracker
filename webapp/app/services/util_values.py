@@ -96,7 +96,8 @@ def features(cast: dict) -> dict:
 
 def heal_features(heal: dict) -> dict:
     f = dict.fromkeys(DEFAULT_WEIGHTS, 0.0)
-    f["heal_saved"] = 1.0 if heal.get("saved") else 0.0
+    share = heal.get("saved_share")
+    f["heal_saved"] = float(share) if share is not None else (1.0 if heal.get("saved") else 0.0)
     f["heal_hp_fought"] = float(heal.get("amount") or 0.0) if heal.get("fought") and heal.get("pool") == "hp" else 0.0
     return f
 
@@ -111,7 +112,9 @@ def _evidence(cast: dict, key) -> tuple[float, bool] | None:
         if best is None or w > best[0]:
             best = (w, bool(k.get("ours")))
     for h in cast.get("harm") or ():
-        if h.get("died") and key[2] == h["mate"]:      # this teammate killed while our util had them blinded
+        # this teammate killed while our util had them blinded: that death only (`died_t`), never a later life's
+        if h.get("died") and key[2] == h["mate"] and h.get("died_t") is not None \
+                and round(float(h["died_t"]), 2) == key[0]:
             w = EVIDENCE_WEIGHT["harmed_teammate"]
             if best is None or w > best[0]:
                 best = (w, False)
@@ -226,7 +229,11 @@ def team_rounds(rounds: list[dict], model: dict | None) -> list[dict]:
 
 def fit_weights(rows: list[dict], *, folds: int = 5) -> dict:
     """Non-negative weights (harm columns negated), ridge-pulled toward DEFAULT_WEIGHTS, fitted on round wins.
-    Held-out check: k folds by match, the residual's mean square with fitted weights vs with none."""
+    Held-out check: k folds by match, the residual's mean square with fitted weights vs with none.
+
+    When adopted, a match in the corpus is valued with its own fold's weights, fitted without it (`by_match`;
+    spec, "Baseline": weights are set inside training folds, never on the matches being reported). `weights`,
+    fitted on every match, are for a match the fit never saw."""
     names = list(DEFAULT_WEIGHTS)
     if len(rows) < MIN_ROUNDS_TO_FIT:
         return {"weights": dict(DEFAULT_WEIGHTS), "fitted": False, "rounds": len(rows), "check": None}
@@ -258,6 +265,7 @@ def fit_weights(rows: list[dict], *, folds: int = 5) -> dict:
     matches = sorted({r["match"] for r in rows})
     defaults = [DEFAULT_WEIGHTS[n_] for n_ in names]
     fitted_mse, zero_mse, default_mse, n = 0.0, 0.0, 0.0, 0
+    by_match = {}
     for k in range(folds):
         held = set(matches[k::folds])
         train = [r for r in rows if r["match"] not in held]
@@ -265,6 +273,8 @@ def fit_weights(rows: list[dict], *, folds: int = 5) -> dict:
         if not train or not test:
             continue
         w = solve(train)
+        for m in held:
+            by_match[str(m)] = {n_: float(w[i]) for i, n_ in enumerate(names)}
         fitted_mse += mse(w, test) * len(test)
         zero_mse += mse([0.0] * len(names), test) * len(test)
         default_mse += mse(defaults, test) * len(test)
@@ -278,7 +288,162 @@ def fit_weights(rows: list[dict], *, folds: int = 5) -> dict:
         return {"weights": dict(DEFAULT_WEIGHTS), "fitted": False, "rounds": len(rows), "check": check}
     w = solve(rows)
     return {"weights": {n_: float(w[i]) for i, n_ in enumerate(names)}, "fitted": True, "rounds": len(rows),
-            "check": check}
+            "check": check, "by_match": by_match}
+
+
+def weights_for(fit: dict | None, match_id) -> dict:
+    """The weights a match is valued with: its own fold's when the fit was adopted and saw it, else the fit's."""
+    fit = fit or {}
+    own = (fit.get("by_match") or {}).get(str(match_id)) if fit.get("fitted") else None
+    return own or fit.get("weights") or dict(DEFAULT_WEIGHTS)
+
+
+# --- the no-util baseline (spec, "Baseline")
+#
+# What a cast is compared with: moments in the corpus in the same state (the estimator's cell: who is alive, the
+# spike, the time bucket) and phase, for the same side, when no util of that kind by that side was up. A moment's
+# outcome, and a cast's, is the change in that side's round-win chance over the next BASE_WINDOW_S (to t_decided),
+# from the kills in the round. A cast's `lift` is its own change minus the comparison set's mean. Thin cells fall
+# back a level (state + phase + time, then state + phase, then man advantage), and the level is kept with the
+# lift. The comparison set never includes the cast's own match (`minus`). This baseline is not the ability prior:
+# the prior is the ability's mean lift, which shrinks a small sample (`shrunk`).
+
+BASE_WINDOW_S = 10.0
+BASE_STEP_S = 2.0
+BASE_MIN_N = 30             # comparison moments a level needs before it is used
+BASE_LEVELS = ("state, phase and time", "state and phase", "man advantage")
+KIND_ORDER = ("ult", "blind", "smoke", "wall", "damaging", "status", "info", "device", "heal", "other")
+
+
+def main_kind(kinds) -> str:
+    """The one kind a cast is grouped and compared by."""
+    for k in KIND_ORDER:
+        if k in (kinds or ()):
+            return k
+    return "other"
+
+
+def _phase(t, contact, plant) -> str:
+    if plant is not None and t >= plant:
+        return "post_plant"
+    if contact is None or t < contact:
+        return "pre_contact"
+    return "contact"
+
+
+def _alive_at(round_data: dict, t: float) -> tuple[int, int]:
+    """(attackers, defenders) alive at t, from the round's kills (each with its `before` counts)."""
+    kills = sorted((k for k in round_data.get("kills") or () if k.get("before")), key=lambda k: k["t"])
+    for k in kills:
+        if k["t"] > t:
+            return int(k["before"][0]), int(k["before"][1])
+    if not kills:
+        return 5, 5
+    a, d = (int(x) for x in kills[-1]["before"])
+    return (a - 1, d) if kills[-1].get("v_side") == "attack" else (a, d - 1)
+
+
+def _p_at(round_data: dict, model, side: str, t: float) -> float:
+    offset = float(round_data.get("clock_offset") or 0.0)
+    plant = round_data.get("plant")
+    a, d = _alive_at(round_data, t)
+    return util_model.p_side(model, side, max(a, 0), max(d, 0), plant is not None and plant <= t, t + offset,
+                             None if plant is None else plant + offset)
+
+
+def window_swing(round_data: dict, model, side: str, t: float) -> float:
+    """The change in `side`'s round-win chance from t over the next BASE_WINDOW_S, cut at t_decided."""
+    end = min(t + BASE_WINDOW_S, float(round_data.get("t_decided") or t + BASE_WINDOW_S))
+    return _p_at(round_data, model, side, max(end, t)) - _p_at(round_data, model, side, t)
+
+
+def levels(round_data: dict, side: str, t: float) -> list[str]:
+    """The comparison cells of a moment, most specific first (BASE_LEVELS)."""
+    offset = float(round_data.get("clock_offset") or 0.0)
+    plant = round_data.get("plant")
+    planted = plant is not None and plant <= t
+    a, d = _alive_at(round_data, t)
+    tb = util_model.time_bucket(t + offset, planted, None if plant is None else plant + offset)
+    ph = _phase(t, round_data.get("contact"), plant)
+    return [f"{side}|{a}v{d}|{int(planted)}|{ph}|{tb}", f"{side}|{a}v{d}|{int(planted)}|{ph}", f"{side}|{a}v{d}"]
+
+
+def moments(round_data: dict, model):
+    """(side, levels, kinds of that side's util up, outcome, slots of that side alive) every BASE_STEP_S of the
+    round to t_decided."""
+    end = float(round_data.get("t_decided") or 0.0)
+    casts = [c for c in round_data.get("casts") or () if not c.get("after_decided")]
+    deaths = {}
+    for k in round_data.get("kills") or ():
+        deaths.setdefault(k["victim"], k["t"])
+    sides = round_data.get("sides") or {}
+    t = 0.0
+    while t < end:
+        for side in ("attack", "defense"):
+            up = {main_kind(c.get("kinds")) for c in casts
+                  if c.get("side") == side and c["t"] <= t < (c.get("t_end") or c["t"])}
+            alive = {int(s) for s, sd in sides.items() if sd == side and deaths.get(int(s), 1e9) > t}
+            yield side, levels(round_data, side, t), up, window_swing(round_data, model, side, t), alive
+        t += BASE_STEP_S
+
+
+def add_moments(table: dict, round_data: dict, model, personal: dict | None = None,
+                player_of: dict | None = None) -> None:
+    """Adds a round's moments to a baseline table {kind: {level key: [sum, n]}}: each moment counts for every kind
+    that wasn't up. With `personal` (and `player_of`, slot -> player id), each alive player's own moments too,
+    keyed "player|kind|side": the personal baseline shown beside the corpus's."""
+    for side, keys, up, swing, alive in moments(round_data, model):
+        for kind in KIND_ORDER:
+            if kind in up:
+                continue
+            cells = table.setdefault(kind, {})
+            for key in keys:
+                cell = cells.setdefault(key, [0.0, 0])
+                cell[0] += swing
+                cell[1] += 1
+            if personal is not None:
+                for slot in alive:
+                    pid = (player_of or {}).get(slot)
+                    if pid is not None:
+                        cell = personal.setdefault(f"{pid}|{kind}|{side}", [0.0, 0])
+                        cell[0] += swing
+                        cell[1] += 1
+
+
+def merge_tables(into: dict, table: dict) -> None:
+    for kind, cells in table.items():
+        out = into.setdefault(kind, {})
+        for key, (s, n) in cells.items():
+            cell = out.setdefault(key, [0.0, 0])
+            cell[0] += s
+            cell[1] += n
+
+
+def baseline(table: dict, kind: str, keys: list[str], minus: dict | None = None) -> dict | None:
+    """{"mean", "n", "level"} from the most specific level with BASE_MIN_N moments; None when none has. `minus`
+    (the cast's own match's table) is taken out first."""
+    cells = table.get(kind) or {}
+    own = (minus or {}).get(kind) or {}
+    for i, key in enumerate(keys):
+        s, n = cells.get(key, (0.0, 0))
+        s_own, n_own = own.get(key, (0.0, 0))
+        s, n = s - s_own, n - n_own
+        if n >= BASE_MIN_N:
+            return {"mean": s / n, "n": int(n), "level": BASE_LEVELS[i]}
+    return None
+
+
+def cast_lift(round_data: dict, model, cast: dict, table: dict, minus: dict | None = None) -> dict:
+    """A cast against the no-util baseline: its own outcome (`swing`), the comparison set's (`base`, `base_n`,
+    `base_level`) and the difference (`lift`, None without a comparison set)."""
+    side, t = cast.get("side"), float(cast["t"])
+    if side not in ("attack", "defense"):
+        return {"swing": None, "base": None, "base_n": 0, "base_level": None, "lift": None}
+    swing = window_swing(round_data, model, side, max(t, 0.0))
+    base = baseline(table, main_kind(cast.get("kinds")), levels(round_data, side, max(t, 0.0)), minus)
+    return {"swing": round(swing, 4), "base": None if base is None else round(base["mean"], 4),
+            "base_n": 0 if base is None else base["n"], "base_level": None if base is None else base["level"],
+            "lift": None if base is None else round(swing - base["mean"], 4)}
 
 
 # --- rankings

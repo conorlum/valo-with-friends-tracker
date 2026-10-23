@@ -17,14 +17,15 @@ def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
             "player_id": pid, "agent": "Breach", "ability": ability, "kind": "blind", "kinds": ["blind"],
             "side": "attack", "area": area, "phase": "contact", "t": 20.0, "buy": "full buy", "won": True,
             "value": value, "ledger": value, "jobs": 0.0, "wasted": False, "harm": 0, "harm_died": 0,
-            "followed": True, "ult_points": None, "enemies": 1, "features": {}, "combo": []}
+            "followed": True, "ult_points": None, "enemies": 1, "features": {}, "combo": [], "scored": True,
+            "swing": value, "base": 0.0, "base_n": 40, "base_level": "state and phase", "lift": value}
     base.update(kw)
     return base
 
 
-def corpus(rows):
-    return {"rows": rows, "prior_mean": {"Flashpoint": 0.0}, "spread": 0.01, "fit": {"fitted": False},
-            "estimator": {}}
+def corpus(rows, personal=None):
+    return {"rows": rows, "ability_prior": {"Flashpoint": 0.0}, "spread": 0.01, "fit": {"fitted": False},
+            "estimator": {}, "personal": personal or {}}
 
 
 def test_page_is_friends_only_and_lineups_need_five_casts():
@@ -36,6 +37,28 @@ def test_page_is_friends_only_and_lineups_need_five_casts():
     assert set(page["players"]) == {1}
     few = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(4)]), {1})
     assert few["lineups"] == []
+
+
+def test_a_lineup_is_scored_against_the_no_util_baseline_not_the_abilitys_average():
+    # credited value is high, but what followed these casts was no better than moments without util: no clear value
+    rows = [row(1, 0.05, i, rnd=i, swing=0.01, lift=0.0) for i in range(6)]
+    c = replay_util.page_for({**corpus(rows), "ability_prior": {"Flashpoint": 0.05}}, {1})["lineups"][0]
+    assert c["value"] == 5.0 and c["prior"] == 5.0
+    assert c["score"] == pytest.approx(100 * 5 * 0.05 / 11, abs=0.01), "shrunk toward the prior, not minus it"
+    # without five compared casts there is no score and no call
+    rows = [row(1, 0.05, i, rnd=i, lift=None) for i in range(6)]
+    c = replay_util.page_for(corpus(rows), {1})["lineups"][0]
+    assert c["score"] is None and c["call"] == "no comparison yet" and c["compared"] == 0
+    # the player's own moments without that util, shown beside when there are enough
+    mine = {"1|blind|attack": [-0.40, 40]}
+    c = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(6)], personal=mine), {1})["lineups"][0]
+    assert c["personal"] == pytest.approx(100 * (0.03 + 0.01), abs=0.01)
+
+
+def test_casts_after_the_round_was_decided_stay_out_of_the_page():
+    rows = [row(1, 0.03, i, rnd=i) for i in range(5)] + [row(1, 0.0, 9, scored=False, lift=None)]
+    page = replay_util.page_for(corpus(rows), {1})
+    assert page["n"] == 5 and page["lineups"][0]["n"] == 5
 
 
 def test_player_block_best_worst_and_patterns():

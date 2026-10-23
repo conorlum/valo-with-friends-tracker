@@ -12,7 +12,11 @@ MERGE_S = 0.6               # a piece starting this soon after a cast's last pie
 THROW_MATCH_S = 0.05        # a piece whose `thrown.t0` is this close to a cast's throw is that cast's
 REPEAT_S = 1.0              # the same landed piece again this much later is another use (a second smoke) ...
 REPEAT_PARTS = ("SonarPing", "RevealDart", "Pulse", "Segment", "Chunk", "Manager", "Wall", "Second")  # ... but not these
-FLASH_ROW_MATCH_S = 1.0     # a projectile or source thrown this close to a flash or nearsight row is that cast
+BUY_PLACED_S = 0.5          # a placement starting by this round time was placed in the buy phase (clamped to 0 s) ...
+SAME_PLACE_M = 1.5          # ... and the same piece placed farther than this from its namesake is another charge
+#                             (2026-10-22, 10 replays: 105 Cypher trip pairs at 0 s; mid-round same-name pieces at
+#                             two places are one use: Skye's seekers, Neon's bolt, Reyna's pools, a Killjoy swarm)
+FLASH_ROW_MATCH_S = 1.0    # a projectile or source thrown this close to a flash or nearsight row is that cast
 
 # --- windows (measure)
 GRACE_S = 1.0               # a kill this long after an effect ends still counts as on an affected enemy

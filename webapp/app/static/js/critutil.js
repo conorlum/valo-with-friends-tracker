@@ -104,7 +104,11 @@
     (row.harm || []).forEach(function (h) {
       bits.push((HOW[h.how] || h.how) + " teammate " + nameOf(players, h.mate) + (h.died ? " (died while affected)" : ""));
     });
-    if (row.heal) bits.push("healed " + nameOf(players, row.heal.target) + (row.heal.saved ? ", kept them alive" : row.heal.fought ? ", before a fight" : ""));
+    if (row.heal) {
+      var share = row.heal.saved_share;
+      var kept = typeof share === "number" && share < 1 ? ", shared in keeping them alive" : ", kept them alive";
+      bits.push("healed " + nameOf(players, row.heal.target) + (row.heal.saved ? kept : row.heal.fought ? ", before a fight" : ""));
+    }
     if (row.found_nobody) bits.push("found nobody (the area was empty)");
     if (row.wasted) bits.push("wasted: nothing came of it");
     return bits;
@@ -114,7 +118,12 @@
     var parts = ["R" + row.round + " " + clock(row.t), row.ability];
     var f = facts(row, players);
     if (f.length) parts.push(f.join("; "));
+    if (row.scored === false) {
+      parts.push("after the round was decided, not scored");
+      return parts.join(" · ");
+    }
     parts.push(signed(row.value) + " pp");
+    if (typeof row.lift === "number") parts.push(signed(row.lift) + " pp vs no util (" + row.base_level + ")");
     return parts.join(" · ");
   }
 
@@ -128,6 +137,7 @@
     if (payload.stale > 0) out.push(payload.stale + " rounds not computed yet");
     if ((payload.failed || []).length) out.push("Util could not be computed for rounds " + payload.failed.join(", "));
     if (!payload.estimator) out.push("The win-odds estimator isn't built yet: kill values read 0 until it is");
+    if (!payload.baseline) out.push("No comparison with rounds without util yet: it comes with the Critical Util page's first build");
     return out;
   }
 

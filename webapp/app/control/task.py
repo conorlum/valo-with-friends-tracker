@@ -368,7 +368,7 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
         try:
             from app.moments import fights
 
-            made = fights.round_moments(engine.RoundInputs(blob, geo, link), blob)
+            made = fights.round_moments(engine.RoundInputs(blob, geo, link), engine.control_view(blob))
             moments = _plain({"status": "ok", "v": made.get("v"), "sight": made.get("sight"),
                               "fights": made["fights"], "error": None})
         except Exception as error:  # noqa: BLE001 - the moments' failure, not the gap run's

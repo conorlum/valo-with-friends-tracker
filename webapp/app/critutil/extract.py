@@ -5,7 +5,8 @@ Runs on the replay worker beside Critical Moments (app/control/task.py, the gap 
 app.control, app.replays.player_state and app.critutil.constants. Slots only, never names. What a cast is worth is
 not decided here: the site turns this evidence into values with the corpus's estimator (app/services/util_values.py).
 
-Output: {"v", "sides", "plant", "defuse", "t_decided", "kills", "casts", "heals", "unused", "avail"}.
+Output: {"v", "sides", "contact", "plant", "defuse", "t_decided", "kills", "casts", "heals", "unused", "ults",
+"avail"}.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import math
 
 from app.control import engine
-from app.critutil.constants import (AGENT_KEYS, DEVICE_PATTERNS, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
+from app.critutil.constants import (AGENT_KEYS, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, LIFE_CAP_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
@@ -103,13 +104,34 @@ def _dist_m(rnd, a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1]) * rnd.geo.m_per_px
 
 
-def _another_use(c: _Cast, row) -> bool:
+def _another_use(rnd, c: _Cast, row) -> bool:
     """A landed piece this cast already has, landing again more than REPEAT_S later, is another use of the
-    ability (a second smoke), unless the piece is one that repeats within one use (a recon's pings)."""
+    ability (a second smoke), unless the piece is one that repeats within one use (a recon's pings). In the buy
+    phase every placement starts at the round's 0 s, so there the same piece at another place is another charge
+    (a Cypher's two trips)."""
     name = row.get("name")
     if not name or name not in c.landed or any(p in name for p in REPEAT_PARTS):
         return False
-    return float(row["t"]) - c.landed[name] > REPEAT_S
+    if float(row["t"]) - c.landed[name] > REPEAT_S:
+        return True
+    if float(row["t"]) > BUY_PLACED_S or row.get("u") is None or (row.get("thrown") or {}).get("t0") is not None:
+        return False
+    here = _px(row["u"], row["v"])
+    return all(_dist_m(rnd, here, _px(x["u"], x["v"])) > SAME_PLACE_M
+               for x in c.rows if x.get("name") == name and x.get("u") is not None)
+
+
+def _anchored(casts, row):
+    """The cast a piece is proven part of: its owner's cast with a row whose `end` is where this piece is (a
+    tripwire's second anchor sits on its wire's `end`). None otherwise."""
+    if row.get("u") is None:
+        return None
+    for c in reversed(casts):
+        if c.by == row.get("by") and c.flash is None and any(
+                isinstance(x.get("end"), list) and len(x["end"]) >= 2
+                and abs(x["end"][0] - row["u"]) <= 2 and abs(x["end"][1] - row["v"]) <= 2 for x in c.rows):
+            return c
+    return None
 
 
 def build_casts(rnd, blob: dict) -> list[_Cast]:
@@ -126,7 +148,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         c.kinds = {"blind"} if r["k"] == "flash" else {"status"}
         casts.append(c)
     abilities = sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
-                       key=lambda r: (r["t"], r.get("kind") != "Projectile"))
+                       key=lambda r: (r["t"], r.get("kind") != "Projectile", "end" not in r))
     for r in abilities:
         name, by, tt = r.get("name"), r.get("by"), _throw_t(r)
         kinds = _kinds_of([name] if name else [])
@@ -135,15 +157,15 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         if twin is not None and (not kinds or kinds <= {"blind", "status"}):
             twin.add(r, t_cap)                # a flash's own projectile and source rows
             continue
-        host = None
-        if r.get("kind") != "Projectile":
+        host = _anchored(casts, r) if r.get("kind") != "Projectile" else None
+        if host is None and r.get("kind") != "Projectile":
             for c in reversed(casts):
                 if c.flash is not None or c.by != by or c.key != _key_of(name):
                     continue
                 if (r.get("thrown") or {}).get("t0") is not None:
                     if abs(c.t - tt) <= THROW_MATCH_S:
                         host = c
-                elif c.t - _EPS <= r["t"] <= c.t_end + MERGE_S and not _another_use(c, r):
+                elif c.t - _EPS <= r["t"] <= c.t_end + MERGE_S and not _another_use(rnd, c, r):
                     host = c
                 break                         # only the latest use of this ability can own the piece
         if host is not None:
@@ -342,57 +364,95 @@ def _harm(rnd, sides, c: _Cast, effects) -> list[dict]:
         mate = e["target"]
         if mate == c.by or sides.get(mate) != side:
             continue
-        died = any(victim == mate and e["t0"] <= t <= e["t1"] + GRACE_S and sides.get(killer) not in (None, side)
-                   for t, killer, victim in rnd.kills)
+        death = next((t for t, killer, victim in rnd.kills
+                      if victim == mate and e["t0"] <= t <= e["t1"] + GRACE_S and sides.get(killer) not in (None, side)
+                      and rnd.life_end(mate, e["t0"]) >= t - _EPS), None)
+        # `died_t` is that death: the ledger charges this harm with that kill only, never a later life's
         out.append({"mate": mate, "how": e["how"], "t": _r2(e["t0"]), "dur": _r2(e["t1"] - e["t0"]),
-                    "died": died})
+                    "died": death is not None, "died_t": _r2(death)})
     return out
 
 
-def _cover(rnd, sides, c: _Cast) -> dict | None:
-    """For a smoke or wall: sight lines between living enemies and the caster's team that this cast alone cut,
-    sampled every SIGHT_STEP_S over its life to t_decided. None for any other cast, or without a smoke shape."""
-    if not ({"smoke", "wall"} & c.kinds):
-        return None
-    side = sides.get(c.by)
-    if side is None:
+def _shapes_of(rnd, sides, c: _Cast):
+    """A smoke or wall cast's own shapes in the engine: [(t0, t1, shape)], or None for any other cast."""
+    if not ({"smoke", "wall"} & c.kinds) or sides.get(c.by) is None:
         return None
     landed = c.landed_t if c.landed_t is not None else c.t     # the zone's time, not the throw's
     spots = [_px(r["u"], r["v"]) for r in c.rows if r.get("u") is not None and r.get("kind") != "Projectile"]
-    mine = [(t0, t1, x, y, r, solid) for t0, t1, x, y, r, solid in rnd.smokes
+    mine = [(t0, t1, (x, y, r, solid)) for t0, t1, x, y, r, solid in rnd.smokes
             if c.t - _EPS <= t0 <= c.t_end and any(math.hypot(x - sx, y - sy) < 1.0 for sx, sy in spots)]
     walls = [(t0, t1, w) for t0, t1, w in rnd.walls if abs(t0 - landed) <= 1.0]
-    if not mine and not walls:
-        return None
-    end = min(c.t_end, rnd.t_decided)
-    blocked_s, pairs, covered = 0.0, set(), {}
-    t = c.t
-    while t < end:
-        shapes = [(x, y, r, solid) for t0, t1, x, y, r, solid in mine if t0 <= t < t1] + \
-                 [w for t0, t1, w in walls if t0 <= t < t1]
-        if shapes:
-            for a, sa in sides.items():
-                if sa != side or not rnd.alive(a, t):
+    return (mine + walls) or None
+
+
+def _grid(t0: float, t1: float, step: float):
+    """The round's shared sample times in [t0, t1): multiples of `step`, so every cast samples the same instants."""
+    t = math.ceil((t0 - _EPS) / step) * step
+    while t < t1:
+        yield round(t, 4)
+        t += step
+
+
+def _cover_all(rnd, sides, casts: list[_Cast]) -> dict[int, dict]:
+    """For each smoke or wall: the sight lines between living enemies and the caster's team that it cut (one its
+    own shapes block and bare geometry doesn't), sampled every SIGHT_STEP_S over its life to t_decided. A line two
+    casts each cut at the same instant is split between them, never counted twice; each covered teammate who lived
+    is one save, given to the cast that covered them longest (spec, "No double counting")."""
+    shapes = {c.i: s for c in casts if (s := _shapes_of(rnd, sides, c))}
+    by_i = {c.i: c for c in casts}
+    acc = {i: {"blocked_s": 0.0, "pairs": set(), "covered": {}, "share": {}} for i in shapes}
+    if not shapes:
+        return {}
+    start = min(by_i[i].t for i in shapes)
+    end = max(min(by_i[i].t_end, rnd.t_decided) for i in shapes)
+    for t in _grid(start, end, SIGHT_STEP_S):
+        live = {}
+        for i, s in shapes.items():
+            c = by_i[i]
+            if not c.t <= t < min(c.t_end, rnd.t_decided):
+                continue
+            now = [shape for t0, t1, shape in s if t0 <= t < t1]
+            if now:
+                live[i] = now
+        if not live:
+            continue
+        for a, sa in sides.items():
+            if sa is None or not rnd.alive(a, t):
+                continue
+            pa = rnd.pos(a, t)
+            if pa is None:
+                continue
+            for b, sb in sides.items():
+                if sb in (None, sa) or not rnd.alive(b, t):
                     continue
-                pa = rnd.pos(a, t)
-                if pa is None:
+                mine = [i for i in live if sides.get(by_i[i].by) == sa]
+                if not mine:
                     continue
-                for b, sb in sides.items():
-                    if sb in (None, side) or not rnd.alive(b, t):
-                        continue
-                    pb = rnd.pos(b, t)
-                    if pb is None or _dist_m(rnd, pa, pb) > SIGHT_RANGE_M:
-                        continue
-                    la, lb = (pa[0], pa[1], None), (pb[0], pb[1], None)
-                    if engine.los(rnd.geo, la, lb, []) and not engine.los(rnd.geo, la, lb, shapes):
-                        blocked_s += SIGHT_STEP_S
-                        pairs.add((a, b))
-                        covered[a] = t
-        t += SIGHT_STEP_S
-    lived = [m for m, last in covered.items()
-             if rnd.alive(m, min(rnd.t_decided, last + SAVE_WINDOW_S))]
-    return {"blocked_s": _r2(blocked_s), "pairs": len(pairs), "covered": sorted(covered),
-            "covered_lived": sorted(lived)}
+                pb = rnd.pos(b, t)
+                if pb is None or _dist_m(rnd, pa, pb) > SIGHT_RANGE_M:
+                    continue
+                la, lb = (pa[0], pa[1], None), (pb[0], pb[1], None)
+                if not engine.los(rnd.geo, la, lb, []):
+                    continue
+                cut = [i for i in mine if not engine.los(rnd.geo, la, lb, live[i])]
+                for i in cut:
+                    share = SIGHT_STEP_S / len(cut)
+                    acc[i]["blocked_s"] += share
+                    acc[i]["pairs"].add((a, b))
+                    acc[i]["covered"][a] = t
+                    acc[i]["share"][a] = acc[i]["share"].get(a, 0.0) + share
+    saves: dict[int, int] = {}       # teammate -> the one cast their save goes to
+    for i in sorted(acc, key=lambda i: by_i[i].t):
+        for a, s in acc[i]["share"].items():
+            if a not in saves or s > acc[saves[a]]["share"][a] + _EPS:
+                saves[a] = i
+    out = {}
+    for i, x in acc.items():
+        lived = [m for m, last in x["covered"].items()
+                 if saves.get(m) == i and rnd.alive(m, min(rnd.t_decided, last + SAVE_WINDOW_S))]
+        out[i] = {"blocked_s": _r2(x["blocked_s"]), "pairs": len(x["pairs"]), "covered": sorted(x["covered"]),
+                  "covered_lived": sorted(lived)}
+    return out
 
 
 def _presence(rnd, sides, c: _Cast) -> dict | None:
@@ -406,11 +466,10 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     r = ZONE_RADIUS_M[kind]
     x, y = _px(c.u, c.v)
     end = min(c.t_end, rnd.t_decided)
-    inside_s = waiting_s = 0.0
-    entered, turned = set(), set()
+    inside_s = 0.0
+    entered, turned, waits = set(), set(), set()
     prev, closest = {}, {}
-    t = c.t
-    while t < end:
+    for t in _grid(c.t, end, PRESENCE_STEP_S):
         for s, sd in sides.items():
             if sd in (None, side) or not rnd.alive(s, t):
                 continue
@@ -424,23 +483,49 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
             elif d <= r + WAIT_RING_M:
                 q = prev.get(s)
                 if q is not None and _dist_m(rnd, p, q) / PRESENCE_STEP_S < STOPPED_MPS:
-                    waiting_s += PRESENCE_STEP_S
+                    waits.add((t, s))
             if d <= r + WAIT_RING_M:
                 closest[s] = min(closest.get(s, d), d)
             elif s in closest and d - closest[s] >= TURN_AWAY_M:
                 turned.add(s)           # came to the edge, then went back the way it came
             prev[s] = p
-        t += PRESENCE_STEP_S
-    return {"r_m": r, "armed_s": _r2(max(0.0, end - c.t)), "inside_s": _r2(inside_s), "waiting_s": _r2(waiting_s),
-            "entered": sorted(entered), "held_back": sorted(turned - entered)}
+    # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
+    return {"r_m": r, "armed_s": _r2(max(0.0, end - c.t)), "inside_s": _r2(inside_s),
+            "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
+            "held_back": sorted(turned - entered), "_waits": waits,
+            "_gap": {s: closest[s] - r for s in turned - entered}}
 
 
-def _spike_effect(rnd, sides, c: _Cast, spike) -> dict | None:
-    """Defuse attempts that overlapped this cast, near the spike, and whether each was stopped (not finished)."""
+def _share_presence(presence: dict[int, dict | None]) -> None:
+    """An enemy waiting at two casts' edges at once is one enemy-second, split between them; an enemy held back by
+    two casts is held back once, by the cast whose edge they came closest to (spec, "No double counting")."""
+    claims: dict[tuple, int] = {}
+    for p in presence.values():
+        for w in (p or {}).get("_waits", ()):
+            claims[w] = claims.get(w, 0) + 1
+    owner: dict[int, tuple[float, int]] = {}
+    for i, p in sorted(presence.items()):
+        for s, gap in (p or {}).get("_gap", {}).items():
+            if s not in owner or gap < owner[s][0] - _EPS:
+                owner[s] = (gap, i)
+    for i, p in presence.items():
+        if p is None:
+            continue
+        p["waiting_s"] = _r2(sum(PRESENCE_STEP_S / claims[w] for w in p.pop("_waits")))
+        p["held_back"] = sorted(s for s in p.pop("_gap") if owner[s][1] == i)
+
+
+def _spike_effect(rnd, sides, c: _Cast, spike, effects) -> dict | None:
+    """Defuse attempts that overlapped this cast, near the spike, and whether each was stopped (not finished).
+    An attempt can be this cast's to stop only when the defuser is the caster's enemy and the cast reached them
+    during it (`evidence`): an effect of this cast on the defuser ("effect"), or a damaging zone burning on the
+    spike ("zone"). `stopped` is set by `_share_defuses`: each stopped attempt goes to one cast."""
     if spike is None or spike.get("u") is None or c.u is None:
         return None
-    if _dist_m(rnd, _px(c.u, c.v), _px(spike["u"], spike["v"])) > SPIKE_NEAR_M:
+    gap = _dist_m(rnd, _px(c.u, c.v), _px(spike["u"], spike["v"]))
+    if gap > SPIKE_NEAR_M:
         return None
+    side = sides.get(c.by)
     attempts = []
     for a in spike.get("defuses") or ():
         if not isinstance(a, list) or len(a) < 3:
@@ -449,9 +534,36 @@ def _spike_effect(rnd, sides, c: _Cast, spike) -> dict | None:
         t1 = float(a[1]) if a[1] is not None else t0
         if t1 < c.t or t0 > c.t_end:
             continue
-        attempts.append({"t": _r2(t0), "by": a[2], "finished": bool(a[3]) if len(a) > 3 else None})
-    return {"near_spike": True, "attempts": attempts,
-            "stopped": sum(1 for a in attempts if a["finished"] is False)}
+        finished = bool(a[3]) if len(a) > 3 else None
+        evidence = None
+        if side is not None and sides.get(a[2]) not in (None, side):
+            if any(e["target"] == a[2] and e["how"] != "reveal" and e["t0"] - _EPS <= t1 and e["t1"] + _EPS >= t0
+                   for e in effects):
+                evidence = "effect"
+            elif "damaging" in c.kinds and gap <= ZONE_RADIUS_M["damaging"] and c.t <= t1 <= c.t_end:
+                evidence = "zone"
+        attempts.append({"t": _r2(t0), "t1": _r2(t1), "by": a[2], "finished": finished, "evidence": evidence})
+    return {"near_spike": True, "attempts": attempts, "stopped": 0}
+
+
+def _share_defuses(spikes: dict[int, dict | None], order: dict[int, float]) -> None:
+    """Each defuse attempt that didn't finish is stopped once: by the cast with evidence on it, an effect on the
+    defuser before a zone on the spike, the latest such cast on a tie."""
+    best: dict[tuple, tuple] = {}
+    for i, sp in spikes.items():
+        for a in (sp or {}).get("attempts", ()):
+            if a["finished"] is not False or a["evidence"] is None:
+                continue
+            key = (a["t"], a["by"])
+            rank = (a["evidence"] == "effect", order[i])
+            if key not in best or rank > best[key][0]:
+                best[key] = (rank, i)
+    for i, sp in spikes.items():
+        if sp is None:
+            continue
+        for a in sp["attempts"]:
+            a["stopped_by_this"] = best.get((a["t"], a["by"]), (None, None))[1] == i
+        sp["stopped"] = sum(1 for a in sp["attempts"] if a["stopped_by_this"])
 
 
 # --- heals and unused util
@@ -465,15 +577,13 @@ def _vitals_before(ps, slot, t):
 
 def _heals(rnd, blob, sides) -> list[dict]:
     ps = blob.get("player_state")
+    rows = [r for r in blob.get("util") or () if r.get("k") == "heal" and r.get("target") is not None]
     out = []
-    for r in blob.get("util") or ():
-        if r.get("k") != "heal" or r.get("target") is None:
-            continue
+    for r in rows:
         target, t0 = r["target"], float(r["t"])
         t1 = float(r.get("t1") if r.get("t1") is not None else t0)
         before = _vitals_before(ps, target, t0)
         hp_before = None if before is None else before.get("hp")
-        sh_before = 0 if before is None else (before.get("sh") or 0)
         life_end = rnd.life_end(target, t1)
         horizon = min(t1 + HEAL_FOLLOW_S, rnd.t_decided)
         dmg =[d for d in blob.get("util") or () if d.get("k") == "damage" and d.get("target") == target
@@ -482,16 +592,58 @@ def _heals(rnd, blob, sides) -> list[dict]:
                                   and t1 <= float(r2["t"]) <= horizon for r2 in blob.get("util") or ())
         taken = _damage_taken(ps, target, t1, horizon)
         survived = rnd.alive(target, horizon - _EPS) or life_end >= horizon
-        saved = None
-        if hp_before is not None and taken is not None:
-            # still standing once the damage after the heal passed what they had before it: without the heal that
-            # damage would have killed them (other heals in between are counted in the same walk of vitals)
-            saved = r.get("pool") in ("hp", "armor") and _outlived(ps, target, t1, horizon, hp_before + sh_before)
+        share = None
+        if hp_before is not None and taken is not None and r.get("amount") is not None:
+            share = _saved_share(ps, r, rows, horizon) if r.get("pool") in ("hp", "armor") else 0.0
         out.append({"t": _r2(t0), "t1": _r2(t1), "by": r.get("by"), "target": target, "pool": r.get("pool"),
                     "amount": _r2(r.get("amount")), "name": r.get("name"), "code": r.get("code"),
                     "hp_before": _r2(hp_before), "taken_after": _r2(taken), "fought": fought,
-                    "survived": bool(survived), "saved": saved})
+                    "survived": bool(survived), "saved": None if share is None else share > 0,
+                    "saved_share": None if share is None else round(share, 3)})
     return out
+
+
+def _heal_end(r) -> float:
+    return float(r.get("t1") if r.get("t1") is not None else r["t"])
+
+
+def _saved_share(ps, heal, heals, horizon) -> float | None:
+    """This heal's share of a life saved, 0..1 (spec, "Healing"). Within the life the heal ended in, take the
+    lowest health (HP + shield) the player was seen at, still alive, between the heal and `horizon`: every other
+    heal is in it already. Without this heal they'd have had that low point minus its amount; at or below zero,
+    the heal kept them alive. Each heal of that life ending before the low point (no more than HEAL_FOLLOW_S
+    before it) that was needed the same way shares the save by amount; one the others alone covered gets nothing
+    (20 HP, healed to 80, then to 100, then 25 damage: neither heal was needed). None without vitals."""
+    events = ((ps or {}).get("vitals") or {}).get(str(heal["target"])) or []
+    t1 = _heal_end(heal)
+    at = next((e for e in reversed(events) if e["t"] <= t1 + _EPS), None)
+    if at is None:
+        return None
+    life = at.get("life")
+    low = None
+    for e in events:
+        if e["t"] < t1 - _EPS or e.get("life") != life:
+            continue
+        if e["t"] > horizon:
+            break
+        health = (e.get("hp") or 0) + (e.get("sh") or 0)
+        if (e.get("hp") or 0) > 0 and (low is None or health < low[0]):
+            low = (health, e["t"])
+    if low is None:
+        return 0.0
+    health, t_low = low
+    mates = [h for h in heals if h.get("target") == heal["target"] and h.get("amount") is not None
+             and h.get("pool") in ("hp", "armor") and t_low - HEAL_FOLLOW_S <= _heal_end(h) <= t_low + _EPS
+             and _life_of(events, _heal_end(h)) == life]
+    needed = [h for h in mates if health - float(h["amount"]) <= 0]
+    if heal not in needed:
+        return 0.0
+    return float(heal["amount"]) / sum(float(h["amount"]) for h in needed)
+
+
+def _life_of(events, t):
+    at = next((e for e in reversed(events) if e["t"] <= t + _EPS), None)
+    return None if at is None else at.get("life")
 
 
 def _damage_taken(ps, slot, t0, t1):
@@ -512,27 +664,6 @@ def _damage_taken(ps, slot, t0, t1):
                 lost += drop
         prev = e
     return lost
-
-
-def _outlived(ps, slot, t0, t1, health_before) -> bool:
-    """True when, between t0 and t1 and within one life, the damage `slot` took first reached `health_before`
-    (what it had before the heal) at a hit it was still alive after."""
-    events = ((ps or {}).get("vitals") or {}).get(str(slot)) or []
-    lost, prev = 0.0, None
-    for e in events:
-        if e["t"] < t0:
-            prev = e
-            continue
-        if e["t"] > t1:
-            break
-        if prev is not None and e.get("life") == prev.get("life"):
-            drop = (prev.get("hp") or 0) + (prev.get("sh") or 0) - (e.get("hp") or 0) - (e.get("sh") or 0)
-            if drop > 0:
-                lost += drop
-                if lost >= health_before:
-                    return (e.get("hp") or 0) > 0
-        prev = e
-    return False
 
 
 def _held(ps, slot, t) -> dict[str, int]:
@@ -565,8 +696,8 @@ def _ult_at(ps, slot, t):
 
 
 def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
-    """Deaths holding util that fits the fight, in fights the player engaged first; and full ults never used,
-    once per player-round. Without charge timelines (before revision 21) no death claim is made."""
+    """Deaths holding util that fits the fight, in fights the player engaged first. Without charge timelines
+    (before revision 21) no claim is made. Full ults never used are the site's (`_ults`)."""
     ps = blob.get("player_state")
     have_charges = bool((ps or {}).get("charges"))
     out = []
@@ -590,17 +721,26 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
         if fits:
             out.append({"slot": victim, "t": _r2(t), "kind": "held_at_death",
                         "abilities": [name for name, _ in fits], "kinds": sorted({kind for _, kind in fits})})
+    return out
+
+
+def _ults(rnd, blob, sides) -> dict[str, dict]:
+    """Each slot's ult this round, for the site to find full ults never used: `cap_seen`, the points held just
+    before a drop to 0 (a use, which proves the cost; None without one this round), `end`, the points at their
+    death or the round's decision (`t`), and whether they used it by then. Whether `end` is full is the site's
+    call, from every round of the match (app/services/replay_util.py `unused_ults`): one round rarely proves the
+    cost, and a player can hold a full ult all round. Nothing without ult timelines (before revision 19)."""
+    ps = blob.get("player_state")
+    if not (ps or {}).get("ult"):
+        return {}
+    util = blob.get("util") or ()
+    out = {}
     for slot in sides:
-        cap = _ult_cap(ps, slot)
-        if cap is None:
-            continue
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
-        n = _ult_at(ps, slot, end - _EPS)
-        if n is not None and n >= cap:
-            used = any(r.get("by") == slot and _key_of(r.get("name")) == "X" and r["t"] <= end for r in util
-                       if r.get("k") == "ability")
-            if not used:
-                out.append({"slot": slot, "t": _r2(end), "kind": "ult_unused", "points": n})
+        used = any(r.get("by") == slot and _key_of(r.get("name")) == "X" and r["t"] <= end for r in util
+                   if r.get("k") == "ability")
+        out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
+                          "used": used}
     return out
 
 
@@ -630,21 +770,28 @@ def _probe_kind(c: _Cast) -> str | None:
     return None
 
 
-def _holds_by_cast(casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
-    """Each probe item (app/critutil/unknown.py) to one cast: its owner's cast of the same kind whose landing is
-    nearest its start (a buy-phase placement starts at the round's 0), within HOLD_MATCH_S. One cast, one item."""
+def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
+    """Each probe item (app/critutil/unknown.py) to one cast: the cast holding the device's own row (`id`, the
+    actor); else its owner's cast of the same kind whose landing is nearest its start (a buy-phase placement
+    starts at the round's 0), within HOLD_MATCH_S, and for a molly nearest its place. One cast, one item."""
     out: dict[int, dict] = {}
     if not holds:
         return out
     taken = set()
-    for item in sorted(holds.get("items") or (), key=lambda i: i["t0"]):
+    for item in sorted(holds.get("items") or (), key=lambda i: (i["t0"], i.get("id") is None)):
         best = None
-        for c in casts:
+        if item.get("id") is not None:
+            best = next(((0.0, c) for c in casts if c.i not in taken and item["id"] in c.ids), None)
+        for c in casts if best is None else ():
             if c.i in taken or c.by != item["by"] or _probe_kind(c) != item["kind"]:
                 continue
             landed = max(c.landed_t if c.landed_t is not None else c.t, 0.0)
             gap = abs(landed - item["t0"])
-            if gap <= HOLD_MATCH_S and (best is None or gap < best[0]):
+            if gap > HOLD_MATCH_S:
+                continue
+            if item.get("uv") is not None and c.u is not None:
+                gap += _dist_m(rnd, _px(*item["uv"]), _px(c.u, c.v))     # a metre is worth a second here
+            if best is None or gap < best[0]:
                 best = (gap, c)
         if best is not None:
             taken.add(best[1].i)
@@ -671,7 +818,15 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
                       "v_side": sides.get(victim), "before": [before["attack"], before["defense"]]})
     defuse = next((float(a[1]) for a in (spike or {}).get("defuses") or ()
                    if isinstance(a, list) and len(a) > 3 and a[3] and a[1] is not None), None)
-    held = _holds_by_cast(casts, holds)
+    held = _holds_by_cast(rnd, casts, holds)
+    # outcomes two casts can share (a sight line, an enemy at an edge, a stopped defuse) are measured for every
+    # cast first and then given out once
+    cover = _cover_all(rnd, sides, casts)
+    presence = {c.i: _presence(rnd, sides, c) for c in casts}
+    _share_presence(presence)
+    spikes = {c.i: _spike_effect(rnd, sides, c, spike, effects[c.i]) if plant is not None and c.t >= plant else None
+              for c in casts}
+    _share_defuses(spikes, {c.i: c.t for c in casts})
     out_casts = []
     for c in casts:
         eff = effects[c.i]
@@ -695,9 +850,9 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "kills": _link_kills(rnd, sides, c, eff, trigger),
             "followed": _followed(rnd, blob, sides, c, eff),
             "harm": _harm(rnd, sides, c, eff),
-            "cover": _cover(rnd, sides, c),
-            "presence": _presence(rnd, sides, c),
-            "spike": _spike_effect(rnd, sides, c, spike) if plant is not None and c.t >= plant else None,
+            "cover": cover.get(c.i),
+            "presence": presence[c.i],
+            "spike": spikes[c.i],
             "hold": held.get(c.i),
             "ult_points": _ult_cost(ps, c),
             "activation": ((c.flash or {}).get("activation") or {}).get("targets_complete"),
@@ -711,6 +866,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "casts": out_casts,
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),
+        "ults": _ults(rnd, blob, sides),
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
                   "ult": bool((ps or {}).get("ult")),
