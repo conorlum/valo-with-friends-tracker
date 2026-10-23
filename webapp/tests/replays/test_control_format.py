@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from app.control import engine as ce
+from app.control import fight_swing as fs
 from app.control import geometry as cg
 from app.control import heights as hc
 from app.control import mollies as mo
@@ -71,7 +72,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # Unreleased, so re-pinned in place when the capture's start (ORB_CAPTURE_S before it) became a sound too.
           18: "64b0e0cdf5418980",
           # 19 (2026-10-19): BLIND_STATUSES, `nearsighted` status rows (Harbor's Reckoning) read as nearsight.
-          19: "328288d9f5e9537f"}
+          19: "328288d9f5e9537f",
+          # 20 (2026-10-23): fight swing, the summary's team fights (app/control/fight_swing.py, digested from 20).
+          20: "d50d4e280c7967b4"}
 
 
 def _constants_digest() -> str:
@@ -89,8 +92,8 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list
-    for module in (ce, cg, hc, ct, ut, mo):
+    # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list; fs since 20
+    for module in (ce, cg, hc, ct, ut, mo) + ((fs,) if cf.CONTROL_REVISION >= 20 else ()):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
@@ -219,6 +222,16 @@ def test_the_summary_keeps_the_section_totals_and_player_stats(round_control):
         assert totals.sum(0) == pytest.approx(np.full(cells, sec.seconds), abs=rounding + 1e-6)
     assert summary["players"]["0"] == rc.players[0].as_dict()
     assert summary["players"]["6"]["deaths"] and summary["group_side"] == {"A": "attack", "B": "defense"}
+
+
+def test_the_summary_keeps_the_rounds_team_fights(round_control):
+    rc, data = round_control
+    [fight] = rc.fights
+    assert fight["deaths"] == [[6, 4.1, "B"]] and fight["wipe"] is False
+    assert fight["measured"][0] < 4.1 < fight["measured"][1] <= data["t_decided"]
+    assert set(fight["lost_m2"]) == {"A", "B"} and fight["area_m2"] > 0
+    assert cf.unpack_summary(encode_summary(rc, data))["fights"] == rc.fights
+    assert "fights" not in cf.unpack_summary(encode_summary(dataclasses.replace(rc, fights=None), data))
 
 
 def test_the_data_is_one_gzip_member_with_the_magic_inside():
