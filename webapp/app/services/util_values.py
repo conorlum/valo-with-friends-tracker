@@ -808,7 +808,11 @@ def _finish(sums: list) -> dict:
     n = sum(s["n"] for s in sums)
     cell = sum((s["cell"] for s in sums), np.zeros(MAX_L))
     ma = sum((s["ma"] for s in sums), np.zeros(MAX_L))
-    diffs = [d for s in sums for d in s["diffs"].values()]
+    by_unit: dict = {}                  # one difference per match (or player-match), summed over types
+    for s in sums:
+        for unit, d in s["diffs"].items():
+            by_unit[unit] = by_unit[unit] + d if unit in by_unit else np.array(d, dtype=float)
+    diffs = list(by_unit.values())
     out = {}
     for L in range(1, MAX_L + 1):
         ds = [float(d[L - 1]) for d in diffs]

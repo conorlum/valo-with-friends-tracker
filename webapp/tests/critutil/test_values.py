@@ -415,6 +415,17 @@ def test_equal_errors_do_not_pass():
     assert not util_values.gate({}, min_n=3)["all"][1]["pass"]
 
 
+def test_the_gates_paired_difference_is_one_per_match_summed_over_types():
+    def arr(n, slope):
+        return np.array([float(n)] + [n * slope * L for L in range(1, 46)])
+    per_match = {m: {typ: {"attack|5v5|0|contact|a": arr(10, 0.01 * m), "attack|5v5|0|contact|b": arr(10, -0.01 * m)}
+                     for typ in ("flash", "smoke")} for m in range(1, 5)}
+    g = util_values.gate(per_match, min_n=3)
+    assert g["all"][5]["matches"] == 4, "two types in one match are one paired difference"
+    one = util_values.gate({m: {"flash": v["flash"]} for m, v in per_match.items()}, min_n=3)
+    assert g["all"][5]["diff_mean"] == pytest.approx(2 * one["all"][5]["diff_mean"])
+
+
 def test_overlap_counts_a_same_type_cast_starting_inside_the_window(monkeypatch):
     monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[13.0, 15.0]])
     r = v2_round([v2_cast(0, t=13.0)], kills=[], t_decided=12.0)
