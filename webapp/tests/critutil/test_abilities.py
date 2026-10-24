@@ -66,6 +66,14 @@ def test_rowspan_label():
     assert rows[0]["label"] == "Duration"
 
 
+def test_unquoted_rowspan_label():
+    # Sky Smoke, Dark Cover, Ruse, Shear: `|rowspan=2| Duration`, no quotes around the value
+    row = 'rowspan=2|[[File:Duration.png|20px|link=]] Duration\n|19.25 seconds\n|{{Tick}}\n|-\n|more\n|{{Tick}}\n'
+    secs, rows = abilities.parse_duration(_table("|" + row), field="Duration")
+    assert secs == 19.25
+    assert rows[0]["label"] == "Duration"
+
+
 def test_no_duration_row():
     assert abilities.parse_duration(_table(EQUIP)) == (None, [])
     assert abilities.parse_duration("no table here") == (None, [])

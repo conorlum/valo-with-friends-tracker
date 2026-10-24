@@ -284,17 +284,18 @@
    "wiki": {
     "page": "Sky Smoke",
     "field": "Duration",
+    "value": "19.25 seconds",
+    "fetched": "2026-10-24",
     "rows": [
      {
-      "label": "rowspan=2| Duration",
+      "label": "Duration",
       "value": "19.25 seconds"
      }
     ]
    },
    "pieces": [],
    "replay_s": 20.8,
-   "duration_s": null,
-   "provisional": true
+   "duration_s": 19.25
   },
   {
    "match": "^(Sarge_X_OrbitalStrike_Production)$",
@@ -507,17 +508,18 @@
    "wiki": {
     "page": "Ruse",
     "field": "Duration",
+    "value": "Alive: 14 seconds (includes 0.5-second formation time and 0.5-second expiration time)",
+    "fetched": "2026-10-24",
     "rows": [
      {
-      "label": "rowspan=2| Duration",
+      "label": "Duration",
       "value": "Alive: 14 seconds (includes 0.5-second formation time and 0.5-second expiration time)"
      }
     ]
    },
    "pieces": [],
    "replay_s": 15.0,
-   "duration_s": null,
-   "provisional": true
+   "duration_s": 14.0
   },
   {
    "match": "^(?!)$",
@@ -1791,7 +1793,7 @@
       "value": "4 seconds"
      },
      {
-      "label": "rowspan=2| Wall Dissolve Duration",
+      "label": "Wall Dissolve Duration",
       "value": "2 seconds"
      },
      {
@@ -1957,17 +1959,18 @@
    "wiki": {
     "page": "Dark Cover",
     "field": "Duration",
+    "value": "15 seconds",
+    "fetched": "2026-10-24",
     "rows": [
      {
-      "label": "rowspan=2| Duration",
+      "label": "Duration",
       "value": "15 seconds"
      }
     ]
    },
    "pieces": [],
    "replay_s": 17.9,
-   "duration_s": null,
-   "provisional": true
+   "duration_s": 15.0
   },
   {
    "match": "^(Wraith_X_GlobalTeleport_Intention)$",
@@ -2824,17 +2827,18 @@
    "wiki": {
     "page": "Crosscut",
     "field": "Teleport duration",
+    "value": "Total duration: 1.6 seconds",
+    "fetched": "2026-10-24",
     "rows": [
      {
-      "label": "rowspan=2| Teleport duration",
+      "label": "Teleport duration",
       "value": "Total duration: 1.6 seconds"
      }
     ]
    },
    "pieces": [],
    "replay_s": 23.7,
-   "duration_s": null,
-   "provisional": true
+   "duration_s": 1.6
   },
   {
    "match": "^(?!)$",
@@ -3030,17 +3034,18 @@
    "wiki": {
     "page": "Shear",
     "field": "Duration",
+    "value": "Total 6 seconds",
+    "fetched": "2026-10-24",
     "rows": [
      {
-      "label": "rowspan=3| Duration",
+      "label": "Duration",
       "value": "Total 6 seconds"
      }
     ]
    },
    "pieces": [],
    "replay_s": 16.6,
-   "duration_s": null,
-   "provisional": true
+   "duration_s": 6.0
   },
   {
    "match": "^(Nox_vyse_arc_rose)$",

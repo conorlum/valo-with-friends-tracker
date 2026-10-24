@@ -47,7 +47,7 @@ def extractor_hash(entries=None) -> str:
     return _digest([{k: e.get(k) for k in EXTRACTOR_FIELDS} for e in es])
 
 
-_ATTR = re.compile(r'^\s*\w+="[^"]*"\s*\|(?!\|)')
+_ATTR = re.compile(r'^\s*\w+=(?:"[^"]*"|[^\s|"]+)\s*\|(?!\|)')
 _FILE = re.compile(r"\[\[File:[^\]]*\]\]")
 _NUM = r"(\d+(?:\.\d+)?)"
 _RANGE = re.compile(_NUM + r"\s*[-–—]\s*" + _NUM)
