@@ -3,9 +3,12 @@ import json
 
 from app.services.replay_moments import (
     attach_deaths,
+    attach_team_fights,
     build_payload,
+    expensive_fights,
     player_info,
     player_summary,
+    team_fight_of,
 )
 
 
@@ -91,6 +94,52 @@ def test_expensive_deaths():
     assert d[1]["fight_i"] == 4 and d[0]["fight_i"] is None
 
 
+def team_fight(deaths, lost, wipe=False):
+    return {"t0": deaths[0][1], "t1": deaths[-1][1], "deaths": [list(d) for d in deaths], "wipe": wipe,
+            "lost_m2": lost}
+
+
+def test_team_fight_is_seen_from_the_dying_players_side():
+    tf = [team_fight([(3, 30.0, "A"), (7, 31.0, "B"), (4, 33.0, "A")], {"A": 900.0, "B": 100.0})]
+    mine = team_fight_of(3, 30.05, tf)
+    assert mine == {"t0": 30.0, "t1": 33.0, "ours": 2, "theirs": 1, "swing_m2": -800.0, "wipe": False}
+    assert team_fight_of(7, 31.0, tf)["swing_m2"] == 800.0 and team_fight_of(7, 31.0, tf)["ours"] == 1
+    assert team_fight_of(3, 30.2, tf) is None and team_fight_of(3, 30.0, None) is None
+
+
+def test_expensive_fight_tag_needs_the_cut_off_and_no_wipe():
+    f = [fight(slot=3, died={"t": 30.0, "killer": 7}), fight(slot=3, i=1, died=None)]
+    before = copy.deepcopy(f)
+    for lost, wipe, tagged in (({"A": 600.0, "B": 100.0}, False, True), ({"A": 599.0, "B": 100.0}, False, False),
+                               ({"A": 900.0, "B": 0.0}, True, False)):
+        out = attach_team_fights(f, [team_fight([(3, 30.0, "A")], lost, wipe)])
+        assert ("expensive_fight" in out[0].get("tags", [])) is tagged, (lost, wipe)
+        assert out[0]["team_fight"]["wipe"] is wipe and "team_fight" not in out[1]
+    assert f == before
+
+
+def test_expensive_fights_summary_order_and_filters():
+    moments = {1: {"status": "ok", "fights": [fight(slot=3, i=0, died={"t": 10.0, "killer": 7})]},
+               2: {"status": "ok", "fights": [fight(slot=3, i=2, died={"t": 20.0, "killer": 7}),
+                                              fight(slot=3, i=3, died={"t": 40.0, "killer": 7})]},
+               3: {"status": "ok", "fights": [fight(slot=3, i=0, died={"t": 5.0, "killer": 7})]}}
+    tfs = {1: [team_fight([(3, 10.0, "A")], {"A": 300.0, "B": 0.0})],
+           2: [team_fight([(3, 20.0, "A")], {"A": 1000.0, "B": 0.0}),
+               team_fight([(3, 40.0, "A")], {"A": 0.0, "B": 50.0})],          # positive: not listed
+           "3": [team_fight([(3, 5.0, "A")], {"A": 5000.0, "B": 0.0}, wipe=True)]}   # a wipe: not listed
+    rows = expensive_fights(3, moments, tfs)
+    assert [(r["round"], r["swing_m2"], r["fight_i"]) for r in rows] == [(2, -1000.0, 2), (1, -300.0, 0)]
+
+
+def test_a_revived_players_two_deaths_in_one_team_fight_list_it_once():
+    moments = {1: {"status": "ok", "fights": [fight(slot=3, i=0, died={"t": 10.0, "killer": 7}),
+                                              fight(slot=3, i=1, died={"t": 18.0, "killer": 7})]}}
+    tfs = {1: [team_fight([(3, 10.0, "A"), (7, 14.0, "B"), (3, 18.0, "A")], {"A": 900.0, "B": 0.0})]}
+    assert [(r["round"], r["fight_i"]) for r in expensive_fights(3, moments, tfs)] == [(1, 0)]
+    tagged = attach_team_fights(moments[1]["fights"], tfs[1])
+    assert all("expensive_fight" in f["tags"] for f in tagged), "each personal fight is still tagged"
+
+
 def test_build_payload():
     moments = {1: {"status": "ok", "fights": [fight(slot=3)]},
                2: {"status": "failed", "fights": None}}
@@ -98,4 +147,10 @@ def test_build_payload():
                       attack_round1=[3], moments=moments, deaths={}, events={}, stale=0)
     assert p["rounds"]["2"] == {"status": "failed", "fights": []}
     assert set(p["summary"]) == {"3", "4"} and "info" in p["summary"]["3"]
+    assert p["summary"]["3"]["expensive_fights"] == []
     assert json.loads(json.dumps(p)) == p
+    died = {1: {"status": "ok", "fights": [fight(slot=3, died={"t": 12.0, "killer": 4})]}}
+    p = build_payload(players={"3": {"name": "x", "team": "A"}}, attack_round1=[3], moments=died, deaths={},
+                      events={}, stale=0, team_fights={1: [team_fight([(3, 12.0, "A")], {"A": 800.0, "B": 0.0})]})
+    assert "expensive_fight" in p["rounds"]["1"]["fights"][0]["tags"]
+    assert p["summary"]["3"]["expensive_fights"][0]["swing_m2"] == -800.0

@@ -178,4 +178,6 @@ def encode_summary(rc: RoundControl, blob: dict, *, provenance=None) -> bytes:
         summary['provenance'] = provenance
     if rc.map_features:
         summary['map_features'] = rc.map_features
+    if rc.fights is not None:
+        summary['fights'] = rc.fights
     return cf.pack_summary(summary)
