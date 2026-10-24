@@ -187,6 +187,47 @@ def test_a_build_that_raced_new_evidence_is_stored_under_its_own_inputs_and_buil
     assert builds == [1, 2], "the stored build is current: no third"
 
 
+def test_the_corpus_key_follows_the_ability_table_the_extractor_version_and_the_friendships(db, linked, monkeypatch):
+    from app.critutil import abilities, constants
+
+    put_util(db, linked, 1)
+    rows = replay_util.current_rows(db, with_data=False)
+    base = replay_util.corpus_key(db, rows, None)
+    assert replay_util.corpus_key(db, rows, None) == base
+    with monkeypatch.context() as mp:
+        mp.setattr(abilities, "table_hash", lambda entries=None: "another table")
+        assert replay_util.corpus_key(db, rows, None) != base
+    with monkeypatch.context() as mp:
+        mp.setattr(constants, "VERSION", constants.VERSION + 1)
+        assert replay_util.corpus_key(db, rows, None) != base
+    assert replay_util.corpus_key(db, rows, None) == base
+    db.add(Friendship(owner_player_id=1, friend_player_id=2))
+    db.commit()
+    assert replay_util.corpus_key(db, rows, None) != base
+
+
+def test_the_replay_context_says_whether_the_blob_has_on_spans(db, linked):
+    linked.recipe = "p1.c22.f1.a1"
+    db.commit()
+    assert replay_util._replay_context(db, {linked.id})[linked.id]["on_known"] is True
+    linked.recipe = "p1.c21.f1.a1"
+    db.commit()
+    assert replay_util._replay_context(db, {linked.id})[linked.id]["on_known"] is False
+
+
+def test_the_tab_reads_a_casts_lift_from_the_stored_build(db, linked):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
+    put_util(db, linked, 1)
+    assert body_of(call(db))["rounds"]["1"]["casts"][0]["lift"] is None
+    key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
+    built = {"rows": [{"replay": linked.id, "round": 1, "i": 0, "lift": 0.0312, "base_n": 55, "base_level": "x"}]}
+    replay_util._store_values(db, key, built)
+    c = body_of(call(db))["rounds"]["1"]["casts"][0]
+    assert c["lift"] == 3.12 and c["base_n"] == 55 and c["base_level"] == "x"
+
+
 def test_a_cast_after_the_round_was_decided_is_shown_unscored(db, linked):
     late = {**cast(i=1, value_kills=False), "t": 95.0, "after_decided": True}
     put_util(db, linked, 1, payload=data([cast(), late]))

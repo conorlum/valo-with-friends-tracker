@@ -49,10 +49,9 @@ def test_a_lineup_is_scored_against_the_no_util_baseline_not_the_abilitys_averag
     rows = [row(1, 0.05, i, rnd=i, lift=None) for i in range(6)]
     c = replay_util.page_for(corpus(rows), {1})["lineups"][0]
     assert c["score"] is None and c["call"] == "no comparison yet" and c["compared"] == 0
-    # the player's own moments without that util, shown beside when there are enough
-    mine = {"1|blind|attack": [-0.40, 40]}
-    c = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(6)], personal=mine), {1})["lineups"][0]
-    assert c["personal"] == pytest.approx(100 * (0.03 + 0.01), abs=0.01)
+    # the build no longer carries personal tables (W18; W21 rebuilds Yours on the page): the column reads None
+    c = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(6)]), {1})["lineups"][0]
+    assert c["personal"] is None
 
 
 def test_casts_after_the_round_was_decided_stay_out_of_the_page():

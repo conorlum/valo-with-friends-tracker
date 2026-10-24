@@ -20,9 +20,10 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from app.critutil import abilities, constants
 from app.services import util_model, util_values
 
-PAGE_VERSION = 1
+PAGE_VERSION = 2
 EXAMPLES_KEPT = 5
 COMBO_S = 3.0               # measure (spec, "Measurements" 4)
 COMBO_UV = 700              # minimap units (0..10000): about 8 m on a mid-size map; measure
@@ -194,6 +195,21 @@ def _stored_rounds(db, replay_ids=None, rows=None):
     return out
 
 
+ON_SPANS_FROM = 22          # CONDENSE revision from which Viper's Poison Cloud `on` spans exist
+
+
+def on_known(recipe: str | None) -> bool:
+    """Whether a replay's blob has the `on` spans (condense revision ON_SPANS_FROM or later)."""
+    from app.services import replay_control
+
+    return (replay_control.condense_revision(recipe or "") or 0) >= ON_SPANS_FROM
+
+
+def _round_data(data: dict, ctx: dict) -> dict:
+    """A stored round with the replay's clock offset and whether its blob has `on` spans."""
+    return {**data, "clock_offset": ctx.get("offset", 0.0), "on_known": bool(ctx.get("on_known", False))}
+
+
 def _replay_context(db, replay_ids):
     """Per replay: map, uuid, match id, slot -> (player_id, agent, team), round -> (winner side, number), and each
     slot's team's average start loadout per round."""
@@ -202,7 +218,8 @@ def _replay_context(db, replay_ids):
     from app.models.round import Round, RoundPlayerStat
 
     out = {}
-    replays = db.query(Replay.id, Replay.map_name, Replay.match_uuid, Replay.match_id, Replay.clock_offset).filter(
+    replays = db.query(Replay.id, Replay.map_name, Replay.match_uuid, Replay.match_id, Replay.clock_offset,
+                       Replay.recipe).filter(
         Replay.id.in_(list(replay_ids)), Replay.match_id.is_not(None)).all()
     match_of = {r.id: r.match_id for r in replays}
     players: dict[int, dict] = defaultdict(dict)
@@ -233,7 +250,7 @@ def _replay_context(db, replay_ids):
         loadouts[(rid, n, team)].append(s.loadout or 0)
     for r in replays:
         out[r.id] = {"map": r.map_name, "uuid": str(r.match_uuid), "match_id": r.match_id,
-                     "offset": r.clock_offset or 0.0,
+                     "offset": r.clock_offset or 0.0, "on_known": on_known(r.recipe),
                      "players": players.get(r.id, {}), "rounds": rounds.get(r.id, {}),
                      "loadout": {(n, team): sum(v) / len(v) for (rid, n, team), v in loadouts.items()
                                  if rid == r.id and v}}
@@ -246,15 +263,15 @@ def _replay_context(db, replay_ids):
 NO_LIFT = {"swing": None, "base": None, "base_n": 0, "base_level": None, "lift": None}
 
 
-def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, table: dict | None = None,
-               own: dict | None = None, include_unscored: bool = False) -> list[dict]:
-    """Every valued cast of one replay, flat, with who threw it and where, and its combo partners. With `table`
-    (the corpus's no-util baseline; `own`, this match's part of it, taken out) each scored cast is compared with
-    it (util_values.cast_lift). A cast after the round was decided is never scored (spec, "The cast"): it is left
-    out, or with `include_unscored` (the tab) kept with `scored` false and no value."""
+def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, include_unscored: bool = False
+               ) -> list[dict]:
+    """Every valued cast of one replay, flat, with who threw it and where, and its combo partners. The lift fields
+    are empty here: `build_from_rounds` fills them (the v2 baseline), the tab reads them from the stored build. A
+    cast after the round was decided is never scored (spec, "The cast"): it is left out, or with `include_unscored`
+    (the tab) kept with `scored` false and no value."""
     rows = []
     for n, data in sorted(rounds.items()):
-        data = {**data, "clock_offset": ctx.get("offset", 0.0)}
+        data = _round_data(data, ctx)
         valued = util_values.value_round(data, model, weights)
         sides = data.get("sides") or {}
         casts = data.get("casts") or []
@@ -265,7 +282,6 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, table
                 continue
             p = ctx["players"].get(c["by"]) or {}
             team = p.get("team")
-            lift = util_values.cast_lift(data, model, c, table, own) if scored and table is not None else NO_LIFT
             rows.append({
                 "replay": replay_id, "uuid": ctx["uuid"], "map": ctx["map"], "match": ctx["match_id"], "round": n,
                 "i": c["i"], "slot": c["by"], "player_id": p.get("player_id"), "agent": c.get("agent") or p.get("agent"),
@@ -279,7 +295,7 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, table
                 "wasted": v.get("wasted", False), "found_nobody": v.get("found_nobody", False),
                 "harm": len(c.get("harm") or ()), "harm_died": sum(1 for h in c.get("harm") or () if h.get("died")),
                 "followed": c.get("followed"), "ult_points": c.get("ult_points"),
-                "enemies": len(c.get("enemies") or ()), "features": v.get("features", {}), **lift,
+                "enemies": len(c.get("enemies") or ()), "features": v.get("features", {}), **NO_LIFT,
             })
         _mark_combos([r for r in rows if r["round"] == n and r["scored"]], casts)
         for r in rows:
@@ -336,7 +352,9 @@ def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
 
     ids = sorted({r[0] for r in rows})
     replays = sorted(db.query(Replay.id, Replay.match_id, Replay.clock_offset).filter(Replay.id.in_(ids))) if ids else []
-    h = hashlib.sha256(f"{util_values.VERSION}:{PAGE_VERSION}:{(model or {}).get('key')}".encode())
+    friends = hashlib.sha256(",".join(str(p) for p in sorted(friend_players(db))).encode()).hexdigest()
+    h = hashlib.sha256(f"{util_values.VERSION}:{PAGE_VERSION}:{(model or {}).get('key')}:{abilities.table_hash()}:"
+                       f"{constants.VERSION}:{friends}".encode())
     for rid, n, fp, at, *_ in sorted(rows, key=lambda r: (r[0], r[1])):
         h.update(f"|{rid}:{n}:{fp}:{at}".encode())
     for rid, match_id, offset in replays:
@@ -352,48 +370,135 @@ def lineup_score(lifts: list[float], prior: float) -> float | None:
     return util_values.shrunk(lifts, prior, SHRINK_K)
 
 
-def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None) -> dict:
-    """Every friend's valued casts, the fitted weights and what the page needs to grade a lineup, from `rows`
-    (`current_rows`; read here when not given) and the estimator `model` (the stored one when not given). Reads
-    only: `ensure_values` stores it.
+def friend_players(db) -> set[int]:
+    """Every player id in any friendship: the players whose casts get a Yours baseline."""
+    from app.models.friendship import Friendship
 
-    Each match is valued with weights fitted without it (util_values.weights_for) and compared with the no-util
-    baseline of the other matches (util_values.cast_lift)."""
-    rows = current_rows(db) if rows is None else rows
-    model = util_model.load(db) if model is None else model
-    stored = _stored_rounds(db, rows=rows)
-    ctx = _replay_context(db, set(stored))
+    return {pid for pair in db.query(Friendship.owner_player_id, Friendship.friend_player_id) for pid in pair}
+
+
+def _gate_list(by_l: dict) -> list[dict]:
+    return [dict(by_l[L]) for L in range(1, util_values.MAX_L + 1)]
+
+
+def _item_of(data: dict, row: dict) -> dict | None:
+    """The raw cast (by `i`) or heal (by t and who) a row was made from."""
+    if row["i"] is not None:
+        return next((c for c in data.get("casts") or () if c["i"] == row["i"]), None)
+    return next((h for h in data.get("heals") or () if h.get("t") == row["t"] and h.get("by") == row["slot"]), None)
+
+
+def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()) -> dict:
+    """The corpus build, pure: `stored` is {replay id: {round: data}}, `ctx` the `_replay_context`, `friend_players`
+    the players in at least one friendship (they get a Yours baseline). Each match is valued with weights fitted
+    without it (util_values.weights_for) and each cast compared with the v2 baseline (util_values: per type, at its
+    own length L): the other matches' moments (`lift_all`, R1), the caster's own moments with every match of the
+    cast's lineup left out (`lift_yours`, R3), and for a placeable the same map and side without that device
+    (`lift_device`, R10). A mode's lift counts toward scores, priors and spread only where the gate passes at the
+    cast's L (R2); `lift` is the all-players one for the page and the tab."""
+    friend_players = frozenset(friend_players)
     stored = {rid: rounds for rid, rounds in stored.items() if rid in ctx}
-    own: dict[int, dict] = defaultdict(dict)        # match -> its part of the baseline table
-    personal: dict[str, list] = {}
-    training = []
+    prepared: dict[int, dict] = {}
+    items, training = [], []
     for rid, rounds in stored.items():
         c = ctx[rid]
         player_of = {slot: p.get("player_id") for slot, p in c["players"].items()}
+        prepared[rid] = {}
         for n, data in rounds.items():
-            data = {**data, "clock_offset": c["offset"]}
-            util_values.add_moments(own[c["match_id"]], data, model, personal, player_of)
-            training.append({"match": c["match_id"], "data": data, "winner": (c["rounds"].get(n) or {}).get("winner")})
-    table: dict = {}
-    for part in own.values():
-        util_values.merge_tables(table, part)
+            d = prepared[rid][n] = _round_data(data, c)
+            items.append({"match": c["match_id"], "map": c["map"], "data": d, "player_of": player_of})
+            training.append({"match": c["match_id"], "data": d, "winner": (c["rounds"].get(n) or {}).get("winner")})
+    tables = util_values.match_tables(items, model, friend_players)
+    gates = util_values.gate_all_modes(tables)
+    gate_pass = {mode: {L: bool(g["pass"]) for L, g in gates[mode].items()} for mode in ("all", "yours", "device")}
     fit = util_values.fit_weights(util_values.team_rounds(training, model))
     out_rows = []
     for rid, rounds in stored.items():
         m = ctx[rid]["match_id"]
-        out_rows.extend(_cast_rows(rid, ctx[rid], rounds, model, util_values.weights_for(fit, m), table=table,
-                                   own=own[m]))
-    lifts: dict[str, list] = defaultdict(list)
+        out_rows.extend(_cast_rows(rid, ctx[rid], prepared[rid], model, util_values.weights_for(fit, m)))
+
+    lineup_of = lambda r: (r["player_id"], r["ability"], r["map"], r["side"], r["area"])  # noqa: E731
+    lineup_matches: dict[tuple, set] = defaultdict(set)
     for r in out_rows:
-        if r["kind"] != "heal" and r.get("lift") is not None:
-            lifts[r["ability"]].append(r["lift"])
-    ability_prior = {k: sum(v) / len(v) for k, v in lifts.items()}
-    lineup: dict[tuple, list] = defaultdict(list)
+        lineup_matches[lineup_of(r)].add(r["match"])
+    tot_all = util_values.totals(tables["all"])
+    tot_yours: dict = {}
+    dev_wrapped: dict = {}
+    tot_dev: dict = {}
     for r in out_rows:
-        if r["kind"] != "heal" and r.get("lift") is not None:
-            lineup[(r["player_id"], r["ability"], r["map"], r["side"], r["area"])].append(r["lift"])
-    scores = [s for k, v in lineup.items() if (s := lineup_score(v, ability_prior.get(k[1], 0.0))) is not None]
-    spread = (sum(s * s for s in scores) / len(scores)) ** 0.5 if scores else 0.0
+        r.update(lift_all=None, gate_all=None, yours_level=None, yours_n=0, lift_yours=None, gate_yours=None,
+                 device_level=None, device_n=0, lift_device=None, gate_device=None, L=0, type=None)
+        data = prepared[r["replay"]].get(r["round"]) or {}
+        item = _item_of(data, r)
+        if item is None:
+            continue
+        typ = util_values.type_of(item)
+        r["type"] = typ
+        side = r["side"]
+        segs = util_values.item_segments(data, item)
+        if not segs or side not in ("attack", "defense"):
+            continue
+        swing, L = util_values.cast_swing_v2(data, model, item, segs, side)
+        if swing is None:
+            continue
+        keys = util_values.levels(data, side, max(float(segs[0][0]), 0.0))
+        r.update(swing=round(swing, 4), L=L)
+        got = util_values.lift_v2(tot_all, tables["all"], typ, keys, L, swing, leave_out={r["match"]})
+        if got is not None:
+            r.update(base=round(got["mean"], 4), base_n=got["n"], base_level=got["level"],
+                     lift_all=round(got["lift"], 4), gate_all=gate_pass["all"][L])
+        pid = r["player_id"]
+        if pid in tables["yours"]:
+            if pid not in tot_yours:
+                tot_yours[pid] = util_values.totals(tables["yours"][pid])
+            got = util_values.lift_v2(tot_yours[pid], tables["yours"][pid], typ, keys, L, swing,
+                                      leave_out=lineup_matches[lineup_of(r)])
+            if got is not None:
+                r.update(yours_level=got["level"], yours_n=got["n"], lift_yours=round(got["lift"], 4),
+                         gate_yours=gate_pass["yours"][L])
+        if typ == "placeable" and item.get("ability_id") is not None:
+            dkey = f"{item['ability_id']}|{r['map']}|{side}"
+            per = tables["device"].get(dkey)
+            if per is not None:
+                if dkey not in tot_dev:
+                    dev_wrapped[dkey] = {mm: {"device": cells} for mm, cells in per.items()}
+                    tot_dev[dkey] = util_values.totals(dev_wrapped[dkey])
+                got = util_values.lift_v2(tot_dev[dkey], dev_wrapped[dkey], "device", keys, L, swing,
+                                          leave_out={r["match"]})
+                if got is not None:
+                    r.update(device_level=got["level"], device_n=got["n"], lift_device=round(got["lift"], 4),
+                             gate_device=gate_pass["device"][L])
+        r["lift"] = r["lift_all"] if r["gate_all"] else None
+
+    modes = {"all": ("lift_all", "gate_all"), "yours": ("lift_yours", "gate_yours")}
+    prior_sums: dict[str, dict] = {"all": {}, "yours": {}}
+    for mode, (lk, gk) in modes.items():
+        for r in out_rows:
+            if r["kind"] != "heal" and r.get(lk) is not None and r.get(gk):
+                cell = prior_sums[mode].setdefault(r["ability"], {}).setdefault(str(r["match"]), [0, 0.0])
+                cell[0] += 1
+                cell[1] += r[lk]
+    by_ability: dict[str, list] = defaultdict(list)
+    for r in out_rows:
+        if r["kind"] != "heal" and r.get("lift_all") is not None and r.get("gate_all"):
+            by_ability[r["ability"]].append(r["lift_all"])
+    ability_prior = {k: sum(v) / len(v) for k, v in by_ability.items()}
+    spread_by_mode = {}
+    for mode, (lk, gk) in modes.items():
+        lineup: dict[tuple, list] = defaultdict(list)
+        for r in out_rows:
+            if r["kind"] != "heal" and r.get(lk) is not None and r.get(gk):
+                lineup[lineup_of(r)].append(r[lk])
+        scores = []
+        for k, v in lineup.items():
+            cells = prior_sums[mode].get(k[1]) or {}
+            left = lineup_matches[k]
+            n = sum(c[0] for mm, c in cells.items() if int(mm) not in left)
+            s = sum(c[1] for mm, c in cells.items() if int(mm) not in left)
+            score = lineup_score(v, s / n if n else 0.0)
+            if score is not None:
+                scores.append(score)
+        spread_by_mode[mode] = (sum(s * s for s in scores) / len(scores)) ** 0.5 if scores else 0.0
     overlap: dict[str, dict] = {}
     for r in out_rows:
         if r["kind"] == "heal":
@@ -402,9 +507,30 @@ def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = No
         o["casts"] += 1
         level = r.get("base_level")
         o["none" if level is None else "full" if level == util_values.BASE_LEVELS[0] else "fallback"] += 1
-    return {"rows": out_rows, "fit": fit, "ability_prior": ability_prior, "spread": spread,
-            "baseline": table, "personal": personal, "overlap": overlap, "matches": sorted(own),
+    return {"rows": out_rows, "fit": fit, "ability_prior": ability_prior, "spread": spread_by_mode["all"],
+            "spread_by_mode": spread_by_mode, "prior_sums": prior_sums, "overlap": overlap,
+            "matches": sorted({ctx[rid]["match_id"] for rid in stored}),
+            "gate": {"all": _gate_list(gates["all"]), "yours": _gate_list(gates["yours"]),
+                     "device": _gate_list(gates["device"]),
+                     "by_type": {mode: {typ: _gate_list(g) for typ, g in gates["by_type"][mode].items()}
+                                 for mode in ("all", "yours")}},
+            "same_type_overlap": {typ: [float(x) for x in arr] for typ, arr in tables["overlap"].items()},
             "estimator": {k: (model or {}).get(k) for k in ("n", "matches", "check", "calibration")}}
+
+
+def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None) -> dict:
+    """The stored build's data (`build_from_rounds`) from `rows` (`current_rows`; read here when not given), the
+    estimator `model` (the stored one when not given) and the friendships, with each row's fingerprint added.
+    Reads only: `ensure_values` stores it."""
+    rows = current_rows(db) if rows is None else rows
+    model = util_model.load(db) if model is None else model
+    stored = _stored_rounds(db, rows=rows)
+    ctx = _replay_context(db, set(stored))
+    out = build_from_rounds(stored, ctx, model, friend_players(db))
+    out["fingerprints"] = {}
+    for r in rows:
+        out["fingerprints"].setdefault(str(r[0]), {})[str(r[1])] = r[2]
+    return out
 
 
 def _store_values(db, key: str, data: dict) -> None:
@@ -655,13 +781,14 @@ def match_payload(db, replay) -> dict:
             failed.append(n)
             continue
         current[n] = row.data
-    table, own = corpus.get("baseline"), None
-    if ctx is not None and table is not None and ctx["match_id"] in (corpus.get("matches") or ()):
-        own = {}            # the stored baseline counted this match: take it out again, as the corpus build did
-        for n, data in current.items():
-            util_values.add_moments(own, {**data, "clock_offset": ctx["offset"]}, model)
-    flat = _cast_rows(replay.id, ctx, current, model, weights, table=table, own=own,
-                      include_unscored=True) if ctx else []
+    built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
+             for r in corpus.get("rows") or () if r.get("replay") == replay.id}
+    flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True) if ctx else []
+    for r in flat:          # the lift comes from the stored build (the same cast there), when it has one
+        b = built.get((r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None,
+                       r["t"] if r["i"] is None else None))
+        if b is not None:
+            r.update(lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
     by_round: dict[int, list] = defaultdict(list)
     for r in flat:
         by_round[r["round"]].append(r)
@@ -697,7 +824,7 @@ def match_payload(db, replay) -> dict:
     return {"players": players, "rounds": rounds_out, "summary": summary, "stale": stale,
             "failed": sorted(failed), "estimator": bool(model and model.get("n")),
             "weights_fitted": weights != util_values.DEFAULT_WEIGHTS,
-            "baseline": table is not None}
+            "baseline": bool(corpus.get("rows"))}
 
 
 def unused_ults(rounds: dict[int, dict]) -> dict[int, list]:

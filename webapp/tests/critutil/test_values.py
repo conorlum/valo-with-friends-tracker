@@ -138,34 +138,6 @@ def baseline_round(casts, kills=(), t_decided=60.0):
             "t_decided": t_decided, "kills": list(kills), "casts": casts, "heals": [], "unused": []}
 
 
-def test_the_no_util_baseline_compares_a_cast_with_moments_in_its_state_without_that_util():
-    # rounds with no util: the attackers lose a man every round at 14 s (a falling chance); a round with a flash at
-    # 10 s where they take the kill instead
-    quiet = [baseline_round([], [kill(14.0, 5, 0, [5, 5], k_side="defense", v_side="attack")]) for _ in range(12)]
-    table: dict = {}
-    for r in quiet:
-        util_values.add_moments(table, r, MODEL)
-    flash = cast(0, t=10.0, t_end=12.0, kinds=["blind"])
-    mine = baseline_round([flash], [kill(14.0, 0, 5, [5, 5])])
-    own: dict = {}
-    util_values.add_moments(own, mine, MODEL)
-    util_values.merge_tables(table, own)
-    out = util_values.cast_lift(mine, MODEL, flash, table, own)
-    assert out["swing"] > 0 and out["base"] < 0 and out["lift"] == pytest.approx(out["swing"] - out["base"], abs=1e-4)
-    assert out["base_level"] == util_values.BASE_LEVELS[0] and out["base_n"] >= util_values.BASE_MIN_N
-    # its own match is taken out: without `own` its own moments would sit in its comparison set
-    assert util_values.cast_lift(mine, MODEL, flash, table)["base_n"] > out["base_n"]
-    assert util_values.baseline({}, "blind", util_values.levels(mine, "attack", 10.0)) is None
-
-
-def test_moments_with_that_util_up_are_left_out_of_its_baseline():
-    flash = cast(0, t=0.0, t_end=60.0, kinds=["blind"])
-    table: dict = {}
-    util_values.add_moments(table, baseline_round([flash]), MODEL)
-    assert not any(k.startswith("attack|") for k in table.get("blind", {})), "attack had a flash up all round"
-    assert any(k.startswith("attack|") for k in table["smoke"]), "but no smoke"
-
-
 def test_calls_grade_by_spread():
     assert util_values.call(0.02, 0.01) == "this wins rounds, keep throwing it"
     assert util_values.call(0.004, 0.01) == "keep throwing it"
