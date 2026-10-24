@@ -53,6 +53,9 @@ def _ability_styles() -> list[tuple[re.Pattern, str]]:
 
 
 def ability_label(cast: dict) -> str:
+    table_id = cast.get("ability_id")
+    if isinstance(table_id, str) and "/" in table_id:
+        return table_id.split("/", 1)[1]
     agent = cast.get("agent") or ""
     codes = [c for c in cast.get("codes") or () if c]
     names = [n for n in cast.get("names") or () if n]
@@ -78,6 +81,19 @@ def ability_label(cast: dict) -> str:
 
 def kind_label(kinds) -> str:
     return util_values.main_kind(kinds)
+
+
+LABELS = (("blind", "Blinds"), ("smoke", "Smokes"), ("damaging", "Damaging"), ("status", "Status"),
+          ("info", "Info"), ("teleport", "Teleports"), ("heal", "Heals"))
+
+
+def label_of(kinds) -> str | None:
+    """The group a row sits in on the page: the first of LABELS whose tag the cast has."""
+    have = set(kinds or ())
+    for tag, label in LABELS:
+        if tag in have:
+            return label
+    return None
 
 
 # --- areas and economy
@@ -286,6 +302,7 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                 "replay": replay_id, "uuid": ctx["uuid"], "map": ctx["map"], "match": ctx["match_id"], "round": n,
                 "i": c["i"], "slot": c["by"], "player_id": p.get("player_id"), "agent": c.get("agent") or p.get("agent"),
                 "ability": ability_label(c), "kind": kind_label(c.get("kinds")), "kinds": c.get("kinds"),
+                "label": label_of(c.get("kinds")),
                 "side": c.get("side"), "area": area_of(ctx["map"], c.get("u"), c.get("v"), c.get("side")),
                 "phase": c.get("phase"), "t": c["t"],
                 "buy": buy_type(n, ctx["loadout"].get((n, team))),
@@ -307,7 +324,7 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                          "agent": p.get("agent"), "ability": ability_label({"agent": p.get("agent"),
                                                                             "codes": [h.get("code")],
                                                                             "names": [h.get("name")]}),
-                         "kind": "heal", "kinds": ["heal"], "side": sides.get(str(h.get("by"))), "area": "unknown",
+                         "kind": "heal", "kinds": ["heal"], "label": "Heals", "side": sides.get(str(h.get("by"))), "area": "unknown",
                          "phase": None, "t": h["t"], "buy": buy_type(n, None), "won": None, "scored": True,
                          "value": h["value"], "ledger": 0.0, "jobs": h["value"], "wasted": False, "harm": 0,
                          "harm_died": 0, "followed": None, "ult_points": None, "enemies": 0, "combo": [],

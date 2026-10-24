@@ -41,8 +41,9 @@ DEFAULT_WEIGHTS = {
     "harm_soft": 0.0080,       # per teammate blinded, nearsighted or statused, who lived (negative)
     "front_s": 0.0015,         # per second the map-control unknown stopped at a device's or molly's edge
     "held_m2s": 0.000005,      # per m2 x second of ground only that device or molly held (no teammate saw it)
+    "spike_got": 0.0300,       # per Omen ult whose caster picked the spike up after arriving (+1 when it was then planted)
 }
-NEGATIVE = frozenset({"harm_soft"})
+NEGATIVE =frozenset({"harm_soft"})
 JUDGED_KINDS = frozenset({"blind", "smoke", "wall", "damaging", "status", "info", "device"})   # can be wasted
 MIN_ROUNDS_TO_FIT = 300
 RIDGE = 50.0                # pull of every fitted weight toward its default, in rounds
@@ -95,6 +96,8 @@ def features(cast: dict) -> dict:
     hold = cast.get("hold") or {}
     f["front_s"] = float(hold.get("front_s") or 0.0)
     f["held_m2s"] = float(hold.get("held_m2s") or 0.0)
+    sig = cast.get("signals") or {}
+    f["spike_got"] = (1.0 + (1.0 if sig.get("got_spike_planted") else 0.0)) if sig.get("got_spike") else 0.0
     return f
 
 
