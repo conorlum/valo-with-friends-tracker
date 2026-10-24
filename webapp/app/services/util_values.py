@@ -17,12 +17,16 @@ Pure: plain dicts in and out, no DB.
 
 from __future__ import annotations
 
+import functools
 import math
 
+import numpy as np
+
+from app.critutil import abilities, windows
 from app.critutil.constants import EVIDENCE_WEIGHT, GUN_WEIGHT
 from app.services import util_model
 
-VERSION = 1
+VERSION = 2
 # Starting weights in win probability per unit, used when the corpus is too small to fit them (fit_weights).
 DEFAULT_WEIGHTS = {
     "blocked_s": 0.0010,       # per second of enemy sight lines cut (summed over pairs)
@@ -444,6 +448,178 @@ def cast_lift(round_data: dict, model, cast: dict, table: dict, minus: dict | No
     return {"swing": round(swing, 4), "base": None if base is None else round(base["mean"], 4),
             "base_n": 0 if base is None else base["n"], "base_level": None if base is None else base["level"],
             "lift": None if base is None else round(swing - base["mean"], 4)}
+
+
+# --- the no-util baseline, version 2: by type, over each cast's own up-time (plan 5, decision D14)
+#
+# A moment's outcome is a vector: the change in the side's round-win chance over the next L seconds, L = 1..45
+# (cut at t_decided). A cast is compared at its own length L, and only its on-time counts: the sum of the swings
+# over its window segments (app/critutil/windows.py), the first 45 s of them.
+
+TYPES = ("flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "other")
+MAX_L = 45
+_SIDES = ("attack", "defense")
+
+
+@functools.lru_cache(maxsize=1)
+def _abilities_by_key() -> dict:
+    return {f"{e['agent']}/{e['ability']}": e for e in abilities.load()}
+
+
+def type_of(item: dict, default: str | None = None) -> str:
+    """A cast's stored type if it is one of TYPES, else "other". A row with no `type` is `default` (a heal row is
+    "heal"; the ult-use dicts pass "ult")."""
+    if "type" in item:
+        return item["type"] if item["type"] in TYPES else "other"
+    return default or "heal"
+
+
+def swing_grid(round_data: dict, model, side: str):
+    """(times, P): the side's round-win chance at whole seconds 0..floor(t_decided), and t_decided itself."""
+    td = max(float(round_data.get("t_decided") or 0.0), 0.0)
+    times = list(np.arange(0, math.floor(td) + 1, dtype=float))
+    if td > times[-1]:
+        times.append(td)
+    times = np.array(times)
+    return times, np.array([_p_at(round_data, model, side, float(t)) for t in times])
+
+
+def p_on_grid(times, P, x):
+    """P at x by linear interpolation, x clamped to [0, t_decided]."""
+    return np.interp(np.clip(x, 0.0, times[-1]), times, P)
+
+
+def item_segments(round_data: dict, item: dict, typ: str | None = None) -> list:
+    """The item's up-time segments (windows.window with its abilities table entry)."""
+    entry = None
+    if "type" in item and item.get("ability_id") is not None:
+        entry = _abilities_by_key().get(item["ability_id"])
+    out = windows.window(item, entry, float(round_data.get("t_decided") or 0.0), bool(round_data.get("on_known", False)))
+    return out["segments"]
+
+
+def up_segments(round_data: dict) -> list:
+    """[(side, type, segments)] for the round's casts, heals and ult uses."""
+    out = []
+    sides = round_data.get("sides") or {}
+    for c in round_data.get("casts") or ():
+        if c.get("after_decided"):
+            continue
+        out.append((c.get("side"), type_of(c), item_segments(round_data, c)))
+    for h in round_data.get("heals") or ():
+        out.append((sides.get(str(h.get("by"))), "heal", item_segments(round_data, h)))
+    for slot, ult in (round_data.get("ults") or {}).items():
+        use = (ult or {}).get("use")
+        if use is None or use.get("t") is None:
+            continue
+        out.append((sides.get(str(slot)), "ult", item_segments(round_data, use, "ult")))
+    return out
+
+
+def _grid_swings(times, P, t: float, td: float):
+    ls = np.arange(1, MAX_L + 1, dtype=float)
+    return p_on_grid(times, P, np.minimum(t + ls, td)) - float(p_on_grid(times, P, t))
+
+
+def add_moments_v2(table: dict, round_data: dict, model) -> None:
+    """Adds a round's moments to {type: {level key: array [n, sum_1..sum_45]}}: each counts for every type not up."""
+    td = float(round_data.get("t_decided") or 0.0)
+    segs = up_segments(round_data)
+    steps = []
+    t = 0.0
+    while t < td:
+        steps.append(t)
+        t += BASE_STEP_S
+    if not steps:
+        return
+    for side in _SIDES:
+        times, P = swing_grid(round_data, model, side)
+        rows = np.array([np.concatenate(([1.0], _grid_swings(times, P, t, td))) for t in steps])
+        up = np.zeros((len(steps), len(TYPES)), dtype=bool)
+        for s_side, typ, ss in segs:
+            if s_side != side:
+                continue
+            j = TYPES.index(typ if typ in TYPES else "other")
+            for k, t in enumerate(steps):
+                if any(a <= t < b for a, b in ss):
+                    up[k, j] = True
+        keys = [levels(round_data, side, t) for t in steps]
+        for lvl in range(len(BASE_LEVELS)):
+            groups: dict = {}
+            for k in range(len(steps)):
+                groups.setdefault(keys[k][lvl], []).append(k)
+            for key, idx in groups.items():
+                idx = np.array(idx)
+                for j, typ in enumerate(TYPES):
+                    sel = idx[~up[idx, j]]
+                    if len(sel):
+                        cells = table.setdefault(typ, {})
+                        add = rows[sel].sum(axis=0)
+                        cells[key] = cells[key] + add if key in cells else add
+
+
+def merge_tables_v2(into: dict, table: dict) -> None:
+    for typ, cells in table.items():
+        out = into.setdefault(typ, {})
+        for key, arr in cells.items():
+            out[key] = out[key] + arr if key in out else np.array(arr, dtype=float)
+
+
+def cast_swing_v2(round_data: dict, model, item: dict, segments: list, side: str | None = None):
+    """(swing, L): the sum of P(end) - P(start) over the first 45 s of on-time, and that on-time rounded to a second
+    (1..45). (None, 0) without segments."""
+    side = side or item.get("side")
+    times, P = swing_grid(round_data, model, side)
+    left, total, swing = float(MAX_L), 0.0, 0.0
+    for s, e in segments:
+        if left <= 0:
+            break
+        e = min(e, s + left)
+        if e <= s:
+            continue
+        swing += float(p_on_grid(times, P, e) - p_on_grid(times, P, s))
+        total += e - s
+        left -= e - s
+    if total <= 0:
+        return None, 0
+    return swing, max(1, min(MAX_L, int(math.floor(total + 0.5))))
+
+
+def baseline_v2(table: dict, typ: str, keys: list, L: int, minus: dict | None = None) -> dict | None:
+    """{"mean", "n", "level"} at length L from the most specific level with BASE_MIN_N moments; None when none has."""
+    cells = table.get(typ) or {}
+    own = (minus or {}).get(typ) or {}
+    for i, key in enumerate(keys):
+        arr = cells.get(key)
+        if arr is None:
+            continue
+        if key in own:
+            arr = arr - own[key]
+        n = arr[0]
+        if n >= BASE_MIN_N:
+            return {"mean": float(arr[L]) / n, "n": int(round(n)), "level": BASE_LEVELS[i]}
+    return None
+
+
+def cast_lift_v2(round_data: dict, model, item: dict, table: dict, minus: dict | None = None,
+                 typ: str | None = None, side: str | None = None) -> dict:
+    """An item (cast, heal row or ult use; pass `typ`/`side` for an ult use) against the v2 baseline."""
+    sides = round_data.get("sides") or {}
+    side = side or item.get("side") or sides.get(str(item.get("by")))
+    typ = typ if typ in TYPES else type_of(item, typ)
+    out = {"swing": None, "base": None, "base_n": 0, "base_level": None, "lift": None, "L": 0, "type": typ}
+    segs = item_segments(round_data, item, typ)
+    if not segs or side not in _SIDES:
+        return out
+    swing, L = cast_swing_v2(round_data, model, item, segs, side)
+    if swing is None:
+        return out
+    out.update(swing=round(swing, 4), L=L)
+    base = baseline_v2(table, typ, levels(round_data, side, max(float(segs[0][0]), 0.0)), L, minus)
+    if base is not None:
+        out.update(base=round(base["mean"], 4), base_n=base["n"], base_level=base["level"],
+                   lift=round(swing - base["mean"], 4))
+    return out
 
 
 # --- rankings

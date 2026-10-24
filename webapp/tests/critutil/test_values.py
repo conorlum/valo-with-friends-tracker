@@ -172,3 +172,115 @@ def test_calls_grade_by_spread():
     assert util_values.call(0.0, 0.01) == "no clear value"
     assert util_values.call(-0.005, 0.01) == "this is costing you"
     assert util_values.shrunk([1.0] * 5, 0.0, 5.0) == 0.5
+
+
+# --- the type-and-duration baseline (v2)
+
+import numpy as np  # noqa: E402
+
+
+def v2_cast(i, t=10.0, seen_end=12.0, type_="flash", side="attack", **kw):
+    return {"i": i, "by": 1, "side": side, "t": t, "type": type_, "kinds": ["blind"], "signals": {"seen_end": seen_end},
+            "effects": [], **kw}
+
+
+def v2_round(casts=(), heals=(), kills=None, t_decided=60.0):
+    kills = [kill(14.0, 5, 0, [5, 5], k_side="defense", v_side="attack")] if kills is None else kills
+    r = baseline_round(list(casts), kills, t_decided)
+    r["heals"] = list(heals)
+    return r
+
+
+def quiet_table(n_rounds=12):
+    table: dict = {}
+    for _ in range(n_rounds):
+        util_values.add_moments_v2(table, v2_round(), MODEL)
+    return table
+
+
+def test_a_cast_is_compared_at_its_own_length():
+    r = v2_round()
+    keys = util_values.levels(r, "attack", 10.0)
+    arr = np.array([40.0] + [4.0 * L for L in range(1, 46)])
+    table = {"flash": {keys[0]: arr}}
+    assert util_values.baseline_v2(table, "flash", keys, 3)["mean"] == pytest.approx(12.0 / 40)
+    out = util_values.cast_lift_v2(r, MODEL, v2_cast(0), table)      # up 10..13: three seconds
+    assert out["L"] == 3 and out["type"] == "flash" and out["base"] == pytest.approx(0.3)
+    assert out["base_n"] == 40 and out["base_level"] == util_values.BASE_LEVELS[0]
+
+
+def test_only_on_time_counts(monkeypatch):
+    r = v2_round()
+    monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[10.0, 12.0], [20.0, 23.0]])
+    grid = util_values.swing_grid(r, MODEL, "attack")
+    want = (util_values.p_on_grid(*grid, 12.0) - util_values.p_on_grid(*grid, 10.0)
+            + util_values.p_on_grid(*grid, 23.0) - util_values.p_on_grid(*grid, 20.0))
+    out = util_values.cast_lift_v2(r, MODEL, v2_cast(0), quiet_table())
+    assert out["L"] == 5 and out["swing"] == pytest.approx(want, abs=1e-4)
+
+
+def test_a_long_window_is_cut_at_45_seconds_of_on_time(monkeypatch):
+    r = v2_round()
+    monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[0.0, 60.0]])
+    grid = util_values.swing_grid(r, MODEL, "attack")
+    out = util_values.cast_lift_v2(r, MODEL, v2_cast(0), quiet_table())
+    assert out["L"] == 45
+    assert out["swing"] == pytest.approx(util_values.p_on_grid(*grid, 45.0) - util_values.p_on_grid(*grid, 0.0),
+                                         abs=1e-4)
+
+
+def test_a_heal_row_makes_heal_up_and_nothing_else():
+    heal = {"by": 1, "t": 10.0}
+    table: dict = {}
+    util_values.add_moments_v2(table, v2_round(heals=[heal]), MODEL)
+
+    def n_attack(kind):
+        return sum(int(a[0]) for k, a in table[kind].items() if k.startswith("attack|") and k.count("|") == 1)
+
+    assert n_attack("smoke") == 30 and n_attack("heal") == 5, "moments from 10 s on leave the heal cells only"
+
+
+def test_an_item_with_no_segments_has_no_lift():
+    out = util_values.cast_lift_v2(v2_round(), MODEL, v2_cast(0, seen_end=None), quiet_table())
+    assert out["lift"] is None and out["swing"] is None
+
+
+def test_own_match_is_taken_out_of_the_comparison_set():
+    r = v2_round()
+    own: dict = {}
+    util_values.add_moments_v2(own, r, MODEL)
+    table = quiet_table()
+    util_values.merge_tables_v2(table, own)
+    with_own = util_values.cast_lift_v2(r, MODEL, v2_cast(0), table)
+    without = util_values.cast_lift_v2(r, MODEL, v2_cast(0), table, own)
+    assert 0 < without["base_n"] < with_own["base_n"] and without["lift"] is not None
+
+
+def test_the_numpy_table_equals_a_plain_python_reference():
+    casts = [v2_cast(0, t=6.0, seen_end=9.0), v2_cast(1, t=20.0, seen_end=30.0, type_="smoke", side="defense")]
+    r = v2_round(casts)
+    table: dict = {}
+    util_values.add_moments_v2(table, r, MODEL)
+    ref: dict = {}
+    end = r["t_decided"]
+    t = 0.0
+    while t < end:
+        for side in ("attack", "defense"):
+            up = {c["type"] for c in casts if c["side"] == side
+                  and c["t"] <= t < c["signals"]["seen_end"] + 1.0}
+            vec = [1.0] + [util_values._p_at(r, MODEL, side, min(t + L, end)) - util_values._p_at(r, MODEL, side, t)
+                           for L in range(1, 46)]
+            for typ in util_values.TYPES:
+                if typ in up:
+                    continue
+                for key in util_values.levels(r, side, t):
+                    cell = ref.setdefault(typ, {}).setdefault(key, [0.0] * 46)
+                    for j, v in enumerate(vec):
+                        cell[j] += v
+        t += util_values.BASE_STEP_S
+    assert set(table) == set(ref)
+    for typ in ref:
+        assert set(table[typ]) == set(ref[typ])
+        for key, cell in ref[typ].items():
+            assert table[typ][key].shape == (46,)
+            assert table[typ][key] == pytest.approx(cell, abs=1e-6)
