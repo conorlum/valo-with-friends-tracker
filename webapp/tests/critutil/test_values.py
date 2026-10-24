@@ -219,12 +219,25 @@ def test_only_on_time_counts(monkeypatch):
     assert out["L"] == 5 and out["swing"] == pytest.approx(want, abs=1e-4)
 
 
+def test_the_baseline_reads_the_level_at_the_first_segments_start(monkeypatch):
+    r = v2_round()                      # a kill at 14 s changes the man advantage
+    monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[20.0, 25.0]])
+    at_start = util_values.levels(r, "attack", 20.0)
+    at_cast = util_values.levels(r, "attack", 10.0)
+    assert at_start[0] != at_cast[0]
+    arr = np.array([40.0] + [2.0 * L for L in range(1, 46)])
+    out = util_values.cast_lift_v2(r, MODEL, v2_cast(0), {"flash": {at_start[1]: arr}})
+    assert out["base_level"] == util_values.BASE_LEVELS[1] and out["base"] == pytest.approx(10.0 / 40)
+    assert util_values.cast_lift_v2(r, MODEL, v2_cast(0), {"flash": {at_cast[1]: arr}})["lift"] is None
+
+
 def test_a_long_window_is_cut_at_45_seconds_of_on_time(monkeypatch):
-    r = v2_round()
+    r = v2_round(kills=[kill(50.0, 5, 0, [5, 5], k_side="defense", v_side="attack")])
     monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[0.0, 60.0]])
     grid = util_values.swing_grid(r, MODEL, "attack")
     out = util_values.cast_lift_v2(r, MODEL, v2_cast(0), quiet_table())
     assert out["L"] == 45
+    assert abs(util_values.p_on_grid(*grid, 60.0) - util_values.p_on_grid(*grid, 45.0)) > 0.01, "P moves after 45 s"
     assert out["swing"] == pytest.approx(util_values.p_on_grid(*grid, 45.0) - util_values.p_on_grid(*grid, 0.0),
                                          abs=1e-4)
 
