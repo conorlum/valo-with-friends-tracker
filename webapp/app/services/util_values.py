@@ -43,7 +43,7 @@ DEFAULT_WEIGHTS = {
     "held_m2s": 0.000005,      # per m2 x second of ground only that device or molly held (no teammate saw it)
     "spike_got": 0.0300,       # per Omen ult whose caster picked the spike up after arriving (+1 when it was then planted)
 }
-NEGATIVE =frozenset({"harm_soft"})
+NEGATIVE = frozenset({"harm_soft"})
 JUDGED_KINDS = frozenset({"blind", "smoke", "wall", "damaging", "status", "info", "device"})   # can be wasted
 MIN_ROUNDS_TO_FIT = 300
 RIDGE = 50.0                # pull of every fitted weight toward its default, in rounds
