@@ -60,6 +60,35 @@ def cmd_refresh(db) -> int:
     return 0
 
 
+_SHORT_L = (1, 2, 3, 5, 10, 15, 20, 30, 45)
+
+
+def _gate_cell(g: dict) -> str:
+    return (f"{'pass' if g['pass'] else 'FAIL'} {g['n']} {g['diff_mean']:+.4f}±{g['diff_sd']:.4f} "
+            f"({g['matches']})")
+
+
+def gate_lines(data: dict) -> list[str]:
+    """The stored build's gate tables and same-type overlap as text lines (pure: no DB)."""
+    gate = data.get("gate")
+    if not gate:
+        return []
+    lines = ["gate per length (mode all / yours / device):"]
+    for L in range(1, 46):
+        lines.append(f"  {L:2d}  all: {_gate_cell(gate['all'][L - 1])}  yours: {_gate_cell(gate['yours'][L - 1])}  "
+                     f"device: {_gate_cell(gate['device'][L - 1])}")
+    for mode in ("all", "yours"):
+        for typ, g in sorted((gate.get("by_type") or {}).get(mode, {}).items()):
+            lines.append(f"gate, mode {mode}, type {typ}:")
+            lines.extend(f"  {typ} {mode} {L:2d}  {_gate_cell(g[L - 1])}" for L in _SHORT_L)
+    lines.append("same-type overlap (share of comparison moments with a same-type cast in [t, t+L]):")
+    for typ, arr in sorted((data.get("same_type_overlap") or {}).items()):
+        n = arr[0]
+        cells = " ".join(f"{L}:{100 * arr[L] / n:.1f}%" if n else f"{L}:-" for L in _SHORT_L)
+        lines.append(f"  {typ:12s} n {n:g}  {cells}")
+    return lines
+
+
 def cmd_measure(db) -> int:
     """The spec's measurements, from the stored evidence only."""
     from app.services import replay_util, util_model
@@ -128,6 +157,9 @@ def cmd_measure(db) -> int:
         print("2. baseline overlap per ability (casts: full level / fallback / none):")
         for ability, o in sorted(data["overlap"].items(), key=lambda kv: -kv[1]["casts"]):
             print(f"   {ability:24s} {o['casts']:4d}: {o['full']} / {o['fallback']} / {o['none']}")
+    if data:
+        for line in gate_lines(data):
+            print(line)
     kinds = Counter(k for _, _, d in rounds for c in d.get("casts") or () for k in c.get("kinds") or ())
     print(f"cast kinds: {dict(kinds.most_common())}")
     return 0

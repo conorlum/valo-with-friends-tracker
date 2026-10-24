@@ -605,17 +605,25 @@ def _summ(values):
     return n, mean
 
 
-def page_for(corpus: dict, circle: set[int]) -> dict:
-    """The page's tables for one viewer's circle: friends' casts only."""
+def page_for(corpus: dict, circle: set[int], mode: str = "yours") -> dict:
+    """The page's tables for one viewer's circle: friends' casts only. `mode` ("yours" or "all") picks the baseline
+    each cast is compared with: the caster's own moments or every player's (a lift counts only where the gate
+    passed at the cast's length, R2)."""
+    mode = mode if mode in ("yours", "all") else "yours"
+    lk, gk = f"lift_{mode}", f"gate_{mode}"
     rows = [r for r in corpus.get("rows") or () if r.get("player_id") in circle and r.get("scored", True)]
-    prior = corpus.get("ability_prior") or {}
-    personal = corpus.get("personal") or {}
-    spread = corpus.get("spread") or 0.0
+    spread = (corpus.get("spread_by_mode") or {}).get(mode, corpus.get("spread")) or 0.0
+    sums = (corpus.get("prior_sums") or {}).get(mode) or {}
+    gate = (corpus.get("gate") or {}).get(mode)
     out: dict = {"n": len(rows), "fit": corpus.get("fit"), "estimator": corpus.get("estimator"),
-                 "overlap": corpus.get("overlap") or {}, "base_window": util_values.BASE_WINDOW_S}
+                 "overlap": corpus.get("overlap") or {}, "mode": mode,
+                 "failing": [L for L in range(1, util_values.MAX_L + 1) if not gate[L - 1]["pass"]] if gate else []}
+
+    def compared(r):
+        return r[lk] if r.get(lk) is not None and r.get(gk) else None
 
     def mean_lift(v):
-        lifts = [r["lift"] for r in v if r.get("lift") is not None]
+        lifts = [x for x in map(compared, v) if x is not None]
         return (round(100 * sum(lifts) / len(lifts), 2) if lifts else None), len(lifts)
 
     wins: dict[tuple, list] = defaultdict(list)
@@ -637,20 +645,28 @@ def page_for(corpus: dict, circle: set[int]) -> dict:
     for k, v in lineups.items():
         if len(v) < MIN_CASTS:
             continue
-        lifts = [r["lift"] for r in v if r.get("lift") is not None]
-        ability_prior = prior.get(k[2], 0.0)
+        lifts = [x for x in map(compared, v) if x is not None]
+        left = {r["match"] for r in v}
+        cells = sums.get(k[2]) or {}
+        pn = sum(c[0] for mm, c in cells.items() if int(mm) not in left)
+        ps = sum(c[1] for mm, c in cells.items() if int(mm) not in left)
+        ability_prior = ps / pn if pn else 0.0
+        if "prior_sums" not in corpus:      # an old build: its all-players prior
+            ability_prior = (corpus.get("ability_prior") or {}).get(k[2], 0.0)
         score = lineup_score(lifts, ability_prior)
-        mine = personal.get(f"{k[0]}|{util_values.main_kind(v[0].get('kinds'))}|{k[4]}") or (0.0, 0)
-        swings = [r["swing"] for r in v if r.get("swing") is not None]
-        personal_lift = None
-        if mine[1] >= util_values.BASE_MIN_N and swings:
-            personal_lift = round(100 * (sum(swings) / len(swings) - mine[0] / mine[1]), 2)
+        if score is not None:
+            call = util_values.call(score, spread)
+        elif mode == "yours" and all(r.get("lift_yours") is None for r in v):
+            call = "no personal comparison yet"
+        elif any(r.get(lk) is not None for r in v):
+            call = "baseline not validated for this window"
+        else:
+            call = "no comparison yet"
         calls.append({"player_id": k[0], "agent": k[1], "ability": k[2], "map": k[3], "side": k[4], "area": k[5],
                       "n": len(v), "compared": len(lifts), "matches": len({r["match"] for r in v}),
                       "value": round(100 * sum(r["value"] for r in v) / len(v), 2),
                       "score": None if score is None else round(100 * score, 2),
-                      "prior": round(100 * ability_prior, 2), "personal": personal_lift,
-                      "call": "no comparison yet" if score is None else util_values.call(score, spread)})
+                      "prior": round(100 * ability_prior, 2), "call": call})
     out["lineups"] = sorted(calls, key=lambda c: -(c["score"] if c["score"] is not None else -1e9))
 
     by_player: dict[int, list] = defaultdict(list)

@@ -20,6 +20,9 @@ def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
             "followed": True, "ult_points": None, "enemies": 1, "features": {}, "combo": [], "scored": True,
             "swing": value, "base": 0.0, "base_n": 40, "base_level": "state and phase", "lift": value}
     base.update(kw)
+    for lk, gk in (("lift_all", "gate_all"), ("lift_yours", "gate_yours")):    # the legacy `lift` feeds both modes
+        base.setdefault(lk, base["lift"])
+        base.setdefault(gk, base[lk] is not None)
     return base
 
 
@@ -47,11 +50,11 @@ def test_a_lineup_is_scored_against_the_no_util_baseline_not_the_abilitys_averag
     assert c["score"] == pytest.approx(100 * 5 * 0.05 / 11, abs=0.01), "shrunk toward the prior, not minus it"
     # without five compared casts there is no score and no call
     rows = [row(1, 0.05, i, rnd=i, lift=None) for i in range(6)]
-    c = replay_util.page_for(corpus(rows), {1})["lineups"][0]
+    c = replay_util.page_for(corpus(rows), {1}, mode="all")["lineups"][0]
     assert c["score"] is None and c["call"] == "no comparison yet" and c["compared"] == 0
-    # the build no longer carries personal tables (W18; W21 rebuilds Yours on the page): the column reads None
+    # Yours is a mode now, not a column
     c = replay_util.page_for(corpus([row(1, 0.03, i, rnd=i) for i in range(6)]), {1})["lineups"][0]
-    assert c["personal"] is None
+    assert "personal" not in c
 
 
 def test_casts_after_the_round_was_decided_stay_out_of_the_page():
@@ -168,3 +171,61 @@ def test_viewer_label_other_group_heal_and_omen_text():
     assert "got the spike, then planted" in out[3]
     assert out[4].count("got the spike") == 1 and "planted" not in out[4]
     assert out[5] == 1
+
+
+# --- W21: the page per mode
+
+def gate(failing=()):
+    return [{"n": 50, "se_cell": 0.01, "se_ma": 0.01, "pass": L not in failing, "diff_mean": 0.0, "diff_sd": 0.01,
+             "matches": 5} for L in range(1, 46)]
+
+
+def mode_corpus(rows, failing=(), prior_sums=None):
+    return {"rows": rows, "ability_prior": {"Flashpoint": 0.0}, "spread": 0.01, "fit": {"fitted": False},
+            "estimator": {}, "spread_by_mode": {"all": 0.01, "yours": 0.01},
+            "prior_sums": prior_sums or {"all": {}, "yours": {}},
+            "gate": {"all": gate(failing), "yours": gate(), "device": gate(), "by_type": {}}}
+
+
+def mrow(i, pid=1, **kw):
+    kw.setdefault("lift_all", 0.0)
+    kw.setdefault("gate_all", True)
+    kw.setdefault("lift_yours", 0.0)
+    kw.setdefault("gate_yours", True)
+    kw.setdefault("L", 5)
+    return row(pid, 0.03, i, rnd=i, **kw)
+
+
+def test_the_same_lineup_gets_a_different_call_per_mode():
+    rows = [mrow(i, lift_all=0.05, lift_yours=0.0) for i in range(6)]
+    c = replay_util.page_for(mode_corpus(rows), {1}, mode="all")["lineups"][0]
+    assert c["call"] == "this wins rounds, keep throwing it"
+    y = replay_util.page_for(mode_corpus(rows), {1}, mode="yours")
+    assert y["lineups"][0]["call"] == "no clear value" and y["mode"] == "yours"
+    assert replay_util.page_for(mode_corpus(rows), {1}, mode="junk")["mode"] == "yours"
+    assert "personal" not in y["lineups"][0]
+
+
+def test_yours_without_lifts_and_a_failing_gate_have_their_own_calls():
+    rows = [mrow(i, lift_yours=None, gate_yours=None) for i in range(6)]
+    assert replay_util.page_for(mode_corpus(rows), {1}, mode="yours")["lineups"][0]["call"] == "no personal comparison yet"
+    assert replay_util.page_for(mode_corpus(rows), {1}, mode="all")["lineups"][0]["call"] == "no clear value"
+    rows = [mrow(i, gate_all=False) for i in range(6)]
+    page = replay_util.page_for(mode_corpus(rows, failing=(5, 7)), {1}, mode="all")
+    assert page["lineups"][0]["call"] == "baseline not validated for this window"
+    assert page["failing"] == [5, 7] and page["lineups"][0]["compared"] == 0
+    assert replay_util.page_for(mode_corpus(rows, failing=(5, 7)), {1}, mode="yours")["failing"] == []
+
+
+def test_the_prior_is_cross_fitted_per_mode():
+    rows = [mrow(i, lift_all=0.0) for i in range(5)]      # all in match 1
+    sums = {"all": {"Flashpoint": {"1": [100, 100.0], "2": [10, 0.0]}}, "yours": {}}
+    c = replay_util.page_for(mode_corpus(rows, prior_sums=sums), {1}, mode="all")["lineups"][0]
+    assert c["prior"] == 0.0 and c["score"] == 0.0, "match 1's own huge sum is left out"
+
+
+def test_an_old_build_without_the_new_keys_still_pages():
+    rows = [mrow(i) for i in range(6)]
+    old = {"rows": rows, "ability_prior": {}, "spread": 0.01, "fit": {}, "estimator": {}}
+    page = replay_util.page_for(old, {1})
+    assert page["failing"] == [] and len(page["lineups"]) == 1

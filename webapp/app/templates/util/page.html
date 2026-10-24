@@ -14,19 +14,25 @@
 <p class="page-meta">Which utility wins rounds for you and your friends, which to keep throwing, and the patterns in how you use it. {{ thin_note }}</p>
 <p class="page-meta">{{ page.n }} casts from your circle.{% if page.fit and not page.fit.fitted %} The job weights are still the starting values (fewer than {{ 300 }} rounds to fit them on).{% endif %}{% if page.estimator and page.estimator.check %} Win-odds estimator: {{ page.estimator.matches }} matches; held-out log loss {{ page.estimator.check.log_loss }} vs {{ page.estimator.check.log_loss_man }} for man advantage alone.{% endif %}</p>
 
+<div class="scope-toggle">
+  <a class="scope-toggle-btn{% if mode == 'yours' %} active{% endif %}" href="?mode=yours">Yours</a>
+  <a class="scope-toggle-btn{% if mode == 'all' %} active{% endif %}" href="?mode=all">All players</a>
+</div>
+
 <section class="card">
   <h2>Keep throwing it?</h2>
-  <p class="page-meta">Each friend's ability into one area, on one map and side, with at least 5 casts. Score: how the side's chance to win the round moved over the {{ page.base_window | int }} s after each cast, against moments in other matches in the same state and phase with no util of that kind up (the no-util baseline), pulled toward that ability's own average (its prior, shown) while casts are few. "Yours" is the same comparison against your own moments without it, where you have enough.</p>
+  <p class="page-meta">Each friend's ability into one area, on one map and side, with at least 5 casts. Score: how the side's chance to win the round moved over each cast's own window (while that ability was up: its duration, or until it was destroyed or ended, at most 45 s), against moments in other matches in the same state with no util of that type up (the no-util baseline), pulled toward that ability's own average (its prior, shown) while casts are few. {% if mode == 'all' %}All players compares it with every player's.{% else %}Yours compares each cast with your own moments without it.{% endif %}</p>
   <table class="util-table">
-    <thead><tr><th>Player</th><th>Ability</th><th>Map · side · area</th><th>Casts (matches)</th><th>Score vs no util</th><th>Ability prior</th><th>Yours</th><th>Call</th></tr></thead>
+    <thead><tr><th>Player</th><th>Ability</th><th>Map · side · area</th><th>Casts (matches)</th><th>Score vs no util</th><th>Ability prior</th><th>Call</th></tr></thead>
     <tbody>
     {% for c in page.lineups %}
       <tr><td>{{ c.name | strip_tag }}</td><td>{{ c.agent }} {{ c.ability }}</td><td>{{ c.map }} · {{ c.side }} · {{ c.area }}</td>
         <td>{{ c.n }} ({{ c.matches }}){% if c.compared != c.n %}, {{ c.compared }} compared{% endif %}</td><td class="{{ tone(c.score) }}">{{ signed(c.score) }}</td>
-        <td>{{ signed(c.prior) }}</td><td class="{{ tone(c.personal) }}">{{ signed(c.personal) }}</td><td>{{ c.call }}</td></tr>
-    {% else %}<tr><td colspan="8">No lineup has 5 casts yet.</td></tr>{% endfor %}
+        <td>{{ signed(c.prior) }}</td><td>{{ c.call }}</td></tr>
+    {% else %}<tr><td colspan="7">No lineup has 5 casts yet.</td></tr>{% endfor %}
     </tbody>
   </table>
+  {% if page.failing %}<p class="page-meta">Baseline not validated for windows of: {{ page.failing | join(', ') }} s (calls on those casts are hidden).</p>{% endif %}
 </section>
 
 <section class="card">

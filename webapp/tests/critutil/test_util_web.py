@@ -351,6 +351,32 @@ def test_page_for_a_viewer_shows_only_their_circle(db, linked, monkeypatch):
     assert render(db, monkeypatch, viewer=other)["players"] == []
 
 
+def test_page_modes_toggle_and_failing_lengths(db, monkeypatch):
+    from app.models.player import Player
+    from app.routers import util_page
+    from app.services import circle
+    from test_page import mode_corpus, mrow
+
+    me = Player(display_name="Me#NA1")
+    db.add(me)
+    db.flush()
+    corpus = mode_corpus([mrow(i, pid=me.id) for i in range(6)], failing=(5, 7))
+    monkeypatch.setattr(replay_util, "ensure_values", lambda db_: corpus)
+    monkeypatch.setattr(circle, "circle_ids", lambda db_, pid: set())
+    monkeypatch.setattr(util_page, "get_current_player", lambda request, db_: me)
+    monkeypatch.setattr("app.templates.get_current_player", lambda request, db_: None)   # the nav's own lookup
+
+    def html(**kw):
+        return util_page.util_page(request(None), db, **kw).body.decode()
+
+    default, allp = html(), html(mode="all")
+    assert 'scope-toggle-btn active" href="?mode=yours"' in default and 'btn" href="?mode=all"' in default
+    assert 'scope-toggle-btn active" href="?mode=all"' in allp
+    assert "Baseline not validated for windows of: 5, 7 s" in allp
+    assert "Baseline not validated for windows" not in default
+    assert "compares it with every player" in allp and "compares each cast with your own" in default
+
+
 def test_coach_util_facts_are_the_players_casts_with_ids():
     from app.coach import brief
 

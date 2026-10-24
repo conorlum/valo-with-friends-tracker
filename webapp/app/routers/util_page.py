@@ -28,7 +28,8 @@ PHASE_WORDS = {"pre_contact": "before first contact", "contact": "after contact"
 
 
 @router.get("/util")
-def util_page(request: Request, db: Session = Depends(get_db)):
+def util_page(request: Request, db: Session = Depends(get_db), mode: str = "yours"):
+    mode = mode if mode in ("yours", "all") else "yours"
     if not replay_service.replays_enabled():
         raise HTTPException(status_code=404)
     viewer = get_current_player(request, db)
@@ -36,7 +37,7 @@ def util_page(request: Request, db: Session = Depends(get_db)):
         return templates.TemplateResponse(request, "util/page.html", {"login_note": LOGIN_NOTE, "page": None})
     corpus = replay_util.ensure_values(db)
     ids = circle.circle_ids(db, viewer.id) | {viewer.id}
-    page = replay_util.page_for(corpus, ids)
+    page = replay_util.page_for(corpus, ids, mode)
     names = {p.id: p.display_name for p in db.query(Player.id, Player.display_name).filter(Player.id.in_(list(ids)))}
     for c in page["lineups"]:
         c["name"] = names.get(c["player_id"], "?")
@@ -44,4 +45,5 @@ def util_page(request: Request, db: Session = Depends(get_db)):
                      key=lambda p: (p["name"] != names.get(viewer.id), p["name"].lower()))
     return templates.TemplateResponse(request, "util/page.html", {
         "page": page, "players": players, "thin_note": THIN_NOTE, "phase_words": PHASE_WORDS, "login_note": None,
+        "mode": mode,
     })
