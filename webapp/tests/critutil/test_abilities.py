@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+PINNED_EXTRACTOR_HASH = "aa3725d734e82b21b9c41fe247a69da332bc769ab53112835e910c59cb4a1b3c"
 
 
 def _script():
@@ -76,6 +76,52 @@ def test_duration_row_without_number():
     secs, rows = abilities.parse_duration(_table(row))
     assert secs is None
     assert rows == [{"label": "Duration", "value": "Until destroyed"}]
+
+
+def test_field_picks_the_named_row_case_insensitively():
+    blind = "|[[File:Blind.png|20px|link=]] Max blind duration\n|2.5 seconds\n|{{Cross}}\n"
+    secs, rows = abilities.parse_duration(_table(blind, DURATION), field="max BLIND duration")
+    assert secs == 2.5
+    assert len(rows) == 2
+    assert abilities.parse_duration(_table(blind, DURATION), field="Duration")[0] == 8.0
+
+
+def test_field_label_with_html_comment_prefix():
+    row = "|<!-- note -->Concuss duration\n|4 seconds\n|{{Tick}}\n"
+    secs, rows = abilities.parse_duration(_table(DURATION, row), field="Concuss duration")
+    assert secs == 4.0
+    assert rows[1]["label"] == "Concuss duration"
+
+
+def test_field_not_on_the_page_gives_none():
+    secs, rows = abilities.parse_duration(_table(DURATION), field="Slow duration")
+    assert secs is None
+    assert rows == [{"label": "Duration", "value": "8 seconds"}]
+    assert abilities.parse_duration(_table(DURATION), field="none")[0] is None
+
+
+def test_from_dir_uses_field_and_slash_file_names(tmp_path):
+    blind = "|[[File:Blind.png|20px|link=]] Max blind duration\n|2.5 seconds\n|{{Cross}}\n"
+    seed = {"abilities": [
+        {"match": "A", "agent": "X", "ability": "Alpha", "wiki": {"page": "Nebula / Dissipate", "field": "Max blind duration"}},
+        {"match": "B", "agent": "Y", "ability": "Beta", "wiki": {"page": "Beta", "field": "none"}},
+        {"match": "C", "agent": "Z", "ability": "Gamma", "wiki": {"page": "Gamma", "field": None}},
+    ]}
+    seed_path = tmp_path / "seed.json"
+    seed_path.write_text(json.dumps(seed), encoding="utf-8")
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    (saved / "Nebula _ Dissipate.json").write_text(
+        json.dumps({"parse": {"wikitext": {"*": _table(DURATION, blind)}}}), encoding="utf-8")
+    (saved / "Beta.json").write_text(
+        json.dumps({"parse": {"wikitext": {"*": _table(DURATION)}}}), encoding="utf-8")
+    (saved / "Gamma.json").write_text(json.dumps({"error": {"code": "missingtitle"}}), encoding="utf-8")
+    out = tmp_path / "out.json"
+    _script().main(["--from", str(saved), "--seed", str(seed_path), "--out", str(out)])
+    got = json.loads(out.read_text(encoding="utf-8"))["abilities"]
+    assert got[0]["duration_s"] == 2.5 and got[0]["wiki"]["field"] == "Max blind duration"
+    assert got[1]["duration_s"] is None and got[1]["provisional"] is True and got[1]["wiki"]["field"] == "none"
+    assert got[2]["duration_s"] is None and got[2]["provisional"] is True
 
 
 def _entries():
@@ -147,6 +193,48 @@ def test_from_dir_merges_and_reports(tmp_path, capsys):
     text = capsys.readouterr().out
     assert "Alpha" in text and "10.7" in text
     assert "Beta" in text and "Gamma" in text
+
+
+TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "other"}
+RULES = {"duration", "status", "flash", "placeable", "on_spans", "heal", "ult:until_end", "ult:until_death",
+         "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
+KNOWN_CODES = [
+    "Clay_X_Rocket", "Aggrobot_RollyPolly", "Phoenix_4_Molotov_Production", "Clay_4_Projectile_Primary",
+    "Clay_4_Projectile_Secondary", "Gumshoe_E_CameraTrackingDart", "Gumshoe_E_PossessableCamera",
+    "Grenadier_Q_SemtexBasic", "Iris_Concuss", "Iris_ConcussPulse", "Nox_Wall", "Nox_WallTrap",
+    "Smonk_NewSmoke_PDS", "Cashew_X_Segment", "Deadeye_E_Trap", "Sprinter_4_GroundStrike",
+]
+
+
+def test_every_agent_key_ability_and_slot_x_row_is_in_the_table():
+    from app.critutil.constants import AGENT_KEYS
+    have = {(e["agent"], e["ability"]) for e in abilities.load()}
+    for agent, slots in AGENT_KEYS.items():
+        for slot, (name, _kind) in slots.items():
+            assert (agent, name) in have, (agent, name)
+    assert len(have) == len(abilities.load())
+    assert sum(1 for e in abilities.load() if e["slot"] == "X") >= 26
+
+
+def test_table_types_rules_and_regexes():
+    import re
+    for e in abilities.load():
+        assert e["type"] in TYPES, e["ability"]
+        assert e["rule"] in RULES or re.fullmatch(r"fixed:\d+(\.\d+)?", e["rule"]), e["ability"]
+        assert isinstance(e["kinds"], list) and e["kinds"]
+        re.compile(e["match"])
+        for p in e["pieces"]:
+            re.compile(p)
+
+
+def test_no_two_entries_match_the_same_known_code_name():
+    import re
+    for code in KNOWN_CODES:
+        hits = [e["ability"] for e in abilities.load() if re.search(e["match"], code)]
+        assert len(hits) <= 1, (code, hits)
+    assert abilities.lookup("Clay_X_Rocket")["ability"] == "Showstopper"
+    assert abilities.lookup("Phoenix_4_Molotov_Production")["ability"] == "Hot Hands"
+    assert abilities.lookup("Gumshoe_E_CameraTrackingDart")["ability"] == "Spycam dart"
 
 
 def test_extractor_hash_is_pinned():

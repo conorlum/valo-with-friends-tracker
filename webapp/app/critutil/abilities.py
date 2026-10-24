@@ -54,6 +54,7 @@ _RANGE = re.compile(_NUM + r"\s*[-–—]\s*" + _NUM)
 
 
 def _clean_label(cell: str) -> str:
+    cell = re.sub(r"<!--.*?-->", "", cell, flags=re.S)
     cell = _ATTR.sub("", cell)
     return _FILE.sub("", cell).strip()
 
@@ -74,8 +75,9 @@ def _number(value: str):
     return float(m.group(1)) if m else None
 
 
-def parse_duration(wikitext: str):
-    """(seconds or None, rows) from the page's ==Stats== wikitable. rows: every row whose label has "duration"."""
+def parse_duration(wikitext: str, field: str | None = None):
+    """(seconds or None, rows) from the page's ==Stats== wikitable. rows: every row whose label has "duration".
+    With `field`, the row labelled so (case-insensitive) is the one used; no such row gives (None, rows)."""
     i = wikitext.find("==Stats==")
     text = wikitext[i:] if i >= 0 else wikitext
     end = text.find("\n|}")
@@ -89,7 +91,10 @@ def parse_duration(wikitext: str):
         label = _clean_label(cells[0])
         if "duration" in label.lower():
             rows.append({"label": label, "value": _clean_value(cells[1])})
-    chosen = [r for r in rows if r["label"].lower() == "duration"] + rows
+    if field is not None:
+        chosen = [r for r in rows if r["label"].lower() == field.strip().lower()]
+    else:
+        chosen = [r for r in rows if r["label"].lower() == "duration"] + rows
     for r in chosen:
         n = _number(r["value"])
         if n is not None:

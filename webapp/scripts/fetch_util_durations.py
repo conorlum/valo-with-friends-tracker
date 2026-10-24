@@ -31,6 +31,10 @@ def page_of(entry: dict) -> str:
     return (entry.get("wiki") or {}).get("page") or entry["ability"]
 
 
+def file_name(page: str) -> str:
+    return page.replace("/", "_") + ".json"
+
+
 def fetch(seed_path: Path, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     pages = list(dict.fromkeys(page_of(e) for e in json.loads(seed_path.read_text(encoding="utf-8"))["abilities"]))
@@ -39,7 +43,7 @@ def fetch(seed_path: Path, directory: Path) -> None:
             time.sleep(1)
         req = urllib.request.Request(URL.format(page=urllib.parse.quote(page)), headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=60) as r:
-            (directory / f"{page}.json").write_bytes(r.read())
+            (directory / file_name(page)).write_bytes(r.read())
         print("fetched", page)
 
 
@@ -49,23 +53,27 @@ def merge(seed_path: Path, directory: Path, out: Path, today: str | None = None)
     mismatched, missing = [], []
     for e in entries:
         page = page_of(e)
-        f = directory / f"{page}.json"
+        f = directory / file_name(page)
         secs, rows = None, []
-        if f.exists():
-            wt = json.loads(f.read_text(encoding="utf-8"))["parse"]["wikitext"]["*"]
-            secs, rows = abilities.parse_duration(wt)
         wiki = dict(e.get("wiki") or {})
+        field = wiki.get("field")
+        if field in ("-", ""):
+            field = None
+        if f.exists():
+            saved = json.loads(f.read_text(encoding="utf-8"))
+            if "parse" in saved:
+                secs, rows = abilities.parse_duration(saved["parse"]["wikitext"]["*"], field)
         wiki["page"] = page
+        wiki["field"] = field
         e["duration_s"] = secs
         if secs is None:
             e["provisional"] = True
-            wiki.pop("field", None)
             wiki.pop("value", None)
             wiki["rows"] = rows
             missing.append(e)
         else:
             e.pop("provisional", None)
-            chosen = next(r for r in rows if _is_chosen(r, secs, rows))
+            chosen = next(r for r in rows if _is_chosen(r, field, rows))
             wiki.update(field=chosen["label"], value=chosen["value"], fetched=today, rows=rows)
             r = e.get("replay_s")
             if r is not None and abs(secs - r) > 1:
@@ -81,7 +89,9 @@ def merge(seed_path: Path, directory: Path, out: Path, today: str | None = None)
         print(f"  {e['agent']} {e['ability']}")
 
 
-def _is_chosen(row: dict, secs: float, rows: list[dict]) -> bool:
+def _is_chosen(row: dict, field: str | None, rows: list[dict]) -> bool:
+    if field is not None:
+        return row["label"].lower() == field.strip().lower()
     exact = [r for r in rows if r["label"].lower() == "duration"]
     return row is (exact or rows)[0]
 
