@@ -857,6 +857,60 @@ def _ult_cost(ps, c: _Cast):
     return n
 
 
+def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) -> dict:
+    """Stored facts the site's windows are cut from later (nothing is windowed here): when it landed, when its pieces
+    were last seen, a flash's pop, the enemy hits and effect ends, a wall's `on` and a device's `off` spans, when a
+    placeable armed, the ult line's drop, and for an ult the facts its table rule asks for."""
+    ends = []
+    for r in c.rows:
+        if (r.get("k") == "ability" and r.get("kind") == "Projectile") or r.get("k") in ("flash", "nearsight"):
+            continue
+        e = [x for x in (r.get("t1"), r.get("gone")) if x is not None]
+        if e and min(e) < rnd.t_end - _EPS:
+            ends.append(min(e))
+    pop = ((c.flash or {}).get("pop") or {}).get("t")
+    on = sorted(([a, b] for r in c.rows for a, b in (r.get("on") or ())), key=lambda x: x[0])
+    off = sorted(([a, b] for r in c.rows for a, b in (r.get("off") or ())), key=lambda x: x[0])
+    ult_line = ((blob.get("player_state") or {}).get("ult") or {}).get(str(c.by)) or []
+    drop = None
+    for prev, cur in zip(ult_line, ult_line[1:]):
+        if cur["n"] == 0 and prev["n"] > 0 and c.t - 12.0 <= cur["t"] <= c.t + _EPS:
+            drop = cur["t"]
+    s = {
+        "landed": _r2(c.landed_t),
+        "seen_end": _r2(max(ends)) if ends else None,
+        "pop": _r2(pop),
+        "hits": [[_r2(e["t0"]), _r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] in ("blind", "nearsight")],
+        "effect_ends": [[_r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] not in ("damage", "reveal")],
+        "on": [[_r2(a), _r2(b)] for a, b in on],
+        "off": [[_r2(a), _r2(b)] for a, b in off],
+        "armed": _r2(c.landed_t) if cast_type == "placeable" else None,
+        "ult_drop": _r2(drop),
+    }
+    if cast_type != "ult":
+        return s
+    rule = (c.entry or {}).get("rule")
+    if rule == "ult:omen":
+        row = next((r for r in c.rows if _code_name(r) == "Wraith_X_GlobalTeleport_Intention"), None) or {}
+        s["arrival"] = _r2(row.get("t1"))
+        s["arrival_outcome"] = row.get("outcome")
+    elif rule == "ult:thrash":
+        row = next((r for r in c.rows if "RollyPolly" in (_code_name(r) or "")), None) or {}
+        p = row.get("possessed")
+        s["moved"] = _r2(p[0][0] if isinstance(p, list) and p else row.get("t"))
+    elif rule == "ult:duel":
+        k = next(((t, a, b) for t, a, b in sorted(rnd.kills) if c.t < t <= c.t + 12.0 and c.by in (a, b)), None)
+        s["duel_end"] = _r2(k[0]) if k else None
+        s["duel_won"] = (k[1] == c.by) if k else None
+    elif rule == "ult:capture":
+        ts = [e["t1"] for e in enemy_eff if e["how"] == "cocooned"]
+        s["capture_end"] = _r2(max(ts)) if ts else None
+    elif rule in ("ult:until_end", "ult:until_death"):
+        s["ult_end"] = _r2(next((p["t"] for p in ult_line if p["t"] > c.t + _EPS and p["n"] == 0), None))
+        s["death"] = _r2(next((t for t, a, b in sorted(rnd.kills) if t > c.t and b == c.by), None))
+    return s
+
+
 WATCHER_OF = (("TripWire", "trip"), ("PossessableCamera", "camera"), ("E_Turret", "turret"))
 
 
@@ -940,11 +994,12 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             seen = [x for x in (_trigger(c), *(e["t0"] for e in enemy_eff)) if x is not None and x >= c.t - _EPS]
             trigger = min(seen) if seen else None
         alive = _alive_counts(rnd, sides, c.t)
+        cast_type = "ult" if "ult" in c.kinds else (c.entry or {}).get("type") or "other"
         out_casts.append({
             "i": c.i, "by": c.by, "agent": c.agent, "t": _r2(c.t), "t_end": _r2(c.t_end), "u": c.u, "v": c.v,
             "names": sorted(set(c.names)), "codes": sorted({r.get("code") for r in c.rows if r.get("code")}),
             "kinds": sorted(c.kinds), "side": side,
-            "type": "ult" if "ult" in c.kinds else (c.entry or {}).get("type") or "other",
+            "type": cast_type,
             "ability_id": f"{c.entry['agent']}/{c.entry['ability']}" if c.entry else None,
             "end_unknown": c.end_unknown,
             "phase": _phase(c.t, contact, plant), "after_decided": c.t > rnd.t_decided,
@@ -962,6 +1017,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "hold": held.get(c.i),
             "ult_points": _ult_cost(ps, c),
             "activation": ((c.flash or {}).get("activation") or {}).get("targets_complete"),
+            "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {

@@ -463,3 +463,138 @@ def test_spycam_dart_and_its_stuck_piece_are_one_cast_apart_from_the_camera():
             toy_ability("Gumshoe", "RemovableObject_GumshoeTrackingDart", 300, 200, 1, t=6.0, t1=14.0, kind="GameObject"),
             toy_ability("Gumshoe", "E_PossessableCamera", 150, 200, 1, t=5.5, t1=None, kind="GameObject")]
     assert len(cast_by(run(util), 1)) == 2
+
+
+# --- window signals (W12)
+
+
+def sig(out, by=1):
+    return cast_by(out, by)[0]["signals"]
+
+
+def test_signals_base_keys_are_always_present_and_empty_when_absent():
+    s = sig(run([toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0, kind="GameObject")]))
+    assert set(s) == {"landed", "seen_end", "pop", "hits", "effect_ends", "on", "off", "armed", "ult_drop"}
+    assert s["pop"] is None and s["hits"] == [] and s["effect_ends"] == [] and s["on"] == [] and s["off"] == []
+    assert s["armed"] is None and s["ult_drop"] is None and s["landed"] == 8.0
+
+
+def test_signals_seen_end_is_the_max_of_the_pieces_ends_and_ignores_projectiles():
+    util = [toy_ability("Clay", "X_Rocket_a", 200, 200, 1, t=8.0, t1=9.0, kind="GameObject"),
+            toy_ability("Clay", "X_Rocket_b", 210, 200, 1, t=8.0, t1=99.0, kind="GameObject", gone=11.5),
+            toy_ability("Clay", "X_Rocket_p", 220, 200, 1, t=8.0, t1=20.0, kind="Projectile")]
+    assert sig(run(util, t_end=40.0))["seen_end"] == 11.5
+
+
+def test_signals_a_row_closed_by_the_round_ending_is_not_seen():
+    util = [toy_ability("Gumshoe", "4_TripWire", 200, 200, 1, t=0.0, t1=30.0, kind="GameObject")]
+    assert sig(run(util, t_end=30.0))["seen_end"] is None
+    util = [toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=None, kind="GameObject")]
+    assert sig(run(util, t_end=30.0))["seen_end"] is None
+
+
+def test_signals_pop_and_hits_on_a_real_shaped_flash():
+    f = flash(88.5, 1, [[5, 89.1, 2.0], [6, 89.3, None], [0, 89.2, 1.0]])
+    del f["name"]
+    f.update(ability="phoenix_curveball_right", pop={"t": 89.126})
+    s = sig(run([f], t_end=100.0))
+    assert s["pop"] == 89.13
+    assert s["hits"] == [[89.1, 91.1, True], [89.3, 90.8, False]]
+    assert s["effect_ends"] == [[91.1, True], [90.8, False]]
+
+
+def test_signals_effect_ends_skip_damage_and_reveal_and_keep_an_unknown_nearsight_end():
+    n = flash(13.0, 1, [[5, 13.5, None]], k="nearsight", name="reyna_leer")
+    n["t1"] = 15.0
+    rev = {"k": "reveal", "t": 13.2, "t1": 16.0, "by": 1, "target": 6, "code": "Vampire", "name": "reyna_leer"}
+    s = sig(run([n, rev], t_end=40.0))
+    assert s["effect_ends"] == [[15.0, False]]
+    assert s["hits"] == [[13.5, 15.0, False]]
+
+
+def test_signals_on_and_off_are_sorted_concatenations_of_the_rows():
+    util = [toy_ability("Zz", "E_A", 200, 200, 1, t=8.0, t1=30.0, kind="GameObject", on=[[20.0, 22.0]],
+                        off=[[25.0, None]]),
+            toy_ability("Zz", "E_B", 210, 200, 1, t=8.0, t1=30.0, kind="GameObject", on=[[10.0, 12.0]],
+                        off=[[15.0, 16.0]])]
+    s = sig(run(util, t_end=40.0))
+    assert s["on"] == [[10.0, 12.0], [20.0, 22.0]]
+    assert s["off"] == [[15.0, 16.0], [25.0, None]]
+
+
+def test_signals_armed_is_the_landing_time_for_a_placeable_only():
+    trip = [toy_ability("Gumshoe", "4_TripWire", 200, 200, 1, t=0.0, t1=20.0, kind="GameObject")]
+    assert sig(run(trip, t_end=30.0))["armed"] == 0.0
+    other = [toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0, kind="GameObject")]
+    assert sig(run(other))["armed"] is None
+
+
+OMEN = ("Wraith", "X_GlobalTeleport_Intention")
+
+
+def omen_run(ps, t=20.0, **extra):
+    return run([toy_ability(*OMEN, 200, 200, 1, t=t, t1=t + 4.0, kind="GameObject", **extra)], player_state=ps,
+               t_end=60.0)
+
+
+def test_signals_ult_drop_is_taken_inside_twelve_seconds_and_not_before():
+    got = sig(omen_run({"ult": {"1": [{"t": 0.0, "n": 7}, {"t": 19.0, "n": 0}]}}))
+    assert got["ult_drop"] == 19.0
+    old = sig(omen_run({"ult": {"1": [{"t": 0.0, "n": 7}, {"t": 7.0, "n": 0}]}}))
+    assert old["ult_drop"] is None
+    assert "ult_drop" in sig(run([toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0)]))
+
+
+def test_signals_omen_arrival_and_outcome():
+    s = sig(omen_run(None, outcome="landed"))
+    assert s["arrival"] == 24.0 and s["arrival_outcome"] == "landed"
+    util = [toy_ability(*OMEN, 200, 200, 1, t=20.0, t1=None, kind="GameObject")]
+    s = sig(run(util, t_end=60.0))
+    assert s["arrival"] is None and s["arrival_outcome"] is None
+    assert "moved" not in s and "duel_end" not in s
+
+
+def test_signals_thrash_moved_from_possessed_else_the_rows_t():
+    mk = lambda **x: [toy_ability("Aggrobot", "RollyPolly", 200, 200, 1, t=10.0, t1=40.0, kind="GameObject", **x)]
+    assert sig(run(mk(possessed=[[12.5, 20.0]]), t_end=60.0))["moved"] == 12.5
+    assert sig(run(mk(possessed=[]), t_end=60.0))["moved"] == 10.0
+    assert "arrival" not in sig(run(mk(), t_end=60.0))
+
+
+DUEL = [toy_ability("Sequoia", "X_LineCapture", 200, 200, 1, t=10.0, t1=30.0, kind="GameObject")]
+
+
+def test_signals_duel_won_lost_and_none():
+    won = sig(run(DUEL, kills=[kill(12.0, 1, 5)], t_end=60.0))
+    assert won["duel_end"] == 12.0 and won["duel_won"] is True
+    lost = sig(run(DUEL, kills=[kill(12.0, 5, 1)], t_end=60.0))
+    assert lost["duel_end"] == 12.0 and lost["duel_won"] is False
+    none = sig(run(DUEL, kills=[kill(12.0, 0, 5), kill(23.0, 1, 6)], t_end=60.0))
+    assert none["duel_end"] is None and none["duel_won"] is None
+
+
+def test_signals_capture_end_is_the_latest_cocoon_end():
+    util = [toy_ability("Cable", "X_FishingHook", 200, 200, 1, t=10.0, t1=30.0, kind="GameObject"),
+            status(12.0, 18.0, 1, 5, name="X_FishingHook_Cage", status="cocooned"),
+            status(12.5, 20.5, 1, 6, name="X_FishingHook_Cage", status="cocooned")]
+    for u in util[1:]:
+        u["code"] = "Cable"
+    s = sig(run(util, t_end=60.0))
+    assert s["capture_end"] == 20.5
+    none = sig(run(util[:1], t_end=60.0))
+    assert none["capture_end"] is None
+
+
+def test_signals_until_end_and_until_death_rules(monkeypatch):
+    orig = extract._entry_for
+    entry = {"match": "^(Zz_X_Blade)$", "agent": "Jett", "ability": "Blade Storm", "type": "ult", "kinds": ["ult"],
+             "rule": "ult:until_end", "grace_s": 0, "pieces": [], "duration_s": None}
+    monkeypatch.setattr(extract, "_entry_for", lambda k: entry if k == "Zz_X_Blade" else orig(k))
+    util = [toy_ability("Zz", "X_Blade", 200, 200, 1, t=10.0, t1=None, kind="GameObject")]
+    ps = {"ult": {"1": [{"t": 0.0, "n": 8}, {"t": 9.5, "n": 0}, {"t": 18.0, "n": 0}, {"t": 30.0, "n": 1}]}}
+    s = sig(run(util, kills=[kill(25.0, 5, 1)], player_state=ps, t_end=60.0))
+    assert s["ult_end"] == 18.0
+    assert s["death"] == 25.0 and s["ult_drop"] == 9.5
+    ps2 = {"ult": {"1": [{"t": 0.0, "n": 8}, {"t": 10.0, "n": 0}, {"t": 21.0, "n": 0}]}}
+    s = sig(run(util, player_state=ps2, t_end=60.0))
+    assert s["ult_end"] == 21.0 and s["death"] is None
