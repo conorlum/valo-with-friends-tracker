@@ -86,6 +86,14 @@ def test_status_unknown_end_is_t0_plus_d_plus_grace_and_damage_is_ignored():
     assert segs(cast(10.0, effects=[eff(11.0, 12.0, False, "slow")]), ent("status", None)) == []
 
 
+def test_status_with_only_unknown_ends_is_cut_at_seen_end_but_a_known_end_is_not():
+    leer = [eff(11.0, 11.5, False, "nearsight")]
+    assert segs(cast(10.0, effects=leer, seen_end=12.0), ent("status", 4)) == [[10.0, 13.0]]
+    assert segs(cast(10.0, effects=leer, seen_end=40.0), ent("status", 4)) == [[10.0, 16.0]]
+    known = [eff(11.0, 15.0, True, "slow")]
+    assert segs(cast(10.0, effects=known, seen_end=12.0), ent("status", 4)) == [[10.0, 17.0]]
+
+
 def test_status_with_no_hit_runs_its_duration_and_is_capped_at_seen_end():
     assert segs(cast(10.0), ent("status", 6)) == [[10.0, 17.0]]
     assert segs(cast(10.0, seen_end=12.0), ent("status", 6)) == [[10.0, 13.0]]
@@ -111,6 +119,12 @@ def test_on_spans_are_the_stored_spans():
     c = cast(10.0, on=[[10.0, 14.0], [18.0, 22.0]])
     assert w(c, ent("on_spans", 10)) == {"segments": [[10.0, 14.0], [18.0, 22.0]], "rule": "on_spans",
                                          "fallback": False}
+
+
+def test_open_off_and_on_spans_run_to_the_end():
+    c = cast(10.0, armed=11.0, seen_end=40.0, off=[[20.0, None]])
+    assert segs(c, ent("placeable")) == [[11.0, 20.0]]
+    assert segs(cast(10.0, on=[[12.0, None]]), ent("on_spans", 10)) == [[12.0, 100.0]]
 
 
 def test_on_spans_empty_depends_on_on_known():

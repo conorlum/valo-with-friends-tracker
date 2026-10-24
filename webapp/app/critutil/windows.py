@@ -11,8 +11,8 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
   flash       with a pop and hits: [t, pop + longest hit, at most 4 s]; a pop and no hits: [t, pop + g]; no pop but
               effects (Gekko's Dizzy): the latest effect end, each at most t0 + 4 s; neither: duration. Fallback
               when there is no pop.
-  status      the latest effect end: a known one ends at t1 + 2 s, an unknown one at t0 + D + g. No usable effect:
-              duration (a Leer or Dizzy shot down ends it early).
+  status      the latest effect end: a known one ends at t1 + 2 s, an unknown one at t0 + D + g, cut at seen_end + g
+              when no end is known (a Leer shot down). No usable effect: duration (cut the same way).
   placeable   [armed (at least 0), seen_end or t_decided] minus every `off` span.
   on_spans    the stored `on` spans. None stored: with on_known, off its whole life; otherwise duration, fallback.
   life        [start, seen_end]; no seen_end: [start, start + D + g], fallback (Viper's Pit).
@@ -54,6 +54,7 @@ def _cut(segments, t_decided):
 
 def _minus(span, holes):
     out = [list(span)]
+    holes = [[h0, float("inf") if h1 is None else h1] for h0, h1 in holes if h0 is not None]  # open: off to the end
     for h0, h1 in sorted(holes, key=lambda s: s[0]):
         nxt = []
         for a, b in out:
@@ -116,14 +117,17 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
             fallback = True
             segs = timed()
     elif rule == "status":
-        ends = []
+        ends, known = [], False
         for e in effects:
             if e.get("how") in STATUS_HOWS_OUT:
                 continue
             if e.get("known"):
+                known = True
                 ends.append(e["t1"] + STATUS_KNOWN_TAIL_S)
             elif D is not None:
                 ends.append(e["t0"] + D + g)
+        if ends and not known and seen is not None:     # only unknown ends (Leer): it can't outlast its pieces
+            ends = [min(max(ends), seen + g)]
         segs = [[t, max(ends)]] if ends else timed()
     elif rule == "placeable":
         a = max(s["armed"] if s.get("armed") is not None else t, 0.0)
@@ -132,7 +136,7 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
     elif rule == "on_spans":
         on = s.get("on") or []
         if on:
-            segs = [list(x) for x in on]
+            segs = [[a, t_decided if b is None else b] for a, b in on]     # an open span is on to the end
         elif on_known:
             segs = []
         else:
