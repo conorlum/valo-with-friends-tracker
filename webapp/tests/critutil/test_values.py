@@ -297,3 +297,145 @@ def test_the_numpy_table_equals_a_plain_python_reference():
         for key, cell in ref[typ].items():
             assert table[typ][key].shape == (46,)
             assert table[typ][key] == pytest.approx(cell, abs=1e-6)
+
+
+# --- per-match tables, the gate, Yours, devices (W17)
+
+KILL_TIMES = [10.0, 14.0, 18.0, 22.0, 26.0, 12.0]
+
+
+def corpus(n=6, with_flash=(1, 3)):
+    items = []
+    for m in range(1, n + 1):
+        casts = [v2_cast(0, t=8.0, seen_end=11.0)] if m in with_flash else []
+        r = v2_round(casts, kills=[kill(KILL_TIMES[(m - 1) % len(KILL_TIMES)], 5, 0, [5, 5], k_side="defense", v_side="attack")],
+                     t_decided=40.0)
+        items.append({"match": m, "map": "Haven", "data": r, "player_of": {0: 100, 1: 101, 5: 200, 6: 201}})
+    return items
+
+
+def brute_gate(items, min_n, L):
+    """Every held-out moment, one by one: predicted means from the other matches' moments, real squared errors."""
+    moms = []       # (match, typ, side, keys, row)
+    for it in items:
+        for side, t, keys, up, row, alive, nxt in util_values.moment_rows(it["data"], MODEL):
+            for typ in util_values.TYPES:
+                if typ not in up:
+                    moms.append((it["match"], typ, keys, row))
+    se_cell = se_ma = 0.0
+    used = set()
+    for m, typ, keys, row in moms:
+        others = [x for x in moms if x[0] != m and x[1] == typ]
+
+        def mean_at(lvl):
+            sel = [x[3] for x in others if x[2][0].split("|")[:[4, 4, 2][lvl] if lvl else 5] ==
+                   keys[0].split("|")[:[4, 4, 2][lvl] if lvl else 5]]
+            return (len(sel), sum(s[L] for s in sel) / len(sel) if sel else 0.0)
+        lv = None
+        for i, depth in enumerate((5, 4, 2)):
+            n, mu = (lambda sel: (len(sel), sum(s[3][L] for s in sel) / len(sel) if sel else 0.0))(
+                [x for x in others if x[2][0].split("|")[:depth] == keys[0].split("|")[:depth]])
+            if n >= min_n:
+                lv = i
+                mu_cell = mu
+                break
+        n2 = [x for x in others if x[2][0].split("|")[:2] == keys[0].split("|")[:2]]
+        if lv is None or len(n2) < min_n:
+            continue
+        mu_ma = sum(x[3][L] for x in n2) / len(n2)
+        used.add(lv)
+        y = row[L]
+        se_cell += (y - mu_cell) ** 2
+        se_ma += (y - mu_ma) ** 2
+    return se_cell - se_ma, used
+
+
+def test_the_leave_one_match_out_gate_equals_a_brute_force_recompute():
+    items = corpus()
+    tabs = util_values.match_tables(items, MODEL)
+    for min_n in (3, 6):
+        g = util_values.gate(tabs["all"], min_n=min_n)
+        used = set()
+        for L in (1, 5, 10, 30, 45):
+            want, u = brute_gate(items, min_n, L)
+            used |= u
+            got = g["all"][L]
+            assert got["se_cell"] - got["se_ma"] == pytest.approx(want, abs=1e-9)
+            assert got["pass"] == (want < -1e-12)
+        assert 0 in used or min_n == 6
+        assert used & {1, 2}, "a fallback level was used"
+    assert 0 in brute_gate(items, 3, 5)[1], "and level 0 on the small corpus"
+
+
+def test_yours_leaves_out_every_match_given():
+    items = corpus(8, with_flash=())
+    tabs = util_values.match_tables(items, MODEL)
+    per_match = tabs["all"]
+    totals = util_values.totals(per_match)
+    r = items[0]["data"]
+    keys = util_values.levels(r, "attack", 2.0)
+    out = util_values.lift_v2(totals, per_match, "flash", keys, 4, 0.5, leave_out={1, 2})
+    others: dict = {}
+    for it in items[2:]:
+        util_values.add_moments_v2(others, it["data"], MODEL)
+    want = util_values.baseline_v2(others, "flash", keys, 4)
+    assert out["mean"] == pytest.approx(want["mean"]) and out["n"] == want["n"] and out["level"] == want["level"]
+    assert out["lift"] == pytest.approx(0.5 - want["mean"])
+    # a table with too few other moments has no baseline
+    assert util_values.lift_v2(totals, per_match, "flash", keys, 4, 0.5, leave_out=set(range(1, 8))) is None
+
+
+def test_a_device_table_holds_the_other_rounds_of_its_map_only():
+    plac = {"i": 0, "by": 1, "side": "attack", "t": 8.0, "type": "placeable", "ability_id": "Sage/Barrier",
+            "kinds": ["wall"], "effects": [], "signals": {}}
+    r_with = v2_round([plac], t_decided=20.0)
+    r_without = v2_round(t_decided=20.0)
+    items = [{"match": 1, "map": "Haven", "data": r_with, "player_of": {}},
+             {"match": 2, "map": "Haven", "data": r_without, "player_of": {}},
+             {"match": 3, "map": "Bind", "data": r_without, "player_of": {}}]
+    dev = util_values.match_tables(items, MODEL)["device"]
+
+    def count(key, m):
+        return sum(a[0] for a in dev[key].get(m, {}).values())
+    atk, dfn, bind = "Sage/Barrier|Haven|attack", "Sage/Barrier|Haven|defense", "Sage/Barrier|Bind|attack"
+    assert 1 not in dev[atk] and count(atk, 2) > 0, "the round where attack placed it is out of attack's table"
+    assert count(dfn, 1) > 0 and count(dfn, 2) > 0, "defense never placed it"
+    assert 3 not in dev[atk] and 3 not in dev[dfn] and count(bind, 3) > 0, "each map has its own"
+    assert 1 not in dev[bind] and 2 not in dev[bind]
+
+
+def test_equal_errors_do_not_pass():
+    def arr(n):
+        return np.array([float(n)] + [n * L / 8.0 for L in range(1, 46)])
+    per_match = {m: {"flash": {"attack|5v5|0|contact|a": arr(10), "attack|5v5|0|contact|b": arr(10)}}
+                 for m in range(1, 5)}
+    g = util_values.gate(per_match, min_n=3)
+    assert all(not g["all"][L]["pass"] for L in range(1, 46)) and g["all"][3]["n"] > 0
+    assert all(not g["by_type"]["flash"][L]["pass"] for L in range(1, 46))
+    assert not util_values.gate({}, min_n=3)["all"][1]["pass"]
+
+
+def test_overlap_counts_a_same_type_cast_starting_inside_the_window(monkeypatch):
+    monkeypatch.setattr(util_values, "item_segments", lambda rd, item, typ=None: [[13.0, 15.0]])
+    r = v2_round([v2_cast(0, t=13.0)], kills=[], t_decided=12.0)
+    items = [{"match": 1, "map": "Haven", "data": r, "player_of": {}}]
+    ov = util_values.match_tables(items, MODEL)["overlap"]["flash"]
+    steps = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+    assert ov[0] == 12                      # six moments per side, none with a flash up yet
+    for L in (1, 3, 4, 6, 45):
+        assert ov[L] == sum(1 for t in steps if 13.0 < t + L), L
+    assert ov[3] == 0 and ov[4] == 1
+
+
+def test_a_yours_row_is_added_for_each_alive_friend_slot():
+    items = corpus(2, with_flash=())
+    tabs = util_values.match_tables(items, MODEL, friend_players=frozenset({100, 200}))
+    assert set(tabs["yours"]) == {100, 200}
+    # 100 is an attacker who dies at 10 s in match 1: fewer moments than the all-table's attack moments
+    n100 = sum(a[0] for a in tabs["yours"][100][1]["flash"].values())
+    n_all_atk = sum(a[0] for k, a in tabs["all"][1]["flash"].items() if k.startswith("attack"))
+    assert 0 < n100 < n_all_atk
+    n200 = sum(a[0] for a in tabs["yours"][200][1]["flash"].values())
+    assert n200 == sum(a[0] for k, a in tabs["all"][1]["flash"].items() if k.startswith("defense"))
+    g = util_values.gate_all_modes(tabs)
+    assert set(g) >= {"all", "yours", "device", "by_type"} and set(g["yours"]) == set(range(1, 46))

@@ -521,10 +521,12 @@ def _grid_swings(times, P, t: float, td: float):
     return p_on_grid(times, P, np.minimum(t + ls, td)) - float(p_on_grid(times, P, t))
 
 
-def add_moments_v2(table: dict, round_data: dict, model) -> None:
-    """Adds a round's moments to {type: {level key: array [n, sum_1..sum_45]}}: each counts for every type not up."""
+def moment_rows(round_data: dict, model):
+    """Every BASE_STEP_S of the round to t_decided, per side: (side, t, keys, up, row, alive, next_start).
+    keys = levels(); up = the set of types that side has up at t; row = [1, swing_1..swing_45]; alive = the slots
+    of that side alive at t; next_start = {type: the earliest start s > t of one of that side's segments of that
+    type} (only types that have one)."""
     td = float(round_data.get("t_decided") or 0.0)
-    segs = up_segments(round_data)
     steps = []
     t = 0.0
     while t < td:
@@ -532,30 +534,56 @@ def add_moments_v2(table: dict, round_data: dict, model) -> None:
         t += BASE_STEP_S
     if not steps:
         return
+    segs = up_segments(round_data)
+    sides = round_data.get("sides") or {}
+    deaths: dict = {}
+    for k in round_data.get("kills") or ():
+        v = k["victim"]
+        deaths[v] = min(deaths.get(v, 1e9), k["t"])
     for side in _SIDES:
         times, P = swing_grid(round_data, model, side)
-        rows = np.array([np.concatenate(([1.0], _grid_swings(times, P, t, td))) for t in steps])
-        up = np.zeros((len(steps), len(TYPES)), dtype=bool)
-        for s_side, typ, ss in segs:
-            if s_side != side:
-                continue
-            j = TYPES.index(typ if typ in TYPES else "other")
-            for k, t in enumerate(steps):
-                if any(a <= t < b for a, b in ss):
-                    up[k, j] = True
-        keys = [levels(round_data, side, t) for t in steps]
-        for lvl in range(len(BASE_LEVELS)):
-            groups: dict = {}
-            for k in range(len(steps)):
-                groups.setdefault(keys[k][lvl], []).append(k)
-            for key, idx in groups.items():
-                idx = np.array(idx)
-                for j, typ in enumerate(TYPES):
-                    sel = idx[~up[idx, j]]
-                    if len(sel):
-                        cells = table.setdefault(typ, {})
-                        add = rows[sel].sum(axis=0)
-                        cells[key] = cells[key] + add if key in cells else add
+        mine = [(typ if typ in TYPES else "other", ss) for s_side, typ, ss in segs if s_side == side]
+        slots = [int(s) for s, sd in sides.items() if sd == side]
+        for t in steps:
+            up = {typ for typ, ss in mine if any(a <= t < b for a, b in ss)}
+            nxt: dict = {}
+            for typ, ss in mine:
+                for a, _b in ss:
+                    if a > t and a < nxt.get(typ, 1e18):
+                        nxt[typ] = a
+            alive = {s for s in slots if deaths.get(s, 1e9) > t}
+            row = np.concatenate(([1.0], _grid_swings(times, P, t, td)))
+            yield side, t, levels(round_data, side, t), up, row, alive, nxt
+
+
+def _acc(cells: dict, key: str, row) -> None:
+    if key in cells:
+        cells[key] += row
+    else:
+        cells[key] = np.array(row, dtype=float)
+
+
+def expand(cells: dict) -> dict:
+    """Level-0 cells {key: arr} -> {key at all three levels: arr}: children summed into their parents."""
+    out: dict = {}
+    for key, arr in cells.items():
+        parts = key.split("|")
+        for k in (key, "|".join(parts[:4]), "|".join(parts[:2])):
+            _acc(out, k, arr)
+    return out
+
+
+def add_moments_v2(table: dict, round_data: dict, model) -> None:
+    """Adds a round's moments to {type: {level key: array [n, sum_1..sum_45]}}: each counts for every type not up."""
+    l0: dict = {}
+    for _side, _t, keys, up, row, _alive, _nxt in moment_rows(round_data, model):
+        for typ in TYPES:
+            if typ not in up:
+                _acc(l0.setdefault(typ, {}), keys[0], row)
+    for typ, cells in l0.items():
+        out = table.setdefault(typ, {})
+        for key, arr in expand(cells).items():
+            out[key] = out[key] + arr if key in out else arr
 
 
 def merge_tables_v2(into: dict, table: dict) -> None:
@@ -620,6 +648,231 @@ def cast_lift_v2(round_data: dict, model, item: dict, table: dict, minus: dict |
         out.update(base=round(base["mean"], 4), base_n=base["n"], base_level=base["level"],
                    lift=round(swing - base["mean"], 4))
     return out
+
+
+# --- v2 per-match tables, leave-one-match-out gate, Yours and device tables (plan 5, R1-R3, R10, D15)
+#
+# Tables are kept per match at level 0 only (sparse); `expand` gives the three levels and `totals` sums matches.
+
+
+def match_tables(items: list, model, friend_players=frozenset()) -> dict:
+    """items = [{"match", "map", "data" (round data), "player_of" {slot: player id}}]. Returns
+    "all" {match: {type: {L0 key: arr}}}; "yours" {player: {match: {type: {L0 key: arr}}}} (each moment also for
+    each alive slot of that side whose player is in friend_players); "device" {"<ability_id>|<map>|<side>":
+    {match: {L0 key: arr}}} (every moment of that map and side in rounds where that side placed no cast of that
+    ability_id: D15, no other filter); "overlap" {type: [n, o_1..o_45]} (n comparison moments; o_L those whose
+    next same-type start s has s < t + L)."""
+    out_all: dict = {}
+    yours: dict = {}
+    device: dict = {}
+    overlap: dict = {}
+    ls = np.arange(1, MAX_L + 1, dtype=float)
+    ids: set = set()
+    maps: set = set()
+    for it in items:
+        maps.add(it["map"])
+        for c in it["data"].get("casts") or ():
+            if type_of(c) == "placeable" and c.get("ability_id") is not None:
+                ids.add(c["ability_id"])
+    for it in items:
+        m, rd = it["match"], it["data"]
+        player_of = it.get("player_of") or {}
+        placed = {s: {c.get("ability_id") for c in rd.get("casts") or ()
+                      if c.get("side") == s and type_of(c) == "placeable"} for s in _SIDES}
+        all_m = out_all.setdefault(m, {})
+        for side, t, keys, up, row, alive, nxt in moment_rows(rd, model):
+            k0 = keys[0]
+            pids = [player_of[s] for s in alive if player_of.get(s) in friend_players]
+            for typ in TYPES:
+                if typ in up:
+                    continue
+                _acc(all_m.setdefault(typ, {}), k0, row)
+                for pid in pids:
+                    _acc(yours.setdefault(pid, {}).setdefault(m, {}).setdefault(typ, {}), k0, row)
+                ov = overlap.get(typ)
+                if ov is None:
+                    ov = overlap[typ] = np.zeros(MAX_L + 1)
+                ov[0] += 1
+                if typ in nxt:
+                    ov[1:] += (nxt[typ] < t + ls)
+            for aid in ids:
+                if aid not in placed[side]:
+                    _acc(device.setdefault(f"{aid}|{it['map']}|{side}", {}).setdefault(m, {}), k0, row)
+    for aid in ids:                     # every key exists even when no round qualified
+        for mp in maps:
+            for side in _SIDES:
+                device.setdefault(f"{aid}|{mp}|{side}", {})
+    return {"all": out_all, "yours": yours, "device": device, "overlap": overlap}
+
+
+def _expand_typed(typed: dict) -> dict:
+    return {typ: expand(cells) for typ, cells in typed.items()}
+
+
+def _add_typed(into: dict, typed: dict, sign: float = 1.0) -> None:
+    for typ, cells in typed.items():
+        out = into.setdefault(typ, {})
+        for key, arr in cells.items():
+            if key in out:
+                out[key] = out[key] + sign * arr
+            else:
+                out[key] = sign * arr
+
+
+def totals(per_match: dict, leave_out=(), typed: bool = True) -> dict:
+    """The expanded {type: {key at 3 levels: arr}} summed over the matches not in leave_out. With typed=False the
+    per-match value is {L0 key: arr} (a device's) and the result is {key: arr}."""
+    out: dict = {}
+    for m, v in per_match.items():
+        if m in leave_out:
+            continue
+        if typed:
+            _add_typed(out, _expand_typed(v))
+        else:
+            for key, arr in expand(v).items():
+                _acc(out, key, arr)
+    return out
+
+
+def lift_v2(totals_table: dict, per_match: dict, typ: str, keys: list, L: int, swing: float, leave_out=()):
+    """A cast's lift against `totals_table` minus the expanded cells of every match in leave_out (Yours leaves out
+    all of a lineup's matches), through the levels and BASE_MIN_N like baseline_v2. None without a baseline."""
+    minus = totals({m: v for m, v in per_match.items() if m in set(leave_out)})
+    base = baseline_v2(totals_table, typ, keys, L, minus)
+    if base is None:
+        return None
+    return {**base, "lift": swing - base["mean"]}
+
+
+def make_predictor(per_match: dict, typ: str) -> dict:
+    """A prepared outside predictor for `gate`: the main table's per-match cells (typed), its totals, and the type
+    whose cells predict (the device gate uses "placeable")."""
+    exp = {m: _expand_typed(v) for m, v in per_match.items()}
+    tot: dict = {}
+    for e in exp.values():
+        _add_typed(tot, e)
+    return {"exp": exp, "tot": tot, "type": typ}
+
+
+def _pick(tot: dict, minus: dict | None, typ: str, keys: list, min_n: float):
+    """(mean vector [45], index of the level) from the most specific key with n >= min_n after taking `minus` out."""
+    cells = tot.get(typ) or {}
+    own = (minus or {}).get(typ) or {}
+    for i, key in enumerate(keys):
+        arr = cells.get(key)
+        if arr is None:
+            continue
+        if key in own:
+            arr = arr - own[key]
+        if arr[0] >= min_n:
+            return arr[1:] / arr[0], i
+    return None
+
+
+def _gate_sums(per_match: dict, min_n: float, predictor: dict | None = None) -> dict:
+    """{type: {"n", "cell" [45], "ma" [45], "diffs" [per-match arrays of (se_cell - se_ma)]}}."""
+    exp = {m: _expand_typed(v) for m, v in per_match.items()}
+    tot: dict = {}
+    for e in exp.values():
+        _add_typed(tot, e)
+    out: dict = {}
+    for m, v in per_match.items():
+        em = exp[m]
+        pm = predictor["exp"].get(m) if predictor else None
+        for typ, cells in v.items():
+            for k0, arr in cells.items():
+                parts = k0.split("|")
+                keys = [k0, "|".join(parts[:4]), "|".join(parts[:2])]
+                cell = _pick(tot, em, typ, keys, min_n)
+                if cell is None:
+                    continue
+                if predictor is None:
+                    ma = _pick(tot, em, typ, keys[2:], min_n)
+                else:
+                    ma = _pick(predictor["tot"], pm, predictor["type"], keys, min_n)
+                if ma is None:
+                    continue
+                n_k, S = arr[0], arr[1:]
+                e_cell = -2 * cell[0] * S + n_k * cell[0] ** 2
+                e_ma = -2 * ma[0] * S + n_k * ma[0] ** 2
+                o = out.setdefault(typ, {"n": 0.0, "cell": np.zeros(MAX_L), "ma": np.zeros(MAX_L), "diffs": {}})
+                o["n"] += n_k
+                o["cell"] += e_cell
+                o["ma"] += e_ma
+                o["diffs"][m] = o["diffs"].get(m, 0.0) + (e_cell - e_ma)
+    return out
+
+
+def _finish(sums: list) -> dict:
+    """Pools a list of _gate_sums entries ({"n", "cell", "ma", "diffs": {unit: array}}) into {L: {...}}."""
+    n = sum(s["n"] for s in sums)
+    cell = sum((s["cell"] for s in sums), np.zeros(MAX_L))
+    ma = sum((s["ma"] for s in sums), np.zeros(MAX_L))
+    diffs = [d for s in sums for d in s["diffs"].values()]
+    out = {}
+    for L in range(1, MAX_L + 1):
+        ds = [float(d[L - 1]) for d in diffs]
+        sd = float(np.std(ds, ddof=1)) if len(ds) > 1 else 0.0
+        c, a = float(cell[L - 1]), float(ma[L - 1])
+        # strictly less; a float-noise margin keeps equal errors from passing
+        passed = n > 0 and c < a - 1e-12 * max(1.0, abs(a))
+        out[L] = {"n": int(round(n)), "se_cell": c, "se_ma": a, "pass": bool(passed),
+                  "diff_mean": float(np.mean(ds)) if ds else 0.0, "diff_sd": sd, "matches": len(ds)}
+    return out
+
+
+def _gate_result(sums_by_type: dict) -> dict:
+    return {"all": _finish(list(sums_by_type.values())),
+            "by_type": {typ: _finish([s]) for typ, s in sums_by_type.items()}}
+
+
+def gate(per_match: dict, min_n: float = BASE_MIN_N, predictor: dict | None = None) -> dict:
+    """Leave-one-match-out: does the cell mean (most specific level with min_n moments in the other matches) predict
+    a held-out match's moments better than the man-advantage mean (level 2, also min_n, other matches)? Sums of
+    squared errors per L = 1..45, the moments' own sum of squares being the same for both and left out (D15). A cell
+    missing either predictor is skipped. `predictor` (from make_predictor) replaces the man-advantage side with
+    another table's cell, at the level chosen from it with the same match out. `per_match` is
+    {match: {type: {L0 key: arr}}}. Returns {"all": {L: {n, se_cell, se_ma, pass, diff_mean, diff_sd, matches}},
+    "by_type": {type: {L: ...}}}."""
+    return _gate_result(_gate_sums(per_match, min_n, predictor))
+
+
+def _pool(units: list) -> dict:
+    """Pools several _gate_sums results (by type) into one {type: sums}, units keyed (unit, match)."""
+    out: dict = {}
+    for ui, sums in enumerate(units):
+        for typ, s in sums.items():
+            o = out.setdefault(typ, {"n": 0.0, "cell": np.zeros(MAX_L), "ma": np.zeros(MAX_L), "diffs": {}})
+            o["n"] += s["n"]
+            o["cell"] += s["cell"]
+            o["ma"] += s["ma"]
+            for m, d in s["diffs"].items():
+                o["diffs"][(ui, m)] = d
+    return out
+
+
+def gate_yours(yours: dict, min_n: float = BASE_MIN_N) -> dict:
+    """`gate` pooled over players, each on its own tables (own leave-one-match-out); diff stats over
+    (player, match) pairs."""
+    return _gate_result(_pool([_gate_sums(pm, min_n) for pm in yours.values()]))
+
+
+def gate_device(device: dict, main_all: dict, min_n: float = BASE_MIN_N) -> dict:
+    """Per device key, the held-out device cell predicted by the device's own cell mean (levels, own match out)
+    against the main "all" table's placeable cell at the level chosen from it (own match out); pooled over
+    devices. Returns {L: {...}} (one pool, no type split)."""
+    pred = make_predictor(main_all, "placeable")
+    units = [_gate_sums({m: {"device": cells} for m, cells in pm.items()}, min_n, pred) for pm in device.values()]
+    pooled = _pool(units)
+    return _finish(list(pooled.values()))
+
+
+def gate_all_modes(tables: dict, min_n: float = BASE_MIN_N) -> dict:
+    """{"all": {L}, "yours": {L}, "device": {L}, "by_type": {"all": {type: {L}}, "yours": {type: {L}}}}."""
+    a = gate(tables["all"], min_n)
+    y = gate_yours(tables["yours"], min_n)
+    return {"all": a["all"], "yours": y["all"], "device": gate_device(tables["device"], tables["all"], min_n),
+            "by_type": {"all": a["by_type"], "yours": y["by_type"]}}
 
 
 # --- rankings
