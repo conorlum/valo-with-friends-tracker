@@ -1,0 +1,201 @@
+"""Each cast's up-time from its table rule (app/critutil/windows.py), on plain dicts."""
+
+from app.critutil.windows import window
+
+TD = 100.0
+
+
+def cast(t=10.0, typ="util", effects=(), **signals):
+    s = {"landed": None, "seen_end": None, "pop": None, "hits": [], "effect_ends": [], "on": [], "off": [],
+         "armed": None, "ult_drop": None}
+    s.update(signals)
+    return {"t": t, "type": typ, "effects": list(effects), "signals": s}
+
+
+def ent(rule, D=None, g=1, **kw):
+    return {"rule": rule, "grace_s": g, "duration_s": D, **kw}
+
+
+def w(item, entry, td=TD, **kw):
+    return window(item, entry, td, **kw)
+
+
+def segs(item, entry, td=TD, **kw):
+    return w(item, entry, td, **kw)["segments"]
+
+
+def eff(t0, t1, known, how="blind", target=5):
+    return {"target": target, "how": how, "t0": t0, "t1": t1, "known": known}
+
+
+def test_duration_runs_for_d_plus_grace_from_landing():
+    assert w(cast(10.0, landed=11.0), ent("duration", 8)) == {"segments": [[10.0, 20.0]], "rule": "duration",
+                                                              "fallback": False}
+
+
+def test_duration_is_cut_at_the_last_seen_piece_if_earlier():
+    assert segs(cast(10.0, seen_end=14.0), ent("duration", 8)) == [[10.0, 15.0]]
+    assert segs(cast(10.0, seen_end=40.0), ent("duration", 8)) == [[10.0, 19.0]]
+
+
+def test_duration_with_no_d_needs_seen_end():
+    assert segs(cast(10.0), ent("duration", None)) == []
+    assert segs(cast(10.0, seen_end=14.0), ent("duration", None)) == [[10.0, 15.0]]
+
+
+def test_no_entry_is_a_duration_rule_with_no_d():
+    assert w(cast(10.0, seen_end=12.0), None) == {"segments": [[10.0, 13.0]], "rule": "duration", "fallback": False}
+    assert segs(cast(10.0), None) == []
+
+
+def test_fixed_n():
+    assert w(cast(10.0), ent("fixed:3")) == {"segments": [[10.0, 13.0]], "rule": "fixed:3", "fallback": False}
+
+
+def test_flash_with_pop_and_hits_caps_the_blind_at_four():
+    c = cast(10.0, pop=10.5, hits=[[10.6, 12.0, True], [10.6, 16.6, True]])
+    assert w(c, ent("flash", 1.5)) == {"segments": [[10.0, 14.5]], "rule": "flash", "fallback": False}
+    assert segs(cast(10.0, pop=10.5, hits=[[10.6, 11.6, True]]), ent("flash")) == [[10.0, 11.5]]
+
+
+def test_flash_with_pop_and_no_hits_is_pop_plus_grace():
+    assert segs(cast(10.0, pop=10.5), ent("flash", 1.5)) == [[10.0, 11.5]]
+
+
+def test_flash_with_no_pop_but_effects_is_each_capped_at_four_without_grace():
+    c = cast(10.0, effects=[eff(11.0, 12.0, True, "concuss"), eff(11.0, 20.0, True, "concuss")])
+    r = w(c, ent("flash", 1.5))
+    assert r["segments"] == [[10.0, 15.0]] and r["fallback"] is True
+
+
+def test_flash_with_no_pop_and_no_effects_uses_duration_capped_at_seen_end():
+    r = w(cast(10.0), ent("flash", 2.0))
+    assert r["segments"] == [[10.0, 13.0]] and r["fallback"] is True
+    assert segs(cast(10.0, seen_end=10.5), ent("flash", 2.0)) == [[10.0, 11.5]]
+    assert segs(cast(10.0), ent("flash", None)) == []
+
+
+def test_status_known_end_plus_two():
+    c = cast(10.0, effects=[eff(11.0, 14.0, True, "slow"), eff(11.0, 13.0, True, "slow")])
+    assert segs(c, ent("status", 5)) == [[10.0, 16.0]]
+
+
+def test_status_unknown_end_is_t0_plus_d_plus_grace_and_damage_is_ignored():
+    c = cast(10.0, effects=[eff(11.0, 11.5, False, "slow"), eff(12.0, 30.0, True, "damage")])
+    assert segs(c, ent("status", 4)) == [[10.0, 16.0]]
+    assert segs(cast(10.0, effects=[eff(11.0, 12.0, False, "slow")]), ent("status", None)) == []
+
+
+def test_status_with_no_hit_runs_its_duration_and_is_capped_at_seen_end():
+    assert segs(cast(10.0), ent("status", 6)) == [[10.0, 17.0]]
+    assert segs(cast(10.0, seen_end=12.0), ent("status", 6)) == [[10.0, 13.0]]
+    assert segs(cast(10.0, seen_end=12.0), ent("status", None)) == [[10.0, 13.0]]
+    assert segs(cast(10.0), ent("status", None)) == []
+
+
+def test_placeable_minus_off_spans():
+    c = cast(10.0, typ="placeable", armed=11.0, seen_end=40.0, off=[[20.0, 25.0], [30.0, 31.0]])
+    assert segs(c, ent("placeable")) == [[11.0, 20.0], [25.0, 30.0], [31.0, 40.0]]
+
+
+def test_placeable_without_seen_end_runs_to_decided_and_off_all_life_is_empty():
+    assert segs(cast(10.0, armed=11.0), ent("placeable")) == [[11.0, 100.0]]
+    assert segs(cast(10.0, armed=11.0, off=[[0.0, 200.0]]), ent("placeable")) == []
+
+
+def test_placeable_armed_in_buy_phase_starts_at_zero():
+    assert segs(cast(-20.0, armed=-15.0, seen_end=30.0), ent("placeable")) == [[0.0, 30.0]]
+
+
+def test_on_spans_are_the_stored_spans():
+    c = cast(10.0, on=[[10.0, 14.0], [18.0, 22.0]])
+    assert w(c, ent("on_spans", 10)) == {"segments": [[10.0, 14.0], [18.0, 22.0]], "rule": "on_spans",
+                                         "fallback": False}
+
+
+def test_on_spans_empty_depends_on_on_known():
+    assert w(cast(10.0), ent("on_spans", 10)) == {"segments": [], "rule": "on_spans", "fallback": False}
+    r = w(cast(10.0, landed=11.0), ent("on_spans", 10), on_known=False)
+    assert r["segments"] == [[10.0, 22.0]] and r["fallback"] is True
+
+
+def test_on_spans_with_no_d_and_on_unknown_is_empty_with_fallback():
+    r = w(cast(10.0), ent("on_spans", None), on_known=False)
+    assert r == {"segments": [], "rule": "on_spans", "fallback": True}
+
+
+def test_life_runs_to_seen_end_or_falls_back():
+    c = cast(10.0, typ="ult", landed=11.0, seen_end=30.0)
+    assert w(c, ent("life", 20)) == {"segments": [[11.0, 30.0]], "rule": "life", "fallback": False}
+    r = w(cast(10.0, typ="ult", landed=11.0), ent("life", 20))
+    assert r["segments"] == [[11.0, 32.0]] and r["fallback"] is True
+    assert segs(cast(10.0, typ="ult"), ent("life", None)) == []
+
+
+def test_heal_row_runs_to_death_or_decided():
+    assert w({"t": 10.0, "t1": 12.0, "target": 1, "death": 20.0}, None) == {
+        "segments": [[10.0, 20.0]], "rule": "heal", "fallback": False}
+    assert segs({"t": 10.0, "t1": 12.0, "target": 1, "death": None}, None) == [[10.0, 100.0]]
+
+
+def test_heal_cast_runs_to_decided():
+    assert segs(cast(10.0, typ="heal"), ent("heal")) == [[10.0, 100.0]]
+
+
+def test_raze_from_ult_drop_or_fallback():
+    assert segs(cast(10.0, typ="ult", ult_drop=9.5), ent("ult:raze", 3)) == [[9.5, 11.0]]
+    r = w(cast(10.0, typ="ult"), ent("ult:raze", 3))
+    assert r["segments"] == [[10.0, 14.0]] and r["fallback"] is True
+
+
+def test_omen_arrival_and_spike_pickup():
+    e = ent("ult:omen", 5)
+    assert segs(cast(10.0, typ="ult", arrival=15.0, got_spike=False, spike_pickup=None), e) == [[10.0, 25.0]]
+    assert segs(cast(10.0, typ="ult", arrival=15.0, got_spike=True, spike_pickup=17.0), e) == [[10.0, 27.0]]
+    r = w(cast(10.0, typ="ult"), e)
+    assert r["segments"] == [[10.0, 16.0]] and r["fallback"] is True
+
+
+def test_thrash_from_move_to_seen_end():
+    e = ent("ult:thrash", 6)
+    assert segs(cast(10.0, typ="ult", moved=12.0, seen_end=20.0), e) == [[12.0, 21.0]]
+    r = w(cast(10.0, typ="ult", moved=12.0), e)
+    assert r["segments"] == [[10.0, 17.0]] and r["fallback"] is True
+
+
+def test_duel_and_capture():
+    assert segs(cast(10.0, typ="ult", duel_end=15.0), ent("ult:duel", 8)) == [[10.0, 16.0]]
+    assert w(cast(10.0, typ="ult"), ent("ult:duel", 8))["fallback"] is True
+    assert segs(cast(10.0, typ="ult", capture_end=18.0), ent("ult:capture", 8)) == [[10.0, 19.0]]
+    assert segs(cast(10.0, typ="ult"), ent("ult:capture", None)) == []
+
+
+def test_seekers_hit_seen_end_or_fallback():
+    e = ent("ult:seekers", 5)
+    c = cast(10.0, typ="ult", effects=[eff(12.0, 14.0, True, "nearsight"), eff(12.0, 16.0, True, "nearsight")],
+             seen_end=30.0)
+    assert segs(c, e) == [[10.0, 18.0]]
+    assert segs(cast(10.0, typ="ult", seen_end=20.0), e) == [[10.0, 20.0]]
+    r = w(cast(10.0, typ="ult"), e)
+    assert r["segments"] == [[10.0, 16.0]] and r["fallback"] is True
+
+
+def test_until_end_is_the_earlier_of_ult_end_and_death():
+    e = ent("ult:until_end", None, 0)
+    use = {"t": 10.0, "type": "ult", "signals": {"ult_end": 30.0, "death": 25.0}}
+    assert segs(use, e) == [[10.0, 25.0]]
+    use["signals"] = {"ult_end": 22.0, "death": 25.0}
+    assert segs(use, e) == [[10.0, 22.0]]
+    use["signals"] = {"ult_end": None, "death": None}
+    assert w(use, e) == {"segments": [[10.0, 100.0]], "rule": "ult:until_end", "fallback": False}
+
+
+def test_until_death_with_no_use_is_empty():
+    use = {"t": None, "type": "ult", "signals": {"ult_end": None, "death": 25.0}}
+    assert segs(use, ent("ult:until_death", None, 0)) == []
+
+
+def test_every_window_is_cut_at_t_decided():
+    assert segs(cast(10.0, landed=10.0), ent("duration", 8), td=14.0) == [[10.0, 14.0]]
+    assert segs(cast(10.0, on=[[10.0, 14.0], [18.0, 22.0]]), ent("on_spans", 10), td=12.0) == [[10.0, 12.0]]
+    assert segs(cast(10.0, landed=10.0), ent("duration", 8), td=10.0) == []

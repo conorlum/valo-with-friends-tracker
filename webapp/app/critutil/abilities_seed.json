@@ -1990,7 +1990,7 @@
     "ult",
     "smoke"
    ],
-   "rule": "on_spans",
+   "rule": "life",
    "grace_s": 1,
    "wiki": {
     "page": "Viper's Pit",

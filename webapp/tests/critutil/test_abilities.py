@@ -204,7 +204,7 @@ def test_from_dir_merges_and_reports(tmp_path, capsys):
 
 
 TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "other"}
-RULES = {"duration", "status", "flash", "placeable", "on_spans", "heal", "ult:until_end", "ult:until_death",
+RULES = {"duration", "status", "flash", "placeable", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
          "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
 KNOWN_CODES = [
     "Clay_X_Rocket", "Aggrobot_RollyPolly", "Phoenix_4_Molotov_Production", "Clay_4_Projectile_Primary",

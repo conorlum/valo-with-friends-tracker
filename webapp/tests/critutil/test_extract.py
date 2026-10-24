@@ -20,8 +20,11 @@ def players(extra=None):
     return p
 
 
-def run(util=(), kills=(), extra=None, player_state=None, t_end=30.0):
+def run(util=(), kills=(), extra=None, player_state=None, t_end=30.0, agents=None):
     rnd, data = round_of(players(extra), util=list(util), kills=list(kills), geo=GEO, t_end=t_end)
+    for p in data["players"]:
+        if p["slot"] in (agents or {}):
+            p["agent"] = agents[p["slot"]]
     if player_state is not None:
         data["player_state"] = player_state
     return extract.round_util(rnd, data)
@@ -218,8 +221,52 @@ def test_each_slot_s_ult_is_reported_for_the_match_to_judge():
     ps = {"version": 1, "ult": {"0": [{"t": -30.0, "n": 7}], "1": [{"t": -30.0, "n": 6}, {"t": 12.0, "n": 0}]}}
     util = [toy_ability("Sarge", "X_Orbital", 300, 200, 1, t=12.0, t1=20.0)]
     ults = run(util, player_state=ps)["ults"]
-    assert ults["0"] == {"cap_seen": None, "end": 7, "t": 30.0, "used": False}, "held all round, no drop to prove 7"
+    use = {"t": None, "ability_id": "Jett/Blade Storm", "type": "ult", "signals": {"ult_end": None, "death": None}}
+    assert ults["0"] == {"cap_seen": None, "end": 7, "t": 30.0, "used": False,
+                         "use": use}, "held all round, no drop to prove 7 (the toy's slot 0 is a Jett)"
     assert ults["1"]["cap_seen"] == 6 and ults["1"]["used"] is True
+
+
+def ult_state(slot=0, drop=None):
+    pts = [{"t": -30.0, "n": 8}] + ([{"t": drop, "n": 0}] if drop is not None else [])
+    return {"version": 1, "ult": {str(slot): pts}}
+
+
+def test_chamber_use_is_the_first_tour_de_force_shot_and_ends_at_the_drop_after_it():
+    util = [shot(5.0, 0, gun="Vandal"), shot(12.0, 0, gun="Tour de Force"), shot(14.0, 0, gun="Tour de Force")]
+    ps = ult_state(0, drop=12.1)
+    ps["ult"]["0"].insert(1, {"t": 3.0, "n": 0})      # a drop before the first use is not its end
+    out = run(util, kills=[kill(20.0, 5, 0)], player_state=ps, agents={0: "Chamber"})
+    assert out["ults"]["0"]["use"] == {"t": 12.0, "ability_id": "Chamber/Tour De Force", "type": "ult",
+                                       "signals": {"ult_end": 12.1, "death": 20.0}}
+
+
+def test_jett_use_is_the_first_knife_hit_from_the_equippable():
+    miss = {**damage(6.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "ability"}
+    hit = {**damage(9.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "equippable"}
+    out = run([miss, hit], player_state=ult_state(0), agents={0: "Jett"})
+    use = out["ults"]["0"]["use"]
+    assert use["t"] == 9.0 and use["ability_id"] == "Jett/Blade Storm"
+    assert use["signals"] == {"ult_end": None, "death": None}
+
+
+def test_neon_use_is_the_first_shot_with_no_gun():
+    util = [shot(7.0, 0, gun="Vandal"), shot(11.0, 0, gun=None)]
+    out = run(util, player_state=ult_state(0), agents={0: "Neon"})
+    assert out["ults"]["0"]["use"]["t"] == 11.0
+
+
+def test_reyna_has_no_use_sign_and_other_agents_have_no_use():
+    out = run([shot(7.0, 0, gun=None)], player_state=ult_state(0), agents={0: "Reyna", 1: "Sova"})
+    assert out["ults"]["0"]["use"] == {"t": None, "ability_id": "Reyna/Empress", "type": "ult",
+                                       "signals": {"ult_end": None, "death": None}}
+    assert out["ults"]["1"]["use"] is None
+
+
+def test_a_use_after_the_slot_died_is_not_a_use():
+    util = [shot(12.0, 0, gun="Tour de Force")]
+    out = run(util, kills=[kill(10.0, 5, 0)], player_state=ult_state(0), agents={0: "Chamber"})
+    assert out["ults"]["0"]["use"]["t"] is None
 
 
 def test_molly_damage_by_id_is_zone_damage_on_the_kill():

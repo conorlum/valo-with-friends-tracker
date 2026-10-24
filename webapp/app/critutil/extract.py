@@ -863,7 +863,38 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
     return out
 
 
-def _ults(rnd, blob, sides) -> dict[str, dict]:
+def _first_use(util, slot, agent, end):
+    """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it), up to `end`;
+    None when it has none (Reyna's has no sign)."""
+    if agent == "Chamber":
+        want = lambda r: r.get("k") == "shot" and r.get("gun") == "Tour de Force"
+    elif agent == "Jett":
+        want = lambda r: (r.get("k") == "damage" and r.get("name") == "X_Dagger_Production"
+                          and r.get("from") == "equippable")
+    elif agent == "Neon":
+        want = lambda r: r.get("k") == "shot" and r.get("gun") is None
+    else:
+        return None
+    ts = [r["t"] for r in util if r.get("by") == slot and r["t"] <= end and want(r)]
+    return min(ts) if ts else None
+
+
+def _use(rnd, ps, util, slot, agent, end) -> dict | None:
+    entry = next((e for e in abilities.load() if e.get("agent") == agent and e.get("type") == "ult"
+                  and e.get("rule") in ("ult:until_end", "ult:until_death")), None) if agent else None
+    if entry is None:
+        return None
+    t = _first_use(util, slot, agent, end)
+    line = ((ps or {}).get("ult") or {}).get(str(slot)) or []
+    end_t = death = None
+    if t is not None:
+        end_t = next((p["t"] for p in line if p["t"] > t and p["n"] == 0), None)
+        death = next((k for k, a, b in sorted(rnd.kills) if k > t and b == slot), None)
+    return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult",
+            "signals": {"ult_end": _r2(end_t), "death": _r2(death)}}
+
+
+def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     """Each slot's ult this round, for the site to find full ults never used: `cap_seen`, the points held just
     before a drop to 0 (a use, which proves the cost; None without one this round), `end`, the points at their
     death or the round's decision (`t`), and whether they used it by then. Whether `end` is full is the site's
@@ -879,7 +910,7 @@ def _ults(rnd, blob, sides) -> dict[str, dict]:
         used = any(r.get("by") == slot and _key_of(r.get("name")) == "X" and r["t"] <= end for r in util
                    if r.get("k") == "ability")
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
-                          "used": used}
+                          "used": used, "use": _use(rnd, ps, util, slot, (agents or {}).get(slot), end)}
     return out
 
 
@@ -1111,7 +1142,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "casts": out_casts,
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),
-        "ults": _ults(rnd, blob, sides),
+        "ults": _ults(rnd, blob, sides, agents),
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
                   "ult": bool((ps or {}).get("ult")),
