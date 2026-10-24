@@ -16,6 +16,7 @@ BUY_PLACED_S = 0.5          # a placement starting by this round time was placed
 SAME_PLACE_M = 1.5          # ... and the same piece placed farther than this from its namesake is another charge
 #                             (2026-10-22, 10 replays: 105 Cypher trip pairs at 0 s; mid-round same-name pieces at
 #                             two places are one use: Skye's seekers, Neon's bolt, Reyna's pools, a Killjoy swarm)
+FLASH_TAIL_S = 1.0         # a flash cast's rows end by its pop plus this
 FLASH_ROW_MATCH_S = 1.0    # a projectile or source thrown this close to a flash or nearsight row is that cast
 
 # --- windows (measure)

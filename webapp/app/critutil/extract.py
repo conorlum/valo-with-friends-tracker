@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import functools
 import math
+import re
 
 from app.control import engine
 from app.critutil import abilities
 from app.critutil.constants import (AGENT_KEYS, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
-                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
+                                    FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
@@ -44,6 +45,19 @@ def _key_of(name: str | None) -> str | None:
 @functools.lru_cache(maxsize=None)
 def _entry_for(code_name: str):
     return abilities.lookup(code_name)
+
+
+@functools.lru_cache(maxsize=None)
+def _parents_for(code_name: str) -> frozenset:
+    """The `match` strings of the table entries that list `<code>_<name>` among their pieces."""
+    return frozenset(e["match"] for e in abilities.load()
+                     if any(re.search(p, code_name) for p in e.get("pieces") or ()))
+
+
+def _parents_of(row) -> frozenset:
+    if not row.get("code") or not row.get("name"):
+        return frozenset()
+    return _parents_for(f"{row['code']}_{row['name']}")
 
 
 def _entry_of(row) -> dict | None:
@@ -141,7 +155,10 @@ def _end(row, rnd) -> tuple[float, bool]:
     t = float(row["t"])
     ends = [x for x in (row.get("t1"), row.get("gone")) if x is not None]
     unknown = False
-    if ends:
+    pop = row.get("pop") if row.get("k") == "flash" else None
+    if pop and pop.get("t") is not None:
+        end = float(pop["t"]) + FLASH_TAIL_S      # a flash is over a second after it pops
+    elif ends:
         end = min(ends)
     else:
         e = _entry_of(row)
@@ -195,7 +212,13 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
     spike is not a cast."""
     util = blob.get("util") or ()
     casts: list[_Cast] = []
+    codes = {}                              # slot -> its code, for flash rows that carry none
+    for r in util:
+        if r.get("k") == "ability" and r.get("code") and r.get("by") is not None:
+            codes.setdefault(r["by"], r["code"])
     for r in sorted((r for r in util if r.get("k") in ("flash", "nearsight")), key=lambda r: r["t"]):
+        if not r.get("code") and codes.get(r.get("by")):
+            r = {**r, "code": codes[r["by"]]}
         c = _Cast(len(casts), r, rnd)
         c.flash = r
         c.kinds = {"blind"} if r["k"] == "flash" else {"status"}
@@ -205,16 +228,36 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
     for r in abilities:
         name, by, tt = r.get("name"), r.get("by"), _throw_t(r)
         kinds = _kinds_of([name] if name else [])
+        entry, parents = _entry_of(r), _parents_of(r)
         twin = next((c for c in reversed(casts) if c.flash is not None and c.by == by
                      and abs(c.t - tt) <= FLASH_ROW_MATCH_S), None)
-        if twin is not None and (not kinds or kinds <= {"blind", "status"}):
-            twin.add(r, rnd)                # a flash's own projectile and source rows
-            continue
+        if twin is not None and ((twin.entry is not None and twin.entry["match"] in parents)
+                                 or (entry is None and (not kinds or kinds <= {"blind", "status"}))):
+            pop = twin.flash.get("pop") or {}
+            if pop.get("t") is not None:
+                bound = float(pop["t"]) + FLASH_TAIL_S
+            elif twin.flash["k"] == "nearsight":
+                bound = _end(twin.flash, rnd)[0] + FLASH_TAIL_S
+            else:
+                bound = None
+            if bound is None or _end(r, rnd)[0] <= bound + _EPS:
+                twin.add(r, rnd)            # a flash's own projectile and source rows
+                continue
         host = _anchored(casts, r) if r.get("kind") != "Projectile" else None
-        if host is None and r.get("kind") != "Projectile":
+        if host is None and parents:        # a piece of a table ability: its owner's latest cast of the parent
+            for c in reversed(casts):
+                if c.flash is not None or c.by != by or c.entry is None or c.entry["match"] not in parents:
+                    continue
+                if ((r.get("thrown") or {}).get("t0") is not None and abs(c.t - tt) <= THROW_MATCH_S) \
+                        or c.t - _EPS <= r["t"] <= c.t_end + MERGE_S:
+                    host = c
+                break
+        if host is None and not parents and r.get("kind") != "Projectile":
             for c in reversed(casts):
                 if c.flash is not None or c.by != by or c.key != _key_of(name):
                     continue
+                if entry is not None and (c.entry is None or c.entry["match"] != entry["match"]):
+                    break                   # a row with its own ability only joins a cast of that ability
                 if (r.get("thrown") or {}).get("t0") is not None:
                     if abs(c.t - tt) <= THROW_MATCH_S:
                         host = c

@@ -367,3 +367,89 @@ def test_kind_label_is_unchanged_for_one_cast_per_old_kind():
         assert kind_label(c["kinds"]) == label, (code, name, c["kinds"])
     out = run([flash(8.0, 1, [[5, 8.4, 2.0]])])
     assert kind_label(cast_by(out, 1)[0]["kinds"]) == "blind"
+
+
+# --- pieces join their casts by the ability table; flash and nearsight casts stay short (W11)
+
+
+def _paint_shells(t, by=1):
+    util = [toy_ability("Clay", "4_Projectile_Primary", 200, 200, by, t=t, t1=t + 1.0, kind="Projectile"),
+            toy_ability("Clay", "4_Projectile_SecondarySpawner", 300, 200, by, t=t + 1.0, t1=t + 1.2, kind="Projectile")]
+    util += [toy_ability("Clay", "4_Projectile_Secondary", 300 + 10 * i, 200, by, t=t + 1.1 + 0.1 * i, t1=t + 2.0,
+                         kind="Projectile") for i in range(4)]
+    return util
+
+
+def test_paint_shells_primary_spawner_and_secondaries_are_one_cast_and_a_second_use_is_another():
+    assert len(cast_by(run(_paint_shells(5.0)), 1)) == 1
+    assert len(cast_by(run(_paint_shells(5.0) + _paint_shells(15.0)), 1)) == 2
+
+
+def test_a_piece_of_another_slot_does_not_join():
+    util = [toy_ability("Clay", "4_Projectile_Primary", 200, 200, 1, t=5.0, t1=6.0, kind="Projectile"),
+            toy_ability("Clay", "4_Projectile_SecondarySpawner", 300, 200, 0, t=6.0, t1=6.2, kind="Projectile")]
+    out = run(util)
+    assert len(cast_by(out, 1)) == 1 and len(cast_by(out, 0)) == 1
+
+
+def test_hot_hands_projectile_and_molotov_fire_are_one_molly_cast():
+    util = [toy_ability("Phoenix", "4_Molotov_Production", 200, 200, 1, t=5.0, t1=6.0, kind="Projectile"),
+            toy_ability("Phoenix", "MolotovFire", 300, 200, 1, t=6.0, t1=11.0, kind="Zone")]
+    (c,) = cast_by(run(util), 1)
+    assert c["type"] == "molly"
+
+
+def test_dizzy_chain_is_one_cast():
+    util = [toy_ability("Aggrobot", "E_DiscTurret_PowerWave", 200, 200, 1, t=5.0, t1=8.0, kind="GameObject"),
+            toy_ability("Aggrobot", "Zamboni_Rocket", 250, 200, 1, t=6.0, t1=7.0, kind="Projectile"),
+            toy_ability("Aggrobot", "E_OrbSpawner", 300, 200, 1, t=8.0, t1=9.0, kind="GameObject"),
+            toy_ability("Aggrobot", "Reclaim_Orb_Turret", 300, 210, 1, t=9.0, t1=12.0, kind="GameObject")]
+    (c,) = cast_by(run(util), 1)
+    assert c["t"] == 5.0 and c["t_end"] == 12.0
+
+
+def test_fast_lane_beside_a_ground_strike_is_its_own_cast():
+    util = [toy_ability("Sprinter", "4_GroundStrike", 200, 200, 1, t=5.0, t1=6.0, kind="Projectile"),
+            toy_ability("Sprinter", "Q_ElectricSphere", 300, 200, 1, t=6.0, t1=9.0, kind="Zone"),
+            toy_ability("Sprinter", "4_Tunnel", 300, 220, 1, t=6.2, t1=9.0, kind="Zone")]
+    out = run(util)
+    assert len(cast_by(out, 1)) == 2
+
+
+def test_flashpoint_flash_and_its_through_walls_twin_are_one_cast():
+    util = [flash(8.0, 1, [[5, 8.4, 2.0]], name="breach_flashpoint"),
+            toy_ability("Breach", "Q_ThroughWalls_Flash", 300, 200, 1, t=8.1, t1=8.5, kind="GameObject")]
+    out = run(util)
+    assert len(cast_by(out, 1)) == 1
+
+
+def test_arc_rose_with_no_flash_row_stays_its_own_cast():
+    util = [toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=8.0, t1=20.0, kind="GameObject")]
+    assert len(cast_by(run(util), 1)) == 1
+
+
+def test_a_flash_keeps_a_short_span_beside_a_long_lived_row():
+    f = flash(8.0, 1, [[5, 8.4, 2.0]], name="phoenix_curveball_left")
+    f["pop"] = {"t": 8.8}
+    util = [f, toy_ability("Phoenix", "E_FlareCurve_Synced", 200, 200, 1, t=8.0, t1=8.5, kind="Projectile"),
+            toy_ability("Zzz", "E_Long", 300, 200, 1, t=8.2, t1=33.0, kind="Zone")]
+    casts = cast_by(run(util, t_end=40.0), 1)
+    flashed = [c for c in casts if "blind" in c["kinds"]]
+    assert len(flashed) == 1 and flashed[0]["t_end"] <= 9.8 and len(casts) == 2
+
+
+def test_a_nearsight_keeps_its_own_rows_end():
+    n = flash(13.0, 1, [[5, 13.5, None]], k="nearsight", name="reyna_leer")
+    n["t1"] = 15.0
+    util = [n, toy_ability("Vampire", "4_NearsightAoE", 200, 200, 1, t=13.0, t1=13.5, kind="Projectile"),
+            toy_ability("Zzz", "E_Long", 300, 200, 1, t=13.2, t1=38.0, kind="Zone")]
+    casts = cast_by(run(util, t_end=40.0), 1)
+    near = [c for c in casts if "status" in c["kinds"]]
+    assert len(near) == 1 and near[0]["t_end"] <= 16.0 and len(casts) == 2
+
+
+def test_spycam_dart_and_its_stuck_piece_are_one_cast_apart_from_the_camera():
+    util = [toy_ability("Gumshoe", "E_CameraTrackingDart", 200, 200, 1, t=5.0, t1=6.0, kind="Projectile"),
+            toy_ability("Gumshoe", "RemovableObject_GumshoeTrackingDart", 300, 200, 1, t=6.0, t1=14.0, kind="GameObject"),
+            toy_ability("Gumshoe", "E_PossessableCamera", 150, 200, 1, t=5.5, t1=None, kind="GameObject")]
+    assert len(cast_by(run(util), 1)) == 2
