@@ -222,10 +222,70 @@ def test_the_tab_reads_a_casts_lift_from_the_stored_build(db, linked):
     put_util(db, linked, 1)
     assert body_of(call(db))["rounds"]["1"]["casts"][0]["lift"] is None
     key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
-    built = {"rows": [{"replay": linked.id, "round": 1, "i": 0, "lift": 0.0312, "base_n": 55, "base_level": "x"}]}
+    built = {"rows": [{"replay": linked.id, "round": 1, "i": 0, "lift": 0.0312, "base_n": 55, "base_level": "x"}],
+             "fingerprints": {str(linked.id): {"1": _fingerprint(db, linked, 1)}}}
     replay_util._store_values(db, key, built)
     c = body_of(call(db))["rounds"]["1"]["casts"][0]
     assert c["lift"] == 3.12 and c["base_n"] == 55 and c["base_level"] == "x"
+
+
+def _fingerprint(db, replay, n):
+    return db.get(ReplayRoundUtil, (replay.id, n)).fingerprint
+
+
+def _stored_build(db, linked, row, fingerprints=True):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
+    put_util(db, linked, 1)
+    key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
+    built = {"rows": [{"replay": linked.id, "round": 1, "i": 0, "slot": 0, "t": 8.0, **row}]}
+    if fingerprints:
+        built["fingerprints"] = {str(linked.id): {"1": _fingerprint(db, linked, 1)}}
+    replay_util._store_values(db, key, built)
+    return built
+
+
+def test_the_payload_carries_both_baselines_gates_label_and_signals(db, linked):
+    row = {"lift": 0.02, "type": "blind", "L": 0.1, "lift_all": 0.02, "base_level": "s", "base_n": 9,
+           "lift_yours": 0.0345, "yours_level": "y", "yours_n": 7, "gate_all": True, "gate_yours": False,
+           "lift_device": None, "device_level": None, "device_n": 0, "gate_device": None, "label": "Dart"}
+    _stored_build(db, linked, row)
+    c = body_of(call(db))["rounds"]["1"]["casts"][0]
+    assert c["lift_all"] == 2.0 and c["lift_yours"] == 3.45 and c["lift_device"] is None
+    assert c["gate_all"] is True and c["gate_yours"] is False and c["yours_level"] == "y" and c["yours_n"] == 7
+    assert c["type"] == "blind" and c["L"] == 0.1 and c["kind"] == "blind"
+    assert "label" in c and "signals" in c and "device_n" in c
+
+
+def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeypatch):
+    _stored_build(db, linked, {"lift": 0.0}, fingerprints=False)
+    calls = []
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
+    call(db)
+    assert calls == [1]
+
+
+def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypatch):
+    _stored_build(db, linked, {"lift": 0.0})
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: pytest.fail("rebuilt"))
+    call(db)
+
+
+def test_the_payload_never_mutates_the_build_or_shares_with_it(db, linked):
+    import copy
+
+    _stored_build(db, linked, {"lift": 0.02, "lift_all": 0.02, "gate_all": True, "base_level": "s"})
+    before = copy.deepcopy(replay_util._values_row(db)[1])
+    first = body_of(call(db))
+    assert replay_util._values_row(db)[1] == before
+    first["rounds"]["1"]["casts"][0]["lift_all"] = 99
+    from app.routers import replays as r
+
+    payload = replay_util.match_payload(db, linked)
+    payload["rounds"]["1"]["casts"][0]["lift_all"] = 77
+    assert replay_util.match_payload(db, linked)["rounds"]["1"]["casts"][0]["lift_all"] == 2.0
+    assert replay_util._values_row(db)[1] == before
 
 
 def test_a_cast_after_the_round_was_decided_is_shown_unscored(db, linked):

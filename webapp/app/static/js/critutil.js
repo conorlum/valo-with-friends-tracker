@@ -47,8 +47,12 @@
 
   function groupsFor(payload, slot) {
     var casts = castsFor(payload, slot);
+    var known = {};
+    KINDS.forEach(function (k) { known[k.key] = true; });
     return KINDS.map(function (k) {
-      return { key: k.key, label: k.label, rows: casts.filter(function (c) { return c.kind === k.key; }) };
+      return { key: k.key, label: k.label, rows: casts.filter(function (c) {
+        return k.key === "other" ? !known[c.kind] || c.kind === "other" : c.kind === k.key;
+      }) };
     });
   }
 
@@ -105,17 +109,24 @@
       bits.push((HOW[h.how] || h.how) + " teammate " + nameOf(players, h.mate) + (h.died ? " (died while affected)" : ""));
     });
     if (row.heal) {
-      var share = row.heal.saved_share;
-      var kept = typeof share === "number" && share < 1 ? ", shared in keeping them alive" : ", kept them alive";
-      bits.push("healed " + nameOf(players, row.heal.target) + (row.heal.saved ? kept : row.heal.fought ? ", before a fight" : ""));
+      var hl = row.heal;
+      var text = "healed " + nameOf(players, hl.target);
+      if (hl.kept_alive === true) {
+        text += ", kept them alive";
+        if (typeof hl.hits_after === "number") text += "; survived " + plural(hl.hits_after, "more hit") + " (to within one damage run)";
+      } else if (hl.fought) text += ", before a fight";
+      bits.push(text);
+    }
+    if (row.signals && row.signals.got_spike === true) {
+      bits.push("got the spike" + (row.signals.got_spike_planted ? ", then planted" : ""));
     }
     if (row.found_nobody) bits.push("found nobody (the area was empty)");
     if (row.wasted) bits.push("wasted: nothing came of it");
     return bits;
   }
 
-  function rowText(row, players) {
-    var parts = ["R" + row.round + " " + clock(row.t), row.ability];
+  function rowText(row, players, mode) {
+    var parts = ["R" + row.round + " " + clock(row.t), typeof row.label === "string" ? row.ability + " (" + row.label + ")" : row.ability];
     var f = facts(row, players);
     if (f.length) parts.push(f.join("; "));
     if (row.scored === false) {
@@ -123,7 +134,18 @@
       return parts.join(" · ");
     }
     parts.push(signed(row.value) + " pp");
-    if (typeof row.lift === "number") parts.push(signed(row.lift) + " pp vs no util (" + row.base_level + ")");
+    var yours = mode !== "all";
+    if (yours && typeof row.lift_yours === "number" && row.gate_yours !== false) {
+      parts.push(signed(row.lift_yours) + " pp vs your rounds without it (" + row.yours_level + ")");
+    } else if (typeof row.lift_all === "number") {
+      if (row.gate_all === false) parts.push("baseline not validated for this window");
+      else {
+        parts.push(signed(row.lift_all) + " pp vs all players' rounds without it (" + row.base_level + ")" +
+                   (yours ? " · no personal comparison yet: all players shown" : ""));
+      }
+    } else if (typeof row.lift === "number") {
+      parts.push(signed(row.lift) + " pp vs no util (" + row.base_level + ")");
+    }
     return parts.join(" · ");
   }
 
@@ -159,7 +181,8 @@
 
   function tone(v) { return typeof v !== "number" || v === 0 ? "" : v > 0 ? "util-good" : "util-bad"; }
 
-  function render(panel, payload, slot, viewer) {
+  function render(panel, payload, slot, viewer, mode) {
+    mode = mode === "all" ? "all" : "yours";
     panel.textContent = "";
     var players = payload.players || {};
     var select = el("select", "replay-moments-picker");
@@ -170,8 +193,17 @@
       if (Number(s) === slot) o.selected = true;
       select.appendChild(o);
     });
-    select.addEventListener("change", function () { render(panel, payload, Number(select.value), viewer); });
+    select.addEventListener("change", function () { render(panel, payload, Number(select.value), viewer, mode); });
     panel.appendChild(select);
+    var toggle = el("div", "replay-util-mode");
+    [["yours", "Yours"], ["all", "All players"]].forEach(function (m) {
+      var b = el("button", "replay-moment-button" + (m[0] === mode ? " active" : ""), m[1]);
+      b.type = "button";
+      b.setAttribute("aria-pressed", m[0] === mode ? "true" : "false");
+      b.addEventListener("click", function () { render(panel, payload, slot, viewer, m[0]); });
+      toggle.appendChild(b);
+    });
+    panel.appendChild(toggle);
     notes(payload).forEach(function (text) { panel.appendChild(el("p", "replay-side-note", text)); });
     var s = (payload.summary || {})[String(slot)] || {};
     panel.appendChild(el("p", "replay-side-note", plural(s.casts || 0, "cast") + ", " + signed(s.value) + " pp in all"));
@@ -183,7 +215,7 @@
       var list = el("ol", "replay-feed");
       (s[pair[0]] || []).forEach(function (b) {
         var row = byKey[b.round + ":" + b.i] || Object.assign({}, b);
-        list.appendChild(jumpButton(rowText(row, players), b.round, b.t, viewer, tone(b.value)));
+        list.appendChild(jumpButton(rowText(row, players, mode), b.round, b.t, viewer, tone(b.value)));
       });
       if (!list.children.length) list.appendChild(el("li", "replay-side-note", "none"));
       panel.appendChild(list);
@@ -197,7 +229,7 @@
       if (!g.rows.length) return;
       panel.appendChild(el("h3", "replay-moments-heading", g.label + " (" + g.rows.length + ")"));
       var list = el("ol", "replay-feed");
-      g.rows.forEach(function (row) { list.appendChild(jumpButton(rowText(row, players), row.round, row.t, viewer, tone(row.value))); });
+      g.rows.forEach(function (row) { list.appendChild(jumpButton(rowText(row, players, mode), row.round, row.t, viewer, tone(row.value))); });
       panel.appendChild(list);
     });
   }

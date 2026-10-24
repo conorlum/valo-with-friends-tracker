@@ -120,3 +120,51 @@ console.log(JSON.stringify([u.rowText(rows[0], payload.players), u.signed(-1.5),
     assert out[1] == "−1.50"
     assert out[2] == "R3 1:10 · died holding Flashpoint after engaging first"
     assert out[3] == ["blind"]
+
+
+def _node(expr, rows):
+    script = f"""
+const u = require({json.dumps(str(JS))});
+const players = {{"0": {{name: "Me"}}}};
+const base = {{round: 3, t: 61.2, ability: "Flashpoint", kind: "blind", value: 2.5}};
+const rows = {json.dumps(rows)}.map(r => Object.assign({{}}, base, r));
+console.log(JSON.stringify({expr}));
+"""
+    return json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8",
+                                     check=True).stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_lift_text_by_mode():
+    both = {"lift_yours": 1.5, "yours_level": "your state", "lift_all": 0.5, "base_level": "state", "gate_all": True,
+            "gate_yours": True}
+    only_all = {"lift_all": 0.5, "base_level": "state", "gate_all": True}
+    ungated = {"lift_all": 0.5, "base_level": "state", "gate_all": False}
+    old = {"lift": 0.5, "base_level": "state"}
+    out = _node("[u.rowText(rows[0], players), u.rowText(rows[0], players, 'all'), u.rowText(rows[2], players),"
+                " u.rowText(rows[3], players, 'all'), u.rowText(rows[4], players), u.rowText(rows[5], players)]",
+                [both, both, only_all, only_all, ungated, old])
+    assert out[0].endswith("+2.50 pp · +1.50 pp vs your rounds without it (your state)")
+    assert out[1].endswith("+2.50 pp · +0.50 pp vs all players' rounds without it (state)")
+    assert out[2].endswith("+0.50 pp vs all players' rounds without it (state) · no personal comparison yet: all players shown")
+    assert out[3].endswith("vs all players' rounds without it (state)") and "no personal" not in out[3]
+    assert out[4].endswith("+2.50 pp · baseline not validated for this window")
+    assert out[5].endswith("+2.50 pp · +0.50 pp vs no util (state)")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_label_other_group_heal_and_omen_text():
+    out = _node("[u.rowText(rows[0], players), u.rowText(rows[1], players), u.rowText(rows[2], players),"
+                " u.rowText(rows[3], players), u.rowText(rows[4], players),"
+                " u.groupsFor({players, rounds: {'1': {casts: rows.map((r, i) => Object.assign({slot: 0, i: i}, r))}}}, 0)"
+                ".filter(g => g.key === 'other')[0].rows.length]",
+                [{"label": "Dart"}, {"heal": {"target": 0, "kept_alive": True, "hits_after": 2}, "kind": "heal"},
+                 {"heal": {"target": 0, "kept_alive": False, "fought": True}, "kind": "heal"},
+                 {"signals": {"got_spike": True, "got_spike_planted": True}},
+                 {"signals": {"got_spike": True}, "kind": "wall"}])
+    assert "Flashpoint (Dart)" in out[0]
+    assert "healed Me, kept them alive; survived 2 more hits (to within one damage run)" in out[1]
+    assert "healed Me, before a fight" in out[2]
+    assert "got the spike, then planted" in out[3]
+    assert out[4].count("got the spike") == 1 and "planted" not in out[4]
+    assert out[5] == 1

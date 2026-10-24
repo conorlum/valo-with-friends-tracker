@@ -330,7 +330,8 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                          "harm_died": 0, "followed": None, "ult_points": None, "enemies": 0, "combo": [],
                          "features": {"saved": bool(h.get("saved")), "amount": h.get("amount")}, **NO_LIFT,
                          "heal": {"target": h.get("target"), "saved": h.get("saved"),
-                                  "saved_share": h.get("saved_share"), "fought": h.get("fought")}})
+                                  "saved_share": h.get("saved_share"), "fought": h.get("fought"),
+                                  "kept_alive": h.get("kept_alive"), "hits_after": h.get("hits_after")}})
     return rows
 
 
@@ -798,6 +799,11 @@ def match_payload(db, replay) -> dict:
             failed.append(n)
             continue
         current[n] = row.data
+    covered = corpus.get("fingerprints", {}).get(str(replay.id), {})
+    if any(stored[n].fingerprint != covered.get(str(n)) for n in current):
+        ensure_values(db)       # the stored build does not cover this replay's rounds: once per request
+        corpus = (_values_row(db) or (None, {}))[1]
+        weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
     flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True) if ctx else []
@@ -806,6 +812,8 @@ def match_payload(db, replay) -> dict:
                        r["t"] if r["i"] is None else None))
         if b is not None:
             r.update(lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
+            r.update({k: b.get(k) for k in ("type", "L", "lift_all", "lift_yours", "yours_level", "yours_n", "gate_all",
+                                            "gate_yours", "lift_device", "device_level", "device_n", "gate_device")})
     by_round: dict[int, list] = defaultdict(list)
     for r in flat:
         by_round[r["round"]].append(r)
@@ -819,6 +827,11 @@ def match_payload(db, replay) -> dict:
                                              "t", "wasted", "found_nobody", "followed", "enemies", "harm_died",
                                              "combo", "scored", "base_n", "base_level")
                            if k in r},
+                        **{k: r.get(k) for k in ("label", "type", "L", "gate_all", "gate_yours", "gate_device",
+                                                 "yours_level", "yours_n", "device_level", "device_n")},
+                        **{k: None if r.get(k) is None else round(100 * r[k], 2)
+                           for k in ("lift_all", "lift_yours", "lift_device")},
+                        "signals": c.get("signals"),
                         "value": round(100 * r["value"], 2) if r["scored"] else None,
                         "ledger": round(100 * r["ledger"], 2), "jobs": round(100 * r["jobs"], 2),
                         "lift": None if r.get("lift") is None else round(100 * r["lift"], 2),
