@@ -206,6 +206,14 @@ def test_the_same_lineup_gets_a_different_call_per_mode():
     assert "personal" not in y["lineups"][0]
 
 
+def test_each_mode_grades_its_calls_by_its_own_spread():
+    rows = [mrow(i, lift_all=0.02, lift_yours=0.02) for i in range(6)]
+    corp = mode_corpus(rows)
+    corp["spread_by_mode"] = {"all": 0.01, "yours": 0.5}
+    assert replay_util.page_for(corp, {1}, mode="all")["lineups"][0]["call"] == "this wins rounds, keep throwing it"
+    assert replay_util.page_for(corp, {1}, mode="yours")["lineups"][0]["call"] == "no clear value"
+
+
 def test_yours_without_lifts_and_a_failing_gate_have_their_own_calls():
     rows = [mrow(i, lift_yours=None, gate_yours=None) for i in range(6)]
     assert replay_util.page_for(mode_corpus(rows), {1}, mode="yours")["lineups"][0]["call"] == "no personal comparison yet"
