@@ -629,7 +629,7 @@ def test_heal_death_is_the_first_kill_of_the_target_at_or_after_the_heal_end():
 def test_heal_hits_after_counts_enemy_gun_runs_from_the_crossing():
     ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (7.0, 0, 50), (7.5, 0, 30),
                                                  (9.0, 0, 5))}}
-    util = [heal(6.0, 60), damage(6.9, 5, 0), damage(7.0, 5, 0), damage(7.5, 5, 0, n=2),
+    util = [heal(6.0, 60), damage(6.9, 5, 0, t1=7.2), damage(7.0, 5, 0), damage(7.5, 5, 0, n=2),
             damage(7.6, 1, 0), damage(7.7, 5, 0, src="ability"), damage(7.8, 0, 5), damage(20.0, 5, 0)]
     (h,) = run(util, kills=[kill(10.0, 5, 0)], player_state=ps)["heals"]
     assert h["kept_alive"] is True and h["death"] == 10.0
