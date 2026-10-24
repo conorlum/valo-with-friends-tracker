@@ -54,17 +54,21 @@ def _parents_for(code_name: str) -> frozenset:
                      if any(re.search(p, code_name) for p in e.get("pieces") or ()))
 
 
+def _code_name(row) -> str | None:
+    """`<code>_<name>`, the key the table matches; a flash or nearsight row carries its name as `ability`."""
+    name = row.get("name") or row.get("ability")
+    return f"{row['code']}_{name}" if row.get("code") and name else None
+
+
 def _parents_of(row) -> frozenset:
-    if not row.get("code") or not row.get("name"):
-        return frozenset()
-    return _parents_for(f"{row['code']}_{row['name']}")
+    key = _code_name(row)
+    return _parents_for(key) if key else frozenset()
 
 
 def _entry_of(row) -> dict | None:
     """The ability table's entry for a row (matched on `<code>_<name>`), None when the row has no code or fits none."""
-    if not row.get("code") or not row.get("name"):
-        return None
-    return _entry_for(f"{row['code']}_{row['name']}")
+    key = _code_name(row)
+    return _entry_for(key) if key else None
 
 
 def _kinds_of(names: list[str], rows=()) -> set[str]:
@@ -120,7 +124,8 @@ class _Cast:
     def add(self, row, rnd, first=False):
         self.rows.append(row)
         end, unknown = _end(row, rnd)
-        if not first:               # the row that ends last decides whether the cast's end is a guess
+        if not first and self.flash is None:    # a flash ends with its own row; its projectile never stretches it
+            # the row that ends last decides whether the cast's end is a guess
             if end > self.t_end:
                 self.t_end, self.end_unknown = end, unknown
             elif end == self.t_end:
@@ -231,8 +236,10 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         entry, parents = _entry_of(r), _parents_of(r)
         twin = next((c for c in reversed(casts) if c.flash is not None and c.by == by
                      and abs(c.t - tt) <= FLASH_ROW_MATCH_S), None)
-        if twin is not None and ((twin.entry is not None and twin.entry["match"] in parents)
-                                 or (entry is None and (not kinds or kinds <= {"blind", "status"}))):
+        if twin is not None and twin.entry is not None and twin.entry["match"] in parents:
+            twin.add(r, rnd)                # the table's own piece of this flash (its projectile lingers past the pop)
+            continue
+        if twin is not None and entry is None and (not kinds or kinds <= {"blind", "status"}):
             pop = twin.flash.get("pop") or {}
             if pop.get("t") is not None:
                 bound = float(pop["t"]) + FLASH_TAIL_S
@@ -241,7 +248,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             else:
                 bound = None
             if bound is None or _end(r, rnd)[0] <= bound + _EPS:
-                twin.add(r, rnd)            # a flash's own projectile and source rows
+                twin.add(r, rnd)            # a flash's own projectile and source rows the table doesn't name
                 continue
         host = _anchored(casts, r) if r.get("kind") != "Projectile" else None
         if host is None and parents:        # a piece of a table ability: its owner's latest cast of the parent

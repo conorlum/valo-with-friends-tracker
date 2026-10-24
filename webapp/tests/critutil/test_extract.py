@@ -448,6 +448,16 @@ def test_a_nearsight_keeps_its_own_rows_end():
     assert len(near) == 1 and near[0]["t_end"] <= 16.0 and len(casts) == 2
 
 
+def test_a_real_shaped_flash_row_finds_its_entry_and_keeps_its_lingering_projectile():
+    # real flash rows carry no code and their name as `ability`; the Curveball's projectile lives on ~1.5 s past the pop
+    f = flash(88.5, 1, [[5, 89.1, 2.0]])
+    del f["name"]
+    f.update(ability="phoenix_curveball_right", pop={"t": 89.1})
+    util = [f, toy_ability("Phoenix", "E_FlareCurve_Synced_Right", 200, 200, 1, t=88.5, t1=90.6, kind="Projectile")]
+    (c,) = cast_by(run(util, t_end=100.0), 1)
+    assert c["ability_id"] == "Phoenix/Curveball" and c["type"] == "flash" and c["t_end"] == 90.1
+
+
 def test_spycam_dart_and_its_stuck_piece_are_one_cast_apart_from_the_camera():
     util = [toy_ability("Gumshoe", "E_CameraTrackingDart", 200, 200, 1, t=5.0, t1=6.0, kind="Projectile"),
             toy_ability("Gumshoe", "RemovableObject_GumshoeTrackingDart", 300, 200, 1, t=6.0, t1=14.0, kind="GameObject"),
