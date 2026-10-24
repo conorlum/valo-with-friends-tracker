@@ -55,8 +55,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 2.5,
-   "replay_s": 2.0
+   "replay_s": 2.0,
+   "duration_s": 2.5
   },
   {
    "match": "^(Rift_E_SmokeZone(_Fake)?)$",
@@ -82,8 +82,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 14.25,
-   "replay_s": 15.5
+   "replay_s": 15.5,
+   "duration_s": 14.25
   },
   {
    "match": "^(Rift_X_GlobalWall)$",
@@ -111,8 +111,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 21.0,
-   "replay_s": 24.0
+   "replay_s": 24.0,
+   "duration_s": 21.0
   },
   {
    "match": "^(Rift_X_Markers)$",
@@ -131,9 +131,9 @@
     "rows": []
    },
    "pieces": [],
+   "replay_s": 5.7,
    "duration_s": null,
-   "provisional": true,
-   "replay_s": 5.7
+   "provisional": true
   },
   {
    "match": "^(Breach_4_FusionBlast)$",
@@ -152,9 +152,9 @@
     "rows": []
    },
    "pieces": [],
+   "replay_s": 4.4,
    "duration_s": null,
-   "provisional": true,
-   "replay_s": 4.4
+   "provisional": true
   },
   {
    "match": "^(Breach_breach_flashpoint)$",
@@ -182,8 +182,8 @@
    "pieces": [
     "^Breach_Q_ThroughWalls_Flash$"
    ],
-   "duration_s": 2.25,
-   "replay_s": 1.2
+   "replay_s": 1.2,
+   "duration_s": 2.25
   },
   {
    "match": "^(Breach_E_SweetSpotFissure)$",
@@ -209,8 +209,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 2.5,
-   "replay_s": 6.1
+   "replay_s": 6.1,
+   "duration_s": 2.5
   },
   {
    "match": "^(Breach_X_Shockwave)$",
@@ -237,8 +237,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 4.0,
-   "replay_s": 6.9
+   "replay_s": 6.9,
+   "duration_s": 4.0
   },
   {
    "match": "^(Sarge_E_SpeedStim)$",
@@ -412,9 +412,9 @@
    "agent": "Chamber",
    "ability": "Rendezvous",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -685,9 +685,9 @@
    "pieces": [
     "^Gumshoe_RemovableObject_GumshoeTrackingDart$"
    ],
+   "replay_s": 2.3,
    "duration_s": null,
-   "provisional": true,
-   "replay_s": 2.3
+   "provisional": true
   },
   {
    "match": "^(Gumshoe_X_InterrogateHat)$",
@@ -1034,8 +1034,8 @@
     "^Aggrobot_(Zamboni_Rocket|E_OrbSpawner)$",
     "^Aggrobot_Reclaim_Orb_Turret$"
    ],
-   "duration_s": 2.0,
-   "replay_s": 13.2
+   "replay_s": 13.2,
+   "duration_s": 2.0
   },
   {
    "match": "^(Aggrobot_RollyPolly)$",
@@ -1113,8 +1113,8 @@
    "pieces": [
     "^Mage_4_SplashGrenade$"
    ],
-   "duration_s": 2.0,
-   "replay_s": 2.0
+   "replay_s": 2.0,
+   "duration_s": 2.0
   },
   {
    "match": "^(Mage_Q_Wall)$",
@@ -1380,9 +1380,9 @@
    "agent": "Jett",
    "ability": "Updraft",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1406,9 +1406,9 @@
    "agent": "Jett",
    "ability": "Tailwind",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1475,8 +1475,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 4.0,
-   "replay_s": 4.9
+   "replay_s": 4.9,
+   "duration_s": 4.0
   },
   {
    "match": "^(Grenadier_kayo_flash_drive_(overhand|underhand))$",
@@ -1504,8 +1504,8 @@
    "pieces": [
     "^Grenadier_C_Flash(_Underhand)?$"
    ],
-   "duration_s": 2.25,
-   "replay_s": 2.6
+   "replay_s": 2.6,
+   "duration_s": 2.25
   },
   {
    "match": "^(Grenadier_E_SuppressionBlade)$",
@@ -1877,9 +1877,9 @@
    "agent": "Neon",
    "ability": "High Gear",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1927,9 +1927,9 @@
    "agent": "Omen",
    "ability": "Shrouded Step",
    "slot": "C",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2013,7 +2013,7 @@
    "type": "ult",
    "kinds": [
     "ult",
-    "mobility"
+    "teleport"
    ],
    "rule": "ult:omen",
    "grace_s": 0,
@@ -2087,8 +2087,8 @@
    "pieces": [
     "^Phoenix_E_FlareCurve_Synced(_Right)?$"
    ],
-   "duration_s": 1.5,
-   "replay_s": 1.6
+   "replay_s": 1.6,
+   "duration_s": 1.5
   },
   {
    "match": "^(Phoenix_4_Molotov_Production)$",
@@ -2182,9 +2182,9 @@
    "agent": "Raze",
    "ability": "Blast Pack",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2226,9 +2226,9 @@
     "^Clay_4_Projectile_SecondarySpawner$",
     "^Clay_4_Projectile_Secondary$"
    ],
+   "replay_s": 3.7,
    "duration_s": null,
-   "provisional": true,
-   "replay_s": 3.7
+   "provisional": true
   },
   {
    "match": "^(Clay_X_Rocket)$",
@@ -2255,8 +2255,8 @@
     ]
    },
    "pieces": [],
-   "duration_s": 10.0,
-   "replay_s": 0.6
+   "replay_s": 0.6,
+   "duration_s": 10.0
   },
   {
    "match": "^(Vampire_reyna_leer)$",
@@ -2285,8 +2285,8 @@
     "^Vampire_4_NearsightAoE$",
     "^Vampire_4_NearsightAOE_Source$"
    ],
-   "duration_s": 1.6,
-   "replay_s": 1.6
+   "replay_s": 1.6,
+   "duration_s": 1.6
   },
   {
    "match": "^(Vampire_Q_Heal_HealPool_High)$",
@@ -2326,9 +2326,9 @@
    "agent": "Reyna",
    "ability": "Dismiss",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2565,8 +2565,8 @@
     "^Guide_E_HawkFlash$",
     "^Guide_E_HawkFlash_FlashSource$"
    ],
-   "duration_s": 2.25,
-   "replay_s": 2.5
+   "replay_s": 2.5,
+   "duration_s": 2.25
   },
   {
    "match": "^(Guide_X_Pack)$",
@@ -2856,9 +2856,9 @@
    "agent": "Veto",
    "ability": "Crosscut",
    "slot": "?",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2968,7 +2968,7 @@
     "smoke"
    ],
    "rule": "on_spans",
-   "grace_s": 1,
+   "grace_s": 5,
    "wiki": {
     "page": "Poison Cloud",
     "field": "none",
@@ -2992,7 +2992,7 @@
     "wall"
    ],
    "rule": "on_spans",
-   "grace_s": 1,
+   "grace_s": 5,
    "wiki": {
     "page": "Toxic Screen",
     "field": "none",
@@ -3177,9 +3177,9 @@
    "agent": "Waylay",
    "ability": "Lightspeed",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -3203,9 +3203,9 @@
    "agent": "Waylay",
    "ability": "Refract",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -3324,17 +3324,17 @@
    "pieces": [
     "^Stealth_Q_BounceFlash$"
    ],
-   "duration_s": 1.5,
-   "replay_s": 1.9
+   "replay_s": 1.9,
+   "duration_s": 1.5
   },
   {
    "match": "^(Stealth_E_Teleporter(Moving|Stationary)_FakeTP)$",
    "agent": "Yoru",
    "ability": "Gatecrash",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,

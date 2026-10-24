@@ -1,5 +1,6 @@
 """Each cast's up-time from its table rule (app/critutil/windows.py), on plain dicts."""
 
+from app.critutil import abilities
 from app.critutil.windows import window
 
 TD = 100.0
@@ -115,10 +116,18 @@ def test_placeable_armed_in_buy_phase_starts_at_zero():
     assert segs(cast(-20.0, armed=-15.0, seen_end=30.0), ent("placeable")) == [[0.0, 30.0]]
 
 
-def test_on_spans_are_the_stored_spans():
+def test_on_spans_are_the_stored_spans_plus_the_grace():
     c = cast(10.0, on=[[10.0, 14.0], [18.0, 22.0]])
-    assert w(c, ent("on_spans", 10)) == {"segments": [[10.0, 14.0], [18.0, 22.0]], "rule": "on_spans",
+    assert w(c, ent("on_spans", 10)) == {"segments": [[10.0, 15.0], [18.0, 23.0]], "rule": "on_spans",
                                          "fallback": False}
+    assert segs(c, ent("on_spans", 10, g=0)) == [[10.0, 14.0], [18.0, 22.0]]
+    assert segs(c, ent("on_spans", 10, g=5)) == [[10.0, 27.0]]       # Viper: 5 s after each span, overlaps merge
+
+
+def test_viper_smokes_have_a_five_second_tail():
+    by = {e["ability"]: e for e in abilities.load() if e["agent"] == "Viper"}
+    assert by["Poison Cloud"]["rule"] == by["Toxic Screen"]["rule"] == "on_spans"
+    assert by["Poison Cloud"]["grace_s"] == by["Toxic Screen"]["grace_s"] == 5
 
 
 def test_open_off_and_on_spans_run_to_the_end():

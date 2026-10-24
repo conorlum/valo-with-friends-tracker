@@ -187,8 +187,8 @@ def is_wasted(cast: dict, ledger_value: float, f: dict) -> bool:
     as holding it while armed (the watch), so a device is wasted only when it was gone at once and showed no
     enemy."""
     kinds = set(cast.get("kinds") or ())
-    if not kinds & JUDGED_KINDS or kinds & {"mobility", "teleport"}:
-        return False            # movement, teleports, decoys and the like: never called wasted
+    if not kinds & JUDGED_KINDS or kinds & {"dash", "teleport"}:
+        return False            # dashes, teleports, decoys and the like: never called wasted
     if kinds <= {"info", "ult"}:
         return False            # recon that found nobody still told the team the area was empty (found_nobody)
     if cast.get("enemies") or cast.get("kills") or ledger_value:
@@ -319,7 +319,8 @@ BASE_WINDOW_S = 10.0
 BASE_STEP_S = 2.0
 BASE_MIN_N = 30             # comparison moments a level needs before it is used
 BASE_LEVELS = ("state, phase and time", "state and phase", "man advantage")
-KIND_ORDER = ("ult", "blind", "smoke", "wall", "damaging", "status", "info", "device", "heal", "other")
+KIND_ORDER = ("ult", "blind", "smoke", "wall", "damaging", "status", "info", "device", "heal", "teleport", "dash",
+              "other")
 
 
 def main_kind(kinds) -> str:
@@ -375,7 +376,8 @@ def levels(round_data: dict, side: str, t: float) -> list[str]:
 # (cut at t_decided). A cast is compared at its own length L, and only its on-time counts: the sum of the swings
 # over its window segments (app/critutil/windows.py), the first 45 s of them.
 
-TYPES = ("flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "other")
+TYPES = ("flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
+         "other")
 MAX_L = 45
 _SIDES = ("attack", "defense")
 

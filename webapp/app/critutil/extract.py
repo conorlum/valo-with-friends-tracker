@@ -282,7 +282,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         if any(_key_of(n) == "X" for n in c.names):
             c.kinds.add("ult")
         if any(f"{x.get('code')}_{x.get('name')}" in MOBILITY_KEYS for x in c.rows):
-            c.kinds.add("mobility")
+            c.kinds.add("dash")
         if not c.kinds:
             c.kinds.add("other")
     casts.sort(key=lambda c: (c.t, c.i))

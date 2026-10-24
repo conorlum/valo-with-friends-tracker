@@ -84,7 +84,7 @@ def kind_label(kinds) -> str:
 
 
 LABELS = (("blind", "Blinds"), ("smoke", "Smokes"), ("damaging", "Damaging"), ("status", "Status"),
-          ("info", "Info"), ("teleport", "Teleports"), ("heal", "Heals"))
+          ("info", "Info"), ("teleport", "Teleports"), ("dash", "Dashes"), ("heal", "Heals"))
 
 
 def label_of(kinds) -> str | None:

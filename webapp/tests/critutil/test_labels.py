@@ -22,11 +22,21 @@ def test_label_of():
     f = replay_util.label_of
     for tag, label in replay_util.LABELS:
         assert f([tag]) == label
-    assert [l for _, l in replay_util.LABELS] == ["Blinds", "Smokes", "Damaging", "Status", "Info", "Teleports", "Heals"]
+    assert [l for _, l in replay_util.LABELS] == ["Blinds", "Smokes", "Damaging", "Status", "Info", "Teleports", "Dashes",
+                                                         "Heals"]
     assert f(["damaging", "status"]) == "Damaging"
     assert f(["status", "blind"]) == "Blinds"
-    for kinds in (["wall"], ["device"], ["mobility"], ["ult"], [], None):
+    for kinds in (["wall"], ["device"], ["ult"], ["other"], [], None):
         assert f(kinds) is None
+    assert f(["dash"]) == "Dashes" and f(["ult", "teleport"]) == "Teleports"
+
+
+def test_dashes_and_teleports_are_their_own_types_and_groups():
+    from app.services import util_values
+    for typ in ("dash", "teleport"):
+        assert util_values.type_of({"type": typ}) == typ
+        assert util_values.main_kind([typ]) == typ
+    assert util_values.main_kind(["ult", "teleport"]) == "ult"
 
 
 def test_ability_name_from_the_table_id():

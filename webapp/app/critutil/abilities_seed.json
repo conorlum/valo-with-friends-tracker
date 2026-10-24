@@ -283,9 +283,9 @@
    "agent": "Chamber",
    "ability": "Rendezvous",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -902,9 +902,9 @@
    "agent": "Jett",
    "ability": "Updraft",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -919,9 +919,9 @@
    "agent": "Jett",
    "ability": "Tailwind",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1226,9 +1226,9 @@
    "agent": "Neon",
    "ability": "High Gear",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1260,9 +1260,9 @@
    "agent": "Omen",
    "ability": "Shrouded Step",
    "slot": "C",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1319,7 +1319,7 @@
    "type": "ult",
    "kinds": [
     "ult",
-    "mobility"
+    "teleport"
    ],
    "rule": "ult:omen",
    "grace_s": 0,
@@ -1430,9 +1430,9 @@
    "agent": "Raze",
    "ability": "Blast Pack",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1531,9 +1531,9 @@
    "agent": "Reyna",
    "ability": "Dismiss",
    "slot": "E",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1892,9 +1892,9 @@
    "agent": "Veto",
    "ability": "Crosscut",
    "slot": "?",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -1970,7 +1970,7 @@
     "smoke"
    ],
    "rule": "on_spans",
-   "grace_s": 1,
+   "grace_s": 5,
    "wiki": {
     "page": "Poison Cloud",
     "field": "none"
@@ -1991,7 +1991,7 @@
     "wall"
    ],
    "rule": "on_spans",
-   "grace_s": 1,
+   "grace_s": 5,
    "wiki": {
     "page": "Toxic Screen",
     "field": "none"
@@ -2119,9 +2119,9 @@
    "agent": "Waylay",
    "ability": "Lightspeed",
    "slot": "Q",
-   "type": "other",
+   "type": "dash",
    "kinds": [
-    "mobility"
+    "dash"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2136,9 +2136,9 @@
    "agent": "Waylay",
    "ability": "Refract",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -2213,9 +2213,9 @@
    "agent": "Yoru",
    "ability": "Gatecrash",
    "slot": "E",
-   "type": "other",
+   "type": "teleport",
    "kinds": [
-    "mobility"
+    "teleport"
    ],
    "rule": "duration",
    "grace_s": 1,

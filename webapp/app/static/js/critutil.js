@@ -11,7 +11,7 @@
     { key: "ult", label: "Ults" }, { key: "blind", label: "Flashes" }, { key: "smoke", label: "Smokes and walls" },
     { key: "damaging", label: "Damage (mollies, nades)" }, { key: "status", label: "Slows, stuns, nearsight" },
     { key: "info", label: "Recon" }, { key: "device", label: "Traps and devices" }, { key: "heal", label: "Heals" },
-    { key: "other", label: "Other" }
+    { key: "teleport", label: "Teleports" }, { key: "dash", label: "Dashes" }, { key: "other", label: "Other" }
   ];
   var JUMP_LEAD_S = 2;
   var HOW = { blind: "blinded", nearsight: "nearsighted", reveal: "revealed", damage: "damaged" };

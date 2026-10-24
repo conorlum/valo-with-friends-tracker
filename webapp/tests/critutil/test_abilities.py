@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "b23046a71304588119a3cba28fc675e3f0739a8390a209dba8a59aefbc544d86"
+PINNED_EXTRACTOR_HASH = "749819390a0afca796c50cfc419b1ed50ad56f661d9c6a074e8d205fc8240c5a"
 
 
 def _script():
@@ -203,7 +203,8 @@ def test_from_dir_merges_and_reports(tmp_path, capsys):
     assert "Beta" in text and "Gamma" in text
 
 
-TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "other"}
+TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
+         "other"}
 RULES = {"duration", "status", "flash", "placeable", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
          "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
 KNOWN_CODES = [
@@ -250,6 +251,21 @@ def test_astra_stars_are_not_her_ult():
     star = abilities.lookup("Rift_X_Markers")
     assert star["ability"] == "Astral Form star" and star["type"] == "other" and "ult" not in star["kinds"]
     assert abilities.lookup("Rift_X_GlobalWall")["ability"] == "Cosmic Divide"
+
+
+def test_movement_is_split_into_teleports_and_dashes():
+    by = {(e["agent"], e["ability"]): e for e in abilities.load()}
+    teleports = {("Chamber", "Rendezvous"), ("Omen", "Shrouded Step"), ("Yoru", "Gatecrash"), ("Veto", "Crosscut"),
+                 ("Waylay", "Refract")}
+    dashes = {("Jett", "Updraft"), ("Jett", "Tailwind"), ("Neon", "High Gear"), ("Raze", "Blast Pack"),
+              ("Reyna", "Dismiss"), ("Waylay", "Lightspeed")}
+    for key in teleports:
+        assert by[key]["type"] == "teleport" and by[key]["kinds"] == ["teleport"], key
+    for key in dashes:
+        assert by[key]["type"] == "dash" and by[key]["kinds"] == ["dash"], key
+    assert {k for k, e in by.items() if e["type"] in ("teleport", "dash")} == teleports | dashes
+    assert not any("mobility" in e["kinds"] for e in abilities.load())
+    assert "teleport" in by[("Omen", "From the Shadows")]["kinds"]
 
 
 def test_extractor_hash_is_pinned():

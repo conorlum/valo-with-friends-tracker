@@ -14,7 +14,7 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
   status      the latest effect end: a known one ends at t1 + 2 s, an unknown one at t0 + D + g, cut at seen_end + g
               when no end is known (a Leer shot down). No usable effect: duration (cut the same way).
   placeable   [armed (at least 0), seen_end or t_decided] minus every `off` span.
-  on_spans    the stored `on` spans. None stored: with on_known, off its whole life; otherwise duration, fallback.
+  on_spans    each stored `on` span, plus g after it (Viper: 5 s). None stored: with on_known, off its whole life; otherwise duration, fallback.
   life        [start, seen_end]; no seen_end: [start, start + D + g], fallback (Viper's Pit).
   heal        a heal row: [t, death or t_decided]; a heal-type cast: [t, t_decided].
   ult:raze    [ult_drop, t + g]; no drop: fallback.
@@ -136,7 +136,7 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
     elif rule == "on_spans":
         on = s.get("on") or []
         if on:
-            segs = [[a, t_decided if b is None else b] for a, b in on]     # an open span is on to the end
+            segs = [[a, t_decided if b is None else b + g] for a, b in on]     # an open span is on to the end
         elif on_known:
             segs = []
         else:
