@@ -195,9 +195,9 @@
     });
     select.addEventListener("change", function () { render(panel, payload, Number(select.value), viewer, mode); });
     panel.appendChild(select);
-    var toggle = el("div", "replay-util-mode");
+    var toggle = el("div", "scope-toggle replay-util-mode");
     [["yours", "Yours"], ["all", "All players"]].forEach(function (m) {
-      var b = el("button", "replay-moment-button" + (m[0] === mode ? " active" : ""), m[1]);
+      var b = el("button", "scope-toggle-btn" + (m[0] === mode ? " active" : ""), m[1]);
       b.type = "button";
       b.setAttribute("aria-pressed", m[0] === mode ? "true" : "false");
       b.addEventListener("click", function () { render(panel, payload, slot, viewer, m[0]); });

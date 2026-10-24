@@ -258,6 +258,17 @@ def test_the_payload_carries_both_baselines_gates_label_and_signals(db, linked):
     assert "label" in c and "signals" in c and "device_n" in c
 
 
+def test_the_payload_passes_omens_spike_signals_and_the_heals_kept_alive(db, linked):
+    d = data([{**cast(), "signals": {"got_spike": True, "got_spike_planted": True}}])
+    d["heals"] = [{"t": 20.0, "t1": 21.0, "by": 1, "target": 0, "pool": "hp", "amount": 30.0, "fought": True,
+                   "saved": True, "saved_share": 1.0, "kept_alive": True, "hits_after": 2}]
+    put_util(db, linked, 1, d)
+    casts = body_of(call(db))["rounds"]["1"]["casts"]
+    assert [c["signals"] for c in casts if c.get("i") == 0] == [{"got_spike": True, "got_spike_planted": True}]
+    heal = [c["heal"] for c in casts if c.get("heal")]
+    assert heal and heal[0]["kept_alive"] is True and heal[0]["hits_after"] == 2
+
+
 def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeypatch):
     _stored_build(db, linked, {"lift": 0.0}, fingerprints=False)
     calls = []
@@ -280,8 +291,6 @@ def test_the_payload_never_mutates_the_build_or_shares_with_it(db, linked):
     first = body_of(call(db))
     assert replay_util._values_row(db)[1] == before
     first["rounds"]["1"]["casts"][0]["lift_all"] = 99
-    from app.routers import replays as r
-
     payload = replay_util.match_payload(db, linked)
     payload["rounds"]["1"]["casts"][0]["lift_all"] = 77
     assert replay_util.match_payload(db, linked)["rounds"]["1"]["casts"][0]["lift_all"] == 2.0
