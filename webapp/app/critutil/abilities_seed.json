@@ -53,7 +53,7 @@
    "pieces": []
   },
   {
-   "match": "^(Rift_X_Markers|Rift_X_GlobalWall)$",
+   "match": "^(Rift_X_GlobalWall)$",
    "agent": "Astra",
    "ability": "Cosmic Divide",
    "slot": "X",
@@ -67,6 +67,23 @@
    "grace_s": 0,
    "wiki": {
     "page": "Cosmic Divide",
+    "field": "Duration"
+   },
+   "pieces": []
+  },
+  {
+   "match": "^(Rift_X_Markers)$",
+   "agent": "Astra",
+   "ability": "Astral Form star",
+   "slot": "X",
+   "type": "other",
+   "kinds": [
+    "other"
+   ],
+   "rule": "duration",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Astral Form",
     "field": "Duration"
    },
    "pieces": []

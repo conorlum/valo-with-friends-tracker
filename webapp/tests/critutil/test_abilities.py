@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "aa3725d734e82b21b9c41fe247a69da332bc769ab53112835e910c59cb4a1b3c"
+PINNED_EXTRACTOR_HASH = "b23046a71304588119a3cba28fc675e3f0739a8390a209dba8a59aefbc544d86"
 
 
 def _script():
@@ -243,6 +243,13 @@ def test_no_two_entries_match_the_same_known_code_name():
     assert abilities.lookup("Clay_X_Rocket")["ability"] == "Showstopper"
     assert abilities.lookup("Phoenix_4_Molotov_Production")["ability"] == "Hot Hands"
     assert abilities.lookup("Gumshoe_E_CameraTrackingDart")["ability"] == "Spycam dart"
+
+
+def test_astra_stars_are_not_her_ult():
+    # stars are placed 2-6 a round in Astral Form; only the Cosmic Divide wall is the ult
+    star = abilities.lookup("Rift_X_Markers")
+    assert star["ability"] == "Astral Form star" and star["type"] == "other" and "ult" not in star["kinds"]
+    assert abilities.lookup("Rift_X_GlobalWall")["ability"] == "Cosmic Divide"
 
 
 def test_extractor_hash_is_pinned():
