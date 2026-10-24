@@ -780,18 +780,26 @@ def test_a_dizzy_shot_down_is_gone_when_an_orb_dropped_under_a_shot_ray(tmp_path
     assert "gone" not in _dizzy(tmp_path, spawner=False)
 
 
-def test_a_poison_cloud_lists_the_zones_its_emitter_made_while_alive(tmp_path):
+def test_a_poison_cloud_takes_the_zones_of_its_own_owner_while_alive(tmp_path):
+    # The export gives neither emitter nor zone an Instigator: owners come by nearest / the landing.
     em = "Default__Projectile_Pandemic_4_SmokeGrenade_C"
     zone = "Default__Zone_Pandemic_4_SmokeZone_C"
-    rows = [spawned(20_000, 95, em, 0, 0), instigated(20_000, 95, 109), closed(30_000, 95),
-            spawned(22_000, 96, zone, 0, 0), instigated(22_000, 96, 109), closed(25_000, 96),
-            spawned(26_000, 97, zone, 0, 0), instigated(26_000, 97, 109),
-            spawned(27_000, 98, zone, 0, 0), instigated(27_000, 98, 108), closed(28_000, 98),   # another instigator
-            spawned(31_000, 99, zone, 0, 0), instigated(31_000, 99, 109),                       # after it closed
-            spawned(20_000, 100, em, 0, 0), instigated(20_000, 100, 109), closed(21_000, 100)]  # no zone in its life
-    out = {a["id"]: a for a in run14(tmp_path, rows).rounds[1]["abilities"] if a["name"] == "4_SmokeGrenade"}
-    assert out[95]["on"] == [[12.0, 15.0], [16.0, None]]
-    assert "on" not in out[100]
+    rows = [spawned(20_000, 95, em, 0, 0), closed(22_000, 95),                       # player 8's, lands at 22 s
+            spawned(22_000, 96, zone, 0, 0), closed(25_000, 96),
+            spawned(20_000, 100, em, 5000, 5000), closed(23_000, 100),               # player 9's, lands at 23 s
+            spawned(23_000, 101, zone, 5000, 5000),
+            spawned(40_000, 102, em, 0, 0), closed(41_000, 102)]                     # player 8's, no zone in its life
+    table = table7()
+    table.agents[8] = table.agents[9] = "Viper"
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    extras = build_extras(path, table, WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {8: (0.0, 0.0), 9: (5000.0, 5000.0)},
+                          teams=TEAMS7)
+    out = {a["id"]: a for a in extras.rounds[1]["abilities"] if a["name"] == "4_SmokeGrenade"}
+    assert (out[95]["slot"], out[100]["slot"]) == (8, 9)
+    assert out[95]["on"] == [[12.0, 15.0]]
+    assert out[100]["on"] == [[13.0, None]]
+    assert "on" not in out[102]
 
 
 # ---------------------------------------------------------------- stored util (Stage 2, R2)

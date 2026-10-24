@@ -1760,6 +1760,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if a.name == "E_OrbSpawner":
             spawners_at[a.t_ms].append(a)
     poison_zones = sorted((a for a in actors.values() if a.name == "4_SmokeZone"), key=lambda a: (a.t_ms, a.guid))
+    poison_emitters: list[tuple[dict, _Actor, int | None, int, int]] = []
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -1826,12 +1827,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             entry["gone"] = max(0.0, _seconds(actor.closed_ms, start))
             counts["dizzy_gone"] += 1
         if actor.name == "4_SmokeGrenade" and actor.kind == "Projectile":
-            until = actor.closed_ms if actor.closed_ms is not None else float("inf")
-            mine = [z for z in poison_zones if z.instigator == actor.instigator and actor.t_ms <= z.t_ms <= until]
-            if mine:
-                entry["on"] = [[max(0.0, _seconds(z.t_ms, start)),
-                                None if z.closed_ms is None else _seconds(min(z.closed_ms, end), start)] for z in mine]
-                counts["poison_on_spans"] += len(mine)
+            poison_emitters.append((entry, actor, slot, start, end))   # linked to its zones once all owners are known
         if actor.kind == "Bomb":
             attempts = defuse_attempts(actor, raw.effects, raw.oneshots, players)
             if attempts:
@@ -1978,6 +1974,18 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["recall"]["z"] = _dm(recall.z)
             counts["waylay_recalls"] += 1
         counts["waylay_anchors"] += 1
+
+    # Poison Cloud: an emitter's zones are those of the same owner (the export gives neither an Instigator),
+    # spawned while it was alive. An emitter without an owner gets none.
+    for entry, emitter, slot, start, end in poison_emitters:
+        if slot is None:
+            continue
+        until = emitter.closed_ms if emitter.closed_ms is not None else float("inf")
+        mine = [z for z in poison_zones if owner_of.get(z.guid) == slot and emitter.t_ms <= z.t_ms <= until]
+        if mine:
+            entry["on"] = [[max(0.0, _seconds(z.t_ms, start)),
+                            None if z.closed_ms is None else _seconds(min(z.closed_ms, end), start)] for z in mine]
+            counts["poison_on_spans"] += len(mine)
 
     for entry, interceptor, slot, start, end in interceptors:
         active = interceptor_active(interceptor, raw)
