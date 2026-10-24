@@ -193,7 +193,6 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
     pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
     (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
     spike is not a cast."""
-
     util = blob.get("util") or ()
     casts: list[_Cast] = []
     for r in sorted((r for r in util if r.get("k") in ("flash", "nearsight")), key=lambda r: r["t"]):

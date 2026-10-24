@@ -348,6 +348,14 @@ def test_no_40_second_cap():
     assert not hasattr(extract, "LIFE_CAP_S")
     _, c = _one("Zzz", "E_Mystery", t=2.0, t1=None)
     assert c["t_end"] > 30.0 - 1e-9 or c["end_unknown"]
+    out = run([toy_ability("Zzz", "E_Mystery", 250, 150, 1, t=2.0, t1=None)], t_end=100.0)
+    (c,) = cast_by(out, 1)
+    assert out["t_decided"] > 50.0 and c["t_end"] == out["t_decided"] and c["end_unknown"] is True
+
+
+def test_an_ult_the_table_does_not_know_is_still_type_ult():
+    _, c = _one("Zzz", "X_Mystery", t=5.0, t1=9.0)
+    assert "ult" in c["kinds"] and c["type"] == "ult" and c["ability_id"] is None
 
 
 def test_kind_label_is_unchanged_for_one_cast_per_old_kind():
