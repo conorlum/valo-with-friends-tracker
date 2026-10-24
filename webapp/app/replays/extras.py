@@ -48,7 +48,7 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   enemy's ability concussed, hindered, suppressed, made fragile, tethered, decayed or slowed gets a
   `status` row for as long as it lasted (`find_statuses`). A trapwire tethers, then when it goes off
   concusses and reveals (and stays armed). An ability object shot and destroyed before its object
-  closes has `gone`.
+  closes has `gone` (Leer's lethal hit lands in its close ms, and a shot-down Dizzy shows as an early close with an orb dropped under a shot ray, so both have it too). A Poison Cloud emitter has `on`: the spans of its zones.
 - **Casts** (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b). Each use of a
   movement ability in MOVEMENT_EQUIPPABLES, for the height build's blackout (app/control/height_motion.py):
   the effect played on the caster's character as the move starts, told by its float tags (`movement_cast`).
@@ -1638,6 +1638,43 @@ def _control_inputs(entry: dict, actor: _Actor, players: PlayerTable, pawn_yaws,
     counts["pawn_yaw_points"] += len(yaws)
 
 
+LEER_NAME = "4_NearsightAOE_Source"
+DIZZY_NAME = "E_DiscTurret_PowerWave"
+# PROVISIONAL(D11): from 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
+DIZZY_EARLY_MS = 1600
+# PROVISIONAL(D11): from 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
+DIZZY_RAY_UU = 150
+
+
+def _ray_miss(data: dict, p: tuple[float, float, float]) -> float | None:
+    """How far a shot's first ray passes from point p (world units), None when p is behind it."""
+    s = data.get("shot") or {}
+    o, vs = s.get("location"), s.get("attack_vectors") or []
+    if not o or not vs or o.get("x") is None:
+        return None
+    v = vs[0]
+    vx, vy, vz = v.get("x", 0.0), v.get("y", 0.0), v.get("z", 0.0)
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if norm == 0:
+        return None
+    w = (p[0] - o["x"], p[1] - o["y"], p[2] - (o.get("z") or 0))
+    along = (w[0] * vx + w[1] * vy + w[2] * vz) / norm
+    if along < 0:
+        return None
+    return math.sqrt(max(0.0, sum(c * c for c in w) - along * along))
+
+
+def _dizzy_shot_down(t_ms: int, spawners_at: dict[int, list[_Actor]], shots_at: dict[int, list[dict]]) -> bool:
+    """A Dizzy gone early dropped an orb in the ms it closed, under a shot's ray."""
+    for sp in spawners_at.get(t_ms, []):
+        p = (sp.x, sp.y, sp.z or 0)
+        for data in shots_at.get(t_ms, []):
+            miss = _ray_miss(data, p)
+            if miss is not None and miss <= DIZZY_RAY_UU:
+                return True
+    return False
+
+
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
                  game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None,
                  teams: dict[int, str | None] | None = None, pawn_yaws=None) -> Extras:
@@ -1715,6 +1752,14 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     anchors: list[tuple[dict, _Actor, int | None, int, int]] = []     # Waylay's return points, for their recalls
     interceptors: list[tuple[dict, _Actor, int | None, int, int]] = []    # Veto's, for what they destroyed
     longest = longest_lives(actors)
+    shots_at: dict[int, list[dict]] = defaultdict(list)
+    for data in raw_shots:
+        shots_at[int(data.get("time_ms", 0))].append(data)
+    spawners_at: dict[int, list[_Actor]] = defaultdict(list)
+    for a in actors.values():
+        if a.name == "E_OrbSpawner":
+            spawners_at[a.t_ms].append(a)
+    poison_zones = sorted((a for a in actors.values() if a.name == "4_SmokeZone"), key=lambda a: (a.t_ms, a.guid))
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -1768,9 +1813,25 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
         # doesn't use utility up: a trip, a Vyse flash or a Killjoy turret stays until it's destroyed.
         gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
-        if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms):
+        # Leer's lethal hit lands in the very ms it closes (D10: for this name only, never widened).
+        same_ms_ok = actor.name == LEER_NAME
+        if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms
+                     or (same_ms_ok and min(gone) <= actor.closed_ms)):
             entry["gone"] = max(0.0, _seconds(min(min(gone), end), start))
             counts["abilities_gone_early"] += 1
+            counts["leer_gone"] += same_ms_ok
+        elif (actor.name == DIZZY_NAME and actor.closed_ms is not None
+              and actor.closed_ms - actor.t_ms < DIZZY_EARLY_MS and actor.closed_ms <= end
+              and _dizzy_shot_down(actor.closed_ms, spawners_at, shots_at)):
+            entry["gone"] = max(0.0, _seconds(actor.closed_ms, start))
+            counts["dizzy_gone"] += 1
+        if actor.name == "4_SmokeGrenade" and actor.kind == "Projectile":
+            until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+            mine = [z for z in poison_zones if z.instigator == actor.instigator and actor.t_ms <= z.t_ms <= until]
+            if mine:
+                entry["on"] = [[max(0.0, _seconds(z.t_ms, start)),
+                                None if z.closed_ms is None else _seconds(min(z.closed_ms, end), start)] for z in mine]
+                counts["poison_on_spans"] += len(mine)
         if actor.kind == "Bomb":
             attempts = defuse_attempts(actor, raw.effects, raw.oneshots, players)
             if attempts:
