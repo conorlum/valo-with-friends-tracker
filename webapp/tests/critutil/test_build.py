@@ -146,3 +146,40 @@ def test_on_known_follows_the_condense_revision():
     on = replay_util.on_known
     assert on("p1.c22.f1.a1") and on("p1.c23.f1.a1") and not on("p1.c21.f1.a1") and not on("junk")
     assert replay_util.ON_SPANS_FROM == 22
+
+
+def device_corpus():
+    stored, ctx = toy_corpus()
+    for m in stored:
+        stored[m] = {1: v2_round([], kills=[kill(14.0 + (m % 3) * 4, 5, 0, [5, 5], k_side="defense", v_side="attack")],
+                                 t_decided=40.0)}
+    plac = v2_cast(0, t=8.0, seen_end=11.0, type_="placeable", side="attack", by=1, kills=[], enemies=[], harm=[],
+                   ability_id="Test/Device")
+    stored[1][1] = v2_round([plac], kills=[kill(14.0, 5, 0, [5, 5], k_side="defense", v_side="attack")],
+                            t_decided=40.0)
+    # the cast's own match also has a round without the device, whose moments differ from every other match's
+    stored[1][2] = v2_round([], kills=[kill(30.0, 5, 0, [5, 5], k_side="defense", v_side="attack")], t_decided=40.0)
+    ctx[1]["rounds"][2] = {"winner": "attack"}
+    return stored, ctx
+
+
+def test_a_placeables_device_lift_leaves_out_only_its_own_match(passing):
+    stored, ctx = device_corpus()
+    out = replay_util.build_from_rounds(stored, ctx, MODEL, {FRIEND})
+    (r,) = [r for r in out["rows"] if r["type"] == "placeable"]
+    assert r["lift_device"] is not None and r["device_level"] is not None and r["device_n"] >= 30
+    assert r["gate_device"] is True
+    items = []
+    for m in stored:
+        for n, rd in stored[m].items():
+            items.append({"match": m, "map": "Haven", "data": {**rd, "clock_offset": 0.0, "on_known": True},
+                          "player_of": {s: p["player_id"] for s, p in ctx[m]["players"].items()}})
+    per = util_values.match_tables(items, MODEL, {FRIEND})["device"]["Test/Device|Haven|attack"]
+    wrapped = {m: {"device": cells} for m, cells in per.items()}
+    assert 1 in wrapped, "the own match has a round without the device"
+    keys = util_values.levels(items[0]["data"], "attack", 8.0)
+    want = util_values.lift_v2(util_values.totals(wrapped), wrapped, "device", keys, r["L"], r["swing"], leave_out={1})
+    assert r["device_n"] == want["n"] and r["device_level"] == want["level"]
+    assert r["lift_device"] == pytest.approx(want["lift"], abs=1e-4)
+    keep = util_values.lift_v2(util_values.totals(wrapped), wrapped, "device", keys, r["L"], r["swing"], leave_out=())
+    assert keep["n"] != want["n"] or abs(keep["lift"] - want["lift"]) > 1e-3, "the own match would change the number"
