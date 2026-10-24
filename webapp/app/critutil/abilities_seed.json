@@ -33,7 +33,8 @@
     "page": "Nova Pulse",
     "field": "Concuss duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 2.0
   },
   {
    "match": "^(Rift_E_SmokeZone(_Fake)?)$",
@@ -50,7 +51,8 @@
     "page": "Nebula / Dissipate",
     "field": "Duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 15.5
   },
   {
    "match": "^(Rift_X_GlobalWall)$",
@@ -69,7 +71,8 @@
     "page": "Cosmic Divide",
     "field": "Duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 24.0
   },
   {
    "match": "^(Rift_X_Markers)$",
@@ -86,7 +89,8 @@
     "page": "Astral Form",
     "field": "Duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 5.7
   },
   {
    "match": "^(Breach_4_FusionBlast)$",
@@ -103,7 +107,8 @@
     "page": "Aftershock",
     "field": "none"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 4.4
   },
   {
    "match": "^(Breach_breach_flashpoint)$",
@@ -122,7 +127,8 @@
    },
    "pieces": [
     "^Breach_Q_ThroughWalls_Flash$"
-   ]
+   ],
+   "replay_s": 1.2
   },
   {
    "match": "^(Breach_E_SweetSpotFissure)$",
@@ -139,7 +145,8 @@
     "page": "Fault Line",
     "field": "Concuss duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 6.1
   },
   {
    "match": "^(Breach_X_Shockwave)$",
@@ -157,7 +164,8 @@
     "page": "Rolling Thunder",
     "field": "Concuss duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 6.9
   },
   {
    "match": "^(Sarge_E_SpeedStim)$",
@@ -193,7 +201,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 12.7
+   "replay_s": 12.5
   },
   {
    "match": "^(Sarge_4_Smoke_ProductionNEW|Sarge_4_SmokeManager_Production)$",
@@ -251,7 +259,7 @@
     "^Deadeye_4_Trap_Dart$",
     "^Deadeye_E_Slow_Large$"
    ],
-   "replay_s": 7.0
+   "replay_s": 23.3
   },
   {
    "match": "^(?!)$",
@@ -286,7 +294,7 @@
     "field": "Teleport duration"
    },
    "pieces": [],
-   "replay_s": 15.0
+   "replay_s": 13.3
   },
   {
    "match": "^(?!)$",
@@ -396,7 +404,7 @@
    "pieces": [
     "^Gumshoe_4_TripWire_SecondWire$"
    ],
-   "replay_s": 18.3
+   "replay_s": 22.0
   },
   {
    "match": "^(Gumshoe_Q_CageTrap|Gumshoe_Q_Cage)$",
@@ -414,7 +422,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 8.4
+   "replay_s": 8.3
   },
   {
    "match": "^(Gumshoe_E_PossessableCamera)$",
@@ -433,7 +441,7 @@
     "field": "none"
    },
    "pieces": [],
-   "replay_s": 2.9
+   "replay_s": 7.8
   },
   {
    "match": "^(Gumshoe_E_CameraTrackingDart)$",
@@ -452,7 +460,8 @@
    },
    "pieces": [
     "^Gumshoe_RemovableObject_GumshoeTrackingDart$"
-   ]
+   ],
+   "replay_s": 2.3
   },
   {
    "match": "^(Gumshoe_X_InterrogateHat)$",
@@ -491,7 +500,7 @@
    "pieces": [
     "^Cable_4_RemovableNet$"
    ],
-   "replay_s": 4.5
+   "replay_s": 4.4
   },
   {
    "match": "^(Cable_Q_SoundSensor)$",
@@ -511,7 +520,7 @@
    "pieces": [
     "^Cable_Q_SoundSensor_Fissure$"
    ],
-   "replay_s": 19.2
+   "replay_s": 17.2
   },
   {
    "match": "^(Cable_E_CableJam)$",
@@ -531,7 +540,7 @@
    "pieces": [
     "^Cable_E_CableJam_Root$"
    ],
-   "replay_s": 11.3
+   "replay_s": 30.9
   },
   {
    "match": "^(Cable_X_FishingHook)$",
@@ -552,7 +561,7 @@
    "pieces": [
     "^Cable_X_FishingHook_Cage$"
    ],
-   "replay_s": 8.3
+   "replay_s": 4.5
   },
   {
    "match": "^(BountyHunter_4_WolfHound)$",
@@ -590,7 +599,7 @@
    "pieces": [
     "^BountyHunter_Q_Tether_SphereExpansion$"
    ],
-   "replay_s": 2.6
+   "replay_s": 2.4
   },
   {
    "match": "^(BountyHunter_E_Divebomb)$",
@@ -610,7 +619,7 @@
    "pieces": [
     "^BountyHunter_E_LoSReveal_Source_Reactivate$"
    ],
-   "replay_s": 3.3
+   "replay_s": 3.4
   },
   {
    "match": "^(BountyHunter_X_WaveForm)$",
@@ -649,7 +658,7 @@
    "pieces": [
     "^Aggrobot_Reclaim_Orb_ExplodeyPatch$"
    ],
-   "replay_s": 6.3
+   "replay_s": 23.8
   },
   {
    "match": "^(Aggrobot_SeekerNade)$",
@@ -669,7 +678,7 @@
    "pieces": [
     "^Aggrobot_Reclaim_Orb_SeekerNade(PlantSuccessful)?$"
    ],
-   "replay_s": 7.8
+   "replay_s": 17.9
   },
   {
    "match": "^(Aggrobot_E_DiscTurret_PowerWave)$",
@@ -689,7 +698,8 @@
    "pieces": [
     "^Aggrobot_(Zamboni_Rocket|E_OrbSpawner)$",
     "^Aggrobot_Reclaim_Orb_Turret$"
-   ]
+   ],
+   "replay_s": 13.2
   },
   {
    "match": "^(Aggrobot_RollyPolly)$",
@@ -710,7 +720,7 @@
    "pieces": [
     "^Aggrobot_X_Reclaim_Orb$"
    ],
-   "replay_s": 5.0
+   "replay_s": 22.1
   },
   {
    "match": "^(Mage_harbor_storm_surge)$",
@@ -729,7 +739,8 @@
    },
    "pieces": [
     "^Mage_4_SplashGrenade$"
-   ]
+   ],
+   "replay_s": 2.0
   },
   {
    "match": "^(Mage_Q_Wall)$",
@@ -768,7 +779,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 21.7
+   "replay_s": 21.6
   },
   {
    "match": "^(Mage_X_TidalWave)$",
@@ -790,7 +801,7 @@
    "pieces": [
     "^Mage_X_TidalWave_Chunk$"
    ],
-   "replay_s": 12.8
+   "replay_s": 13.6
   },
   {
    "match": "^(Sequoia_4_MovingCover)$",
@@ -952,7 +963,8 @@
     "page": "FRAG-ment",
     "field": "Duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 4.9
   },
   {
    "match": "^(Grenadier_kayo_flash_drive_(overhand|underhand))$",
@@ -971,7 +983,8 @@
    },
    "pieces": [
     "^Grenadier_C_Flash(_Underhand)?$"
-   ]
+   ],
+   "replay_s": 2.6
   },
   {
    "match": "^(Grenadier_E_SuppressionBlade)$",
@@ -991,7 +1004,7 @@
    "pieces": [
     "^Grenadier_E_SuppressionPulse$"
    ],
-   "replay_s": 16.0
+   "replay_s": 15.8
   },
   {
    "match": "^(Grenadier_X_UltPulseManager)$",
@@ -1034,7 +1047,7 @@
    "pieces": [
     "^Killjoy_4_BeeSwarm_Damage$"
    ],
-   "replay_s": 8.2
+   "replay_s": 12.8
   },
   {
    "match": "^(Killjoy_Q_StealthAlarmbot)$",
@@ -1052,7 +1065,7 @@
     "field": "Vulnerable duration"
    },
    "pieces": [],
-   "replay_s": 15.5
+   "replay_s": 18.7
   },
   {
    "match": "^(Killjoy_E_Turret)$",
@@ -1071,7 +1084,7 @@
     "field": "none"
    },
    "pieces": [],
-   "replay_s": 14.9
+   "replay_s": 16.7
   },
   {
    "match": "^(Killjoy_X_Bomb)$",
@@ -1206,7 +1219,7 @@
    "pieces": [
     "^Sprinter_Q_ElectricSphere$"
    ],
-   "replay_s": 1.6
+   "replay_s": 1.7
   },
   {
    "match": "^(?!)$",
@@ -1278,7 +1291,7 @@
     "^Wraith_Q_NearsightMissile_TrajectoryWarning$",
     "^Wraith_Q_NearsightMissile$"
    ],
-   "replay_s": 3.9
+   "replay_s": 2.0
   },
   {
    "match": "^(Wraith_4_Smoke)$",
@@ -1353,7 +1366,8 @@
    },
    "pieces": [
     "^Phoenix_E_FlareCurve_Synced(_Right)?$"
-   ]
+   ],
+   "replay_s": 1.6
   },
   {
    "match": "^(Phoenix_4_Molotov_Production)$",
@@ -1391,7 +1405,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 11.0
+   "replay_s": 10.2
   },
   {
    "match": "^(Clay_E_Boomba)$",
@@ -1429,7 +1443,7 @@
    "pieces": [
     "^Clay_Q_Explosion$"
    ],
-   "replay_s": 5.6
+   "replay_s": 5.7
   },
   {
    "match": "^(Clay_4_Projectile_Primary)$",
@@ -1449,7 +1463,8 @@
    "pieces": [
     "^Clay_4_Projectile_SecondarySpawner$",
     "^Clay_4_Projectile_Secondary$"
-   ]
+   ],
+   "replay_s": 3.7
   },
   {
    "match": "^(Clay_X_Rocket)$",
@@ -1467,7 +1482,8 @@
     "page": "Showstopper",
     "field": "Max duration"
    },
-   "pieces": []
+   "pieces": [],
+   "replay_s": 0.6
   },
   {
    "match": "^(Vampire_reyna_leer)$",
@@ -1487,7 +1503,8 @@
    "pieces": [
     "^Vampire_4_NearsightAoE$",
     "^Vampire_4_NearsightAOE_Source$"
-   ]
+   ],
+   "replay_s": 1.6
   },
   {
    "match": "^(Vampire_Q_Heal_HealPool_High)$",
@@ -1561,7 +1578,7 @@
    "pieces": [
     "^Thorne_E_Wall_Segment_Fortifying$"
    ],
-   "replay_s": 9.9
+   "replay_s": 41.0
   },
   {
    "match": "^(Thorne_4_SlowFIeld_Production)$",
@@ -1581,7 +1598,7 @@
    "pieces": [
     "^Thorne_4_SlowField_Production$"
    ],
-   "replay_s": 8.3
+   "replay_s": 8.2
   },
   {
    "match": "^(?!)$",
@@ -1634,7 +1651,7 @@
     "field": "none"
    },
    "pieces": [],
-   "replay_s": 2.1
+   "replay_s": 1.9
   },
   {
    "match": "^(Guide_Q_PossessableScout)$",
@@ -1652,7 +1669,7 @@
     "field": "Concuss duration"
    },
    "pieces": [],
-   "replay_s": 4.3
+   "replay_s": 4.1
   },
   {
    "match": "^(Guide_skye_guiding_light)$",
@@ -1672,7 +1689,8 @@
    "pieces": [
     "^Guide_E_HawkFlash$",
     "^Guide_E_HawkFlash_FlashSource$"
-   ]
+   ],
+   "replay_s": 2.5
   },
   {
    "match": "^(Guide_X_Pack)$",
@@ -1691,7 +1709,7 @@
     "field": "Nearsight duration"
    },
    "pieces": [],
-   "replay_s": 7.6
+   "replay_s": 8.3
   },
   {
    "match": "^(Hunter_E_Drone)$",
@@ -1711,7 +1729,7 @@
    "pieces": [
     "^Hunter_E_Drone_RevealDart$"
    ],
-   "replay_s": 6.5
+   "replay_s": 6.7
   },
   {
    "match": "^(Hunter_4_ExplosiveBolt)$",
@@ -1791,7 +1809,7 @@
    "pieces": [
     "^Cashew_4_SonarPing$"
    ],
-   "replay_s": 5.7
+   "replay_s": 5.3
   },
   {
    "match": "^(Cashew_Q_ShellShockGrenade(_Bounce)?)$",
@@ -1809,7 +1827,7 @@
     "field": "Concuss duration"
    },
    "pieces": [],
-   "replay_s": 1.5
+   "replay_s": 1.6
   },
   {
    "match": "^(Cashew_E_MapMissileMarker|Cashew_E_Explosion)$",
@@ -1940,7 +1958,7 @@
    "pieces": [
     "^Pandemic_AcidMolotov_NewMolotov$"
    ],
-   "replay_s": 7.5
+   "replay_s": 8.7
   },
   {
    "match": "^(Pandemic_4_SmokeGrenade)$",
@@ -1997,7 +2015,7 @@
     "field": "Integrity duration"
    },
    "pieces": [],
-   "replay_s": 21.9
+   "replay_s": 53.4
   },
   {
    "match": "^(Nox_BarbedWire)$",
@@ -2015,7 +2033,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 7.3
+   "replay_s": 6.6
   },
   {
    "match": "^(Nox_WallTrap|Nox_Wall)$",
@@ -2034,7 +2052,7 @@
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 16.6
+   "replay_s": 11.1
   },
   {
    "match": "^(Nox_vyse_arc_rose)$",
@@ -2055,7 +2073,7 @@
    "pieces": [
     "^Nox_StealthingTrap_Flash_2$"
    ],
-   "replay_s": 7.9
+   "replay_s": 2.0
   },
   {
    "match": "^(Nox_DisarmPulse)$",
@@ -2187,7 +2205,8 @@
    },
    "pieces": [
     "^Stealth_Q_BounceFlash$"
-   ]
+   ],
+   "replay_s": 1.9
   },
   {
    "match": "^(Stealth_E_Teleporter(Moving|Stationary)_FakeTP)$",
@@ -2205,7 +2224,7 @@
     "field": "Tether Duration"
    },
    "pieces": [],
-   "replay_s": 12.9
+   "replay_s": 11.9
   },
   {
    "match": "^(?!)$",
