@@ -1640,9 +1640,9 @@ def _control_inputs(entry: dict, actor: _Actor, players: PlayerTable, pawn_yaws,
 
 LEER_NAME = "4_NearsightAOE_Source"
 DIZZY_NAME = "E_DiscTurret_PowerWave"
-# PROVISIONAL(D11): from 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
+# From 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
 DIZZY_EARLY_MS = 1600
-# PROVISIONAL(D11): from 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
+# From 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
 DIZZY_RAY_UU = 150
 
 
