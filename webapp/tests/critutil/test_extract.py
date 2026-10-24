@@ -598,3 +598,81 @@ def test_signals_until_end_and_until_death_rules(monkeypatch):
     ps2 = {"ult": {"1": [{"t": 0.0, "n": 8}, {"t": 10.0, "n": 0}, {"t": 21.0, "n": 0}]}}
     s = sig(run(util, player_state=ps2, t_end=60.0))
     assert s["ult_end"] == 21.0 and s["death"] is None
+
+
+# --- heal tags: death, kept_alive, hits_after
+
+
+def test_heal_kept_alive_when_more_was_lost_than_hp_before():
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (7.0, 0, 40), (8.0, 0, 10))}}
+    (h,) = run([heal(6.0, 60)], player_state=ps)["heals"]
+    assert h["kept_alive"] is True and h["death"] is None
+
+
+def test_heal_not_kept_alive_when_loss_is_at_or_under_hp_before():
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (8.0, 0, 60))}}
+    (h,) = run([heal(6.0, 60)], player_state=ps)["heals"]
+    assert h["kept_alive"] is False and h["hits_after"] is None
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (8.0, 0, 70))}}
+    (h,) = run([heal(6.0, 60)], player_state=ps)["heals"]
+    assert h["kept_alive"] is False
+    (h,) = run([heal(6.0, 60)], player_state={"version": 1})["heals"]
+    assert h["kept_alive"] is None and h["hits_after"] is None
+
+
+def test_heal_death_is_the_first_kill_of_the_target_at_or_after_the_heal_end():
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (7.0, 0, 40))}}
+    out = run([heal(6.0, 60)], kills=[kill(5.5, 5, 6), kill(12.0, 5, 0)], player_state=ps)
+    assert out["heals"][0]["death"] == 12.0
+
+
+def test_heal_hits_after_counts_enemy_gun_runs_from_the_crossing():
+    ps = {"version": 1, "vitals": {"0": vitals((5.0, 0, 20), (6.0, 0, 80), (7.0, 0, 50), (7.5, 0, 30),
+                                                 (9.0, 0, 5))}}
+    util = [heal(6.0, 60), damage(6.9, 5, 0), damage(7.0, 5, 0), damage(7.5, 5, 0, n=2),
+            damage(7.6, 1, 0), damage(7.7, 5, 0, src="ability"), damage(7.8, 0, 5), damage(20.0, 5, 0)]
+    (h,) = run(util, kills=[kill(10.0, 5, 0)], player_state=ps)["heals"]
+    assert h["kept_alive"] is True and h["death"] == 10.0
+    assert h["hits_after"] == 3, "the 6.9 run began before the crossing at 7.0; ability, mate, own and late rows don't count"
+
+
+# --- Omen spike tags
+
+
+def _spike(*entries):
+    return {"version": 1, "spike": [dict(zip(("t", "s", "slot"), e)) if len(e) == 3 else {"t": e[0], "s": e[1]}
+                                    for e in entries]}
+
+
+def _omen_spike(ps):
+    return sig(omen_run(ps))
+
+
+def test_omen_picked_up_the_spike_within_fifteen_seconds():
+    ps = _spike((0.0, "carried", 5), (22.0, "dropped"), (30.0, "carried", 1), (40.0, "planted"))
+    s = _omen_spike(ps)
+    assert s["spike_pickup"] == 30.0 and s["got_spike"] is True and s["got_spike_planted"] is True
+    ps = _spike((0.0, "carried", 5), (22.0, "dropped"), (30.0, "carried", 1))
+    assert _omen_spike(ps)["got_spike_planted"] is False
+
+
+def test_omen_pickup_too_late_or_by_a_teammate_is_not_got_spike():
+    s = _omen_spike(_spike((0.0, "carried", 5), (22.0, "dropped"), (39.5, "carried", 1)))
+    assert s["spike_pickup"] is None and s["got_spike"] is False and s["got_spike_planted"] is None
+    s = _omen_spike(_spike((0.0, "carried", 5), (22.0, "dropped"), (30.0, "carried", 0)))
+    assert s["spike_pickup"] == 30.0 and s["got_spike"] is False
+    assert _omen_spike({"version": 1})["got_spike"] is None
+
+
+def test_omen_pickup_without_a_slot_goes_to_the_nearest_alive_player():
+    u, v = (140 * 10000 / extract.engine.PX, 200 * 10000 / extract.engine.PX)
+    drop = {"t": 22.0, "s": "dropped", "u": u, "v": v}
+    ps = {"version": 1, "spike": [{"t": 0.0, "s": "carried", "slot": 5}, drop, {"t": 30.0, "s": "carried"}]}
+    s = _omen_spike(ps)
+    assert s["got_spike"] is True and s["spike_pickup"] == 30.0
+    u2, v2 = (120 * 10000 / extract.engine.PX, 200 * 10000 / extract.engine.PX)
+    ps["spike"][1] = {"t": 22.0, "s": "dropped", "u": u2, "v": v2}
+    assert _omen_spike(ps)["got_spike"] is False
+    ps["spike"][1] = {"t": 22.0, "s": "dropped"}
+    s = _omen_spike(ps)
+    assert s["got_spike"] is None and s["spike_pickup"] == 30.0

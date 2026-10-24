@@ -698,12 +698,48 @@ def _heals(rnd, blob, sides) -> list[dict]:
         share = None
         if hp_before is not None and taken is not None and r.get("amount") is not None:
             share = _saved_share(ps, r, rows, horizon) if r.get("pool") in ("hp", "armor") else 0.0
+        death = next((t for t, _k, v in sorted(rnd.kills) if v == target and t >= t1), None)
+        end = death if death is not None else rnd.t_decided
+        lost = _damage_taken(ps, target, t1, end)
+        kept = None if lost is None or hp_before is None else lost > hp_before
+        hits_after = None
+        if kept:
+            t_cross = _loss_crossing(ps, target, t1, end, hp_before)
+            hits_after = 0 if t_cross is None else sum(
+                int(d.get("n") or 1) for d in blob.get("util") or ()
+                if d.get("k") == "damage" and d.get("target") == target and d.get("src") == "gun"
+                and sides.get(d.get("by")) not in (None, sides.get(target))
+                and t_cross - _EPS <= float(d["t"]) <= end)
         out.append({"t": _r2(t0), "t1": _r2(t1), "by": r.get("by"), "target": target, "pool": r.get("pool"),
                     "amount": _r2(r.get("amount")), "name": r.get("name"), "code": r.get("code"),
                     "hp_before": _r2(hp_before), "taken_after": _r2(taken), "fought": fought,
                     "survived": bool(survived), "saved": None if share is None else share > 0,
-                    "saved_share": None if share is None else round(share, 3)})
+                    "saved_share": None if share is None else round(share, 3),
+                    "death": _r2(death), "kept_alive": kept, "hits_after": hits_after})
     return out
+
+
+def _loss_crossing(ps, slot, t0, t1, limit) -> float | None:
+    """The time of the vitals event at which the health lost since t0 (as `_damage_taken` adds it) first exceeds
+    `limit`, or None."""
+    events = ((ps or {}).get("vitals") or {}).get(str(slot))
+    if not events:
+        return None
+    lost, prev = 0.0, None
+    for e in events:
+        if e["t"] < t0:
+            prev = e
+            continue
+        if e["t"] > t1:
+            break
+        if prev is not None and e.get("life") == prev.get("life"):
+            drop = (prev.get("hp") or 0) + (prev.get("sh") or 0) - (e.get("hp") or 0) - (e.get("sh") or 0)
+            if drop > 0:
+                lost += drop
+                if lost > limit:
+                    return float(e["t"])
+        prev = e
+    return None
 
 
 def _heal_end(r) -> float:
@@ -857,6 +893,52 @@ def _ult_cost(ps, c: _Cast):
     return n
 
 
+SPIKE_PICKUP_S = 15.0
+
+
+def _omen_spike(rnd, blob, c: _Cast, arrival) -> dict:
+    """Whether the Omen who landed picked the spike up within SPIKE_PICKUP_S of arriving (a `carried` entry after a
+    `dropped` one), and whether it was planted later. The picker is the entry's slot, else the alive player nearest
+    the drop place."""
+    out = {"spike_pickup": None, "got_spike": None, "got_spike_planted": None}
+    line = (blob.get("player_state") or {}).get("spike")
+    if arrival is None or not line:
+        return out
+    out["got_spike"] = False
+    pick = None
+    for prev, cur in zip(line, line[1:]):
+        if cur.get("s") == "carried" and prev.get("s") == "dropped" and arrival <= cur["t"] <= arrival + SPIKE_PICKUP_S:
+            pick = (prev, cur)
+            break
+    if pick is None:
+        return out
+    prev, cur = pick
+    t = float(cur["t"])
+    out["spike_pickup"] = _r2(t)
+    picker = cur.get("slot")
+    if picker is None and prev.get("u") is not None and prev.get("v") is not None:
+        spot = _px(prev["u"], prev["v"])
+        best = None
+        for p in blob.get("players") or ():
+            slot = p["slot"] if isinstance(p, dict) else p
+            if not rnd.alive(slot, t):
+                continue
+            pos = rnd.pos(slot, t)
+            if pos is None:
+                continue
+            d = _dist_m(rnd, pos, spot)
+            if best is None or d < best[0]:
+                best = (d, slot)
+        picker = best[1] if best else None
+    if picker is None:
+        out["got_spike"] = None
+        return out
+    out["got_spike"] = picker == c.by
+    if out["got_spike"]:
+        out["got_spike_planted"] = any(e.get("s") == "planted" and e["t"] > t for e in line)
+    return out
+
+
 def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) -> dict:
     """Stored facts the site's windows are cut from later (nothing is windowed here): when it landed, when its pieces
     were last seen, a flash's pop, the enemy hits and effect ends, a wall's `on` and a device's `off` spans, when a
@@ -894,6 +976,7 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         row = next((r for r in c.rows if _code_name(r) == "Wraith_X_GlobalTeleport_Intention"), None) or {}
         s["arrival"] = _r2(row.get("t1"))
         s["arrival_outcome"] = row.get("outcome")
+        s.update(_omen_spike(rnd, blob, c, s["arrival"]))
     elif rule == "ult:thrash":
         row = next((r for r in c.rows if "RollyPolly" in (_code_name(r) or "")), None) or {}
         p = row.get("possessed")
