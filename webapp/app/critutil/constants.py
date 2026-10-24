@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 1                 # the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 2                 # the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -24,7 +24,6 @@ ZONE_DAMAGE_LOOKBACK_S = 3.0  # a victim damaged by a zone this recently before 
 TRIGGER_WINDOW_S = 4.0      # a device's trigger: kills this long after it
 NEAR_TRIGGER_M = 15.0       # ... on enemies within this of the device
 FOLLOW_S = 1.5              # a teammate's damage or aimed shot this soon after an effect starts follows it up
-LIFE_CAP_S = 40.0           # an ability row with no close counts at most this long
 
 # --- sight blocking (smokes and walls)
 SIGHT_STEP_S = 0.5

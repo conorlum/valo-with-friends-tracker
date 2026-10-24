@@ -11,11 +11,13 @@ Output: {"v", "sides", "contact", "plant", "defuse", "t_decided", "kills", "cast
 
 from __future__ import annotations
 
+import functools
 import math
 
 from app.control import engine
+from app.critutil import abilities
 from app.critutil.constants import (AGENT_KEYS, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
-                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, LIFE_CAP_S, MOBILITY_KEYS,
+                                    FLASH_ROW_MATCH_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
@@ -39,7 +41,39 @@ def _key_of(name: str | None) -> str | None:
     return name.split("_", 1)[0]
 
 
-def _kinds_of(names: list[str]) -> set[str]:
+@functools.lru_cache(maxsize=None)
+def _entry_for(code_name: str):
+    return abilities.lookup(code_name)
+
+
+def _entry_of(row) -> dict | None:
+    """The ability table's entry for a row (matched on `<code>_<name>`), None when the row has no code or fits none."""
+    if not row.get("code") or not row.get("name"):
+        return None
+    return _entry_for(f"{row['code']}_{row['name']}")
+
+
+def _kinds_of(names: list[str], rows=()) -> set[str]:
+    """A cast's kinds: each row the table matches gives that entry's `kinds`; the rest (and every name when no row is
+    given) go through today's patterns."""
+    kinds = set()
+    rest = list(names)
+    if rows:
+        rest = []
+        for r in rows:
+            e = _entry_of(r)
+            if e is not None:
+                kinds.update(e.get("kinds") or ())
+            elif r.get("name") or r.get("ability"):
+                rest.append(r.get("name") or r.get("ability"))
+        names = rest
+    kinds |= _pattern_kinds(names)
+    if "wall" in kinds and "smoke" in kinds:
+        kinds.add("stall")
+    return kinds
+
+
+def _pattern_kinds(names: list[str]) -> set[str]:
     kinds = set()
     for n in names:
         k = ABILITY_KIND.get(n)
@@ -56,21 +90,29 @@ def _kinds_of(names: list[str]) -> set[str]:
 
 class _Cast:
     __slots__ = ("i", "by", "agent", "t", "t_end", "u", "v", "rows", "names", "ids", "kinds", "flash", "key",
-                 "landed_t", "landed")
+                 "landed_t", "landed", "end_unknown", "entry")
 
-    def __init__(self, i, row, t_cap):
+    def __init__(self, i, row, rnd):
         self.i, self.by, self.agent = i, row.get("by"), row.get("agent")
         self.t = _throw_t(row)              # when it was thrown: a projectile's spawn, a placed piece's `thrown.t0`
-        self.t_end = _end(row, t_cap)
+        self.t_end, self.end_unknown = _end(row, rnd)
+        self.entry = None                   # the table entry of the first of its rows (time order) that has one
         self.u = self.v = None
         self.rows, self.names, self.ids = [], [], set()
         self.flash, self.key = None, _key_of(row.get("name"))
         self.landed_t, self.landed = None, {}   # first landed piece's time; each landed name's first time
-        self.add(row, t_cap)
+        self.add(row, rnd, first=True)
 
-    def add(self, row, t_cap):
+    def add(self, row, rnd, first=False):
         self.rows.append(row)
-        self.t_end = max(self.t_end, _end(row, t_cap))
+        end, unknown = _end(row, rnd)
+        if not first:               # the row that ends last decides whether the cast's end is a guess
+            if end > self.t_end:
+                self.t_end, self.end_unknown = end, unknown
+            elif end == self.t_end:
+                self.end_unknown = self.end_unknown or unknown
+        if self.entry is None:
+            self.entry = _entry_of(row)
         if self.agent is None:
             self.agent = row.get("agent")
         name = row.get("name") or row.get("ability")
@@ -93,11 +135,23 @@ def _throw_t(row) -> float:
     return float(thrown["t0"]) if thrown.get("t0") is not None else float(row["t"])
 
 
-def _end(row, t_cap) -> float:
+def _end(row, rnd) -> tuple[float, bool]:
+    """(when the row ends, whether that is a guess). A row with a close ends there; one without ends at `t` plus the
+    table's duration, a placeable at t_decided; with neither it ends at t_decided and is flagged `end_unknown`."""
     t = float(row["t"])
     ends = [x for x in (row.get("t1"), row.get("gone")) if x is not None]
-    end = min(ends) if ends else t + LIFE_CAP_S
-    return min(max(float(end), t), t_cap)
+    unknown = False
+    if ends:
+        end = min(ends)
+    else:
+        e = _entry_of(row)
+        if e is not None and e.get("type") == "placeable":
+            end = rnd.t_decided
+        elif e is not None and e.get("duration_s") is not None:
+            end = t + float(e["duration_s"])
+        else:
+            end, unknown = rnd.t_decided, True
+    return min(max(float(end), t), rnd.t_end), unknown
 
 
 def _dist_m(rnd, a, b):
@@ -139,11 +193,11 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
     pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
     (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
     spike is not a cast."""
-    t_cap = rnd.t_end
+
     util = blob.get("util") or ()
     casts: list[_Cast] = []
     for r in sorted((r for r in util if r.get("k") in ("flash", "nearsight")), key=lambda r: r["t"]):
-        c = _Cast(len(casts), r, t_cap)
+        c = _Cast(len(casts), r, rnd)
         c.flash = r
         c.kinds = {"blind"} if r["k"] == "flash" else {"status"}
         casts.append(c)
@@ -155,7 +209,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         twin = next((c for c in reversed(casts) if c.flash is not None and c.by == by
                      and abs(c.t - tt) <= FLASH_ROW_MATCH_S), None)
         if twin is not None and (not kinds or kinds <= {"blind", "status"}):
-            twin.add(r, t_cap)                # a flash's own projectile and source rows
+            twin.add(r, rnd)                # a flash's own projectile and source rows
             continue
         host = _anchored(casts, r) if r.get("kind") != "Projectile" else None
         if host is None and r.get("kind") != "Projectile":
@@ -169,13 +223,13 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
                     host = c
                 break                         # only the latest use of this ability can own the piece
         if host is not None:
-            host.add(r, t_cap)
+            host.add(r, rnd)
             continue
-        c = _Cast(len(casts), r, t_cap)
+        c = _Cast(len(casts), r, rnd)
         c.kinds = set()
         casts.append(c)
     for c in casts:
-        c.kinds = set(c.kinds) | _kinds_of(c.names)
+        c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
         if any(_key_of(n) == "X" for n in c.names):
             c.kinds.add("ult")
         if any(f"{x.get('code')}_{x.get('name')}" in MOBILITY_KEYS for x in c.rows):
@@ -841,6 +895,9 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "i": c.i, "by": c.by, "agent": c.agent, "t": _r2(c.t), "t_end": _r2(c.t_end), "u": c.u, "v": c.v,
             "names": sorted(set(c.names)), "codes": sorted({r.get("code") for r in c.rows if r.get("code")}),
             "kinds": sorted(c.kinds), "side": side,
+            "type": "ult" if "ult" in c.kinds else (c.entry or {}).get("type") or "other",
+            "ability_id": f"{c.entry['agent']}/{c.entry['ability']}" if c.entry else None,
+            "end_unknown": c.end_unknown,
             "phase": _phase(c.t, contact, plant), "after_decided": c.t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]],
             "trigger": _r2(trigger),

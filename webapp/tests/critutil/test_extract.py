@@ -305,3 +305,57 @@ def test_a_stun_on_a_teammate_flagged_friendly_is_harm():
     (c,) = cast_by(out, 1)
     assert c["harm"] == [{"mate": 0, "how": "concussed", "t": 8.2, "dur": 1.8, "died": True, "died_t": 9.5}]
     assert out["avail"]["friendly_status"] is True
+
+
+# --- the ability table: kinds, type, ability_id, and how long a row with no end lasts (W10)
+
+
+def _one(code, name, **kw):
+    out = run([toy_ability(code, name, 250, 150, 1, **kw)])
+    (c,) = cast_by(out, 1)
+    return out, c
+
+
+def test_wingman_is_a_status_not_an_ult():
+    _, c = _one("Aggrobot", "SeekerNade", t=5.0, t1=7.0, kind="GameObject")
+    assert "ult" not in c["kinds"] and c["type"] == "status" and c["ability_id"] == "Gekko/Wingman"
+
+
+def test_thrash_and_steel_garden_are_ults():
+    _, c = _one("Aggrobot", "RollyPolly", t=5.0, t1=9.0, kind="GameObject")
+    assert "ult" in c["kinds"] and c["type"] == "ult" and c["ability_id"] == "Gekko/Thrash"
+    _, c = _one("Nox", "DisarmPulse", t=5.0, t1=9.0, kind="GameObject")
+    assert "ult" in c["kinds"] and c["type"] == "ult" and c["ability_id"] == "Vyse/Steel Garden"
+
+
+def test_a_row_with_no_end_lasts_the_tables_duration():
+    _, c = _one("Sarge", "Q_Molotov_Production", t=5.0, t1=None)
+    assert c["t_end"] == 13.0 and c["type"] == "molly" and c["end_unknown"] is False
+
+
+def test_a_placeable_with_no_end_runs_to_t_decided():
+    out, c = _one("Killjoy", "Q_StealthAlarmbot", t=5.0, t1=None)
+    assert c["type"] == "placeable" and c["t_end"] == out["t_decided"] and c["end_unknown"] is False
+
+
+def test_an_unknown_ability_with_no_end_is_end_unknown_and_other():
+    out, c = _one("Zzz", "E_Mystery", t=5.0, t1=None)
+    assert c["t_end"] == out["t_decided"] and c["end_unknown"] is True
+    assert c["type"] == "other" and c["ability_id"] is None
+
+
+def test_no_40_second_cap():
+    assert not hasattr(extract, "LIFE_CAP_S")
+    _, c = _one("Zzz", "E_Mystery", t=2.0, t1=None)
+    assert c["t_end"] > 30.0 - 1e-9 or c["end_unknown"]
+
+
+def test_kind_label_is_unchanged_for_one_cast_per_old_kind():
+    from app.services.replay_util import kind_label
+
+    cases = [(("Wraith", "4_Smoke"), "smoke"), (("Sarge", "Q_Molotov_Production"), "damaging")]
+    for (code, name), label in cases:
+        _, c = _one(code, name, t=5.0, t1=9.0)
+        assert kind_label(c["kinds"]) == label, (code, name, c["kinds"])
+    out = run([flash(8.0, 1, [[5, 8.4, 2.0]])])
+    assert kind_label(cast_by(out, 1)[0]["kinds"]) == "blind"
