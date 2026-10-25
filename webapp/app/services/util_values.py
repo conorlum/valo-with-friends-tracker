@@ -580,23 +580,29 @@ DEVICE_EARLY_DEATH_S = 20.0     # a sentinel dead this soon left the round witho
 
 
 def round_agents(rd: dict) -> dict[int, str]:
-    """{slot: agent} of a round's data: its `agents`, else (rows extracted before it was stored) each slot's ult's
-    agent, the part of its `ability_id` before the slash."""
+    """{slot: agent} of a round's data: its `agents`, else (rows extracted before it was stored) the agent of each
+    slot's casts and of its ult's `ability_id` (the part before the slash)."""
     if rd.get("agents"):
         return {int(s): a for s, a in rd["agents"].items() if a}
     out = {}
+    for c in rd.get("casts") or ():
+        if c.get("by") is not None and c.get("agent"):
+            out.setdefault(int(c["by"]), c["agent"])
     for s, ult in (rd.get("ults") or {}).items():
         aid = ((ult or {}).get("use") or {}).get("ability_id")
         if aid:
-            out[int(s)] = aid.split("/", 1)[0]
+            out.setdefault(int(s), aid.split("/", 1)[0])
     return out
 
 
-def device_from(rd: dict, ids) -> dict:
+def device_from(rd: dict, ids, agents: dict | None = None) -> dict:
     """{(ability_id, side): the first second of the round that counts toward that device's comparison}: the side
     had the ability's agent and never placed it (from 0), or placed it and the agent died within
-    DEVICE_EARLY_DEATH_S (from the death: their util went off with them). Other rounds have no entry."""
-    agents = round_agents(rd)
+    DEVICE_EARLY_DEATH_S (from the death: their util went off with them, so only an entry with `off_at_death`).
+    Other rounds have no entry. `agents`
+    {slot: agent} defaults to round_agents(rd); match_tables passes the match's (old rows name a slot's agent only
+    in rounds it cast something)."""
+    agents = round_agents(rd) if agents is None else agents
     sides = {int(s): v for s, v in (rd.get("sides") or {}).items()}
     deaths: dict = {}
     for k in rd.get("kills") or ():
@@ -611,7 +617,8 @@ def device_from(rd: dict, ids) -> dict:
             side = sides[slot]
             if (aid, side) not in placed:
                 out[(aid, side)] = 0.0
-            elif deaths.get(slot, 1e9) <= DEVICE_EARLY_DEATH_S:
+            elif deaths.get(slot, 1e9) <= DEVICE_EARLY_DEATH_S \
+                    and (_abilities_by_key().get(aid) or {}).get("off_at_death"):
                 out[(aid, side)] = deaths[slot]
     return out
 
@@ -631,15 +638,18 @@ def match_tables(items: list, model, friend_players=frozenset()) -> dict:
     ls = np.arange(1, MAX_L + 1, dtype=float)
     ids: set = set()
     maps: set = set()
+    match_agents: dict = {}
     for it in items:
         maps.add(it["map"])
+        for slot, agent in round_agents(it["data"]).items():
+            match_agents.setdefault(it["match"], {}).setdefault(slot, agent)
         for c in it["data"].get("casts") or ():
             if type_of(c) == "placeable" and c.get("ability_id") is not None:
                 ids.add(c["ability_id"])
     for it in items:
         m, rd = it["match"], it["data"]
         player_of = it.get("player_of") or {}
-        without = device_from(rd, ids)
+        without = device_from(rd, ids, round_agents(rd) if rd.get("agents") else match_agents.get(m, {}))
         all_m = out_all.setdefault(m, {})
         for side, t, keys, up, row, alive, nxt in moment_rows(rd, model):
             k0 = keys[0]

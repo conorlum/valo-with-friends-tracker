@@ -381,21 +381,29 @@ def test_a_device_table_holds_the_other_rounds_of_its_map_only():
 
 
 def test_a_device_table_takes_a_round_whose_agent_died_early_from_the_death():
-    plac = {"i": 0, "by": 1, "side": "attack", "t": 0.0, "type": "placeable", "ability_id": "Sage/Barrier",
-            "kinds": ["wall"], "effects": [], "signals": {}}
-    sages = {"1": "Sage"}
-
-    def table(death_t):
+    def table(death_t, aid="Cypher/Trapwire"):
+        agent = aid.split("/")[0]
+        plac = {"i": 0, "by": 1, "side": "attack", "t": 0.0, "type": "placeable", "ability_id": aid,
+                "kinds": ["device"], "effects": [], "signals": {}}
         died = kill(death_t, 5, 1, [5, 5], k_side="defense", v_side="attack")
-        rd = {**v2_round([plac], kills=[died], t_decided=40.0), "agents": sages}
+        rd = {**v2_round([plac], kills=[died], t_decided=40.0), "agents": {"1": agent}}
         cells = util_values.match_tables([{"match": 1, "map": "Haven", "data": rd, "player_of": {}}],
-                                         MODEL)["device"]["Sage/Barrier|Haven|attack"]
+                                         MODEL)["device"][f"{aid}|Haven|attack"]
         return sum(a[0] for a in cells.get(1, {}).values())
     assert table(14.0) == len([t for t in range(0, 40, 2) if t >= 14.0])     # from the death on
     assert table(25.0) == 0                                                  # died later: not "early"
-    # rows extracted before `agents` was stored: the agent comes from the slot's ult
+    assert table(14.0, "Yoru/Fakeout") == 0                                  # not a sentinel's: on after death
+    plac = {"i": 0, "by": 1, "side": "attack", "t": 0.0, "type": "placeable", "ability_id": "Sage/Barrier",
+            "kinds": ["wall"], "effects": [], "signals": {}}
+    # rows extracted before `agents` was stored: the agent comes from the slot's casts or its ult
     old = {**v2_round(t_decided=20.0), "ults": {"1": {"use": {"ability_id": "Sage/Resurrection", "t": None}}}}
     assert util_values.round_agents(old) == {1: "Sage"}
+    # ... and from any round of the match: a round with no Sage cast is still a round with Sage
+    placed = {**plac, "agent": "Sage"}
+    items = [{"match": 1, "map": "Haven", "data": v2_round([placed], t_decided=20.0), "player_of": {}},
+             {"match": 1, "map": "Haven", "data": v2_round(t_decided=20.0), "player_of": {}}]
+    cells = util_values.match_tables(items, MODEL)["device"]["Sage/Barrier|Haven|attack"]
+    assert sum(a[0] for a in cells.get(1, {}).values()) == 10           # the second round's 10 moments
 
 
 def test_equal_errors_do_not_pass():
