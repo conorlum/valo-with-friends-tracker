@@ -576,13 +576,54 @@ def cast_lift_v2(round_data: dict, model, item: dict, table: dict, minus: dict |
 # Tables are kept per match at level 0 only (sparse); `expand` gives the three levels and `totals` sums matches.
 
 
+DEVICE_EARLY_DEATH_S = 20.0     # a sentinel dead this soon left the round without their placed util (the owner)
+
+
+def round_agents(rd: dict) -> dict[int, str]:
+    """{slot: agent} of a round's data: its `agents`, else (rows extracted before it was stored) each slot's ult's
+    agent, the part of its `ability_id` before the slash."""
+    if rd.get("agents"):
+        return {int(s): a for s, a in rd["agents"].items() if a}
+    out = {}
+    for s, ult in (rd.get("ults") or {}).items():
+        aid = ((ult or {}).get("use") or {}).get("ability_id")
+        if aid:
+            out[int(s)] = aid.split("/", 1)[0]
+    return out
+
+
+def device_from(rd: dict, ids) -> dict:
+    """{(ability_id, side): the first second of the round that counts toward that device's comparison}: the side
+    had the ability's agent and never placed it (from 0), or placed it and the agent died within
+    DEVICE_EARLY_DEATH_S (from the death: their util went off with them). Other rounds have no entry."""
+    agents = round_agents(rd)
+    sides = {int(s): v for s, v in (rd.get("sides") or {}).items()}
+    deaths: dict = {}
+    for k in rd.get("kills") or ():
+        deaths[k["victim"]] = min(deaths.get(k["victim"], 1e9), k["t"])
+    placed = {(c.get("ability_id"), c.get("side")) for c in rd.get("casts") or () if type_of(c) == "placeable"}
+    out = {}
+    for aid in ids:
+        agent = aid.split("/", 1)[0]
+        for slot, a in agents.items():
+            if a != agent or sides.get(slot) not in _SIDES:
+                continue
+            side = sides[slot]
+            if (aid, side) not in placed:
+                out[(aid, side)] = 0.0
+            elif deaths.get(slot, 1e9) <= DEVICE_EARLY_DEATH_S:
+                out[(aid, side)] = deaths[slot]
+    return out
+
+
 def match_tables(items: list, model, friend_players=frozenset()) -> dict:
     """items = [{"match", "map", "data" (round data), "player_of" {slot: player id}}]. Returns
     "all" {match: {type: {L0 key: arr}}}; "yours" {player: {match: {type: {L0 key: arr}}}} (each moment also for
     each alive slot of that side whose player is in friend_players); "device" {"<ability_id>|<map>|<side>":
-    {match: {L0 key: arr}}} (every moment of that map and side in rounds where that side placed no cast of that
-    ability_id: D15, no other filter); "overlap" {type: [n, o_1..o_45]} (n comparison moments; o_L those whose
-    next same-type start s has s < t + L)."""
+    {match: {L0 key: arr}}} (the moments of that map and side in rounds where that side had the ability's agent and
+    was without it: never placed, or placed and the agent dead within DEVICE_EARLY_DEATH_S, from the death on:
+    `device_from`, the owner's set, 2026-10-24); "overlap" {type: [n, o_1..o_45]} (n comparison moments; o_L those
+    whose next same-type start s has s < t + L)."""
     out_all: dict = {}
     yours: dict = {}
     device: dict = {}
@@ -598,8 +639,7 @@ def match_tables(items: list, model, friend_players=frozenset()) -> dict:
     for it in items:
         m, rd = it["match"], it["data"]
         player_of = it.get("player_of") or {}
-        placed = {s: {c.get("ability_id") for c in rd.get("casts") or ()
-                      if c.get("side") == s and type_of(c) == "placeable"} for s in _SIDES}
+        without = device_from(rd, ids)
         all_m = out_all.setdefault(m, {})
         for side, t, keys, up, row, alive, nxt in moment_rows(rd, model):
             k0 = keys[0]
@@ -617,7 +657,7 @@ def match_tables(items: list, model, friend_players=frozenset()) -> dict:
                 if typ in nxt:
                     ov[1:] += (nxt[typ] < t + ls)
             for aid in ids:
-                if aid not in placed[side]:
+                if t >= without.get((aid, side), 1e18):
                     _acc(device.setdefault(f"{aid}|{it['map']}|{side}", {}).setdefault(m, {}), k0, row)
     for aid in ids:                     # every key exists even when no round qualified
         for mp in maps:

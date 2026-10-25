@@ -360,11 +360,14 @@ def test_yours_leaves_out_every_match_given():
 def test_a_device_table_holds_the_other_rounds_of_its_map_only():
     plac = {"i": 0, "by": 1, "side": "attack", "t": 8.0, "type": "placeable", "ability_id": "Sage/Barrier",
             "kinds": ["wall"], "effects": [], "signals": {}}
-    r_with = v2_round([plac], t_decided=20.0)
-    r_without = v2_round(t_decided=20.0)
+    sages = {"1": "Sage", "6": "Sage"}                  # one Sage a side
+    r_with = {**v2_round([plac], t_decided=20.0), "agents": sages}
+    r_without = {**v2_round(t_decided=20.0), "agents": sages}
     items = [{"match": 1, "map": "Haven", "data": r_with, "player_of": {}},
              {"match": 2, "map": "Haven", "data": r_without, "player_of": {}},
-             {"match": 3, "map": "Bind", "data": r_without, "player_of": {}}]
+             {"match": 3, "map": "Bind", "data": r_without, "player_of": {}},
+             {"match": 4, "map": "Haven", "data": {**v2_round(t_decided=20.0), "agents": {"1": "Jett", "6": "Omen"}},
+              "player_of": {}}]                                                                  # no Sage
     dev = util_values.match_tables(items, MODEL)["device"]
 
     def count(key, m):
@@ -374,6 +377,25 @@ def test_a_device_table_holds_the_other_rounds_of_its_map_only():
     assert count(dfn, 1) > 0 and count(dfn, 2) > 0, "defense never placed it"
     assert 3 not in dev[atk] and 3 not in dev[dfn] and count(bind, 3) > 0, "each map has its own"
     assert 1 not in dev[bind] and 2 not in dev[bind]
+    assert 4 not in dev[atk] and 4 not in dev[dfn], "a side without the ability's agent is no comparison"
+
+
+def test_a_device_table_takes_a_round_whose_agent_died_early_from_the_death():
+    plac = {"i": 0, "by": 1, "side": "attack", "t": 0.0, "type": "placeable", "ability_id": "Sage/Barrier",
+            "kinds": ["wall"], "effects": [], "signals": {}}
+    sages = {"1": "Sage"}
+
+    def table(death_t):
+        died = kill(death_t, 5, 1, [5, 5], k_side="defense", v_side="attack")
+        rd = {**v2_round([plac], kills=[died], t_decided=40.0), "agents": sages}
+        cells = util_values.match_tables([{"match": 1, "map": "Haven", "data": rd, "player_of": {}}],
+                                         MODEL)["device"]["Sage/Barrier|Haven|attack"]
+        return sum(a[0] for a in cells.get(1, {}).values())
+    assert table(14.0) == len([t for t in range(0, 40, 2) if t >= 14.0])     # from the death on
+    assert table(25.0) == 0                                                  # died later: not "early"
+    # rows extracted before `agents` was stored: the agent comes from the slot's ult
+    old = {**v2_round(t_decided=20.0), "ults": {"1": {"use": {"ability_id": "Sage/Resurrection", "t": None}}}}
+    assert util_values.round_agents(old) == {1: "Sage"}
 
 
 def test_equal_errors_do_not_pass():

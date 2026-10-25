@@ -153,12 +153,15 @@ def device_corpus():
     for m in stored:
         stored[m] = {1: v2_round([], kills=[kill(14.0 + (m % 3) * 4, 5, 0, [5, 5], k_side="defense", v_side="attack")],
                                  t_decided=40.0)}
+        stored[m][1]["agents"] = {"1": "Test"}          # the device's agent on attack: its absence is a comparison
     plac = v2_cast(0, t=8.0, seen_end=11.0, type_="placeable", side="attack", by=1, kills=[], enemies=[], harm=[],
                    ability_id="Test/Device")
     stored[1][1] = v2_round([plac], kills=[kill(14.0, 5, 0, [5, 5], k_side="defense", v_side="attack")],
                             t_decided=40.0)
     # the cast's own match also has a round without the device, whose moments differ from every other match's
     stored[1][2] = v2_round([], kills=[kill(30.0, 5, 0, [5, 5], k_side="defense", v_side="attack")], t_decided=40.0)
+    for n in (1, 2):
+        stored[1][n]["agents"] = {"1": "Test"}
     ctx[1]["rounds"][2] = {"winner": "attack"}
     return stored, ctx
 

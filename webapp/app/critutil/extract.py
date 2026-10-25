@@ -5,7 +5,7 @@ Runs on the replay worker beside Critical Moments (app/control/task.py, the gap 
 app.control, app.replays.player_state and app.critutil.constants. Slots only, never names. What a cast is worth is
 not decided here: the site turns this evidence into values with the corpus's estimator (app/services/util_values.py).
 
-Output: {"v", "sides", "contact", "plant", "defuse", "t_decided", "kills", "casts", "heals", "unused", "ults",
+Output: {"v", "sides", "agents", "contact", "plant", "defuse", "t_decided", "kills", "casts", "heals", "unused", "ults",
 "avail"}.
 """
 
@@ -1161,6 +1161,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
     return {
         "v": VERSION,
         "sides": {str(s): v for s, v in sides.items()},
+        "agents": {str(s): agents.get(s) for s in sides},
         "contact": _r2(contact), "plant": _r2(plant), "defuse": _r2(defuse), "t_decided": _r2(rnd.t_decided),
         "kills": kills,
         "casts": out_casts,
