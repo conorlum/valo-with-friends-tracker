@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 3                # the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 3                 # the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -24,11 +24,11 @@ BUFF_MATCH_S = 0.3         # buff rows (Harmonize) of one caster starting this c
 GRACE_S = 1.0               # a kill this long after an effect ends still counts as on an affected enemy
 ZONE_DAMAGE_LOOKBACK_S = 3.0  # a victim damaged by a zone this recently before dying
 TRIGGER_WINDOW_S = 4.0      # a device's trigger: kills this long after it
+NEAR_TRIGGER_M = 15.0       # ... on enemies within this of the device
 TRADEMARK_PIECE_LEAD_S = (1.8, 2.2)   # a fired Trademark's dart or slow starts this long before the trap row closes
 #                             (replays 330/332/370: 1.93-2.004 s) ...
 TRADEMARK_FIRE_LEAD_S = 0.9           # ... and the trap fired this long before the dart's throw
 ALARMBOT_YAW_WINDOW_S = 1.5           # a fired Alarmbot's yaws gain an entry this soon before its row closes (0.71-1.24 s)
-NEAR_TRIGGER_M = 15.0      # ... on enemies within this of the device
 FOLLOW_S = 1.5              # a teammate's damage or aimed shot this soon after an effect starts follows it up
 
 # --- sight blocking (smokes and walls)
