@@ -17,7 +17,7 @@ import re
 
 from app.control import engine
 from app.critutil import abilities, windows
-from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
+from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
@@ -281,6 +281,9 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             for c in reversed(casts):
                 if c.flash is not None or c.by != by or c.entry is None or c.entry["match"] not in parents:
                     continue
+                if r.get("code") == "Deadeye" and r.get("name") == "E_Slow_Large" \
+                        and (r.get("thrown") or {}).get("t0") is None and not _in_dart_window(r, _trap_t1(c)):
+                    break                   # a slow with no throw far from the trap's close is an ult kill's, its own cast
                 if ((r.get("thrown") or {}).get("t0") is not None and abs(c.t - tt) <= THROW_MATCH_S) \
                         or c.t - _EPS <= r["t"] <= c.t_end + MERGE_S:
                     host = c
@@ -416,19 +419,66 @@ def _damage_by_zone_before(effects, target, t) -> bool:
                and e["t0"] <= t for e in effects)
 
 
-def _trigger(c: _Cast) -> float | None:
+def _is_trap_row(r) -> bool:
+    return r.get("code") == "Deadeye" and r.get("name") == "E_Trap"
+
+
+def _trap_t1(c: _Cast) -> float | None:
+    """When a Trademark cast's trap row closed (None for any other cast)."""
+    return next((float(r["t1"]) for r in c.rows if _is_trap_row(r) and r.get("t1") is not None), None)
+
+
+def _in_dart_window(r, trap_t1) -> bool:
+    """A Trademark piece (its dart or its slow) whose `t` is 1.8-2.2 s before the trap row's close: the trap fired."""
+    lo, hi = TRADEMARK_PIECE_LEAD_S
+    return trap_t1 is not None and lo <= trap_t1 - float(r["t"]) <= hi
+
+
+def _trigger_kind(c: _Cast) -> tuple[float, str] | None:
+    """(when the device was set off, "fired" | "broken"), the first of its signals in this order: fx, raised, gone,
+    then a Trademark's dart or slow, then an Alarmbot's second yaw."""
     for r in c.rows:
         fx = r.get("fx")
         if isinstance(fx, (int, float)):
-            return float(fx)
+            return float(fx), "fired"
         if isinstance(fx, list) and fx:
             first = fx[0]
-            return float(first[0] if isinstance(first, list) else first)
+            return float(first[0] if isinstance(first, list) else first), "fired"
         if isinstance(r.get("raised"), list) and r["raised"]:
-            return float(r["raised"][0])
+            return float(r["raised"][0]), "fired"
         if r.get("gone") is not None:
-            return float(r["gone"])
+            return float(r["gone"]), "broken"
+    trap_t1 = _trap_t1(c)
+    for r in c.rows:
+        if r.get("code") == "Deadeye" and r.get("name") in ("4_Trap_Dart", "E_Slow_Large") \
+                and _in_dart_window(r, trap_t1):
+            return _throw_t(r) - TRADEMARK_FIRE_LEAD_S, "fired"
+        yaws = r.get("yaws")
+        if r.get("code") == "Killjoy" and r.get("name") == "Q_StealthAlarmbot" and r.get("t1") is not None \
+                and isinstance(yaws, list):
+            later = [float(y[0]) for y in yaws[1:] if isinstance(y, list) and y
+                     and float(r["t1"]) - ALARMBOT_YAW_WINDOW_S <= float(y[0]) <= float(r["t1"]) + _EPS]
+            if later:
+                return later[0], "fired"
     return None
+
+
+def _trigger(c: _Cast) -> float | None:
+    got = _trigger_kind(c)
+    return got[0] if got else None
+
+
+def _set_off(rnd, c: _Cast, enemy_eff, trigger) -> tuple[float | None, str | None]:
+    """How a device was set off: "fired" (its own signal or an enemy touching it), "broken" (it vanished), "closed"
+    (its row ended before the round was decided with its owner alive, a quiet close), else None. Only `fired` and
+    `broken` carry a trigger time; the caller's `trigger` is untouched by "closed"."""
+    if trigger is not None:
+        got = _trigger_kind(c)
+        return trigger, (got[1] if got and abs(got[0] - trigger) <= _EPS else "fired")
+    if any(r.get("t1") is not None for r in c.rows) and c.t_end < rnd.t_decided - _EPS \
+            and rnd.alive(c.by, c.t_end):
+        return c.t_end, "closed"
+    return None, None
 
 
 def _link_kills(rnd, sides, c: _Cast, effects, trigger) -> list[dict]:
@@ -1273,10 +1323,11 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         eff = effects[c.i]
         side = sides.get(c.by)
         enemy_eff = [e for e in eff if sides.get(e["target"]) not in (None, side)]
-        trigger = None
-        if "device" in c.kinds:     # it fired, was broken, or first touched an enemy: whichever came first
+        trigger = set_off_t = set_off_kind = None
+        if "device" in c.kinds:    # it fired, was broken, or first touched an enemy: whichever came first
             seen = [x for x in (_trigger(c), *(e["t0"] for e in enemy_eff)) if x is not None and x >= c.t - _EPS]
             trigger = min(seen) if seen else None
+            set_off_t, set_off_kind = _set_off(rnd, c, enemy_eff, trigger)
         alive = _alive_counts(rnd, sides, c.t)
         cast_type = "ult" if "ult" in c.kinds else (c.entry or {}).get("type") or "other"
         out_casts.append({
@@ -1289,6 +1340,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "phase": _phase(c.t, contact, plant), "after_decided": c.t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]],
             "trigger": _r2(trigger),
+            "set_off_t": _r2(set_off_t), "set_off_kind": set_off_kind,
             "enemies": sorted({e["target"] for e in enemy_eff}),
             "effects": [{"target": e["target"], "how": e["how"], "t0": _r2(e["t0"]), "t1": _r2(e["t1"]),
                          "known": e["dur_known"]} for e in enemy_eff],

@@ -547,6 +547,84 @@ def test_ambushed_death_makes_no_unused_claim():
     assert extract.round_util(rnd, data)["unused"] == []
 
 
+# --- W5: how a trap was set off (Trademark's dart and slow, Alarmbot's yaws), shapes from real rows
+
+TRAP = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 128.663, "id": 10870, "k": "ability",
+        "kind": "GameObject", "name": "E_Trap", "owner_by": "instigator", "t": 0.0, "t1": 15.842,
+        "u": 5618, "v": 692, "yaw": 156, "z": 80}
+DART = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 0.07, "id": 11396, "k": "ability",
+        "kind": "Projectile", "name": "4_Trap_Dart", "owner_by": "instigator", "t": 13.838, "t1": 13.881,
+        "u": 5605, "v": 816, "yaw": 96, "z": 85}
+SLOW = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 7.006, "id": 11422, "k": "ability",
+        "kind": "Patch", "name": "E_Slow_Large", "owner_by": "instigator", "t": 13.881, "t1": 20.882,
+        "thrown": {"t0": 13.838, "t1": 13.881, "u": 5605, "v": 816, "z": 85}, "u": 5537, "v": 1486, "yaw": 275,
+        "z": 80}
+BOT = {"agent": "Killjoy", "by": 1, "code": "Killjoy", "full": 74.276, "id": 22548, "k": "ability", "kind": "Pawn",
+       "name": "Q_StealthAlarmbot", "owner_by": "instigator", "path": [[0.0, 1158, 3938, 13], [0.103, 1158, 3938, 13]],
+       "possessed": [], "t": 0.0, "t1": 13.234, "u": 1158, "v": 3938, "yaw": 216,
+       "yaws": [[0.0, 216], [12.303, 47], [12.405, 42]], "z": 13}
+
+
+def test_w5_trademark_fired_by_its_dart_and_slow_triggers_before_the_dart():
+    (c,) = cast_by(run([TRAP, DART, SLOW]), 1, "device")
+    assert c["trigger"] == pytest.approx(12.94, abs=0.011)
+    assert c["set_off_kind"] == "fired" and c["set_off_t"] == c["trigger"]
+
+
+def test_w5_trademark_with_only_its_slow_still_fired():
+    (c,) = cast_by(run([TRAP, SLOW]), 1, "device")
+    assert c["trigger"] == pytest.approx(12.94, abs=0.011) and c["set_off_kind"] == "fired"
+
+
+def test_w5_an_ult_slow_with_no_throw_far_from_the_close_is_its_own_cast():
+    ult_slow = {k: v for k, v in SLOW.items() if k != "thrown"} | {"t": 5.0, "t1": 12.0, "id": 99}
+    out = run([TRAP, ult_slow])
+    trap = [c for c in cast_by(out, 1) if "E_Trap" in c["names"]]
+    assert len(trap) == 1 and "E_Slow_Large" not in trap[0]["names"]
+    assert trap[0]["trigger"] is None and trap[0]["set_off_kind"] == "closed"
+    assert any(c["names"] == ["E_Slow_Large"] for c in cast_by(out, 1))
+
+
+def test_w5_an_unthrown_slow_inside_the_window_joins_the_trap():
+    slow = {k: v for k, v in SLOW.items() if k != "thrown"} | {"t": 13.9}
+    (c,) = cast_by(run([TRAP, slow]), 1, "device")
+    assert "E_Slow_Large" in c["names"] and c["set_off_kind"] == "fired"
+
+
+def test_w5_alarmbot_fired_by_a_later_yaw():
+    (c,) = cast_by(run([BOT]), 1, "device")
+    assert c["trigger"] == 12.3 and c["set_off_kind"] == "fired" and c["set_off_t"] == 12.3
+
+
+def test_w5_alarmbot_with_one_yaw_is_closed_not_triggered():
+    bot = BOT | {"t1": 20.0, "yaws": [[0.0, 294]]}
+    (c,) = cast_by(run([bot]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] == "closed"
+
+
+def test_w5_a_gone_device_is_broken():
+    trap = TRAP | {"gone": 10.0}
+    (c,) = cast_by(run([trap]), 1, "device")
+    assert c["trigger"] == 10.0 and c["set_off_kind"] == "broken" and c["set_off_t"] == 10.0
+
+
+def test_w5_a_device_alive_to_the_end_or_whose_owner_died_is_not_closed():
+    alive = TRAP | {"t1": 30.0}
+    (c,) = cast_by(run([alive]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] is None and c["set_off_t"] is None
+    (c,) = cast_by(run([TRAP], kills=[kill(10.0, 5, 1)]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] is None
+
+
+def test_w5_a_trapwire_with_pieces_inside_merge_is_one_cast_and_triggers_as_before():
+    trip = toy_ability("Gumshoe", "4_TripWire", 380, 160, 1, t=2.0, t1=25.0, kind="GameObject")
+    second = toy_ability("Gumshoe", "4_TripWire", 380, 160, 1, t=2.5, t1=3.0, kind="GameObject")
+    tether = status(11.0, 13.0, 1, 5, name="4_TripWire", status="tethered")
+    out = run([trip, second, tether])
+    devs = cast_by(out, 1, "device")
+    assert len(devs) == 1 and devs[0]["trigger"] == 11.0 and devs[0]["set_off_kind"] == "fired"
+
+
 def test_output_is_plain_and_versioned():
     import json
 
