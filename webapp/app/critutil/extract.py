@@ -188,6 +188,9 @@ def _another_use(rnd, c: _Cast, row) -> bool:
     name = row.get("name")
     if not name or name not in c.landed or any(p in name for p in REPEAT_PARTS):
         return False
+    go = (c.entry or {}).get("go_off")
+    if go and re.search(go, f"{row.get('kind')}:{_code_name(row) or ''}"):
+        return False                # the moment this use was set off (Razorvine's patch), not another use
     if float(row["t"]) - c.landed[name] > REPEAT_S:
         return True
     if float(row["t"]) > BUY_PLACED_S or row.get("u") is None or (row.get("thrown") or {}).get("t0") is not None:
@@ -864,9 +867,11 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
 
 
 def _first_use(util, slot, agent, end):
-    """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it), up to `end`;
-    None when it has none (Reyna's has no sign)."""
-    if agent == "Chamber":
+    """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it, or Reyna's
+    Empress heal on activation), up to `end`; None when it has none (Reyna at full health shows no heal)."""
+    if agent == "Reyna":
+        want = lambda r: r.get("k") == "heal" and r.get("name") == "X_Frenzy"
+    elif agent == "Chamber":
         want = lambda r: r.get("k") == "shot" and r.get("gun") == "Tour de Force"
     elif agent == "Jett":
         want = lambda r: (r.get("k") == "damage" and r.get("name") == "X_Dagger_Production"
@@ -1001,9 +1006,12 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         "ult_drop": _r2(drop),
     }
     go = (c.entry or {}).get("go_off")
-    if go:                                  # when it was set off: its first row of that name (Nanoswarm's swarm)
-        ts = [r["t"] for r in c.rows if re.search(go, _code_name(r) or "")]
+    if go:          # when it was set off: its first row matching "<kind>:<code_name>" (Nanoswarm's swarm, Razorvine's patch)
+        ts = [r["t"] for r in c.rows if re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
         s["go_off"] = _r2(min(ts)) if ts else None
+    if (c.entry or {}).get("rule") == "possessed":      # a camera: when its owner was looking through it
+        s["possessed"] = sorted(([_r2(a), _r2(b)] for r in c.rows for a, b in (r.get("possessed") or ())),
+                                key=lambda x: x[0])
     if cast_type != "ult":
         return s
     rule = (c.entry or {}).get("rule")

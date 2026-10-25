@@ -23,7 +23,7 @@ def test_label_of():
     for tag, label in replay_util.LABELS:
         assert f([tag]) == label
     assert [l for _, l in replay_util.LABELS] == ["Blinds", "Smokes", "Damaging", "Status", "Info", "Teleports", "Dashes",
-                                                         "Heals"]
+                                                         "Stims", "Heals"]
     assert f(["damaging", "status"]) == "Damaging"
     assert f(["status", "blind"]) == "Blinds"
     for kinds in (["wall"], ["device"], ["ult"], ["other"], [], None):

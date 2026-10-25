@@ -17,6 +17,7 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
               and a trigger (signals.go_off, else the cast's `trigger`), it ends at trigger + A + g instead (Shear's
               wall, Fakeout's flash). With `from_trigger` it starts at the trigger, and never set off it has none
               (Nanoswarm: only while it damages).
+  possessed   each span its owner looked through it, plus g after it (Spycam: 5 s); never looked through: none.
   travel      [t, seen_end + D + g]: the flight, then the status it leaves (Paranoia); no seen_end: fallback.
   tag         a cast that tagged an enemy: [t, seen_end + g] (Spycam dart: until it is taken out, plus 5 s), no
               seen_end: the last effect end + g; a cast that tagged nobody: none.
@@ -150,6 +151,8 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
             else:
                 b = (seen if seen is not None else t_decided) + g
             segs = _minus([a, b], s.get("off") or [])
+    elif rule == "possessed":
+        segs = [[a, (t_decided if b is None else b) + g] for a, b in (s.get("possessed") or [])]
     elif rule == "travel":
         segs = [[t, seen + (D or 0.0) + g]] if seen is not None else fb()
     elif rule == "tag":

@@ -144,6 +144,15 @@ def test_from_trigger_counts_only_after_it_went_off():
     assert segs(trap(armed=1.0, seen_end=40.0), nano) == []                               # never set off
 
 
+def test_possessed_is_each_look_through_plus_the_grace():
+    cam = ent("possessed", None, g=5)
+    looks = [[6.3, 8.6], [15.7, 16.2], [28.8, 29.4]]
+    assert segs(cast(5.0, possessed=looks), cam) == [[6.3, 13.6], [15.7, 21.2], [28.8, 34.4]]
+    assert segs(cast(5.0, possessed=[[6.3, 8.6], [10.0, 11.0]]), cam) == [[6.3, 16.0]]       # tails that overlap merge
+    assert segs(cast(5.0, possessed=[[90.0, None]]), cam) == [[90.0, 100.0]]                 # in it at the end
+    assert segs(cast(5.0), cam) == []                                                        # never looked through
+
+
 def test_travel_is_the_flight_then_the_status():
     para = ent("travel", 2, g=0)
     assert w(cast(10.0, seen_end=11.5), para) == {"segments": [[10.0, 13.5]], "rule": "travel", "fallback": False}

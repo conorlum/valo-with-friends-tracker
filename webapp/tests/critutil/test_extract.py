@@ -256,7 +256,20 @@ def test_neon_use_is_the_first_shot_with_no_gun():
     assert out["ults"]["0"]["use"]["t"] == 11.0
 
 
-def test_reyna_has_no_use_sign_and_other_agents_have_no_use():
+def frenzy_heal(t, by=0):
+    return {"k": "heal", "t": t, "t1": t + 2.5, "by": by, "target": by, "pool": "hp", "amount": 50.0,
+            "code": "Vampire", "name": "X_Frenzy", "from": "causer"}
+
+
+def test_reyna_use_is_her_empress_heal_and_ends_at_the_drop():
+    ps = ult_state(0, drop=42.7)
+    out = run([frenzy_heal(27.5), frenzy_heal(35.0)], kills=[kill(42.7, 5, 0)], player_state=ps,
+              agents={0: "Reyna"}, t_end=60.0)
+    assert out["ults"]["0"]["use"] == {"t": 27.5, "ability_id": "Reyna/Empress", "type": "ult",
+                                       "signals": {"ult_end": 42.7, "death": 42.7}}
+
+
+def test_reyna_at_full_health_has_no_use_sign_and_other_agents_have_no_use():
     out = run([shot(7.0, 0, gun=None)], player_state=ult_state(0), agents={0: "Reyna", 1: "Sova"})
     assert out["ults"]["0"]["use"] == {"t": None, "ability_id": "Reyna/Empress", "type": "ult",
                                        "signals": {"ult_end": None, "death": None}}
@@ -583,6 +596,24 @@ def test_signals_go_off_is_when_a_nanoswarm_was_set_off():
     assert s["go_off"] == 20.0
     hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 200, 200, 1, t=1.0, t1=40.0, kind="Projectile")
     assert sig(run([hidden], t_end=40.0, agents={1: "Killjoy"}))["go_off"] is None
+
+
+def test_signals_go_off_is_razorvines_patch_not_its_hidden_object():
+    hidden = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=0.0, t1=34.6, kind="GameObject")
+    patch = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=34.6, t1=41.1, kind="Patch")
+    out = run([hidden, patch], t_end=60.0, agents={1: "Vyse"})
+    assert len(cast_by(out, 1)) == 1                        # the patch is the same use going off, not a second one
+    assert sig(out)["go_off"] == 34.6
+    never = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=0.0, t1=59.0, kind="GameObject")
+    assert sig(run([never], t_end=60.0, agents={1: "Vyse"}))["go_off"] is None
+
+
+def test_signals_possessed_are_the_cameras_looked_through_spans():
+    cam = toy_ability("Gumshoe", "E_PossessableCamera", 200, 200, 1, t=5.4, t1=76.2, kind="Pawn",
+                      possessed=[[28.8, 29.4], [6.3, 8.6]])
+    assert sig(run([cam], t_end=80.0, agents={1: "Cypher"}))["possessed"] == [[6.3, 8.6], [28.8, 29.4]]
+    trip = toy_ability("Gumshoe", "4_TripWire", 200, 200, 1, t=0.0, t1=20.0, kind="GameObject")
+    assert "possessed" not in sig(run([trip], t_end=30.0))
 
 
 OMEN = ("Wraith", "X_GlobalTeleport_Intention")

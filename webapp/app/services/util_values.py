@@ -319,8 +319,8 @@ BASE_WINDOW_S = 10.0
 BASE_STEP_S = 2.0
 BASE_MIN_N = 30             # comparison moments a level needs before it is used
 BASE_LEVELS = ("state, phase and time", "state and phase", "man advantage")
-KIND_ORDER = ("ult", "blind", "smoke", "wall", "damaging", "status", "info", "device", "heal", "teleport", "dash",
-              "other")
+KIND_ORDER = ("ult", "blind", "smoke", "wall", "damaging", "status", "info", "device", "stim", "heal", "teleport",
+              "dash", "other")
 
 
 def main_kind(kinds) -> str:
@@ -377,7 +377,7 @@ def levels(round_data: dict, side: str, t: float) -> list[str]:
 # over its window segments (app/critutil/windows.py), the first 45 s of them.
 
 TYPES = ("flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
-         "other")
+         "stim", "other")
 MAX_L = 45
 _SIDES = ("attack", "defense")
 

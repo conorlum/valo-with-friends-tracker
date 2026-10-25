@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "fb275174b2323a819ccadc003241956aee0c81cf0f386bb6132f67fdc169d762"
+PINNED_EXTRACTOR_HASH = "605b5944904a1ea6d570a2ccaa04ad015da18cf9062c6503cad807be7bf02137"
 
 
 def _script():
@@ -241,9 +241,21 @@ def test_the_owners_answers_on_the_unsettled_abilities():
         assert by[key]["duration_s"] == secs and "provisional" not in by[key], key
 
 
+def test_the_owners_second_answers_razorvine_stims_mpulse_spycam():
+    by = {(e["agent"], e["ability"]): e for e in abilities.load()}
+    rv = by[("Vyse", "Razorvine")]
+    assert rv["type"] == "placeable" and rv["from_trigger"] and rv["go_off"] == "^Patch:Nox_BarbedWire$"
+    assert rv["after_trigger_s"] == 6 and rv["grace_s"] == 2
+    assert by[("Brimstone", "Stim Beacon")]["type"] == "stim" and by[("Miks", "Harmonize")]["type"] == "stim"
+    assert by[("Clove", "Pick-Me-Up")]["type"] == "stim" and by[("Clove", "Pick-Me-Up")]["kinds"] == ["stim", "heal"]
+    assert abilities.lookup("Iris_Heal")["ability"] == "M-pulse (heal)"        # the heal mode, not Harmonize
+    assert abilities.lookup("Iris_Heal")["type"] == "heal"
+    assert by[("Cypher", "Spycam")]["rule"] == "possessed" and by[("Cypher", "Spycam")]["grace_s"] == 5
+
+
 TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
-         "other"}
-RULES = {"duration", "status", "flash", "placeable", "travel", "tag", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
+         "stim", "other"}
+RULES = {"duration", "status", "flash", "placeable", "possessed", "travel", "tag", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
          "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
 KNOWN_CODES = [
     "Clay_X_Rocket", "Aggrobot_RollyPolly", "Phoenix_4_Molotov_Production", "Clay_4_Projectile_Primary",

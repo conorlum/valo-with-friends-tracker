@@ -63,9 +63,9 @@ STALL_KINDS = frozenset({"smoke", "damaging", "status", "device"})
 AGENT_KEYS = {
     "Astra": {"C": ("Gravity Well", "status"), "Q": ("Nova Pulse", "status"), "E": ("Nebula", "smoke")},
     "Breach": {"C": ("Aftershock", "damaging"), "Q": ("Flashpoint", "blind"), "E": ("Fault Line", "status")},
-    "Brimstone": {"C": ("Stim Beacon", "other"), "Q": ("Incendiary", "damaging"), "E": ("Sky Smoke", "smoke")},
+    "Brimstone": {"C": ("Stim Beacon", "stim"), "Q": ("Incendiary", "damaging"), "E": ("Sky Smoke", "smoke")},
     "Chamber": {"C": ("Trademark", "device"), "E": ("Rendezvous", "teleport")},   # Headhunter is a gun, not util
-    "Clove": {"C": ("Pick-Me-Up", "heal"), "Q": ("Meddle", "status"), "E": ("Ruse", "smoke")},
+    "Clove": {"C": ("Pick-Me-Up", "stim"), "Q": ("Meddle", "status"), "E": ("Ruse", "smoke")},
     "Cypher": {"C": ("Trapwire", "device"), "Q": ("Cyber Cage", "smoke"), "E": ("Spycam", "info")},
     "Deadlock": {"C": ("GravNet", "status"), "Q": ("Sonic Sensor", "device"), "E": ("Barrier Mesh", "other")},
     "Fade": {"C": ("Prowler", "status"), "Q": ("Seize", "status"), "E": ("Haunt", "info")},
@@ -85,7 +85,7 @@ AGENT_KEYS = {
     "Sova": {"C": ("Owl Drone", "info"), "Q": ("Shock Bolt", "damaging"), "E": ("Recon Bolt", "info")},
     "Tejo": {"C": ("Stealth Drone", "info"), "Q": ("Special Delivery", "status"), "E": ("Guided Salvo", "damaging")},
     "Viper": {"C": ("Snake Bite", "damaging"), "Q": ("Poison Cloud", "smoke"), "E": ("Toxic Screen", "smoke")},
-    "Vyse": {"C": ("Razorvine", "damaging"), "Q": ("Shear", "other"), "E": ("Arc Rose", "blind")},
+    "Vyse": {"C": ("Razorvine", "device"), "Q": ("Shear", "other"), "E": ("Arc Rose", "blind")},
     "Waylay": {"C": ("Saturate", "status"), "Q": ("Lightspeed", "dash"), "E": ("Refract", "teleport")},
     "Yoru": {"C": ("Fakeout", "other"), "Q": ("Blindside", "blind"), "E": ("Gatecrash", "teleport")},
 }

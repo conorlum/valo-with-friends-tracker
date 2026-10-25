@@ -246,9 +246,9 @@
    "agent": "Brimstone",
    "ability": "Stim Beacon",
    "slot": "C",
-   "type": "other",
+   "type": "stim",
    "kinds": [
-    "other"
+    "stim"
    ],
    "rule": "duration",
    "grace_s": 1,
@@ -445,8 +445,9 @@
    "agent": "Clove",
    "ability": "Pick-Me-Up",
    "slot": "C",
-   "type": "heal",
+   "type": "stim",
    "kinds": [
+    "stim",
     "heal"
    ],
    "rule": "heal",
@@ -635,8 +636,8 @@
     "info",
     "device"
    ],
-   "rule": "placeable",
-   "grace_s": 0,
+   "rule": "possessed",
+   "grace_s": 5,
    "wiki": {
     "page": "Spycam",
     "field": "none",
@@ -1595,7 +1596,7 @@
    ],
    "replay_s": 12.8,
    "from_trigger": true,
-   "go_off": "^Killjoy_4_BeeSwarm_Damage$",
+   "go_off": ":Killjoy_4_BeeSwarm_Damage$",
    "after_trigger_s": 4,
    "duration_s": 4.0
   },
@@ -1707,16 +1708,16 @@
    "duration_s": 8.0
   },
   {
-   "match": "^(Iris_Heal)$",
+   "match": "^(?!)$",
    "agent": "Miks",
    "ability": "Harmonize",
    "slot": "?",
-   "type": "heal",
+   "type": "stim",
    "kinds": [
-    "heal"
+    "stim"
    ],
-   "rule": "heal",
-   "grace_s": 0,
+   "rule": "duration",
+   "grace_s": 1,
    "wiki": {
     "page": "Harmonize",
     "field": "Buff duration",
@@ -1730,7 +1731,6 @@
     ]
    },
    "pieces": [],
-   "replay_s": 5.3,
    "duration_s": 8.0
   },
   {
@@ -1761,6 +1761,32 @@
    ],
    "replay_s": 1.8,
    "duration_s": 2.0
+  },
+  {
+   "match": "^(Iris_Heal)$",
+   "agent": "Miks",
+   "ability": "M-pulse (heal)",
+   "slot": "?",
+   "type": "heal",
+   "kinds": [
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "M-pulse",
+    "field": "none",
+    "rows": [
+     {
+      "label": "Max Concuss duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 5.3,
+   "duration_s": null,
+   "provisional": true
   },
   {
    "match": "^(Iris_E_Smoke)$",
@@ -3025,12 +3051,13 @@
    "agent": "Vyse",
    "ability": "Razorvine",
    "slot": "C",
-   "type": "molly",
+   "type": "placeable",
    "kinds": [
-    "damaging"
+    "damaging",
+    "device"
    ],
-   "rule": "duration",
-   "grace_s": 1,
+   "rule": "placeable",
+   "grace_s": 2,
    "wiki": {
     "page": "Razorvine",
     "field": "Duration",
@@ -3045,6 +3072,9 @@
    },
    "pieces": [],
    "replay_s": 6.6,
+   "from_trigger": true,
+   "go_off": "^Patch:Nox_BarbedWire$",
+   "after_trigger_s": 6,
    "duration_s": 6.0
   },
   {
