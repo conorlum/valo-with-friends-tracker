@@ -386,7 +386,8 @@
     "^Deadeye_E_Slow_Large$"
    ],
    "replay_s": 23.3,
-   "duration_s": 4.0
+   "duration_s": 4.0,
+   "off_at_death": true
   },
   {
    "match": "^(Deadeye_E_Teleporter_Tether)$",
@@ -597,7 +598,8 @@
     "^Gumshoe_4_TripWire_SecondWire$"
    ],
    "replay_s": 22.0,
-   "duration_s": 1.25
+   "duration_s": 1.25,
+   "off_at_death": true
   },
   {
    "match": "^(Gumshoe_Q_CageTrap|Gumshoe_Q_Cage)$",
@@ -646,7 +648,8 @@
    "pieces": [],
    "replay_s": 7.8,
    "duration_s": null,
-   "provisional": true
+   "provisional": true,
+   "off_at_death": true
   },
   {
    "match": "^(Gumshoe_E_CameraTrackingDart)$",
@@ -744,7 +747,8 @@
     "^Cable_Q_SoundSensor_Fissure$"
    ],
    "replay_s": 17.2,
-   "duration_s": 2.5
+   "duration_s": 2.5,
+   "off_at_death": true
   },
   {
    "match": "^(Cable_E_CableJam)$",
@@ -1598,7 +1602,8 @@
    "from_trigger": true,
    "go_off": ":Killjoy_4_BeeSwarm_Damage$",
    "after_trigger_s": 4,
-   "duration_s": 4.0
+   "duration_s": 4.0,
+   "off_at_death": true
   },
   {
    "match": "^(Killjoy_Q_StealthAlarmbot)$",
@@ -1625,7 +1630,8 @@
    },
    "pieces": [],
    "replay_s": 18.7,
-   "duration_s": 4.0
+   "duration_s": 4.0,
+   "off_at_death": true
   },
   {
    "match": "^(Killjoy_E_Turret)$",
@@ -1647,7 +1653,8 @@
    "pieces": [],
    "replay_s": 16.7,
    "duration_s": null,
-   "provisional": true
+   "provisional": true,
+   "off_at_death": true
   },
   {
    "match": "^(Killjoy_X_Bomb)$",
@@ -1708,7 +1715,7 @@
    "duration_s": 8.0
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Iris_Q_Harmonize)$",
    "agent": "Miks",
    "ability": "Harmonize",
    "slot": "?",
@@ -1716,8 +1723,8 @@
    "kinds": [
     "stim"
    ],
-   "rule": "duration",
-   "grace_s": 1,
+   "rule": "buff",
+   "grace_s": 0,
    "wiki": {
     "page": "Harmonize",
     "field": "Buff duration",
@@ -2919,7 +2926,8 @@
    },
    "pieces": [],
    "replay_s": 10.4,
-   "duration_s": 9.0
+   "duration_s": 9.0,
+   "off_at_death": true
   },
   {
    "match": "^(?!)$",
@@ -3075,7 +3083,8 @@
    "from_trigger": true,
    "go_off": "^Patch:Nox_BarbedWire$",
    "after_trigger_s": 6,
-   "duration_s": 6.0
+   "duration_s": 6.0,
+   "off_at_death": true
   },
   {
    "match": "^(Nox_WallTrap|Nox_Wall)$",
@@ -3104,7 +3113,8 @@
    "pieces": [],
    "replay_s": 11.1,
    "after_trigger_s": 6,
-   "duration_s": 6.0
+   "duration_s": 6.0,
+   "off_at_death": true
   },
   {
    "match": "^(Nox_vyse_arc_rose)$",

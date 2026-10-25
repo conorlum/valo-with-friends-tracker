@@ -18,6 +18,7 @@ SAME_PLACE_M = 1.5          # ... and the same piece placed farther than this fr
 #                             two places are one use: Skye's seekers, Neon's bolt, Reyna's pools, a Killjoy swarm)
 FLASH_TAIL_S = 1.0         # a flash cast's rows end by its pop plus this
 FLASH_ROW_MATCH_S = 1.0    # a projectile or source thrown this close to a flash or nearsight row is that cast
+BUFF_MATCH_S = 0.3         # buff rows (Harmonize) of one caster starting this close together are one cast
 
 # --- windows (measure)
 GRACE_S = 1.0               # a kill this long after an effect ends still counts as on an affected enemy

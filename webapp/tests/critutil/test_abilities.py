@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "605b5944904a1ea6d570a2ccaa04ad015da18cf9062c6503cad807be7bf02137"
+PINNED_EXTRACTOR_HASH = "f910c1d0e4bb1a7885e8e451134d114b4da8be5124761bb549a93caee9896d98"
 
 
 def _script():
@@ -255,7 +255,7 @@ def test_the_owners_second_answers_razorvine_stims_mpulse_spycam():
 
 TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
          "stim", "other"}
-RULES = {"duration", "status", "flash", "placeable", "possessed", "travel", "tag", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
+RULES = {"duration", "status", "flash", "placeable", "possessed", "buff", "travel", "tag", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
          "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
 KNOWN_CODES = [
     "Clay_X_Rocket", "Aggrobot_RollyPolly", "Phoenix_4_Molotov_Production", "Clay_4_Projectile_Primary",

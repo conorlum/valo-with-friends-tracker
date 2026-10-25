@@ -107,7 +107,7 @@ from app.replays import player_state as _player_state
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
 CONDENSE_REVISION = 22   # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21),
-                         #     Leer / Dizzy `gone`, Poison Cloud `on` (2026-10-24);
+                         #     Leer / Dizzy `gone`, Poison Cloud `on`, Harmonize `buff` rows (2026-10-24);
                          # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
                          #     heals in `vitals`, `player_state` charges (2026-10-21);
                          # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's

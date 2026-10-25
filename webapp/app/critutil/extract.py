@@ -17,7 +17,7 @@ import re
 
 from app.control import engine
 from app.critutil import abilities
-from app.critutil.constants import (AGENT_KEYS, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
+from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
@@ -214,7 +214,8 @@ def _anchored(casts, row):
 
 
 def build_casts(rnd, blob: dict) -> list[_Cast]:
-    """One _Cast per use of a charge. A flash or nearsight row, or a projectile, starts one (a thrown ability); the
+    """One _Cast per use of a charge. A flash or nearsight row, or a projectile, starts one (a thrown ability); a
+    caster's buff rows that start together (Harmonize on Miks and the teammate) are one; the
     pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
     (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
     spike is not a cast."""
@@ -231,7 +232,16 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         c.flash = r
         c.kinds = {"blind"} if r["k"] == "flash" else {"status"}
         casts.append(c)
-    abilities = sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
+    for r in sorted((r for r in util if r.get("k") == "buff" and r.get("by") is not None), key=lambda r: r["t"]):
+        host = next((c for c in reversed(casts) if c.by == r["by"] and c.rows[0].get("k") == "buff"
+                     and abs(c.t - float(r["t"])) <= BUFF_MATCH_S), None)
+        if host is not None:
+            host.add(r, rnd)                # the teammate a Harmonize was cast on: the same use
+        else:
+            c = _Cast(len(casts), r, rnd)
+            c.kinds = set()
+            casts.append(c)
+    abilities =sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
                        key=lambda r: (r["t"], r.get("kind") != "Projectile", "end" not in r))
     for r in abilities:
         name, by, tt = r.get("name"), r.get("by"), _throw_t(r)
@@ -264,7 +274,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
                 break
         if host is None and not parents and r.get("kind") != "Projectile":
             for c in reversed(casts):
-                if c.flash is not None or c.by != by or c.key != _key_of(name):
+                if c.flash is not None or c.by != by or c.key != _key_of(name) or c.rows[0].get("k") == "buff":
                     continue
                 if entry is not None and (c.entry is None or c.entry["match"] != entry["match"]):
                     break                   # a row with its own ability only joins a cast of that ability
@@ -1009,6 +1019,8 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     if go:          # when it was set off: its first row matching "<kind>:<code_name>" (Nanoswarm's swarm, Razorvine's patch)
         ts = [r["t"] for r in c.rows if re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
         s["go_off"] = _r2(min(ts)) if ts else None
+    if cast_type == "placeable":        # a sentinel's placed util turns off when its owner dies (the owner, 2026-10-24)
+        s["owner_death"] = _r2(next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None))
     if (c.entry or {}).get("rule") == "possessed":      # a camera: when its owner was looking through it
         s["possessed"] = sorted(([_r2(a), _r2(b)] for r in c.rows for a, b in (r.get("possessed") or ())),
                                 key=lambda x: x[0])

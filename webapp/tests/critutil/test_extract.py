@@ -616,6 +616,28 @@ def test_signals_possessed_are_the_cameras_looked_through_spans():
     assert "possessed" not in sig(run([trip], t_end=30.0))
 
 
+def test_signals_owner_death_is_when_a_placeables_owner_died():
+    trip = toy_ability("Gumshoe", "4_TripWire", 200, 200, 1, t=0.0, t1=29.0, kind="GameObject")
+    kills = [kill(8.0, 1, 5), kill(12.0, 6, 1)]             # an enemy's death first: only the owner's counts
+    assert sig(run([trip], kills=kills, t_end=30.0, agents={1: "Cypher"}))["owner_death"] == 12.0
+    assert sig(run([trip], t_end=30.0, agents={1: "Cypher"}))["owner_death"] is None
+    smoke = toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0, kind="GameObject")
+    assert "owner_death" not in sig(run([smoke], kills=[kill(10.0, 5, 1)]))
+
+
+def buff(t, by, target, t1):
+    return {"k": "buff", "t": t, "by": by, "t1": t1, "target": target, "code": "Iris", "name": "Q_Harmonize"}
+
+
+def test_harmonize_on_a_teammate_is_one_stim_cast_to_the_last_buff_end():
+    out = run([buff(10.0, 1, 1, 21.0), buff(10.0, 1, 0, 17.6)], t_end=40.0, agents={1: "Miks"})
+    cs = cast_by(out, 1)
+    assert len(cs) == 1 and cs[0]["ability_id"] == "Miks/Harmonize" and cs[0]["type"] == "stim"
+    assert cs[0]["signals"]["seen_end"] == 21.0          # Miks' own buff, refreshed by a kill
+    two = run([buff(5.0, 1, 1, 13.0), buff(25.0, 1, 1, 33.0)], t_end=40.0, agents={1: "Miks"})
+    assert len(cast_by(two, 1)) == 2
+
+
 OMEN = ("Wraith", "X_GlobalTeleport_Intention")
 
 

@@ -277,3 +277,20 @@ def test_every_window_is_cut_at_t_decided():
     assert segs(cast(10.0, landed=10.0), ent("duration", 8), td=14.0) == [[10.0, 14.0]]
     assert segs(cast(10.0, on=[[10.0, 14.0], [18.0, 22.0]]), ent("on_spans", 10), td=12.0) == [[10.0, 12.0]]
     assert segs(cast(10.0, landed=10.0), ent("duration", 8), td=10.0) == []
+
+
+def test_buff_runs_to_the_last_buff_end_refreshes_included():
+    h = ent("buff", 8, g=0)
+    assert segs(cast(10.0, seen_end=18.0), h) == [[10.0, 18.0]]
+    assert segs(cast(10.0, seen_end=21.0), h) == [[10.0, 21.0]]                  # a kill refreshed it
+    assert segs(cast(10.0), h) == [[10.0, 100.0]]                                # still on at the end
+
+
+def test_a_sentinels_placed_util_ends_when_its_owner_dies():
+    tw = ent("placeable", None, g=1, off_at_death=True)
+    assert segs(trap(0.0, armed=0.0, owner_death=32.0), tw) == [[0.0, 32.0]]
+    assert segs(trap(0.0, armed=0.0), tw) == [[0.0, 100.0]]                      # lived
+    assert segs(trap(0.0, armed=0.0, owner_death=32.0), ent("placeable", None, g=1)) == [[0.0, 100.0]]   # no flag
+    assert segs(trap(0.0, armed=40.0, owner_death=32.0), tw) == []               # dead before it armed
+    cam = ent("possessed", None, g=5, off_at_death=True)
+    assert segs(cast(5.0, possessed=[[6.3, 8.6], [15.7, 16.2]], owner_death=16.0), cam) == [[6.3, 13.6], [15.7, 16.0]]

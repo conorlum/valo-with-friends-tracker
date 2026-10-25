@@ -18,6 +18,10 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
               wall, Fakeout's flash). With `from_trigger` it starts at the trigger, and never set off it has none
               (Nanoswarm: only while it damages).
   possessed   each span its owner looked through it, plus g after it (Spycam: 5 s); never looked through: none.
+              An entry with `off_at_death` (a sentinel's placed util) ends, under either rule, at signals.owner_death:
+              its object stays in the replay, but it is off.
+  buff        [t, seen_end + g]: to the last buffed player's buff end, refreshes included (Harmonize: a kill
+              refreshes it); no seen_end (it ran to the round's end): t_decided.
   travel      [t, seen_end + D + g]: the flight, then the status it leaves (Paranoia); no seen_end: fallback.
   tag         a cast that tagged an enemy: [t, seen_end + g] (Spycam dart: until it is taken out, plus 5 s), no
               seen_end: the last effect end + g; a cast that tagged nobody: none.
@@ -153,6 +157,8 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
             segs = _minus([a, b], s.get("off") or [])
     elif rule == "possessed":
         segs = [[a, (t_decided if b is None else b) + g] for a, b in (s.get("possessed") or [])]
+    elif rule == "buff":
+        segs = [[t, (t_decided if seen is None else seen + g)]]
     elif rule == "travel":
         segs = [[t, seen + (D or 0.0) + g]] if seen is not None else fb()
     elif rule == "tag":
@@ -218,4 +224,7 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
             segs = [[t, min(stops) if stops else t_decided]]
     else:
         segs = fb()
+    death = s.get("owner_death")
+    if (entry or {}).get("off_at_death") and death is not None and rule in ("placeable", "possessed"):
+        segs = [[a, min(b, death)] for a, b in segs if a is not None and b is not None]
     return {"segments": _cut(segs, t_decided), "rule": rule, "fallback": fallback}

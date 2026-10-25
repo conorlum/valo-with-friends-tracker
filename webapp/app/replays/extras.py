@@ -23,6 +23,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`;
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
   lifetime, so it is its own kind and not an `ability`.
+- `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
+  object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`).
 
 - **Abilities.** Every `actor_spawned` whose archetype is `Default__<Kind>_<AgentCode>_<Name>_C`
   with a kind in ABILITY_KINDS (placed objects, zones, patches, projectiles, possessable
@@ -960,6 +962,43 @@ STATUS_MERGE_MS = 300
 # duration where it matters and the replay doesn't carry it (a game value, not measured).
 STATUS_PING_MS = 1000
 STATUS_KNOWN_MS = {"suppressed": 8000}
+
+
+# Buffs an agent casts with no object (Miks' Harmonize, revision 22): a continuous effect on the caster's own
+# character whose context names that character and whose `FXC.Buff.Duration` is positive (8 for Harmonize; the
+# effects with -1 are other things), plus the same container's effect starting within BUFF_TEAM_MS on the
+# teammate it was cast on, whose context names the caster. Each lasts to its stop: a kill refreshes the buff, and
+# the stop comes later (one 11.0 s Harmonize in 47a5f123). Code -> the stored name.
+BUFF_SELF = {"Iris": "Q_Harmonize"}
+BUFF_TEAM_MS = 150
+
+
+def find_buffs(effects: list[_Effect], players: PlayerTable, code_of_agent: dict[str, str],
+               teams: dict[int, str | None] | None = None) -> list[dict]:
+    """[{t_ms, t1_ms | None, by, target, code, name}]: one per buffed player, the caster's own first."""
+    candidates = [e for e in effects if not e.oneshot and e.buff is not None and e.buff > 0
+                  and players.pawn_slot.get(e.actor) is not None]
+    by_container: dict = defaultdict(list)
+    for e in candidates:
+        by_container[e.container].append(e)
+    out = []
+    for e in candidates:
+        slot = players.pawn_slot[e.actor]
+        code = code_of_agent.get(players.agents[slot])
+        name = BUFF_SELF.get(code)
+        if name is None or e.actor not in e.context:
+            continue
+        rows = [(slot, e)]
+        for o in by_container[e.container]:
+            other = players.pawn_slot[o.actor]
+            if o is e or other == slot or abs(o.t_ms - e.t_ms) > BUFF_TEAM_MS or e.actor not in o.context:
+                continue
+            if teams and teams.get(other) is not None and teams.get(other) != teams.get(slot):
+                continue
+            rows.append((other, o))
+        for target, o in rows:
+            out.append({"t_ms": o.t_ms, "t1_ms": o.stop_ms, "by": slot, "target": target, "code": code, "name": name})
+    return out
 
 
 def status_of(actor: _Actor, oneshot: bool = False) -> str | None:
@@ -2041,6 +2080,17 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
             "status": status["status"], "from": status["from"], **({"friendly": True} if status.get("friendly") else {})})
 
+    for buff in find_buffs(raw.effects, players, code_of_agent, teams):
+        n = _round_of(buff["t_ms"], windows)
+        if n is None:
+            continue
+        start, _, end = windows[n - 1]
+        t1 = end if buff["t1_ms"] is None else min(buff["t1_ms"], end)
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("buffs", []).append({
+            "t0": _seconds(buff["t_ms"], start), "t1": _seconds(t1, start), "slot": buff["by"],
+            "target": buff["target"], "code": buff["code"], "name": buff["name"]})
+        counts["buffs"] += 1
+
     last_cast: dict[tuple[int, str], int] = {}
     for t_ms, pawn, floats in sorted(raw.movement_plays, key=lambda play: play[0]):
         slot = players.pawn_slot.get(pawn)
@@ -2174,6 +2224,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for status in round_extras.get("statuses", []):
         rest = {k: v for k, v in status.items() if k not in ("t0", "slot")}
         out.append({"k": "status", "t": status["t0"], "by": status["slot"], **rest})
+    for buff in round_extras.get("buffs", []):
+        rest = {k: v for k, v in buff.items() if k not in ("t0", "slot")}
+        out.append({"k": "buff", "t": buff["t0"], "by": buff["slot"], **rest})
     for cast in sorted(round_extras.get("casts", []), key=lambda c: c["t"]):
         rest = {k: v for k, v in cast.items() if k not in ("t", "slot")}
         out.append({"k": "cast", "t": cast["t"], "by": cast["slot"], **rest})
@@ -2186,7 +2239,7 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses, casts = [], [], [], [], []
+    abilities, shots, reveals, statuses, casts, buffs = [], [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -2199,6 +2252,8 @@ def rounds_extras(util: list[dict]) -> dict:
             statuses.append({"t0": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "cast":
             casts.append({"t": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "buff":
+            buffs.append({"t0": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
@@ -2206,4 +2261,6 @@ def rounds_extras(util: list[dict]) -> dict:
         out["statuses"] = statuses
     if casts:
         out["casts"] = casts
+    if buffs:
+        out["buffs"] = buffs
     return out
