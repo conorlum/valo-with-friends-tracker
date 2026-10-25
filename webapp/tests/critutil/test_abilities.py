@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "4f1f3b366d7287812f0033840d7586d3a84d9f0c36ad392fcd2f9add3215114e"
+PINNED_EXTRACTOR_HASH = "1b4f332295e56eb77ebf232b9e70fae832a9cdd41500afdb23c9aa8fcd016068"
 
 
 def _script():

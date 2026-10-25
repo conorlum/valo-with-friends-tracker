@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 3                 # the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 4                 # the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -89,6 +89,7 @@ AGENT_KEYS = {
     "Skye": {"C": ("Regrowth", "heal"), "Q": ("Trailblazer", "status"), "E": ("Guiding Light", "blind")},
     "Sova": {"C": ("Owl Drone", "info"), "Q": ("Shock Bolt", "damaging"), "E": ("Recon Bolt", "info")},
     "Tejo": {"C": ("Stealth Drone", "info"), "Q": ("Special Delivery", "status"), "E": ("Guided Salvo", "damaging")},
+    "Veto": {"C": ("Crosscut", "teleport"), "Q": ("Chokehold", "device"), "E": ("Interceptor", "device")},
     "Viper": {"C": ("Snake Bite", "damaging"), "Q": ("Poison Cloud", "smoke"), "E": ("Toxic Screen", "smoke")},
     "Vyse": {"C": ("Razorvine", "device"), "Q": ("Shear", "other"), "E": ("Arc Rose", "blind")},
     "Waylay": {"C": ("Saturate", "status"), "Q": ("Lightspeed", "dash"), "E": ("Refract", "teleport")},

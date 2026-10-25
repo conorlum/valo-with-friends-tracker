@@ -1082,3 +1082,31 @@ def test_omen_pickup_without_a_slot_goes_to_the_nearest_alive_player():
     ps["spike"][1] = {"t": 22.0, "s": "dropped"}
     s = _omen_spike(ps)
     assert s["got_spike"] is None and s["spike_pickup"] == 30.0
+
+
+# Veto's rows, as stored (replay 330, 2026-10-25; slot and times kept, ids trimmed)
+def _veto(name, kind, t, t1, owner_by="equippable", **more):
+    return {"agent": "Veto", "by": 1, "code": "Pine", "full": round(t1 - t, 3), "id": 3700 + int(t * 10), "k": "ability",
+            "kind": kind, "name": name, "owner_by": owner_by, "t": t, "t1": t1, "u": 8005, "v": 2593, "z": 97, **more}
+
+
+def test_veto_casts_are_named_and_a_chokehold_is_one_trap_triggered_by_its_tether():
+    rows = [_veto("Q_TrapGrenade", "Projectile", 1.957, 2.314, yaw=77),
+            _veto("Q_SeizeTrap", "GameObject", 2.314, 27.0, owner_by="agent",
+                  thrown={"t0": 1.957, "t1": 2.314, "u": 8005, "v": 2593, "z": 97}),
+            _veto("Q_Tether_SphereExpansion", "GameObject", 20.39, 24.895, owner_by="agent"),
+            {"by": 1, "code": "Pine", "from": "object", "k": "status", "name": "Q_Tether_SphereExpansion",
+             "status": "tethered", "t": 20.39, "t1": 24.903, "target": 5},
+            _veto("4_UsableTeleport", "GameObject", 12.959, 15.742, yaw=310),
+            _veto("E_RadEaterSpawner", "Projectile", 15.764, 16.069, yaw=196),
+            _veto("E_RadEater", "Pawn", 16.069, 26.0, owner_by="agent", active=16.745)]
+    out = run(rows)
+    by_ability = {}
+    for c in cast_by(out, 1):
+        by_ability.setdefault(c["ability_id"], []).append(c)
+    assert sorted(by_ability) == ["Veto/Chokehold", "Veto/Crosscut", "Veto/Interceptor"]
+    (choke,) = by_ability["Veto/Chokehold"]
+    assert "device" in choke["kinds"] and choke["type"] == "placeable"
+    assert choke["trigger"] == pytest.approx(20.39, abs=0.011) and choke["set_off_kind"] == "fired"
+    assert choke["enemies"] == [5]
+    assert len(by_ability["Veto/Interceptor"]) == 1 and by_ability["Veto/Crosscut"][0]["type"] == "teleport"
