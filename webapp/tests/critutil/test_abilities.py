@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "749819390a0afca796c50cfc419b1ed50ad56f661d9c6a074e8d205fc8240c5a"
+PINNED_EXTRACTOR_HASH = "fb275174b2323a819ccadc003241956aee0c81cf0f386bb6132f67fdc169d762"
 
 
 def _script():
@@ -203,9 +203,47 @@ def test_from_dir_merges_and_reports(tmp_path, capsys):
     assert "Beta" in text and "Gamma" in text
 
 
+def test_from_dir_takes_the_owners_figure_only_when_the_wiki_has_none(tmp_path):
+    seed = {"abilities": [
+        {"match": "A", "agent": "X", "ability": "Alpha", "owner_s": 2.8, "owner_note": "windup + ticks"},
+        {"match": "B", "agent": "Y", "ability": "Beta", "owner_s": 99.0},
+    ]}
+    seed_path = tmp_path / "seed.json"
+    seed_path.write_text(json.dumps(seed), encoding="utf-8")
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    (saved / "Alpha.json").write_text(json.dumps({"parse": {"wikitext": {"*": _table(EQUIP)}}}), encoding="utf-8")
+    (saved / "Beta.json").write_text(json.dumps({"parse": {"wikitext": {"*": _table(DURATION)}}}), encoding="utf-8")
+    out = tmp_path / "out.json"
+    _script().main(["--from", str(saved), "--seed", str(seed_path), "--out", str(out)])
+    got = json.loads(out.read_text(encoding="utf-8"))["abilities"]
+    assert got[0]["duration_s"] == 2.8 and "provisional" not in got[0] and got[0]["owner_note"] == "windup + ticks"
+    assert got[1]["duration_s"] == 8.0           # a wiki duration wins over the owner's figure
+
+
+def test_the_owners_answers_on_the_unsettled_abilities():
+    by = {(e["agent"], e["ability"]): e for e in abilities.load()}
+    nano = by[("Killjoy", "Nanoswarm")]
+    assert nano["from_trigger"] and nano["go_off"] and nano["after_trigger_s"] == 4 and nano["grace_s"] == 2
+    assert by[("Yoru", "Fakeout")]["after_trigger_s"] == 2 and by[("Yoru", "Fakeout")]["grace_s"] == 0
+    assert by[("Vyse", "Shear")]["after_trigger_s"] == 6 and by[("Vyse", "Shear")]["grace_s"] == 2
+    assert by[("Veto", "Interceptor")]["grace_s"] == 2
+    para = by[("Omen", "Paranoia")]
+    assert para["type"] == "status" and para["kinds"] == ["status"] and para["rule"] == "travel"
+    assert by[("Sage", "Slow Orb")]["rule"] == "duration" and by[("Sage", "Slow Orb")]["grace_s"] == 2
+    assert by[("Cypher", "Spycam dart")]["rule"] == "tag" and by[("Cypher", "Spycam dart")]["grace_s"] == 5
+    assert by[("Veto", "Evolution")]["rule"] == "ult:until_death"
+    assert ("Chamber", "Headhunter") not in by
+    owner = {("Breach", "Aftershock"): 2.8, ("Gekko", "Mosh Pit"): 6.3, ("Raze", "Paint Shells"): 2.92,
+             ("Sova", "Shock Bolt"): 0.4, ("Tejo", "Guided Salvo"): 2.85, ("Tejo", "Armageddon"): 7.58,
+             ("Deadlock", "GravNet"): 1.5}
+    for key, secs in owner.items():
+        assert by[key]["duration_s"] == secs and "provisional" not in by[key], key
+
+
 TYPES = {"flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
          "other"}
-RULES = {"duration", "status", "flash", "placeable", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
+RULES = {"duration", "status", "flash", "placeable", "travel", "tag", "on_spans", "life", "heal", "ult:until_end", "ult:until_death",
          "ult:capture", "ult:thrash", "ult:duel", "ult:omen", "ult:raze", "ult:seekers"}
 KNOWN_CODES = [
     "Clay_X_Rocket", "Aggrobot_RollyPolly", "Phoenix_4_Molotov_Production", "Clay_4_Projectile_Primary",

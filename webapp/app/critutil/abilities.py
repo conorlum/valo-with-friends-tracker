@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 PATH = Path(__file__).with_name("abilities.json")
-EXTRACTOR_FIELDS = ("match", "pieces", "kinds", "type")
+EXTRACTOR_FIELDS = ("match", "pieces", "kinds", "type", "go_off")
 
 
 @functools.lru_cache(maxsize=None)

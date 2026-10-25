@@ -3,8 +3,8 @@
     $PY scripts/fetch_util_durations.py --fetch <dir>      # downloads each page's wikitext, one at a time
     $PY scripts/fetch_util_durations.py --from <dir>       # parses the saved pages and writes abilities.json
 
-No database. Durations come only from the wiki's Stats table; an entry with none gets duration_s null and
-provisional true."""
+No database. Durations come from the wiki's Stats table; an entry with none there takes the owner's `owner_s`
+from the seed (worked out from the page's windup and tick rows), else gets duration_s null and provisional true."""
 
 from __future__ import annotations
 
@@ -66,7 +66,13 @@ def merge(seed_path: Path, directory: Path, out: Path, today: str | None = None)
         wiki["page"] = page
         wiki["field"] = field
         e["duration_s"] = secs
-        if secs is None:
+        if secs is None and e.get("owner_s") is not None:
+            # the owner's figure, worked out from the page's windup and tick rows (seed `owner_s`, `owner_note`)
+            e["duration_s"] = float(e["owner_s"])
+            e.pop("provisional", None)
+            wiki.pop("value", None)
+            wiki["rows"] = rows
+        elif secs is None:
             e["provisional"] = True
             wiki.pop("value", None)
             wiki["rows"] = rows

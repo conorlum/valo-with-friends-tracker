@@ -13,7 +13,13 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
               when there is no pop.
   status      the latest effect end: a known one ends at t1 + 2 s, an unknown one at t0 + D + g, cut at seen_end + g
               when no end is known (a Leer shot down). No usable effect: duration (cut the same way).
-  placeable   [armed (at least 0), seen_end or t_decided] minus every `off` span.
+  placeable   [armed (at least 0), (seen_end or t_decided) + g] minus every `off` span. With `after_trigger_s` A
+              and a trigger (signals.go_off, else the cast's `trigger`), it ends at trigger + A + g instead (Shear's
+              wall, Fakeout's flash). With `from_trigger` it starts at the trigger, and never set off it has none
+              (Nanoswarm: only while it damages).
+  travel      [t, seen_end + D + g]: the flight, then the status it leaves (Paranoia); no seen_end: fallback.
+  tag         a cast that tagged an enemy: [t, seen_end + g] (Spycam dart: until it is taken out, plus 5 s), no
+              seen_end: the last effect end + g; a cast that tagged nobody: none.
   on_spans    each stored `on` span, plus g after it (Viper: 5 s). None stored: with on_known, off its whole life; otherwise duration, fallback.
   life        [start, seen_end]; no seen_end: [start, start + D + g], fallback (Viper's Pit).
   heal        a heal row: [t, death or t_decided]; a heal-type cast: [t, t_decided].
@@ -130,9 +136,30 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
             ends = [min(max(ends), seen + g)]
         segs = [[t, max(ends)]] if ends else timed()
     elif rule == "placeable":
-        a = max(s["armed"] if s.get("armed") is not None else t, 0.0)
-        b = seen if seen is not None else t_decided
-        segs = _minus([a, b], s.get("off") or [])
+        went = s.get("go_off") if s.get("go_off") is not None else item.get("trigger")
+        after = (entry or {}).get("after_trigger_s")
+        if (entry or {}).get("from_trigger"):
+            a = went
+        else:
+            a = max(s["armed"] if s.get("armed") is not None else t, 0.0)
+        if a is None:
+            segs = []                                   # never set off (a Nanoswarm left hidden)
+        else:
+            if after is not None and went is not None:
+                b = went + after + g
+            else:
+                b = (seen if seen is not None else t_decided) + g
+            segs = _minus([a, b], s.get("off") or [])
+    elif rule == "travel":
+        segs = [[t, seen + (D or 0.0) + g]] if seen is not None else fb()
+    elif rule == "tag":
+        if not item.get("enemies"):
+            segs = []                                   # tagged nobody: nothing it could tell
+        elif seen is not None:
+            segs = [[t, seen + g]]
+        else:
+            ends = [e.get("t1") if e.get("t1") is not None else e["t0"] for e in effects]
+            segs = [[t, max(ends) + g]] if ends else fb()
     elif rule == "on_spans":
         on = s.get("on") or []
         if on:

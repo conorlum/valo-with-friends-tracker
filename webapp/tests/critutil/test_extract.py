@@ -576,6 +576,15 @@ def test_signals_armed_is_the_landing_time_for_a_placeable_only():
     assert sig(run(other))["armed"] is None
 
 
+def test_signals_go_off_is_when_a_nanoswarm_was_set_off():
+    grenade = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 200, 200, 1, t=1.0, t1=20.0, kind="Projectile")
+    swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", 200, 200, 1, t=20.0, t1=24.0, kind="GameObject")
+    s = sig(run([grenade, swarm], t_end=40.0, agents={1: "Killjoy"}))
+    assert s["go_off"] == 20.0
+    hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 200, 200, 1, t=1.0, t1=40.0, kind="Projectile")
+    assert sig(run([hidden], t_end=40.0, agents={1: "Killjoy"}))["go_off"] is None
+
+
 OMEN = ("Wraith", "X_GlobalTeleport_Intention")
 
 

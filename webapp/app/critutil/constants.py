@@ -64,7 +64,7 @@ AGENT_KEYS = {
     "Astra": {"C": ("Gravity Well", "status"), "Q": ("Nova Pulse", "status"), "E": ("Nebula", "smoke")},
     "Breach": {"C": ("Aftershock", "damaging"), "Q": ("Flashpoint", "blind"), "E": ("Fault Line", "status")},
     "Brimstone": {"C": ("Stim Beacon", "other"), "Q": ("Incendiary", "damaging"), "E": ("Sky Smoke", "smoke")},
-    "Chamber": {"C": ("Trademark", "device"), "Q": ("Headhunter", "other"), "E": ("Rendezvous", "teleport")},
+    "Chamber": {"C": ("Trademark", "device"), "E": ("Rendezvous", "teleport")},   # Headhunter is a gun, not util
     "Clove": {"C": ("Pick-Me-Up", "heal"), "Q": ("Meddle", "status"), "E": ("Ruse", "smoke")},
     "Cypher": {"C": ("Trapwire", "device"), "Q": ("Cyber Cage", "smoke"), "E": ("Spycam", "info")},
     "Deadlock": {"C": ("GravNet", "status"), "Q": ("Sonic Sensor", "device"), "E": ("Barrier Mesh", "other")},

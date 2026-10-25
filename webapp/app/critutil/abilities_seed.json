@@ -108,7 +108,9 @@
     "field": "none"
    },
    "pieces": [],
-   "replay_s": 4.4
+   "replay_s": 4.4,
+   "owner_s": 2.8,
+   "owner_note": "2.2 s windup + 2 ticks 0.6 s apart"
   },
   {
    "match": "^(Breach_breach_flashpoint)$",
@@ -260,23 +262,6 @@
     "^Deadeye_E_Slow_Large$"
    ],
    "replay_s": 23.3
-  },
-  {
-   "match": "^(?!)$",
-   "agent": "Chamber",
-   "ability": "Headhunter",
-   "slot": "Q",
-   "type": "other",
-   "kinds": [
-    "other"
-   ],
-   "rule": "duration",
-   "grace_s": 1,
-   "wiki": {
-    "page": "Headhunter",
-    "field": "none"
-   },
-   "pieces": []
   },
   {
    "match": "^(Deadeye_E_Teleporter_Tether)$",
@@ -452,8 +437,8 @@
    "kinds": [
     "info"
    ],
-   "rule": "fixed:10",
-   "grace_s": 0,
+   "rule": "tag",
+   "grace_s": 5,
    "wiki": {
     "page": "Spycam",
     "field": "none"
@@ -500,7 +485,9 @@
    "pieces": [
     "^Cable_4_RemovableNet$"
    ],
-   "replay_s": 4.4
+   "replay_s": 4.4,
+   "owner_s": 1.5,
+   "owner_note": "a netted player's 1.5 s removal channel (0.4 s windup)"
   },
   {
    "match": "^(Cable_Q_SoundSensor)$",
@@ -658,7 +645,9 @@
    "pieces": [
     "^Aggrobot_Reclaim_Orb_ExplodeyPatch$"
    ],
-   "replay_s": 23.8
+   "replay_s": 23.8,
+   "owner_s": 6.3,
+   "owner_note": "3 s windup + 30 ticks every 0.1 s + 3-tick explosion"
   },
   {
    "match": "^(Aggrobot_SeekerNade)$",
@@ -1039,7 +1028,7 @@
     "device"
    ],
    "rule": "placeable",
-   "grace_s": 0,
+   "grace_s": 2,
    "wiki": {
     "page": "Nanoswarm",
     "field": "Duration"
@@ -1047,7 +1036,10 @@
    "pieces": [
     "^Killjoy_4_BeeSwarm_Damage$"
    ],
-   "replay_s": 12.8
+   "replay_s": 12.8,
+   "from_trigger": true,
+   "go_off": "^Killjoy_4_BeeSwarm_Damage$",
+   "after_trigger_s": 4
   },
   {
    "match": "^(Killjoy_Q_StealthAlarmbot)$",
@@ -1277,12 +1269,12 @@
    "agent": "Omen",
    "ability": "Paranoia",
    "slot": "Q",
-   "type": "flash",
+   "type": "status",
    "kinds": [
-    "blind"
+    "status"
    ],
-   "rule": "flash",
-   "grace_s": 1,
+   "rule": "travel",
+   "grace_s": 0,
    "wiki": {
     "page": "Paranoia",
     "field": "Nearsight duration"
@@ -1464,7 +1456,9 @@
     "^Clay_4_Projectile_SecondarySpawner$",
     "^Clay_4_Projectile_Secondary$"
    ],
-   "replay_s": 3.7
+   "replay_s": 3.7,
+   "owner_s": 2.92,
+   "owner_note": "2.25 s grenade windup + 0.667 s sub-munitions"
   },
   {
    "match": "^(Clay_X_Rocket)$",
@@ -1589,8 +1583,8 @@
    "kinds": [
     "status"
    ],
-   "rule": "status",
-   "grace_s": 1,
+   "rule": "duration",
+   "grace_s": 2,
    "wiki": {
     "page": "Slow Orb",
     "field": "Duration"
@@ -1749,7 +1743,9 @@
    "pieces": [
     "^Hunter_4_ExplosiveBolt_Explosion$"
    ],
-   "replay_s": 4.9
+   "replay_s": 4.9,
+   "owner_s": 0.4,
+   "owner_note": "0.4 s windup"
   },
   {
    "match": "^(Hunter_Q_RevealBolt)$",
@@ -1848,7 +1844,9 @@
     "^Cashew_E_AirStrikeMortar$",
     "^Cashew_E_MapMissileMarker_SecondRocket$"
    ],
-   "replay_s": 4.5
+   "replay_s": 4.5,
+   "owner_s": 2.85,
+   "owner_note": "1.25 s windup + 3 ticks 0.8 s apart"
   },
   {
    "match": "^(Cashew_X_Segment(Manager)?)$",
@@ -1867,7 +1865,9 @@
     "field": "none"
    },
    "pieces": [],
-   "replay_s": 8.0
+   "replay_s": 8.0,
+   "owner_s": 7.58,
+   "owner_note": "3.08 s windup + 16 segments 0.25 s apart, 4 ticks each 0.25 s apart"
   },
   {
    "match": "^(?!)$",
@@ -1915,7 +1915,7 @@
     "device"
    ],
    "rule": "placeable",
-   "grace_s": 0,
+   "grace_s": 2,
    "wiki": {
     "page": "Interceptor",
     "field": "Duration"
@@ -1932,8 +1932,8 @@
    "kinds": [
     "ult"
    ],
-   "rule": "duration",
-   "grace_s": 1,
+   "rule": "ult:until_death",
+   "grace_s": 0,
    "wiki": {
     "page": "Evolution",
     "field": "none"
@@ -2046,13 +2046,14 @@
     "device"
    ],
    "rule": "placeable",
-   "grace_s": 0,
+   "grace_s": 2,
    "wiki": {
     "page": "Shear",
     "field": "Duration"
    },
    "pieces": [],
-   "replay_s": 11.1
+   "replay_s": 11.1,
+   "after_trigger_s": 6
   },
   {
    "match": "^(Nox_vyse_arc_rose)$",
@@ -2186,7 +2187,8 @@
     "field": "Maximum image duration"
    },
    "pieces": [],
-   "replay_s": 11.0
+   "replay_s": 11.0,
+   "after_trigger_s": 2
   },
   {
    "match": "^(Stealth_yoru_blindside)$",

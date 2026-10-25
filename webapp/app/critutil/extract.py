@@ -1000,6 +1000,10 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         "armed": _r2(c.landed_t) if cast_type == "placeable" else None,
         "ult_drop": _r2(drop),
     }
+    go = (c.entry or {}).get("go_off")
+    if go:                                  # when it was set off: its first row of that name (Nanoswarm's swarm)
+        ts = [r["t"] for r in c.rows if re.search(go, _code_name(r) or "")]
+        s["go_off"] = _r2(min(ts)) if ts else None
     if cast_type != "ult":
         return s
     rule = (c.entry or {}).get("rule")

@@ -104,16 +104,62 @@ def test_status_with_no_hit_runs_its_duration_and_is_capped_at_seen_end():
 
 def test_placeable_minus_off_spans():
     c = cast(10.0, typ="placeable", armed=11.0, seen_end=40.0, off=[[20.0, 25.0], [30.0, 31.0]])
-    assert segs(c, ent("placeable")) == [[11.0, 20.0], [25.0, 30.0], [31.0, 40.0]]
+    assert segs(c, ent("placeable", g=0)) == [[11.0, 20.0], [25.0, 30.0], [31.0, 40.0]]
 
 
 def test_placeable_without_seen_end_runs_to_decided_and_off_all_life_is_empty():
-    assert segs(cast(10.0, armed=11.0), ent("placeable")) == [[11.0, 100.0]]
-    assert segs(cast(10.0, armed=11.0, off=[[0.0, 200.0]]), ent("placeable")) == []
+    assert segs(cast(10.0, armed=11.0), ent("placeable", g=0)) == [[11.0, 100.0]]
+    assert segs(cast(10.0, armed=11.0, off=[[0.0, 200.0]]), ent("placeable", g=0)) == []
 
 
 def test_placeable_armed_in_buy_phase_starts_at_zero():
-    assert segs(cast(-20.0, armed=-15.0, seen_end=30.0), ent("placeable")) == [[0.0, 30.0]]
+    assert segs(cast(-20.0, armed=-15.0, seen_end=30.0), ent("placeable", g=0)) == [[0.0, 30.0]]
+
+
+def trap(t=10.0, trigger=None, **signals):
+    c = cast(t, typ="placeable", **signals)
+    c["trigger"] = trigger
+    return c
+
+
+def test_placeable_tail_is_the_grace_after_its_end():
+    # Interceptor: active time plus 2 s
+    assert segs(trap(armed=11.0, seen_end=20.0), ent("placeable", 9, g=2)) == [[11.0, 22.0]]
+
+
+def test_a_tripped_trap_ends_its_after_trigger_time_past_the_trigger():
+    shear = ent("placeable", 6, g=2, after_trigger_s=6)
+    assert segs(trap(armed=11.0, seen_end=30.0, trigger=30.0), shear) == [[11.0, 38.0]]    # holds, trips, 6 s wall + 2
+    assert segs(trap(armed=11.0, seen_end=50.0), shear) == [[11.0, 52.0]]                 # never tripped: its life + 2
+    fakeout = ent("placeable", 10, g=0, after_trigger_s=2)
+    assert segs(trap(armed=11.0, seen_end=15.0, trigger=15.0), fakeout) == [[11.0, 17.0]]  # shot: plus its flash
+    assert segs(trap(armed=11.0, seen_end=21.0), fakeout) == [[11.0, 21.0]]
+
+
+def test_from_trigger_counts_only_after_it_went_off():
+    nano = ent("placeable", 4, g=2, from_trigger=True, after_trigger_s=4)
+    assert segs(trap(armed=1.0, seen_end=40.0, go_off=30.0), nano) == [[30.0, 36.0]]
+    assert segs(trap(armed=1.0, seen_end=40.0, trigger=31.0), nano) == [[31.0, 37.0]]     # no swarm row: the hit
+    assert segs(trap(armed=1.0, seen_end=40.0, go_off=30.0, trigger=31.0), nano) == [[30.0, 36.0]]
+    assert segs(trap(armed=1.0, seen_end=40.0), nano) == []                               # never set off
+
+
+def test_travel_is_the_flight_then_the_status():
+    para = ent("travel", 2, g=0)
+    assert w(cast(10.0, seen_end=11.5), para) == {"segments": [[10.0, 13.5]], "rule": "travel", "fallback": False}
+    r = w(cast(10.0), para)
+    assert r["segments"] == [[10.0, 12.0]] and r["fallback"] is True
+
+
+def test_tag_counts_only_a_dart_that_tagged_someone():
+    dart = ent("tag", None, g=5)
+    tagged = cast(10.0, seen_end=13.0)
+    tagged["enemies"] = [6]
+    assert segs(tagged, dart) == [[10.0, 18.0]]                                            # out at 13 s, plus 5
+    assert segs(cast(10.0, seen_end=10.6), dart) == []                                     # a miss
+    no_end = cast(10.0, effects=[{"t0": 12.0, "t1": 13.0, "how": "reveal"}])
+    no_end["enemies"] = [6]
+    assert segs(no_end, dart) == [[10.0, 18.0]]
 
 
 def test_on_spans_are_the_stored_spans_plus_the_grace():
@@ -132,7 +178,7 @@ def test_viper_smokes_have_a_five_second_tail():
 
 def test_open_off_and_on_spans_run_to_the_end():
     c = cast(10.0, armed=11.0, seen_end=40.0, off=[[20.0, None]])
-    assert segs(c, ent("placeable")) == [[11.0, 20.0]]
+    assert segs(c, ent("placeable", g=0)) == [[11.0, 20.0]]
     assert segs(cast(10.0, on=[[12.0, None]]), ent("on_spans", 10)) == [[12.0, 100.0]]
 
 
