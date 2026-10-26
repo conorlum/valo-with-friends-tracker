@@ -1,0 +1,21 @@
+{
+  "geometry_inputs": {
+    "fingerprint": "6a2ce4ec3dad1043",
+    "inputs": {
+      "barrier": "06d022399053",
+      "scale": 8.1e-05,
+      "sight": "8342f6714685",
+      "specials": [],
+      "walk": "42d1d3f29a3c"
+    },
+    "map": "Abyss"
+  },
+  "heights_ledge": {
+    "data": "5364e1d9ae432983",
+    "summary": "4543f613a8319a42"
+  },
+  "open": {
+    "data": "860b06914cdab51a",
+    "summary": "8e05b64cd65b3871"
+  }
+}
