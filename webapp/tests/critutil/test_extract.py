@@ -561,6 +561,22 @@ def test_a_pit_with_an_area_counts_its_real_ground_not_a_circle():
     assert c["presence"]["area"] is True and c["presence"]["entered"] == [5]
 
 
+def test_a_trip_earns_no_presence_after_its_owner_died():
+    # Branch review B2: a sentinel's placed util is off at its owner's death (windows.py `off_at_death`), so an enemy
+    # who reaches the trip's edge after that waits on nothing. Cypher (slot 1) dies at 4 s; the enemy stops at 10 s.
+    mover = [(0.0, 300 + px(40), 200, 180), (9.0, 300 + px(16), 200, 180), (30.0, 300 + px(16), 200, 180)]
+    trip = toy_ability("Gumshoe", "4_TripWire", 300, 200, 1, t=0.5, t1=30.0, kind="GameObject")
+    out = run([trip], kills=[kill(4.0, 6, 1)], extra={5: ("B", mover)})
+    (c,) = [c for c in cast_by(out, 1) if c.get("presence")]
+    short = toy_ability("Gumshoe", "4_TripWire", 300, 200, 1, t=0.5, t1=4.0, kind="GameObject")
+    (s,) = [c for c in cast_by(run([short], extra={5: ("B", mover)}), 1) if c.get("presence")]
+    assert c["presence"]["waiting_s"] == s["presence"]["waiting_s"], "nothing after its owner's death counts"
+    assert c["presence"]["entered"] == s["presence"]["entered"]
+    alive = run([trip], extra={5: ("B", mover)})
+    (a,) = [c for c in cast_by(alive, 1) if c.get("presence")]
+    assert a["presence"]["waiting_s"] > c["presence"]["waiting_s"], "with its owner alive the later wait counts"
+
+
 def test_enemy_who_comes_to_the_edge_and_turns_back_is_held_back():
     mover = [(0.0, 400 + px(30), 160, 180), (9.0, 400 + px(7), 160, 180), (13.0, 400 + px(25), 160, 0)]
     molly = toy_ability("Phoenix", "MolotovFire", 400, 160, 1, t=8.0, t1=14.0)
