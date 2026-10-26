@@ -736,6 +736,13 @@ def test_w5_alarmbot_fired_by_a_later_yaw():
     assert c["trigger"] == 12.3 and c["set_off_kind"] == "fired" and c["set_off_t"] == 12.3
 
 
+def test_an_alarmbot_that_fired_then_was_shot_fired_first():
+    # Branch review B15: the yaw at 12.303 s (it chased) comes before its lethal close at 13.234 s (`gone`, CONDENSE
+    # 23): the earliest signal decides, so it fired at 12.3.
+    (c,) = cast_by(run([BOT | {"gone": 13.234}]), 1, "device")
+    assert c["trigger"] == 12.3 and c["set_off_kind"] == "fired"
+
+
 def test_w5_alarmbot_with_one_yaw_is_closed_not_triggered():
     bot = BOT | {"t1": 20.0, "yaws": [[0.0, 294]]}
     (c,) = cast_by(run([bot]), 1, "device")

@@ -479,38 +479,38 @@ def _rose_end(rnd, c: _Cast) -> float:
 
 
 def _trigger_kind(c: _Cast) -> tuple[float, str] | None:
-    """(when the device was set off, "fired" | "broken"), the first of its signals in this order: fx, raised, gone,
-    then a Trademark's dart or slow, then an Alarmbot's second yaw. An Arc Rose has its own: its first pop, else its
-    destruction."""
+    """(when the device was set off, "fired" | "broken"): the earliest of its signals (fx, raised, a Trademark's dart
+    or slow, an Alarmbot's second yaw: fired; gone: broken), fired on a tie. An Alarmbot that chased and was then
+    shot fired (branch review B15). An Arc Rose has its own: its first pop, else its destruction."""
     if _is_rose(c):
         pops, gone = _rose_pops(c), _rose_gone(c)
         if pops and (gone is None or pops[0] <= gone + _EPS):
             return pops[0], "fired"
         return (gone, "broken") if gone is not None else None
+    seen: list[tuple[float, str]] = []
+    trap_t1 = _trap_t1(c)
     for r in c.rows:
         fx = r.get("fx")
         if isinstance(fx, (int, float)):
-            return float(fx), "fired"
-        if isinstance(fx, list) and fx:
+            seen.append((float(fx), "fired"))
+        elif isinstance(fx, list) and fx:
             first = fx[0]
-            return float(first[0] if isinstance(first, list) else first), "fired"
+            seen.append((float(first[0] if isinstance(first, list) else first), "fired"))
         if isinstance(r.get("raised"), list) and r["raised"]:
-            return float(r["raised"][0]), "fired"
+            seen.append((float(r["raised"][0]), "fired"))
         if r.get("gone") is not None:
-            return float(r["gone"]), "broken"
-    trap_t1 = _trap_t1(c)
-    for r in c.rows:
+            seen.append((float(r["gone"]), "broken"))
         if r.get("code") == "Deadeye" and r.get("name") in ("4_Trap_Dart", "E_Slow_Large") \
                 and _in_dart_window(r, trap_t1):
-            return _throw_t(r) - TRADEMARK_FIRE_LEAD_S, "fired"
+            seen.append((_throw_t(r) - TRADEMARK_FIRE_LEAD_S, "fired"))
         yaws = r.get("yaws")
         if r.get("code") == "Killjoy" and r.get("name") == "Q_StealthAlarmbot" and r.get("t1") is not None \
                 and isinstance(yaws, list):
             later = [float(y[0]) for y in yaws[1:] if isinstance(y, list) and y
                      and float(r["t1"]) - ALARMBOT_YAW_WINDOW_S <= float(y[0]) <= float(r["t1"]) + _EPS]
             if later:
-                return later[0], "fired"
-    return None
+                seen.append((later[0], "fired"))
+    return min(seen, key=lambda s: (s[0], s[1] != "fired")) if seen else None
 
 
 def _trigger(c: _Cast) -> float | None:
