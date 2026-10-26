@@ -822,6 +822,9 @@ def match_payload(db, replay) -> dict:
             or key != corpus_key(db, current_rows(db, with_data=False), model):
         ensure_values(db)
         corpus = (_values_row(db) or (None, {}))[1]
+        model = util_model.load(db)         # the rebuild may have refit it: score with the build's (branch review B14)
+        if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
+            model = util_model.ensure(db)
         weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
