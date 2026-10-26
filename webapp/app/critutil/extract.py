@@ -642,24 +642,41 @@ def _shapes_of(rnd, sides, c: _Cast):
     # A wall is this cast's only when it starts with it AND runs through the cast's own laid points (Viper's and
     # Blaze's `points`, Vyse's `line`, Sage's segment centres: the engine builds each wall through them). Time alone
     # gave an Omen smoke the cover of an enemy Viper wall raised in the same second (branch review B1).
-    laid = [_px(*p[:2]) for r in c.rows for key in ("points", "line", "segments")
-            for p in (r.get(key) or ()) if isinstance(p, (list, tuple)) and len(p) >= 2]
+    lines = [[_px(*p[:2]) for p in r[key] if isinstance(p, (list, tuple)) and len(p) >= 2]
+             for r in c.rows for key in ("points", "line") if r.get(key)]
+    centres = [_px(*p[:2]) for r in c.rows for p in (r.get("segments") or ())
+               if isinstance(p, (list, tuple)) and len(p) >= 2]
     walls = [(t0, t1, w) for t0, t1, w in rnd.walls
-             if abs(t0 - landed) <= 1.0 and laid and _on_wall(w, laid)]
+             if abs(t0 - landed) <= 1.0 and _is_own_wall(w, lines, centres)]
     return (mine + walls) or None
 
 
-WALL_MATCH_PX = 3.0      # a laid point this close to a wall's line is on it (the engine simplifies lines to ~1 px)
+WALL_MATCH_PX = 3.0      # a wall's vertex this close to a laid line is on it (the engine keeps the laid points)
 
 
-def _on_wall(wall, points) -> bool:
-    for x0, y0, x1, y1 in wall.segs:
+def _to_line(p, pts) -> float:
+    """px from a point to a polyline (one point: to that point)."""
+    best = math.hypot(p[0] - pts[0][0], p[1] - pts[0][1])
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
         dx, dy = x1 - x0, y1 - y0
         n2 = dx * dx + dy * dy
-        for x, y in points:
-            k = 0.0 if n2 == 0 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / n2))
-            if math.hypot(x - x0 - k * dx, y - y0 - k * dy) <= WALL_MATCH_PX:
-                return True
+        k = 0.0 if n2 == 0 else max(0.0, min(1.0, ((p[0] - x0) * dx + (p[1] - y0) * dy) / n2))
+        best = min(best, math.hypot(p[0] - x0 - k * dx, p[1] - y0 - k * dy))
+    return best
+
+
+def _is_own_wall(wall, lines, centres) -> bool:
+    """Whether the engine built this wall from the cast's laid points: every vertex of it on one of the cast's laid
+    lines (Viper's and Blaze's `points`, Vyse's `line`: the engine's line through them), or, for Sage, a one-segment
+    wall centred on one of its `segments`. A point of ours merely touching another wall (two walls meeting in a T) is
+    not enough (branch review B13)."""
+    verts = [(x0, y0) for x0, y0, _x1, _y1 in wall.segs] + [tuple(wall.segs[-1][2:])]
+    if any(len(ln) >= 1 and all(_to_line(v, ln) <= WALL_MATCH_PX for v in verts) for ln in lines):
+        return True
+    if centres and len(wall.segs) == 1:
+        x0, y0, x1, y1 = wall.segs[0]
+        mid = ((x0 + x1) / 2, (y0 + y1) / 2)
+        return any(math.hypot(mid[0] - x, mid[1] - y) <= WALL_MATCH_PX for x, y in centres)
     return False
 
 
