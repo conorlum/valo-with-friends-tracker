@@ -101,6 +101,38 @@ def test_cover_elsewhere_does_not_excuse_the_floor():
         cg.attach_heights(geo, flat_asset_geo())
 
 
+def test_a_walkable_child_of_a_parent_the_box_made_unwalkable_is_dropped_too():
+    # Summit 23709: the child's own 4x4 is walkable with no cover, but the box fills most of its 8x8 parent.
+    pixels = masks(hole=False); cover = np.zeros((1024, 1024), bool)
+    for child in CHILDREN[:3]:
+        y, x = divmod(child, 256)
+        pixels[y * 4:y * 4 + 4, x * 4:x * 4 + 4] = False
+        cover[y * 4:y * 4 + 4, x * 4:x * 4 + 4] = True
+    geo = geo_of(pixels)
+    assert not geo.walk.ravel()[PARENT]
+    with pytest.raises(ValueError, match='outside permanent walk mask'):
+        cg.attach_heights(geo_of(pixels), flat_asset_geo())                # no cover: still refused
+    cg.attach_cover(geo, cover, 'x')
+    cg.attach_heights(geo, flat_asset_geo())
+    assert geo.height_cover_dropped == 4 and not geo.space_walk[ag.BASE + CHILDREN[3]]
+
+
+def test_a_fine_edge_into_an_8px_cell_a_box_made_unwalkable_is_dropped():
+    # Summit's box at (518,378): the coarse cell's floor goes silently, the fine edges into it named it.
+    ring = PARENT - 1
+    y, x = divmod(ring, 128)
+    pixels = masks(hole=False); pixels[y * 8:y * 8 + 8, x * 8:x * 8 + 8] = False
+    with pytest.raises(ValueError, match='mixed edge'):
+        cg.attach_heights(geo_of(pixels), flat_asset_geo())                # no cover: still refused
+    cover = np.zeros((1024, 1024), bool); cover[y * 8:y * 8 + 8, x * 8:x * 8 + 8] = True
+    geo = geo_of(pixels); cg.attach_cover(geo, cover, 'x')
+    asset = flat_asset_geo()
+    cg.attach_heights(geo, asset)
+    assert geo.height_cover_dropped == 1 and len(geo.heights.fine_edges) == 3
+    assert not np.isin(geo.heights.fine_edges[:, (0, 2)], ring).any()
+    assert np.array_equal(geo.heights.fine_floors, asset.fine_floors)      # no fine floor was on the box
+
+
 def test_no_drop_keeps_the_asset_and_the_cache_key():
     # every child walkable: cover present but nothing to drop
     plain = geo_of(masks(hole=False)); asset = flat_asset_geo()

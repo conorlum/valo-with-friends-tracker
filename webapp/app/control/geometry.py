@@ -313,7 +313,7 @@ class Geometry:
     barrier_sha: str | None = None        # index.json's `barrier_sha` for it
     cover_sha: str | None = None          # index.json's `cover_sha`: the see-over cover mask, if the map has any
     cover_px: np.ndarray | None = None    # PX x PX int16: 4-connected pieces of that mask, 1.., 0 = none
-    height_cover_dropped: int = 0         # fine floors on top of cover (boxes) the adaptive attach dropped
+    height_cover_dropped: int = 0         # box-top cells adaptive.attach dropped: fine floors + 8 px cells cut from edges
 
     def see_over_mask(self, label: int) -> np.ndarray:
         """The pixels of one cover piece (all False for label 0 or when the map has no cover)."""
