@@ -145,7 +145,6 @@ def test_an_enemy_at_a_witness_cell_sees_the_player_on_the_box(side):
     assert seen_by_enemy(geo, centre_of(geo, BOX_WITNESS[side]))
 
 
-@red
 def test_an_enemy_behind_a_real_wall_does_not_see_the_player_whose_anchor_cell_it_sees():
     geo = walled_box_hall()
     from app.control import engine as ce
@@ -307,15 +306,13 @@ def test_control_every_consumer_agrees_for_a_ground_viewer_at_a_ring_cell(side, 
 # visibility build and over 40 lines), so these run on the flat box_hall: its floors are all unresolved (NaN), which
 # is the ring-median branch; the known-floor and four-value cases are in test_stance.py.
 
-@red
 def test_the_ring_median_sets_the_floor_where_the_map_has_none():
     geo = box_hall()
-    extra = {6: still("B", *ring_xy(geo, "E"), 0, 0.2), 7: still("B", *ring_xy(geo, "N"), 0, 0.0)}
+    extra = {6: still("B", 284.0, 196.0, 0, 0.2), 7: still("B", 260.0, 172.0, 0, 0.0)}   # 12 px from the box
     st = stance(geo, on_box_track(*CENTRE), T, extra)     # rise 1.0 m over a median of 0.0..0.2 m
     assert st is not None and st.kind == "on_box"
 
 
-@red
 def test_a_player_in_the_piece_with_no_z_while_the_others_have_it_is_beside_and_sees_no_further():
     geo = box_hall()
     tk = tick(geo, {0: ("A", [(0.0, 250.0, 196.0, 0), (10.0, 250.0, 196.0, 0)]),
