@@ -356,6 +356,8 @@ class RoundInputs:
         self._segment: dict[int, np.ndarray] = {}   # slot -> each sample's track segment index
         self.tracks = {}
         self.heights: dict[int, np.ndarray] = {}     # slot -> position-z per sample, metres above the map's origin
+        # slot -> raw position-z per sample in metres (no origin subtracted), on every map; NaN without z
+        self.track_z: dict[int, np.ndarray] = {}
         origin = geo.heights.origin_z if geo.heights is not None else 0
         for s, segs in (blob.get("tracks") or {}).items():
             parts = [(g["t0"] + np.arange(len(g["u"])) / self.hz, _decode(g["u"]), _decode(g["v"]),
@@ -363,6 +365,9 @@ class RoundInputs:
             self.tracks[int(s)] = tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
             self._segment[int(s)] = np.concatenate([np.full(len(g["u"]), i) for i, g in enumerate(segs)]) if segs \
                 else np.zeros(0, int)
+            if segs:
+                self.track_z[int(s)] = np.concatenate([
+                    _decode(g["z"]) / 10.0 if "z" in g else np.full(len(g["u"]), np.nan) for g in segs])
             if geo.heights is not None and segs:
                 # NaN where a segment was stored without z (before revision 11, or the parser gave none)
                 self.heights[int(s)] = np.concatenate([
