@@ -1086,6 +1086,19 @@ def test_signals_go_off_is_razorvines_patch_not_its_hidden_object():
     assert sig(run([never], t_end=60.0, agents={1: "Vyse"}))["go_off"] is None
 
 
+def test_presence_counts_only_while_the_util_is_on():
+    # Branch review B12: a Viper smoke out 0-40 s but up only 20-25 s, and a Razorvine never set off, each with an
+    # enemy standing in it the whole round: only the smoke's 5 s up count, and nothing for the hidden Razorvine.
+    camper = {5: ("B", [(0.0, 200, 200, 180), (40.0, 200, 200, 180)])}
+    smoke = toy_ability("Pandemic", "4_SmokeGrenade", 200, 200, 1, t=0.0, t1=40.0, kind="GameObject",
+                        on=[[20.0, 25.0]])
+    (c,) = [c for c in run([smoke], t_end=40.0, extra=camper, agents={1: "Viper"})["casts"] if c["presence"]]
+    assert c["presence"]["inside_s"] == pytest.approx(5.0, abs=0.3)
+    vine = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=0.0, t1=39.0, kind="GameObject")
+    out = run([vine], t_end=40.0, extra=camper, agents={1: "Vyse"})
+    assert not any((c["presence"] or {}).get("inside_s") for c in out["casts"])
+
+
 def test_signals_possessed_are_the_cameras_looked_through_spans():
     cam = toy_ability("Gumshoe", "E_PossessableCamera", 200, 200, 1, t=5.4, t1=76.2, kind="Pawn",
                       possessed=[[28.8, 29.4], [6.3, 8.6]])
