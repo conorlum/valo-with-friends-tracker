@@ -23,9 +23,10 @@
    }
   },
   "Ascent": {
-   "fingerprint": "ec9117de631b6329",
+   "fingerprint": "002a6552b213cdd3",
    "geometry_inputs": {
     "barrier": "77b049460968",
+    "cover": "48afd9eee5e9",
     "scale": 7e-05,
     "sight": "06147e83b898",
     "specials": [],
@@ -123,9 +124,10 @@
    }
   },
   "Summit": {
-   "fingerprint": "82e2271f3383a9c6",
+   "fingerprint": "acf73736dffcd02c",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
+    "cover": "4ca7d497b029",
     "scale": 7.5e-05,
     "sight": "a8686d5a1bbd",
     "specials": [],
@@ -133,9 +135,10 @@
    }
   },
   "Sunset": {
-   "fingerprint": "0d2d1df24fbc4ab4",
+   "fingerprint": "6c79b654ccf4284f",
    "geometry_inputs": {
     "barrier": "02adc35320f7",
+    "cover": "ca4caf841b49",
     "scale": 7.8e-05,
     "sight": "e608a189a789",
     "specials": [],

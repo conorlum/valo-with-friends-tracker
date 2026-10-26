@@ -440,6 +440,7 @@ def _candidate_geometry(geo, mf, members):
         candidate = geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
         attach_heights(candidate, geo.heights)
         candidate.barrier, candidate.barrier_sha = geo.barrier, geo.barrier_sha
+        candidate.cover_px, candidate.cover_sha = geo.cover_px, geo.cover_sha
         return candidate
     return replace(geo, walk_px=walk, sight=sight,
                    walk=walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5,
@@ -1520,6 +1521,9 @@ def geometry_from_feature_inputs(inputs: fi.FeatureInput, asset=None) -> Geometr
                               _archived_mask(base['walk'], (PX, PX)), base['scale'], base['specials'])
     geo.barrier = None if base['barrier'] is None else _archived_mask(base['barrier'], (GRID, GRID))
     geo.barrier_sha = base.get('barrier_sha')
+    if base.get('cover') is not None:            # before the heights: they read the cover pieces
+        from app.control.geometry import attach_cover
+        attach_cover(geo, _archived_mask(base['cover'], (PX, PX)), base.get('cover_sha'))
     if inputs.key.height_digest == 'flat':
         if asset is not None:
             raise fa.FeatureArtifactCorrupt('flat key cannot attach heights')
@@ -1544,6 +1548,9 @@ def verify_permanent_context(geo: Geometry, inputs: fi.FeatureInput) -> None:
             or ((geo.barrier is None) != (reconstructed.barrier is None)) \
             or (geo.barrier is not None and not np.array_equal(geo.barrier, reconstructed.barrier)):
         raise fa.FeatureArtifactCorrupt('compiler permanent context does not match archive')
+    if geo.cover_sha != reconstructed.cover_sha or ((geo.cover_px is None) != (reconstructed.cover_px is None)) \
+            or (geo.cover_px is not None and not np.array_equal(geo.cover_px, reconstructed.cover_px)):
+        raise fa.FeatureArtifactCorrupt('compiler permanent cover does not match archive')
 
 
 def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -> fa.FeatureArtifact:
@@ -1602,9 +1609,11 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
                 triggers[trigger['id']] = {'nodes': list(p.nodes), 'mask': _packed_mask(to_px(raster(trigger['geometry']))),
                                           'targets': trigger.get('targets', [])}
     sight, walk, _ = reconcile(geo.sight, geo.walk_px, mf, statuses)
-    assets.update(bindings=bindings, triggers=triggers, base_deltas=deltas, phases=phases,
-                  base_domain={'sight': _packed_mask(sight), 'walk': _packed_mask(walk),
-                               'barrier': None if geo.barrier is None else _packed_mask(geo.barrier)})
+    base_domain = {'sight': _packed_mask(sight), 'walk': _packed_mask(walk),
+                   'barrier': None if geo.barrier is None else _packed_mask(geo.barrier)}
+    if geo.cover_px is not None:                 # only a map with cover
+        base_domain['cover'] = _packed_mask(geo.cover_px > 0)
+    assets.update(bindings=bindings, triggers=triggers, base_deltas=deltas, phases=phases, base_domain=base_domain)
     pending = {bid: {'reasons': status.reasons, 'placement': {m: [dict(r, members=status.members) for r in p.reasons]
                for m, p in placement(geo, mf).items() if m in status.members}}
                for bid, status in sorted(statuses.items()) if not status.publishable}

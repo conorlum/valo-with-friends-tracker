@@ -381,7 +381,7 @@ def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
     mine = replay_control.geometry_inputs(map_name, heights)
     used = result.get("geometry") or {}
     return mine is not None and all(used.get(k) == mine.get(k)
-                                    for k in ("sight", "walk", "barrier", "specials", "scale", "height", "features"))
+                                    for k in ("sight", "walk", "barrier", "cover", "specials", "scale", "height", "features"))
 
 
 def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
