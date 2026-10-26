@@ -658,6 +658,22 @@ SLAB_SLOTS = 6     # blocked slope intervals kept per ray; more are merged into 
 SLOPE_EPS = 1e-9   # a blocked interval's ends count as blocked
 
 
+def sight_without(geo: Geometry, *labels: int) -> np.ndarray:
+    """`geo.sight` with the see-over pixels of the given cover pieces cleared (they don't block). Labels of 0, or a
+    map with no cover, give `geo.sight` itself. Cached on the geometry per label set."""
+    wanted = tuple(sorted({int(l) for l in labels if l}))
+    if not wanted or geo.cover_px is None:
+        return geo.sight
+    cache = geo.__dict__.setdefault("_sight_without", {})
+    view = cache.get(wanted)
+    if view is None or view[0] is not geo.sight:
+        cleared = geo.sight.copy()
+        for label in wanted:
+            cleared &= ~geo.see_over_mask(label)
+        view = cache[wanted] = (geo.sight, cleared)
+    return view[1]
+
+
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
          own: int | None = None, record: dict | None = None, see_over: int = 0) -> np.ndarray:
     """see_over: the cover piece the eye stands on; 0 = none (not used yet).
@@ -701,6 +717,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
             reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
+    sight = sight_without(geo, see_over) if see_over else geo.sight
     for step in range(0, RAY_MAX_PX, RAY_STEP_PX):
         px = x + dx * step
         py = y + dy * step
@@ -708,7 +725,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
         pxc = np.clip(px, 0, PX - 1).astype(np.int32)
         pyc = np.clip(py, 0, PX - 1).astype(np.int32)
         if step > 3:
-            hits += geo.sight[pyc, pxc]
+            hits += sight[pyc, pxc]
             live &= hits <= geo.tol_hits
         for (sx, sy, r, solid), inside0 in zip(smokes, started_in):
             inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
@@ -746,6 +763,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
+    sight = sight_without(geo, see_over) if see_over else geo.sight
     src = geo.space_at_px(x, y)
     own = geo.node_at_px(x, y, eye - hc.EYE_M) if own is None else own
     seen[own] = True
@@ -781,7 +799,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             pxc = np.clip(px, 0, PX - 1).astype(np.int32)
             pyc = np.clip(py, 0, PX - 1).astype(np.int32)
             if step > 3:
-                hits += geo.sight[pyc, pxc]
+                hits += sight[pyc, pxc]
                 live &= hits <= geo.tol_hits
             for (sx, sy, r, solid), inside0 in zip(smokes, started_in):
                 inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
@@ -886,7 +904,8 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     from app.control.features import BoundedOccluder, los_with
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
-        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record)
+        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record,
+                        see_over=see_over)
     (ax, ay, az), (bx, by, bz) = a, b
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
@@ -908,12 +927,13 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     slope = (bz - az) / total if heights else 0.0
     step_m = RAY_STEP_PX * geo.m_per_px
     hits, flat = 0, False
-    spans: list[list] = []                       # [cell, first d, last d] in order along the line
+    sight = sight_without(geo, *see_over) if any(see_over) else geo.sight
+    spans: list[list] = []                    # [cell, first d, last d] in order along the line
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step
         pxc, pyc = int(min(max(px, 0), PX - 1)), int(min(max(py, 0), PX - 1))
         if step > 3:
-            hits += bool(geo.sight[pyc, pxc])
+            hits += bool(sight[pyc, pxc])
             if hits > geo.tol_hits:
                 return False
         for (sx, sy, r, solid), inside0 in zip(circles, started_in):
