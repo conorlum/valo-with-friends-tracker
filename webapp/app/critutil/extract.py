@@ -1105,6 +1105,21 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
     return out
 
 
+EVOLUTION_BUFF = "X_Evolution"                  # Veto's ult, a buff row on himself (CONDENSE 23)
+EVOLUTION_REGEN = "X_SelfBuffVers_Engineering"  # its regeneration: a heal row each time he heals after a hit
+
+
+def _evolution(util, slot, end):
+    """(start, end) of the slot's Evolution buff row starting by `end`, or None. It runs to his death or the
+    round's end (the row's `t1`)."""
+    rows = [r for r in util if r.get("k") == "buff" and r.get("by") == slot and r.get("name") == EVOLUTION_BUFF
+            and r["t"] <= end]
+    if not rows:
+        return None
+    r = min(rows, key=lambda x: x["t"])
+    return float(r["t"]), float(r["t1"]) if r.get("t1") is not None else None
+
+
 def _first_use(util, slot, agent, end):
     """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it, or Reyna
     equipping Empress, else its heal on activation), up to `end`; None when it has none (in an old blob, Reyna at
@@ -1119,6 +1134,12 @@ def _first_use(util, slot, agent, end):
                           and r.get("from") == "equippable")
     elif agent == "Neon":
         want = lambda r: r.get("k") == "shot" and r.get("gun") is None
+    elif agent == "Veto":
+        # Evolution's own buff row (CONDENSE 23); before it, the first regen heal (a floor: only when he was hurt)
+        span = _evolution(util, slot, end)
+        if span is not None:
+            return span[0]
+        want = lambda r: r.get("k") == "heal" and r.get("name") == EVOLUTION_REGEN
     else:
         return None
     ts = [r["t"] for r in util if r.get("by") == slot and r["t"] <= end and want(r)]
@@ -1136,8 +1157,19 @@ def _use(rnd, ps, util, slot, agent, end) -> dict | None:
     if t is not None:
         end_t = next((p["t"] for p in line if p["t"] > t and p["n"] == 0), None)
         death = next((k for k, a, b in sorted(rnd.kills) if k > t and b == slot), None)
-    return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult",
-            "signals": {"ult_end": _r2(end_t), "death": _r2(death)}}
+    signals = {"ult_end": _r2(end_t), "death": _r2(death)}
+    if agent == "Veto":
+        # Veto's ult line drops only at the round's end, so the buff row's own end is the ult's end; while it is on
+        # he regenerates after every hit that doesn't kill him, so a use can heal several times (the wiki).
+        span = _evolution(util, slot, end)
+        if span is not None:
+            signals["ult_end"] = _r2(span[1])
+        stop = span[1] if span is not None and span[1] is not None else end
+        regen = [r for r in util if r.get("k") == "heal" and r.get("by") == slot and r.get("name") == EVOLUTION_REGEN
+                 and t is not None and t - _EPS <= r["t"] <= stop + _EPS]
+        signals.update({"exact": span is not None, "regen_heals": len(regen),
+                        "regen_hp": _r2(sum(float(r.get("amount") or 0.0) for r in regen))})
+    return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult", "signals": signals}
 
 
 def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
@@ -1153,7 +1185,8 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     out = {}
     for slot in sides:
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
-        used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util if r.get("k") == "ability")
+        used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util
+                   if r.get("k") == "ability") or _evolution(util, slot, end) is not None
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
                           "used": used, "use": _use(rnd, ps, util, slot, (agents or {}).get(slot), end)}
     return out

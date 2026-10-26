@@ -475,6 +475,39 @@ def test_reyna_at_full_health_has_no_use_sign_and_other_agents_have_no_use():
     assert out["ults"]["1"]["use"] is None
 
 
+def evolution(t, t1, by=0):
+    # the CONDENSE 23 row (6e52839b round 9: {"k": "buff", "by": 9, "target": 9, "code": "Pine", ...})
+    return {"k": "buff", "t": t, "t1": t1, "by": by, "target": by, "code": "Pine", "name": "X_Evolution"}
+
+
+def regen(t, amount, by=0):
+    # 409 round 9's regen heal row shape
+    return {"k": "heal", "t": t, "t1": t + 0.3, "by": by, "target": by, "pool": "hp", "amount": amount,
+            "code": "Pine", "name": "X_SelfBuffVers_Engineering", "from": "causer", "n": 7}
+
+
+def test_veto_use_is_his_evolution_row_and_every_regen_heal_in_it_counts():
+    # The ult line drops only at the round's end (408/409): the buff row gives the real start and end, and he
+    # regenerates after every non-lethal hit while it is on, so one use can heal several times (408 round 23: two).
+    util = [regen(5.0, 9.0), evolution(16.5, 47.6), regen(20.0, 13.3), regen(31.0, 22.3), regen(50.0, 8.0)]
+    ps = ult_state(0, drop=58.0)
+    out = run(util, kills=[kill(47.6, 5, 0)], player_state=ps, agents={0: "Veto"}, t_end=60.0)
+    assert out["ults"]["0"]["used"] is True
+    assert out["ults"]["0"]["use"] == {"t": 16.5, "ability_id": "Veto/Evolution", "type": "ult",
+                                       "signals": {"ult_end": 47.6, "death": 47.6, "exact": True,
+                                                   "regen_heals": 2, "regen_hp": 35.6}}
+    (c,) = [c for c in out["casts"] if c["by"] == 0 and c["ability_id"] == "Veto/Evolution"]
+    assert "ult" in c["kinds"]
+
+
+def test_veto_without_the_row_falls_back_to_his_first_regen_heal():
+    # a blob before CONDENSE 23: no buff row; the first regen heal is a floor on the start
+    out = run([regen(27.7, 20.0), regen(40.0, 10.0)], player_state=ult_state(0, drop=55.0), agents={0: "Veto"},
+              t_end=60.0)
+    use = out["ults"]["0"]["use"]
+    assert use["t"] == 27.7 and use["signals"]["exact"] is False and use["signals"]["regen_heals"] == 2
+
+
 def test_a_use_after_the_slot_died_is_not_a_use():
     util = [shot(12.0, 0, gun="Tour de Force")]
     out = run(util, kills=[kill(10.0, 5, 0)], player_state=ult_state(0), agents={0: "Chamber"})
