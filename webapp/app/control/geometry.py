@@ -676,7 +676,7 @@ def sight_without(geo: Geometry, *labels: int) -> np.ndarray:
 
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
          own: int | None = None, record: dict | None = None, see_over: int = 0) -> np.ndarray:
-    """see_over: the cover piece the eye stands on; 0 = none (not used yet).
+    """see_over: the cover piece the eye stands on: its see-over pixels don't block (`sight_without`); 0 = none.
 
     The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
     stop a ray once it has crossed more than the corner tolerance; a hollow smoke stops it at its edge
@@ -705,7 +705,7 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
 
 
 def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, see_over: int = 0) -> np.ndarray:
-    """`cast` on cells, in 2D: the whole of it on a flat map. see_over: as in `cast` (not used yet)."""
+    """`cast` on cells, in 2D: the whole of it on a flat map. see_over: as in `cast`."""
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     seen = np.zeros(geo.n if geo.adaptive else GRID * GRID, bool)
@@ -742,7 +742,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
                   own: int | None, record: dict | None, see_over: int = 0) -> np.ndarray:
-    """`cast` on nodes, with the height test (see_over: as in `cast`, not used yet). The own-cell and target-cell plate rule below is not the
+    """`cast` on nodes, with the height test (see_over: as in `cast`). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
     viewer's own cell and the cell being tested don't count), and blocked slope intervals, one per upper
@@ -890,7 +890,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
 
 def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
         see_over: tuple[int, int] = (0, 0)) -> bool:
-    """see_over: the cover piece(s) the eye/target stands on; 0 = none (not used yet).
+    """see_over: the cover piece(s) the eye/target stands on: their see-over pixels don't block; 0 = none.
 
     Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
     z already at the eye's and the target point's own heights (None for a 2D check, and on a flat map).
