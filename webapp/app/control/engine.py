@@ -105,7 +105,7 @@ from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
-from app.control.stance import Stance
+from app.control.stance import Stance, stance_at
 from app.control.routes import RouteLog
 from app.replays import choke_assets
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
@@ -1200,6 +1200,21 @@ class Fill:
         return walk & ~self.seen & ~self.free
 
 
+def _smoke_key(smokes: list) -> tuple:
+    """A hashable of a tick's smokes by content (circles as they are, a Wall by its segments, a bounded
+    occluder by its owner, band and mask), for the on-box presence memo."""
+    out = []
+    for sm in smokes:
+        if isinstance(sm, Wall):
+            out.append(("wall", sm.segs.tobytes()))
+        elif hasattr(sm, "mask"):
+            out.append(("occ", sm.owner, sm.bottom, sm.top, sm.all_height,
+                        sm.mask_digest if sm.mask_digest is not None else hash(sm.mask.tobytes())))
+        else:
+            out.append(tuple(sm))
+    return tuple(out)
+
+
 def sector(geo: Geometry, x: float, y: float, yaw: float, half: float) -> np.ndarray:
     """Flat cells whose centre lies within yaw +/- half of (x, y), widened by the cell's own angular size."""
     dx = geo.centres[:, 0] - x
@@ -1353,6 +1368,7 @@ class Tick:
         timings = timings if timings is not None else defaultdict(float)
         started = time.perf_counter()
         self.holders: dict[int, Holder] = {}
+        every: dict[int, tuple] = {}   # the same for every viewer (flat maps too), for in-box targets
         looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
@@ -1367,38 +1383,58 @@ class Tick:
                 continue
             x, y, yaw = p
             cell = rnd.node(s, t, x, y)
+            st = None
+            if geo.cover_px is not None:   # W13: only a player inside a cover piece asks for a stance
+                ix, iy = int(x), int(y)
+                if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1] and geo.cover_px[iy, ix]:
+                    st = stance_at(rnd, s, t)
+            ex, ey = x, y
+            see_over = 0
+            if st is not None:
+                ex, ey = st.eye_px
+                see_over = st.see_over
+                if st.anchor is not None:
+                    cell = st.anchor
             mode = rnd.movement(s, t, p)
             if s in using:
                 raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
             else:
-                raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
-                           eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks)
+                raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
+                           eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks, see_over=see_over)
             body = raw.copy()
             blind = _during(rnd.flashed[s], t)
             if blind:
                 body[:] = False
             elif _during(rnd.nearsight[s], t):
                 r = NEARSIGHT_RADIUS_M / geo.m_per_px
-                body &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) < r * r
+                body &= ((geo.centres[:, 0] - ex) ** 2 + (geo.centres[:, 1] - ey) ** 2) < r * r
             if _during(rnd.downgraded[s], t):
                 active = np.zeros(geo.n, bool)
             else:
-                active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
+                active = body & sector(geo, ex, ey, yaw, CONE_HALF[mode])
             passive = body & ~active
             if not blind:
-                passive |= self._presence(x, y, cell) & ~active
+                if st is None:
+                    passive |= self._presence(x, y, cell) & ~active
+                else:
+                    passive |= self._presence(x, y, cell, st, s, t) & ~active
             watch = self._watch(s, t, blind)
             enemy = "B" if rnd.team[s] == "A" else "A"
             flagged = _during(rnd.contest_status[s], t) or _during(rnd.hit_contest[s], t) or any(
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
             self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode,
-                                     blind=blind)
-            if geo.heights is not None and s not in using:
-                looks[s] = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
-                            None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
+                                     blind=blind, stance=st)
+            if s not in using:
+                look = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
+                        None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
+                every[s] = look
+                if geo.heights is not None:
+                    looks[s] = look
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
+        if any(h.stance is not None for h in self.holders.values()):   # W14: in-box targets by the physical line
+            self.direct.update(self._boxed(every))
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
@@ -1411,7 +1447,8 @@ class Tick:
             self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
-                              if h.team != e.team and (e.body[h.cell] or (e.slot, h.slot) in self.direct)}
+                              if h.team != e.team and ((e.slot, h.slot) in self.direct if h.stance is not None
+                                                       else (e.body[h.cell] or (e.slot, h.slot) in self.direct))}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
         # side -> flat cells an unknown enemy could be in: extra sources of that side's free space
@@ -1458,6 +1495,8 @@ class Tick:
             for h in self.holders.values():
                 z = rnd.height(h.slot, t) if h.team != e.team else None
                 floor = geo.node_z[h.cell]
+                if h.stance is not None:
+                    continue    # an in-box target is `_boxed`'s
                 if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
                     continue
                 dx, dy = h.x - e.x, h.y - e.y
@@ -1468,11 +1507,61 @@ class Tick:
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
-    def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
+    def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
+        """Enemies in a box (a holder with a stance), seen by the one physical line from the viewer's eye to
+        the target's pixel, over the pieces both stand on: not flashed, inside the field of view, inside the
+        nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
+        geo, rnd, t = self.geo, self.rnd, self.t
+        out = {}
+        for s, (yaw, eye, flashed, nearsighted, cone) in every.items():
+            if flashed:
+                continue
+            e = self.holders[s]
+            ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+            e_piece = e.stance.see_over if e.stance is not None else 0
+            for h in self.holders.values():
+                if h.team == e.team or h.stance is None:
+                    continue
+                dx, dy = h.x - ex, h.y - ey
+                off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
+                if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                z = rnd.height(h.slot, t) if geo.heights is not None else None
+                tz = None if z is None or np.isnan(z) else float(z) + hc.BODY_M
+                ez = eye if tz is not None else None
+                if ez is None:
+                    tz = None
+                if los(geo, (ex, ey, ez), (h.x, h.y, tz), self.smokes, record=self.fallbacks,
+                       see_over=(e_piece, h.stance.see_over)):
+                    out[(s, h.slot)] = cone is not None and off <= cone
+        return out
+
+    def _presence(self, x: float, y: float, cell: int, st: Stance | None = None, s: int = 0,
+                  t: float = 0.0) -> np.ndarray:
         """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
         (8-connected) and in their line of sight (smoke-aware, all round them): anything that blocks
-        sight stops the bubble (the user's call, 2026-10-01)."""
+        sight stops the bubble (the user's call, 2026-10-01).
+        With a stance (W13): on a box the sight part is one 360 degree cast from the box pixel over the
+        piece, memoised per (piece, cell, smoke key) on the round; the circle is centred on `st.px`.
+        Beside a box it is today's, from the anchor cell."""
         geo = self.geo
+        if st is not None:
+            x, y = st.px
+        if st is not None and st.kind == "on_box":
+            start = np.zeros(geo.n, bool)
+            start[cell] = True
+            steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
+            reach = self.topo.dilate(start, eight=True, iterations=steps, within=geo.walk_n)
+            r = PRESENCE_M / geo.m_per_px
+            near = reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
+            memo = self.rnd.__dict__.setdefault("_presence_memo", {})
+            key = (st.see_over, cell, _smoke_key(self.smokes))
+            if key not in memo:
+                sight = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), self.smokes,
+                             eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks, see_over=st.see_over)
+                sight[cell] = True
+                memo[key] = sight
+            return near & memo[key]
         start = np.zeros(geo.n, bool)
         start[cell] = True
         steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
@@ -2079,7 +2168,8 @@ class Knowledge:
         kt.holders = holders
         # only enemies the team sees can contest its players
         kt.sees = {x.slot: {h.slot for h in holders.values()
-                            if h.team != x.team and (x.body[h.cell] or (x.slot, h.slot) in tick.direct)}
+                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if h.stance is not None
+                                                     else (x.body[h.cell] or (x.slot, h.slot) in tick.direct))}
                    for x in holders.values()}
         kt._dist = {}
         kt._back, kt._safe = {}, {}    # backfill again, against what the team knew

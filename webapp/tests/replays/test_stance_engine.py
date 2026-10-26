@@ -68,7 +68,6 @@ def on_box(yaw):
     return on_box_track(*CENTRE, yaw=yaw)
 
 
-@red
 @pytest.mark.parametrize("side", SIDES)
 def test_an_on_box_viewer_has_the_faced_side_witness_in_their_view(side):
     opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}[side]
@@ -77,7 +76,6 @@ def test_an_on_box_viewer_has_the_faced_side_witness_in_their_view(side):
     assert not tk.view[0][BOX_WITNESS[opposite]], "behind the viewer is outside the field of view"
 
 
-@red
 @pytest.mark.parametrize("side", SIDES)
 def test_an_on_box_viewer_is_held_at_their_anchor_node(side):
     from app.control import stance as st_mod
@@ -92,7 +90,6 @@ def test_an_on_box_viewer_is_held_at_their_anchor_node(side):
     assert h.cell == st.anchor and geo.walk.ravel()[h.cell]
 
 
-@red
 def test_a_hugger_in_the_piece_is_held_at_the_anchor_and_sees_no_further_than_the_ground_does():
     geo = box_hall()
     rnd, _ = inputs(geo, {0: hugging_track(250, 196, yaw=0)})        # inside the west edge, facing east
@@ -104,6 +101,35 @@ def test_a_hugger_in_the_piece_is_held_at_the_anchor_and_sees_no_further_than_th
     tk = ce.Tick(rnd, T)
     assert tk.holders[0].cell == st.anchor
     assert not tk.view[0][BOX_WITNESS["E"]], "beside the box, the box is in the way"
+
+
+def test_the_on_box_presence_is_memoised_per_piece_cell_and_smokes():
+    from app.control import engine as ce
+
+    geo = box_hall()
+    rnd, _ = inputs(geo, {0: on_box(0)})
+    first = ce.Tick(rnd, T)
+    memo = rnd.__dict__["_presence_memo"]
+    assert len(memo) == 1
+    (key,) = memo
+    held = memo[key]
+    again = ce.Tick(rnd, T + 1.0)
+    assert len(memo) == 1 and memo[key] is held, "same piece, cell and smokes reuse the cast"
+    assert again.holders[0].stance is not None and first.holders[0].stance.kind == "on_box"
+    rnd.smokes_at = lambda _t: [(CENTRE[0] + 60.0, CENTRE[1], 20.0, True)]
+    ce.Tick(rnd, T)
+    assert len(memo) == 2, "a different smoke key is a different entry"
+
+
+def test_nobody_in_the_box_never_asks_for_a_stance():
+    from app.control import stance as st_mod
+
+    geo = box_hall()
+    x, y = ring_xy(geo, "W")
+    rnd, _ = inputs(geo, {0: still("A", x, y, 0)})
+    before = st_mod.CALLS
+    tk = __import__("app.control.engine", fromlist=["Tick"]).Tick(rnd, T)
+    assert st_mod.CALLS == before and tk.holders[0].stance is None
 
 
 def test_control_a_ground_player_beside_the_box_does_not_see_through_it():
@@ -138,7 +164,6 @@ def seen_by_enemy(geo, enemy_xy, enemy_yaw=None, target=CENTRE, util=(), smokes=
     return 0 in tick(geo, players, util, smokes).sees[5]
 
 
-@red
 @pytest.mark.parametrize("side", SIDES)
 def test_an_enemy_at_a_witness_cell_sees_the_player_on_the_box(side):
     geo = box_hall()
@@ -170,7 +195,6 @@ def test_control_a_ground_player_behind_the_same_wall_is_not_seen():
     assert 0 not in tick(geo, players).sees[5]
 
 
-@red
 def test_the_player_on_the_box_just_inside_the_enemys_field_of_view_is_seen():
     from app.control import engine as ce
 
@@ -202,7 +226,19 @@ def test_control_a_flashed_enemy_does_not_see_the_player_on_the_box():
     assert not seen_by_enemy(geo, centre_of(geo, BOX_WITNESS["E"]), util=[flash_row(5, 1.0, 8.0)])
 
 
-@red
+def test_ground_sightings_do_not_change_when_another_player_is_on_the_box_and_a_flat_tick_has_no_looks():
+    geo = box_hall()
+    wx, wy = ring_xy(geo, "W")
+    ground = {1: still("A", wx, wy, 0), 5: still("B", 330.0, 120.0, 180)}
+    without = tick(geo, ground)
+    assert without.direct == {}, "nobody in a box: no extra sightings on a flat map"
+    withbox = tick(geo, {**ground, 0: on_box(0)})
+    assert withbox.holders[0].stance is not None
+    assert withbox.sees[5] - {0} == without.sees[5]
+    assert withbox.sees[1] == without.sees[1]
+    assert (5, 1) not in withbox.direct and (1, 5) not in withbox.direct
+
+
 def test_a_nearsighted_enemy_within_the_bubble_sees_the_player_on_the_box():
     geo = box_hall()
     near = centre_of(geo, BOX_WITNESS["E"])                     # 40 px = 5.6 m from the box centre
