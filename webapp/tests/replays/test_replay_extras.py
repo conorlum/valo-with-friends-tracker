@@ -746,15 +746,22 @@ def _leer(guid):
     return spawned(20_000, guid, "Default__GameObject_Vampire_4_NearsightAOE_Source_C", 0, 0)
 
 
-def test_leer_hit_lethal_in_its_close_ms_is_gone_and_other_abilities_are_not(tmp_path):
+def test_a_lethal_hit_in_the_close_ms_is_gone_for_every_object(tmp_path):
+    # trap-jobs D4 (CONDENSE 23): a shot camera, turret or alarmbot closes in its lethal hit's ms, like Leer.
     rows = [_leer(80), damage(30_000, 80, 999, lethal=True), closed(30_000, 80),    # shot down: same ms
             _leer(81), closed(30_000, 81),                                          # natural close
             spawned(20_000, 82, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 82, 101),
-            damage(30_000, 82, 999, lethal=True), closed(30_000, 82)]               # D10: not widened
+            damage(30_000, 82, 999, lethal=True), closed(30_000, 82),               # shot: same ms
+            spawned(20_000, 83, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 83, 101),
+            damage(30_000, 83, 999), closed(30_000, 83),                            # hit, not lethal: a recall
+            spawned(20_000, 84, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 84, 101),
+            closed(30_000, 84), damage(30_050, 84, 999, lethal=True)]               # lethal after the close
     out = {a["id"]: a for a in run14(tmp_path, rows).rounds[1]["abilities"]}
     assert out[80]["gone"] == 20.0
     assert "gone" not in out[81]
-    assert "gone" not in out[82]
+    assert out[82]["gone"] == 20.0
+    assert "gone" not in out[83]
+    assert "gone" not in out[84]
 
 
 def _dizzy_rows(close_ms=21_000, spawner=True, ray_y=60.0):

@@ -94,20 +94,20 @@ CAPABILITIES = {
     "reveal": False,      # recon, Haunt, darts' and drones' tags, Neural Theft, Fade's and Gekko's utility
     "status": False,      # concuss, slow, tether, decay: what utility puts on a player
 }
-# No local replay has a Veto, so Evolution's own archetype has never been seen. Any of Veto's
-# (`Pine`) ult-slot objects is read as Evolution being active for its life. The plan's evidence task: confirm the
-# name and its life on a replay with an ulting Veto.
+# Evolution has no object: it is a `buff` row (`Pine` / `X_Evolution`, CONDENSE 23) on Veto himself, from the end
+# of its windup to his death or the round's end (trap-jobs D10: 4 uses in 6e52839b and 47a5f123). Blobs before 23
+# have no such row, so they show no Evolution, as before.
 EVOLUTION = re.compile(r"^Pine_X_")
 VETO = "Veto"
 
 
 def evolution_spans(blob: dict) -> dict[int, list[tuple[float, float]]]:
-    """slot -> [(from, to)] round seconds while that player was in Evolution: an ult-slot ability row of a Veto
-    (EVOLUTION), owned by them, from its start to its end. Nothing for anyone else."""
+    """slot -> [(from, to)] round seconds while that player was in Evolution: an ult-slot buff row of a Veto
+    (EVOLUTION) on himself, from its start to its end. Nothing for anyone else."""
     vetos = {p["slot"] for p in blob.get("players") or [] if p.get("agent") == VETO}
     out: dict[int, list[tuple[float, float]]] = {}
     for e in blob.get("util") or []:
-        if e.get("k") != "ability" or e.get("by") not in vetos:
+        if e.get("k") != "buff" or e.get("by") not in vetos or e.get("target", e.get("by")) != e.get("by"):
             continue
         if not EVOLUTION.match(f"{e.get('code')}_{e.get('name')}"):
             continue

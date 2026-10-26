@@ -24,7 +24,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
   lifetime, so it is its own kind and not an `ability`.
 - `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
-  object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`).
+  object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`);
+  Veto's Evolution (`X_Evolution`, revision 23) is one on himself, to his death or the round's end.
 - `{"k": "equip", "t", "by", "code", "name"}`: a player switching to their ult's equippable (revision 22,
   `Raw.ult_equips`), once per switch.
 
@@ -997,17 +998,29 @@ STATUS_KNOWN_MS = {"suppressed": 8000}
 # the stop comes later (one 11.0 s Harmonize in 47a5f123). Code -> the stored name.
 BUFF_SELF = {"Iris": "Q_Harmonize"}
 BUFF_TEAM_MS = 150
+# Buffs that last until removed (`FXC.Buff.Duration` -1) on the caster's own character, context naming it (trap-jobs
+# D10, CONDENSE 23): Veto's Evolution, after its 1 s windup, to his death or the round's end. 4 of 4 uses in
+# 6e52839b and 47a5f123 stop in the ms he dies; it is his only such effect. Code -> the stored name.
+BUFF_SELF_UNTIL_REMOVED = {"Pine": "X_Evolution"}
 
 
 def find_buffs(effects: list[_Effect], players: PlayerTable, code_of_agent: dict[str, str],
                teams: dict[int, str | None] | None = None) -> list[dict]:
     """[{t_ms, t1_ms | None, by, target, code, name}]: one per buffed player, the caster's own first."""
+    out = []
+    for e in effects:
+        slot = players.pawn_slot.get(e.actor)
+        if e.oneshot or e.buff != -1 or slot is None or e.actor not in e.context:
+            continue
+        code = code_of_agent.get(players.agents[slot])
+        if code in BUFF_SELF_UNTIL_REMOVED:
+            out.append({"t_ms": e.t_ms, "t1_ms": e.stop_ms, "by": slot, "target": slot, "code": code,
+                        "name": BUFF_SELF_UNTIL_REMOVED[code]})
     candidates = [e for e in effects if not e.oneshot and e.buff is not None and e.buff > 0
                   and players.pawn_slot.get(e.actor) is not None]
     by_container: dict = defaultdict(list)
     for e in candidates:
         by_container[e.container].append(e)
-    out = []
     for e in candidates:
         slot = players.pawn_slot[e.actor]
         code = code_of_agent.get(players.agents[slot])
@@ -1879,13 +1892,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
         # doesn't use utility up: a trip, a Vyse flash or a Killjoy turret stays until it's destroyed.
         gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
-        # Leer's lethal hit lands in the very ms it closes (D10: for this name only, never widened).
-        same_ms_ok = actor.name == LEER_NAME
-        if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms
-                     or (same_ms_ok and min(gone) <= actor.closed_ms)):
+        # A lethal hit usually lands in the very ms the object closes (Leer, a shot alarmbot, turret or camera),
+        # so a hit at the close counts (trap-jobs D4, CONDENSE 23; Leer alone had it before).
+        if gone and (actor.closed_ms is None or min(gone) <= actor.closed_ms):
             entry["gone"] = max(0.0, _seconds(min(min(gone), end), start))
             counts["abilities_gone_early"] += 1
-            counts["leer_gone"] += same_ms_ok
+            counts["leer_gone"] += actor.name == LEER_NAME
         elif (actor.name == DIZZY_NAME and actor.closed_ms is not None
               and actor.closed_ms - actor.t_ms < DIZZY_EARLY_MS and actor.closed_ms <= end
               and _dizzy_shot_down(actor.closed_ms, spawners_at, shots_at)):

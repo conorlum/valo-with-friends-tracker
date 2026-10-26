@@ -111,7 +111,9 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 22   # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21),
+CONDENSE_REVISION = 23   # 23: a lethal hit in an object's close ms is `gone` (any object, not only Leer), Veto's
+                         #     Evolution `buff` rows (2026-10-25);
+                         # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21),
                          #     Leer / Dizzy `gone`, Poison Cloud `on`, Harmonize `buff` rows (2026-10-24),
                          #     `equip` rows: a player switching to their ult's equippable (2026-10-25);
                          # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
