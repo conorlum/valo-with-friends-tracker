@@ -412,6 +412,50 @@ def test_a_new_track_segment_at_box_height_is_beside_for_half_a_second_then_on_b
     assert st_mod.stance_at(rnd, 0, 3.6).kind == "on_box"
 
 
+def test_a_teleport_from_the_same_height_is_still_beside_for_half_a_second():
+    from app.control import stance as st_mod
+    from app.control.engine import RoundInputs
+    from control_toys import z_track
+
+    geo = box_hall()
+    players = {0: ("A", [(0.0, 300, 196, 0, 1.0), (10.0, 300, 196, 0, 1.0)]), **dict([ring_ref(geo)])}
+    blob = height_blob(players, t_end=10.0)
+    # an Omen-like teleport between two spots at z 1.0 m: the old segment's samples must not count for the window
+    blob["tracks"]["0"] = (z_track([(0.0, 300, 196, 0, 1.0), (2.9, 300, 196, 0, 1.0)], 0.0, 2.9)
+                           + z_track([(3.0, *CENTRE, 0, 1.0), (10.0, *CENTRE, 0, 1.0)], 3.0, 10.0))
+    rnd = RoundInputs(blob, geo, None, None)
+    assert st_mod.stance_at(rnd, 0, 3.2).kind == "beside"
+    assert st_mod.stance_at(rnd, 0, 3.6).kind == "on_box"
+
+
+def test_the_anchor_is_on_the_players_side_of_a_real_wall_not_the_nearer_node_across_it():
+    import hashlib
+
+    from app.control import geometry as cg
+    from app.control.engine import RoundInputs
+    from app.control import stance as st_mod
+    from control_toys import _DIR, TOY_SCALE, HALL, geometry_from_masks, rect_mask, visibility
+
+    floor = rect_mask([HALL])
+    wall = rect_mask([(253, 96, 259, 200)])                 # 6 px thick: the cells either side stay walkable
+    piece = rect_mask([(259, 192, 288, 208)])
+    geo = geometry_from_masks("ThinWallPiece", ~floor | wall | piece, floor & ~wall & ~piece, TOY_SCALE, None)
+    attach = piece & ~wall
+    cg.attach_cover(geo, attach, hashlib.sha256(np.packbits(attach).tobytes()).hexdigest()[:12])
+    visibility(geo, _DIR)
+    label = int(geo.cover_px[196, 259])
+    assert label != 0
+    west, east = 24 * GRID + 31, 23 * GRID + 32       # (252, 196) across the wall; (260, 188) own side
+    assert geo.walk.ravel()[west] and geo.walk.ravel()[east]
+    assert not cg.los(geo, (252.0, 196.0, None), (259.0, 196.0, None), see_over=(label, label))
+    assert cg.los(geo, (260.0, 188.0, None), (259.0, 196.0, None), see_over=(label, label))
+    # the node across the wall is nearer (7 px against 8.1 px) but not in sight of the player
+    rnd = RoundInputs(height_blob({0: ("A", [(0.0, 259.5, 196, 0, 0.0), (10.0, 259.5, 196, 0, 0.0)])}, t_end=10.0),
+                      geo, None, None)
+    st = st_mod.stance_at(rnd, 0, 5.0)
+    assert st is not None and st.anchor == east
+
+
 def test_no_ring_samples_with_z_means_beside():
     from app.control import stance as st_mod
 
