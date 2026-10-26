@@ -305,11 +305,23 @@ class Watcher:
     node: int | None = None              # the node it sits on (heights only)
     origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
     off: list = field(default_factory=list)   # [(t0, t1)] switched off (a KJ device, its owner out of range)
+    src: int | None = None               # its util row's `id` (the actor's guid), for Critical Util's probe
 
 
 def _watching(w: Watcher, t: float) -> bool:
     """A watcher is up from its placement to its end, except while it is switched off."""
     return w.t0 <= t < w.t1 and not _during(w.off, t)
+
+
+def control_view(blob: dict) -> dict:
+    """The round as control and Critical Moments read it: without revision 22's `friendly` rows (a status on the
+    applier's own team, kept only for Critical Util's harm). Every reader of `RoundInputs.blob` then sees the round
+    a revision 21 parse gave, so a friendly suppression never turns a Cypher's trips off. The blob itself is left
+    alone (Critical Util reads it whole)."""
+    util = blob.get("util")
+    if not util or not any(e.get("friendly") for e in util):
+        return blob
+    return {**blob, "util": [e for e in util if not e.get("friendly")]}
 
 
 class RoundInputs:
@@ -319,6 +331,7 @@ class RoundInputs:
     def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None, *,
                  sight_check: bool = False):
         link = link or ControlLink()
+        blob = control_view(blob)
         self.blob, self.geo, self.link = blob, geo, link
         self.hz = blob["hz"]
         self.t_start = float(blob.get("t_start") or 0.0)
@@ -697,6 +710,8 @@ class RoundInputs:
         `off`, condenser revision 12; a row without it is never off) snapped to the grid, inside its life."""
         before = len(self.watchers)
         self._add_watcher(e, key, t0, t1)
+        for w in self.watchers[before:]:
+            w.src = e.get("id")
         if len(self.watchers) == before or not e.get("off"):
             return
         off = []

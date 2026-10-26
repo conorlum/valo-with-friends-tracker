@@ -38,6 +38,7 @@ COPY webapp/app/replays /srv/webapp/app/replays
 COPY webapp/app/control /srv/webapp/app/control
 COPY webapp/app/gaps /srv/webapp/app/gaps
 COPY webapp/app/moments /srv/webapp/app/moments
+COPY webapp/app/critutil /srv/webapp/app/critutil
 COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY webapp/scripts/ascent_map_messages.patch /srv/webapp/scripts/ascent_map_messages.patch

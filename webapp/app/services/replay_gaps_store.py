@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.exc import IntegrityError
 
-from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments
+from app.models.replay import (Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
+                               ReplayRoundUtil)
 from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import db as replay_db
@@ -60,9 +61,10 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
 
 
 def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, rows: list[dict], *,
-               moments: dict, expected_control_fingerprint: str | None = None) -> str:
+               moments: dict, util: dict | None = None, expected_control_fingerprint: str | None = None) -> str:
     """"stored", or "skipped: <why>". `moments` is the worker's moments result, stored with the run (and only
-    when the run is: a skip writes nothing). Without `expected_control_fingerprint` (the local command, which has
+    when the run is: a skip writes nothing); `util`, its Critical Util result the same way (None: a caller that
+    has none leaves the round's util row as it is). Without `expected_control_fingerprint` (the local command, which has
     just planned the round) the round's gaps are replaced as they are given."""
     session = session_factory()
     try:
@@ -98,6 +100,13 @@ def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, ro
             fights={"v": moments.get("v"), "sight": moments.get("sight"), "fights": moments["fights"]}
             if moments_ok else None,
             error=moments.get("error"), computed_at=datetime.now(timezone.utc)))
+        if util is not None:
+            util_ok = util["status"] == "ok"
+            session.merge(ReplayRoundUtil(
+                replay_id=replay_id, round_number=round_number, status=util["status"],
+                fingerprint=run["fingerprint"], gaps_revision=run["gaps_revision"],
+                data=util.get("data") if util_ok else None, error=util.get("error"),
+                computed_at=datetime.now(timezone.utc)))
         if ok:
             session.add_all(ReplayGap(replay_id=replay_id, round_number=round_number, **row) for row in rows)
         session.commit()

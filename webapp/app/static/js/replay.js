@@ -1900,6 +1900,24 @@
     if (name === "control") this.loadControlTables();
     if (name === "gaps") this.refreshGaps();
     if (name === "moments") this.loadMoments();
+    if (name === "critutil") this.loadCritUtil();
+  };
+
+  // Critical Util: fetched the first time the tab opens, like Critical Moments.
+  ReplayViewer.prototype.loadCritUtil = function () {
+    var self = this;
+    var panel = this.root.querySelector("[data-replay-critutil]");
+    if (!panel || !this.options.loadCritUtil || !window.ReplayCritUtil) return;
+    if (!this.critUtilPromise) {
+      panel.textContent = "Loading…";
+      this.critUtilPromise = Promise.resolve().then(function () { return self.options.loadCritUtil(); }).then(function (payload) {
+        var slot = window.ReplayCritUtil.defaultSlot(payload, self.options.momentsViewerSlot);
+        window.ReplayCritUtil.render(panel, payload, slot, self);
+      }).catch(function () {
+        self.critUtilPromise = null;
+        panel.textContent = "Could not load the utility. Open the tab again to retry.";
+      });
+    }
   };
 
   // Critical Moments: fetched the first time the tab opens; a failed fetch is asked again next time.

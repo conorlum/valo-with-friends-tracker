@@ -60,6 +60,7 @@ from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
 from app.services import replay_moments
+from app.services import replay_util
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
@@ -260,6 +261,18 @@ def replay_moments_json(request: Request, match_uuid: str, db: Session = Depends
         return refused
     body = replay_moments.load_moments_payload(db, replay)
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
+@router.get("/replays/{match_uuid}/util.json")
+def replay_util_json(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    """The match's Critical Util: each player's casts with what they did and were worth
+    (app/services/replay_util.py); the same 404s as moments.json."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    body = replay_util.match_payload(db, replay)
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return _json_with_etag(request, body, etag_of(canonical))
 
 

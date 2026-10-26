@@ -94,7 +94,7 @@ AUTO_PREFIX = "auto-reparse:"
 AUTO_CONTEXT_VERSION = 1
 AUTO_PHASES = ("reserved", "accepted", "refused_before_acceptance")
 # What this site's code speaks. The worker must advertise exactly these in /health (`worker_off_reason`).
-GAPS_PROTOCOL = 2
+GAPS_PROTOCOL = 3
 REPARSE_PROTOCOL = 1
 _before_settle = None  # tests only: called with the attempt row just before the store-and-settle commit
 
