@@ -754,10 +754,20 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
         def dist(p):
             return _dist_m(rnd, p, (x, y))
     end = min(c.t_end, rnd.t_decided)
+    # Only while it is on, as its comparison window (windows.py): never in an `off` span (a Killjoy device out of
+    # range), and a sentinel's placed util (`off_at_death`) not after its owner died (branch review B2).
+    offs = [(a, b) for r in c.rows for a, b in (r.get("off") or ()) if a is not None]
+    if (c.entry or {}).get("off_at_death") and c.by is not None:
+        died = next((t for t, _k, v in sorted(rnd.kills) if v == c.by and t >= c.t), None)
+        if died is not None:
+            end = min(end, died)
     inside_s = 0.0
     entered, turned, waits = set(), set(), set()
     prev, closest = {}, {}
     for t in _grid(c.t, end, PRESENCE_STEP_S):
+        if any(a <= t < (b if b is not None else math.inf) for a, b in offs):
+            prev.clear()
+            continue
         for s, sd in sides.items():
             if sd in (None, side) or not rnd.alive(s, t):
                 continue
