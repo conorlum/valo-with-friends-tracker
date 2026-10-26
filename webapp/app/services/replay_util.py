@@ -459,7 +459,7 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
         swing, L = util_values.cast_swing_v2(data, model, item, segs, side)
         if swing is None:
             continue
-        keys = util_values.levels(data, side, max(float(segs[0][0]), 0.0))
+        keys = util_values.levels(data, side, max(util_values.start_time(data, float(segs[0][0])), 0.0))
         r.update(swing=round(swing, 4), L=L)
         got = util_values.lift_v2(tot_all, tables["all"], typ, keys, L, swing, leave_out={r["match"]})
         if got is not None:

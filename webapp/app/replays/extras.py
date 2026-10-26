@@ -333,6 +333,9 @@ MOVEMENT_EQUIPPABLES = {
     "Wushu_E_Dash": {"FXC.TimedStateDuration": 0.45},
     "Terra_Q_DoubleDash": {"FXC.Angle": None, "FXC.TimedStateDuration": 0.4},
 }
+# A switch to an equippable whose spawn row comes after it is that equippable's only if it spawns this soon after;
+# an older one named an earlier actor under the same GUID.
+EQUIP_EARLY_MS = 2_000
 CAST_TAG_TOLERANCE = 0.005
 CAST_MERGE_MS = 200      # one cast plays its effect twice (Waylay's): plays this close together are one
 
@@ -363,7 +366,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
     holding: dict[int, int] = {}           # each character's current equippable, to see a switch
-    unresolved: dict[int, tuple[int, int]] = {}    # a character's switch to an equippable not spawned yet: (ms, guid)
+    unresolved: list[tuple[int, int, int]] = []    # switches to an equippable not spawned yet: (ms, character, guid)
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if not any(needle in line for needle in _RAW_NEEDLES):
@@ -379,7 +382,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.flights.pop(guid, None)
                 raw.typed_walls.pop(guid, None)
                 equip_now.pop(guid, None)
-                for pawn in [p for p, g in holding.items() if g == guid and unresolved.get(p, (0, None))[1] != guid]:
+                waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
+                for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:
                     del holding[pawn]           # a reused GUID: holding the new actor is a new switch
                 bombs.discard(guid)
                 carried.discard(guid)
@@ -405,11 +409,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     equip = _Equip(guid, t_ms, *held.groups(), float(location["x"]), float(location["y"]))
                     equip_now[guid] = equip
                     raw.equips.append(equip)
-                    for pawn, (at, waiting) in list(unresolved.items()):
-                        if waiting == guid:         # a switch to this equippable sent before it spawned
-                            del unresolved[pawn]
-                            if equip.name.startswith("X_"):
-                                raw.ult_equips.append((at, pawn, equip))
+                    # a switch to this equippable sent just before it spawned (older ones named an earlier actor)
+                    for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
+                        unresolved.remove((at, pawn, waiting))
+                        if t_ms - at <= EQUIP_EARLY_MS and equip.name.startswith("X_"):
+                            raw.ult_equips.append((at, pawn, equip))
                     continue
                 if match is not None:
                     kind, code, name = match.groups()
@@ -528,9 +532,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     instigators.setdefault(guid, int(payload["Instigator"]))
                 held_now = payload.get("NewCurrentEquippable")
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
-                    unresolved.pop(guid, None)
-                    if held_now not in equip_now:
-                        unresolved[guid] = (t_ms, held_now)
+                    if held_now not in equip_now:          # a gun, or an equippable whose spawn row is still to come
+                        unresolved[:] = [u for u in unresolved if t_ms - u[0] <= EQUIP_EARLY_MS]
+                        unresolved.append((t_ms, guid, held_now))   # kept even if they switch again before it spawns
                     elif equip_now[held_now].name.startswith("X_"):
                         raw.ult_equips.append((t_ms, guid, equip_now[held_now]))
                     holding[guid] = held_now
@@ -2037,16 +2041,16 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         counts["waylay_anchors"] += 1
 
     # Poison Cloud: an emitter's zones are those of the same owner (the export gives neither an Instigator),
-    # spawned while it was alive. An emitter without an owner gets none.
+    # spawned while it was alive. An emitter without an owner gets none; one with an owner always has `on`, `[]`
+    # when it never went up, so a reader can tell "never on" from a row stored before `on` existed.
     for entry, emitter, slot, start, end in poison_emitters:
         if slot is None:
             continue
         until = emitter.closed_ms if emitter.closed_ms is not None else float("inf")
         mine = [z for z in poison_zones if owner_of.get(z.guid) == slot and emitter.t_ms <= z.t_ms <= until]
-        if mine:
-            entry["on"] = [[max(0.0, _seconds(z.t_ms, start)),
-                            None if z.closed_ms is None else _seconds(min(z.closed_ms, end), start)] for z in mine]
-            counts["poison_on_spans"] += len(mine)
+        entry["on"] = [[max(0.0, _seconds(z.t_ms, start)),
+                        None if z.closed_ms is None else _seconds(min(z.closed_ms, end), start)] for z in mine]
+        counts["poison_on_spans"] += len(mine)
 
     for entry, interceptor, slot, start, end in interceptors:
         active = interceptor_active(interceptor, raw)

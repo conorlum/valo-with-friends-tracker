@@ -531,12 +531,21 @@ def merge_tables_v2(into: dict, table: dict) -> None:
             out[key] = out[key] + arr if key in out else np.array(arr, dtype=float)
 
 
+def start_time(round_data: dict, s: float) -> float:
+    """The moment a segment starting at s is judged from: s, or with a kill within the second before it or at its
+    very moment, just before s (START_KILL_S). The grid's whole seconds would blend that kill in, or count one at the
+    start itself (a Jett's first knife, which is how her use is known) as already made. The cast's swing and its
+    comparison cell (`levels`) both start here."""
+    if any(s - 1.0 <= float(k["t"]) <= s + START_KILL_S for k in round_data.get("kills") or ()):
+        return s - START_KILL_S
+    return s
+
+
 def cast_swing_v2(round_data: dict, model, item: dict, segments: list, side: str | None = None):
     """(swing, L): the sum of P(end) - P(start) over the first 45 s of on-time, and that on-time rounded to a second
     (1..45). (None, 0) without segments."""
     side = side or item.get("side")
     times, P = swing_grid(round_data, model, side)
-    kill_ts = [float(k["t"]) for k in round_data.get("kills") or ()]
     left, total, swing = float(MAX_L), 0.0, 0.0
     for s, e in segments:
         if left <= 0:
@@ -544,12 +553,8 @@ def cast_swing_v2(round_data: dict, model, item: dict, segments: list, side: str
         e = min(e, s + left)
         if e <= s:
             continue
-        if any(s - 1.0 <= kt <= s + START_KILL_S for kt in kill_ts):
-            # a kill near the start: the grid's whole seconds would blend it in, or count one at the very start
-            # (a Jett's first knife, which is how her use is known) as already made; take the state just before
-            start = _p_at(round_data, model, side, s - START_KILL_S)
-        else:
-            start = float(p_on_grid(times, P, s))
+        at = start_time(round_data, s)
+        start = _p_at(round_data, model, side, at) if at != s else float(p_on_grid(times, P, s))
         swing += float(p_on_grid(times, P, e)) - start
         total += e - s
         left -= e - s
@@ -588,7 +593,7 @@ def cast_lift_v2(round_data: dict, model, item: dict, table: dict, minus: dict |
     if swing is None:
         return out
     out.update(swing=round(swing, 4), L=L)
-    base = baseline_v2(table, typ, levels(round_data, side, max(float(segs[0][0]), 0.0)), L, minus)
+    base = baseline_v2(table, typ, levels(round_data, side, max(start_time(round_data, float(segs[0][0])), 0.0)), L, minus)
     if base is not None:
         out.update(base=round(base["mean"], 4), base_n=base["n"], base_level=base["level"],
                    lift=round(swing - base["mean"], 4))
@@ -674,6 +679,13 @@ def match_tables(items: list, model, friend_players=frozenset()) -> dict:
         m, rd = it["match"], it["data"]
         player_of = it.get("player_of") or {}
         without = device_from(rd, ids, round_agents(rd) if rd.get("agents") else match_agents.get(m, {}))
+        # that device's own up-time this round: a moment with one up never counts as "without" it (placed again
+        # after a revive)
+        dev_up: dict = {}
+        if without:
+            for c in rd.get("casts") or ():
+                if (c.get("ability_id"), c.get("side")) in without and not c.get("after_decided"):
+                    dev_up.setdefault((c["ability_id"], c["side"]), []).extend(item_segments(rd, c))
         all_m = out_all.setdefault(m, {})
         for side, t, keys, up, row, alive, nxt in moment_rows(rd, model):
             k0 = keys[0]
@@ -691,7 +703,8 @@ def match_tables(items: list, model, friend_players=frozenset()) -> dict:
                 if typ in nxt:
                     ov[1:] += (nxt[typ] < t + ls)
             for aid in ids:
-                if t >= without.get((aid, side), 1e18):
+                if t >= without.get((aid, side), 1e18) \
+                        and not any(a <= t < b for a, b in dev_up.get((aid, side), ())):
                     _acc(device.setdefault(f"{aid}|{it['map']}|{side}", {}).setdefault(m, {}), k0, row)
     for aid in ids:                     # every key exists even when no round qualified
         for mp in maps:

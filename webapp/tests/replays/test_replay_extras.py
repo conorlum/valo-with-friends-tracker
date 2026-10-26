@@ -799,7 +799,7 @@ def test_a_poison_cloud_takes_the_zones_of_its_own_owner_while_alive(tmp_path):
     assert (out[95]["slot"], out[100]["slot"]) == (8, 9)
     assert out[95]["on"] == [[12.0, 15.0]]
     assert out[100]["on"] == [[13.0, None]]
-    assert "on" not in out[102]
+    assert out[102]["on"] == [], "known never on: not the same as a row stored before `on`"
 
 
 def held(t_ms, pawn, equippable):
@@ -839,6 +839,19 @@ def test_a_switch_sent_before_its_equippable_spawned_keeps_its_time_and_a_reused
     extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
     assert [e["t"] for e in extras.rounds[1]["equips"]] == [5.0]
     assert [e["t"] for e in extras.rounds[2]["equips"]] == [10.0]
+
+
+def test_a_pending_switch_survives_a_later_switch_and_a_stale_one_names_no_later_item(tmp_path):
+    rows = [held(15_000, 106, 50), held(15_100, 106, 900),                        # Empress, then the gun, both
+            spawned(15_300, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # before 50's spawn row
+            held(30_000, 106, 60),                                                  # names 60 long before it spawns
+            spawned(75_000, 60, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),
+            held(80_000, 106, 900), held(81_000, 106, 60)]                          # the real switch to it
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert [e["t"] for e in extras.rounds[1]["equips"]] == [5.0]
+    assert [e["t"] for e in extras.rounds[2]["equips"]] == [11.0]
 
 
 # ---------------------------------------------------------------- stored util (Stage 2, R2)

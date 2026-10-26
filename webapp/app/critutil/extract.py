@@ -584,11 +584,20 @@ def _cover_all(rnd, sides, casts: list[_Cast]) -> dict[int, dict]:
     return out
 
 
+def _death_after(rnd, slot, t: float) -> float | None:
+    """When the slot's life that holds t ended before the round did: a death, the link's database-only ones and
+    a disconnect included (the round's lives, not only its kills). None while they lived on (or no such life)."""
+    end = next((b for a, b in rnd.lives.get(slot, ()) if a <= t < b), None)
+    if end is None:                     # not alive at t (a buy-phase placement clamped to 0): their first death
+        return next((tt for tt, _a, b in sorted(rnd.kills) if tt > t and b == slot), None)
+    return None if end == math.inf or end >= rnd.t_end - _EPS else float(end)
+
+
 def _owner_death(rnd, c: _Cast) -> float | None:
     """When the cast's owner died after throwing it, for a sentinel's placed util (`off_at_death`), else None."""
     if not (c.entry or {}).get("off_at_death"):
         return None
-    return next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None)
+    return _death_after(rnd, c.by, c.t)
 
 
 def _go_off_t(c: _Cast) -> float | None:
@@ -599,25 +608,34 @@ def _go_off_t(c: _Cast) -> float | None:
 
 
 def _active_spans(rnd, c: _Cast) -> list[list[float]]:
-    """When the cast could act, to t_decided: its life, from its set-off when it acts only once set off
-    (`from_trigger`: a Nanoswarm never set off has none), inside its stored `on` spans (Viper's clouds; a row
-    stored before them keeps its life), minus its `off` spans, cut at its owner's death when it is a sentinel's
-    placed util (the object stays in the replay, but it is off)."""
+    """When the cast could act, to t_decided, as sorted disjoint spans: its life; for one that acts only once set
+    off (`from_trigger`), from its set-off to its set-off pieces' end (else the entry's `after_trigger_s`): a
+    Nanoswarm never set off has none, one set off burns 4 s; inside its stored `on` spans when a row carries them
+    (Viper's clouds; `on: []` is known never on; a row with no `on` key, stored before them, keeps its life); minus
+    its `off` spans; cut at its owner's death when it is a sentinel's placed util (the object stays in the
+    replay, but it is off)."""
     end = min(c.t_end, rnd.t_decided)
     death = _owner_death(rnd, c)
     if death is not None:
         end = min(end, death)
     start = c.t
-    if (c.entry or {}).get("from_trigger"):
+    entry = c.entry or {}
+    if entry.get("from_trigger"):
         start = _go_off_t(c)
         if start is None:
             return []
+        go = entry.get("go_off")
+        pieces = [float(min(x for x in (r.get("t1"), r.get("gone")) if x is not None)) for r in c.rows
+                  if re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")
+                  and (r.get("t1") is not None or r.get("gone") is not None)]     # observed ends only
+        after = entry.get("after_trigger_s")
+        end = min(end, max(pieces) if pieces else (start + after if after is not None else end))
     spans = [[start, end]]
-    on = [[a, end if b is None else b] for r in c.rows for a, b in (r.get("on") or ())]
-    if on:
-        spans = [[max(a, s0), min(b, s1)] for s0, s1 in spans for a, b in on if min(b, s1) > max(a, s0)]
+    if any("on" in r for r in c.rows):
+        on = [[a, end if b is None else b] for r in c.rows for a, b in (r.get("on") or ())]
+        spans = [[max(a, start), min(b, end)] for a, b in on if min(b, end) > max(a, start)]
     off = [[a, b] for r in c.rows for a, b in (r.get("off") or ())]
-    return [[a, b] for s0, s1 in spans for a, b in windows._minus([s0, s1], off) if b > a]
+    return windows._cut([[a, b] for s0, s1 in spans for a, b in windows._minus([s0, s1], off) if b > a], None)
 
 
 def _presence(rnd, sides, c: _Cast) -> dict | None:
@@ -1072,7 +1090,7 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     if (c.entry or {}).get("go_off"):   # when it was set off (Nanoswarm's swarm, Razorvine's patch)
         s["go_off"] = _r2(_go_off_t(c))
     if cast_type == "placeable":        # a sentinel's placed util turns off when its owner dies (the owner, 2026-10-24)
-        s["owner_death"] = _r2(next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None))
+        s["owner_death"] = _r2(_death_after(rnd, c.by, c.t))
     if (c.entry or {}).get("rule") == "possessed":      # a camera: when its owner was looking through it
         s["possessed"] = sorted(([_r2(a), _r2(b)] for r in c.rows for a, b in (r.get("possessed") or ())),
                                 key=lambda x: x[0])

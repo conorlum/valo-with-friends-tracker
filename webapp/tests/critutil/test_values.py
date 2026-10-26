@@ -58,6 +58,24 @@ def test_a_kill_at_a_casts_very_start_is_inside_its_swing():
     before = util_values._p_at(rd, MODEL, "attack", 11.9)
     after = util_values._p_at(rd, MODEL, "attack", 20.0)
     assert after > before and swing == pytest.approx(after - before)
+    at = util_values.start_time(rd, 12.0)
+    assert util_values.levels(rd, "attack", at) == util_values.levels(rd, "attack", 11.9), \
+        "the comparison cell is the state the swing starts from: 5v5, not the 5v4 after the knife"
+    assert util_values.start_time(rd, 20.0) == 20.0
+
+
+def test_a_device_placed_again_after_a_revive_is_not_a_without_it_moment():
+    trip = {"i": 0, "by": 1, "side": "attack", "t": 2.0, "type": "placeable", "ability_id": "Cypher/Trapwire",
+            "kinds": ["device"], "signals": {"armed": 2.0, "owner_death": 4.0}}
+    again = {**trip, "i": 1, "t": 22.0, "signals": {"armed": 22.0}}
+    rd = {**round_data([trip, again], [kill(4.0, 5, 1, [2, 2], k_side="defense", v_side="attack")]),
+          "t_decided": 40.0, "agents": {"1": "Cypher"},
+          "lives": {"0": [[0.0, None]], "1": [[0.0, 4.0], [20.0, None]], "5": [[0.0, None]], "6": [[0.0, None]]}}
+    tables = util_values.match_tables([{"match": 1, "map": "Ascent", "data": rd}], MODEL)
+    cells = tables["device"]["Cypher/Trapwire|Ascent|attack"].get(1) or {}
+    counted = sum(float(v[0]) for v in cells.values())
+    # moments every 2 s from the death (4 s) to 40 s: 18; those with the second trip up (22 s on) are left out
+    assert counted == 9
 
 
 def test_a_kill_is_split_once_between_casts_and_the_gun():
@@ -392,8 +410,10 @@ def test_a_device_table_holds_the_other_rounds_of_its_map_only():
 def test_a_device_table_takes_a_round_whose_agent_died_early_from_the_death():
     def table(death_t, aid="Cypher/Trapwire"):
         agent = aid.split("/")[0]
+        # extraction stores a placeable's owner_death, which ends a sentinel's device (its own up-time is never a
+        # "without it" moment)
         plac = {"i": 0, "by": 1, "side": "attack", "t": 0.0, "type": "placeable", "ability_id": aid,
-                "kinds": ["device"], "effects": [], "signals": {}}
+                "kinds": ["device"], "effects": [], "signals": {"owner_death": death_t}}
         died = kill(death_t, 5, 1, [5, 5], k_side="defense", v_side="attack")
         rd = {**v2_round([plac], kills=[died], t_decided=40.0), "agents": {"1": agent}}
         cells = util_values.match_tables([{"match": 1, "map": "Haven", "data": rd, "player_of": {}}],

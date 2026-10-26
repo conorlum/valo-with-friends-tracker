@@ -214,6 +214,33 @@ def test_a_hidden_nanoswarm_stops_no_defuse_and_one_set_off_on_the_spike_does():
     assert c["spike"]["attempts"][0]["evidence"] == "zone" and c["spike"]["stopped"] == 1
 
 
+def test_a_set_off_nanoswarm_stops_no_defuse_after_its_swarm_burned_out():
+    hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", *SPIKE, 0, t=2.0, t1=None, kind="GameObject")
+    swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", *SPIKE, 0, t=31.0, t1=35.0)
+    out = run([planted([[42.0, 45.0, 6, False]]), hidden, swarm], t_end=60.0)
+    (c,) = cast_by(out, 0)
+    assert c["spike"]["attempts"][0]["evidence"] is None and c["spike"]["stopped"] == 0
+
+
+def test_a_cloud_known_never_on_has_no_presence_and_overlapping_on_spans_count_once():
+    never = toy_ability("Pandemic", "4_SmokeGrenade", 400, 160, 1, t=0.0, t1=30.0, kind="Projectile", on=[])
+    (c,) = cast_by(run([never]), 1)
+    assert c["presence"]["armed_s"] == 0 and c["presence"]["inside_s"] == 0
+    twice = toy_ability("Pandemic", "4_SmokeGrenade", 400, 160, 1, t=0.0, t1=30.0, kind="Projectile",
+                        on=[[10.0, 20.0], [15.0, None]])
+    (c,) = cast_by(run([twice]), 1)
+    assert c["presence"]["armed_s"] == pytest.approx(20.0)
+
+
+def test_a_trip_goes_off_at_its_owners_death_known_only_from_the_database():
+    wire = toy_ability("Gumshoe", "4_TripWire", 400, 160, 1, t=2.0, t1=None, kind="GameObject")
+    rnd, data = round_of(players(), util=[wire], geo=GEO, db_deaths=[(1, 6.0)])
+    out = extract.round_util(rnd, data)
+    (c,) = cast_by(out, 1)
+    assert c["presence"]["armed_s"] == pytest.approx(4.0)
+    assert c["signals"]["owner_death"] == 6.0
+
+
 def test_a_poison_clouds_presence_counts_only_while_it_is_on():
     cloud = toy_ability("Pandemic", "4_SmokeGrenade", 400, 160, 1, t=0.0, t1=30.0, kind="Projectile",
                         on=[[10.0, 12.0]])
