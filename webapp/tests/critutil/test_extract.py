@@ -258,6 +258,21 @@ def test_chamber_use_is_the_first_tour_de_force_shot_and_ends_at_the_drop_after_
                                        "signals": {"ult_end": 12.1, "death": 20.0}}
 
 
+def test_a_timed_ult_use_is_one_ult_cast_with_its_window_counted_once_in_the_baseline():
+    from app.services import util_values
+
+    util = [shot(12.0, 0, gun="Tour de Force"), shot(14.0, 0, gun="Tour de Force")]
+    ps = ult_state(0, drop=12.1)
+    out = run(util, kills=[kill(20.0, 5, 0)], player_state=ps, agents={0: "Chamber"})
+    (c,) = [c for c in out["casts"] if c.get("from_use")]
+    assert (c["by"], c["t"], c["t_end"], c["type"], c["kinds"]) == (0, 12.0, 12.1, "ult", ["ult"])
+    assert c["ability_id"] == "Chamber/Tour De Force" and c["ult_points"] == 8
+    data = {**out, "on_known": True}
+    ult_segs = [segs for side, typ, segs in util_values.up_segments(data) if typ == "ult"]
+    assert len(ult_segs) == 1, "the cast, not the use as well"
+    assert util_values.value_round(data, None)["casts"][c["i"]]["found_nobody"] is False
+
+
 def test_jett_use_is_the_first_knife_hit_from_the_equippable():
     miss = {**damage(6.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "ability"}
     hit = {**damage(9.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "equippable"}

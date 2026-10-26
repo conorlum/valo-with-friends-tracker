@@ -1129,6 +1129,32 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
     return out
 
 
+def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i) -> list[dict]:
+    """One cast per timed ult used this round (Chamber, Jett, Neon, Reyna: `_ults`' `use`), which leave no ability
+    row to make a cast of: type ult, its window from the use's signals, no place and no effects of its own (its
+    kills are the owner's gun's). `from_use` marks it, so the baseline doesn't count the use twice."""
+    out = []
+    for slot, u in sorted(ults.items(), key=lambda x: int(x[0])):
+        use = (u or {}).get("use") or {}
+        if use.get("t") is None:
+            continue
+        s, t = int(slot), float(use["t"])
+        sig = use.get("signals") or {}
+        stops = [x for x in (sig.get("ult_end"), sig.get("death")) if x is not None]
+        held = [p["n"] for p in ((ps or {}).get("ult") or {}).get(slot) or [] if p["t"] <= t and p["n"]]
+        alive = _alive_counts(rnd, sides, t)
+        out.append({
+            "i": first_i + len(out), "by": s, "agent": agents.get(s), "t": _r2(t),
+            "t_end": _r2(min([*stops, rnd.t_decided])), "u": None, "v": None, "names": [], "codes": [],
+            "kinds": ["ult"], "side": sides.get(s), "type": "ult", "ability_id": use.get("ability_id"),
+            "end_unknown": False, "phase": _phase(t, contact, plant), "after_decided": t > rnd.t_decided,
+            "alive": [alive["attack"], alive["defense"]], "trigger": None, "enemies": [], "effects": [],
+            "kills": [], "followed": None, "harm": [], "cover": None, "presence": None, "spike": None, "hold": None,
+            "ult_points": held[-1] if held else None, "activation": None, "signals": dict(sig), "from_use": True,
+        })
+    return out
+
+
 def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
     """`holds`: the gap run's unknown probe result (app/critutil/unknown.py), None outside a gap run."""
     sides = _sides(rnd)
@@ -1193,6 +1219,8 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "activation": ((c.flash or {}).get("activation") or {}).get("targets_complete"),
             "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
+    ults = _ults(rnd, blob, sides, agents)
+    out_casts.extend(_timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts)))
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
         "v": VERSION,
@@ -1203,7 +1231,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "casts": out_casts,
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),
-        "ults": _ults(rnd, blob, sides, agents),
+        "ults": ults,
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
                   "ult": bool((ps or {}).get("ult")),

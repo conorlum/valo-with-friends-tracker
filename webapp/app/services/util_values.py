@@ -173,7 +173,8 @@ def value_round(round_data: dict, model: dict | None, weights: dict | None = Non
         casts[c["i"]] = {"ledger": round(l, 4), "jobs": round(jobs, 4), "total": round(l + jobs, 4),
                          "features": {k: v for k, v in f.items() if v}, "items": led[c["i"]]["items"],
                          "scored": True, "wasted": is_wasted(c, l, f),
-                         "found_nobody": set(c.get("kinds") or ()) <= {"info", "ult"} and not c.get("enemies")}
+                         "found_nobody": "info" in (c.get("kinds") or ())
+                                         and set(c.get("kinds") or ()) <= {"info", "ult"} and not c.get("enemies")}
     heals = []
     for h in round_data.get("heals") or []:
         f = heal_features(h)
@@ -429,10 +430,11 @@ def up_segments(round_data: dict) -> list:
         out.append((c.get("side"), type_of(c), item_segments(round_data, c)))
     for h in round_data.get("heals") or ():
         out.append((sides.get(str(h.get("by"))), "heal", item_segments(round_data, h)))
+    as_casts = {str(c.get("by")) for c in round_data.get("casts") or () if c.get("from_use")}
     for slot, ult in (round_data.get("ults") or {}).items():
         use = (ult or {}).get("use")
-        if use is None or use.get("t") is None:
-            continue
+        if use is None or use.get("t") is None or str(slot) in as_casts:
+            continue            # rows extracted before timed ults became casts still count the use here
         out.append((sides.get(str(slot)), "ult", item_segments(round_data, use, "ult")))
     return out
 
