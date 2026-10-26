@@ -730,8 +730,13 @@ def _build_replay_stats(
         team_by_mp: dict[int, str] = {
             mp.id: (mp.team.value if hasattr(mp.team, "value") else mp.team) for mp in match_players
         }
-        own_mp_ids = {mp.id for mp in match_players if mp.id in our_mp_to_player}
-        opp_mp_ids = {mp.id for mp in match_players if mp.id not in our_mp_to_player}
+        roster_mp_ids = {mp.id for mp in match_players if mp.id in our_mp_to_player}
+        # Sides are teams: a random teammate alongside the roster is not an enemy.
+        if our_side is not None:
+            own_mp_ids = {mp_id for mp_id, team in team_by_mp.items() if team == our_side}
+        else:
+            own_mp_ids = roster_mp_ids
+        opp_mp_ids = {mp.id for mp in match_players if mp.id not in own_mp_ids}
 
         opp_top_frag_mp_id: int | None = None
         opp_bottom_frag_mp_id: int | None = None
@@ -814,7 +819,7 @@ def _build_replay_stats(
 
                 if (
                     own_count == 0
-                    and len(own_mp_ids) == 5
+                    and len(roster_mp_ids) == 5
                     and death_id is not None
                     and death_id in our_mp_to_player
                 ):
@@ -828,7 +833,7 @@ def _build_replay_stats(
 
             if round_won_by_us and clutch_state is not None:
                 _, _, alive_snapshot = clutch_state
-                for mp_id in alive_snapshot:
+                for mp_id in alive_snapshot & roster_mp_ids:
                     player_id = our_mp_to_player[mp_id]
                     clutch_counts[player_id] = clutch_counts.get(player_id, 0) + 1
 

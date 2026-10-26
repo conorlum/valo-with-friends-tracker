@@ -195,9 +195,9 @@ def _clutch_resolvers_by_round(
     (round won while at 1-or-2-alive against an equal-or-larger enemy side)
     in that round, for one match. `rounds` are that match's rounds in round
     order, `kills_by_round` its kill events by round id and `match_mp_ids`
-    every player in it. Mirrors app.services.session_stats._build_replay_stats'
-    clutch detection, scoped to one match and the viewer's own side (viewer +
-    relevant friends).
+    every player in it. `own_mp_ids` is the viewer's whole team, not just the
+    viewer and friends: a random teammate is not an enemy. Mirrors the match
+    page's clutch detection (app.services.matches), for the viewer's side only.
     """
     opp_mp_ids = {mp_id for mp_id in match_mp_ids if mp_id not in own_mp_ids}
 
@@ -305,10 +305,13 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
     all_own_mp_ids = set().union(*own_mp_ids_by_match.values())
 
     mp_ids_by_match: dict[int, list[int]] = {}
-    for mp_id, match_id in db.query(MatchPlayer.id, MatchPlayer.match_id).filter(
+    team_mp_ids_by_match: dict[int, set[int]] = {}
+    for mp_id, match_id, team in db.query(MatchPlayer.id, MatchPlayer.match_id, MatchPlayer.team).filter(
         MatchPlayer.match_id.in_(relevant_match_ids)
     ):
         mp_ids_by_match.setdefault(match_id, []).append(mp_id)
+        if team == viewer_mp_by_match[match_id].team:
+            team_mp_ids_by_match.setdefault(match_id, set()).add(mp_id)
 
     rounds_by_match: dict[int, list] = {}
     for round_row in (
@@ -350,7 +353,7 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
         rounds = rounds_by_match.get(match_id, [])
 
         clutch_resolvers = _clutch_resolvers_by_round(
-            rounds, kills_by_round, mp_ids_by_match.get(match_id, []), own_mp_ids, viewer_team
+            rounds, kills_by_round, mp_ids_by_match.get(match_id, []), team_mp_ids_by_match[match_id], viewer_team
         )
 
         rounds_by_number = {r.round_number: r for r in rounds}
