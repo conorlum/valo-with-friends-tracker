@@ -277,6 +277,17 @@ def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeyp
     assert calls == [1]
 
 
+def test_a_build_whose_corpus_key_moved_is_rebuilt_though_this_replays_rounds_match(db, linked, monkeypatch):
+    # Branch review B7: another replay joining, a refit estimator or a new table changes corpus_key without
+    # touching this replay's fingerprints; the stored lifts and gates are then stale.
+    built = _stored_build(db, linked, {"lift": 0.0})
+    replay_util._store_values(db, "an older corpus", built)
+    calls = []
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
+    call(db)
+    assert calls == [1]
+
+
 def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypatch):
     _stored_build(db, linked, {"lift": 0.0})
     monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: pytest.fail("rebuilt"))
