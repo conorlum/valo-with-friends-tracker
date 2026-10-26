@@ -147,6 +147,12 @@
     } else if (typeof row.lift === "number") {
       parts.push(signed(row.lift) + " pp vs no util (" + row.base_level + ")");
     }
+    // a placeable's own comparison (plan R10): shown beside the main lift, never driving its calls
+    if (typeof row.lift_device === "number") {
+      if (row.gate_device === false) parts.push("comparison with rounds without this device not validated");
+      else parts.push(signed(row.lift_device) + " pp vs rounds this side never placed it (" + row.device_level + ", " +
+                      plural(row.device_n || 0, "moment") + ")");
+    }
     return parts.join(" · ");
   }
 

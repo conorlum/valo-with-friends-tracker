@@ -156,6 +156,20 @@ def test_viewer_lift_text_by_mode():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_shows_the_per_device_comparison_for_a_placeable():
+    # Branch review B9 (plan R10: "shown for placeables; calls stay on the main lift")
+    main = {"lift_all": 0.5, "base_level": "state", "gate_all": True}
+    shown = {**main, "lift_device": -1.25, "device_level": "map side", "device_n": 14, "gate_device": True}
+    failed = {**main, "lift_device": 3.0, "device_level": "map side", "device_n": 3, "gate_device": False}
+    out = _node("[u.rowText(rows[0], players, 'all'), u.rowText(rows[1], players, 'all'), u.rowText(rows[2], players, 'all')]",
+                [shown, failed, main])
+    assert out[0].endswith("+0.50 pp vs all players' rounds without it (state) · "
+                           "−1.25 pp vs rounds this side never placed it (map side, 14 moments)")
+    assert out[1].endswith("comparison with rounds without this device not validated")
+    assert "never placed" not in out[2] and "device" not in out[2]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_viewer_label_other_group_heal_and_omen_text():
     out = _node("[u.rowText(rows[0], players), u.rowText(rows[1], players), u.rowText(rows[2], players),"
                 " u.rowText(rows[3], players), u.rowText(rows[4], players),"
