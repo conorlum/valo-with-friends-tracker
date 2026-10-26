@@ -200,7 +200,10 @@ def is_wasted(cast: dict, ledger_value: float, f: dict) -> bool:
         return False
     if "device" in (cast.get("kinds") or ()):
         presence = cast.get("presence") or {}
-        return (presence.get("armed_s") or 0) < 3.0 and not presence.get("entered")
+        # its object's life, not its active time: a Nanoswarm left hidden was not "gone at once" (rows stored before
+        # `life_s` have only armed_s, which was then the life)
+        life = presence.get("life_s", presence.get("armed_s"))
+        return (life or 0) < 3.0 and not presence.get("entered")
     if "smoke" in (cast.get("kinds") or ()) or "wall" in (cast.get("kinds") or ()):
         return not (cast.get("cover") or {}).get("pairs") and not (cast.get("presence") or {}).get("entered")
     return True

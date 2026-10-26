@@ -214,6 +214,27 @@ def test_a_hidden_nanoswarm_stops_no_defuse_and_one_set_off_on_the_spike_does():
     assert c["spike"]["attempts"][0]["evidence"] == "zone" and c["spike"]["stopped"] == 1
 
 
+def test_a_nanoswarm_left_hidden_is_not_called_wasted():
+    # it was there all round, never set off: no active time, but not a device "gone at once"
+    from app.services import util_values
+
+    hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 100, 100, 0, t=2.0, t1=None, kind="GameObject")
+    out = run([hidden], extra={5: ("B", [(0.0, 480, 300, 180)]), 6: ("B", [(0.0, 480, 320, 180)])})
+    (c,) = cast_by(out, 0)
+    assert c["presence"]["armed_s"] == 0 and c["presence"]["life_s"] > 20
+    assert util_values.value_round(out, None)["casts"][c["i"]]["wasted"] is False
+
+
+def test_an_ult_knife_hit_is_never_effect_evidence_for_the_jetts_dash():
+    # replay 366 round 28's shape: a dash at 44.4 s (live 7.5 s by the table), then Blade Storm hits at 51.8 s
+    util = [{"k": "cast", "t": 44.4, "by": 0, "code": "Wushu", "name": "E_Dash"},
+            {**damage(51.78, 0, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}]
+    out = run(util, kills=[kill(51.78, 0, 5)], player_state=ult_state(0), agents={0: "Jett"}, t_end=70.0)
+    (dash,) = [c for c in out["casts"] if c["type"] == "dash"]
+    assert dash["t_end"] > 51.78, "the dash is still live by the table when the knife lands"
+    assert dash["effects"] == [] and dash["kills"] == []
+
+
 def test_a_set_off_nanoswarm_stops_no_defuse_after_its_swarm_burned_out():
     hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", *SPIKE, 0, t=2.0, t1=None, kind="GameObject")
     swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", *SPIKE, 0, t=31.0, t1=35.0)

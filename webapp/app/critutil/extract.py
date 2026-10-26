@@ -394,8 +394,11 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
                          and "damaging" in c.kinds]
             if not cands and r.get("code"):
                 # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
+                # and of the same ability slot (a Jett's ult knives are never her dash's)
+                key = _key_of(name)
                 cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
-                         and r["code"] in {x.get("code") for x in c.rows}]
+                         and r["code"] in {x.get("code") for x in c.rows}
+                         and (key is None or c.key is None or c.key == key)]
             if len({c.i for c in cands}) != 1:
                 cands = [c for c in cands if name and name in c.names] or cands
             if not cands:
@@ -676,7 +679,10 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                     gaps[s] = min(gaps.get(s, closest[s] - r), closest[s] - r)   # came to the edge, then went back
                 prev[s] = p
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
-    return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)), "inside_s": _r2(inside_s),
+    # `life_s`: how long its object was there at all, active or not (a device "gone at once" is wasted; one left
+    # hidden is not, by that rule: util_values.is_wasted)
+    return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)),
+            "life_s": _r2(max(0.0, min(c.t_end, rnd.t_decided) - c.t)), "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
             "held_back": sorted(set(gaps) - entered), "_waits": waits,
             "_gap": {s: g for s, g in gaps.items() if s not in entered}}
