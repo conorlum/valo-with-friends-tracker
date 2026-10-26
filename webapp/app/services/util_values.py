@@ -342,8 +342,17 @@ def _phase(t, contact, plant) -> str:
     return "contact"
 
 
+def _alive_slot(round_data: dict, slot, t: float) -> bool:
+    return any(a <= t and (b is None or t < b) for a, b in (round_data.get("lives") or {}).get(str(slot)) or ())
+
+
 def _alive_at(round_data: dict, t: float) -> tuple[int, int]:
-    """(attackers, defenders) alive at t, from the round's kills (each with its `before` counts)."""
+    """(attackers, defenders) alive at t: from the round's `lives` (revives included), else (rows stored before
+    them) from its kills, each with its `before` counts."""
+    sides = round_data.get("sides") or {}
+    if round_data.get("lives") and set(sides.values()) <= {"attack", "defense"}:
+        alive = [sides.get(s) for s in (round_data.get("lives") or {}) if _alive_slot(round_data, s, t)]
+        return alive.count("attack"), alive.count("defense")
     kills = sorted((k for k in round_data.get("kills") or () if k.get("before")), key=lambda k: k["t"])
     for k in kills:
         if k["t"] > t:
@@ -382,6 +391,9 @@ def levels(round_data: dict, side: str, t: float) -> list[str]:
 TYPES = ("flash", "smoke", "wall", "molly", "status", "recon", "placeable", "heal", "ult", "teleport", "dash",
          "stim", "other")
 MAX_L = 45
+# A cast's swing starts from the state just this long before its start when a kill is that close to it: a kill a
+# timed ult is known by (its first shot or knife) happens at the use's own moment (constants.ULT_SHOT_MATCH_S).
+START_KILL_S = 0.05
 _SIDES = ("attack", "defense")
 
 
@@ -476,7 +488,8 @@ def moment_rows(round_data: dict, model):
                 for a, _b in ss:
                     if a > t and a < nxt.get(typ, 1e18):
                         nxt[typ] = a
-            alive = {s for s in slots if deaths.get(s, 1e9) > t}
+            alive = {s for s in slots if _alive_slot(round_data, s, t)} if round_data.get("lives") \
+                else {s for s in slots if deaths.get(s, 1e9) > t}
             row = np.concatenate(([1.0], _grid_swings(times, P, t, td)))
             yield side, t, levels(round_data, side, t), up, row, alive, nxt
 
@@ -523,6 +536,7 @@ def cast_swing_v2(round_data: dict, model, item: dict, segments: list, side: str
     (1..45). (None, 0) without segments."""
     side = side or item.get("side")
     times, P = swing_grid(round_data, model, side)
+    kill_ts = [float(k["t"]) for k in round_data.get("kills") or ()]
     left, total, swing = float(MAX_L), 0.0, 0.0
     for s, e in segments:
         if left <= 0:
@@ -530,7 +544,13 @@ def cast_swing_v2(round_data: dict, model, item: dict, segments: list, side: str
         e = min(e, s + left)
         if e <= s:
             continue
-        swing += float(p_on_grid(times, P, e) - p_on_grid(times, P, s))
+        if any(s - 1.0 <= kt <= s + START_KILL_S for kt in kill_ts):
+            # a kill near the start: the grid's whole seconds would blend it in, or count one at the very start
+            # (a Jett's first knife, which is how her use is known) as already made; take the state just before
+            start = _p_at(round_data, model, side, s - START_KILL_S)
+        else:
+            start = float(p_on_grid(times, P, s))
+        swing += float(p_on_grid(times, P, e)) - start
         total += e - s
         left -= e - s
     if total <= 0:

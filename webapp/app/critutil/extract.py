@@ -591,15 +591,33 @@ def _owner_death(rnd, c: _Cast) -> float | None:
     return next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None)
 
 
+def _go_off_t(c: _Cast) -> float | None:
+    """When the cast was set off: its first row matching the entry's `go_off` (Nanoswarm's swarm), else None."""
+    go = (c.entry or {}).get("go_off")
+    ts = [float(r["t"]) for r in c.rows if go and re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
+    return min(ts) if ts else None
+
+
 def _active_spans(rnd, c: _Cast) -> list[list[float]]:
-    """When the cast could act, to t_decided: its life minus its `off` spans, cut at its owner's death when it is
-    a sentinel's placed util (the object stays in the replay, but it is off)."""
+    """When the cast could act, to t_decided: its life, from its set-off when it acts only once set off
+    (`from_trigger`: a Nanoswarm never set off has none), inside its stored `on` spans (Viper's clouds; a row
+    stored before them keeps its life), minus its `off` spans, cut at its owner's death when it is a sentinel's
+    placed util (the object stays in the replay, but it is off)."""
     end = min(c.t_end, rnd.t_decided)
     death = _owner_death(rnd, c)
     if death is not None:
         end = min(end, death)
+    start = c.t
+    if (c.entry or {}).get("from_trigger"):
+        start = _go_off_t(c)
+        if start is None:
+            return []
+    spans = [[start, end]]
+    on = [[a, end if b is None else b] for r in c.rows for a, b in (r.get("on") or ())]
+    if on:
+        spans = [[max(a, s0), min(b, s1)] for s0, s1 in spans for a, b in on if min(b, s1) > max(a, s0)]
     off = [[a, b] for r in c.rows for a, b in (r.get("off") or ())]
-    return [[a, b] for a, b in windows._minus([c.t, end], off) if b > a]
+    return [[a, b] for s0, s1 in spans for a, b in windows._minus([s0, s1], off) if b > a]
 
 
 def _presence(rnd, sides, c: _Cast) -> dict | None:
@@ -614,38 +632,36 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     x, y = _px(c.u, c.v)
     spans = _active_spans(rnd, c)
     inside_s = 0.0
-    entered, turned, waits = set(), set(), set()
-    prev, closest = {}, {}
-    ticks = []
+    entered, waits = set(), set()
+    gaps: dict[int, float] = {}         # each enemy who turned away: how close they came to the edge first
     for a, b in spans:
-        ticks.extend(_grid(a, b, PRESENCE_STEP_S))
-    for i, t in enumerate(ticks):
-        if i and t - ticks[i - 1] > PRESENCE_STEP_S + _EPS:
-            prev = {}                   # back on after an off span: a position from before it says nothing of speed
-        for s, sd in sides.items():
-            if sd in (None, side) or not rnd.alive(s, t):
-                continue
-            p = rnd.pos(s, t)
-            if p is None:
-                continue
-            d = _dist_m(rnd, p, (x, y))
-            if d <= r:
-                inside_s += PRESENCE_STEP_S
-                entered.add(s)
-            elif d <= r + WAIT_RING_M:
-                q = prev.get(s)
-                if q is not None and _dist_m(rnd, p, q) / PRESENCE_STEP_S < STOPPED_MPS:
-                    waits.add((t, s))
-            if d <= r + WAIT_RING_M:
-                closest[s] = min(closest.get(s, d), d)
-            elif s in closest and d - closest[s] >= TURN_AWAY_M:
-                turned.add(s)           # came to the edge, then went back the way it came
-            prev[s] = p
+        # each active span on its own: a speed or an approach from before an off span says nothing of this one
+        prev, closest = {}, {}
+        for t in _grid(a, b, PRESENCE_STEP_S):
+            for s, sd in sides.items():
+                if sd in (None, side) or not rnd.alive(s, t):
+                    continue
+                p = rnd.pos(s, t)
+                if p is None:
+                    continue
+                d = _dist_m(rnd, p, (x, y))
+                if d <= r:
+                    inside_s += PRESENCE_STEP_S
+                    entered.add(s)
+                elif d <= r + WAIT_RING_M:
+                    q = prev.get(s)
+                    if q is not None and _dist_m(rnd, p, q) / PRESENCE_STEP_S < STOPPED_MPS:
+                        waits.add((t, s))
+                if d <= r + WAIT_RING_M:
+                    closest[s] = min(closest.get(s, d), d)
+                elif s in closest and d - closest[s] >= TURN_AWAY_M:
+                    gaps[s] = min(gaps.get(s, closest[s] - r), closest[s] - r)   # came to the edge, then went back
+                prev[s] = p
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
     return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)), "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
-            "held_back": sorted(turned - entered), "_waits": waits,
-            "_gap": {s: closest[s] - r for s in turned - entered}}
+            "held_back": sorted(set(gaps) - entered), "_waits": waits,
+            "_gap": {s: g for s, g in gaps.items() if s not in entered}}
 
 
 def _share_presence(presence: dict[int, dict | None]) -> None:
@@ -671,7 +687,7 @@ def _spike_effect(rnd, sides, c: _Cast, spike, effects) -> dict | None:
     """Defuse attempts that overlapped this cast, near the spike, and whether each was stopped (not finished).
     An attempt can be this cast's to stop only when the defuser is the caster's enemy and the cast reached them
     during it (`evidence`): an effect of this cast on the defuser ("effect"), or a damaging zone burning on the
-    spike ("zone"). `stopped` is set by `_share_defuses`: each stopped attempt goes to one cast."""
+    spike, active (`_active_spans`) when the attempt stopped ("zone"). `stopped` is set by `_share_defuses`: each stopped attempt goes to one cast."""
     if spike is None or spike.get("u") is None or c.u is None:
         return None
     gap = _dist_m(rnd, _px(c.u, c.v), _px(spike["u"], spike["v"]))
@@ -692,8 +708,9 @@ def _spike_effect(rnd, sides, c: _Cast, spike, effects) -> dict | None:
             if any(e["target"] == a[2] and e["how"] != "reveal" and e["t0"] - _EPS <= t1 and e["t1"] + _EPS >= t0
                    for e in effects):
                 evidence = "effect"
-            elif "damaging" in c.kinds and gap <= ZONE_RADIUS_M["damaging"] and c.t <= t1 <= c.t_end:
-                evidence = "zone"
+            elif "damaging" in c.kinds and gap <= ZONE_RADIUS_M["damaging"] \
+                    and any(a - _EPS <= t1 <= b + _EPS for a, b in _active_spans(rnd, c)):
+                evidence = "zone"       # burning on the spike when the attempt stopped: not a hidden or off one
         attempts.append({"t": _r2(t0), "t1": _r2(t1), "by": a[2], "finished": finished, "evidence": evidence})
     return {"near_spike": True, "attempts": attempts, "stopped": 0}
 
@@ -1052,10 +1069,8 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         "armed": _r2(c.landed_t) if cast_type == "placeable" else None,
         "ult_drop": _r2(drop),
     }
-    go = (c.entry or {}).get("go_off")
-    if go:          # when it was set off: its first row matching "<kind>:<code_name>" (Nanoswarm's swarm, Razorvine's patch)
-        ts = [r["t"] for r in c.rows if re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
-        s["go_off"] = _r2(min(ts)) if ts else None
+    if (c.entry or {}).get("go_off"):   # when it was set off (Nanoswarm's swarm, Razorvine's patch)
+        s["go_off"] = _r2(_go_off_t(c))
     if cast_type == "placeable":        # a sentinel's placed util turns off when its owner dies (the owner, 2026-10-24)
         s["owner_death"] = _r2(next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None))
     if (c.entry or {}).get("rule") == "possessed":      # a camera: when its owner was looking through it
@@ -1159,6 +1174,13 @@ def _ult_weapon_kills(rnd, util, slot, agent, since=None, until=None) -> list[di
     return out
 
 
+def _with_ult_kills(linked: list[dict], ult: list[dict]) -> list[dict]:
+    """One entry per kill: a kill the ult made itself replaces this cast's other evidence on it (a rocket's zone
+    damage), so the tab and the coach count it once."""
+    mine = {(k["t"], k["killer"], k["victim"]) for k in ult}
+    return sorted([k for k in linked if (k["t"], k["killer"], k["victim"]) not in mine] + ult, key=lambda k: k["t"])
+
+
 def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i, util=()) -> list[dict]:
     """One cast per timed ult used this round (Chamber, Jett, Neon, Reyna: `_ults`' `use`), which leave no ability
     row to make a cast of: type ult, its window from the use's signals, no place and no effects of its own. An ult
@@ -1240,9 +1262,8 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "enemies": sorted({e["target"] for e in enemy_eff}),
             "effects": [{"target": e["target"], "how": e["how"], "t0": _r2(e["t0"]), "t1": _r2(e["t1"]),
                          "known": e["dur_known"]} for e in enemy_eff],
-            "kills": _link_kills(rnd, sides, c, eff, trigger) + (
-                _ult_weapon_kills(rnd, blob.get("util") or (), c.by, agents.get(c.by) or c.agent, since=c.t)
-                if cast_type == "ult" else []),
+            "kills": _with_ult_kills(_link_kills(rnd, sides, c, eff, trigger), _ult_weapon_kills(
+                rnd, blob.get("util") or (), c.by, agents.get(c.by) or c.agent, since=c.t) if cast_type == "ult" else []),
             "followed": _followed(rnd, blob, sides, c, eff),
             "harm": _harm(rnd, sides, c, eff),
             "cover": cover.get(c.i),
@@ -1263,6 +1284,9 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "agents": {str(s): agents.get(s) for s in sides},
         "contact": _r2(contact), "plant": _r2(plant), "defuse": _r2(defuse), "t_decided": _r2(rnd.t_decided),
         "kills": kills,
+        # each slot's lives, [start, end | null]: who is alive when, revives included (the kills alone can't say)
+        "lives": {str(s): [[_r2(a), None if b == math.inf else _r2(b)] for a, b in rnd.lives.get(s, ())]
+                  for s in sides},
         "casts": out_casts,
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),

@@ -827,6 +827,20 @@ def test_a_switch_to_the_ult_equippable_is_one_equip_row_and_other_switches_none
     assert rounds_extras(util)["equips"] == extras.rounds[1]["equips"]
 
 
+def test_a_switch_sent_before_its_equippable_spawned_keeps_its_time_and_a_reused_guid_is_a_new_switch(tmp_path):
+    rows = [held(15_000, 106, 50),                                                  # names guid 50 before it spawns
+            spawned(15_200, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),
+            held(15_400, 106, 50),                                                  # the repeat: not another switch
+            closed(40_000, 50),
+            spawned(75_000, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # the GUID reused, a new item
+            held(80_000, 106, 50)]                                                  # held without a switch between
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert [e["t"] for e in extras.rounds[1]["equips"]] == [5.0]
+    assert [e["t"] for e in extras.rounds[2]["equips"]] == [10.0]
+
+
 # ---------------------------------------------------------------- stored util (Stage 2, R2)
 
 import sys  # noqa: E402

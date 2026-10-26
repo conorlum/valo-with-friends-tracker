@@ -363,6 +363,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
     holding: dict[int, int] = {}           # each character's current equippable, to see a switch
+    unresolved: dict[int, tuple[int, int]] = {}    # a character's switch to an equippable not spawned yet: (ms, guid)
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if not any(needle in line for needle in _RAW_NEEDLES):
@@ -378,6 +379,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.flights.pop(guid, None)
                 raw.typed_walls.pop(guid, None)
                 equip_now.pop(guid, None)
+                for pawn in [p for p, g in holding.items() if g == guid and unresolved.get(p, (0, None))[1] != guid]:
+                    del holding[pawn]           # a reused GUID: holding the new actor is a new switch
                 bombs.discard(guid)
                 carried.discard(guid)
                 walls.discard(guid)
@@ -402,6 +405,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     equip = _Equip(guid, t_ms, *held.groups(), float(location["x"]), float(location["y"]))
                     equip_now[guid] = equip
                     raw.equips.append(equip)
+                    for pawn, (at, waiting) in list(unresolved.items()):
+                        if waiting == guid:         # a switch to this equippable sent before it spawned
+                            del unresolved[pawn]
+                            if equip.name.startswith("X_"):
+                                raw.ult_equips.append((at, pawn, equip))
                     continue
                 if match is not None:
                     kind, code, name = match.groups()
@@ -519,9 +527,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
                 held_now = payload.get("NewCurrentEquippable")
-                if guid in pawns and isinstance(held_now, int):
-                    if holding.get(guid) != held_now and held_now in equip_now \
-                            and equip_now[held_now].name.startswith("X_"):
+                if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
+                    unresolved.pop(guid, None)
+                    if held_now not in equip_now:
+                        unresolved[guid] = (t_ms, held_now)
+                    elif equip_now[held_now].name.startswith("X_"):
                         raw.ult_equips.append((t_ms, guid, equip_now[held_now]))
                     holding[guid] = held_now
                 moved = payload.get("ReplicatedMovement")

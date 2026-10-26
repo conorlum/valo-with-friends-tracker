@@ -203,6 +203,56 @@ def test_util_up_before_the_plant_can_stop_a_defuse_while_it_still_burns():
     assert c["spike"]["stopped"] == 1 and c["spike"]["attempts"][0]["evidence"] == "zone"
 
 
+def test_a_hidden_nanoswarm_stops_no_defuse_and_one_set_off_on_the_spike_does():
+    hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", *SPIKE, 0, t=2.0, t1=None, kind="GameObject")
+    out = run([planted([[30.0, 33.0, 6, False]]), hidden], t_end=60.0)
+    (c,) = cast_by(out, 0)
+    assert c["spike"]["attempts"][0]["evidence"] is None and c["spike"]["stopped"] == 0
+    swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", *SPIKE, 0, t=31.0, t1=35.0)
+    out = run([planted([[30.0, 33.0, 6, False]]), hidden, swarm], t_end=60.0)
+    (c,) = cast_by(out, 0)
+    assert c["spike"]["attempts"][0]["evidence"] == "zone" and c["spike"]["stopped"] == 1
+
+
+def test_a_poison_clouds_presence_counts_only_while_it_is_on():
+    cloud = toy_ability("Pandemic", "4_SmokeGrenade", 400, 160, 1, t=0.0, t1=30.0, kind="Projectile",
+                        on=[[10.0, 12.0]])
+    (c,) = cast_by(run([cloud]), 1)
+    assert c["presence"]["armed_s"] == pytest.approx(2.0)
+    assert 0 < c["presence"]["inside_s"] <= 2.0 * len(c["presence"]["entered"]) + 1e-9
+
+
+def test_an_enemy_who_left_while_a_turret_was_off_was_not_held_back_by_it():
+    # at the turret's edge while it is on, gone (far) while it is off, still far when it comes back on
+    turret = toy_ability("Killjoy", "E_Turret", 200, 200, 0, t=2.0, t1=20.0, kind="GameObject", off=[[5.0, 15.0]])
+    edge, far = 200 + px(15), 200 + px(40)
+    moves = {6: ("B", [(0.0, edge, 200, 180), (5.5, edge, 200, 180), (7.0, far, 200, 180), (30.0, far, 200, 180)]),
+             5: ("B", [(0.0, far, 260, 180), (30.0, far, 260, 180)])}
+    (c,) = cast_by(run([turret], extra=moves), 0)
+    assert c["presence"]["held_back"] == []
+
+
+def test_a_rocket_kill_is_one_kill_entry_on_the_ult():
+    rocket = toy_ability("Clay", "X_Rocket", 400, 160, 0, t=12.0, t1=13.0, kind="Projectile", id=77)
+    hit = {**damage(13.0, 0, 5), "code": "Clay", "name": "X_Rocket", "from": "causer", "id": 77}
+    out = run([rocket, hit], kills=[kill(13.0, 0, 5)], agents={0: "Raze"})
+    (c,) = [c for c in out["casts"] if c["type"] == "ult"]
+    assert [k["ev"] for k in c["kills"] if k["victim"] == 5] == ["ult_weapon"]
+
+
+def test_the_round_keeps_each_slots_lives_and_the_baseline_counts_a_revive():
+    from app.services import util_values
+
+    out = run([], kills=[kill(10.0, 5, 0)])
+    assert out["lives"]["0"][0][1] == 10.0 and out["lives"]["5"][0][1] is None
+    rd = {"sides": {"0": "attack", "1": "attack", "5": "defense"},
+          "lives": {"0": [[0.0, 10.0], [20.0, None]], "1": [[0.0, None]], "5": [[0.0, None]]},
+          "kills": [{"t": 10.0, "killer": 5, "victim": 0, "v_side": "attack", "before": [2, 1]},
+                    {"t": 30.0, "killer": 0, "victim": 5, "v_side": "defense", "before": [2, 1]}]}
+    assert util_values._alive_at(rd, 15.0) == (1, 1), "dead until the revive at 20 s"
+    assert util_values._alive_at(rd, 25.0) == (2, 1)
+
+
 def vitals(*points):
     return [{"t": t, "life": life, "hp": hp, "sh": 0, "mhp": 100, "msh": 0} for t, life, hp in points]
 

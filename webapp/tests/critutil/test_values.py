@@ -51,6 +51,15 @@ MODEL = model_from([(a, d, False, 10.0, None, i < 20 * a // (a + d)) for a in ra
                     for i in range(20)])
 
 
+def test_a_kill_at_a_casts_very_start_is_inside_its_swing():
+    # a Jett's ult is known by her first knife: when that knife kills, the use and the kill are one moment
+    rd = {**round_data([], [kill(12.0, 0, 5, [5, 5])]), "t_decided": 40.0}
+    swing, _L = util_values.cast_swing_v2(rd, MODEL, {"side": "attack"}, [[12.0, 20.0]])
+    before = util_values._p_at(rd, MODEL, "attack", 11.9)
+    after = util_values._p_at(rd, MODEL, "attack", 20.0)
+    assert after > before and swing == pytest.approx(after - before)
+
+
 def test_a_kill_is_split_once_between_casts_and_the_gun():
     k = kill(9.0, 0, 5, [5, 5])
     ev = {"t": 9.0, "killer": 0, "victim": 5, "ours": True}
