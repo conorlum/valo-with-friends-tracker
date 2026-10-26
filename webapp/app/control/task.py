@@ -115,6 +115,8 @@ def geometry_used(geo) -> dict:
     used = {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
+    if geo.cover_sha:                          # only a map with cover (absent: none)
+        used["cover"] = geo.cover_sha
     if geo.height_sha:
         used["height"] = geo.height_sha
     if getattr(geo, "features_sha", None):     # the exact artifact actually loaded (absent: none)
