@@ -121,6 +121,29 @@ def test_the_on_box_presence_is_memoised_per_piece_cell_and_smokes():
     assert len(memo) == 2, "a different smoke key is a different entry"
 
 
+def test_two_points_on_one_box_never_share_a_presence_cast():
+    from app.control import engine as ce
+
+    geo = box_hall()
+    a = ce.Tick(inputs(geo, {0: on_box_track(CENTRE[0] - 3, CENTRE[1], yaw=0)})[0], T)
+    rnd, _ = inputs(geo, {0: on_box_track(CENTRE[0] - 3, CENTRE[1], yaw=0),
+                          1: ("A", on_box_track(CENTRE[0] + 3, CENTRE[1], yaw=0)[1])})
+    both = ce.Tick(rnd, T)
+    assert len({k[2:4] for k in rnd.__dict__["_presence_memo"]}) == 2
+    assert (both.holders[0].passive == a.holders[0].passive).all(), "the other player's cast never leaks in"
+
+
+def test_a_hugger_deep_inside_the_outline_is_seen_at_its_anchor_cell():
+    # 4 px inside the box's west edge, beside it (no z); an enemy in the open to the west sees its anchor cell
+    geo = box_hall()
+    rnd, _ = inputs(geo, {0: hugging_track(252, 196, yaw=0), 1: still("B", 200.0, 196.0, 0)})
+    from app.control import engine as ce
+
+    tk = ce.Tick(rnd, T)
+    assert tk.holders[0].stance is not None and tk.holders[0].stance.kind == "beside"
+    assert 0 in tk.sees[1]
+
+
 def test_nobody_in_the_box_never_asks_for_a_stance():
     from app.control import stance as st_mod
 
@@ -160,7 +183,8 @@ def walled_box_hall():
 def seen_by_enemy(geo, enemy_xy, enemy_yaw=None, target=CENTRE, util=(), smokes=None):
     """Whether the enemy (slot 5) sees the player on the box (slot 0) at T."""
     yaw = bearing(enemy_xy, target) if enemy_yaw is None else enemy_yaw
-    players = {0: on_box_track(*target, yaw=0), 5: still("B", *enemy_xy, yaw)}
+    # slot 7: a second ground reference north of the box (walled_box_hall's wall covers the west one)
+    players = {0: on_box_track(*target, yaw=0), 5: still("B", *enemy_xy, yaw), 7: still("B", 260.0, 172.0, 0)}
     return 0 in tick(geo, players, util, smokes).sees[5]
 
 
@@ -180,8 +204,9 @@ def test_an_enemy_behind_a_real_wall_does_not_see_the_player_whose_anchor_cell_i
     assert not ce.los(geo, (*enemy, None), (*CENTRE, None), see_over=(0, 1)), "the box's top is behind the wall"
     from app.control import stance as st_mod
 
-    rnd, _ = inputs(geo, {0: on_box(0), 5: still("B", *enemy, 0)})
-    assert st_mod.stance_at(rnd, 0, T) is not None
+    rnd, _ = inputs(geo, {0: on_box(0), 5: still("B", *enemy, 0), 7: still("B", 260.0, 172.0, 0)})
+    st = st_mod.stance_at(rnd, 0, T)
+    assert st is not None and st.kind == "on_box"
     assert not seen_by_enemy(geo, enemy, 0)
 
 

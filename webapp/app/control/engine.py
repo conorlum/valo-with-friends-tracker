@@ -1200,6 +1200,11 @@ class Fill:
         return walk & ~self.seen & ~self.free
 
 
+def _on_box(h) -> bool:
+    """A holder standing on a cover piece (seen by the physical line, W14); beside one is held at the anchor."""
+    return h.stance is not None and h.stance.kind == "on_box"
+
+
 def _smoke_key(smokes: list) -> tuple:
     """A hashable of a tick's smokes by content (circles as they are, a Wall by its segments, a bounded
     occluder by its owner, band and mask), for the on-box presence memo."""
@@ -1433,7 +1438,7 @@ class Tick:
                     looks[s] = look
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
-        if any(h.stance is not None for h in self.holders.values()):   # W14: in-box targets by the physical line
+        if any(_on_box(h) for h in self.holders.values()):   # W14: on-box targets by the physical line
             self.direct.update(self._boxed(every))
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
@@ -1447,7 +1452,7 @@ class Tick:
             self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
-                              if h.team != e.team and ((e.slot, h.slot) in self.direct if h.stance is not None
+                              if h.team != e.team and ((e.slot, h.slot) in self.direct if _on_box(h)
                                                        else (e.body[h.cell] or (e.slot, h.slot) in self.direct))}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
@@ -1495,8 +1500,8 @@ class Tick:
             for h in self.holders.values():
                 z = rnd.height(h.slot, t) if h.team != e.team else None
                 floor = geo.node_z[h.cell]
-                if h.stance is not None:
-                    continue    # an in-box target is `_boxed`'s
+                if _on_box(h):
+                    continue    # an on-box target is `_boxed`'s
                 if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
                     continue
                 dx, dy = h.x - e.x, h.y - e.y
@@ -1508,8 +1513,9 @@ class Tick:
         return out
 
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
-        """Enemies in a box (a holder with a stance), seen by the one physical line from the viewer's eye to
-        the target's pixel, over the pieces both stand on: not flashed, inside the field of view, inside the
+        """Enemies standing on a box, seen by the one physical line from the viewer's eye to the target's pixel,
+        over the pieces both stand on (a target beside a box is held at its anchor cell and seen there, by the
+        ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
@@ -1520,9 +1526,10 @@ class Tick:
             ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
             e_piece = e.stance.see_over if e.stance is not None else 0
             for h in self.holders.values():
-                if h.team == e.team or h.stance is None:
+                if h.team == e.team or not _on_box(h):
                     continue
-                dx, dy = h.x - ex, h.y - ey
+                hx, hy = h.x, h.y
+                dx, dy = hx - ex, hy - ey
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
@@ -1531,7 +1538,7 @@ class Tick:
                 ez = eye if tz is not None else None
                 if ez is None:
                     tz = None
-                if los(geo, (ex, ey, ez), (h.x, h.y, tz), self.smokes, record=self.fallbacks,
+                if los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
                        see_over=(e_piece, h.stance.see_over)):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
@@ -1542,7 +1549,8 @@ class Tick:
         (8-connected) and in their line of sight (smoke-aware, all round them): anything that blocks
         sight stops the bubble (the user's call, 2026-10-01).
         With a stance (W13): on a box the sight part is one 360 degree cast from the box pixel over the
-        piece, memoised per (piece, cell, smoke key) on the round; the circle is centred on `st.px`.
+        piece, memoised per (piece, cell, point, eye height, smoke key) on the round; the circle is centred
+        on `st.px`.
         Beside a box it is today's, from the anchor cell."""
         geo = self.geo
         if st is not None:
@@ -1555,10 +1563,12 @@ class Tick:
             r = PRESENCE_M / geo.m_per_px
             near = reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
             memo = self.rnd.__dict__.setdefault("_presence_memo", {})
-            key = (st.see_over, cell, _smoke_key(self.smokes))
+            eye = self._eye(s, t, cell)
+            # the cast's own inputs: never shared between two points or two eye heights on one piece
+            key = (st.see_over, cell, x, y, None if eye is None else round(eye, 3), _smoke_key(self.smokes))
             if key not in memo:
                 sight = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), self.smokes,
-                             eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks, see_over=st.see_over)
+                             eye_z=eye, own=cell, record=self.fallbacks, see_over=st.see_over)
                 sight[cell] = True
                 memo[key] = sight
             return near & memo[key]
@@ -2168,7 +2178,7 @@ class Knowledge:
         kt.holders = holders
         # only enemies the team sees can contest its players
         kt.sees = {x.slot: {h.slot for h in holders.values()
-                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if h.stance is not None
+                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if _on_box(h)
                                                      else (x.body[h.cell] or (x.slot, h.slot) in tick.direct))}
                    for x in holders.values()}
         kt._dist = {}
