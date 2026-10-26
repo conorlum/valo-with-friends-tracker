@@ -273,6 +273,20 @@ def test_a_timed_ult_use_is_one_ult_cast_with_its_window_counted_once_in_the_bas
     assert util_values.value_round(data, None)["casts"][c["i"]]["found_nobody"] is False
 
 
+def test_a_tour_de_force_kill_is_the_ults_whole_kill_and_an_operator_kill_is_not(monkeypatch):
+    from app.services import util_values
+
+    util = [shot(12.0, 0, gun="Tour de Force"), shot(13.0, 0, gun="Tour de Force"), shot(16.0, 0, gun="Operator")]
+    out = run(util, kills=[kill(13.0, 0, 5), kill(16.0, 0, 6)], player_state=ult_state(0, drop=25.0),
+              agents={0: "Chamber"})
+    (c,) = [c for c in out["casts"] if c.get("from_use")]
+    assert c["kills"] == [{"t": 13.0, "killer": 0, "victim": 5, "ours": True, "ev": "ult_weapon"}]
+    monkeypatch.setattr(util_values, "swings", lambda rd, model: {
+        util_values._kill_key(k["t"], k["killer"], k["victim"]): 0.2 for k in rd["kills"]})
+    led = util_values.ledger(out, None)[c["i"]]
+    assert led["value"] == pytest.approx(0.2), "the whole swing: the ult was the gun"
+
+
 def test_jett_use_is_the_first_knife_hit_from_the_equippable():
     miss = {**damage(6.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "ability"}
     hit = {**damage(9.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "equippable"}

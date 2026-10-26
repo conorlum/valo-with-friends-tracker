@@ -109,22 +109,22 @@ def heal_features(heal: dict) -> dict:
     return f
 
 
-def _evidence(cast: dict, key) -> tuple[float, bool] | None:
-    """(weight, positive) of this cast's evidence on one kill, or None."""
+def _evidence(cast: dict, key) -> tuple[float, bool, str] | None:
+    """(weight, positive, ev) of this cast's evidence on one kill, or None."""
     best = None
     for k in cast.get("kills") or ():
         if _kill_key(k["t"], k["killer"], k["victim"]) != key:
             continue
         w = EVIDENCE_WEIGHT.get(k["ev"], 0.0)
         if best is None or w > best[0]:
-            best = (w, bool(k.get("ours")))
+            best = (w, bool(k.get("ours")), k["ev"])
     for h in cast.get("harm") or ():
         # this teammate killed while our util had them blinded: that death only (`died_t`), never a later life's
         if h.get("died") and key[2] == h["mate"] and h.get("died_t") is not None \
                 and round(float(h["died_t"]), 2) == key[0]:
             w = EVIDENCE_WEIGHT["harmed_teammate"]
             if best is None or w > best[0]:
-                best = (w, False)
+                best = (w, False, "harmed_teammate")
     return best
 
 
@@ -143,8 +143,10 @@ def ledger(round_data: dict, model: dict | None) -> dict[int, dict]:
                 claims.append((c, ev))
         if not claims:
             continue
-        total = sum(w for _, (w, _) in claims) + GUN_WEIGHT
-        for c, (w, positive) in claims:
+        # the gun's share, unless the kill was made with an ult that is the gun (Tour de Force): then the ult has it
+        gun = 0.0 if any(ev == "ult_weapon" for _, (_, _, ev) in claims) else GUN_WEIGHT
+        total = sum(w for _, (w, _, _) in claims) + gun
+        for c, (w, positive, _) in claims:
             share = w / total
             # `swing` is for the killer's side: our kill is +swing for us, an enemy's kill on us is -swing for us
             value = share * swing if positive else -share * swing

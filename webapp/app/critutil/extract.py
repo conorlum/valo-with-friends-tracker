@@ -21,7 +21,7 @@ from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVI
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
-                                    VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
+                                    ULT_GUNS, ULT_SHOT_MATCH_S, VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
 from app.moments.constants import ABILITY_KIND
 
 _EPS = 0.01
@@ -1129,10 +1129,22 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
     return out
 
 
-def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i) -> list[dict]:
+def _ult_weapon_kills(rnd, util, slot, agent) -> list[dict]:
+    """The kills an ult that is a gun made (ULT_GUNS): the killer's shot at the kill's moment was that gun."""
+    gun = ULT_GUNS.get(agent)
+    if gun is None:
+        return []
+    shots = [float(r["t"]) for r in util if r.get("k") == "shot" and r.get("by") == slot and r.get("gun") == gun]
+    return [{"t": _r2(t), "killer": killer, "victim": victim, "ours": True, "ev": "ult_weapon"}
+            for t, killer, victim in rnd.kills
+            if killer == slot and t <= rnd.t_decided and any(abs(t - s) <= ULT_SHOT_MATCH_S for s in shots)]
+
+
+def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i, util=()) -> list[dict]:
     """One cast per timed ult used this round (Chamber, Jett, Neon, Reyna: `_ults`' `use`), which leave no ability
-    row to make a cast of: type ult, its window from the use's signals, no place and no effects of its own (its
-    kills are the owner's gun's). `from_use` marks it, so the baseline doesn't count the use twice."""
+    row to make a cast of: type ult, its window from the use's signals, no place and no effects of its own. An ult
+    that is a gun (Chamber's) has its own kills (`_ult_weapon_kills`). `from_use` marks it, so the baseline doesn't
+    count the use twice."""
     out = []
     for slot, u in sorted(ults.items(), key=lambda x: int(x[0])):
         use = (u or {}).get("use") or {}
@@ -1149,7 +1161,7 @@ def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i) -> l
             "kinds": ["ult"], "side": sides.get(s), "type": "ult", "ability_id": use.get("ability_id"),
             "end_unknown": False, "phase": _phase(t, contact, plant), "after_decided": t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]], "trigger": None, "enemies": [], "effects": [],
-            "kills": [], "followed": None, "harm": [], "cover": None, "presence": None, "spike": None, "hold": None,
+            "kills": _ult_weapon_kills(rnd, util, s, agents.get(s)), "followed": None, "harm": [], "cover": None, "presence": None, "spike": None, "hold": None,
             "ult_points": held[-1] if held else None, "activation": None, "signals": dict(sig), "from_use": True,
         })
     return out
@@ -1220,7 +1232,8 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
     ults = _ults(rnd, blob, sides, agents)
-    out_casts.extend(_timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts)))
+    out_casts.extend(_timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
+                                      blob.get("util") or ()))
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
         "v": VERSION,

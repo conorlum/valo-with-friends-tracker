@@ -95,7 +95,13 @@ FITS_ANY_FIGHT = frozenset({"blind", "smoke", "status"})
 FITS_SPIKE = frozenset({"damaging", "smoke", "status", "device"})   # a planted spike or a defuse attempt
 
 # Evidence weights for splitting one ledger item between its casts and the gunplay (app/services/util_values.py).
-# Gunplay always takes a share, so util never takes a whole kill.
+# Gunplay always takes a share, so util never takes a whole kill, except a kill with an ult that is the gun
+# ("ult_weapon": Chamber's Tour de Force, a free Operator whose only job is kills; the owner, 2026-10-25).
 EVIDENCE_WEIGHT = {"affected": 1.0, "revealed": 0.7, "zone_damage": 0.8, "trigger": 0.6, "cover": 0.5,
-                   "harmed_teammate": 1.0, "failed_follow": 0.5}
+                   "harmed_teammate": 1.0, "failed_follow": 0.5, "ult_weapon": 1.0}
 GUN_WEIGHT = 1.0
+# The ults that are a gun: agent -> the `gun` its shot rows carry. A kill is the ult's when the killer's shot at
+# the kill's moment was this gun (every Chamber kill in the 58 replays has its shot at the same time: 37 of them
+# Tour de Force, measured 2026-10-25).
+ULT_GUNS = {"Chamber": "Tour de Force"}
+ULT_SHOT_MATCH_S = 0.05
