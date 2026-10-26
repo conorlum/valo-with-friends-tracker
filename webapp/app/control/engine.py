@@ -104,6 +104,7 @@ from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
+from app.control.stance import Stance
 from app.control.routes import RouteLog
 from app.replays import choke_assets
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
@@ -1149,6 +1150,7 @@ class Holder:
     mode: str
     memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
     blind: bool = False      # flashed now (P07): alive, in place and seen, with no personal control
+    stance: Stance | None = None   # W12: standing on / beside a cover piece (nothing sets it yet)
 
 
 # Zero personal control while blinded (P07; the design's section 2, the plan's amendment "Blinded control"). A
