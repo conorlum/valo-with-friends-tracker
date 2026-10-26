@@ -521,6 +521,14 @@ def test_veto_without_the_row_falls_back_to_his_first_regen_heal():
     assert use["t"] == 27.7 and use["signals"]["exact"] is False and use["signals"]["regen_heals"] == 2
 
 
+def test_a_detected_timed_ult_use_counts_as_used():
+    # Branch review B5: Chamber fires Tour de Force at 7 s and dies at 12 s before his points reset; the use is
+    # detected, so `used` must say so (else unused_ults reports a full ult never used).
+    out = run([shot(7.0, 0, gun="Tour de Force")], kills=[kill(12.0, 5, 0)], player_state=ult_state(0),
+              agents={0: "Chamber"})
+    assert out["ults"]["0"]["use"]["t"] == 7.0 and out["ults"]["0"]["used"] is True
+
+
 def test_a_use_after_the_slot_died_is_not_a_use():
     util = [shot(12.0, 0, gun="Tour de Force")]
     out = run(util, kills=[kill(10.0, 5, 0)], player_state=ult_state(0), agents={0: "Chamber"})

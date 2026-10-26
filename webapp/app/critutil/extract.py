@@ -1205,10 +1205,13 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     out = {}
     for slot in sides:
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
+        use = _use(rnd, ps, util, slot, (agents or {}).get(slot), end)
+        # used: an ult ability row, or the use a timed ult's own evidence found (a Tour de Force shot, Evolution's
+        # row): the same evidence the use is valued on (branch review B5)
         used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util
-                   if r.get("k") == "ability") or _evolution(util, slot, end) is not None
+                   if r.get("k") == "ability") or (use is not None and use.get("t") is not None)
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
-                          "used": used, "use": _use(rnd, ps, util, slot, (agents or {}).get(slot), end)}
+                          "used": used, "use": use}
     return out
 
 
