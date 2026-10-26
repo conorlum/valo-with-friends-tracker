@@ -802,6 +802,31 @@ def test_a_poison_cloud_takes_the_zones_of_its_own_owner_while_alive(tmp_path):
     assert "on" not in out[102]
 
 
+def held(t_ms, pawn, equippable):
+    # the real shape (2026-10-25 Sunset export): the character's inventory names what it now holds
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": pawn, "is_actor": False,
+            "export_group_path": "/Script/ShooterGame.AresInventory",
+            "payload": {"NetTimestamp": 1, "NewCurrentEquippable": equippable}}
+
+
+def test_a_switch_to_the_ult_equippable_is_one_equip_row_and_other_switches_none(tmp_path):
+    rows = [spawned(1_000, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # Reyna's (slot 6, pawn 106)
+            spawned(1_000, 51, "Default__Ability_Vampire_Q_Heal_C", 0, 0),
+            held(14_000, 106, 900),                                                 # her gun
+            held(15_000, 106, 50), held(15_100, 106, 50),                           # Empress: one switch, sent twice
+            held(16_000, 106, 900), held(17_000, 106, 51),                          # back to the gun, then Devour
+            held(80_000, 106, 50)]                                                  # round 2
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert extras.rounds[1]["equips"] == [{"t": 5.0, "slot": 6, "code": "Vampire", "name": "X_Frenzy"}]
+    assert extras.rounds[2]["equips"] == [{"t": 10.0, "slot": 6, "code": "Vampire", "name": "X_Frenzy"}]
+    util = util_entries(extras.rounds[1])
+    assert [e for e in util if e["k"] == "equip"] == [{"k": "equip", "t": 5.0, "by": 6, "code": "Vampire",
+                                                       "name": "X_Frenzy"}]
+    assert rounds_extras(util)["equips"] == extras.rounds[1]["equips"]
+
+
 # ---------------------------------------------------------------- stored util (Stage 2, R2)
 
 import sys  # noqa: E402

@@ -307,6 +307,23 @@ def test_an_ult_that_is_a_weapon_has_its_own_kills_and_not_the_guns(agent, util)
         [{"t": 13.0, "killer": 0, "victim": 5, "ours": True, "ev": "ult_weapon"}]
 
 
+def test_reyna_empress_starts_when_equipped_and_every_kill_until_her_death_is_its_own(monkeypatch):
+    # the Sunset export's shape (2026-10-25): equipped at 5 s, no heal (full health), a kill, then her death
+    from app.services import util_values
+
+    util = [{"k": "equip", "t": 5.0, "by": 0, "code": "Vampire", "name": "X_Frenzy"}]
+    ps = ult_state(0, drop=20.0)
+    out = run(util, kills=[kill(3.0, 0, 6), kill(12.0, 0, 5), kill(20.0, 6, 0)], player_state=ps,
+              agents={0: "Reyna"})
+    (c,) = [c for c in out["casts"] if c.get("from_use")]
+    assert (c["t"], c["t_end"], c["ability_id"]) == (5.0, 20.0, "Reyna/Empress")
+    assert c["kills"] == [{"t": 12.0, "killer": 0, "victim": 5, "ours": True, "ev": "ult_weapon"}], \
+        "the kill before she equipped it is not the ult's"
+    monkeypatch.setattr(util_values, "swings", lambda rd, model: {
+        util_values._kill_key(k["t"], k["killer"], k["victim"]): 0.2 for k in rd["kills"]})
+    assert util_values.ledger(out, None)[c["i"]]["value"] == pytest.approx(0.2), "the whole kill"
+
+
 def test_jett_use_is_the_first_knife_hit_from_the_equippable():
     miss = {**damage(6.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "ability"}
     hit = {**damage(9.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "equippable"}

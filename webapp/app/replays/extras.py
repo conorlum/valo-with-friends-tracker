@@ -25,6 +25,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   lifetime, so it is its own kind and not an `ability`.
 - `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
   object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`).
+- `{"k": "equip", "t", "by", "code", "name"}`: a player switching to their ult's equippable (revision 22,
+  `Raw.ult_equips`), once per switch.
 
 - **Abilities.** Every `actor_spawned` whose archetype is `Default__<Kind>_<AgentCode>_<Name>_C`
   with a kind in ABILITY_KINDS (placed objects, zones, patches, projectiles, possessable
@@ -272,6 +274,9 @@ class Raw:
     # A push or pull an ability object put on a character (`NetMulticastApplyForceModule` naming it as `Source`):
     # (time, the character, the object). Reckoning's chunks send one on every touch.
     forces: list[tuple[int, int, int]] = field(default_factory=list)
+    # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
+    # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
+    ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -286,7 +291,7 @@ _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
-                           f'"{RPC_FORCE}"')
+                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -357,6 +362,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     walls: set[int] = set()
     orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
+    holding: dict[int, int] = {}           # each character's current equippable, to see a switch
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if not any(needle in line for needle in _RAW_NEEDLES):
@@ -512,6 +518,12 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     continue
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
+                held_now = payload.get("NewCurrentEquippable")
+                if guid in pawns and isinstance(held_now, int):
+                    if holding.get(guid) != held_now and held_now in equip_now \
+                            and equip_now[held_now].name.startswith("X_"):
+                        raw.ult_equips.append((t_ms, guid, equip_now[held_now]))
+                    holding[guid] = held_now
                 moved = payload.get("ReplicatedMovement")
                 if isinstance(moved, dict) and guid in actors and actors[guid].kind == "Projectile":
                     where = moved.get("location") or {}
@@ -2109,6 +2121,15 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": code, "name": name})
         counts["movement_casts"] += 1
 
+    for t_ms, pawn, equip in sorted(raw.ult_equips, key=lambda e: e[0]):
+        slot = players.pawn_slot.get(pawn)
+        n = _round_of(t_ms, windows)
+        if slot is None or n is None:
+            continue
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("equips", []).append(
+            {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": equip.code, "name": equip.name})
+        counts["ult_equips"] += 1
+
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
         shot = data.get("shot") or {}
@@ -2230,6 +2251,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for cast in sorted(round_extras.get("casts", []), key=lambda c: c["t"]):
         rest = {k: v for k, v in cast.items() if k not in ("t", "slot")}
         out.append({"k": "cast", "t": cast["t"], "by": cast["slot"], **rest})
+    for equip in sorted(round_extras.get("equips", []), key=lambda e: e["t"]):
+        rest = {k: v for k, v in equip.items() if k not in ("t", "slot")}
+        out.append({"k": "equip", "t": equip["t"], "by": equip["slot"], **rest})
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
@@ -2239,7 +2263,7 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses, casts, buffs = [], [], [], [], [], []
+    abilities, shots, reveals, statuses, casts, buffs, equips = [], [], [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -2254,6 +2278,8 @@ def rounds_extras(util: list[dict]) -> dict:
             casts.append({"t": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "buff":
             buffs.append({"t0": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "equip":
+            equips.append({"t": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
@@ -2263,4 +2289,6 @@ def rounds_extras(util: list[dict]) -> dict:
         out["casts"] = casts
     if buffs:
         out["buffs"] = buffs
+    if equips:
+        out["equips"] = equips
     return out

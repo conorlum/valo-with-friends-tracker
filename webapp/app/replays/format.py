@@ -36,6 +36,11 @@ Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-sl
 MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser
 looked for them, so a round with that key and no cast had none. A blob without the key was condensed before.
 
+Ult equips (revision 22): `{"k": "equip", "t", "by", "code", "name"}` each time a player's inventory switched to their
+ult's equippable (an `X_` one: `Vampire` `X_Frenzy`), from its `NewCurrentEquippable`. Equipping is not using for most
+ults (a Breach can take his out and put it away); Reyna's Empress fires the moment it is equipped, which is the only
+sign of its start when she is at full health.
+
 A Killjoy turret or alarmbot `ability` row has `"off"` (revision 12) when it was switched off (KJ walked out
 of its range): `[[from, to | null], ...]` in round seconds, null meaning until the row's `t1`.
 
@@ -107,7 +112,8 @@ from app.replays import player_state as _player_state
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
 CONDENSE_REVISION = 22   # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21),
-                         #     Leer / Dizzy `gone`, Poison Cloud `on`, Harmonize `buff` rows (2026-10-24);
+                         #     Leer / Dizzy `gone`, Poison Cloud `on`, Harmonize `buff` rows (2026-10-24),
+                         #     `equip` rows: a player switching to their ult's equippable (2026-10-25);
                          # 21: damage causes (`code`, `name`, `from`, `id`), `heal` runs, ability rows' `id`,
                          #     heals in `vitals`, `player_state` charges (2026-10-21);
                          # 20: statuses: Neon's, Deadlock's and Harbor's named (no generic "hit"), High Tide's

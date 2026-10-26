@@ -913,10 +913,12 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
 
 
 def _first_use(util, slot, agent, end):
-    """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it, or Reyna's
-    Empress heal on activation), up to `end`; None when it has none (Reyna at full health shows no heal)."""
+    """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it, or Reyna
+    equipping Empress, else its heal on activation), up to `end`; None when it has none (in an old blob, Reyna at
+    full health shows no heal)."""
     if agent == "Reyna":
-        want = lambda r: r.get("k") == "heal" and r.get("name") == "X_Frenzy"
+        # Empress fires the moment it is equipped (revision 22's `equip` rows); blobs from before have only its heal
+        want = lambda r: r.get("name") == "X_Frenzy" and r.get("k") in ("equip", "heal")
     elif agent == "Chamber":
         want = lambda r: r.get("k") == "shot" and r.get("gun") == "Tour de Force"
     elif agent == "Jett":
@@ -1129,9 +1131,10 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
     return out
 
 
-def _ult_weapon_kills(rnd, util, slot, agent, since=None) -> list[dict]:
+def _ult_weapon_kills(rnd, util, slot, agent, since=None, until=None) -> list[dict]:
     """The kills an ult that is a weapon made (ULT_WEAPONS), from `since` on: the killer's shot at the kill's moment
-    was the ult's gun, or their last damage run on the victim, ending at the kill, was the ult."""
+    was the ult's gun, or their last damage run on the victim, ending at the kill, was the ult, or (a "window"
+    ult) any kill up to `until`, the ult's end."""
     proof = ULT_WEAPONS.get(agent)
     if proof is None:
         return []
@@ -1140,7 +1143,9 @@ def _ult_weapon_kills(rnd, util, slot, agent, since=None) -> list[dict]:
     for t, killer, victim in rnd.kills:
         if killer != slot or t > rnd.t_decided or (since is not None and t < since - _EPS):
             continue
-        if how == "shot":
+        if how == "window":
+            hit = since is not None and until is not None and t <= until + _EPS
+        elif how == "shot":
             hit = any(r.get("k") == "shot" and r.get("by") == slot and abs(float(r["t"]) - t) <= ULT_SHOT_MATCH_S
                       and r.get("gun") == what for r in util)
         else:
@@ -1167,15 +1172,16 @@ def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i, util
         s, t = int(slot), float(use["t"])
         sig = use.get("signals") or {}
         stops = [x for x in (sig.get("ult_end"), sig.get("death")) if x is not None]
+        t_end = min([*stops, rnd.t_decided])
         held = [p["n"] for p in ((ps or {}).get("ult") or {}).get(slot) or [] if p["t"] <= t and p["n"]]
         alive = _alive_counts(rnd, sides, t)
         out.append({
             "i": first_i + len(out), "by": s, "agent": agents.get(s), "t": _r2(t),
-            "t_end": _r2(min([*stops, rnd.t_decided])), "u": None, "v": None, "names": [], "codes": [],
+            "t_end": _r2(t_end), "u": None, "v": None, "names": [], "codes": [],
             "kinds": ["ult"], "side": sides.get(s), "type": "ult", "ability_id": use.get("ability_id"),
             "end_unknown": False, "phase": _phase(t, contact, plant), "after_decided": t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]], "trigger": None, "enemies": [], "effects": [],
-            "kills": _ult_weapon_kills(rnd, util, s, agents.get(s)), "followed": None, "harm": [], "cover": None, "presence": None, "spike": None, "hold": None,
+            "kills": _ult_weapon_kills(rnd, util, s, agents.get(s), since=t, until=t_end), "followed": None, "harm": [], "cover": None, "presence": None, "spike": None, "hold": None,
             "ult_points": held[-1] if held else None, "activation": None, "signals": dict(sig), "from_use": True,
         })
     return out
