@@ -152,6 +152,19 @@ def test_a_cast_never_takes_cover_from_a_wall_that_isnt_its_own():
     assert w["cover"]["blocked_s"] > 0, "the wall keeps its own cover"
 
 
+def test_a_wall_ending_on_an_enemy_wall_never_takes_its_cover():
+    # Branch review B13: our Viper wall, raised in the same second as an enemy one, runs along the top and ends on
+    # the enemy wall's end (a T). It cuts nothing itself; the enemy wall cuts the lines between the teams.
+    ours = toy_ability("Pandemic", "E_SmokeScreenManager", 230, 120, 1, t=5.0, t1=15.0, kind="GameObject",
+                       points=[list(uv(200, 120)), list(uv(230, 120)), list(uv(260, 120))], on=[[5.0, 15.0]])
+    theirs = toy_ability("Pandemic", "E_SmokeScreenManager", 260, 200, 5, t=5.0, t1=15.0, kind="GameObject",
+                         points=[list(uv(260, 120)), list(uv(260, 280))], on=[[5.0, 15.0]])
+    out = run([ours, theirs])
+    assert not (cast_by(out, 1)[0].get("cover") or {}).get("blocked_s"), "the enemy's wall is not our wall's cover"
+    (w,) = [w for w in cast_by(out, 5) if w.get("cover")]
+    assert w["cover"]["blocked_s"] > 0
+
+
 def test_two_coincident_smokes_share_the_sight_lines_and_the_save_once():
     one = toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=5.0, t1=15.0, kind="Zone")
     (alone,) = cast_by(run([one]), 1, "smoke")
