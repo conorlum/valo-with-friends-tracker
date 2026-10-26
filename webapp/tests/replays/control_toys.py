@@ -74,6 +74,50 @@ def box_hall():
     return geo
 
 
+# Three separate cover boxes in a row (A, B at the ends, C between them but south of the y 186 line).
+THREE_BOXES = {"A": (144, 184, 168, 208), "B": (240, 184, 264, 208), "C": (192, 196, 216, 220)}
+
+
+def three_boxes():
+    """The open hall with three separate cover boxes (THREE_BOXES), attached as three pieces."""
+    key = ("ThreeBoxes", HALL, tuple(THREE_BOXES.values()))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    boxes = rect_mask(list(THREE_BOXES.values()))
+    geo = geometry_from_masks("ThreeBoxes", ~floor | boxes, floor & ~boxes, TOY_SCALE, None)
+    sha = hashlib.sha256(np.packbits(boxes).tobytes()).hexdigest()[:12]
+    attach_cover(geo, boxes, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+# A real wall strip (x 248-256, y 96-190) that an over-drawn cover outline (WALL_PIECE_PX) overlaps for y 184-190.
+WALL_STRIP_PX = (248, 96, 256, 190)
+WALL_PIECE_PX = (232, 184, 272, 208)
+
+
+def wall_piece_hall():
+    """The open hall with a real wall strip and one cover piece drawn over the strip's southern end."""
+    key = ("WallPieceHall", HALL, WALL_STRIP_PX, WALL_PIECE_PX)
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    wall = rect_mask([WALL_STRIP_PX])
+    piece = rect_mask([WALL_PIECE_PX])
+    geo = geometry_from_masks("WallPieceHall", ~floor | wall | piece, floor & ~wall & ~piece, TOY_SCALE, None)
+    sha = hashlib.sha256(np.packbits(piece).tobytes()).hexdigest()[:12]
+    attach_cover(geo, piece, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
 def rect_mask(rects) -> np.ndarray:
     mask = np.zeros((PX, PX), bool)
     for x0, y0, x1, y1 in rects:
