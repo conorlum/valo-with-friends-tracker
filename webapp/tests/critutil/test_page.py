@@ -156,6 +156,19 @@ def test_viewer_lift_text_by_mode():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_shows_a_placeables_device_comparison_beside_the_main_lift():
+    main = {"lift_all": 0.5, "base_level": "state", "gate_all": True}
+    device = {**main, "lift_device": -1.25, "device_level": "map side", "device_n": 14, "gate_device": True}
+    ungated = {**device, "gate_device": False}
+    out = _node("[u.rowText(rows[0], players, 'all'), u.rowText(rows[1], players, 'all'),"
+                " u.rowText(rows[2], players, 'all')]", [device, ungated, main])
+    assert out[0].endswith("+0.50 pp vs all players' rounds without it (state) · "
+                           "−1.25 pp vs this side's rounds without it placed (map side, 14 moments)")
+    assert out[1].endswith(" · trap comparison not validated for this window")
+    assert "placed" not in out[2] and "trap" not in out[2]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_viewer_label_other_group_heal_and_omen_text():
     out = _node("[u.rowText(rows[0], players), u.rowText(rows[1], players), u.rowText(rows[2], players),"
                 " u.rowText(rows[3], players), u.rowText(rows[4], players),"

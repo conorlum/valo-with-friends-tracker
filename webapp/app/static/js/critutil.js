@@ -147,6 +147,13 @@
     } else if (typeof row.lift === "number") {
       parts.push(signed(row.lift) + " pp vs no util (" + row.base_level + ")");
     }
+    if (typeof row.lift_device === "number") {    // a placeable: beside the main lift, never instead of it
+      if (row.gate_device === false) parts.push("trap comparison not validated for this window");
+      else {
+        parts.push(signed(row.lift_device) + " pp vs this side's rounds without it placed (" + row.device_level +
+                   ", " + plural(row.device_n, "moment") + ")");
+      }
+    }
     return parts.join(" · ");
   }
 
