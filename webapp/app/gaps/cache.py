@@ -72,6 +72,7 @@ class Writer:
         for k in gone:
             del self.prev[k]
         players = {s: (p.team, p.node, p.x, p.y, p.yaw, _nodes(p.live), _nodes(p.utility), _nodes(p.view), p.eye_z)
+                   + (() if p.eye_x is None else (p.eye_x, p.eye_y, p.see_over))
                    for s, p in rec.players.items()}
         events = {side: list(ev) for side, ev in rec.events.items()}
         self.ticks.append((rec.t, players, diff, gone, events, list(rec.smokes), unknown.geo.n))
@@ -125,8 +126,9 @@ def replay(path: Path):
         unknown: dict = {"A": {}, "B": {}}
         for (side, e), arr in state.items():
             unknown.setdefault(side, {})[e] = arr
-        views = {s: PlayerView(s, team, node, x, y, yaw, _mask(live, n), _mask(util, n), _mask(view, n), eye_z)
-                 for s, (team, node, x, y, yaw, live, util, view, eye_z) in players.items()}
+        views = {s: PlayerView(s, f[0], f[1], f[2], f[3], f[4], _mask(f[5], n), _mask(f[6], n), _mask(f[7], n),
+                               f[8], *f[9:12])
+                 for s, f in players.items()}
         yield TickRecord(t, views, unknown, events, smokes), logs
 
 
