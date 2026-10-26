@@ -156,10 +156,11 @@ def test_control_a_line_from_a_to_b_across_box_c_stays_blocked():
 # ------------------------------------------------------------------ 5. an over-drawn outline over a real wall
 
 
-def test_the_wall_piece_toy_is_one_piece_overlapping_the_wall():
+def test_the_wall_piece_toy_is_one_piece_that_leaves_the_wall_out():
     geo = wall_piece_hall()
     x0, y0, x1, y1 = WALL_PIECE_PX
-    assert (geo.cover_px[y0:y1, x0:x1] == 1).all()
+    assert set(np.unique(geo.cover_px[y0:y1, x0:x1])) == {0, 1}
+    assert geo.cover_px[188, 252] == 0 and geo.cover_px[200, 252] == 1
     assert geo.sight[188, 252]
 
 

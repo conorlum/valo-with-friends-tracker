@@ -111,8 +111,9 @@ def wall_piece_hall():
     wall = rect_mask([WALL_STRIP_PX])
     piece = rect_mask([WALL_PIECE_PX])
     geo = geometry_from_masks("WallPieceHall", ~floor | wall | piece, floor & ~wall & ~piece, TOY_SCALE, None)
-    sha = hashlib.sha256(np.packbits(piece).tobytes()).hexdigest()[:12]
-    attach_cover(geo, piece, sha)
+    see_over = piece & ~wall        # as the committed <Map>.cover.png: the drawn piece minus the real wall (D1)
+    sha = hashlib.sha256(np.packbits(see_over).tobytes()).hexdigest()[:12]
+    attach_cover(geo, see_over, sha)
     visibility(geo, _DIR)
     _CACHE[key] = geo
     return geo
