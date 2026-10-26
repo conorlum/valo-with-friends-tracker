@@ -76,6 +76,7 @@ def prepare_geometry(geo):
     if np.array_equal(sight, geo.sight) and np.array_equal(walk, geo.walk_px):
         return geo
     fresh = cg.geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
+    fresh.cover_px, fresh.cover_sha = geo.cover_px, geo.cover_sha   # before the heights: they read the pieces
     if geo.heights is not None:
         cg.attach_heights(fresh, geo.heights)
         fresh.movement_only, fresh.movement_height_sha = geo.movement_only, geo.movement_height_sha
