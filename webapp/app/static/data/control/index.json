@@ -42,6 +42,7 @@
     "passes": true
    },
    "barrier_sha": "77b049460968",
+   "cover_sha": "48afd9eee5e9",
    "paints": [
     "cover_paint",
     "barrier_paint"
@@ -245,6 +246,7 @@
     "passes": true
    },
    "barrier_sha": "6e8a726dd39b",
+   "cover_sha": "4ca7d497b029",
    "paints": [
     "cover_paint",
     "barrier_paint"
@@ -269,6 +271,7 @@
     "passes": true
    },
    "barrier_sha": "02adc35320f7",
+   "cover_sha": "ca4caf841b49",
    "paints": [
     "barrier_paint"
    ]
