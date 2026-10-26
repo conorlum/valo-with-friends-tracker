@@ -186,6 +186,13 @@ def test_a_stopped_defuse_goes_once_to_the_cast_that_reached_the_defuser():
         "an effect on the defuser before a zone on the spike; a smoke alone stops nothing; a finished one counts for none"
 
 
+def test_util_up_before_the_plant_can_stop_a_defuse_while_it_still_burns():
+    molly = toy_ability("Phoenix", "MolotovFire", *SPIKE, 0, t=18.0, t1=34.0)
+    out = run([planted([[30.0, 33.0, 6, False]]), molly], t_end=60.0)
+    (c,) = cast_by(out, 0, "damaging")
+    assert c["spike"]["stopped"] == 1 and c["spike"]["attempts"][0]["evidence"] == "zone"
+
+
 def vitals(*points):
     return [{"t": t, "life": life, "hp": hp, "sh": 0, "mhp": 100, "msh": 0} for t, life, hp in points]
 

@@ -1119,8 +1119,9 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
     cover = _cover_all(rnd, sides, casts)
     presence = {c.i: _presence(rnd, sides, c) for c in casts}
     _share_presence(presence)
-    spikes = {c.i: _spike_effect(rnd, sides, c, spike, effects[c.i]) if plant is not None and c.t >= plant else None
-              for c in casts}
+    # util still up after the plant counts, wherever it was thrown: `_spike_effect` checks each attempt's overlap
+    spikes = {c.i: _spike_effect(rnd, sides, c, spike, effects[c.i]) if plant is not None and c.t_end >= plant
+              else None for c in casts}
     _share_defuses(spikes, {c.i: c.t for c in casts})
     out_casts = []
     for c in casts:
