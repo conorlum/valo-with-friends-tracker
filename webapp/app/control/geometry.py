@@ -251,6 +251,20 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     return MapMasks(sight, walk, cover)
 
 
+def see_over_cover(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
+    """The pixels that block sight only because of a cover tag or paint (`cover & ~wall_without_cover`): a
+    cover outline drawn over a real wall never erases that wall. These are the boxes a player can stand on
+    and see over; masks()'s sight and walk are unchanged by it."""
+    entry = entry or {}
+    m = masks(rgba, entry)
+    base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
+    see_across = tag_shapes(rgba, entry)["seeacross"].copy()
+    if entry.get("see_across_paint"):
+        see_across |= unpack_paint(entry["see_across_paint"])
+    wall_without_cover = ~base["opaque"] & ~see_across
+    return m.cover & ~wall_without_cover
+
+
 def bullet_mask(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
     """What stops a shot's tracer on the minimap (PX x PX, True stops it; the 2026-10-05 review, item 11): every
     sight wall, plus the low boxes sight goes over (`seeover` tags) and `bullet_paint` (a box the map only draws
@@ -295,6 +309,14 @@ class Geometry:
     visibility_s: float = 0.0
     barrier: np.ndarray | None = None     # GRID x GRID: the buy-phase barrier lines (barrier paint), if painted
     barrier_sha: str | None = None        # index.json's `barrier_sha` for it
+    cover_sha: str | None = None          # index.json's `cover_sha`: the see-over cover mask, if the map has any
+    cover_px: np.ndarray | None = None    # PX x PX int16: 4-connected pieces of that mask, 1.., 0 = none
+
+    def see_over_mask(self, label: int) -> np.ndarray:
+        """The pixels of one cover piece (all False for label 0 or when the map has no cover)."""
+        if self.cover_px is None or label == 0:
+            return np.zeros((PX, PX), bool)
+        return self.cover_px == label
     # --- nodes (one per cell on a flat map; `attach_heights` adds the upper floors)
     n: int = GRID * GRID                  # node count: every array the engine keeps per place has this length
     node_cell: np.ndarray = None          # node -> flat cell
@@ -500,6 +522,14 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    cover_path = asset_dir / f"{name}.cover.png"
+    if cover_path.is_file():
+        cover_px = read_mask_png(cover_path)
+        cover_sha = hashlib.sha256(np.packbits(cover_px).tobytes()).hexdigest()[:12]
+        if row.get("cover_sha") != cover_sha:
+            raise GeometryError(f"{name}.cover.png is {cover_sha}, index.json says {row.get('cover_sha')}; "
+                                f"rebuild the geometry")
+        attach_cover(geo, cover_px, cover_sha)
     if load_features and row.get("features_sha"):
         raise GeometryError(f'{name}: legacy feature pointer requires archive conversion')
     if height_mode == 'flat':
@@ -514,6 +544,16 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         if asset.digest != wanted:
             raise GeometryError(f"{name}.height.npz is {asset.digest}, index.json says {wanted}; rebuild the heights")
         attach_heights(geo, asset)
+    return geo
+
+
+def attach_cover(geo: Geometry, mask: np.ndarray | None, sha: str | None) -> Geometry:
+    """Sets the see-over cover pieces on `geo` (4-connected labels, int16); a None mask leaves them None."""
+    if mask is None:
+        return geo
+    labels, _ = ndimage.label(np.asarray(mask, bool))      # default structure is 4-connected
+    geo.cover_px = labels.astype(np.int16)
+    geo.cover_sha = sha
     return geo
 
 

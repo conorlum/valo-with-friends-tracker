@@ -70,6 +70,14 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
         row["barrier_sha"] = hashlib.sha256(np.packbits(barrier).tobytes()).hexdigest()[:12]
     elif barrier_path.is_file():
         barrier_path.unlink()
+    # The boxes a player can stand on and see over (cover that blocks sight only because of its tag): only when any.
+    cover_path = asset_dir / f"{name}.cover.png"
+    over = cg.see_over_cover(rgba, entry)
+    if over.any():
+        cg.write_mask_png(cover_path, over)
+        row["cover_sha"] = hashlib.sha256(np.packbits(over).tobytes()).hexdigest()[:12]
+    elif cover_path.is_file():
+        cover_path.unlink()
     # The Stage 6 paints, only when a map has any (so earlier entries stay as they were).
     paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint", "bullet_paint")
               if entry.get(key)]
