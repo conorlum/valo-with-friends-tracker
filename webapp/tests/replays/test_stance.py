@@ -60,7 +60,6 @@ def stance(geo, points, t, extra=None):
 # ------------------------------------------------------------------ 1. the 360 degree view from the box
 
 
-@red
 @pytest.mark.parametrize("side", ["N", "S", "E", "W"])
 def test_a_viewer_on_the_box_sees_every_side_witness(side):
     from app.control import geometry as cg
@@ -83,7 +82,6 @@ def test_control_a_ground_viewer_does_not_see_the_witness_behind_the_box(side):
 # ------------------------------------------------------------------ 2. four yaws
 
 
-@red
 @pytest.mark.parametrize("side", ["N", "S", "E", "W"])
 def test_a_cone_from_the_box_reaches_the_faced_side_and_not_the_others(side):
     from app.control import geometry as cg
@@ -126,7 +124,6 @@ def test_three_boxes_are_three_pieces():
     assert set(THREE_BOXES) == {"A", "B", "C"}
 
 
-@red
 def test_a_line_from_box_a_to_box_b_clears_with_both_pieces_exempt():
     from app.control import geometry as cg
 
@@ -164,7 +161,6 @@ def test_the_wall_piece_toy_is_one_piece_that_leaves_the_wall_out():
     assert geo.sight[188, 252]
 
 
-@red
 def test_a_piece_over_open_floor_beside_the_wall_is_seen_over():
     from app.control import geometry as cg
 
@@ -350,3 +346,56 @@ def test_control_cast_and_los_never_call_stance_at():
     cg.los(geo, (100, 150, None), (300, 150, None), see_over=(0, 0))
     cg.los(geo, (100, 150, None), (300, 150, None))
     assert st_mod.CALLS == before
+
+
+# ------------------------------------------------------------------ see_over = 0 is today's, and only the named piece is exempt
+
+
+def _without_cover(geo):
+    import copy
+
+    bare = copy.copy(geo)
+    bare.cover_px = None
+    bare.__dict__.pop("_sight_without", None)
+    return bare
+
+
+def test_see_over_zero_is_todays_cast_and_los_on_box_hall():
+    from app.control import geometry as cg
+
+    geo = box_hall()
+    bare = _without_cover(geo)
+    for x, y in (CENTRE, (200.0, 196.0), (260.0, 150.0)):
+        assert cg.cast(geo, x, y, ANGLES, [], see_over=0).tobytes() == cg.cast(bare, x, y, ANGLES, []).tobytes()
+    a, b = (200, 196, None), (320, 196, None)
+    assert cg.los(geo, a, b, see_over=(0, 0)) == cg.los(bare, a, b)
+
+
+def test_see_over_is_inert_on_a_map_without_cover():
+    from app.control import geometry as cg
+    from control_toys import open_hall
+
+    geo = open_hall()
+    assert geo.cover_px is None
+    assert cg.cast(geo, 100.0, 150.0, ANGLES, [], see_over=3).tobytes() == cg.cast(geo, 100.0, 150.0, ANGLES, []).tobytes()
+    assert cg.los(geo, (100, 150, None), (300, 150, None), see_over=(3, 4)) == cg.los(geo, (100, 150, None), (300, 150, None))
+
+
+def test_another_pieces_label_does_not_see_through_this_box():
+    from app.control import geometry as cg
+
+    geo = three_boxes()
+    la, lb, lc = _labels(geo)
+    assert not cg.los(geo, (156, 186, None), (252, 186, None), see_over=(lc, lc))
+    assert not cg.los(geo, (156, 186, None), (252, 186, None), see_over=(lc, 0))
+
+
+def test_a_line_from_the_box_to_the_ground_behind_it_clears_with_the_eyes_piece_only():
+    from app.control import geometry as cg
+
+    geo = box_hall()
+    label = int(geo.cover_px[int(CENTRE[1]), int(CENTRE[0])])
+    assert label != 0
+    x, y = ring_xy(geo, "W")
+    assert cg.los(geo, (CENTRE[0], CENTRE[1], None), (x - 10, y, None), see_over=(label, 0))
+    assert not cg.los(geo, (CENTRE[0], CENTRE[1], None), (x - 10, y, None), see_over=(0, 0))

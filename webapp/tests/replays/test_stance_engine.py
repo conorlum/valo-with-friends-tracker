@@ -331,12 +331,12 @@ def test_a_player_in_the_piece_with_no_z_while_the_others_have_it_is_beside_and_
 # ------------------------------------------------------------------ 5. Summit's five kills
 
 SUMMIT_CASES = [
-    pytest.param("403 r6 Omen", (982, 399), (949, 417), id="403-r6", marks=red),
-    pytest.param("403 r9 Omen", (982, 407), (933, 401), id="403-r9", marks=red),
+    pytest.param("403 r6 Omen", (982, 399), (949, 417), id="403-r6"),
+    pytest.param("403 r9 Omen", (982, 407), (933, 401), id="403-r9"),
     # today's plain cast and line already reach this one (before-control): a control, not red
     pytest.param("403 r18 Omen victim", (463, 582), (438, 645), id="403-r18"),
-    pytest.param("409 r6 Phoenix", (629, 376), (645, 531), id="409-r6", marks=red),
-    pytest.param("409 r9 Veto", (498, 663), (493, 423), id="409-r9", marks=red),
+    pytest.param("409 r6 Phoenix", (629, 376), (645, 531), id="409-r6"),
+    pytest.param("409 r9 Veto", (498, 663), (493, 423), id="409-r9"),
 ]
 
 
