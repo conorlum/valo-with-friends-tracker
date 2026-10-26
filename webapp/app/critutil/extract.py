@@ -637,8 +637,28 @@ def _shapes_of(rnd, sides, c: _Cast):
     spots = [_px(r["u"], r["v"]) for r in c.rows if r.get("u") is not None and r.get("kind") != "Projectile"]
     mine = [(t0, t1, (x, y, r, solid)) for t0, t1, x, y, r, solid in rnd.smokes
             if c.t - _EPS <= t0 <= c.t_end and any(math.hypot(x - sx, y - sy) < 1.0 for sx, sy in spots)]
-    walls = [(t0, t1, w) for t0, t1, w in rnd.walls if abs(t0 - landed) <= 1.0]
+    # A wall is this cast's only when it starts with it AND runs through the cast's own laid points (Viper's and
+    # Blaze's `points`, Vyse's `line`, Sage's segment centres: the engine builds each wall through them). Time alone
+    # gave an Omen smoke the cover of an enemy Viper wall raised in the same second (branch review B1).
+    laid = [_px(*p[:2]) for r in c.rows for key in ("points", "line", "segments")
+            for p in (r.get(key) or ()) if isinstance(p, (list, tuple)) and len(p) >= 2]
+    walls = [(t0, t1, w) for t0, t1, w in rnd.walls
+             if abs(t0 - landed) <= 1.0 and laid and _on_wall(w, laid)]
     return (mine + walls) or None
+
+
+WALL_MATCH_PX = 3.0      # a laid point this close to a wall's line is on it (the engine simplifies lines to ~1 px)
+
+
+def _on_wall(wall, points) -> bool:
+    for x0, y0, x1, y1 in wall.segs:
+        dx, dy = x1 - x0, y1 - y0
+        n2 = dx * dx + dy * dy
+        for x, y in points:
+            k = 0.0 if n2 == 0 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / n2))
+            if math.hypot(x - x0 - k * dx, y - y0 - k * dy) <= WALL_MATCH_PX:
+                return True
+    return False
 
 
 def _grid(t0: float, t1: float, step: float):
