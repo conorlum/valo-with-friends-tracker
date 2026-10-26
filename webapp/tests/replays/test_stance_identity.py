@@ -22,7 +22,7 @@ sys.path.insert(0, str(WEBAPP / "scripts"))
 sys.path.insert(0, str(WEBAPP))
 
 import control_reference as ref  # noqa: E402
-from control_toys import height_blob, reference_rounds, standing, toy_heights  # noqa: E402
+from control_toys import blob, box_hall, height_blob, reference_rounds, standing, toy_heights  # noqa: E402
 
 FIXTURE = WEBAPP / "tests" / "fixtures" / "control" / "stance_identity.json"
 DROPPED = ("control", "data", "summary", "figures")
@@ -37,12 +37,23 @@ def heights_round():
     return geo, height_blob(players, t_end=10.0)
 
 
-def computed(flat: bool = True, heights: bool = True) -> dict:
+def box_round():
+    """The cover toy (a box mid-hall) with players on both sides of it; nobody's track enters the box."""
+    walk = lambda side, x0, y0, x1, y1, yaw: (side, [(0.0, x0, y0, yaw), (10.0, x1, y1, yaw)])  # noqa: E731
+    players = {0: walk("A", 120, 150, 300, 150, 0), 1: walk("A", 230, 260, 230, 120, 270),
+               5: ("B", [(0.0, 400, 150, 180)]), 6: walk("B", 400, 270, 300, 230, 200)}
+    return box_hall(), blob(players, t_end=10.0)
+
+
+def computed(flat: bool = True, heights: bool = True, box: bool = True) -> dict:
     from app.control import engine as ce
     from app.replays import control_format as cf
     from app.services import replay_control as rcn
 
     out = {}
+    if box:
+        bgeo, bblob = box_round()
+        out["box_hall_empty"] = ref.digest_round(ce.compute_round(bblob, bgeo, None), bblob)
     if heights:
         hgeo, hblob = heights_round()
         out["heights_ledge"] = ref.digest_round(ce.compute_round(hblob, hgeo, None), hblob)
@@ -63,7 +74,7 @@ def computed(flat: bool = True, heights: bool = True) -> dict:
 @pytest.mark.slow       # ~23 s in a fresh process (the open_hall geometry build)
 def test_the_flat_round_and_the_input_identity_match_the_base_code():
     recorded = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    now = computed(heights=False)
+    now = computed(heights=False, box=False)
     assert now["open"] == recorded["open"], "a flat round's control output moved"
     assert now["geometry_inputs"] == recorded["geometry_inputs"], "the control input identity moved"
 
@@ -71,7 +82,20 @@ def test_the_flat_round_and_the_input_identity_match_the_base_code():
 @pytest.mark.slow       # the toy height asset's visibility build alone is ~40 s
 def test_the_heights_round_matches_the_base_code():
     recorded = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert computed(flat=False)["heights_ledge"] == recorded["heights_ledge"], "a heights round's output moved"
+    assert computed(flat=False, box=False)["heights_ledge"] == recorded["heights_ledge"], \
+        "a heights round's output moved"
+
+
+@pytest.mark.slow       # the toy height asset's visibility build alone is ~40 s
+def test_a_cover_round_nobody_enters_matches_the_base_code_and_stance_is_never_called():
+    from app.control import stance
+
+    recorded = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    before = stance.CALLS
+    now = computed()
+    assert stance.CALLS == before, "the engine called stance_at while the rule is not in"
+    assert now["box_hall_empty"] == recorded["box_hall_empty"], "a cover round nobody enters moved"
+    assert now["open"] == recorded["open"] and now["heights_ledge"] == recorded["heights_ledge"]
 
 
 def test_the_fixture_holds_no_revision():
