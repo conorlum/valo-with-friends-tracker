@@ -296,7 +296,8 @@ _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
-                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"', '"ConvexHullPoints"')
+                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"',
+                           '"FragmentDelta"')   # every ground delta, a delete-only one too (branch review B19)
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -386,6 +387,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.origins.pop(guid, None)
                 raw.flights.pop(guid, None)
                 raw.typed_walls.pop(guid, None)
+                raw.footprints.pop(guid, None)      # a reused GUID's ground starts empty (branch review B20)
                 equip_now.pop(guid, None)
                 waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
                 for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:

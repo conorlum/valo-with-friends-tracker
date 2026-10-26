@@ -758,6 +758,30 @@ def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
         (9, 0, 15.0, 20.0, False), (9, 1, 15.0, 20.0, True)]
 
 
+def _ground(t_ms, guid, updates=(), deleted=()):
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": guid,
+            "export_group_path": "/Script/DynamicVolume.GroundVolumeComponent",
+            "payload": {"FinalCount": len(updates), "FragmentDelta": {"DeletedIds": list(deleted), "Updates": [
+                {"ReplicationID": rid, "ConvexHullPoints": [{"Point": {"x": x + dx, "y": y, "z": 188}}
+                                                            for x, y in ((0, 0), (200, 0), (200, 200), (0, 200))]}
+                for rid, dx in updates]}}}
+
+
+def test_a_pits_ground_drops_deleted_fragments_and_never_outlives_its_spawn(tmp_path):
+    # Branch review B19: a delta that only deletes (no hull points in the line) still removes its fragment.
+    # B20: a GUID reused by a later Pit starts with no ground of the earlier one's.
+    pit, agents = 300, {**AGENTS7, "Pandemic": "Viper"}
+    rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
+            _ground(21_000, pit, updates=[(1, 0), (2, 200)]), _ground(22_000, pit, deleted=[1]),
+            closed(30_000, pit)]
+    [row] = [a for a in build_extras_rows(tmp_path, rows, agents).rounds[1]["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 1 and row["area"][0][0] == list(GAME_MAP.to_uv(200, 0))
+    rows += [spawned(40_000, pit, "Default__Patch_Pandemic_X_Circular_C", 900, 900), instigated(40_000, pit, 109),
+             _ground(41_000, pit, updates=[(7, 900)]), closed(50_000, pit)]
+    [row] = [a for a in build_extras_rows(tmp_path, rows, agents).rounds[1]["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 1 and row["area"][0][0] == list(GAME_MAP.to_uv(900, 0))
+
+
 def build_extras_rows(tmp_path, rows, agents):
     path = tmp_path / "events.ndjson"
     path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
