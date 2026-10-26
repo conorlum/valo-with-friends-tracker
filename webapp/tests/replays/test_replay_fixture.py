@@ -122,9 +122,9 @@ def test_the_shape_scan_catches_a_nested_unknown_key_and_an_opaque_string(tmp_pa
 
 
 def test_every_committed_fixture_passes_the_shape_check():
-    if not FIXTURES.exists():
-        pytest.skip("no replay fixtures committed")
-    for manifest in FIXTURES.rglob("manifest.json"):
+    manifests = list(FIXTURES.rglob("manifest.json"))
+    assert {p.parent.name for p in manifests} >= {'swiftplay', 'competitive'}, 'required sanitized fixtures are missing'
+    for manifest in manifests:
         assert mrf.shape_hits(manifest.parent) == [], manifest.parent.name
 
 
@@ -159,8 +159,8 @@ def test_the_scanner_passes_synthetic_rows():
 
 
 def test_every_committed_fixture_is_identity_free():
-    if not FIXTURES.exists():
-        pytest.skip("no replay fixtures committed yet (the Swiftplay export is pending)")
+    assert (FIXTURES/'swiftplay'/'manifest.json').is_file()
+    assert (FIXTURES/'competitive'/'manifest.json').is_file()
     assert mrf.scan_dir(FIXTURES) == []
 
 

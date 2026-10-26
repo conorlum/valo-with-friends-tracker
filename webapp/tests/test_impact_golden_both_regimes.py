@@ -5,10 +5,8 @@ The match below has pre-plant kills, post-plant kills inside the old denial
 window, and a post-resolution kill, so it exercises every branch of
 _time_factor at once. Two goldens are pinned:
 
-  * flags OFF -- today's shipped scoring. This is the one that matters most:
-    it locks current behaviour so a refactor cannot silently move a live
-    score, which is the whole premise of the "no rescore" constraint the
-    Part 3 and Part 4 work has been carrying.
+  * flags OFF -- historical legacy scoring. This locks the legacy comparator,
+    not the runtime-selected manifest (which has its own persistence tests).
   * flags ON  -- Part 3's empirical pre-plant curve plus Part 4's post-plant
     leverage, the latter against a deterministic stub table so the golden
     does not depend on the DB-fitted V table.
@@ -123,13 +121,12 @@ def _rows_as_golden(rows, players):
 
 
 def _check_against_golden(name, produced):
-    GOLDEN_DIR.mkdir(exist_ok=True)
     path = GOLDEN_DIR / name
-    if REGENERATE or not path.exists():
+    if REGENERATE:
+        GOLDEN_DIR.mkdir(exist_ok=True)
         path.write_text(json.dumps(produced, indent=2, sort_keys=True), encoding="utf-8")
-        if REGENERATE:
-            pytest.fail(f"regenerated {name}; set REGENERATE back to False")
-        return
+        pytest.fail(f"regenerated {name}; set REGENERATE back to False")
+    assert path.is_file(), f"Missing reviewed golden: {name}; ordinary tests never generate baselines"
     expected = json.loads(path.read_text(encoding="utf-8"))
     assert produced == expected, (
         f"{name} moved. If this change is intended, review the diff as a SCORING "
@@ -137,11 +134,12 @@ def _check_against_golden(name, produced):
     )
 
 
-def test_golden_shipped_scoring_both_regimes():
+def test_golden_historical_legacy_scoring_both_regimes():
     db = _session()
     match, players = _build_match(db)
 
-    rows = build_impact_rows_for_match(db, match.id)
+    rows = build_impact_rows_for_match(db, match.id, enable_econ_component=False,
+                                     enable_preplant_empirical=False, enable_postplant_leverage=False)
 
     _check_against_golden("impact_both_regimes_flags_off.json", _rows_as_golden(rows, players))
 
@@ -178,7 +176,7 @@ def test_post_resolution_kill_is_still_scored_at_the_flat_discount():
     db = _session()
     match, players = _build_match(db)
 
-    off = {r.match_player_id: r for r in build_impact_rows_for_match(db, match.id)}
+    off = {r.match_player_id: r for r in build_impact_rows_for_match(db, match.id, enable_postplant_leverage=False)}
     on = {
         r.match_player_id: r
         for r in build_impact_rows_for_match(

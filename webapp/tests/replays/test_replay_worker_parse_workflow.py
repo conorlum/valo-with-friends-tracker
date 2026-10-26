@@ -248,22 +248,35 @@ def test_fifteen_uploads_parse_at_once(rig):
 
 
 @pytest.mark.slow
-def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig):
+def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig, monkeypatch):
     at_start = []
+    dispatched, finalized = threading.Event(), threading.Event()
+    write = server.archive_store.write_json
+
+    def saved(path, record):
+        write(path, record)
+        if path.name == 'job.json':
+            if record.get('run_id'): dispatched.set()
+            if record.get('status') == 'done': finalized.set()
+
+    monkeypatch.setattr(server.archive_store, 'write_json', saved)
     rig.render.on_start = lambda run_id, args: at_start.append(record_of(rig, args["job_id"]))
     worker = rig.start()
     rig.gate.clear()
     job = worker.submit(VRF + b"a")
-    wait_for(lambda: record_of(rig, job.id).get("run_id") == "trn-1")      # the durable record itself
+    # Observe completed atomic writes before opening the record. Repeatedly
+    # opening it while the writer renames it can deny replacement on Windows.
+    assert dispatched.wait(10), 'run ID was not persisted'
     # Saved before the start request: a crash before Render answers still finds the token and deadline.
     [before] = at_start
     assert before["run_token"] and before["run_deadline"] > time.time() and "run_id" not in before
     record = record_of(rig, job.id)
+    assert record['run_id'] == 'trn-1'
     assert record["status"] == "parsing" and record["run_token"] == before["run_token"]
     assert rig.render.started[0]["input"][0]["token"] == record["run_token"]
     rig.gate.set()
     wait_jobs(worker, [job.id])
-    wait_for(lambda: record_of(rig, job.id)["status"] == "done")      # the final save follows the in-memory one
+    assert finalized.wait(10), 'settled state was not persisted'
     final = record_of(rig, job.id)
     assert "run_id" not in final and "run_token" not in final
 

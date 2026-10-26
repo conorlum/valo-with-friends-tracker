@@ -54,3 +54,18 @@ def test_a_test_database_may_be_emptied(monkeypatch):
 def test_a_test_database_may_be_written_to(monkeypatch):
     _url(monkeypatch, "valo_rc3_test")
     assert _postgres.postgres_url_or_skip(writes=True).startswith("postgresql+psycopg2://")
+
+
+@pytest.mark.parametrize('url', ['sqlite:///scratch_test', 'not-a-url',
+    'postgresql://someone@example.invalid/production?application_name=/scratch_test',
+    'postgresql://someone@example.invalid/scratch_test?dbname=production',
+    'postgresql://someone@example.invalid/scratch_test?database=production',
+    'postgresql://someone@example.invalid/scratch_test?service=production'])
+def test_query_paths_or_database_overrides_cannot_bypass_the_guard(monkeypatch, url):
+    monkeypatch.setenv(_postgres.TEST_URL_ENV, url)
+    with pytest.raises(pytest.fail.Exception): _postgres.postgres_url_or_skip(writes=True)
+
+
+def test_safe_query_options_do_not_change_the_checked_database(monkeypatch):
+    monkeypatch.setenv(_postgres.TEST_URL_ENV, 'postgresql://u:p@example.invalid/scratch_test?sslmode=require')
+    assert _postgres.database_name(_postgres.postgres_url_or_skip(writes=True)) == 'scratch_test'

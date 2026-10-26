@@ -37,12 +37,15 @@ async def lifespan(_app: FastAPI):
     # The per-match state table the match lists read (app/services/replay_match_states.py): on whenever not in demo mode.
     from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states
 
-    stops = [replay_control_remote.start(SessionLocal), replay_archive_sync.start(SessionLocal),
-             map_pool_refresh.start(SessionLocal), replay_match_states.start(SessionLocal)]
-    yield
-    for stop in stops:
-        if stop is not None:
-            stop.set()
+    stops = []
+    try:
+        for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states):
+            stops.append(service.start(SessionLocal))
+        yield
+    finally:
+        for stop in stops:
+            if stop is not None:
+                stop.set()
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)

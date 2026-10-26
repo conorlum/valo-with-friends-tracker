@@ -332,6 +332,7 @@ def _pg_round(pg, condensed):
 
 
 def test_pg_a_gap_write_and_a_replace_of_the_replay_take_turns(pg, condensed, monkeypatch):
+    feature_free_source(monkeypatch)
     replay_id, _, fingerprint, run = _pg_round(pg, condensed)
     holding, release, out = threading.Event(), threading.Event(), {}
 

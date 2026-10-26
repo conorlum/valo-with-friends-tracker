@@ -145,24 +145,27 @@ A `.venv` with `requirements.txt` installed already exists in `webapp/` (include
 
 ### Running the tests
 
-From `webapp/`, `.\.venv313\Scripts\python.exe -m pytest` (`webapp/pytest.ini`). By default it leaves out the tests
-marked `slow` (5 s or more each) and runs the rest on `pytest-xdist` workers: a third of the machine's cores, pinned
-off its last four cores (`tests/conftest.py`). Child processes inherit the pin. Times on the 12-thread dev machine:
+Run from `webapp/` with `./.venv313/Scripts/python.exe -m pytest`. The default excludes `slow`,
+`browser`, and optional `corpus` measurements; xdist uses a third of the cores and reserves the last four.
+See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-audit implementation map.
 
-| Run | Command (after `-m pytest`) | Time |
-|---|---|---|
-| Everyday: all but `slow` | (nothing) | ~11 min |
-| Everything outside the replays | `tests --ignore=tests/replays` | ~40 s |
-| Replays without the map-control engine | `tests/replays -m "not geometry"` | ~2 min |
-| The map-control engine (control, heights, features, gaps) | `tests/replays -m geometry` | most of the 11 min |
-| Only the slow tests | `-m slow` | ~15 min |
-| Everything | `-m ""` | ~26 min |
+| Lane | Arguments after `-m pytest` |
+|---|---|
+| Offline, including Node helpers | `-n 2 -m "not slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
+| PostgreSQL integration | `-n 0 -m "postgres and not corpus and not slow" --require-postgres` |
+| Browser journeys | `tests/browser -n 0 -m browser --require-browser --require-fixtures` |
+| Slow geometry/reference | `-n 2 -m "slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
 
-`-n 0` runs in one process, and `-n 2` sets the worker count. `geometry` is set by `tests/replays/conftest.py` on
-every replay test module that imports the engine or its toy maps. Run `-m slow`, or everything, before merging a
-change to `app/control`, `app/gaps` or the height build. Mark a new test `@pytest.mark.slow` if it takes 5 s or
-more on its own. A test must not depend on the machine's free memory or load, because parallel workers change both
-(`test_gaps_task.py` fakes `compute_control.free_memory` for this reason).
+PostgreSQL is opt-in through `VALO_TEST_DATABASE_URL` only. Use a disposable local `*_test` database and a role
+allowed to create scratch databases. The required lane gives each legacy case its own Alembic-migrated database,
+installs the release gate only for gate/release tests, and drops only the scratch databases it created.
+It runs serially: a shared PostgreSQL URL with xdist workers is refused. Never use the friends/demo DB or a
+measurement restore for writing tests. Optional corpus measurements remain separate and require approved inputs.
+
+`--require-node`, `--require-fixtures`, `--require-postgres`, and `--require-browser` turn missing prerequisites
+into failures in their designated lanes. Only private-owner replay inputs and corpus probes may remain optional.
+Run the slow lane before merging changes to control, gaps, heights, or features. Mark expensive new cases `slow`;
+do not make correctness depend on available memory, machine load, or long sleeps.
 
 ## Changing how Impact is scored
 
