@@ -420,6 +420,15 @@ def test_no_40_second_cap():
     assert out["t_decided"] > 50.0 and c["t_end"] == out["t_decided"] and c["end_unknown"] is True
 
 
+def test_an_astra_star_is_its_own_entry_not_an_ult_or_an_ult_use():
+    ps = {"version": 1, "ult": {"1": [{"t": -30.0, "n": 7}]}}
+    out = run([toy_ability("Rift", "X_Markers", 250, 150, 1, t=5.0, t1=None, kind="GameObject")], player_state=ps)
+    (c,) = cast_by(out, 1)
+    assert c["ability_id"] == "Astra/Astral Form star"
+    assert "ult" not in c["kinds"] and c["type"] == "other"
+    assert out["ults"]["1"]["used"] is False
+
+
 def test_an_ult_the_table_does_not_know_is_still_type_ult():
     _, c = _one("Zzz", "X_Mystery", t=5.0, t1=9.0)
     assert "ult" in c["kinds"] and c["type"] == "ult" and c["ability_id"] is None

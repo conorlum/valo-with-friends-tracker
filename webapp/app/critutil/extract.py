@@ -149,6 +149,15 @@ class _Cast:
                 self.landed.setdefault(name, float(row["t"]))
 
 
+def _ult_row(row) -> bool:
+    """An ult's row: an X-slot name, unless its table entry says it is something else (Astra's stars are placed
+    in Astral Form, not her ult)."""
+    if _key_of(row.get("name") or row.get("ability")) != "X":
+        return False
+    e = _entry_of(row)
+    return e is None or e.get("type") == "ult"
+
+
 def _throw_t(row) -> float:
     thrown = row.get("thrown") or {}
     return float(thrown["t0"]) if thrown.get("t0") is not None else float(row["t"])
@@ -292,7 +301,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         casts.append(c)
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
-        if any(_key_of(n) == "X" for n in c.names):
+        if any(_ult_row(r) for r in c.rows):
             c.kinds.add("ult")
         if any(f"{x.get('code')}_{x.get('name')}" in MOBILITY_KEYS for x in c.rows):
             c.kinds.add("dash")
@@ -922,8 +931,7 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     out = {}
     for slot in sides:
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
-        used = any(r.get("by") == slot and _key_of(r.get("name")) == "X" and r["t"] <= end for r in util
-                   if r.get("k") == "ability")
+        used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util if r.get("k") == "ability")
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
                           "used": used, "use": _use(rnd, ps, util, slot, (agents or {}).get(slot), end)}
     return out
