@@ -561,6 +561,19 @@ def test_a_pit_with_an_area_counts_its_real_ground_not_a_circle():
     assert c["presence"]["area"] is True and c["presence"]["entered"] == [5]
 
 
+def test_recorded_movement_casts_are_tailwind_and_lightspeed():
+    # Branch review B4: the condenser records Jett's dash and Waylay's double dash as `cast` rows (revision 14);
+    # each is a cast of its table ability, with a comparison window.
+    from app.services import util_values
+    util = [{"k": "cast", "t": 9.0, "by": 1, "code": "Wushu", "name": "E_Dash"},
+            {"k": "cast", "t": 14.0, "by": 0, "code": "Terra", "name": "Q_DoubleDash"}]
+    out = run(util)
+    got = {c["ability_id"]: c for c in out["casts"]}
+    assert set(got) == {"Jett/Tailwind", "Waylay/Lightspeed"}
+    assert got["Jett/Tailwind"]["type"] == "dash" and got["Jett/Tailwind"]["by"] == 1 and got["Jett/Tailwind"]["t"] == 9.0
+    assert util_values.item_segments(out, got["Jett/Tailwind"])
+
+
 def test_a_pit_up_to_the_rounds_end_says_so_and_its_window_runs_to_decided():
     # Branch review B3, through the site's own segments (util_values.item_segments): a Pit 2-60 s in a 60 s round.
     from app.services import util_values

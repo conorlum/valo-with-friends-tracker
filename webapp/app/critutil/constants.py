@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 6                 # 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 7                 # 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
