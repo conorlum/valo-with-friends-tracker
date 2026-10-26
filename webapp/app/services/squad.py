@@ -1,9 +1,9 @@
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy.orm import Session, contains_eager, selectinload
+from sqlalchemy.orm import Session, contains_eager
 
-from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.services.circle import circle_friend_ids
 from app.services.match_streaks import Form, FormEntry, compute_form, form_entry
@@ -189,31 +189,25 @@ def build_squad_overview(
 
 
 def _clutch_resolvers_by_round(
-    db: Session, match_id: int, own_mp_ids: set[int], own_team: str
+    rounds: list, kills_by_round: dict[int, list], match_mp_ids: list[int], own_mp_ids: set[int], own_team: str
 ) -> dict[int, set[int]]:
     """round_number -> set of own_mp_ids that were part of a resolved clutch
     (round won while at 1-or-2-alive against an equal-or-larger enemy side)
-    in that round, for the single match `match_id`. Mirrors
-    app.services.session_stats._build_replay_stats' clutch detection, scoped
-    to one match and the viewer's own side (viewer + relevant friends).
+    in that round, for one match. `rounds` are that match's rounds in round
+    order, `kills_by_round` its kill events by round id and `match_mp_ids`
+    every player in it. Mirrors app.services.session_stats._build_replay_stats'
+    clutch detection, scoped to one match and the viewer's own side (viewer +
+    relevant friends).
     """
-    all_match_players = db.query(MatchPlayer).filter_by(match_id=match_id).all()
-    opp_mp_ids = {mp.id for mp in all_match_players if mp.id not in own_mp_ids}
+    opp_mp_ids = {mp_id for mp_id in match_mp_ids if mp_id not in own_mp_ids}
 
     resolvers: dict[int, set[int]] = {}
-    rounds = (
-        db.query(Round)
-        .filter_by(match_id=match_id)
-        .options(selectinload(Round.kill_events))
-        .order_by(Round.round_number)
-        .all()
-    )
     for round_row in rounds:
         alive_own = set(own_mp_ids)
         alive_opp = set(opp_mp_ids)
         clutch_state: tuple[int, int, frozenset[int]] | None = None
 
-        events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
+        events = sorted(kills_by_round.get(round_row.id, ()), key=lambda e: (e.event_time_seconds, e.id))
         for event in events:
             death_id = event.death_match_player_id
             alive_own.discard(death_id)
@@ -301,42 +295,67 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
     pair_shared_rounds: dict[int, list[SharedRound]] = {}
     friend_agent_counts: dict[int, Counter] = {}
 
+    # One query per table across every relevant match, grouped by match below:
+    # a query per match per table was ~6 round trips a match (3,766 for one
+    # player's career).
+    own_mp_ids_by_match: dict[int, set[int]] = {
+        match_id: {viewer_mp_by_match[match_id].id} | {mp.id for mp in friend_mps_by_match[match_id]}
+        for match_id in relevant_match_ids
+    }
+    all_own_mp_ids = set().union(*own_mp_ids_by_match.values())
+
+    mp_ids_by_match: dict[int, list[int]] = {}
+    for mp_id, match_id in db.query(MatchPlayer.id, MatchPlayer.match_id).filter(
+        MatchPlayer.match_id.in_(relevant_match_ids)
+    ):
+        mp_ids_by_match.setdefault(match_id, []).append(mp_id)
+
+    rounds_by_match: dict[int, list] = {}
+    for round_row in (
+        db.query(Round.id, Round.match_id, Round.round_number, Round.outcome, Round.planted)
+        .filter(Round.match_id.in_(relevant_match_ids))
+        .order_by(Round.match_id, Round.round_number)
+    ):
+        rounds_by_match.setdefault(round_row.match_id, []).append(round_row)
+
+    kills_by_round: dict[int, list] = {}
+    for event in (
+        db.query(KillEvent.id, KillEvent.round_id, KillEvent.death_match_player_id, KillEvent.event_time_seconds)
+        .join(Round, Round.id == KillEvent.round_id)
+        .filter(Round.match_id.in_(relevant_match_ids))
+    ):
+        kills_by_round.setdefault(event.round_id, []).append(event)
+
+    impact_by_match: dict[int, dict[tuple[int, int], ImpactScore]] = {}
+    for score, match_id, round_number in (
+        db.query(ImpactScore, Round.match_id, Round.round_number)
+        .join(Round, Round.id == ImpactScore.round_id)
+        .filter(ImpactScore.match_player_id.in_(all_own_mp_ids))
+    ):
+        impact_by_match.setdefault(match_id, {})[(score.match_player_id, round_number)] = score
+
+    kda_by_match: dict[int, dict[tuple[int, int], RoundPlayerStat]] = {}
+    for stat, match_id, round_number in (
+        db.query(RoundPlayerStat, Round.match_id, Round.round_number)
+        .join(Round, Round.id == RoundPlayerStat.round_id)
+        .filter(RoundPlayerStat.match_player_id.in_(all_own_mp_ids))
+    ):
+        kda_by_match.setdefault(match_id, {})[(stat.match_player_id, round_number)] = stat
+
     for match_id in relevant_match_ids:
         viewer_mp = viewer_mp_by_match[match_id]
         viewer_team = viewer_mp.team.value if hasattr(viewer_mp.team, "value") else viewer_mp.team
         friend_mps = friend_mps_by_match[match_id]
-        friend_mp_ids = {mp.id for mp in friend_mps}
-        own_mp_ids = {viewer_mp.id} | friend_mp_ids
+        own_mp_ids = own_mp_ids_by_match[match_id]
+        rounds = rounds_by_match.get(match_id, [])
 
-        clutch_resolvers = _clutch_resolvers_by_round(db, match_id, own_mp_ids, viewer_team)
-
-        rounds_by_number = {r.round_number: r for r in db.query(Round).filter_by(match_id=match_id).all()}
-
-        impact_rows = (
-            db.query(ImpactScore, Round.round_number)
-            .join(Round, Round.id == ImpactScore.round_id)
-            .filter(
-                Round.match_id == match_id,
-                ImpactScore.match_player_id.in_(own_mp_ids),
-            )
-            .all()
+        clutch_resolvers = _clutch_resolvers_by_round(
+            rounds, kills_by_round, mp_ids_by_match.get(match_id, []), own_mp_ids, viewer_team
         )
-        impact_by_mp_and_round: dict[tuple[int, int], ImpactScore] = {
-            (score.match_player_id, round_number): score for score, round_number in impact_rows
-        }
 
-        kda_rows = (
-            db.query(RoundPlayerStat, Round.round_number)
-            .join(Round, Round.id == RoundPlayerStat.round_id)
-            .filter(
-                Round.match_id == match_id,
-                RoundPlayerStat.match_player_id.in_(own_mp_ids),
-            )
-            .all()
-        )
-        kda_by_mp_and_round: dict[tuple[int, int], RoundPlayerStat] = {
-            (stat.match_player_id, round_number): stat for stat, round_number in kda_rows
-        }
+        rounds_by_number = {r.round_number: r for r in rounds}
+        impact_by_mp_and_round = impact_by_match.get(match_id, {})
+        kda_by_mp_and_round = kda_by_match.get(match_id, {})
 
         agent_by_mp = {viewer_mp.id: viewer_mp.agent, **{mp.id: mp.agent for mp in friend_mps}}
         team_by_mp = {mp_id: viewer_team for mp_id in own_mp_ids}
