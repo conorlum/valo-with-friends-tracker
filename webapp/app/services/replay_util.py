@@ -801,7 +801,7 @@ def match_payload(db, replay) -> dict:
     model = util_model.load(db)
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
         model = util_model.ensure(db)       # this match was in the stored estimator's training: refit it first
-    corpus = (_values_row(db) or (None, {}))[1]
+    key, corpus = _values_row(db) or (None, {})
     weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     rounds_out, stale, failed = {}, 0, []
     current = {}
@@ -816,8 +816,11 @@ def match_payload(db, replay) -> dict:
             continue
         current[n] = row.data
     covered = corpus.get("fingerprints", {}).get(str(replay.id), {})
-    if any(stored[n].fingerprint != covered.get(str(n)) for n in current):
-        ensure_values(db)       # the stored build does not cover this replay's rounds: once per request
+    # rebuilt, once per request, when the stored build does not cover this replay's rounds or anything else it is
+    # made from changed (another replay's rows, the estimator, the table, the friendships: `corpus_key`)
+    if any(stored[n].fingerprint != covered.get(str(n)) for n in current) \
+            or key != corpus_key(db, current_rows(db, with_data=False), model):
+        ensure_values(db)
         corpus = (_values_row(db) or (None, {}))[1]
         weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r

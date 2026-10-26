@@ -283,6 +283,18 @@ def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypat
     call(db)
 
 
+def test_a_build_whose_inputs_changed_elsewhere_is_rebuilt_though_this_replays_fingerprints_match(
+        db, linked, monkeypatch):
+    from app.critutil import abilities
+
+    _stored_build(db, linked, {"lift": 0.0})
+    calls = []
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
+    monkeypatch.setattr(abilities, "table_hash", lambda entries=None: "another table")
+    call(db)
+    assert calls == [1]
+
+
 def test_the_payload_never_mutates_the_build_or_shares_with_it(db, linked):
     import copy
 
