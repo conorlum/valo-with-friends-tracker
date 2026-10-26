@@ -1272,13 +1272,15 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     """Stored facts the site's windows are cut from later (nothing is windowed here): when it landed, when its pieces
     were last seen, a flash's pop, the enemy hits and effect ends, a wall's `on` and a device's `off` spans, when a
     placeable armed, the ult line's drop, and for an ult the facts its table rule asks for."""
-    ends = []
+    ends, to_end = [], False
     for r in c.rows:
         if (r.get("k") == "ability" and r.get("kind") == "Projectile") or r.get("k") in ("flash", "nearsight"):
             continue
         e = [x for x in (r.get("t1"), r.get("gone")) if x is not None]
         if e and min(e) < rnd.t_end - _EPS:
             ends.append(min(e))
+        elif e:
+            to_end = True     # up when the round ended: no seen_end, but not missing either (branch review B3)
     pop = ((c.flash or {}).get("pop") or {}).get("t")
     on = sorted(([a, b] for r in c.rows for a, b in (r.get("on") or ())), key=lambda x: x[0])
     off = sorted(([a, b] for r in c.rows for a, b in (r.get("off") or ())), key=lambda x: x[0])
@@ -1290,6 +1292,7 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     s = {
         "landed": _r2(c.landed_t),
         "seen_end": _r2(max(ends)) if ends else None,
+        "to_end": to_end and not ends,
         "pop": _r2(pop),
         "hits": [[_r2(e["t0"]), _r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] in ("blind", "nearsight")],
         "effect_ends": [[_r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] not in ("damage", "reveal")],

@@ -561,6 +561,16 @@ def test_a_pit_with_an_area_counts_its_real_ground_not_a_circle():
     assert c["presence"]["area"] is True and c["presence"]["entered"] == [5]
 
 
+def test_a_pit_up_to_the_rounds_end_says_so_and_its_window_runs_to_decided():
+    # Branch review B3, through the site's own segments (util_values.item_segments): a Pit 2-60 s in a 60 s round.
+    from app.services import util_values
+    pit = toy_ability("Pandemic", "X_Circular", 300, 200, 1, t=2.0, t1=60.0, kind="GameObject")
+    out = run([pit], t_end=60.0)
+    (c,) = [c for c in cast_by(out, 1) if c["ability_id"] == "Viper/Viper's Pit"]
+    assert c["signals"]["seen_end"] is None and c["signals"]["to_end"] is True
+    assert util_values.item_segments(out, c) == [[2.0, out["t_decided"]]]
+
+
 def test_a_trip_earns_no_presence_after_its_owner_died():
     # Branch review B2: a sentinel's placed util is off at its owner's death (windows.py `off_at_death`), so an enemy
     # who reaches the trip's edge after that waits on nothing. Cypher (slot 1) dies at 4 s; the enemy stops at 10 s.
@@ -963,9 +973,9 @@ def sig(out, by=1):
 
 def test_signals_base_keys_are_always_present_and_empty_when_absent():
     s = sig(run([toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0, kind="GameObject")]))
-    assert set(s) == {"landed", "seen_end", "pop", "hits", "effect_ends", "on", "off", "armed", "ult_drop"}
+    assert set(s) == {"landed", "seen_end", "to_end", "pop", "hits", "effect_ends", "on", "off", "armed", "ult_drop"}
     assert s["pop"] is None and s["hits"] == [] and s["effect_ends"] == [] and s["on"] == [] and s["off"] == []
-    assert s["armed"] is None and s["ult_drop"] is None and s["landed"] == 8.0
+    assert s["armed"] is None and s["ult_drop"] is None and s["landed"] == 8.0 and s["to_end"] is False
 
 
 def test_signals_seen_end_is_the_max_of_the_pieces_ends_and_ignores_projectiles():
