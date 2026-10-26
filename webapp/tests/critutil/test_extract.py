@@ -139,6 +139,19 @@ def test_smoke_between_teams_cuts_sight_lines_and_covered_teammates_lived():
     assert c["cover"]["covered_lived"] == c["cover"]["covered"]
 
 
+def test_a_cast_never_takes_cover_from_a_wall_that_isnt_its_own():
+    # Branch review B1: an Omen smoke off to the side, cutting nothing, and an enemy Viper wall raised in the same
+    # second between the teams. Only the wall's own cast gets its sight lines.
+    smoke = toy_ability("Wraith", "4_Smoke", 260, 40, 1, t=5.0, t1=15.0, kind="Zone")
+    wall = toy_ability("Pandemic", "E_SmokeScreenManager", 260, 200, 5, t=5.0, t1=15.0, kind="GameObject",
+                       points=[list(uv(260, 120)), list(uv(260, 280))], on=[[5.0, 15.0]])
+    out = run([smoke, wall])
+    (c,) = cast_by(out, 1, "smoke")
+    assert not (c.get("cover") or {}).get("blocked_s"), "the enemy's wall is not this smoke's cover"
+    (w,) = [w for w in cast_by(out, 5) if w.get("cover")]
+    assert w["cover"]["blocked_s"] > 0, "the wall keeps its own cover"
+
+
 def test_two_coincident_smokes_share_the_sight_lines_and_the_save_once():
     one = toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=5.0, t1=15.0, kind="Zone")
     (alone,) = cast_by(run([one]), 1, "smoke")
