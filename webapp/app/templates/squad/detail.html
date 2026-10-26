@@ -8,7 +8,7 @@
 
 <div class="scope-toggle">
   <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
-  <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
+  <button type="button" id="career-tab-btn" class="scope-toggle-btn" data-scope="career">Career</button>
 </div>
 
 <div class="page-wide">
@@ -18,7 +18,7 @@
 
 <div id="career-sections" style="display:none;"
      hx-get="/squad/career"
-     hx-trigger="load"
+     hx-trigger="click once from:#career-tab-btn"
      hx-swap="innerHTML">
   <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
 </div>

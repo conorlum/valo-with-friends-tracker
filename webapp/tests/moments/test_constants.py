@@ -29,6 +29,11 @@ def test_trade_window_matches_scoring():
     assert constants.TRADE_WINDOW_S == float(impact.TRADE_WINDOW_SECONDS)
 
 
+def test_team_fights_chain_on_the_trade_window():
+    from app.control import fight_swing
+    assert fight_swing.CHAIN_S == constants.TRADE_WINDOW_S
+
+
 def test_detectors_take_the_leaf_values():
     assert detectors.TRADE_WINDOW_S == constants.TRADE_WINDOW_S
     assert detectors.TRADE_RANGE_M == constants.TRADE_RANGE_M

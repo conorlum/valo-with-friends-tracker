@@ -15,6 +15,7 @@
     { key: "died_not_traded", tag: "died_not_traded", label: "Died not traded" },
     { key: "died_traded", tag: "died_traded", label: "Traded" },
     { key: "traded_teammate", tag: "traded_teammate", label: "Traded a teammate" },
+    { key: "expensive_fight", tag: "expensive_fight", label: "Expensive fight" },
     { key: "util_on_them", tag: "util_on_them", label: "Utility on them" },
     { key: "util_near_them", tag: "util_near_them", label: "Utility near them" },
     { key: "smoke_near", tag: "smoke_near", label: "Smoke near them" },
@@ -130,9 +131,20 @@
     return out;
   }
 
+  // "fight swing −1,551 m² (4 for 1)": the team fight's swing for the player's side, sign in the text. The sign is
+  // the unrounded value's, and a swing under half a m² keeps a decimal, so a small loss never reads as 0.
+  function swingText(tf) {
+    if (!tf || typeof tf.swing_m2 !== "number") return "";
+    var v = tf.swing_m2, size = Math.abs(v);
+    var shown = size === 0 ? "0" : size < 0.5 ? size.toFixed(1) : Math.round(size).toLocaleString("en-US");
+    var signed = (v > 0 ? "+" : v < 0 ? "−" : "") + shown;
+    return "fight swing " + signed + " m² (" + tf.ours + " for " + tf.theirs + ")";
+  }
+
   function groupNumbers(row, key) {
     var mates = row.mates || {};
     switch (key) {
+      case "expensive_fight": return swingText(row.team_fight);
       case "moving":
         var m = row.moving || {};
         return m.measured ? m.above + " of " + m.measured + " shots moving" : "";
@@ -244,6 +256,13 @@
       deaths.appendChild(jumpButton(text, d.round, d.t, jumpFor({ round: d.round, t: d.t }), viewer));
     });
     panel.appendChild(deaths);
+    panel.appendChild(el("h3", "replay-moments-heading", "Most expensive fights"));
+    var costly = el("ol", "replay-feed");
+    (summary.expensive_fights || []).forEach(function (f) {
+      costly.appendChild(jumpButton("R" + f.round + " " + clock(f.t0) + " · " + swingText(f), f.round, f.t0,
+        jumpFor({ round: f.round, t0: f.t0 }), viewer));
+    });
+    panel.appendChild(costly);
     groupsFor(payload, slot).forEach(function (g) {
       panel.appendChild(el("h3", "replay-moments-heading", g.label + " (" + g.rows.length + ")"));
       var list = el("ol", "replay-feed");
@@ -257,7 +276,7 @@
 
   var api = {
     GROUPS: GROUPS, defaultSlot: defaultSlot, fightsFor: fightsFor, groupsFor: groupsFor, rowText: rowText,
-    summaryLine: summaryLine, notes: notes, jumpFor: jumpFor, clock: clock, render: render
+    summaryLine: summaryLine, notes: notes, jumpFor: jumpFor, clock: clock, swingText: swingText, render: render
   };
   global.ReplayMoments = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

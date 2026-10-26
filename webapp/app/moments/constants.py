@@ -35,6 +35,8 @@ CROSSHAIR_NEAR_DEG = 20     # crosshair within this angle is near
 MEDIAN_MIN_CLEAN = 5        # fewest clean kills before a median is shown
 INFO_MERGE_S = 2.0          # info events closer than this merge
 DEATH_MATCH_S = 0.1         # a fight's death matches control's death within this
+EXPENSIVE_FIGHT_M2 = 500.0  # a team fight whose swing is this far below zero is an expensive fight (2026-10-23)
+EXPENSIVE_FIGHTS_SHOWN = 3  # the summary's most expensive fights
 
 GUN_CLASS = {
     "Classic": "pistol", "Shorty": "shotgun", "Frenzy": "pistol", "Ghost": "pistol", "Sheriff": "sheriff",
