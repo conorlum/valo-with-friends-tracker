@@ -801,7 +801,7 @@ def match_payload(db, replay) -> dict:
     model = util_model.load(db)
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
         model = util_model.ensure(db)       # this match was in the stored estimator's training: refit it first
-    corpus = (_values_row(db) or (None, {}))[1]
+    stored_key, corpus = _values_row(db) or (None, {})
     weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     rounds_out, stale, failed = {}, 0, []
     current = {}
@@ -816,8 +816,13 @@ def match_payload(db, replay) -> dict:
             continue
         current[n] = row.data
     covered = corpus.get("fingerprints", {}).get(str(replay.id), {})
-    if any(stored[n].fingerprint != covered.get(str(n)) for n in current):
-        ensure_values(db)       # the stored build does not cover this replay's rounds: once per request
+    # Rebuilt once per request when the stored build doesn't cover this replay's rounds, or when what the whole
+    # corpus is made from moved (another replay, a refit estimator, a new table: corpus_key), since its lifts and
+    # gates are then stale though this replay's rounds still match (branch review B7). The key check reads no util
+    # data and never refits; ensure_values does both only when needed.
+    moved = stored_key != corpus_key(db, current_rows(db, with_data=False), model)
+    if moved or any(stored[n].fingerprint != covered.get(str(n)) for n in current):
+        ensure_values(db)
         corpus = (_values_row(db) or (None, {}))[1]
         weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
