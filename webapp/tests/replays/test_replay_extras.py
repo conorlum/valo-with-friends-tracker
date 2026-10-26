@@ -733,6 +733,37 @@ def test_utility_shot_and_destroyed_is_gone(tmp_path):
     assert [c.get("gone") for c in cams] == [20.0, None]
 
 
+def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
+    # trap-jobs D13, the shapes of b22430cd round 6: the Pit's GroundVolumeComponent lists its fragments (2 m
+    # convex hulls), and an enemy inside gets an effect naming the Pit beside Viper. Viper is slot 9 (team B).
+    pit = 300
+    fragments = {"type": "export_group_received", "time_ms": 21_000, "actor_net_guid": pit,
+                 "export_group_path": "/Script/DynamicVolume.GroundVolumeComponent",
+                 "payload": {"FinalCount": 2, "FragmentDelta": {"DeletedIds": [], "Updates": [
+                     {"ReplicationID": 1, "ConvexHullPoints": [{"Point": {"x": x, "y": y, "z": 188}}
+                                                               for x, y in ((0, 0), (200, 0), (200, 200), (0, 200))]},
+                     {"ReplicationID": 2, "ConvexHullPoints": [{"Point": {"x": x, "y": y, "z": 188}}
+                                                               for x, y in ((200, 0), (400, 0), (400, 200), (200, 200))]}]}}}
+    rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
+            fragments,
+            effect(25_000, 100, 7, [pit, 109], container=8263), stop(30_000, 100, 7),      # enemy (team A): decayed
+            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: friendly
+            closed(40_000, pit)]
+    out = build_extras_rows(tmp_path, rows, {**AGENTS7, "Pandemic": "Viper"}).rounds[1]
+    [row] = [a for a in out["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 2 and all(len(h) == 4 for h in row["area"])
+    assert row["area"][1][1] == list(GAME_MAP.to_uv(400, 0))
+    decayed = [s for s in out.get("statuses", []) if s["status"] == "decayed"]
+    assert [(s["slot"], s["target"], s["t0"], s["t1"], bool(s.get("friendly"))) for s in decayed] == [
+        (9, 0, 15.0, 20.0, False), (9, 1, 15.0, 20.0, True)]
+
+
+def build_extras_rows(tmp_path, rows, agents):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table7(), WINDOWS, GAME_MAP, agents, lambda t_ms: {}, teams=TEAMS7)
+
+
 AGENTS14 = {**AGENTS7, "Aggrobot": "Gekko", "Vampire": "Reyna"}
 
 
