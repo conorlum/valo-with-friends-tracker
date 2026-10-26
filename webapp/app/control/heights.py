@@ -160,6 +160,8 @@ class HeightAsset:
     @property
     def digest(self) -> str:
         """12 hex over everything the engine reads, in a fixed order (not the file's bytes)."""
+        if self.__dict__.get('digest_pinned'):      # a cover-filtered copy (adaptive.attach) keeps its source's
+            return self.__dict__['digest_pinned']
         h = hashlib.sha256()
         h.update(json.dumps({"v": self.meta.get('version', HEIGHT_VERSION), "origin_z": self.origin_z, "units": self.meta.get("units", "dm"),
                              "stand_m": self.meta.get("stand_m", STAND_M)}, sort_keys=True).encode("ascii"))

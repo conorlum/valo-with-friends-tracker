@@ -313,6 +313,7 @@ class Geometry:
     barrier_sha: str | None = None        # index.json's `barrier_sha` for it
     cover_sha: str | None = None          # index.json's `cover_sha`: the see-over cover mask, if the map has any
     cover_px: np.ndarray | None = None    # PX x PX int16: 4-connected pieces of that mask, 1.., 0 = none
+    height_cover_dropped: int = 0         # fine floors on top of cover (boxes) the adaptive attach dropped
 
     def see_over_mask(self, label: int) -> np.ndarray:
         """The pixels of one cover piece (all False for label 0 or when the map has no cover)."""
@@ -475,6 +476,7 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     geo.height_unknown = int((geo.unresolved & ~asset.unresolved.ravel()).sum())
     geo.centres = geo.centres[geo.node_cell]
     geo.heights, geo.height_sha = asset, asset.digest
+    geo.height_cover_dropped = 0
     geo.rows = geo.row_of = None
     geo.node_area = np.ones(geo.n, float)
     if asset.refinement is not None and len(asset.fine_cells):
@@ -963,6 +965,8 @@ def cache_key(geo: Geometry) -> str:
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
                                   **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
+                                  **({'cover_dropped': geo.height_cover_dropped}
+                                     if geo.height_cover_dropped > 0 else {}),
                                   "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
                                  sort_keys=True).encode("ascii"))
