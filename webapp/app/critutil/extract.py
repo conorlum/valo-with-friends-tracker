@@ -408,11 +408,13 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
                          and "damaging" in c.kinds]
             if not cands and r.get("code"):
                 # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
-                # and of the same ability slot (a Jett's ult knives are never her dash's)
+                # and of the same ability slot (a Jett's ult knives are never her dash's), never a movement cast (a
+                # dash touches nobody; branch review B11)
                 key = _key_of(name)
                 cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
                          and r["code"] in {x.get("code") for x in c.rows}
-                         and (key is None or c.key is None or c.key == key)]
+                         and (key is None or c.key is None or c.key == key)
+                         and any(x.get("k") != "cast" for x in c.rows)]
             if len({c.i for c in cands}) != 1:
                 cands = [c for c in cands if name and name in c.names] or cands
             if not cands:

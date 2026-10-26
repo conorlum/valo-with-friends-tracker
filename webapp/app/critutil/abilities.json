@@ -1402,8 +1402,8 @@
    "grace_s": 1,
    "wiki": {
     "page": "Tailwind",
-    "field": "Empowered Duration",
-    "value": "7.5 seconds",
+    "field": "Dash Duration",
+    "value": "0.45 seconds",
     "fetched": "2026-10-24",
     "rows": [
      {
@@ -1417,7 +1417,7 @@
     ]
    },
    "pieces": [],
-   "duration_s": 7.5
+   "duration_s": 0.45
   },
   {
    "match": "^(?!)$",

@@ -582,6 +582,24 @@ def test_recorded_movement_casts_are_tailwind_and_lightspeed():
     assert util_values.item_segments(out, got["Jett/Tailwind"])
 
 
+def test_a_tailwind_cast_row_is_the_dash_itself_and_lasts_its_dash():
+    # Branch review B16: the `cast` row is the dash starting (TimedStateDuration 0.45), not the 7.5 s empower, so its
+    # comparison window is the dash plus grace.
+    from app.services import util_values
+    out = run([{"k": "cast", "t": 9.0, "by": 1, "code": "Wushu", "name": "E_Dash"}])
+    (c,) = [c for c in out["casts"] if c["ability_id"] == "Jett/Tailwind"]
+    assert util_values.item_segments(out, c) == [[9.0, pytest.approx(10.45)]]
+
+
+def test_blade_storm_damage_after_a_dash_is_not_the_dashs():
+    # Branch review B11: a knife hit (cause Wushu/X_Dagger_Production, no ability row) a second after Jett's dash, and
+    # the kill it leads to, are no evidence for the dash.
+    knife = {**damage(9.0, 1, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}
+    out = run([{"k": "cast", "t": 8.0, "by": 1, "code": "Wushu", "name": "E_Dash"}, knife], kills=[kill(10.0, 1, 5)])
+    (c,) = [c for c in out["casts"] if c["ability_id"] == "Jett/Tailwind"]
+    assert c["effects"] == [] and c["kills"] == []
+
+
 def test_a_pit_up_to_the_rounds_end_says_so_and_its_window_runs_to_decided():
     # Branch review B3, through the site's own segments (util_values.item_segments): a Pit 2-60 s in a 60 s round.
     from app.services import util_values
