@@ -17,7 +17,7 @@ import re
 
 from app.control import engine
 from app.critutil import abilities, windows
-from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
+from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, ARC_ROSE, ROSE_REPOP_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
@@ -45,6 +45,10 @@ def _key_of(name: str | None) -> str | None:
 @functools.lru_cache(maxsize=None)
 def _entry_for(code_name: str):
     return abilities.lookup(code_name)
+
+
+def _entry_by_match(match: str) -> dict | None:
+    return next((e for e in abilities.load() if e["match"] == match), None)
 
 
 @functools.lru_cache(maxsize=None)
@@ -305,6 +309,13 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             continue
         c = _Cast(len(casts), r, rnd)
         c.kinds = set()
+        if c.entry is None and len(parents) == 1:
+            parent = _entry_by_match(next(iter(parents)))
+            if parent is not None and parent.get("rule") == "flash":
+                # A flash ability's piece with no flash row (an Arc Rose put down in the buy phase): a use of
+                # that ability, whose pops can't be seen (trap-jobs D12).
+                c.entry = parent
+                c.kinds = set(parent.get("kinds") or ())
         casts.append(c)
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
@@ -434,9 +445,46 @@ def _in_dart_window(r, trap_t1) -> bool:
     return trap_t1 is not None and lo <= trap_t1 - float(r["t"]) <= hi
 
 
+def _is_rose(c: _Cast) -> bool:
+    return c.entry is not None and (c.entry.get("agent"), c.entry.get("ability")) == ARC_ROSE
+
+
+def _rose_pops(c: _Cast) -> list[float]:
+    """An Arc Rose's pops: its flash row's `pop`, then each group of blinds more than ROSE_REPOP_S after the last
+    pop. A pop that blinded nobody is still a pop. Never its `fx` (its arming, or its reveal at Vyse's death)."""
+    if c.flash is None:
+        return []
+    pops = []
+    pop = (c.flash.get("pop") or {}).get("t")
+    if pop is not None:
+        pops.append(float(pop))
+    for t in sorted(float(h[1]) for h in c.flash.get("hits") or () if len(h) > 1):
+        if not pops or t > pops[-1] + ROSE_REPOP_S:
+            pops.append(t)
+    return sorted(pops)
+
+
+def _rose_gone(c: _Cast) -> float | None:
+    gone = [float(r["gone"]) for r in c.rows if r.get("gone") is not None]
+    return min(gone) if gone else None
+
+
+def _rose_end(rnd, c: _Cast) -> float:
+    """When the rose itself left the map: its object's close (a cast started by its flash row ends with the
+    flash), else the round's end."""
+    ends = [float(r["t1"]) for r in c.rows if r.get("k") == "ability" and r.get("t1") is not None]
+    return min(max(ends), rnd.t_end) if ends else rnd.t_end
+
+
 def _trigger_kind(c: _Cast) -> tuple[float, str] | None:
     """(when the device was set off, "fired" | "broken"), the first of its signals in this order: fx, raised, gone,
-    then a Trademark's dart or slow, then an Alarmbot's second yaw."""
+    then a Trademark's dart or slow, then an Alarmbot's second yaw. An Arc Rose has its own: its first pop, else its
+    destruction."""
+    if _is_rose(c):
+        pops, gone = _rose_pops(c), _rose_gone(c)
+        if pops and (gone is None or pops[0] <= gone + _EPS):
+            return pops[0], "fired"
+        return (gone, "broken") if gone is not None else None
     for r in c.rows:
         fx = r.get("fx")
         if isinstance(fx, (int, float)):
@@ -475,10 +523,36 @@ def _set_off(rnd, c: _Cast, enemy_eff, trigger) -> tuple[float | None, str | Non
     if trigger is not None:
         got = _trigger_kind(c)
         return trigger, (got[1] if got and abs(got[0] - trigger) <= _EPS else "fired")
+    if _is_rose(c):
+        # An Arc Rose that leaves quietly with Vyse alive was pulled back (trap-jobs D12: popped, destroyed or recalled)
+        end = _rose_end(rnd, c)
+        if end < rnd.t_decided - _EPS and rnd.alive(c.by, end):
+            return end, "recalled"
+        return None, None
     if any(r.get("t1") is not None for r in c.rows) and c.t_end < rnd.t_decided - _EPS \
             and rnd.alive(c.by, c.t_end):
         return c.t_end, "closed"
     return None, None
+
+
+def _rose(rnd, c: _Cast, set_off_kind) -> dict | None:
+    """An Arc Rose's whole story: every pop, and how it ended: "popped" (its last pop), "destroyed" (shot, popped or
+    not), "recalled", "revealed" (Vyse died while it stood) or "stood" (to the round's end). `seen` is False for a rose
+    with no flash row (put down in the buy phase), whose pops the replay doesn't carry."""
+    if not _is_rose(c):
+        return None
+    pops, gone = _rose_pops(c), _rose_gone(c)
+    if gone is not None:
+        how = "destroyed"
+    elif set_off_kind == "recalled":
+        how = "recalled"
+    elif not rnd.alive(c.by, min(_rose_end(rnd, c), rnd.t_decided) - _EPS):
+        how = "revealed"            # Vyse died while it stood: it is off, though its object may stay to the round's end
+    elif pops:
+        how = "popped"
+    else:
+        how = "stood"
+    return {"pops": [_r2(t) for t in pops], "ended": how, "gone": _r2(gone), "seen": c.flash is not None}
 
 
 def _link_kills(rnd, sides, c: _Cast, effects, trigger) -> list[dict]:
@@ -1341,6 +1415,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "alive": [alive["attack"], alive["defense"]],
             "trigger": _r2(trigger),
             "set_off_t": _r2(set_off_t), "set_off_kind": set_off_kind,
+            "rose": _rose(rnd, c, set_off_kind),
             "enemies": sorted({e["target"] for e in enemy_eff}),
             "effects": [{"target": e["target"], "how": e["how"], "t0": _r2(e["t0"]), "t1": _r2(e["t1"]),
                          "known": e["dur_known"]} for e in enemy_eff],

@@ -780,9 +780,63 @@ def test_flashpoint_flash_and_its_through_walls_twin_are_one_cast():
     assert len(cast_by(out, 1)) == 1
 
 
-def test_arc_rose_with_no_flash_row_stays_its_own_cast():
-    util = [toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=8.0, t1=20.0, kind="GameObject")]
-    assert len(cast_by(run(util), 1)) == 1
+def test_arc_rose_with_no_flash_row_is_an_arc_rose_whose_pops_are_unseen():
+    # trap-jobs D12: 14 of 46 roses on 365/369/370 were put down in the buy phase with no flash row.
+    util = [toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=0.0, t1=30.0, kind="GameObject")]
+    (c,) = cast_by(run(util), 1)
+    assert c["ability_id"] == "Vyse/Arc Rose" and "device" in c["kinds"] and "blind" in c["kinds"]
+    assert c["rose"] == {"pops": [], "ended": "stood", "gone": None, "seen": False}
+
+
+def _rose(fx=(22.149, 48.035), pop=17.041, hits=((0, 17.041, 0.044), (5, 17.041, 1.629), (6, 38.764, 1.353)),
+          t1=29.9, **extra):
+    # The shapes of 370 round 1's rose (id 4594): its object, with `fx`, and its flash row, with `pop` and `hits`.
+    obj = toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=15.461, t1=t1, kind="GameObject", id=4594,
+                      fx=list(fx), **extra)
+    row = flash(15.461, 1, [list(h) for h in hits], name="vyse_arc_rose")
+    row["id"] = 4594
+    if pop is not None:
+        row["pop"] = {"src": "flash_source", "t": pop}
+    return [row, obj]
+
+
+def _rose_cast(util, **kw):
+    (c,) = [c for c in cast_by(run(util, **kw), 1) if c["ability_id"] == "Vyse/Arc Rose"]
+    return c
+
+
+def test_an_arc_rose_is_set_off_by_its_pop_never_its_fx_and_pops_again_later():
+    c = _rose_cast(_rose(), t_end=60.0)
+    assert c["trigger"] == 17.04 and c["set_off_kind"] == "fired"      # the fx at 22.15 is its arming
+    assert c["rose"]["pops"] == [17.04, 38.76] and c["rose"]["ended"] == "popped"
+
+
+def test_an_arc_rose_with_only_fx_never_popped():
+    # 365 round 3: two roses with no pop, only the fx ~6.7 s after placing.
+    c = _rose_cast(_rose(pop=None, hits=(), fx=(22.15,), t1=60.0), t_end=60.0)
+    assert c["trigger"] is None and c["rose"]["pops"] == [] and c["rose"]["ended"] == "stood"
+
+
+def test_an_arc_rose_popped_blinding_nobody_is_still_popped():
+    c = _rose_cast(_rose(pop=19.57, hits=()), t_end=60.0)              # 370 round 3: pop 19.57, no hits
+    assert c["trigger"] == 19.57 and c["rose"]["pops"] == [19.57]
+
+
+def test_an_arc_rose_shot_before_a_pop_is_destroyed_and_broken():
+    c = _rose_cast(_rose(pop=None, hits=(), t1=25.0, gone=25.0), t_end=60.0)
+    assert c["set_off_kind"] == "broken" and c["trigger"] == 25.0
+    assert c["rose"]["ended"] == "destroyed" and c["rose"]["gone"] == 25.0
+
+
+def test_an_arc_rose_pulled_back_with_vyse_alive_is_recalled():
+    c = _rose_cast(_rose(pop=None, hits=(), t1=26.2), t_end=60.0)
+    assert c["set_off_kind"] == "recalled" and c["rose"]["ended"] == "recalled"
+
+
+def test_an_arc_rose_ending_at_vyses_death_is_revealed():
+    util = _rose(pop=None, hits=(), t1=40.5)
+    c = _rose_cast(util, t_end=60.0, kills=[kill(40.0, 5, 1)])
+    assert c["set_off_kind"] is None and c["rose"]["ended"] == "revealed"
 
 
 def test_a_flash_keeps_a_short_span_beside_a_long_lived_row():
