@@ -10,7 +10,8 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
   fixed:N     [t, t + N].
   flash       with a pop and hits: [t, pop + longest hit, at most 4 s]; a pop and no hits: [t, pop + g]; no pop but
               effects (Gekko's Dizzy): the latest effect end, each at most t0 + 4 s; neither: duration. Fallback
-              when there is no pop.
+              when there is no pop. An Arc Rose popped again (its `rose.pops`): one window per pop, each to its own
+              longest blind (the first from t, a later one from its pop).
   status      the latest effect end: a known one ends at t1 + 2 s, an unknown one at t0 + D + g, cut at seen_end + g
               when no end is known (a Leer shot down). No usable effect: duration (cut the same way).
   placeable   [armed (at least 0), (seen_end or t_decided) + g] minus every `off` span. With `after_trigger_s` A
@@ -26,7 +27,8 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
   tag         a cast that tagged an enemy: [t, seen_end + g] (Spycam dart: until it is taken out, plus 5 s), no
               seen_end: the last effect end + g; a cast that tagged nobody: none.
   on_spans    each stored `on` span, plus g after it (Viper: 5 s). None stored: with on_known, off its whole life; otherwise duration, fallback.
-  life        [start, seen_end]; no seen_end: [start, start + D + g], fallback (Viper's Pit).
+  life        [start, seen_end]; up when the round ended (signals.to_end): [start, t_decided]; else no seen_end:
+              [start, start + D + g], fallback (Viper's Pit).
   heal        a heal row: [t, death or t_decided]; a heal-type cast: [t, t_decided].
   ult:raze    [ult_drop, t + g]; no drop: fallback.
   ult:omen    [t, (spike_pickup if she got the spike, else arrival) + 10 s]; no arrival: fallback.
@@ -117,7 +119,17 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
     elif rule == "flash":
         pop = s.get("pop")
         hits = s.get("hits") or []
-        if pop is not None and hits:
+        pops = (item.get("rose") or {}).get("pops") or []
+        if len(pops) > 1:
+            # an Arc Rose popped again (extract `rose`): a window per pop, each to its own longest blind (branch
+            # review B6); the first starts at the cast, a later one at its pop
+            segs = []
+            for k, p in enumerate(pops):
+                nxt = pops[k + 1] if k + 1 < len(pops) else float("inf")
+                mine = [h for h in hits if p - 0.01 <= h[0] < nxt]
+                end = p + min(max(h[1] - h[0] for h in mine), FLASH_CAP_S) if mine else p + g
+                segs.append([t if k == 0 else p, end])
+        elif pop is not None and hits:
             segs = [[t, pop + min(max(h[1] - h[0] for h in hits), FLASH_CAP_S)]]
         elif pop is not None:
             segs = [[t, pop + g]]
@@ -181,6 +193,8 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
     elif rule == "life":
         if seen is not None:
             segs = [[start, seen]]
+        elif s.get("to_end"):
+            segs = [[start, t_decided]]     # up when the round ended: not a missing end (branch review B3)
         else:
             fallback = True
             segs = [[start, start + D + g]] if D is not None else []

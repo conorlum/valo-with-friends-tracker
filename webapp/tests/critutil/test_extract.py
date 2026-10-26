@@ -139,6 +139,32 @@ def test_smoke_between_teams_cuts_sight_lines_and_covered_teammates_lived():
     assert c["cover"]["covered_lived"] == c["cover"]["covered"]
 
 
+def test_a_cast_never_takes_cover_from_a_wall_that_isnt_its_own():
+    # Branch review B1: an Omen smoke off to the side, cutting nothing, and an enemy Viper wall raised in the same
+    # second between the teams. Only the wall's own cast gets its sight lines.
+    smoke = toy_ability("Wraith", "4_Smoke", 260, 40, 1, t=5.0, t1=15.0, kind="Zone")
+    wall = toy_ability("Pandemic", "E_SmokeScreenManager", 260, 200, 5, t=5.0, t1=15.0, kind="GameObject",
+                       points=[list(uv(260, 120)), list(uv(260, 280))], on=[[5.0, 15.0]])
+    out = run([smoke, wall])
+    (c,) = cast_by(out, 1, "smoke")
+    assert not (c.get("cover") or {}).get("blocked_s"), "the enemy's wall is not this smoke's cover"
+    (w,) = [w for w in cast_by(out, 5) if w.get("cover")]
+    assert w["cover"]["blocked_s"] > 0, "the wall keeps its own cover"
+
+
+def test_a_wall_ending_on_an_enemy_wall_never_takes_its_cover():
+    # Branch review B13: our Viper wall, raised in the same second as an enemy one, runs along the top and ends on
+    # the enemy wall's end (a T). It cuts nothing itself; the enemy wall cuts the lines between the teams.
+    ours = toy_ability("Pandemic", "E_SmokeScreenManager", 230, 120, 1, t=5.0, t1=15.0, kind="GameObject",
+                       points=[list(uv(200, 120)), list(uv(230, 120)), list(uv(260, 120))], on=[[5.0, 15.0]])
+    theirs = toy_ability("Pandemic", "E_SmokeScreenManager", 260, 200, 5, t=5.0, t1=15.0, kind="GameObject",
+                         points=[list(uv(260, 120)), list(uv(260, 280))], on=[[5.0, 15.0]])
+    out = run([ours, theirs])
+    assert not (cast_by(out, 1)[0].get("cover") or {}).get("blocked_s"), "the enemy's wall is not our wall's cover"
+    (w,) = [w for w in cast_by(out, 5) if w.get("cover")]
+    assert w["cover"]["blocked_s"] > 0
+
+
 def test_two_coincident_smokes_share_the_sight_lines_and_the_save_once():
     one = toy_ability("Wraith", "4_Smoke", 260, 200, 1, t=5.0, t1=15.0, kind="Zone")
     (alone,) = cast_by(run([one]), 1, "smoke")
@@ -244,12 +270,13 @@ def test_a_nanoswarm_never_set_off_is_wasted_and_one_destroyed_first_is_worse():
 
 
 def test_an_ult_knife_hit_is_never_effect_evidence_for_the_jetts_dash():
-    # replay 366 round 28's shape: a dash at 44.4 s (live 7.5 s by the table), then Blade Storm hits at 51.8 s
+    # replay 366 round 28's shape: a dash at 44.4 s, then a Blade Storm hit while the dash's row is still live (the
+    # row is the 0.45 s dash, branch review B16; 366's own hit came at 51.8 s, after it)
     util = [{"k": "cast", "t": 44.4, "by": 0, "code": "Wushu", "name": "E_Dash"},
-            {**damage(51.78, 0, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}]
-    out = run(util, kills=[kill(51.78, 0, 5)], player_state=ult_state(0), agents={0: "Jett"}, t_end=70.0)
+            {**damage(45.0, 0, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}]
+    out = run(util, kills=[kill(45.0, 0, 5)], player_state=ult_state(0), agents={0: "Jett"}, t_end=70.0)
     (dash,) = [c for c in out["casts"] if c["type"] == "dash"]
-    assert dash["t_end"] > 51.78, "the dash is still live by the table when the knife lands"
+    assert dash["t_end"] + 1.0 > 45.0, "the knife lands inside the dash's attribution window"
     assert dash["effects"] == [] and dash["kills"] == []
 
 
@@ -475,6 +502,47 @@ def test_reyna_at_full_health_has_no_use_sign_and_other_agents_have_no_use():
     assert out["ults"]["1"]["use"] is None
 
 
+def evolution(t, t1, by=0):
+    # the CONDENSE 23 row (6e52839b round 9: {"k": "buff", "by": 9, "target": 9, "code": "Pine", ...})
+    return {"k": "buff", "t": t, "t1": t1, "by": by, "target": by, "code": "Pine", "name": "X_Evolution"}
+
+
+def regen(t, amount, by=0):
+    # 409 round 9's regen heal row shape
+    return {"k": "heal", "t": t, "t1": t + 0.3, "by": by, "target": by, "pool": "hp", "amount": amount,
+            "code": "Pine", "name": "X_SelfBuffVers_Engineering", "from": "causer", "n": 7}
+
+
+def test_veto_use_is_his_evolution_row_and_every_regen_heal_in_it_counts():
+    # The ult line drops only at the round's end (408/409): the buff row gives the real start and end, and he
+    # regenerates after every non-lethal hit while it is on, so one use can heal several times (408 round 23: two).
+    util = [regen(5.0, 9.0), evolution(16.5, 47.6), regen(20.0, 13.3), regen(31.0, 22.3), regen(50.0, 8.0)]
+    ps = ult_state(0, drop=58.0)
+    out = run(util, kills=[kill(47.6, 5, 0)], player_state=ps, agents={0: "Veto"}, t_end=60.0)
+    assert out["ults"]["0"]["used"] is True
+    assert out["ults"]["0"]["use"] == {"t": 16.5, "ability_id": "Veto/Evolution", "type": "ult",
+                                       "signals": {"ult_end": 47.6, "death": 47.6, "exact": True,
+                                                   "regen_heals": 2, "regen_hp": 35.6}}
+    (c,) = [c for c in out["casts"] if c["by"] == 0 and c["ability_id"] == "Veto/Evolution"]
+    assert "ult" in c["kinds"]
+
+
+def test_veto_without_the_row_falls_back_to_his_first_regen_heal():
+    # a blob before CONDENSE 23: no buff row; the first regen heal is a floor on the start
+    out = run([regen(27.7, 20.0), regen(40.0, 10.0)], player_state=ult_state(0, drop=55.0), agents={0: "Veto"},
+              t_end=60.0)
+    use = out["ults"]["0"]["use"]
+    assert use["t"] == 27.7 and use["signals"]["exact"] is False and use["signals"]["regen_heals"] == 2
+
+
+def test_a_detected_timed_ult_use_counts_as_used():
+    # Branch review B5: Chamber fires Tour de Force at 7 s and dies at 12 s before his points reset; the use is
+    # detected, so `used` must say so (else unused_ults reports a full ult never used).
+    out = run([shot(7.0, 0, gun="Tour de Force")], kills=[kill(12.0, 5, 0)], player_state=ult_state(0),
+              agents={0: "Chamber"})
+    assert out["ults"]["0"]["use"]["t"] == 7.0 and out["ults"]["0"]["used"] is True
+
+
 def test_a_use_after_the_slot_died_is_not_a_use():
     util = [shot(12.0, 0, gun="Tour de Force")]
     out = run(util, kills=[kill(10.0, 5, 0)], player_state=ult_state(0), agents={0: "Chamber"})
@@ -497,6 +565,79 @@ def test_enemy_waiting_outside_a_molly_is_waiting_not_held_back():
     out = run([molly], extra={5: ("B", mover)})
     p = cast_by(out, 1, "damaging")[0]["presence"]
     assert p["waiting_s"] > 0 and 5 not in p["entered"] and p["held_back"] == []
+
+
+def _strip(x0, x1, y0, y1):
+    return [list(uv(x, y)) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+
+
+def test_a_pit_with_an_area_counts_its_real_ground_not_a_circle():
+    # trap-jobs D13: a Pit's `area` is its ground (one hull per fragment), not a circle around its centre. Here a long
+    # strip east of the centre: an enemy 10 m east is in it, one 3 m north is not.
+    pit = toy_ability("Pandemic", "X_Circular", 300, 200, 1, t=2.0, t1=20.0, kind="GameObject",
+                      area=[_strip(300 - px(1), 300 + px(6), 200 - px(1), 200 + px(1)),
+                            _strip(300 + px(6), 300 + px(12), 200 - px(1), 200 + px(1))])
+    east = [(0.0, 300 + px(10), 200, 180), (25.0, 300 + px(10), 200, 180)]
+    north = [(0.0, 300, 200 + px(3), 180), (25.0, 300, 200 + px(3), 180)]
+    (c,) = [c for c in cast_by(run([pit], extra={5: ("B", east), 6: ("B", north)}), 1) if c["presence"]]
+    assert c["presence"]["area"] is True and c["presence"]["entered"] == [5]
+
+
+def test_recorded_movement_casts_are_tailwind_and_lightspeed():
+    # Branch review B4: the condenser records Jett's dash and Waylay's double dash as `cast` rows (revision 14);
+    # each is a cast of its table ability, with a comparison window.
+    from app.services import util_values
+    util = [{"k": "cast", "t": 9.0, "by": 1, "code": "Wushu", "name": "E_Dash"},
+            {"k": "cast", "t": 14.0, "by": 0, "code": "Terra", "name": "Q_DoubleDash"}]
+    out = run(util)
+    got = {c["ability_id"]: c for c in out["casts"]}
+    assert set(got) == {"Jett/Tailwind", "Waylay/Lightspeed"}
+    assert got["Jett/Tailwind"]["type"] == "dash" and got["Jett/Tailwind"]["by"] == 1 and got["Jett/Tailwind"]["t"] == 9.0
+    assert util_values.item_segments(out, got["Jett/Tailwind"])
+
+
+def test_a_tailwind_cast_row_is_the_dash_itself_and_lasts_its_dash():
+    # Branch review B16: the `cast` row is the dash starting (TimedStateDuration 0.45), not the 7.5 s empower, so its
+    # comparison window is the dash plus grace.
+    from app.services import util_values
+    out = run([{"k": "cast", "t": 9.0, "by": 1, "code": "Wushu", "name": "E_Dash"}])
+    (c,) = [c for c in out["casts"] if c["ability_id"] == "Jett/Tailwind"]
+    assert util_values.item_segments(out, c) == [[9.0, pytest.approx(10.45)]]
+
+
+def test_blade_storm_damage_after_a_dash_is_not_the_dashs():
+    # Branch review B11: a knife hit (cause Wushu/X_Dagger_Production, no ability row) a second after Jett's dash, and
+    # the kill it leads to, are no evidence for the dash.
+    knife = {**damage(9.0, 1, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}
+    out = run([{"k": "cast", "t": 8.0, "by": 1, "code": "Wushu", "name": "E_Dash"}, knife], kills=[kill(10.0, 1, 5)])
+    (c,) = [c for c in out["casts"] if c["ability_id"] == "Jett/Tailwind"]
+    assert c["effects"] == [] and c["kills"] == []
+
+
+def test_a_pit_up_to_the_rounds_end_says_so_and_its_window_runs_to_decided():
+    # Branch review B3, through the site's own segments (util_values.item_segments): a Pit 2-60 s in a 60 s round.
+    from app.services import util_values
+    pit = toy_ability("Pandemic", "X_Circular", 300, 200, 1, t=2.0, t1=60.0, kind="GameObject")
+    out = run([pit], t_end=60.0)
+    (c,) = [c for c in cast_by(out, 1) if c["ability_id"] == "Viper/Viper's Pit"]
+    assert c["signals"]["seen_end"] is None and c["signals"]["to_end"] is True
+    assert util_values.item_segments(out, c) == [[2.0, out["t_decided"]]]
+
+
+def test_a_trip_earns_no_presence_after_its_owner_died():
+    # Branch review B2: a sentinel's placed util is off at its owner's death (windows.py `off_at_death`), so an enemy
+    # who reaches the trip's edge after that waits on nothing. Cypher (slot 1) dies at 4 s; the enemy stops at 10 s.
+    mover = [(0.0, 300 + px(40), 200, 180), (9.0, 300 + px(16), 200, 180), (30.0, 300 + px(16), 200, 180)]
+    trip = toy_ability("Gumshoe", "4_TripWire", 300, 200, 1, t=0.5, t1=30.0, kind="GameObject")
+    out = run([trip], kills=[kill(4.0, 6, 1)], extra={5: ("B", mover)})
+    (c,) = [c for c in cast_by(out, 1) if c.get("presence")]
+    short = toy_ability("Gumshoe", "4_TripWire", 300, 200, 1, t=0.5, t1=4.0, kind="GameObject")
+    (s,) = [c for c in cast_by(run([short], extra={5: ("B", mover)}), 1) if c.get("presence")]
+    assert c["presence"]["waiting_s"] == s["presence"]["waiting_s"], "nothing after its owner's death counts"
+    assert c["presence"]["entered"] == s["presence"]["entered"]
+    alive = run([trip], extra={5: ("B", mover)})
+    (a,) = [c for c in cast_by(alive, 1) if c.get("presence")]
+    assert a["presence"]["waiting_s"] > c["presence"]["waiting_s"], "with its owner alive the later wait counts"
 
 
 def test_enemy_who_comes_to_the_edge_and_turns_back_is_held_back():
@@ -545,6 +686,91 @@ def test_ambushed_death_makes_no_unused_claim():
     data["players"][0]["agent"] = "Breach"
     data["player_state"] = ps
     assert extract.round_util(rnd, data)["unused"] == []
+
+
+# --- W5: how a trap was set off (Trademark's dart and slow, Alarmbot's yaws), shapes from real rows
+
+TRAP = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 128.663, "id": 10870, "k": "ability",
+        "kind": "GameObject", "name": "E_Trap", "owner_by": "instigator", "t": 0.0, "t1": 15.842,
+        "u": 5618, "v": 692, "yaw": 156, "z": 80}
+DART = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 0.07, "id": 11396, "k": "ability",
+        "kind": "Projectile", "name": "4_Trap_Dart", "owner_by": "instigator", "t": 13.838, "t1": 13.881,
+        "u": 5605, "v": 816, "yaw": 96, "z": 85}
+SLOW = {"agent": "Chamber", "by": 1, "code": "Deadeye", "full": 7.006, "id": 11422, "k": "ability",
+        "kind": "Patch", "name": "E_Slow_Large", "owner_by": "instigator", "t": 13.881, "t1": 20.882,
+        "thrown": {"t0": 13.838, "t1": 13.881, "u": 5605, "v": 816, "z": 85}, "u": 5537, "v": 1486, "yaw": 275,
+        "z": 80}
+BOT = {"agent": "Killjoy", "by": 1, "code": "Killjoy", "full": 74.276, "id": 22548, "k": "ability", "kind": "Pawn",
+       "name": "Q_StealthAlarmbot", "owner_by": "instigator", "path": [[0.0, 1158, 3938, 13], [0.103, 1158, 3938, 13]],
+       "possessed": [], "t": 0.0, "t1": 13.234, "u": 1158, "v": 3938, "yaw": 216,
+       "yaws": [[0.0, 216], [12.303, 47], [12.405, 42]], "z": 13}
+
+
+def test_w5_trademark_fired_by_its_dart_and_slow_triggers_before_the_dart():
+    (c,) = cast_by(run([TRAP, DART, SLOW]), 1, "device")
+    assert c["trigger"] == pytest.approx(12.94, abs=0.011)
+    assert c["set_off_kind"] == "fired" and c["set_off_t"] == c["trigger"]
+
+
+def test_w5_trademark_with_only_its_slow_still_fired():
+    (c,) = cast_by(run([TRAP, SLOW]), 1, "device")
+    assert c["trigger"] == pytest.approx(12.94, abs=0.011) and c["set_off_kind"] == "fired"
+
+
+def test_w5_an_ult_slow_with_no_throw_far_from_the_close_is_its_own_cast():
+    ult_slow = {k: v for k, v in SLOW.items() if k != "thrown"} | {"t": 5.0, "t1": 12.0, "id": 99}
+    out = run([TRAP, ult_slow])
+    trap = [c for c in cast_by(out, 1) if "E_Trap" in c["names"]]
+    assert len(trap) == 1 and "E_Slow_Large" not in trap[0]["names"]
+    assert trap[0]["trigger"] is None and trap[0]["set_off_kind"] == "closed"
+    assert any(c["names"] == ["E_Slow_Large"] for c in cast_by(out, 1))
+
+
+def test_w5_an_unthrown_slow_inside_the_window_joins_the_trap():
+    slow = {k: v for k, v in SLOW.items() if k != "thrown"} | {"t": 13.9}
+    (c,) = cast_by(run([TRAP, slow]), 1, "device")
+    assert "E_Slow_Large" in c["names"] and c["set_off_kind"] == "fired"
+
+
+def test_w5_alarmbot_fired_by_a_later_yaw():
+    (c,) = cast_by(run([BOT]), 1, "device")
+    assert c["trigger"] == 12.3 and c["set_off_kind"] == "fired" and c["set_off_t"] == 12.3
+
+
+def test_an_alarmbot_that_fired_then_was_shot_fired_first():
+    # Branch review B15: the yaw at 12.303 s (it chased) comes before its lethal close at 13.234 s (`gone`, CONDENSE
+    # 23): the earliest signal decides, so it fired at 12.3.
+    (c,) = cast_by(run([BOT | {"gone": 13.234}]), 1, "device")
+    assert c["trigger"] == 12.3 and c["set_off_kind"] == "fired"
+
+
+def test_w5_alarmbot_with_one_yaw_is_closed_not_triggered():
+    bot = BOT | {"t1": 20.0, "yaws": [[0.0, 294]]}
+    (c,) = cast_by(run([bot]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] == "closed"
+
+
+def test_w5_a_gone_device_is_broken():
+    trap = TRAP | {"gone": 10.0}
+    (c,) = cast_by(run([trap]), 1, "device")
+    assert c["trigger"] == 10.0 and c["set_off_kind"] == "broken" and c["set_off_t"] == 10.0
+
+
+def test_w5_a_device_alive_to_the_end_or_whose_owner_died_is_not_closed():
+    alive = TRAP | {"t1": 30.0}
+    (c,) = cast_by(run([alive]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] is None and c["set_off_t"] is None
+    (c,) = cast_by(run([TRAP], kills=[kill(10.0, 5, 1)]), 1, "device")
+    assert c["trigger"] is None and c["set_off_kind"] is None
+
+
+def test_w5_a_trapwire_with_pieces_inside_merge_is_one_cast_and_triggers_as_before():
+    trip = toy_ability("Gumshoe", "4_TripWire", 380, 160, 1, t=2.0, t1=25.0, kind="GameObject")
+    second = toy_ability("Gumshoe", "4_TripWire", 380, 160, 1, t=2.5, t1=3.0, kind="GameObject")
+    tether = status(11.0, 13.0, 1, 5, name="4_TripWire", status="tethered")
+    out = run([trip, second, tether])
+    devs = cast_by(out, 1, "device")
+    assert len(devs) == 1 and devs[0]["trigger"] == 11.0 and devs[0]["set_off_kind"] == "fired"
 
 
 def test_output_is_plain_and_versioned():
@@ -702,9 +928,76 @@ def test_flashpoint_flash_and_its_through_walls_twin_are_one_cast():
     assert len(cast_by(out, 1)) == 1
 
 
-def test_arc_rose_with_no_flash_row_stays_its_own_cast():
-    util = [toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=8.0, t1=20.0, kind="GameObject")]
-    assert len(cast_by(run(util), 1)) == 1
+def test_arc_rose_with_no_flash_row_is_an_arc_rose_whose_pops_are_unseen():
+    # trap-jobs D12: 14 of 46 roses on 365/369/370 were put down in the buy phase with no flash row.
+    util = [toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=0.0, t1=30.0, kind="GameObject")]
+    (c,) = cast_by(run(util), 1)
+    assert c["ability_id"] == "Vyse/Arc Rose" and "device" in c["kinds"] and "blind" in c["kinds"]
+    assert c["rose"] == {"pops": [], "ended": "stood", "gone": None, "seen": False}
+
+
+def _rose(fx=(22.149, 48.035), pop=17.041, hits=((0, 17.041, 0.044), (5, 17.041, 1.629), (6, 38.764, 1.353)),
+          t1=29.9, **extra):
+    # The shapes of 370 round 1's rose (id 4594): its object, with `fx`, and its flash row, with `pop` and `hits`.
+    obj = toy_ability("Nox", "StealthingTrap_Flash_2", 300, 200, 1, t=15.461, t1=t1, kind="GameObject", id=4594,
+                      fx=list(fx), **extra)
+    row = flash(15.461, 1, [list(h) for h in hits], name="vyse_arc_rose")
+    row["id"] = 4594
+    if pop is not None:
+        row["pop"] = {"src": "flash_source", "t": pop}
+    return [row, obj]
+
+
+def _rose_cast(util, **kw):
+    (c,) = [c for c in cast_by(run(util, **kw), 1) if c["ability_id"] == "Vyse/Arc Rose"]
+    return c
+
+
+def test_an_arc_rose_is_set_off_by_its_pop_never_its_fx_and_pops_again_later():
+    c = _rose_cast(_rose(), t_end=60.0)
+    assert c["trigger"] == 17.04 and c["set_off_kind"] == "fired"      # the fx at 22.15 is its arming
+    assert c["rose"]["pops"] == [17.04, 38.76] and c["rose"]["ended"] == "popped"
+
+
+def test_an_arc_rose_with_only_fx_never_popped():
+    # 365 round 3: two roses with no pop, only the fx ~6.7 s after placing.
+    c = _rose_cast(_rose(pop=None, hits=(), fx=(22.15,), t1=60.0), t_end=60.0)
+    assert c["trigger"] is None and c["rose"]["pops"] == [] and c["rose"]["ended"] == "stood"
+
+
+def test_an_arc_rose_popped_blinding_nobody_is_still_popped():
+    c = _rose_cast(_rose(pop=19.57, hits=()), t_end=60.0)              # 370 round 3: pop 19.57, no hits
+    assert c["trigger"] == 19.57 and c["rose"]["pops"] == [19.57]
+
+
+def test_an_arc_rose_shot_before_a_pop_is_destroyed_and_broken():
+    c = _rose_cast(_rose(pop=None, hits=(), t1=25.0, gone=25.0), t_end=60.0)
+    assert c["set_off_kind"] == "broken" and c["trigger"] == 25.0
+    assert c["rose"]["ended"] == "destroyed" and c["rose"]["gone"] == 25.0
+
+
+def test_an_arc_rose_pulled_back_with_vyse_alive_is_recalled():
+    c = _rose_cast(_rose(pop=None, hits=(), t1=26.2), t_end=60.0)
+    assert c["set_off_kind"] == "recalled" and c["rose"]["ended"] == "recalled"
+
+
+def test_an_arc_rose_ending_at_vyses_death_is_revealed():
+    util = _rose(pop=None, hits=(), t1=40.5)
+    c = _rose_cast(util, t_end=60.0, kills=[kill(40.0, 5, 1)])
+    assert c["set_off_kind"] is None and c["rose"]["ended"] == "revealed"
+
+
+def test_an_arc_rose_popped_then_pulled_back_keeps_its_pop_and_was_recalled():
+    # Branch review B17 (365 round 1: a pop at 45.22, the rose gone quietly at 52.63, Vyse alive to 55.26).
+    c = _rose_cast(_rose(hits=((5, 17.041, 1.629),), t1=26.2), t_end=60.0)
+    assert c["rose"]["pops"] == [17.04] and c["rose"]["ended"] == "recalled"
+    assert c["trigger"] == 17.04 and c["set_off_kind"] == "fired"
+
+
+def test_an_arc_rose_closing_in_the_ms_vyse_dies_is_revealed():
+    # Branch review B18: the close and her death at the same time is her death, not a recall nor a rose that stood.
+    c = _rose_cast(_rose(pop=None, hits=(), t1=40.0), t_end=60.0, kills=[kill(40.0, 5, 1)])
+    assert c["set_off_kind"] is None and c["rose"]["ended"] == "revealed"
 
 
 def test_a_flash_keeps_a_short_span_beside_a_long_lived_row():
@@ -753,9 +1046,9 @@ def sig(out, by=1):
 
 def test_signals_base_keys_are_always_present_and_empty_when_absent():
     s = sig(run([toy_ability("Zz", "E_Thing", 200, 200, 1, t=8.0, t1=12.0, kind="GameObject")]))
-    assert set(s) == {"landed", "seen_end", "pop", "hits", "effect_ends", "on", "off", "armed", "ult_drop"}
+    assert set(s) == {"landed", "seen_end", "to_end", "pop", "hits", "effect_ends", "on", "off", "armed", "ult_drop"}
     assert s["pop"] is None and s["hits"] == [] and s["effect_ends"] == [] and s["on"] == [] and s["off"] == []
-    assert s["armed"] is None and s["ult_drop"] is None and s["landed"] == 8.0
+    assert s["armed"] is None and s["ult_drop"] is None and s["landed"] == 8.0 and s["to_end"] is False
 
 
 def test_signals_seen_end_is_the_max_of_the_pieces_ends_and_ignores_projectiles():
@@ -825,6 +1118,19 @@ def test_signals_go_off_is_razorvines_patch_not_its_hidden_object():
     assert sig(out)["go_off"] == 34.6
     never = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=0.0, t1=59.0, kind="GameObject")
     assert sig(run([never], t_end=60.0, agents={1: "Vyse"}))["go_off"] is None
+
+
+def test_presence_counts_only_while_the_util_is_on():
+    # Branch review B12: a Viper smoke out 0-40 s but up only 20-25 s, and a Razorvine never set off, each with an
+    # enemy standing in it the whole round: only the smoke's 5 s up count, and nothing for the hidden Razorvine.
+    camper = {5: ("B", [(0.0, 200, 200, 180), (40.0, 200, 200, 180)])}
+    smoke = toy_ability("Pandemic", "4_SmokeGrenade", 200, 200, 1, t=0.0, t1=40.0, kind="GameObject",
+                        on=[[20.0, 25.0]])
+    (c,) = [c for c in run([smoke], t_end=40.0, extra=camper, agents={1: "Viper"})["casts"] if c["presence"]]
+    assert c["presence"]["inside_s"] == pytest.approx(5.0, abs=0.3)
+    vine = toy_ability("Nox", "BarbedWire", 200, 200, 1, t=0.0, t1=39.0, kind="GameObject")
+    out = run([vine], t_end=40.0, extra=camper, agents={1: "Vyse"})
+    assert not any((c["presence"] or {}).get("inside_s") for c in out["casts"])
 
 
 def test_signals_possessed_are_the_cameras_looked_through_spans():
@@ -1004,3 +1310,31 @@ def test_omen_pickup_without_a_slot_goes_to_the_nearest_alive_player():
     ps["spike"][1] = {"t": 22.0, "s": "dropped"}
     s = _omen_spike(ps)
     assert s["got_spike"] is None and s["spike_pickup"] == 30.0
+
+
+# Veto's rows, as stored (replay 330, 2026-10-25; slot and times kept, ids trimmed)
+def _veto(name, kind, t, t1, owner_by="equippable", **more):
+    return {"agent": "Veto", "by": 1, "code": "Pine", "full": round(t1 - t, 3), "id": 3700 + int(t * 10), "k": "ability",
+            "kind": kind, "name": name, "owner_by": owner_by, "t": t, "t1": t1, "u": 8005, "v": 2593, "z": 97, **more}
+
+
+def test_veto_casts_are_named_and_a_chokehold_is_one_trap_triggered_by_its_tether():
+    rows = [_veto("Q_TrapGrenade", "Projectile", 1.957, 2.314, yaw=77),
+            _veto("Q_SeizeTrap", "GameObject", 2.314, 27.0, owner_by="agent",
+                  thrown={"t0": 1.957, "t1": 2.314, "u": 8005, "v": 2593, "z": 97}),
+            _veto("Q_Tether_SphereExpansion", "GameObject", 20.39, 24.895, owner_by="agent"),
+            {"by": 1, "code": "Pine", "from": "object", "k": "status", "name": "Q_Tether_SphereExpansion",
+             "status": "tethered", "t": 20.39, "t1": 24.903, "target": 5},
+            _veto("4_UsableTeleport", "GameObject", 12.959, 15.742, yaw=310),
+            _veto("E_RadEaterSpawner", "Projectile", 15.764, 16.069, yaw=196),
+            _veto("E_RadEater", "Pawn", 16.069, 26.0, owner_by="agent", active=16.745)]
+    out = run(rows)
+    by_ability = {}
+    for c in cast_by(out, 1):
+        by_ability.setdefault(c["ability_id"], []).append(c)
+    assert sorted(by_ability) == ["Veto/Chokehold", "Veto/Crosscut", "Veto/Interceptor"]
+    (choke,) = by_ability["Veto/Chokehold"]
+    assert "device" in choke["kinds"] and choke["type"] == "placeable"
+    assert choke["trigger"] == pytest.approx(20.39, abs=0.011) and choke["set_off_kind"] == "fired"
+    assert choke["enemies"] == [5]
+    assert len(by_ability["Veto/Interceptor"]) == 1 and by_ability["Veto/Crosscut"][0]["type"] == "teleport"

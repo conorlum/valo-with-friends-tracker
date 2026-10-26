@@ -26,6 +26,28 @@ def blocked_share(sight: np.ndarray, lines: list) -> float:
     return sum(cg.line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in lines) / len(lines)
 
 
+def test_a_kill_line_with_an_end_on_a_cover_box_is_not_judged():
+    # 2026-10-26: a player standing on top of a box shoots over it; the flat test can't tell them from one behind it.
+    sight = np.zeros((cg.PX, cg.PX), bool)
+    sight[100:110, 100:110] = True                       # a box, also cover
+    lines = [[90, 105, 120, 105],                        # through the box, both ends on the ground: blocked
+             [105, 105, 130, 105],                       # from on top of it: not judged
+             [10, 10, 50, 10]]                           # clear
+    assert cg.kill_line_result(sight, lines)["blocked"] == 2
+    got = cg.kill_line_result(sight, lines, cover=sight)
+    assert (got["qualifying"], got["on_cover"], got["blocked"]) == (2, 1, 1)
+
+
+def test_a_cover_tag_is_the_box_inside_its_drawn_outline():
+    # Summit's tagged boxes: the minimap's outline pixels stay sight-open; only what they enclose is cover.
+    m = cg.masks(rgba("Summit"), TAGS["Summit"])
+    shapes = cg.tag_shapes(rgba("Summit"), TAGS["Summit"])["cover"]
+    p = {**cg.DETECTOR_DEFAULTS, **(TAGS["Summit"].get("params") or {})}
+    outline = cg._base_masks(rgba("Summit"), p["glyph_saturation"], p["line_lum"])["line"]
+    assert (shapes & outline).any() and not (m.cover & outline).any()
+    assert (m.cover == (shapes & ~outline)).all()
+
+
 @pytest.mark.parametrize("name", MAPS)
 def test_committed_masks_match_a_fresh_build(name):
     fresh = cg.masks(rgba(name), TAGS.get(name, {}))
@@ -35,8 +57,8 @@ def test_committed_masks_match_a_fresh_build(name):
 
 @pytest.mark.parametrize("name", sorted(LINES))
 def test_kill_lines_pass_risk1(name):
-    geo = cg.load_geometry(name)
-    assert blocked_share(geo.sight, LINES[name]) <= 0.02
+    m = cg.masks(rgba(name), TAGS.get(name, {}))
+    assert cg.kill_line_result(cg.load_geometry(name).sight, LINES[name], m.cover)["passes"]
 
 
 def test_abyss_passes_only_with_its_see_across_tags():

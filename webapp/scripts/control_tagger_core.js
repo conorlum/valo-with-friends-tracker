@@ -76,17 +76,19 @@
       id = Number(key);
       if (id <= maxId) tagOf[id] = tags[key] === "cover" ? 1 : tags[key] === "seeacross" ? 2 : 3;
     });
-    var sight = new Uint8Array(PX * PX), walk = new Uint8Array(PX * PX);
-    var labels = map.labels, opaque = map.opaque;
+    var sight = new Uint8Array(PX * PX), walk = new Uint8Array(PX * PX), coverOut = new Uint8Array(PX * PX);
+    var labels = map.labels, opaque = map.opaque, outline = map.outline;
     var cover = paints.cover_paint, across = paints.see_across_paint, cantWalk = paints.cant_walk_paint;
     for (var i = 0; i < PX * PX; i++) {
       var t = labels[i] ? tagOf[labels[i]] : 0;
-      var isCover = t === 1 || paintAt(cover, i) === 1;
+      // a cover tag is the box inside its drawn outline (geometry `masks`, 2026-10-26); paint covers what it covers
+      var isCover = (t === 1 && !(outline && outline[i])) || paintAt(cover, i) === 1;
       var isAcross = t === 2 || paintAt(across, i) === 1;
       sight[i] = isCover || (!opaque[i] && !isAcross) ? 1 : 0;
       walk[i] = opaque[i] && !isCover && !paintAt(cantWalk, i) ? 1 : 0;
+      coverOut[i] = isCover ? 1 : 0;
     }
-    return { sight: sight, walk: walk };
+    return { sight: sight, walk: walk, cover: coverOut };
   }
 
   function roundHalfEven(v) {
@@ -109,14 +111,25 @@
     return out;
   }
 
-  function riskOne(sight, lines) {
-    var blocked = [];
+  // A line with either end on a cover box isn't judged (geometry.kill_line_result, 2026-10-26): the flat test can't
+  // tell a player standing on top of a box from one behind it.
+  function onCover(cover, x, y) {
+    if (!cover) return false;
+    var yy = Math.min(PX - 1, Math.max(0, Math.floor(y))), xx = Math.min(PX - 1, Math.max(0, Math.floor(x)));
+    return cover[yy * PX + xx] === 1;
+  }
+
+  function riskOne(sight, lines, cover) {
+    var blocked = [], judged = 0;
     lines.forEach(function (line, k) {
+      if (onCover(cover, line[0], line[1]) || onCover(cover, line[2], line[3])) return;
+      judged += 1;
       var px = linePixels(line);
       for (var j = 0; j < px.length; j++) if (sight[px[j]]) { blocked.push(k); return; }
     });
-    var share = lines.length ? blocked.length / lines.length : null;
-    return { qualifying: lines.length, blocked: blocked, share: share, passes: share === null ? null : share <= BAR };
+    var share = judged ? blocked.length / judged : null;
+    return { qualifying: judged, on_cover: lines.length - judged, blocked: blocked, share: share,
+             passes: share === null ? null : share <= BAR };
   }
 
   function clone(value) { return JSON.parse(JSON.stringify(value)); }

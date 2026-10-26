@@ -1,7 +1,7 @@
 """Veto's Evolution (W10, the 2026-10-05 review item 19): enemy blinds, suppression, reveals and statuses don't
-touch him while it is on; sight, drone cones and a trip's trigger still do. No local replay has a Veto, so these
-rounds are toys whose players are relabelled Veto, with an explicit Evolution row (control_toys labels everyone
-Jett, so each test checks its own labels first)."""
+touch him while it is on; sight, drone cones and a trip's trigger still do. These rounds are toys whose players
+are relabelled Veto, with an explicit Evolution buff row (control_toys labels everyone Jett, so each test checks
+its own labels first)."""
 
 import pytest
 
@@ -18,9 +18,17 @@ def veto_round(veto_slot=5, util=()):
     for p in b["players"]:
         if p["slot"] == veto_slot:
             p["agent"] = "Veto"
-    b["util"].append({"k": "ability", "t": EVOLUTION[0], "t1": EVOLUTION[1], "by": veto_slot, "kind": "GameObject",
-                      "code": "Pine", "name": "X_Evolution", "u": 0, "v": 0})
+    # The CONDENSE 23 row (6e52839b round 9's shape: {"k": "buff", "by": 9, "target": 9, "code": "Pine", ...}).
+    b["util"].append({"k": "buff", "t": EVOLUTION[0], "t1": EVOLUTION[1], "by": veto_slot, "target": veto_slot,
+                      "code": "Pine", "name": "X_Evolution"})
     return b
+
+
+def test_an_ability_row_or_a_buff_on_someone_else_is_not_evolution():
+    b = veto_round()
+    b["util"] = [{"k": "ability", "t": 2.0, "t1": 6.0, "by": 5, "code": "Pine", "name": "X_Evolution"},
+                 {"k": "buff", "t": 2.0, "t1": 6.0, "by": 5, "target": 6, "code": "Pine", "name": "X_Evolution"}]
+    assert ut.evolution_spans(b) == {}
 
 
 def inputs(b):

@@ -13,6 +13,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 200,
+    "on_cover": 0,
     "blocked": 0,
     "share": 0.0,
     "passes": true
@@ -35,6 +36,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 476,
+    "on_cover": 0,
     "blocked": 9,
     "share": 0.0189,
     "passes": true
@@ -58,6 +60,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 122,
+    "on_cover": 0,
     "blocked": 0,
     "share": 0.0,
     "passes": true
@@ -131,6 +134,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 148,
+    "on_cover": 0,
     "blocked": 0,
     "share": 0.0,
     "passes": true
@@ -170,6 +174,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 313,
+    "on_cover": 0,
     "blocked": 2,
     "share": 0.0064,
     "passes": true
@@ -211,6 +216,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 275,
+    "on_cover": 0,
     "blocked": 1,
     "share": 0.0036,
     "passes": true
@@ -222,19 +228,20 @@
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
-   "sight_sha": "c2c9ddd9a224",
-   "walk_sha": "b8ab14e4a82e",
-   "bullet_sha": "c2c9ddd9a224",
-   "walkable_cells": 6031,
+   "sight_sha": "a8686d5a1bbd",
+   "walk_sha": "3f2a7cec58c7",
+   "bullet_sha": "a8686d5a1bbd",
+   "walkable_cells": 5931,
    "cell_m": 1.042,
-   "tags": 0,
+   "tags": 22,
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
    "kill_lines": {
-    "qualifying": 297,
-    "blocked": 4,
-    "share": 0.0135,
+    "qualifying": 292,
+    "on_cover": 5,
+    "blocked": 2,
+    "share": 0.0068,
     "passes": true
    },
    "barrier_sha": "6e8a726dd39b",
@@ -245,10 +252,10 @@
   },
   "Sunset": {
    "image_sha": "1188642e2f94",
-   "sight_sha": "1b08ae12cc27",
-   "walk_sha": "f89cd20d79e7",
-   "bullet_sha": "1b08ae12cc27",
-   "walkable_cells": 6195,
+   "sight_sha": "e608a189a789",
+   "walk_sha": "ba2802b67c05",
+   "bullet_sha": "e608a189a789",
+   "walkable_cells": 6197,
    "cell_m": 1.002,
    "tags": 1,
    "see_across_paint": false,
@@ -256,6 +263,7 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 204,
+    "on_cover": 0,
     "blocked": 1,
     "share": 0.0049,
     "passes": true

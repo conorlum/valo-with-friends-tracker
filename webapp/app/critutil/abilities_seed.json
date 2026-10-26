@@ -921,7 +921,7 @@
    "grace_s": 1,
    "wiki": {
     "page": "Tailwind",
-    "field": "Empowered Duration"
+    "field": "Dash Duration"
    },
    "pieces": []
   },
@@ -1895,28 +1895,32 @@
    "owner_note": "3.08 s windup + 16 segments 0.25 s apart, 4 ticks each 0.25 s apart"
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Pine_Q_SeizeTrap|Pine_Q_TrapGrenade(Underhand)?)$",
    "agent": "Veto",
    "ability": "Chokehold",
-   "slot": "?",
-   "type": "status",
+   "slot": "Q",
+   "type": "placeable",
    "kinds": [
-    "status"
+    "device"
    ],
-   "rule": "status",
-   "grace_s": 1,
+   "rule": "placeable",
+   "grace_s": 0,
    "wiki": {
     "page": "Chokehold",
     "field": "Zone Duration"
    },
-   "pieces": [],
-   "replay_s": 22.5
+   "pieces": [
+    "^Pine_Q_Tether_SphereExpansion$"
+   ],
+   "replay_s": 22.5,
+   "after_trigger_s": 4.5,
+   "off_at_death": true
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Pine_4_UsableTeleport)$",
    "agent": "Veto",
    "ability": "Crosscut",
-   "slot": "?",
+   "slot": "C",
    "type": "teleport",
    "kinds": [
     "teleport"
@@ -1931,10 +1935,10 @@
    "replay_s": 23.7
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Pine_E_RadEater|Pine_E_RadEaterSpawner)$",
    "agent": "Veto",
    "ability": "Interceptor",
-   "slot": "?",
+   "slot": "E",
    "type": "placeable",
    "kinds": [
     "device"
@@ -1950,7 +1954,7 @@
    "off_at_death": true
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Pine_X_Evolution)$",
    "agent": "Veto",
    "ability": "Evolution",
    "slot": "X",

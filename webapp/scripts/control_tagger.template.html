@@ -358,7 +358,8 @@
     if (!maps[name]) {
       var m = DATA.maps[name];
       maps[name] = { candidates: m.candidates, params: m.params, image_sha: m.image_sha, lines: m.lines, starts: m.starts,
-                     labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque) };
+                     labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque),
+                     outline: m.outline ? T.rleDecode(m.outline) : null };
     }
     return maps[name];
   }
@@ -380,7 +381,7 @@
   function recompute() {
     var map = maps[state.map];
     state.masks = T.compose(map, mapEdits());
-    state.risk = T.riskOne(state.masks.sight, map.lines);
+    state.risk = T.riskOne(state.masks.sight, map.lines, state.masks.cover);
     state.blocked = {};
     state.risk.blocked.forEach(function (k) { state.blocked[k] = true; });
     paintTint(); paintOverlay(); updateStats(); showSelected(); showChoke();

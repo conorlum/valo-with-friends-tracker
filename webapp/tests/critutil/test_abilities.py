@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "4f1f3b366d7287812f0033840d7586d3a84d9f0c36ad392fcd2f9add3215114e"
+PINNED_EXTRACTOR_HASH = "efa134df85fe245c9fcec575cc2b891dccb6541936b74bd62a0a0cf1bc53ed22"
 
 
 def _script():
@@ -17,6 +17,21 @@ def _script():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def test_a_rebuild_from_the_seed_keeps_every_table_field():
+    # Branch review B8: fetch_util_durations.merge rebuilds abilities.json from the seed and the wiki, writing only
+    # duration_s, provisional and wiki. Every other field of every entry must already be in the seed, or a rebuild
+    # quietly drops it (Veto's three abilities were named in the table only).
+    merged = {"duration_s", "provisional", "wiki"}
+    d = WEBAPP_ROOT / "app" / "critutil"
+    table = json.loads((d / "abilities.json").read_text(encoding="utf-8"))["abilities"]
+    seed = {(e["agent"], e["ability"]): e for e in json.loads((d / "abilities_seed.json").read_text(encoding="utf-8"))["abilities"]}
+    assert len(seed) == len(table)
+    differ = [(t["agent"], t["ability"]) for t in table
+              if {k: v for k, v in t.items() if k not in merged}
+              != {k: v for k, v in seed.get((t["agent"], t["ability"]), {}).items() if k not in merged}]
+    assert differ == []
 
 
 HEAD = '==Stats==\n{| class="wikitable" style="text-align:left"\n!Stat\n!Value\n!Confirmed<br>value?\n'

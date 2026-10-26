@@ -733,6 +733,61 @@ def test_utility_shot_and_destroyed_is_gone(tmp_path):
     assert [c.get("gone") for c in cams] == [20.0, None]
 
 
+def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
+    # trap-jobs D13, the shapes of b22430cd round 6: the Pit's GroundVolumeComponent lists its fragments (2 m
+    # convex hulls), and an enemy inside gets an effect naming the Pit beside Viper. Viper is slot 9 (team B).
+    pit = 300
+    fragments = {"type": "export_group_received", "time_ms": 21_000, "actor_net_guid": pit,
+                 "export_group_path": "/Script/DynamicVolume.GroundVolumeComponent",
+                 "payload": {"FinalCount": 2, "FragmentDelta": {"DeletedIds": [], "Updates": [
+                     {"ReplicationID": 1, "ConvexHullPoints": [{"Point": {"x": x, "y": y, "z": 188}}
+                                                               for x, y in ((0, 0), (200, 0), (200, 200), (0, 200))]},
+                     {"ReplicationID": 2, "ConvexHullPoints": [{"Point": {"x": x, "y": y, "z": 188}}
+                                                               for x, y in ((200, 0), (400, 0), (400, 200), (200, 200))]}]}}}
+    rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
+            fragments,
+            effect(25_000, 100, 7, [pit, 109], container=8263), stop(30_000, 100, 7),      # enemy (team A): decayed
+            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: friendly
+            closed(40_000, pit)]
+    out = build_extras_rows(tmp_path, rows, {**AGENTS7, "Pandemic": "Viper"}).rounds[1]
+    [row] = [a for a in out["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 2 and all(len(h) == 4 for h in row["area"])
+    assert row["area"][1][1] == list(GAME_MAP.to_uv(400, 0))
+    decayed = [s for s in out.get("statuses", []) if s["status"] == "decayed"]
+    assert [(s["slot"], s["target"], s["t0"], s["t1"], bool(s.get("friendly"))) for s in decayed] == [
+        (9, 0, 15.0, 20.0, False), (9, 1, 15.0, 20.0, True)]
+
+
+def _ground(t_ms, guid, updates=(), deleted=()):
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": guid,
+            "export_group_path": "/Script/DynamicVolume.GroundVolumeComponent",
+            "payload": {"FinalCount": len(updates), "FragmentDelta": {"DeletedIds": list(deleted), "Updates": [
+                {"ReplicationID": rid, "ConvexHullPoints": [{"Point": {"x": x + dx, "y": y, "z": 188}}
+                                                            for x, y in ((0, 0), (200, 0), (200, 200), (0, 200))]}
+                for rid, dx in updates]}}}
+
+
+def test_a_pits_ground_drops_deleted_fragments_and_never_outlives_its_spawn(tmp_path):
+    # Branch review B19: a delta that only deletes (no hull points in the line) still removes its fragment.
+    # B20: a GUID reused by a later Pit starts with no ground of the earlier one's.
+    pit, agents = 300, {**AGENTS7, "Pandemic": "Viper"}
+    rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
+            _ground(21_000, pit, updates=[(1, 0), (2, 200)]), _ground(22_000, pit, deleted=[1]),
+            closed(30_000, pit)]
+    [row] = [a for a in build_extras_rows(tmp_path, rows, agents).rounds[1]["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 1 and row["area"][0][0] == list(GAME_MAP.to_uv(200, 0))
+    rows += [spawned(40_000, pit, "Default__Patch_Pandemic_X_Circular_C", 900, 900), instigated(40_000, pit, 109),
+             _ground(41_000, pit, updates=[(7, 900)]), closed(50_000, pit)]
+    [row] = [a for a in build_extras_rows(tmp_path, rows, agents).rounds[1]["abilities"] if a["name"] == "X_Circular"]
+    assert len(row["area"]) == 1 and row["area"][0][0] == list(GAME_MAP.to_uv(900, 0))
+
+
+def build_extras_rows(tmp_path, rows, agents):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table7(), WINDOWS, GAME_MAP, agents, lambda t_ms: {}, teams=TEAMS7)
+
+
 AGENTS14 = {**AGENTS7, "Aggrobot": "Gekko", "Vampire": "Reyna"}
 
 
@@ -746,15 +801,22 @@ def _leer(guid):
     return spawned(20_000, guid, "Default__GameObject_Vampire_4_NearsightAOE_Source_C", 0, 0)
 
 
-def test_leer_hit_lethal_in_its_close_ms_is_gone_and_other_abilities_are_not(tmp_path):
+def test_a_lethal_hit_in_the_close_ms_is_gone_for_every_object(tmp_path):
+    # trap-jobs D4 (CONDENSE 23): a shot camera, turret or alarmbot closes in its lethal hit's ms, like Leer.
     rows = [_leer(80), damage(30_000, 80, 999, lethal=True), closed(30_000, 80),    # shot down: same ms
             _leer(81), closed(30_000, 81),                                          # natural close
             spawned(20_000, 82, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 82, 101),
-            damage(30_000, 82, 999, lethal=True), closed(30_000, 82)]               # D10: not widened
+            damage(30_000, 82, 999, lethal=True), closed(30_000, 82),               # shot: same ms
+            spawned(20_000, 83, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 83, 101),
+            damage(30_000, 83, 999), closed(30_000, 83),                            # hit, not lethal: a recall
+            spawned(20_000, 84, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 84, 101),
+            closed(30_000, 84), damage(30_050, 84, 999, lethal=True)]               # lethal after the close
     out = {a["id"]: a for a in run14(tmp_path, rows).rounds[1]["abilities"]}
     assert out[80]["gone"] == 20.0
     assert "gone" not in out[81]
-    assert "gone" not in out[82]
+    assert out[82]["gone"] == 20.0
+    assert "gone" not in out[83]
+    assert "gone" not in out[84]
 
 
 def _dizzy_rows(close_ms=21_000, spawner=True, ray_y=60.0):

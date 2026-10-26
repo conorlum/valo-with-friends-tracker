@@ -277,6 +277,34 @@ def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeyp
     assert calls == [1]
 
 
+def test_a_build_whose_corpus_key_moved_is_rebuilt_though_this_replays_rounds_match(db, linked, monkeypatch):
+    # Branch review B7: another replay joining, a refit estimator or a new table changes corpus_key without
+    # touching this replay's fingerprints; the stored lifts and gates are then stale.
+    built = _stored_build(db, linked, {"lift": 0.0})
+    replay_util._store_values(db, "an older corpus", built)
+    calls = []
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
+    call(db)
+    assert calls == [1]
+
+
+def test_a_rebuild_that_refits_the_estimator_scores_with_the_new_one(db, linked, monkeypatch):
+    # Branch review B14: ensure_values can refit the estimator while rebuilding; the casts must then be scored with
+    # the estimator that build used, not the one loaded before it.
+    built = _stored_build(db, linked, {"lift": 0.0})
+    replay_util._store_values(db, "an older corpus", built)
+    old, new = {"key": "old", "n": 1, "excluded": []}, {"key": "new", "n": 1, "excluded": []}
+    state = {"model": old}
+    monkeypatch.setattr(replay_util.util_model, "load", lambda d: state["model"])
+    monkeypatch.setattr(replay_util.util_model, "covers", lambda m, ids: True)
+    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: state.update(model=new))
+    seen, real = [], replay_util._cast_rows
+    monkeypatch.setattr(replay_util, "_cast_rows", lambda rid, ctx, cur, model, *a, **k: (seen.append(model["key"]),
+                                                                                         real(rid, ctx, cur, None, *a, **k))[1])
+    call(db)
+    assert seen == ["new"]
+
+
 def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypatch):
     _stored_build(db, linked, {"lift": 0.0})
     monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: pytest.fail("rebuilt"))

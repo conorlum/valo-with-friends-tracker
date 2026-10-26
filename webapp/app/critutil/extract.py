@@ -17,7 +17,7 @@ import re
 
 from app.control import engine
 from app.critutil import abilities, windows
-from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
+from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, ARC_ROSE, ROSE_REPOP_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
@@ -45,6 +45,10 @@ def _key_of(name: str | None) -> str | None:
 @functools.lru_cache(maxsize=None)
 def _entry_for(code_name: str):
     return abilities.lookup(code_name)
+
+
+def _entry_by_match(match: str) -> dict | None:
+    return next((e for e in abilities.load() if e["match"] == match), None)
 
 
 @functools.lru_cache(maxsize=None)
@@ -281,6 +285,9 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             for c in reversed(casts):
                 if c.flash is not None or c.by != by or c.entry is None or c.entry["match"] not in parents:
                     continue
+                if r.get("code") == "Deadeye" and r.get("name") == "E_Slow_Large" \
+                        and (r.get("thrown") or {}).get("t0") is None and not _in_dart_window(r, _trap_t1(c)):
+                    break                   # a slow with no throw far from the trap's close is an ult kill's, its own cast
                 if ((r.get("thrown") or {}).get("t0") is not None and abs(c.t - tt) <= THROW_MATCH_S) \
                         or c.t - _EPS <= r["t"] <= c.t_end + MERGE_S:
                     host = c
@@ -302,6 +309,13 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             continue
         c = _Cast(len(casts), r, rnd)
         c.kinds = set()
+        if c.entry is None and len(parents) == 1:
+            parent = _entry_by_match(next(iter(parents)))
+            if parent is not None and parent.get("rule") == "flash":
+                # A flash ability's piece with no flash row (an Arc Rose put down in the buy phase): a use of
+                # that ability, whose pops can't be seen (trap-jobs D12).
+                c.entry = parent
+                c.kinds = set(parent.get("kinds") or ())
         casts.append(c)
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
@@ -394,11 +408,13 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
                          and "damaging" in c.kinds]
             if not cands and r.get("code"):
                 # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
-                # and of the same ability slot (a Jett's ult knives are never her dash's)
+                # and of the same ability slot (a Jett's ult knives are never her dash's), never a movement cast (a
+                # dash touches nobody; branch review B11)
                 key = _key_of(name)
                 cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
                          and r["code"] in {x.get("code") for x in c.rows}
-                         and (key is None or c.key is None or c.key == key)]
+                         and (key is None or c.key is None or c.key == key)
+                         and any(x.get("k") != "cast" for x in c.rows)]
             if len({c.i for c in cands}) != 1:
                 cands = [c for c in cands if name and name in c.names] or cands
             if not cands:
@@ -416,19 +432,137 @@ def _damage_by_zone_before(effects, target, t) -> bool:
                and e["t0"] <= t for e in effects)
 
 
-def _trigger(c: _Cast) -> float | None:
+def _is_trap_row(r) -> bool:
+    return r.get("code") == "Deadeye" and r.get("name") == "E_Trap"
+
+
+def _trap_t1(c: _Cast) -> float | None:
+    """When a Trademark cast's trap row closed (None for any other cast)."""
+    return next((float(r["t1"]) for r in c.rows if _is_trap_row(r) and r.get("t1") is not None), None)
+
+
+def _in_dart_window(r, trap_t1) -> bool:
+    """A Trademark piece (its dart or its slow) whose `t` is 1.8-2.2 s before the trap row's close: the trap fired."""
+    lo, hi = TRADEMARK_PIECE_LEAD_S
+    return trap_t1 is not None and lo <= trap_t1 - float(r["t"]) <= hi
+
+
+def _is_rose(c: _Cast) -> bool:
+    return c.entry is not None and (c.entry.get("agent"), c.entry.get("ability")) == ARC_ROSE
+
+
+def _rose_pops(c: _Cast) -> list[float]:
+    """An Arc Rose's pops: its flash row's `pop`, then each group of blinds more than ROSE_REPOP_S after the last
+    pop. A pop that blinded nobody is still a pop. Never its `fx` (its arming, or its reveal at Vyse's death)."""
+    if c.flash is None:
+        return []
+    pops = []
+    pop = (c.flash.get("pop") or {}).get("t")
+    if pop is not None:
+        pops.append(float(pop))
+    for t in sorted(float(h[1]) for h in c.flash.get("hits") or () if len(h) > 1):
+        if not pops or t > pops[-1] + ROSE_REPOP_S:
+            pops.append(t)
+    return sorted(pops)
+
+
+def _rose_gone(c: _Cast) -> float | None:
+    gone = [float(r["gone"]) for r in c.rows if r.get("gone") is not None]
+    return min(gone) if gone else None
+
+
+def _rose_end(rnd, c: _Cast) -> float:
+    """When the rose itself left the map: its object's close (a cast started by its flash row ends with the
+    flash), else the round's end."""
+    ends = [float(r["t1"]) for r in c.rows if r.get("k") == "ability" and r.get("t1") is not None]
+    return min(max(ends), rnd.t_end) if ends else rnd.t_end
+
+
+def _rose_owner_gone(rnd, c: _Cast, t: float) -> bool:
+    """Whether Vyse had died by `t`, her death in that very ms included: a rose closing as she dies went with her,
+    it was not pulled back (branch review B18)."""
+    died = next((k for k, _a, v in sorted(rnd.kills) if v == c.by and k >= c.t), None)
+    return (died is not None and died <= t + _EPS) or not rnd.alive(c.by, t - _EPS)
+
+
+def _trigger_kind(c: _Cast) -> tuple[float, str] | None:
+    """(when the device was set off, "fired" | "broken"): the earliest of its signals (fx, raised, a Trademark's dart
+    or slow, an Alarmbot's second yaw: fired; gone: broken), fired on a tie. An Alarmbot that chased and was then
+    shot fired (branch review B15). An Arc Rose has its own: its first pop, else its destruction."""
+    if _is_rose(c):
+        pops, gone = _rose_pops(c), _rose_gone(c)
+        if pops and (gone is None or pops[0] <= gone + _EPS):
+            return pops[0], "fired"
+        return (gone, "broken") if gone is not None else None
+    seen: list[tuple[float, str]] = []
+    trap_t1 = _trap_t1(c)
     for r in c.rows:
         fx = r.get("fx")
         if isinstance(fx, (int, float)):
-            return float(fx)
-        if isinstance(fx, list) and fx:
+            seen.append((float(fx), "fired"))
+        elif isinstance(fx, list) and fx:
             first = fx[0]
-            return float(first[0] if isinstance(first, list) else first)
+            seen.append((float(first[0] if isinstance(first, list) else first), "fired"))
         if isinstance(r.get("raised"), list) and r["raised"]:
-            return float(r["raised"][0])
+            seen.append((float(r["raised"][0]), "fired"))
         if r.get("gone") is not None:
-            return float(r["gone"])
-    return None
+            seen.append((float(r["gone"]), "broken"))
+        if r.get("code") == "Deadeye" and r.get("name") in ("4_Trap_Dart", "E_Slow_Large") \
+                and _in_dart_window(r, trap_t1):
+            seen.append((_throw_t(r) - TRADEMARK_FIRE_LEAD_S, "fired"))
+        yaws = r.get("yaws")
+        if r.get("code") == "Killjoy" and r.get("name") == "Q_StealthAlarmbot" and r.get("t1") is not None \
+                and isinstance(yaws, list):
+            later = [float(y[0]) for y in yaws[1:] if isinstance(y, list) and y
+                     and float(r["t1"]) - ALARMBOT_YAW_WINDOW_S <= float(y[0]) <= float(r["t1"]) + _EPS]
+            if later:
+                seen.append((later[0], "fired"))
+    return min(seen, key=lambda s: (s[0], s[1] != "fired")) if seen else None
+
+
+def _trigger(c: _Cast) -> float | None:
+    got = _trigger_kind(c)
+    return got[0] if got else None
+
+
+def _set_off(rnd, c: _Cast, enemy_eff, trigger) -> tuple[float | None, str | None]:
+    """How a device was set off: "fired" (its own signal or an enemy touching it), "broken" (it vanished), "closed"
+    (its row ended before the round was decided with its owner alive, a quiet close), else None. Only `fired` and
+    `broken` carry a trigger time; the caller's `trigger` is untouched by "closed"."""
+    if trigger is not None:
+        got = _trigger_kind(c)
+        return trigger, (got[1] if got and abs(got[0] - trigger) <= _EPS else "fired")
+    if _is_rose(c):
+        # An Arc Rose that leaves quietly with Vyse alive was pulled back (trap-jobs D12: popped, destroyed or recalled)
+        end = _rose_end(rnd, c)
+        if end < rnd.t_decided - _EPS and not _rose_owner_gone(rnd, c, end):
+            return end, "recalled"
+        return None, None
+    if any(r.get("t1") is not None for r in c.rows) and c.t_end < rnd.t_decided - _EPS \
+            and rnd.alive(c.by, c.t_end):
+        return c.t_end, "closed"
+    return None, None
+
+
+def _rose(rnd, c: _Cast, set_off_kind) -> dict | None:
+    """An Arc Rose's whole story: every pop, and how it ended: "popped" (its last pop), "destroyed" (shot, popped or
+    not), "recalled", "revealed" (Vyse died while it stood) or "stood" (to the round's end). `seen` is False for a rose
+    with no flash row (put down in the buy phase), whose pops the replay doesn't carry."""
+    if not _is_rose(c):
+        return None
+    pops, gone = _rose_pops(c), _rose_gone(c)
+    end = _rose_end(rnd, c)
+    if gone is not None:
+        how = "destroyed"
+    elif _rose_owner_gone(rnd, c, min(end, rnd.t_decided)):
+        how = "revealed"            # Vyse died while it stood: it is off, though its object may stay to the round's end
+    elif end < rnd.t_decided - _EPS and (not pops or end > pops[-1] + _EPS):
+        how = "recalled"            # left quietly after its last pop, Vyse alive: pulled back (branch review B17)
+    elif pops:
+        how = "popped"
+    else:
+        how = "stood"
+    return {"pops": [_r2(t) for t in pops], "ended": how, "gone": _r2(gone), "seen": c.flash is not None}
 
 
 def _link_kills(rnd, sides, c: _Cast, effects, trigger) -> list[dict]:
@@ -513,8 +647,45 @@ def _shapes_of(rnd, sides, c: _Cast):
     spots = [_px(r["u"], r["v"]) for r in c.rows if r.get("u") is not None and r.get("kind") != "Projectile"]
     mine = [(t0, t1, (x, y, r, solid)) for t0, t1, x, y, r, solid in rnd.smokes
             if c.t - _EPS <= t0 <= c.t_end and any(math.hypot(x - sx, y - sy) < 1.0 for sx, sy in spots)]
-    walls = [(t0, t1, w) for t0, t1, w in rnd.walls if abs(t0 - landed) <= 1.0]
+    # A wall is this cast's only when it starts with it AND runs through the cast's own laid points (Viper's and
+    # Blaze's `points`, Vyse's `line`, Sage's segment centres: the engine builds each wall through them). Time alone
+    # gave an Omen smoke the cover of an enemy Viper wall raised in the same second (branch review B1).
+    lines = [[_px(*p[:2]) for p in r[key] if isinstance(p, (list, tuple)) and len(p) >= 2]
+             for r in c.rows for key in ("points", "line") if r.get(key)]
+    centres = [_px(*p[:2]) for r in c.rows for p in (r.get("segments") or ())
+               if isinstance(p, (list, tuple)) and len(p) >= 2]
+    walls = [(t0, t1, w) for t0, t1, w in rnd.walls
+             if abs(t0 - landed) <= 1.0 and _is_own_wall(w, lines, centres)]
     return (mine + walls) or None
+
+
+WALL_MATCH_PX = 3.0      # a wall's vertex this close to a laid line is on it (the engine keeps the laid points)
+
+
+def _to_line(p, pts) -> float:
+    """px from a point to a polyline (one point: to that point)."""
+    best = math.hypot(p[0] - pts[0][0], p[1] - pts[0][1])
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        dx, dy = x1 - x0, y1 - y0
+        n2 = dx * dx + dy * dy
+        k = 0.0 if n2 == 0 else max(0.0, min(1.0, ((p[0] - x0) * dx + (p[1] - y0) * dy) / n2))
+        best = min(best, math.hypot(p[0] - x0 - k * dx, p[1] - y0 - k * dy))
+    return best
+
+
+def _is_own_wall(wall, lines, centres) -> bool:
+    """Whether the engine built this wall from the cast's laid points: every vertex of it on one of the cast's laid
+    lines (Viper's and Blaze's `points`, Vyse's `line`: the engine's line through them), or, for Sage, a one-segment
+    wall centred on one of its `segments`. A point of ours merely touching another wall (two walls meeting in a T) is
+    not enough (branch review B13)."""
+    verts = [(x0, y0) for x0, y0, _x1, _y1 in wall.segs] + [tuple(wall.segs[-1][2:])]
+    if any(len(ln) >= 1 and all(_to_line(v, ln) <= WALL_MATCH_PX for v in verts) for ln in lines):
+        return True
+    if centres and len(wall.segs) == 1:
+        x0, y0, x1, y1 = wall.segs[0]
+        mid = ((x0 + x1) / 2, (y0 + y1) / 2)
+        return any(math.hypot(mid[0] - x, mid[1] - y) <= WALL_MATCH_PX for x, y in centres)
+    return False
 
 
 def _grid(t0: float, t1: float, step: float):
@@ -641,6 +812,25 @@ def _active_spans(rnd, c: _Cast) -> list[list[float]]:
     return windows._cut([[a, b] for s0, s1 in spans for a, b in windows._minus([s0, s1], off) if b > a], None)
 
 
+def _area_dist_m(rnd, p, hulls) -> float:
+    """Metres from a point to the nearest of an area's convex hulls (map px): 0 inside one."""
+    best = math.inf
+    for hull in hulls:
+        n = len(hull)
+        signs = set()
+        for i in range(n):
+            (ax, ay), (bx, by) = hull[i], hull[(i + 1) % n]
+            cross = (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)
+            if abs(cross) > _EPS:
+                signs.add(cross > 0)
+            dx, dy = bx - ax, by - ay
+            k = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy)))
+            best = min(best, math.hypot(p[0] - ax - k * dx, p[1] - ay - k * dy))
+        if n >= 3 and len(signs) <= 1:
+            return 0.0
+    return best * rnd.geo.m_per_px
+
+
 def _presence(rnd, sides, c: _Cast) -> dict | None:
     """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it could act
     (`_active_spans`): enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies
@@ -651,6 +841,15 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     kind = next((k for k in ("device", "smoke", "damaging", "status") if k in c.kinds), "default")
     r = ZONE_RADIUS_M[kind]
     x, y = _px(c.u, c.v)
+    area = next(([[_px(*pt) for pt in hull] for hull in row["area"]] for row in c.rows if row.get("area")), None)
+    if area:
+        r = 0.0                     # its real ground (Viper's Pit, CONDENSE 23): distances are to its edge
+
+        def dist(p):
+            return _area_dist_m(rnd, p, area)
+    else:
+        def dist(p):
+            return _dist_m(rnd, p, (x, y))
     spans = _active_spans(rnd, c)
     inside_s = 0.0
     entered, waits = set(), set()
@@ -665,7 +864,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                 p = rnd.pos(s, t)
                 if p is None:
                     continue
-                d = _dist_m(rnd, p, (x, y))
+                d = dist(p)
                 if d <= r:
                     inside_s += PRESENCE_STEP_S
                     entered.add(s)
@@ -681,7 +880,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
     # `life_s`: how long its object was there at all, active or not (a device "gone at once" is wasted; one left
     # hidden is not, by that rule: util_values.is_wasted)
-    return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)),
+    return {"r_m": r, "area": bool(area), "armed_s": _r2(sum(b - a for a, b in spans)),
             "life_s": _r2(max(0.0, min(c.t_end, rnd.t_decided) - c.t)), "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
             "held_back": sorted(set(gaps) - entered), "_waits": waits,
@@ -953,6 +1152,21 @@ def _unused(rnd, blob, sides, spike, agents) -> list[dict]:
     return out
 
 
+EVOLUTION_BUFF = "X_Evolution"                  # Veto's ult, a buff row on himself (CONDENSE 23)
+EVOLUTION_REGEN = "X_SelfBuffVers_Engineering"  # its regeneration: a heal row each time he heals after a hit
+
+
+def _evolution(util, slot, end):
+    """(start, end) of the slot's Evolution buff row starting by `end`, or None. It runs to his death or the
+    round's end (the row's `t1`)."""
+    rows = [r for r in util if r.get("k") == "buff" and r.get("by") == slot and r.get("name") == EVOLUTION_BUFF
+            and r["t"] <= end]
+    if not rows:
+        return None
+    r = min(rows, key=lambda x: x["t"])
+    return float(r["t"]), float(r["t1"]) if r.get("t1") is not None else None
+
+
 def _first_use(util, slot, agent, end):
     """The time of the slot's first use of a timed ult (the shot, knife or gun-less shot that proves it, or Reyna
     equipping Empress, else its heal on activation), up to `end`; None when it has none (in an old blob, Reyna at
@@ -967,6 +1181,12 @@ def _first_use(util, slot, agent, end):
                           and r.get("from") == "equippable")
     elif agent == "Neon":
         want = lambda r: r.get("k") == "shot" and r.get("gun") is None
+    elif agent == "Veto":
+        # Evolution's own buff row (CONDENSE 23); before it, the first regen heal (a floor: only when he was hurt)
+        span = _evolution(util, slot, end)
+        if span is not None:
+            return span[0]
+        want = lambda r: r.get("k") == "heal" and r.get("name") == EVOLUTION_REGEN
     else:
         return None
     ts = [r["t"] for r in util if r.get("by") == slot and r["t"] <= end and want(r)]
@@ -984,8 +1204,19 @@ def _use(rnd, ps, util, slot, agent, end) -> dict | None:
     if t is not None:
         end_t = next((p["t"] for p in line if p["t"] > t and p["n"] == 0), None)
         death = next((k for k, a, b in sorted(rnd.kills) if k > t and b == slot), None)
-    return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult",
-            "signals": {"ult_end": _r2(end_t), "death": _r2(death)}}
+    signals = {"ult_end": _r2(end_t), "death": _r2(death)}
+    if agent == "Veto":
+        # Veto's ult line drops only at the round's end, so the buff row's own end is the ult's end; while it is on
+        # he regenerates after every hit that doesn't kill him, so a use can heal several times (the wiki).
+        span = _evolution(util, slot, end)
+        if span is not None:
+            signals["ult_end"] = _r2(span[1])
+        stop = span[1] if span is not None and span[1] is not None else end
+        regen = [r for r in util if r.get("k") == "heal" and r.get("by") == slot and r.get("name") == EVOLUTION_REGEN
+                 and t is not None and t - _EPS <= r["t"] <= stop + _EPS]
+        signals.update({"exact": span is not None, "regen_heals": len(regen),
+                        "regen_hp": _r2(sum(float(r.get("amount") or 0.0) for r in regen))})
+    return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult", "signals": signals}
 
 
 def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
@@ -1001,9 +1232,13 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     out = {}
     for slot in sides:
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
-        used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util if r.get("k") == "ability")
+        use = _use(rnd, ps, util, slot, (agents or {}).get(slot), end)
+        # used: an ult ability row, or the use a timed ult's own evidence found (a Tour de Force shot, Evolution's
+        # row): the same evidence the use is valued on (branch review B5)
+        used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util
+                   if r.get("k") == "ability") or (use is not None and use.get("t") is not None)
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
-                          "used": used, "use": _use(rnd, ps, util, slot, (agents or {}).get(slot), end)}
+                          "used": used, "use": use}
     return out
 
 
@@ -1067,13 +1302,15 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     """Stored facts the site's windows are cut from later (nothing is windowed here): when it landed, when its pieces
     were last seen, a flash's pop, the enemy hits and effect ends, a wall's `on` and a device's `off` spans, when a
     placeable armed, the ult line's drop, and for an ult the facts its table rule asks for."""
-    ends = []
+    ends, to_end = [], False
     for r in c.rows:
         if (r.get("k") == "ability" and r.get("kind") == "Projectile") or r.get("k") in ("flash", "nearsight"):
             continue
         e = [x for x in (r.get("t1"), r.get("gone")) if x is not None]
         if e and min(e) < rnd.t_end - _EPS:
             ends.append(min(e))
+        elif e:
+            to_end = True     # up when the round ended: no seen_end, but not missing either (branch review B3)
     pop = ((c.flash or {}).get("pop") or {}).get("t")
     on = sorted(([a, b] for r in c.rows for a, b in (r.get("on") or ())), key=lambda x: x[0])
     off = sorted(([a, b] for r in c.rows for a, b in (r.get("off") or ())), key=lambda x: x[0])
@@ -1085,6 +1322,7 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
     s = {
         "landed": _r2(c.landed_t),
         "seen_end": _r2(max(ends)) if ends else None,
+        "to_end": to_end and not ends,
         "pop": _r2(pop),
         "hits": [[_r2(e["t0"]), _r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] in ("blind", "nearsight")],
         "effect_ends": [[_r2(e["t1"]), e["dur_known"]] for e in enemy_eff if e["how"] not in ("damage", "reveal")],
@@ -1273,10 +1511,11 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         eff = effects[c.i]
         side = sides.get(c.by)
         enemy_eff = [e for e in eff if sides.get(e["target"]) not in (None, side)]
-        trigger = None
-        if "device" in c.kinds:     # it fired, was broken, or first touched an enemy: whichever came first
+        trigger = set_off_t = set_off_kind = None
+        if "device" in c.kinds:    # it fired, was broken, or first touched an enemy: whichever came first
             seen = [x for x in (_trigger(c), *(e["t0"] for e in enemy_eff)) if x is not None and x >= c.t - _EPS]
             trigger = min(seen) if seen else None
+            set_off_t, set_off_kind = _set_off(rnd, c, enemy_eff, trigger)
         alive = _alive_counts(rnd, sides, c.t)
         cast_type = "ult" if "ult" in c.kinds else (c.entry or {}).get("type") or "other"
         out_casts.append({
@@ -1289,6 +1528,8 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "phase": _phase(c.t, contact, plant), "after_decided": c.t > rnd.t_decided,
             "alive": [alive["attack"], alive["defense"]],
             "trigger": _r2(trigger),
+            "set_off_t": _r2(set_off_t), "set_off_kind": set_off_kind,
+            "rose": _rose(rnd, c, set_off_kind),
             "enemies": sorted({e["target"] for e in enemy_eff}),
             "effects": [{"target": e["target"], "how": e["how"], "t0": _r2(e["t0"]), "t1": _r2(e["t1"]),
                          "known": e["dur_known"]} for e in enemy_eff],
@@ -1305,8 +1546,13 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
     ults = _ults(rnd, blob, sides, agents)
-    out_casts.extend(_timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
-                                      blob.get("util") or ()))
+    # a use a recorded row already made a cast of (Veto's Evolution `buff` row, CONDENSE 23) is not made again
+    have = {(c["by"], c["ability_id"], c["t"]) for c in out_casts}
+    out_casts.extend(x for x in _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
+                                                 blob.get("util") or ())
+                     if (x["by"], x["ability_id"], x["t"]) not in have)
+    for i, c in enumerate(out_casts):
+        c["i"] = i
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
         "v": VERSION,

@@ -94,6 +94,7 @@ def map_data(name: str, entry: dict, lines: list) -> dict:
     base = cg._base_masks(rgba, cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
     return {"image": base64.b64encode(raw).decode("ascii"), "image_sha": hashlib.sha256(raw).hexdigest()[:12],
             "params": params, "candidates": candidates, "labels": rle(labels), "opaque": rle(base["opaque"].astype(np.uint8)),
+            "outline": rle(base["line"].astype(np.uint8)),
             "lines": lines}
 
 

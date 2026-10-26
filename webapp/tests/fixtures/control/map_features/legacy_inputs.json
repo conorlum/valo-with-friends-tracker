@@ -123,23 +123,23 @@
    }
   },
   "Summit": {
-   "fingerprint": "03f6d7ae941a0452",
+   "fingerprint": "82e2271f3383a9c6",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
     "scale": 7.5e-05,
-    "sight": "c2c9ddd9a224",
+    "sight": "a8686d5a1bbd",
     "specials": [],
-    "walk": "b8ab14e4a82e"
+    "walk": "3f2a7cec58c7"
    }
   },
   "Sunset": {
-   "fingerprint": "dad7d6f18110fa28",
+   "fingerprint": "0d2d1df24fbc4ab4",
    "geometry_inputs": {
     "barrier": "02adc35320f7",
     "scale": 7.8e-05,
-    "sight": "1b08ae12cc27",
+    "sight": "e608a189a789",
     "specials": [],
-    "walk": "f89cd20d79e7"
+    "walk": "ba2802b67c05"
    }
   }
  },
