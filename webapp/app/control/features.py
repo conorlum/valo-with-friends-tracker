@@ -795,13 +795,13 @@ def _eye_body(geo: Geometry, node: int, offset: float):
 
 
 def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
-              own: int | None = None, record: dict | None = None) -> np.ndarray:
+              own: int | None = None, record: dict | None = None, see_over: int = 0) -> np.ndarray:
     """`geometry.cast`, minus the nodes a bounded occluder hides: each seen node is tested on the line from the
     eye to its body (centre, node z + BODY_M), so two floors behind one XY crossing can differ."""
     from app.control import geometry as cg
     from app.control import heights as hc
 
-    seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record)
+    seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record, see_over=see_over)
     if not occluders:
         return seen
     nodes = np.flatnonzero(seen)
@@ -814,11 +814,12 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
     return seen
 
 
-def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None) -> bool:
+def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None,
+             see_over: tuple[int, int] = (0, 0)) -> bool:
     """`geometry.los` (eye at a, target point b; z None for 2D), and no bounded occluder on the line."""
     from app.control import geometry as cg
 
-    if not cg.los(geo, a, b, smokes, record):
+    if not cg.los(geo, a, b, smokes, record, see_over=see_over):
         return False
     target = np.array([[b[0], b[1], np.nan if b[2] is None else b[2]]], float)
     return not bool(blocked_lines(list(occluders), a, target, record)[0])

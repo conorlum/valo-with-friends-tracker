@@ -8,12 +8,13 @@ each player stands still (or walks a straight line) and faces a fixed direction.
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 from pathlib import Path
 
 import numpy as np
 
-from app.control.geometry import PX, geometry_from_masks, visibility
+from app.control.geometry import GRID, PX, geometry_from_masks, visibility
 
 TOY_SCALE = 7e-5          # Ascent's: 0.14 m per pixel, 1.12 m cells
 HZ = 16
@@ -43,6 +44,34 @@ def midwall_hall():
 def two_rooms(specials=None):
     """Two 10 x 10-cell rooms with void between them, optionally joined by `specials`."""
     return toy_geometry("Rooms", [(96, 96, 176, 176), (304, 96, 384, 176)], specials=specials)
+
+
+# A 3 x 3-cell cover box mid-hall (cells 31-33 x rows 23-25): blocks sight, can't be walked, and is one cover piece.
+BOX_PX = (248, 184, 272, 208)
+BOX_TOY_RISE_M = 1.0      # how high a player standing on the toy box is above the ground (ground z = 0.0 m)
+# One walkable ring cell touching the box on each side (flat cell index, row * GRID + col).
+BOX_RING = {"N": 22 * GRID + 32, "S": 26 * GRID + 32, "E": 24 * GRID + 34, "W": 24 * GRID + 30}
+# For each side, an open-floor cell behind the box as seen from the ring cell on the OPPOSITE side
+# (witness "S" is south of the box, hidden from ring cell "N").
+BOX_WITNESS = {"N": 19 * GRID + 32, "S": 29 * GRID + 32, "E": 24 * GRID + 37, "W": 24 * GRID + 27}
+
+
+def box_hall():
+    """The open hall with a cover box in the middle: sight has it, walk lacks it, and it is attached as the
+    map's one cover piece (before the visibility build)."""
+    key = ("BoxHall", HALL, BOX_PX)
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    box = rect_mask([BOX_PX])
+    geo = geometry_from_masks("BoxHall", ~floor | box, floor & ~box, TOY_SCALE, None)
+    sha = hashlib.sha256(np.packbits(box).tobytes()).hexdigest()[:12]
+    attach_cover(geo, box, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
 
 
 def rect_mask(rects) -> np.ndarray:
@@ -221,6 +250,26 @@ def height_blob(players: dict, *, t_end: float = 30.0, util=(), deaths=None, n: 
 def standing(x: float, y: float, z_m: float, side: str = "A", yaw: int = 0):
     """A player who stands still at a height for the whole round."""
     return side, [(0.0, x, y, yaw, z_m)]
+
+
+def on_box_track(x: float, y: float, rise_m: float = BOX_TOY_RISE_M, side: str = "A", yaw: int = 0,
+                 t_end: float = 10.0):
+    """A player steady on top of a box: still at (x, y), at the ground's z + `rise_m` the whole round."""
+    return side, [(0.0, x, y, yaw, rise_m), (t_end, x, y, yaw, rise_m)]
+
+
+def hugging_track(x: float, y: float, side: str = "A", yaw: int = 0, t_end: float = 10.0):
+    """A player steady at ground z (0 m) against a box: still at (x, y)."""
+    return side, [(0.0, x, y, yaw, 0.0), (t_end, x, y, yaw, 0.0)]
+
+
+def jump_track(x0: float, x1: float, y: float, peak_m: float, t_jump: float, side: str = "A", yaw: int = 0,
+               air_s: float = 1.0, t_end: float = 10.0):
+    """A player on the ground at x0 who jumps at `t_jump` and crosses to x1 in `air_s`: z rises to `peak_m` at
+    the middle (over the box, if it is between) and falls back to the ground at x1."""
+    xm, tm = (x0 + x1) / 2, t_jump + air_s / 2
+    return side, [(0.0, x0, y, yaw, 0.0), (t_jump, x0, y, yaw, 0.0), (tm, xm, y, yaw, peak_m),
+                  (t_jump + air_s, x1, y, yaw, 0.0), (t_end, x1, y, yaw, 0.0)]
 
 
 def height_rounds(make, matches: int = 2, rounds: int = 3, t_end: float = 10.0) -> list:

@@ -659,8 +659,10 @@ SLOPE_EPS = 1e-9   # a blocked interval's ends count as blocked
 
 
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
-         own: int | None = None, record: dict | None = None) -> np.ndarray:
-    """The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
+         own: int | None = None, record: dict | None = None, see_over: int = 0) -> np.ndarray:
+    """see_over: the cover piece the eye stands on; 0 = none (not used yet).
+
+    The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
     stop a ray once it has crossed more than the corner tolerance; a hollow smoke stops it at its edge
     (from inside or out), a solid one as soon as it is inside; a utility `Wall` where it crosses it.
     `smokes` are (x, y, radius px, solid) or `Wall`s.
@@ -676,18 +678,18 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
-                         occluders, eye_z=eye_z, own=own, record=record)
+                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over)
     if geo.heights is not None:
         if eye_z is None:
             if geo.adaptive:
-                return _cast_flat(geo, x, y, angles_deg, smokes)
-            return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes))
-        return _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record)
-    return _cast_flat(geo, x, y, angles_deg, smokes)
+                return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
+            return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes, see_over))
+        return _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over)
+    return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
 
 
-def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list) -> np.ndarray:
-    """`cast` on cells, in 2D: the whole of it on a flat map."""
+def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, see_over: int = 0) -> np.ndarray:
+    """`cast` on cells, in 2D: the whole of it on a flat map. see_over: as in `cast` (not used yet)."""
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     seen = np.zeros(geo.n if geo.adaptive else GRID * GRID, bool)
@@ -722,8 +724,8 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
-                  own: int | None, record: dict | None) -> np.ndarray:
-    """`cast` on nodes, with the height test. The own-cell and target-cell plate rule below is not the
+                  own: int | None, record: dict | None, see_over: int = 0) -> np.ndarray:
+    """`cast` on nodes, with the height test (see_over: as in `cast`, not used yet). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
     viewer's own cell and the cell being tested don't count), and blocked slope intervals, one per upper
@@ -868,8 +870,11 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     return seen
 
 
-def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None) -> bool:
-    """Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
+def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
+        see_over: tuple[int, int] = (0, 0)) -> bool:
+    """see_over: the cover piece(s) the eye/target stands on; 0 = none (not used yet).
+
+    Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
     z already at the eye's and the target point's own heights (None for a 2D check, and on a flat map).
     The same rules as `cast`, for one exact line: the 2D walls with the corner tolerance, smokes and wall
     abilities; the ground of every cell between the two ends' cells; and every upper floor on the way,
