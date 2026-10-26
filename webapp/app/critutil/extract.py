@@ -745,6 +745,24 @@ def _area_dist_m(rnd, p, hulls) -> float:
     return best * rnd.geo.m_per_px
 
 
+def _live_spans(c: _Cast, end: float) -> list[tuple[float, float]]:
+    """When a placed cast is physically up, to `end`: a toggled one (Viper's smokes, rule `on_spans`) only in its
+    stored `on` spans, an open one to `end`; one that acts only once set off (`from_trigger`: Nanoswarm, Razorvine)
+    from its `go_off` row, never if it never went off; anything else from its cast (branch review B12)."""
+    entry = c.entry or {}
+    if entry.get("rule") == "on_spans":
+        spans = [(a, end if b is None else min(b, end)) for r in c.rows for a, b in (r.get("on") or ()) if a is not None]
+        return [(a, b) for a, b in sorted(spans) if b > a]
+    start = c.t
+    if entry.get("from_trigger"):
+        go = entry.get("go_off")
+        ts = [float(r["t"]) for r in c.rows if go and re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
+        if not ts:
+            return []
+        start = min(ts)
+    return [(start, end)] if end > start else []
+
+
 def _presence(rnd, sides, c: _Cast) -> dict | None:
     """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it was up, to
     t_decided: enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies who
@@ -775,7 +793,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     inside_s = 0.0
     entered, turned, waits = set(), set(), set()
     prev, closest = {}, {}
-    for t in _grid(c.t, end, PRESENCE_STEP_S):
+    for t in (t for a, b in _live_spans(c, end) for t in _grid(a, b, PRESENCE_STEP_S)):
         if any(a <= t < (b if b is not None else math.inf) for a, b in offs):
             prev.clear()
             continue
@@ -799,7 +817,8 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                 turned.add(s)           # came to the edge, then went back the way it came
             prev[s] = p
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
-    return {"r_m": r, "area": bool(area), "armed_s": _r2(max(0.0, end - c.t)), "inside_s": _r2(inside_s),
+    return {"r_m": r, "area": bool(area), "armed_s": _r2(sum(b - a for a, b in _live_spans(c, end))),
+            "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
             "held_back": sorted(turned - entered), "_waits": waits,
             "_gap": {s: closest[s] - r for s in turned - entered}}
