@@ -186,6 +186,16 @@ def test_a_stopped_defuse_goes_once_to_the_cast_that_reached_the_defuser():
         "an effect on the defuser before a zone on the spike; a smoke alone stops nothing; a finished one counts for none"
 
 
+def test_a_sentinels_trip_earns_no_presence_after_its_owner_dies():
+    # slot 5 stands on the wire all round; the Cypher (slot 1) dies at 6 s, and the wire is off from then
+    wire = toy_ability("Gumshoe", "4_TripWire", 400, 160, 1, t=2.0, t1=None, kind="GameObject")
+    out = run([wire], kills=[kill(6.0, 6, 1)])
+    (c,) = cast_by(out, 1)
+    assert c["presence"]["armed_s"] == pytest.approx(4.0, abs=0.01)
+    p = c["presence"]
+    assert 5 in p["entered"] and 0 < p["inside_s"] <= 4.0 * len(p["entered"]) + 1e-9
+
+
 def test_util_up_before_the_plant_can_stop_a_defuse_while_it_still_burns():
     molly = toy_ability("Phoenix", "MolotovFire", *SPIKE, 0, t=18.0, t1=34.0)
     out = run([planted([[30.0, 33.0, 6, False]]), molly], t_end=60.0)

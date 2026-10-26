@@ -16,7 +16,7 @@ import math
 import re
 
 from app.control import engine
-from app.critutil import abilities
+from app.critutil import abilities, windows
 from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
@@ -580,21 +580,44 @@ def _cover_all(rnd, sides, casts: list[_Cast]) -> dict[int, dict]:
     return out
 
 
+def _owner_death(rnd, c: _Cast) -> float | None:
+    """When the cast's owner died after throwing it, for a sentinel's placed util (`off_at_death`), else None."""
+    if not (c.entry or {}).get("off_at_death"):
+        return None
+    return next((t for t, _a, b in sorted(rnd.kills) if t > c.t and b == c.by), None)
+
+
+def _active_spans(rnd, c: _Cast) -> list[list[float]]:
+    """When the cast could act, to t_decided: its life minus its `off` spans, cut at its owner's death when it is
+    a sentinel's placed util (the object stays in the replay, but it is off)."""
+    end = min(c.t_end, rnd.t_decided)
+    death = _owner_death(rnd, c)
+    if death is not None:
+        end = min(end, death)
+    off = [[a, b] for r in c.rows for a, b in (r.get("off") or ())]
+    return [[a, b] for a, b in windows._minus([c.t, end], off) if b > a]
+
+
 def _presence(rnd, sides, c: _Cast) -> dict | None:
-    """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it was up, to
-    t_decided: enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies who
-    came to its edge and then turned away without entering (held back). None for any other cast."""
+    """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it could act
+    (`_active_spans`): enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies
+    who came to its edge and then turned away without entering (held back). None for any other cast."""
     if c.u is None or not (c.kinds & PRESENCE_KINDS):
         return None
     side = sides.get(c.by)
     kind = next((k for k in ("device", "smoke", "damaging", "status") if k in c.kinds), "default")
     r = ZONE_RADIUS_M[kind]
     x, y = _px(c.u, c.v)
-    end = min(c.t_end, rnd.t_decided)
+    spans = _active_spans(rnd, c)
     inside_s = 0.0
     entered, turned, waits = set(), set(), set()
     prev, closest = {}, {}
-    for t in _grid(c.t, end, PRESENCE_STEP_S):
+    ticks = []
+    for a, b in spans:
+        ticks.extend(_grid(a, b, PRESENCE_STEP_S))
+    for i, t in enumerate(ticks):
+        if i and t - ticks[i - 1] > PRESENCE_STEP_S + _EPS:
+            prev = {}                   # back on after an off span: a position from before it says nothing of speed
         for s, sd in sides.items():
             if sd in (None, side) or not rnd.alive(s, t):
                 continue
@@ -615,7 +638,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                 turned.add(s)           # came to the edge, then went back the way it came
             prev[s] = p
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
-    return {"r_m": r, "armed_s": _r2(max(0.0, end - c.t)), "inside_s": _r2(inside_s),
+    return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)), "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
             "held_back": sorted(turned - entered), "_waits": waits,
             "_gap": {s: closest[s] - r for s in turned - entered}}
