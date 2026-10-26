@@ -287,6 +287,26 @@ def test_a_tour_de_force_kill_is_the_ults_whole_kill_and_an_operator_kill_is_not
     assert led["value"] == pytest.approx(0.2), "the whole swing: the ult was the gun"
 
 
+def _knife(t, by, target):
+    return {**damage(t, by, target), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}
+
+
+@pytest.mark.parametrize("agent, util", [
+    # the real rows' shapes (2026-10-25): Neon's beam is a shot with no gun; Jett's knives and Raze's rocket are
+    # the damage run that ends at the kill
+    ("Neon", [shot(11.0, 0, gun=None), shot(13.0, 0, gun=None), shot(16.0, 0, gun="Vandal")]),
+    ("Jett", [_knife(11.0, 0, 6), _knife(13.0, 0, 5), damage(16.0, 0, 6)]),
+    ("Raze", [toy_ability("Clay", "X_Rocket", 300, 200, 0, t=12.0, t1=13.0, kind="Projectile"),
+              {**damage(13.0, 0, 5), "code": "Clay", "name": "X_Rocket", "from": "causer"}, damage(16.0, 0, 6)]),
+])
+def test_an_ult_that_is_a_weapon_has_its_own_kills_and_not_the_guns(agent, util):
+    out = run(util, kills=[kill(13.0, 0, 5), kill(16.0, 0, 6)], player_state=ult_state(0, drop=12.0),
+              agents={0: agent})
+    (c,) = [c for c in out["casts"] if c["type"] == "ult"]
+    assert [k for k in c["kills"] if k["ev"] == "ult_weapon"] == \
+        [{"t": 13.0, "killer": 0, "victim": 5, "ours": True, "ev": "ult_weapon"}]
+
+
 def test_jett_use_is_the_first_knife_hit_from_the_equippable():
     miss = {**damage(6.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "ability"}
     hit = {**damage(9.0, 0, 5, src="ability"), "name": "X_Dagger_Production", "from": "equippable"}

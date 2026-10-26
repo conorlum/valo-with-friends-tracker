@@ -96,12 +96,16 @@ FITS_SPIKE = frozenset({"damaging", "smoke", "status", "device"})   # a planted 
 
 # Evidence weights for splitting one ledger item between its casts and the gunplay (app/services/util_values.py).
 # Gunplay always takes a share, so util never takes a whole kill, except a kill with an ult that is the gun
-# ("ult_weapon": Chamber's Tour de Force, a free Operator whose only job is kills; the owner, 2026-10-25).
+# ("ult_weapon": an ult that is a weapon, ULT_WEAPONS: Chamber's Tour de Force is a free Operator whose only job
+# is kills; the owner, 2026-10-25).
 EVIDENCE_WEIGHT = {"affected": 1.0, "revealed": 0.7, "zone_damage": 0.8, "trigger": 0.6, "cover": 0.5,
                    "harmed_teammate": 1.0, "failed_follow": 0.5, "ult_weapon": 1.0}
 GUN_WEIGHT = 1.0
-# The ults that are a gun: agent -> the `gun` its shot rows carry. A kill is the ult's when the killer's shot at
-# the kill's moment was this gun (every Chamber kill in the 58 replays has its shot at the same time: 37 of them
-# Tour de Force, measured 2026-10-25).
-ULT_GUNS = {"Chamber": "Tour de Force"}
+# The ults that are a weapon, judged by their kills (the owner, 2026-10-25): agent -> what proves a kill was the
+# ult's. ("shot", gun): the killer's shot at the kill's moment carried this `gun` (Neon's Overdrive beam has none).
+# ("damage", "<code>_<name>"): the killer's last damage run on the victim, ending at the kill, was this ability.
+# Measured 2026-10-25 on real replays: every kill by these agents has its shot or damage run at the kill's moment;
+# Chamber 37 Tour de Force kills, Raze 8 rocket, Jett 3 knife, Neon 3 beam, the rest their guns.
+ULT_WEAPONS = {"Chamber": ("shot", "Tour de Force"), "Neon": ("shot", None),
+               "Jett": ("damage", "Wushu_X_Dagger_Production"), "Raze": ("damage", "Clay_X_Rocket")}
 ULT_SHOT_MATCH_S = 0.05

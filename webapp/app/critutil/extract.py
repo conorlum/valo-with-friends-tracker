@@ -21,7 +21,7 @@ from app.critutil.constants import (AGENT_KEYS, BUFF_MATCH_S, BUY_PLACED_S, DEVI
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
-                                    ULT_GUNS, ULT_SHOT_MATCH_S, VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
+                                    ULT_SHOT_MATCH_S, ULT_WEAPONS, VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
 from app.moments.constants import ABILITY_KIND
 
 _EPS = 0.01
@@ -1129,15 +1129,29 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
     return out
 
 
-def _ult_weapon_kills(rnd, util, slot, agent) -> list[dict]:
-    """The kills an ult that is a gun made (ULT_GUNS): the killer's shot at the kill's moment was that gun."""
-    gun = ULT_GUNS.get(agent)
-    if gun is None:
+def _ult_weapon_kills(rnd, util, slot, agent, since=None) -> list[dict]:
+    """The kills an ult that is a weapon made (ULT_WEAPONS), from `since` on: the killer's shot at the kill's moment
+    was the ult's gun, or their last damage run on the victim, ending at the kill, was the ult."""
+    proof = ULT_WEAPONS.get(agent)
+    if proof is None:
         return []
-    shots = [float(r["t"]) for r in util if r.get("k") == "shot" and r.get("by") == slot and r.get("gun") == gun]
-    return [{"t": _r2(t), "killer": killer, "victim": victim, "ours": True, "ev": "ult_weapon"}
-            for t, killer, victim in rnd.kills
-            if killer == slot and t <= rnd.t_decided and any(abs(t - s) <= ULT_SHOT_MATCH_S for s in shots)]
+    how, what = proof
+    out = []
+    for t, killer, victim in rnd.kills:
+        if killer != slot or t > rnd.t_decided or (since is not None and t < since - _EPS):
+            continue
+        if how == "shot":
+            hit = any(r.get("k") == "shot" and r.get("by") == slot and abs(float(r["t"]) - t) <= ULT_SHOT_MATCH_S
+                      and r.get("gun") == what for r in util)
+        else:
+            runs = [r for r in util if r.get("k") == "damage" and r.get("by") == slot and r.get("target") == victim
+                    and float(r["t"]) <= t + ULT_SHOT_MATCH_S]
+            last = max(runs, key=lambda r: float(r["t"])) if runs else None
+            hit = last is not None and _code_name(last) == what \
+                and abs(float(last.get("t1") or last["t"]) - t) <= ULT_SHOT_MATCH_S
+        if hit:
+            out.append({"t": _r2(t), "killer": killer, "victim": victim, "ours": True, "ev": "ult_weapon"})
+    return out
 
 
 def _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, first_i, util=()) -> list[dict]:
@@ -1220,7 +1234,9 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "enemies": sorted({e["target"] for e in enemy_eff}),
             "effects": [{"target": e["target"], "how": e["how"], "t0": _r2(e["t0"]), "t1": _r2(e["t1"]),
                          "known": e["dur_known"]} for e in enemy_eff],
-            "kills": _link_kills(rnd, sides, c, eff, trigger),
+            "kills": _link_kills(rnd, sides, c, eff, trigger) + (
+                _ult_weapon_kills(rnd, blob.get("util") or (), c.by, agents.get(c.by) or c.agent, since=c.t)
+                if cast_type == "ult" else []),
             "followed": _followed(rnd, blob, sides, c, eff),
             "harm": _harm(rnd, sides, c, eff),
             "cover": cover.get(c.i),
