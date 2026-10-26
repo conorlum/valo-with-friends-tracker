@@ -2934,7 +2934,7 @@
    "off_at_death": true
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Pine_X_Evolution)$",
    "agent": "Veto",
    "ability": "Evolution",
    "slot": "X",
