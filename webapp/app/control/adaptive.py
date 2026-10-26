@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
 from collections import defaultdict
 
@@ -87,12 +88,18 @@ def attach(geo, asset):
             node_walk[n] = False; node_area[n] = 0
         all_nodes[p] = []
     fine_walk = geo.walk_px.reshape(FINE, 4, FINE, 4).mean((1, 3)) > .5
-    for child, floors in zip(asset.fine_cells, asset.fine_floors):
+    dropped = []
+    for row, (child, floors) in enumerate(zip(asset.fine_cells, asset.fine_floors)):
         child = int(child); sid = BASE + child; p = hm.coarse_of_fine(child)
         cy, cx = divmod(child, FINE); grid[cy, cx] = sid
         walk = bool(fine_walk[cy, cx] and geo.walk.ravel()[p]); spatial_walk[sid] = walk
         if not walk and np.any(floors >= 0):
-            raise ValueError('child floor lies outside permanent walk mask')
+            # A floor on top of see-over cover (a box) is dropped, not refused; any other one still refuses.
+            if geo.cover_px is not None and (geo.cover_px[cy * 4:(cy + 1) * 4, cx * 4:(cx + 1) * 4] > 0).any():
+                dropped.append(row)
+                floors = np.full_like(floors, -1)
+            else:
+                raise ValueError('child floor lies outside permanent walk mask')
         for level in range(max(1, int((floors >= 0).sum()))):
             n = len(node_z); spatial_nodes[sid, level] = n
             node_space.append(sid); node_parent.append(p); all_nodes[p].append(n)
@@ -118,6 +125,19 @@ def attach(geo, asset):
     geo.node_bbox = bbox[geo.node_space]
     geo.unresolved = geo.to_cells(geo.space_unresolved[geo.node_space] & geo.walk_n)
     geo.rows = geo.row_of = geo.topo = None
+    carried = int(getattr(asset, 'cover_dropped', 0))      # an already-filtered copy remembers its count
+    geo.height_cover_dropped = carried + len(dropped)
+    if dropped:
+        # geo.heights is read later for its edges: give it a copy (the asset is cached and shared)
+        # with those children's floors gone and every edge that names them removed.
+        gone = BASE + np.asarray(asset.fine_cells)[dropped].astype(np.int64)
+        edges = asset.fine_edges[~np.isin(asset.fine_edges[:, (0, 2)], gone).any(1)]
+        floors = asset.fine_floors.copy(); floors[dropped] = -1
+        supported = asset.fine_supported.copy(); supported[dropped] = False
+        filtered = dataclasses.replace(asset, fine_floors=floors, fine_supported=supported, fine_edges=edges)
+        filtered.digest_pinned = asset.digest
+        filtered.cover_dropped =geo.height_cover_dropped
+        geo.heights = asset = filtered
     validate_edges(geo, asset.fine_edges)
     return geo
 
