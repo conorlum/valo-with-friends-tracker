@@ -107,6 +107,7 @@ names each). **None is switched to features in this build.**
 | `control/engine:RoundInputs._molly_nodes` | topo.dilate | `walk_only` (added 2026-10-09, replay-player-state run: a molly's footprint, the walk inside its circle) |
 | `control/engine:RoundInputs._trip_end` | topo.around | `walk_only` |
 | `control/engine:Tick.__init__` | cast | `bounded_sight` |
+| `control/engine:Tick._boxed` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: one physical line from the viewer's eye to an enemy standing on a box, over the pieces both stand on) |
 | `control/engine:Tick._backfill_shares` | topo.dilate | `walk_only` |
 | `control/engine:Tick._direct` | los | `bounded_sight` |
 | `control/engine:Tick._flood` | topo.label | `transport_reachability` |
@@ -135,6 +136,7 @@ names each). **None is switched to features in this build.**
 | `control/feature_diagnostics:diagnose_features` | specials | `base`: diagnostics only, exact admitted/archived permanent context, no runtime effects |
 | `control/feature_runtime:prepare_geometry` | specials, archived base domain | `base`: reconcile verified per-map masks without mutating the cached permanent map or changing node identities |
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
+| `control/stance:_anchor.clear` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: a clear line from a candidate anchor cell to the player's pixel beside a box) |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
 | `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
 | `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |
