@@ -107,6 +107,41 @@ def test_shared_rounds_built_from_the_batched_load(db):
     assert pair.avg_round_win_impact_together == pytest.approx(3 * (10 - 5) / 6)
 
 
+def test_a_random_teammate_is_not_an_enemy_in_clutches(db):
+    viewer, friend, enemy1, enemy2 = make_people(db)
+    random_teammate = Player(display_name=f"random#{uuid.uuid4().hex[:4]}")
+    db.add(random_teammate)
+    match = Match(external_id=uuid.uuid4().hex, source=MatchSource.SCRAPED, map_name="Ascent", played_at=T0,
+                  team1_rounds_won=13, team2_rounds_won=5)
+    db.add(match)
+    db.flush()
+    mps = [MatchPlayer(match_id=match.id, player_id=p.id, agent="Jett", team=team)
+           for p, team in ((viewer, Team.TEAM_1), (friend, Team.TEAM_1), (random_teammate, Team.TEAM_1),
+                           (enemy1, Team.TEAM_2), (enemy2, Team.TEAM_2))]
+    db.add_all(mps)
+    db.flush()
+    viewer_mp, friend_mp, _, enemy1_mp, enemy2_mp = mps
+    won = Round(match_id=match.id, round_number=1, outcome="Team A wins")
+    db.add(won)
+    db.flush()
+    # The viewer kills both enemies and nobody of ours dies: a 3v1, never a clutch. With the random counted as an
+    # enemy it looked like 2v2 after the first kill.
+    db.add_all([
+        KillEvent(round_id=won.id, killer_match_player_id=viewer_mp.id, death_match_player_id=enemy1_mp.id,
+                  weapon="Vandal", event_time_seconds=10.0),
+        KillEvent(round_id=won.id, killer_match_player_id=viewer_mp.id, death_match_player_id=enemy2_mp.id,
+                  weapon="Vandal", event_time_seconds=20.0),
+    ])
+    for mp in (viewer_mp, friend_mp):
+        db.add(ImpactScore(round_id=won.id, match_player_id=mp.id, kill_impact=0, death_impact=0, impact=0))
+    db.commit()
+
+    [pair] = get_squad_overview(db, viewer.id, match_limit=None).pairs
+
+    assert pair.rounds_together == 1
+    assert pair.clutches_together == 0
+
+
 def test_query_count_does_not_grow_with_matches(db):
     people = make_people(db)
     viewer_id = people[0].id
