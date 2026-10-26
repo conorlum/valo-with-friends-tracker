@@ -233,8 +233,8 @@ def test_a_nanoswarm_never_set_off_is_wasted_and_one_destroyed_first_is_worse():
     (c,) = cast_by(out, 0)
     lost = util_values.value_round(out, None)["casts"][c["i"]]
     assert c["signals"]["destroyed"] == 9.0 and lost["wasted_why"] == "destroyed before it was set off"
-    assert lost["total"] < unused["total"], "worse than kept down unused"
-    assert "triggered" not in lost["features"], "broken first is not info for a trap set off by hand"
+    assert lost["features"].get("triggered") == 1.0, "an enemy broke it: still info"
+    assert lost["total"] < unused["total"], "but worse than kept down unused"
 
     swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", 100, 100, 0, t=12.0, t1=16.0)
     out = run([hidden, swarm], extra=far)

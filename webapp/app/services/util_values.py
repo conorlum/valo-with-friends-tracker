@@ -42,7 +42,8 @@ DEFAULT_WEIGHTS = {
     "front_s": 0.0015,         # per second the map-control unknown stopped at a device's or molly's edge
     "held_m2s": 0.000005,      # per m2 x second of ground only that device or molly held (no teammate saw it)
     "spike_got": 0.0300,       # per Omen ult whose caster picked the spike up after arriving (+1 when it was then planted)
-    "lost_unset": 0.0080,      # a trap set off by hand (Nanoswarm, Razorvine) destroyed before it was set off (negative)
+    "lost_unset": 0.0120,      # a trap set off by hand (Nanoswarm, Razorvine) destroyed before it was set off (negative;
+                               # more than `triggered`, which it also gets as info, so it nets below unused)
 }
 NEGATIVE = frozenset({"harm_soft", "lost_unset"})
 JUDGED_KINDS = frozenset({"blind", "smoke", "wall", "damaging", "status", "info", "device"})   # can be wasted
@@ -92,8 +93,10 @@ def features(cast: dict) -> dict:
     f["triggered"] = 1.0 if cast.get("trigger") is not None else 0.0
     sig = cast.get("signals") or {}
     if "go_off" in sig:
-        # a trap set off by hand: only setting it off is its job; destroyed first is a loss, not info (the owner)
-        f["triggered"] = 1.0 if sig["go_off"] is not None else 0.0
+        # a trap set off by hand destroyed first: still info (an enemy broke it, `triggered`), but a loss that
+        # outweighs it, so it ranks below one kept down unused (the owner, 2026-10-26); set off is triggered too
+        if sig["go_off"] is not None:
+            f["triggered"] = 1.0
         f["lost_unset"] = 1.0 if sig["go_off"] is None and sig.get("destroyed") is not None else 0.0
     f["defuse_stopped"] = float((cast.get("spike") or {}).get("stopped") or 0)
     # owner, 2026-10-21: flashing or statusing a teammate matters more than damaging one
