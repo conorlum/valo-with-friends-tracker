@@ -245,6 +245,12 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             c = _Cast(len(casts), r, rnd)
             c.kinds = set()
             casts.append(c)
+    for r in sorted((r for r in util if r.get("k") == "cast" and r.get("by") is not None), key=lambda r: r["t"]):
+        # a recorded movement ability (Jett's dash, Waylay's double dash; condenser revision 14): one use each, its
+        # kind and window from its table entry (branch review B4)
+        c = _Cast(len(casts), r, rnd)
+        c.kinds = set()
+        casts.append(c)
     abilities =sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
                        key=lambda r: (r["t"], r.get("kind") != "Projectile", "end" not in r))
     for r in abilities:
