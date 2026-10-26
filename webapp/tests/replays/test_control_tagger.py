@@ -97,6 +97,16 @@ def test_summit_cover_tags_compose_and_judge_kill_lines_like_geometry():
     assert len(got["blocked"]) == index["blocked"] and got["passes"] is True
 
 
+def test_with_every_kill_line_on_cover_nothing_is_judged_alike_in_both():
+    # Branch review B21: no judged line is no evidence; Python and the tagger both say so (share and passes None).
+    entry = {**TAGS["maps"]["Ascent"], "cover_paint": paint_rect(0, 0, 1024, 1024)}
+    got = check("Ascent", entry)
+    m = python_masks("Ascent", entry)
+    py = cg.kill_line_result(m.sight, LINES["Ascent"], m.cover)
+    assert py["qualifying"] == 0 and py["share"] is None and py["passes"] is None
+    assert got["passes"] is None
+
+
 def test_ascent_walls_only_blocks_the_same_lines_as_index_json():
     got = check("Ascent", TAGS["maps"]["Ascent"])
     index = json.loads((cg.ASSET_DIR / "index.json").read_text(encoding="utf-8"))["maps"]["Ascent"]["kill_lines"]

@@ -218,7 +218,9 @@ def kill_line_result(sight: np.ndarray, lines: list, cover: np.ndarray | None = 
 
     judged = [ln for ln in lines if not (on_cover(ln[0], ln[1]) or on_cover(ln[2], ln[3]))]
     blocked = sum(line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in judged)
-    share = blocked / len(judged) if judged else 0.0
+    if not judged:      # no judged line is no evidence: neither passes nor fails, as in the tagger (branch review B21)
+        return {"qualifying": 0, "on_cover": len(lines), "blocked": 0, "share": None, "passes": None}
+    share = blocked / len(judged)
     return {"qualifying": len(judged), "on_cover": len(lines) - len(judged), "blocked": blocked,
             "share": round(share, 4), "passes": share <= RISK1_BAR}
 
