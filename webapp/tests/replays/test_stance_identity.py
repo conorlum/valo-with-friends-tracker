@@ -60,6 +60,7 @@ def computed(flat: bool = True, heights: bool = True) -> dict:
     return out
 
 
+@pytest.mark.slow       # ~23 s in a fresh process (the open_hall geometry build)
 def test_the_flat_round_and_the_input_identity_match_the_base_code():
     recorded = json.loads(FIXTURE.read_text(encoding="utf-8"))
     now = computed(heights=False)
