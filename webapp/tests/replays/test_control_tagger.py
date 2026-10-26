@@ -35,7 +35,8 @@ RUN = """
   });
   function load(m) {
     return {candidates: m.candidates, params: m.params, image_sha: m.image_sha, lines: m.lines,
-            labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque)};
+            labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque),
+            outline: m.outline ? T.rleDecode(m.outline) : null};
   }
   function packBits(a) {
     const out = new Uint8Array(a.length / 8);
@@ -54,7 +55,7 @@ def run_node(body: str, payload):
 
 COMPOSE = """
   function run(p) {
-    const map = load(p.map), e = T.editsFrom(p.entry), m = T.compose(map, e), r = T.riskOne(m.sight, map.lines);
+    const map = load(p.map), e = T.editsFrom(p.entry), m = T.compose(map, e), r = T.riskOne(m.sight, map.lines, m.cover);
     return {sight: packBits(m.sight), walk: packBits(m.walk), blocked: r.blocked, share: r.share, passes: r.passes};
   }
 """
@@ -77,7 +78,9 @@ def check(name, entry):
     got = run_node(COMPOSE, {"map": control_tagger.map_data(name, entry, lines), "entry": entry})
     assert got["sight"] == base64.b64encode(np.packbits(m.sight)).decode(), f"{name} sight"
     assert got["walk"] == base64.b64encode(np.packbits(m.walk)).decode(), f"{name} walk"
-    expected = [k for k, (ax, ay, bx, by) in enumerate(lines) if cg.line_blocked(m.sight, (ax, ay), (bx, by))]
+    on = (lambda x, y: m.cover is not None and bool(m.cover[min(1023, int(y)), min(1023, int(x))]))
+    expected = [k for k, (ax, ay, bx, by) in enumerate(lines) if not (on(ax, ay) or on(bx, by))
+                and cg.line_blocked(m.sight, (ax, ay), (bx, by))]
     assert got["blocked"] == expected, f"{name} kill lines"
     return got
 
@@ -85,6 +88,13 @@ def check(name, entry):
 def test_abyss_tags_and_see_across_paint_compose_exactly_like_geometry():
     got = check("Abyss", TAGS["maps"]["Abyss"])
     assert got["blocked"] == [] and got["passes"] is True        # index.json: 0 of 200 blocked
+
+
+def test_summit_cover_tags_compose_and_judge_kill_lines_like_geometry():
+    # 22 box tags: each box is its outline's inside, and lines with an end on a box aren't judged (2026-10-26)
+    got = check("Summit", TAGS["maps"]["Summit"])
+    index = json.loads((cg.ASSET_DIR / "index.json").read_text(encoding="utf-8"))["maps"]["Summit"]["kill_lines"]
+    assert len(got["blocked"]) == index["blocked"] and got["passes"] is True
 
 
 def test_ascent_walls_only_blocks_the_same_lines_as_index_json():
