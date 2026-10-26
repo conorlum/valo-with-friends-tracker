@@ -16,11 +16,6 @@ LINES = json.loads(KILL_LINES.read_text(encoding="utf-8"))["maps"]
 TAGS = cg.load_tags()["maps"]
 INDEX = json.loads((cg.ASSET_DIR / "index.json").read_text(encoding="utf-8"))
 MAPS = sorted(p.stem for p in cg.MINIMAP_DIR.glob("*.png"))
-RISK1_BAR = 0.02
-# A map whose blocked kill lines were each looked at and kept, with its own bar (the next round number above its
-# share). Summit (2026-10-25, the owner's 22 box tags): 9 of 297 (3.0%): 1 from before, 5 a player standing on a
-# box (no "on top of a box" rule yet), 3 grazing a one-high box's corner, none a wallbang by the game's flag.
-RISK1_BAR_KEPT = {"Summit": 0.035}
 
 
 def rgba(name: str) -> np.ndarray:
@@ -29,6 +24,28 @@ def rgba(name: str) -> np.ndarray:
 
 def blocked_share(sight: np.ndarray, lines: list) -> float:
     return sum(cg.line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in lines) / len(lines)
+
+
+def test_a_kill_line_with_an_end_on_a_cover_box_is_not_judged():
+    # 2026-10-26: a player standing on top of a box shoots over it; the flat test can't tell them from one behind it.
+    sight = np.zeros((cg.PX, cg.PX), bool)
+    sight[100:110, 100:110] = True                       # a box, also cover
+    lines = [[90, 105, 120, 105],                        # through the box, both ends on the ground: blocked
+             [105, 105, 130, 105],                       # from on top of it: not judged
+             [10, 10, 50, 10]]                           # clear
+    assert cg.kill_line_result(sight, lines)["blocked"] == 2
+    got = cg.kill_line_result(sight, lines, cover=sight)
+    assert (got["qualifying"], got["on_cover"], got["blocked"]) == (2, 1, 1)
+
+
+def test_a_cover_tag_is_the_box_inside_its_drawn_outline():
+    # Summit's tagged boxes: the minimap's outline pixels stay sight-open; only what they enclose is cover.
+    m = cg.masks(rgba("Summit"), TAGS["Summit"])
+    shapes = cg.tag_shapes(rgba("Summit"), TAGS["Summit"])["cover"]
+    p = {**cg.DETECTOR_DEFAULTS, **(TAGS["Summit"].get("params") or {})}
+    outline = cg._base_masks(rgba("Summit"), p["glyph_saturation"], p["line_lum"])["line"]
+    assert (shapes & outline).any() and not (m.cover & outline).any()
+    assert (m.cover == (shapes & ~outline)).all()
 
 
 @pytest.mark.parametrize("name", MAPS)
@@ -40,8 +57,8 @@ def test_committed_masks_match_a_fresh_build(name):
 
 @pytest.mark.parametrize("name", sorted(LINES))
 def test_kill_lines_pass_risk1(name):
-    geo = cg.load_geometry(name)
-    assert blocked_share(geo.sight, LINES[name]) <= RISK1_BAR_KEPT.get(name, RISK1_BAR)
+    m = cg.masks(rgba(name), TAGS.get(name, {}))
+    assert cg.kill_line_result(cg.load_geometry(name).sight, LINES[name], m.cover)["passes"]
 
 
 def test_abyss_passes_only_with_its_see_across_tags():
@@ -55,8 +72,7 @@ def test_the_index_lists_every_map_with_the_badge_flag():
         assert row["cover_reviewed"] is False   # nothing tagged as cover yet: the badge shows
         assert row["specials"] == []
         assert (row["kill_lines"] is not None) == (name in LINES)
-    assert all(INDEX["maps"][n]["kill_lines"]["passes"] for n in LINES if n not in RISK1_BAR_KEPT)
-    assert all(INDEX["maps"][n]["kill_lines"]["share"] <= bar for n, bar in RISK1_BAR_KEPT.items())
+    assert all(INDEX["maps"][n]["kill_lines"]["passes"] for n in LINES)
 
 
 def test_a_rebuilt_index_entry_keeps_its_height_fields_and_warns_when_the_walk_mask_moved():

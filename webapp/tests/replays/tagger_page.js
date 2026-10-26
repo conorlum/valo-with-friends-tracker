@@ -138,7 +138,8 @@ function openPage(data, opts) {
     if (!maps[name]) {
       const m = data.maps[name];
       maps[name] = { candidates: m.candidates, params: m.params, image_sha: m.image_sha, lines: m.lines, starts: m.starts,
-                     labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque) };
+                     labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque),
+                     outline: m.outline ? T.rleDecode(m.outline) : null };
     }
     return maps[name];
   }

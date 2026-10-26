@@ -202,6 +202,25 @@ def tag_shapes(rgba: np.ndarray, entry: dict) -> dict[str, np.ndarray]:
 class MapMasks:
     sight: np.ndarray   # PX x PX, True blocks sight
     walk: np.ndarray    # PX x PX, True is walkable
+    cover: np.ndarray | None = None   # PX x PX, the cover boxes (tags and paint), as they block sight
+
+
+# Risk 1 (docs/replay-map-control-plan.md): a map's geometry is usable when at most this share of its judged kill
+# lines crosses a sight wall. A line with either end on a cover box isn't judged: the flat test can't tell a
+# player standing on top of a box from one behind it (2026-10-26: 5 of Summit's 9 blocked lines).
+RISK1_BAR = 0.02
+
+
+def kill_line_result(sight: np.ndarray, lines: list, cover: np.ndarray | None = None) -> dict:
+    """The Risk 1 result of a map's kill lines ([killer x, y, victim x, y] px) against its sight mask."""
+    def on_cover(x, y):
+        return cover is not None and bool(cover[min(PX - 1, max(0, int(y))), min(PX - 1, max(0, int(x)))])
+
+    judged = [ln for ln in lines if not (on_cover(ln[0], ln[1]) or on_cover(ln[2], ln[3]))]
+    blocked = sum(line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in judged)
+    share = blocked / len(judged) if judged else 0.0
+    return {"qualifying": len(judged), "on_cover": len(lines) - len(judged), "blocked": blocked,
+            "share": round(share, 4), "passes": share <= RISK1_BAR}
 
 
 def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
@@ -216,7 +235,9 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
     shapes = tag_shapes(rgba, entry)
     # What each Stage 6 paint means; no map has one yet, so no stored round changes.
-    cover = shapes["cover"]
+    # A cover tag is the box inside its drawn outline: the outline's own line pixels are the box's edge on the
+    # minimap, about a pixel past the real box, and shots fired right past a box clip them (2026-10-26, Summit).
+    cover = shapes["cover"] & ~base["line"]
     if entry.get("cover_paint"):
         cover = cover | unpack_paint(entry["cover_paint"])
     sight = ~base["opaque"] | cover
@@ -227,7 +248,7 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     walk = base["opaque"] & ~cover
     if entry.get("cant_walk_paint"):
         walk &= ~unpack_paint(entry["cant_walk_paint"])
-    return MapMasks(sight, walk)
+    return MapMasks(sight, walk, cover)
 
 
 def bullet_mask(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
