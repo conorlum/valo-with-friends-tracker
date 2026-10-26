@@ -123,13 +123,13 @@
    }
   },
   "Summit": {
-   "fingerprint": "03f6d7ae941a0452",
+   "fingerprint": "b667cd2790380192",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
     "scale": 7.5e-05,
-    "sight": "c2c9ddd9a224",
+    "sight": "5e93b3e61d4c",
     "specials": [],
-    "walk": "b8ab14e4a82e"
+    "walk": "03a0169a7fe3"
    }
   },
   "Sunset": {
