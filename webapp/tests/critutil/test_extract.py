@@ -986,6 +986,19 @@ def test_an_arc_rose_ending_at_vyses_death_is_revealed():
     assert c["set_off_kind"] is None and c["rose"]["ended"] == "revealed"
 
 
+def test_an_arc_rose_popped_then_pulled_back_keeps_its_pop_and_was_recalled():
+    # Branch review B17 (365 round 1: a pop at 45.22, the rose gone quietly at 52.63, Vyse alive to 55.26).
+    c = _rose_cast(_rose(hits=((5, 17.041, 1.629),), t1=26.2), t_end=60.0)
+    assert c["rose"]["pops"] == [17.04] and c["rose"]["ended"] == "recalled"
+    assert c["trigger"] == 17.04 and c["set_off_kind"] == "fired"
+
+
+def test_an_arc_rose_closing_in_the_ms_vyse_dies_is_revealed():
+    # Branch review B18: the close and her death at the same time is her death, not a recall nor a rose that stood.
+    c = _rose_cast(_rose(pop=None, hits=(), t1=40.0), t_end=60.0, kills=[kill(40.0, 5, 1)])
+    assert c["set_off_kind"] is None and c["rose"]["ended"] == "revealed"
+
+
 def test_a_flash_keeps_a_short_span_beside_a_long_lived_row():
     f = flash(8.0, 1, [[5, 8.4, 2.0]], name="phoenix_curveball_left")
     f["pop"] = {"t": 8.8}

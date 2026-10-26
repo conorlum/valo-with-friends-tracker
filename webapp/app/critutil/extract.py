@@ -478,6 +478,13 @@ def _rose_end(rnd, c: _Cast) -> float:
     return min(max(ends), rnd.t_end) if ends else rnd.t_end
 
 
+def _rose_owner_gone(rnd, c: _Cast, t: float) -> bool:
+    """Whether Vyse had died by `t`, her death in that very ms included: a rose closing as she dies went with her,
+    it was not pulled back (branch review B18)."""
+    died = next((k for k, _a, v in sorted(rnd.kills) if v == c.by and k >= c.t), None)
+    return (died is not None and died <= t + _EPS) or not rnd.alive(c.by, t - _EPS)
+
+
 def _trigger_kind(c: _Cast) -> tuple[float, str] | None:
     """(when the device was set off, "fired" | "broken"): the earliest of its signals (fx, raised, a Trademark's dart
     or slow, an Alarmbot's second yaw: fired; gone: broken), fired on a tie. An Alarmbot that chased and was then
@@ -528,7 +535,7 @@ def _set_off(rnd, c: _Cast, enemy_eff, trigger) -> tuple[float | None, str | Non
     if _is_rose(c):
         # An Arc Rose that leaves quietly with Vyse alive was pulled back (trap-jobs D12: popped, destroyed or recalled)
         end = _rose_end(rnd, c)
-        if end < rnd.t_decided - _EPS and rnd.alive(c.by, end):
+        if end < rnd.t_decided - _EPS and not _rose_owner_gone(rnd, c, end):
             return end, "recalled"
         return None, None
     if any(r.get("t1") is not None for r in c.rows) and c.t_end < rnd.t_decided - _EPS \
@@ -544,12 +551,13 @@ def _rose(rnd, c: _Cast, set_off_kind) -> dict | None:
     if not _is_rose(c):
         return None
     pops, gone = _rose_pops(c), _rose_gone(c)
+    end = _rose_end(rnd, c)
     if gone is not None:
         how = "destroyed"
-    elif set_off_kind == "recalled":
-        how = "recalled"
-    elif not rnd.alive(c.by, min(_rose_end(rnd, c), rnd.t_decided) - _EPS):
+    elif _rose_owner_gone(rnd, c, min(end, rnd.t_decided)):
         how = "revealed"            # Vyse died while it stood: it is off, though its object may stay to the round's end
+    elif end < rnd.t_decided - _EPS and (not pops or end > pops[-1] + _EPS):
+        how = "recalled"            # left quietly after its last pop, Vyse alive: pulled back (branch review B17)
     elif pops:
         how = "popped"
     else:
