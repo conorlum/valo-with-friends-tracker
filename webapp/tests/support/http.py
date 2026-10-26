@@ -1,6 +1,6 @@
 """A cookie-aware ASGI client: real routing/forms/middleware without a runtime dependency."""
 import asyncio
-import json
+import json as jsonlib
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from urllib.parse import unquote, urlencode
@@ -17,19 +17,22 @@ class Response:
         return self.content.decode("utf-8")
 
     def json(self):
-        return json.loads(self.content)
+        return jsonlib.loads(self.content)
 
 
 class Client:
     def __init__(self, app, scheme="http"):
         self.app, self.scheme, self.cookies = app, scheme, {}
 
-    def request(self, method, target, *, data=None, headers=None):
+    def request(self, method, target, *, data=None, json=None, headers=None):
+        assert data is None or json is None, 'choose form data or JSON'
         path, _, query = target.partition("?")
-        body = urlencode(data).encode() if data is not None else b""
+        body = jsonlib.dumps(json).encode() if json is not None else urlencode(data).encode() if data is not None else b""
         request_headers = {"host": "testserver", **(headers or {})}
         if data is not None:
             request_headers.update({"content-type": "application/x-www-form-urlencoded", "content-length": str(len(body))})
+        elif json is not None:
+            request_headers.update({"content-type": "application/json", "content-length": str(len(body))})
         if self.cookies:
             request_headers.setdefault("cookie", "; ".join(f"{k}={v}" for k, v in self.cookies.items()))
         scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",

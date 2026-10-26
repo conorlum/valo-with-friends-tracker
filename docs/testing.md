@@ -60,24 +60,43 @@ fresh sessions/processes rather than comparing an output with itself.
 
 | Audit task | Added or strengthened coverage |
 |---|---|
-| T01: execution and prerequisites | `test_test_lanes.py`, `_postgres.py`, `conftest.py`, and `support/lanes.py`: missing requirements fail; real slow failures stay visible; database cases classify through fixtures; parallel shared-DB runs refuse; worker trigger matrix is checked. Four required CI lanes. |
+| T01: execution and prerequisites | `test_test_lanes.py`, `_postgres.py`, `conftest.py`, and `support/lanes.py`: missing requirements fail; real slow failures stay visible; database cases classify through fixtures; parallel shared-DB runs refuse. The worker trigger check enumerates actual Docker COPY sources and workflow bind mounts, including `app/__init__.py` and `scripts/control_reference.py`. Four required CI lanes. |
 | T02: goldens and active scoring | `test_golden_contract.py`: absent, unreadable, malformed, or changed goldens fail without creating/updating a baseline. Historical formula tests explicitly select legacy behavior; runtime-version tests follow the selected manifest. `test_tracker_ingest_contract.py` connects verified runtime scoring to every persisted score field and refusal before writes. |
 | T03: deployment migrations | `test_migration_lifecycle.py`: empty database through head, fresh-process persistence, repeated upgrade, 0027/0028 cache preservation, lock timeout/rollback/retry, and real statement-timeout cancellation with recovery. |
-| T04: HTTP identity/navigation | `test_auth_navigation.py`: real forms, signed sessions, logout, deleted/tampered identities, search ambiguity, tags, literal wildcard characters, Unicode, encoded redirects, local friend redirects, Riot verification, cookie attributes. |
+| T04: HTTP identity/navigation | `test_auth_navigation.py`: real forms, signed sessions, logout, deleted/tampered identities, search ambiguity, tags, literal wildcard characters, Unicode, encoded redirects, local friend redirects, Riot verification. HTTPS cookie attributes are checked on a standalone session-middleware app. |
 | T05: statistics | `test_force_buy_stats.py`, `test_halftime_conversion_stats.py`, `test_score_reached_stats.py`, `test_round_streak_stats.py`, `test_map_side_stats.py`: thresholds, both perspectives, exact sample denominators, empty samples, side swaps, overtime, and classification boundaries. |
 | T06: committed ingestion/recovery | `test_tracker_ingest_contract.py`: synthetic API-shaped payload through loader, active scorer, cache invalidation, and PostgreSQL persistence; duplicate ingest, malformed rollback, unscored-match recovery, manifest/gate refusals, and surrender padding. |
-| T07: command orchestration | `test_ingest_commands.py`: both actual CLI main functions, temporary ledgers, one bad roster member, backfill/prewarm ordering, no-change/no-prewarm paths, CDP failures, and cleanup on exceptions. Browser/network boundaries are simulated. |
+| T07: command orchestration | `test_ingest_commands.py`: both actual CLI main functions, temporary ledgers, one bad roster member, dirty-ID aggregation, no-change/no-prewarm paths, CDP failures, and cleanup on exceptions. Browser/network boundaries are simulated. |
 | T08: observable cache behavior | `test_profile_cache_journey.py`: PostgreSQL cold/warm profile requests, recent 30 versus career 31, filtered storage, stale/corrupt cache recovery, nonfatal cache write errors, committed/rolled-back social invalidation, and unaffected-owner retention. Replaces the old list-slice tautology. |
-| T09: demo protection | `test_demo_http_contract.py`: real request refusals and unchanged state for disabled route families, plus fresh-process settings/branding. Migration lifecycle tests load the committed six-match sample seed twice and request profile/match/statistics pages from that scratch database. |
-| T10: browser seams | `browser/test_user_journeys.py`: desktop/narrow profile filtering and career HTMX insertion; keyboard focus and duplicate-ID check; real linked replay JSON, canvas, seeking, round changes, playback, and unavailable control. Test-only pinned scripts remove CDN dependence. |
+| T09: demo protection | `test_demo_http_contract.py`: disabled route families and fresh-process settings/branding. Resource-dependent replay reads first succeed against the same real linked replay, then return 404 in demo mode with all stored rows unchanged. An authenticated JSON deletion is refused without a tombstone, then succeeds against that retained replay outside demo mode. Migration lifecycle tests load the committed six-match sample seed twice and request profile/match/statistics pages. |
+| T10: browser seams | `browser/test_user_journeys.py`: desktop/narrow profile filtering and career HTMX insertion; keyboard focus and duplicate-ID check. Replay checks require painted minimap pixels, a team-colored player ring at independently projected 5/35-second positions, disappearance of the previous ring after scrubbing, real time/clock advancement and pause, and the required control checkbox with a 202 response and exact unavailable-state text. Test-only pinned scripts remove CDN dependence. |
 | T11: required inputs/isolation | Required sanitized fixtures fail when absent. `test_architecture_guard.py` and strengthened `replays/test_replay_isolation.py` inspect nested, relative, and literal dynamic imports. `test_replay_score_isolation.py` replaces a real replay and checks persisted Impact rows remain identical. |
 | T12: lifespan | `test_app_lifespan.py`: normal shutdown, application-body failure, each partial-start failure, and demo mode with service flags enabled. Started services receive stop signals. |
-| T13: coaching | `test_coach_journey.py`: deterministic snapshot through actual runner/checker/store, escaped report HTTP rendering, feedback form persistence, current-version fallback, and foreign evidence refusal. The model boundary is offline. |
+| T13: coaching | `test_coach_journey.py`: deterministic snapshot through actual runner/checker/store, escaped report HTTP rendering, feedback form persistence, current-version fallback, and missing-point refusal. The model boundary is offline. |
 | T14: local import adapter | `test_demo_adapter_contract.py`: date/key parsing, known date override, real schema mapping, replacement/orphan removal, and rollback preserving the original match. The GUI parser is supplied as deterministic parsed input. |
 
 `support/` holds deliberately small shared builders, raw ASGI transport, scratch-site
 binding, PostgreSQL lifecycle, synthetic tracker/replay histories, and import inspection.
 The worker image can load root conftest without importing SQLAlchemy or psycopg2.
+
+### Remaining audit scenarios
+
+Every T01–T14 area has additions; this does not mean every original scenario is
+complete. T03, T05, T11, and T12 exercise their principal boundary, with representative
+rather than exhaustive schema/roster/operation checks. The following remain partial:
+
+| Task | Follow-up coverage still needed |
+|---|---|
+| T01 | Execute the actual Linux worker image and hosted CI; classification follows recognized test/fixture calls, not an exhaustive call graph. Database isolation is required-mode behavior. |
+| T02 | Frozen production-environment equivalence and additional integrated tamper/version refusals. Persisted-field comparison checks scorer wiring, not an independent mathematical oracle. |
+| T04 | Real-app HTTPS configuration, PostgreSQL search collation, and more malformed redirect inputs. |
+| T06 | Halftime/overtime payloads, exhaustive player assist/spend mapping, pre-existing-cache sentinels during refusal, and unrelated committed-match sentinels during rollback. |
+| T07 | CLI argument parsing in subprocesses, exhaustive ordering, malformed rosters, and replay-link failure behavior. |
+| T08 | Compare actual displayed/chart values across cold/warm cache requests, tied/NULL dates, combined-account deduplication, and membership changes through HTTP. |
+| T09 | Detailed seed statistics and disabled-feature mutations beyond the exercised route/state contracts. |
+| T10 | Combined accounts, statistics/session expansion, coach/moment navigation, and substantive available control/gaps rendering. Keyboard coverage remains a focus smoke check. |
+| T13 | Existing authenticated cross-match/report feedback refusal, checked/unchecked status, opponent-name policy, and a specific missing-source disclosure assertion through the complete journey. |
+| T14 | Root HTML/icon parsing, GUI automation, and PostgreSQL adapter-specific integration. The GUI/parser boundary remains simulated. |
 
 ### Obsolete expectations and narrow fixes
 
@@ -104,7 +123,7 @@ comparator and installed test dependencies. This preserves production's strict f
 environment check while allowing pytest/xdist in the test environment; it does not
 replace a frozen release manifest or prove production-environment equivalence.
 
-## Local validation record
+## Initial implementation validation (e5869084)
 
 Verified with Python 3.13.15, temporary PostgreSQL 18.6, Node, and Playwright Chromium.
 These are separate runs and overlap; do not add their counts as unique coverage.
@@ -126,6 +145,41 @@ These are separate runs and overlap; do not add their counts as unique coverage.
 The first broad replay run stopped after ten stale expectation failures (2,434 passed,
 11 optional skips); later targeted runs corrected those cases. This record is not a
 claim that a single final invocation of the entire existing suite completed without skips.
+
+## Review corrections and validation
+
+The review reproduced the original 195 new cases and the 123-case required PostgreSQL
+lane. It found three P2 gaps in what passing tests proved. The follow-up corrects them:
+
+1. Replay refusal now uses a complete, accessible linked replay, with successful
+   non-demo reads before demo refusal. Valid authenticated JSON deletion checks that
+   refusal retains every stored row and creates no tombstone before the same request
+   successfully deletes the retained replay outside demo mode.
+2. Replay rendering now checks real minimap pixels and team-colored player geometry
+   at independently calculated locations before/after scrubbing, clears the old marker,
+   requires the control checkbox and its exact not-ready response, and observes time
+   advancing during playback and stopping after pause.
+3. Worker triggers include both previously omitted inputs. The check walks actual
+   literal Docker COPY sources and workflow host mounts; the entire mounted tests
+   directory is covered instead of a hand-picked subset.
+
+Follow-up run, from `webapp/` with the committed added-test file selection:
+
+```sh
+python -m pytest <added-test-files> -n 0 -m 'not postgres and not corpus' --require-browser --require-node --require-fixtures -q
+```
+
+**183 passed, 18 deselected, no skips, in 125.66 seconds.** The deselected PostgreSQL
+cases were unchanged and were not rerun in this follow-up. The added-file inventory
+now collects 201 cases, including six additional resource-dependent demo cases.
+
+Seven temporary mutation probes failed at the intended assertions: demo mode forced
+off; all canvas drawing disabled; player arcs disabled while the map still draws;
+control checkbox removed; playback frames frozen; each missing CI path removed in
+turn. These deliberate failures are validation of the assertions, not ordinary-suite
+failures. The probes used a temporary pytest plugin outside the checkout and did not
+edit application source or become an ordinary CI dependency. Docker/hosted Linux
+execution remains pending; no application or scoring source changed in this follow-up.
 
 ## Deliberate limits
 

@@ -5,6 +5,7 @@ on:
     paths:
       - 'replay_worker/**'
       - 'replay_tasks/**'
+      - 'webapp/app/__init__.py'
       - 'webapp/app/control/**'
       - 'webapp/app/gaps/**'
       - 'webapp/app/replays/**'
@@ -13,10 +14,8 @@ on:
       - 'webapp/requirements.txt'
       - 'webapp/replay_parser.json'
       - 'webapp/scripts/*messages.patch'
-      - 'webapp/tests/replays/**'
-      - 'webapp/tests/support/**'
-      - 'webapp/tests/conftest.py'
-      - 'webapp/tests/fixtures/**'
+      - 'webapp/scripts/control_reference.py'
+      - 'webapp/tests/**'
       - '.github/workflows/replay-worker-review.yml'
 
 permissions:

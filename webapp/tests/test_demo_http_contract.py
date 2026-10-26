@@ -6,10 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 from app.config import settings
+from app.db import Base
 from app.models import Player, Friendship, AccountGroup
+from app.models.replay import Replay, ReplayDeletion
 from tests.support.site import site  # noqa: F401
-
-UUID = '00000000-0000-4000-8000-000000000001'
+from tests.support.replays import stored_replay
 
 
 @pytest.mark.parametrize('method,path,data,status', [
@@ -19,8 +20,7 @@ UUID = '00000000-0000-4000-8000-000000000001'
     ('POST','/accounts/label',{'display_name':'Other','label':'renamed'},403),
     ('GET','/replays',None,404), ('GET','/replays/upload',None,404),
     ('POST','/replays/upload/code',{'code':'test-code'},404),
-    ('GET',f'/replays/{UUID}/coach',None,404), ('GET',f'/replays/{UUID}/moments.json',None,404),
-    ('POST','/admin/replays/delete',{'match_uuid':UUID},404), ('GET','/admin/replays/archive',None,404),
+    ('GET','/admin/replays/archive',None,404),
     ('GET','/gaps',None,404),
 ])
 def test_demo_route_families_refuse_without_mutation(site, monkeypatch, method, path, data, status):
@@ -36,6 +36,45 @@ def test_demo_route_families_refuse_without_mutation(site, monkeypatch, method, 
     with factory() as fresh:
         assert fresh.query(Player).count() == 2
         assert fresh.query(Friendship).count() == 0 and fresh.query(AccountGroup).count() == 0
+
+
+def database_snapshot(factory):
+    with factory() as db:
+        return {table.name: db.execute(table.select().order_by(*table.primary_key.columns)).all()
+                for table in Base.metadata.sorted_tables}
+
+
+@pytest.mark.parametrize('suffix,status', [('',200), ('/coach',200), ('/coach/prompt',200),
+    ('/moments.json',200), ('/1.json',200), ('/1/gaps.json',200), ('/1/control.bin',202),
+    ('/control/players.json',200)])
+def test_demo_refuses_the_same_accessible_linked_replay(site, monkeypatch, tmp_path, suffix, status):
+    client, factory = site
+    uuid, _, _, _ = stored_replay(factory, tmp_path)
+    path = f'/replays/{uuid}{suffix}'
+    # Prove resource existence, validity, linking, and map prerequisites first.
+    assert client.get(path).status_code == status
+    before = database_snapshot(factory)
+    monkeypatch.setattr(settings,'demo_mode',True)
+    assert client.get(path).status_code == 404
+    assert database_snapshot(factory) == before
+
+
+def test_demo_admin_delete_preserves_an_existing_replay_and_no_tombstone(site, monkeypatch, tmp_path):
+    client, factory = site
+    uuid, rid, _, _ = stored_replay(factory, tmp_path)
+    monkeypatch.setattr(settings,'replay_admin_token','test-admin')
+    headers = {'authorization':'Bearer test-admin'}
+    before = database_snapshot(factory)
+    monkeypatch.setattr(settings,'demo_mode',True)
+    assert client.post('/admin/replays/delete',json={'match_uuid':uuid},headers=headers).status_code == 404
+    assert database_snapshot(factory) == before
+    # The identical authenticated request is valid and destructive outside demo
+    # mode. Run it last so refusal must have retained the original resource.
+    monkeypatch.setattr(settings,'demo_mode',False)
+    response = client.post('/admin/replays/delete',json={'match_uuid':uuid},headers=headers)
+    assert response.status_code == 200 and response.json()['replay_deleted'] is True
+    with factory() as db:
+        assert db.get(Replay,rid) is None and db.get(ReplayDeletion,uuid) is not None
 
 
 @pytest.mark.parametrize('demo,name', [('true','ValoMaths'), ('false','ValoWithFriendsTracker')])
