@@ -122,7 +122,7 @@
       bits.push("got the spike" + (row.signals.got_spike_planted ? ", then planted" : ""));
     }
     if (row.found_nobody) bits.push("found nobody (the area was empty)");
-    if (row.wasted) bits.push("wasted: nothing came of it");
+    if (row.wasted) bits.push("wasted: " + (typeof row.wasted_why === "string" ? row.wasted_why : "nothing came of it"));
     return bits;
   }
 

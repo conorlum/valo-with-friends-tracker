@@ -156,6 +156,14 @@ def test_viewer_lift_text_by_mode():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_says_why_a_hand_set_trap_was_wasted():
+    out = _node("[u.rowText(rows[0], players), u.rowText(rows[1], players)]",
+                [{"wasted": True, "wasted_why": "destroyed before it was set off"}, {"wasted": True}])
+    assert "wasted: destroyed before it was set off" in out[0]
+    assert "wasted: nothing came of it" in out[1]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_viewer_shows_a_placeables_device_comparison_beside_the_main_lift():
     main = {"lift_all": 0.5, "base_level": "state", "gate_all": True}
     device = {**main, "lift_device": -1.25, "device_level": "map side", "device_n": 14, "gate_device": True}

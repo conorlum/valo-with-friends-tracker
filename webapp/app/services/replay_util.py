@@ -309,7 +309,7 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                 "won": (ctx["rounds"].get(n) or {}).get("winner") == c.get("side") if c.get("side") else None,
                 "scored": scored,
                 "value": v.get("total", 0.0), "ledger": v.get("ledger", 0.0), "jobs": v.get("jobs", 0.0),
-                "wasted": v.get("wasted", False), "found_nobody": v.get("found_nobody", False),
+                "wasted": v.get("wasted", False), "wasted_why": v.get("wasted_why"), "found_nobody": v.get("found_nobody", False),
                 "harm": len(c.get("harm") or ()), "harm_died": sum(1 for h in c.get("harm") or () if h.get("died")),
                 "followed": c.get("followed"), "ult_points": c.get("ult_points"),
                 "enemies": len(c.get("enemies") or ()), "features": v.get("features", {}), **NO_LIFT,
@@ -843,7 +843,7 @@ def match_payload(db, replay) -> dict:
         for r in by_round.get(n, []):
             c = casts.get(r["i"]) or {}
             out.append({**{k: r[k] for k in ("i", "slot", "agent", "ability", "kind", "kinds", "side", "area", "phase",
-                                             "t", "wasted", "found_nobody", "followed", "enemies", "harm_died",
+                                             "t", "wasted", "wasted_why", "found_nobody", "followed", "enemies", "harm_died",
                                              "combo", "scored", "base_n", "base_level")
                            if k in r},
                         **{k: r.get(k) for k in ("label", "type", "L", "gate_all", "gate_yours", "gate_device",

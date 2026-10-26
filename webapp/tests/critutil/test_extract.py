@@ -214,15 +214,33 @@ def test_a_hidden_nanoswarm_stops_no_defuse_and_one_set_off_on_the_spike_does():
     assert c["spike"]["attempts"][0]["evidence"] == "zone" and c["spike"]["stopped"] == 1
 
 
-def test_a_nanoswarm_left_hidden_is_not_called_wasted():
-    # it was there all round, never set off: no active time, but not a device "gone at once"
+def test_a_nanoswarm_never_set_off_is_wasted_and_one_destroyed_first_is_worse():
+    # the owner (2026-10-26): unused is wasted but normal (kept for an execute); destroyed before set off is worse
     from app.services import util_values
 
+    far = {5: ("B", [(0.0, 480, 300, 180)]), 6: ("B", [(0.0, 480, 320, 180)])}
     hidden = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 100, 100, 0, t=2.0, t1=None, kind="GameObject")
-    out = run([hidden], extra={5: ("B", [(0.0, 480, 300, 180)]), 6: ("B", [(0.0, 480, 320, 180)])})
+    out = run([hidden], extra=far)
     (c,) = cast_by(out, 0)
     assert c["presence"]["armed_s"] == 0 and c["presence"]["life_s"] > 20
-    assert util_values.value_round(out, None)["casts"][c["i"]]["wasted"] is False
+    assert c["signals"]["go_off"] is None and c["signals"]["destroyed"] is None
+    unused = util_values.value_round(out, None)["casts"][c["i"]]
+    assert unused["wasted"] is True and unused["wasted_why"] == "never set off" and unused["total"] == 0
+
+    shot = toy_ability("Killjoy", "4_RemoteBees_MultiDetonate", 100, 100, 0, t=2.0, t1=None, kind="GameObject",
+                       gone=9.0)
+    out = run([shot], extra=far)
+    (c,) = cast_by(out, 0)
+    lost = util_values.value_round(out, None)["casts"][c["i"]]
+    assert c["signals"]["destroyed"] == 9.0 and lost["wasted_why"] == "destroyed before it was set off"
+    assert lost["total"] < unused["total"], "worse than kept down unused"
+    assert "triggered" not in lost["features"], "broken first is not info for a trap set off by hand"
+
+    swarm = toy_ability("Killjoy", "4_BeeSwarm_Damage", 100, 100, 0, t=12.0, t1=16.0)
+    out = run([hidden, swarm], extra=far)
+    (c,) = cast_by(out, 0)
+    used = util_values.value_round(out, None)["casts"][c["i"]]
+    assert used["wasted"] is False and used["wasted_why"] is None and used["features"].get("triggered") == 1.0
 
 
 def test_an_ult_knife_hit_is_never_effect_evidence_for_the_jetts_dash():

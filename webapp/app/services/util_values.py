@@ -42,8 +42,9 @@ DEFAULT_WEIGHTS = {
     "front_s": 0.0015,         # per second the map-control unknown stopped at a device's or molly's edge
     "held_m2s": 0.000005,      # per m2 x second of ground only that device or molly held (no teammate saw it)
     "spike_got": 0.0300,       # per Omen ult whose caster picked the spike up after arriving (+1 when it was then planted)
+    "lost_unset": 0.0080,      # a trap set off by hand (Nanoswarm, Razorvine) destroyed before it was set off (negative)
 }
-NEGATIVE = frozenset({"harm_soft"})
+NEGATIVE = frozenset({"harm_soft", "lost_unset"})
 JUDGED_KINDS = frozenset({"blind", "smoke", "wall", "damaging", "status", "info", "device"})   # can be wasted
 MIN_ROUNDS_TO_FIT = 300
 RIDGE = 50.0                # pull of every fitted weight toward its default, in rounds
@@ -89,6 +90,11 @@ def features(cast: dict) -> dict:
     f["revealed"] = float(len({e["target"] for e in cast.get("effects") or ()
                                if e.get("how") == "reveal" and e["target"] not in killed}))
     f["triggered"] = 1.0 if cast.get("trigger") is not None else 0.0
+    sig = cast.get("signals") or {}
+    if "go_off" in sig:
+        # a trap set off by hand: only setting it off is its job; destroyed first is a loss, not info (the owner)
+        f["triggered"] = 1.0 if sig["go_off"] is not None else 0.0
+        f["lost_unset"] = 1.0 if sig["go_off"] is None and sig.get("destroyed") is not None else 0.0
     f["defuse_stopped"] = float((cast.get("spike") or {}).get("stopped") or 0)
     # owner, 2026-10-21: flashing or statusing a teammate matters more than damaging one
     f["harm_soft"] = float(sum(0.5 if h.get("how") == "damage" else 1.0 for h in cast.get("harm") or ()
@@ -96,7 +102,6 @@ def features(cast: dict) -> dict:
     hold = cast.get("hold") or {}
     f["front_s"] = float(hold.get("front_s") or 0.0)
     f["held_m2s"] = float(hold.get("held_m2s") or 0.0)
-    sig = cast.get("signals") or {}
     f["spike_got"] = (1.0 + (1.0 if sig.get("got_spike_planted") else 0.0)) if sig.get("got_spike") else 0.0
     return f
 
@@ -174,7 +179,7 @@ def value_round(round_data: dict, model: dict | None, weights: dict | None = Non
         l = led[c["i"]]["value"]
         casts[c["i"]] = {"ledger": round(l, 4), "jobs": round(jobs, 4), "total": round(l + jobs, 4),
                          "features": {k: v for k, v in f.items() if v}, "items": led[c["i"]]["items"],
-                         "scored": True, "wasted": is_wasted(c, l, f),
+                         "scored": True, "wasted": is_wasted(c, l, f), "wasted_why": wasted_why(c),
                          "found_nobody": "info" in (c.get("kinds") or ())
                                          and set(c.get("kinds") or ()) <= {"info", "ult"} and not c.get("enemies")}
     heals = []
@@ -182,6 +187,16 @@ def value_round(round_data: dict, model: dict | None, weights: dict | None = Non
         f = heal_features(h)
         heals.append({**h, "value": round(job_value(f, weights), 4)})
     return {"casts": casts, "heals": heals}
+
+
+def wasted_why(cast: dict) -> str | None:
+    """Why a trap set off by hand (an entry with `go_off`: Nanoswarm, Razorvine) that was never set off is wasted
+    (the owner, 2026-10-26): destroyed first is worse (`lost_unset`) than kept down unused, which is a normal part
+    of the kit (held for an execute). None for every other cast."""
+    sig = cast.get("signals") or {}
+    if "go_off" not in sig or sig["go_off"] is not None:
+        return None
+    return "destroyed before it was set off" if sig.get("destroyed") is not None else "never set off"
 
 
 def is_wasted(cast: dict, ledger_value: float, f: dict) -> bool:
@@ -196,7 +211,9 @@ def is_wasted(cast: dict, ledger_value: float, f: dict) -> bool:
         return False            # recon that found nobody still told the team the area was empty (found_nobody)
     if cast.get("enemies") or cast.get("kills") or ledger_value:
         return False
-    if any(v for k, v in f.items() if k != "harm_soft"):
+    if wasted_why(cast):
+        return True             # a trap set off by hand that never was (or was destroyed first)
+    if any(v for k, v in f.items() if k not in NEGATIVE):
         return False
     if "device" in (cast.get("kinds") or ()):
         presence = cast.get("presence") or {}

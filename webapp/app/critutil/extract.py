@@ -1094,7 +1094,13 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         "ult_drop": _r2(drop),
     }
     if (c.entry or {}).get("go_off"):   # when it was set off (Nanoswarm's swarm, Razorvine's patch)
-        s["go_off"] = _r2(_go_off_t(c))
+        went = _go_off_t(c)
+        s["go_off"] = _r2(went)
+        # and when its hidden object was destroyed before that (the owner: worse than never setting it off)
+        go = c.entry["go_off"]
+        gone = [float(r["gone"]) for r in c.rows if r.get("gone") is not None
+                and not re.search(go, f"{r.get('kind')}:{_code_name(r) or ''}")]
+        s["destroyed"] = _r2(min(gone)) if gone and (went is None or min(gone) < went) else None
     if cast_type == "placeable":        # a sentinel's placed util turns off when its owner dies (the owner, 2026-10-24)
         s["owner_death"] = _r2(_death_after(rnd, c.by, c.t))
     if (c.entry or {}).get("rule") == "possessed":      # a camera: when its owner was looking through it
