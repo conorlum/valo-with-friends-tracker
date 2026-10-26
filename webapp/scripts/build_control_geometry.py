@@ -36,7 +36,7 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 from app.control import geometry as cg  # noqa: E402
 
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
-RISK1_BAR = cg.RISK1_BAR
+RISK1_BAR = cg._RISK1_BAR
 kill_line_result = cg.kill_line_result     # one rule for the build and the tests (lines on cover aren't judged)
 
 

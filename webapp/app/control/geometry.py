@@ -208,7 +208,7 @@ class MapMasks:
 # Risk 1 (docs/replay-map-control-plan.md): a map's geometry is usable when at most this share of its judged kill
 # lines crosses a sight wall. A line with either end on a cover box isn't judged: the flat test can't tell a
 # player standing on top of a box from one behind it (2026-10-26: 5 of Summit's 9 blocked lines).
-RISK1_BAR = 0.02
+_RISK1_BAR = 0.02   # a build-time bar, not an engine constant: kept out of the control digest
 
 
 def kill_line_result(sight: np.ndarray, lines: list, cover: np.ndarray | None = None) -> dict:
@@ -222,7 +222,7 @@ def kill_line_result(sight: np.ndarray, lines: list, cover: np.ndarray | None = 
         return {"qualifying": 0, "on_cover": len(lines), "blocked": 0, "share": None, "passes": None}
     share = blocked / len(judged)
     return {"qualifying": len(judged), "on_cover": len(lines) - len(judged), "blocked": blocked,
-            "share": round(share, 4), "passes": share <= RISK1_BAR}
+            "share": round(share, 4), "passes": share <= _RISK1_BAR}
 
 
 def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
