@@ -270,12 +270,13 @@ def test_a_nanoswarm_never_set_off_is_wasted_and_one_destroyed_first_is_worse():
 
 
 def test_an_ult_knife_hit_is_never_effect_evidence_for_the_jetts_dash():
-    # replay 366 round 28's shape: a dash at 44.4 s (live 7.5 s by the table), then Blade Storm hits at 51.8 s
+    # replay 366 round 28's shape: a dash at 44.4 s, then a Blade Storm hit while the dash's row is still live (the
+    # row is the 0.45 s dash, branch review B16; 366's own hit came at 51.8 s, after it)
     util = [{"k": "cast", "t": 44.4, "by": 0, "code": "Wushu", "name": "E_Dash"},
-            {**damage(51.78, 0, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}]
-    out = run(util, kills=[kill(51.78, 0, 5)], player_state=ult_state(0), agents={0: "Jett"}, t_end=70.0)
+            {**damage(45.0, 0, 5), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}]
+    out = run(util, kills=[kill(45.0, 0, 5)], player_state=ult_state(0), agents={0: "Jett"}, t_end=70.0)
     (dash,) = [c for c in out["casts"] if c["type"] == "dash"]
-    assert dash["t_end"] > 51.78, "the dash is still live by the table when the knife lands"
+    assert dash["t_end"] + 1.0 > 45.0, "the knife lands inside the dash's attribution window"
     assert dash["effects"] == [] and dash["kills"] == []
 
 

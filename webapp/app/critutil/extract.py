@@ -1546,8 +1546,13 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
     ults = _ults(rnd, blob, sides, agents)
-    out_casts.extend(_timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
-                                      blob.get("util") or ()))
+    # a use a recorded row already made a cast of (Veto's Evolution `buff` row, CONDENSE 23) is not made again
+    have = {(c["by"], c["ability_id"], c["t"]) for c in out_casts}
+    out_casts.extend(x for x in _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
+                                                 blob.get("util") or ())
+                     if (x["by"], x["ability_id"], x["t"]) not in have)
+    for i, c in enumerate(out_casts):
+        c["i"] = i
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
         "v": VERSION,
