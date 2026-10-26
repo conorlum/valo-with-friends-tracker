@@ -26,7 +26,8 @@ g = the entry's `grace_s` (default 1), D = its `duration_s` (may be None), start
   tag         a cast that tagged an enemy: [t, seen_end + g] (Spycam dart: until it is taken out, plus 5 s), no
               seen_end: the last effect end + g; a cast that tagged nobody: none.
   on_spans    each stored `on` span, plus g after it (Viper: 5 s). None stored: with on_known, off its whole life; otherwise duration, fallback.
-  life        [start, seen_end]; no seen_end: [start, start + D + g], fallback (Viper's Pit).
+  life        [start, seen_end]; up when the round ended (signals.to_end): [start, t_decided]; else no seen_end:
+              [start, start + D + g], fallback (Viper's Pit).
   heal        a heal row: [t, death or t_decided]; a heal-type cast: [t, t_decided].
   ult:raze    [ult_drop, t + g]; no drop: fallback.
   ult:omen    [t, (spike_pickup if she got the spike, else arrival) + 10 s]; no arrival: fallback.
@@ -181,6 +182,8 @@ def window(item: dict, entry: dict | None, t_decided: float, on_known: bool = Tr
     elif rule == "life":
         if seen is not None:
             segs = [[start, seen]]
+        elif s.get("to_end"):
+            segs = [[start, t_decided]]     # up when the round ended: not a missing end (branch review B3)
         else:
             fallback = True
             segs = [[start, start + D + g]] if D is not None else []

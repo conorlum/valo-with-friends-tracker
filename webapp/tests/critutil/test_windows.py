@@ -210,6 +210,13 @@ def test_life_runs_to_seen_end_or_falls_back():
     assert segs(cast(10.0, typ="ult"), ent("life", None)) == []
 
 
+def test_life_that_ran_to_the_rounds_end_is_up_to_decided_not_the_fallback():
+    # Branch review B3: a Pit up until the round ended has no seen_end (that is kept for an early end), but it did
+    # not go missing: it is up to t_decided, not start + D + g.
+    r = w(cast(2.0, typ="ult", landed=2.0, to_end=True), ent("life", 8))
+    assert r == {"segments": [[2.0, TD]], "rule": "life", "fallback": False}
+
+
 def test_heal_row_runs_to_death_or_decided():
     assert w({"t": 10.0, "t1": 12.0, "target": 1, "death": 20.0}, None) == {
         "segments": [[10.0, 20.0]], "rule": "heal", "fallback": False}
