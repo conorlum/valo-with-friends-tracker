@@ -439,6 +439,17 @@ def test_an_astra_star_is_its_own_entry_not_an_ult_or_an_ult_use():
     assert out["ults"]["1"]["used"] is False
 
 
+def test_movement_cast_rows_are_dashes_one_cast_per_use():
+    # the condenser's shape (app/replays/extras.py, revision 14): no place, no lifetime
+    util = [{"k": "cast", "t": 4.0, "by": 1, "code": "Wushu", "name": "E_Dash"},
+            {"k": "cast", "t": 9.0, "by": 0, "code": "Terra", "name": "Q_DoubleDash"},
+            {"k": "cast", "t": 15.0, "by": 1, "code": "Wushu", "name": "E_Dash"}]
+    out = run(util)
+    got = sorted((c["t"], c["by"], c["ability_id"], c["type"], tuple(c["kinds"])) for c in out["casts"])
+    assert got == [(4.0, 1, "Jett/Tailwind", "dash", ("dash",)), (9.0, 0, "Waylay/Lightspeed", "dash", ("dash",)),
+                   (15.0, 1, "Jett/Tailwind", "dash", ("dash",))]
+
+
 def test_an_ult_the_table_does_not_know_is_still_type_ult():
     _, c = _one("Zzz", "X_Mystery", t=5.0, t1=9.0)
     assert "ult" in c["kinds"] and c["type"] == "ult" and c["ability_id"] is None

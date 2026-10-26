@@ -1390,7 +1390,7 @@
    "duration_s": 0.6
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Wushu_E_Dash)$",
    "agent": "Jett",
    "ability": "Tailwind",
    "slot": "E",
@@ -3204,7 +3204,7 @@
    "duration_s": 3.0
   },
   {
-   "match": "^(?!)$",
+   "match": "^(Terra_Q_DoubleDash)$",
    "agent": "Waylay",
    "ability": "Lightspeed",
    "slot": "Q",

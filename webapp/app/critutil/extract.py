@@ -224,8 +224,8 @@ def _anchored(casts, row):
 
 def build_casts(rnd, blob: dict) -> list[_Cast]:
     """One _Cast per use of a charge. A flash or nearsight row, or a projectile, starts one (a thrown ability); a
-    caster's buff rows that start together (Harmonize on Miks and the teammate) are one; the
-    pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
+    caster's buff rows that start together (Harmonize on Miks and the teammate) are one; a movement `cast` row is
+    one; the pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
     (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
     spike is not a cast."""
     util = blob.get("util") or ()
@@ -250,6 +250,10 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             c = _Cast(len(casts), r, rnd)
             c.kinds = set()
             casts.append(c)
+    for r in sorted((r for r in util if r.get("k") == "cast" and r.get("by") is not None), key=lambda r: r["t"]):
+        c = _Cast(len(casts), r, rnd)       # a movement ability (Jett's dash): no object, no place, one row a use
+        c.kinds = set()
+        casts.append(c)
     abilities =sorted((r for r in util if r.get("k") == "ability" and r.get("kind") != "Bomb"),
                        key=lambda r: (r["t"], r.get("kind") != "Projectile", "end" not in r))
     for r in abilities:
@@ -283,7 +287,7 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
                 break
         if host is None and not parents and r.get("kind") != "Projectile":
             for c in reversed(casts):
-                if c.flash is not None or c.by != by or c.key != _key_of(name) or c.rows[0].get("k") == "buff":
+                if c.flash is not None or c.by != by or c.key != _key_of(name) or c.rows[0].get("k") in ("buff", "cast"):
                     continue
                 if entry is not None and (c.entry is None or c.entry["match"] != entry["match"]):
                     break                   # a row with its own ability only joins a cast of that ability
