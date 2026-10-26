@@ -765,6 +765,25 @@ def _active_spans(rnd, c: _Cast) -> list[list[float]]:
     return windows._cut([[a, b] for s0, s1 in spans for a, b in windows._minus([s0, s1], off) if b > a], None)
 
 
+def _area_dist_m(rnd, p, hulls) -> float:
+    """Metres from a point to the nearest of an area's convex hulls (map px): 0 inside one."""
+    best = math.inf
+    for hull in hulls:
+        n = len(hull)
+        signs = set()
+        for i in range(n):
+            (ax, ay), (bx, by) = hull[i], hull[(i + 1) % n]
+            cross = (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)
+            if abs(cross) > _EPS:
+                signs.add(cross > 0)
+            dx, dy = bx - ax, by - ay
+            k = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy)))
+            best = min(best, math.hypot(p[0] - ax - k * dx, p[1] - ay - k * dy))
+        if n >= 3 and len(signs) <= 1:
+            return 0.0
+    return best * rnd.geo.m_per_px
+
+
 def _presence(rnd, sides, c: _Cast) -> dict | None:
     """Observed enemy presence around a placed area cast (smoke, molly, wall, device) while it could act
     (`_active_spans`): enemy-seconds inside it, enemy-seconds stopped just outside it (waiting on it), and enemies
@@ -775,6 +794,15 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     kind = next((k for k in ("device", "smoke", "damaging", "status") if k in c.kinds), "default")
     r = ZONE_RADIUS_M[kind]
     x, y = _px(c.u, c.v)
+    area = next(([[_px(*pt) for pt in hull] for hull in row["area"]] for row in c.rows if row.get("area")), None)
+    if area:
+        r = 0.0                     # its real ground (Viper's Pit, CONDENSE 23): distances are to its edge
+
+        def dist(p):
+            return _area_dist_m(rnd, p, area)
+    else:
+        def dist(p):
+            return _dist_m(rnd, p, (x, y))
     spans = _active_spans(rnd, c)
     inside_s = 0.0
     entered, waits = set(), set()
@@ -789,7 +817,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
                 p = rnd.pos(s, t)
                 if p is None:
                     continue
-                d = _dist_m(rnd, p, (x, y))
+                d = dist(p)
                 if d <= r:
                     inside_s += PRESENCE_STEP_S
                     entered.add(s)
@@ -805,7 +833,7 @@ def _presence(rnd, sides, c: _Cast) -> dict | None:
     # `_waits` and `_gap` are for sharing between casts (`_share_presence`), never stored
     # `life_s`: how long its object was there at all, active or not (a device "gone at once" is wasted; one left
     # hidden is not, by that rule: util_values.is_wasted)
-    return {"r_m": r, "armed_s": _r2(sum(b - a for a, b in spans)),
+    return {"r_m": r, "area": bool(area), "armed_s": _r2(sum(b - a for a, b in spans)),
             "life_s": _r2(max(0.0, min(c.t_end, rnd.t_decided) - c.t)), "inside_s": _r2(inside_s),
             "waiting_s": _r2(len(waits) * PRESENCE_STEP_S), "entered": sorted(entered),
             "held_back": sorted(set(gaps) - entered), "_waits": waits,

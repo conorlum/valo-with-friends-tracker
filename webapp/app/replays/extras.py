@@ -5,7 +5,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
-  ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"]}` (`possessed` and
+  ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"], ["area"]}` (`area`,
+  on Viper's Pit, is `[[[u, v], ...], ...]`: the ground it covers, one hull per fragment, revision 23; `possessed` and
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
   point's fourth value are heights in decimetres of world z, each left out when the export gave none:
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
@@ -259,6 +260,9 @@ class Raw:
     # The `FXC.Distance` of a one-shot an ability object played on itself: a ZERO/point pulse's suppress
     # radius in world units (1500 on every knife of the first KAY/O export). guid -> the first one seen.
     object_ranges: dict[int, float] = field(default_factory=dict)
+    # The ground an area ability covers (Viper's Pit), from its GroundVolumeComponent's fragments: guid ->
+    # {fragment id: [(x, y), ...]}, a convex hull each (about 2 m squares), as the last update left them.
+    footprints: dict[int, dict[int, list[tuple[float, float]]]] = field(default_factory=lambda: defaultdict(dict))
     # A projectile's flight: its replicated movement, which the export gives in metres (stored here in world
     # units, x100; W2's unit audit). guid -> [(ms, x, y, z | None)], from its latest spawn.
     flights: dict[int, list[tuple[int, float, float, float | None]]] = field(default_factory=lambda: defaultdict(list))
@@ -292,7 +296,7 @@ _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
-                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"')
+                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"', '"ConvexHullPoints"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -547,6 +551,16 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         raw.flights[guid].append((t_ms, float(where["x"]) * REPLICATED_SCALE,
                                                   float(where["y"]) * REPLICATED_SCALE,
                                                   None if z is None else float(z) * REPLICATED_SCALE))
+                delta = payload.get("FragmentDelta")
+                if isinstance(delta, dict) and guid in actors:
+                    shape = raw.footprints[guid]
+                    for update in delta.get("Updates") or ():
+                        hull = [(float(p["Point"]["x"]), float(p["Point"]["y"])) for p in update.get("ConvexHullPoints") or ()
+                                if isinstance(p, dict) and isinstance(p.get("Point"), dict)]
+                        if hull:
+                            shape[int(update.get("ReplicationID", len(shape)))] = hull
+                    for gone in delta.get("DeletedIds") or ():
+                        shape.pop(gone, None)
                 if guid in walls and isinstance(payload.get("WallActivated"), bool):
                     raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
                 actor_list = payload.get("Actors")
@@ -955,6 +969,9 @@ STATUS_OBJECTS = (
     (re.compile(r"^Breach_(E_SweetSpotFissure|X_Shockwave)$"), "concussed"),
     (re.compile(r"^Rift_Q_FlashBurst$"), "concussed"),
     (re.compile(r"^Smonk_Q_DecayExplosion$"), "decayed"),
+    # Viper's Pit: an enemy inside it gets an effect naming the Pit (and a debuff naming Viper beside it, for the same
+    # span), from stepping in to leaving or the cloud falling (trap-jobs D13: 386 Cypher 5.0 s, Iso 1.3 s; 346 Skye).
+    (re.compile(r"^Pandemic_X_Circular$"), "decayed"),
     (re.compile(r"^(Deadeye_E_Slow_Large|Thorne_4_SlowField_Production)$"), "slowed"),
     (re.compile(r"^Sprinter_Q_ElectricSphere$"), "concussed"),    # Neon's Relay Bolt (caster-named)
     (re.compile(r"^Cable_Q_SoundSensor_Fissure$"), "concussed"),  # Deadlock's Sonic Sensor (caster-named)
@@ -1903,6 +1920,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
               and _dizzy_shot_down(actor.closed_ms, spawners_at, shots_at)):
             entry["gone"] = max(0.0, _seconds(actor.closed_ms, start))
             counts["dizzy_gone"] += 1
+        if raw.footprints.get(actor.guid):
+            # The ground it covers, one map-px hull per fragment (Viper's Pit: 215-236 m2 on 3 casts, edges 11.6-12.8 m
+            # from its centre: not a circle; trap-jobs D13).
+            entry["area"] = [[list(game_map.to_uv(x, y)) for x, y in hull]
+                             for _, hull in sorted(raw.footprints[actor.guid].items())]
+            counts["ability_areas"] += 1
         if actor.name == "4_SmokeGrenade" and actor.kind == "Projectile":
             poison_emitters.append((entry, actor, slot, start, end))   # linked to its zones once all owners are known
         if actor.kind == "Bomb":

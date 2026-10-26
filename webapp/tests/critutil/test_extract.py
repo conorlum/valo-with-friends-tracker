@@ -499,6 +499,22 @@ def test_enemy_waiting_outside_a_molly_is_waiting_not_held_back():
     assert p["waiting_s"] > 0 and 5 not in p["entered"] and p["held_back"] == []
 
 
+def _strip(x0, x1, y0, y1):
+    return [list(uv(x, y)) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+
+
+def test_a_pit_with_an_area_counts_its_real_ground_not_a_circle():
+    # trap-jobs D13: a Pit's `area` is its ground (one hull per fragment), not a circle around its centre. Here a long
+    # strip east of the centre: an enemy 10 m east is in it, one 3 m north is not.
+    pit = toy_ability("Pandemic", "X_Circular", 300, 200, 1, t=2.0, t1=20.0, kind="GameObject",
+                      area=[_strip(300 - px(1), 300 + px(6), 200 - px(1), 200 + px(1)),
+                            _strip(300 + px(6), 300 + px(12), 200 - px(1), 200 + px(1))])
+    east = [(0.0, 300 + px(10), 200, 180), (25.0, 300 + px(10), 200, 180)]
+    north = [(0.0, 300, 200 + px(3), 180), (25.0, 300, 200 + px(3), 180)]
+    (c,) = [c for c in cast_by(run([pit], extra={5: ("B", east), 6: ("B", north)}), 1) if c["presence"]]
+    assert c["presence"]["area"] is True and c["presence"]["entered"] == [5]
+
+
 def test_enemy_who_comes_to_the_edge_and_turns_back_is_held_back():
     mover = [(0.0, 400 + px(30), 160, 180), (9.0, 400 + px(7), 160, 180), (13.0, 400 + px(25), 160, 0)]
     molly = toy_ability("Phoenix", "MolotovFire", 400, 160, 1, t=8.0, t1=14.0)
