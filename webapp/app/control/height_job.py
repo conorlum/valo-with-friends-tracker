@@ -136,7 +136,8 @@ def run(map_name: str, rounds, *, previous: Path | None = None, asset_dir: Path 
     started = time.time()
     flat_geo = cg.load_base_geometry(map_name, asset_dir or cg.ASSET_DIR)
     history = height_inputs.refinement_history(map_name, refinement_history)
-    build = hb.build(rounds, flat_geo, refinement_history=history)
+    cover_px = cg.load_cover_labels(map_name, asset_dir or cg.ASSET_DIR)      # None: the map has no cover.png
+    build = hb.build(rounds, flat_geo, refinement_history=history, cover_px=cover_px)
     run_checks(map_name, flat_geo, build, rounds, must_block)
     old = None
     if previous is not None and Path(previous).is_file():

@@ -526,14 +526,9 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
-    cover_path = asset_dir / f"{name}.cover.png"
-    if cover_path.is_file():
-        cover_px = read_mask_png(cover_path)
-        cover_sha = hashlib.sha256(np.packbits(cover_px).tobytes()).hexdigest()[:12]
-        if row.get("cover_sha") != cover_sha:
-            raise GeometryError(f"{name}.cover.png is {cover_sha}, index.json says {row.get('cover_sha')}; "
-                                f"rebuild the geometry")
-        attach_cover(geo, cover_px, cover_sha)
+    cover = _read_cover(name, asset_dir, row)
+    if cover is not None:
+        attach_cover(geo, cover[0], cover[1])
     if load_features and row.get("features_sha"):
         raise GeometryError(f'{name}: legacy feature pointer requires archive conversion')
     if height_mode == 'flat':
@@ -549,6 +544,29 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
             raise GeometryError(f"{name}.height.npz is {asset.digest}, index.json says {wanted}; rebuild the heights")
         attach_heights(geo, asset)
     return geo
+
+
+def _read_cover(name: str, asset_dir: Path, row: dict):
+    """(cover mask, its sha) from `<name>.cover.png`, checked against index.json's row; None without the file."""
+    cover_path = asset_dir / f"{name}.cover.png"
+    if not cover_path.is_file():
+        return None
+    cover_px = read_mask_png(cover_path)
+    cover_sha = hashlib.sha256(np.packbits(cover_px).tobytes()).hexdigest()[:12]
+    if row.get("cover_sha") != cover_sha:
+        raise GeometryError(f"{name}.cover.png is {cover_sha}, index.json says {row.get('cover_sha')}; "
+                            f"rebuild the geometry")
+    return cover_px, cover_sha
+
+
+def load_cover_labels(name: str, asset_dir: Path = ASSET_DIR) -> np.ndarray | None:
+    """The map's cover pieces as `attach_cover` labels (PX x PX int16, 0 = none); None without a cover.png."""
+    index_path = asset_dir / "index.json"
+    row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    cover = _read_cover(name, asset_dir, row)
+    if cover is None:
+        return None
+    return ndimage.label(np.asarray(cover[0], bool))[0].astype(np.int16)
 
 
 def attach_cover(geo: Geometry, mask: np.ndarray | None, sha: str | None) -> Geometry:

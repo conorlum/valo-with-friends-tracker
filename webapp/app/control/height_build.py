@@ -297,10 +297,11 @@ def cell_floors(found: list[Stand], round_match: list[int], geo: Geometry,
     return floors, reasons, kinds
 
 
-def all_ground(rounds, geo: Geometry) -> tuple[list[Stand], list[Walk], list[int], dict]:
+def all_ground(rounds, geo: Geometry, cover_px=None) -> tuple[list[Stand], list[Walk], list[int], dict]:
     """Every round's stands and walks, outside blackouts and off platforms; each round's match index; and the
-    counts. `rounds` is read once, a round at a time (it may be a generator)."""
-    found, found_walks, match_of, dt = [], [], [], []
+    counts. `rounds` is read once, a round at a time (it may be a generator). With `cover_px` (the cover piece
+    labels), the counts also carry "box_stands": every round's box_tops.top_stands (`build` pops it)."""
+    found, found_walks, match_of, dt, box_stands = [], [], [], [], []
     counts = {"stands": 0, "walks": 0, "on_platforms": 0, "blackouts": 0, "rounds": 0, "matches": 0,
               "rounds_without_z": 0, "visited": np.zeros(GRID * GRID, bool)}
     for i, (match, _, blob) in enumerate(rounds):
@@ -319,9 +320,14 @@ def all_ground(rounds, geo: Geometry) -> tuple[list[Stand], list[Walk], list[int
         counts["on_platforms"] += len(mine) - len(kept)
         found += kept
         found_walks += off_platforms(strides, plats, geo)
+        if cover_px is not None:
+            from app.control import box_tops
+            box_stands += box_tops.top_stands(blob, cover_px, i)
     match_ids = sorted(set(match_of))
     counts.update({"stands": len(found), "walks": len(found_walks), "rounds": len(match_of),
                    "matches": len(match_ids), "dt": dt})
+    if cover_px is not None:
+        counts["box_stands"] = box_stands
     return found, found_walks, [match_ids.index(m) for m in match_of], counts
 
 
@@ -612,11 +618,13 @@ def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, 
     return share, not_ready
 
 
-def build(rounds, geo: Geometry, *, refinement_history=None) -> HeightBuild:
+def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> HeightBuild:
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
-    whether the map reaches the bar, and `report["not_ready"]` why not."""
-    found, found_walks, round_match, counts = all_ground(rounds, geo)
+    whether the map reaches the bar, and `report["not_ready"]` why not. `cover_px` (the cover piece labels)
+    also learns the pieces' tops into the asset's `box_tops`; floors, edges and the report do not read them."""
+    found, found_walks, round_match, counts = all_ground(rounds, geo, cover_px)
     dt = counts.pop("dt")
+    box_stands = counts.pop("box_stands", [])
     floors, reasons, kinds = cell_floors(found, round_match, geo, found_walks)
     filled, why = fill(floors, reasons, geo)
     sloped, granted = fill_gradient(floors, why, crossings([*found, *found_walks]), geo)
@@ -671,7 +679,13 @@ def build(rounds, geo: Geometry, *, refinement_history=None) -> HeightBuild:
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
                            supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta,
                            kind.reshape(GRID, GRID))
-    result = HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    if box_stands:
+        from app.control import box_tops
+        tops = box_tops.top_rows(box_stands)
+        tops[:, 2] -= int(origin)                 # the asset's frame, like `floors`
+        tops = tops[tops[:, 2] >= 0]              # (a top under the lowest floor is no top)
+        asset.box_tops = tops if len(tops) else None
+    result =HeightBuild(asset, report, found, why, not not_ready, found_walks)
     if refinement_history is not None:
         from app.control.adaptive import refine
         result = refine(result, geo, found, found_walks, round_match, floors, reasons, refinement_history)

@@ -146,6 +146,7 @@ class HeightAsset:
     fine_unresolved: np.ndarray | None = None
     fine_kind: np.ndarray | None = None
     fine_edges: np.ndarray | None = None  # spatial cell IDs: parent, or 16384 + child ID
+    box_tops: np.ndarray | None = None    # K x 3 int32: px x, px y, z dm above origin_z; a learnt cover-piece top
 
     def __post_init__(self) -> None:
         self.edges = np.asarray(self.edges, np.int32).reshape(-1, 5)
@@ -172,6 +173,8 @@ class HeightAsset:
             for name, dtype in (('fine_cells', '<i4'), ('fine_floors', '<i2'), ('fine_spread', '<i2'),
                                 ('fine_supported', 'u1'), ('fine_unresolved', 'u1'), ('fine_kind', 'i1'), ('fine_edges', '<i4')):
                 h.update(name.encode() + b'\0' + np.ascontiguousarray(getattr(self, name), dtype=dtype).tobytes())
+        if self.box_tops is not None and len(self.box_tops):      # only when there are some: no-cover assets keep their digest
+            h.update(b'box_tops\0' + np.ascontiguousarray(self.box_tops, dtype='<i4').tobytes())
         return h.hexdigest()[:12]
 
     def floor_count(self) -> np.ndarray:
@@ -186,6 +189,8 @@ def save_asset(path: Path, asset: HeightAsset) -> None:
         meta['refinement'] = asset.refinement
         extra = {name: getattr(asset, name) for name in ('fine_cells', 'fine_floors', 'fine_spread',
             'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}
+    if asset.box_tops is not None and len(asset.box_tops):
+        extra['box_tops'] = np.asarray(asset.box_tops).astype("<i4").reshape(-1, 3)
     np.savez_compressed(path, floors=asset.floors.astype("<i2"), spread=asset.spread.astype("<i2"),
                         supported=asset.supported.astype(bool), unresolved=asset.unresolved.astype(bool),
                         edges=asset.edges.astype("<i4").reshape(-1, 5), kind=asset.kind.astype("i1"),
@@ -205,6 +210,8 @@ def load_asset(path: Path) -> HeightAsset:
             validate_arrays(z, meta['refinement'])
             extra = {'refinement': meta['refinement'], **{name: z[name].copy() for name in ('fine_cells',
                 'fine_floors', 'fine_spread', 'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}}
+        if 'box_tops' in z.files:
+            extra['box_tops'] = z['box_tops'].astype(np.int32).reshape(-1, 3)
         return HeightAsset(z["floors"].astype(np.int16), z["spread"].astype(np.int16), z["supported"].astype(bool),
                            z["unresolved"].astype(bool), z["edges"].astype(np.int32).reshape(-1, 5), meta,
                            z["kind"].astype(np.int8), **extra)

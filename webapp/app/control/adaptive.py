@@ -267,6 +267,9 @@ def refine(build, geo, found, walks, round_match, direct_floors, reasons, previo
         raise ValueError('refined height frame exceeds asset range')
     if shift:
         asset.floors[asset.floors >= 0] += shift
+        if asset.box_tops is not None and len(asset.box_tops):      # tops are in the same frame as floors
+            asset.box_tops = asset.box_tops.copy()
+            asset.box_tops[:, 2] += shift
         asset.meta['origin_z'] = origin
     for i, child in enumerate(ids):
         row = children.get(child)

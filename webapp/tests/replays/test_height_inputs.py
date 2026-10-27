@@ -45,12 +45,19 @@ def test_the_manifest_is_the_same_whatever_order_the_replays_come_in():
     ("a deleted match", lambda r, g, k: (r[:1], g, k)),
     ("a re-drawn walk mask", lambda r, g, k: (r, {**g, "walk": "x" * 12}, k)),
     ("a re-drawn sight mask", lambda r, g, k: (r, {**g, "sight": "x" * 12}, k)),
+    ("a cover mask added", lambda r, g, k: (r, {**g, "cover": "c" * 12}, k)),
     ("another check set", lambda r, g, k: (r, g, "z" * 12)),
     ("no check set", lambda r, g, k: (r, g, None)),
 ])
 def test_every_input_moves_the_digest(name, change):
     base = hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)
     assert hi.digest(hi.manifest("Sunset", *change(REPLAYS, GEOMETRY, "k" * 12))) != hi.digest(base), name
+
+
+def test_a_re_drawn_cover_mask_moves_the_digest():
+    covered = {**GEOMETRY, "cover": "c" * 12}
+    base = hi.digest(hi.manifest("Sunset", REPLAYS, covered, "k" * 12))
+    assert hi.digest(hi.manifest("Sunset", REPLAYS, {**covered, "cover": "d" * 12}, "k" * 12)) != base
 
 
 def test_the_rule_revisions_are_inputs_too(monkeypatch):
