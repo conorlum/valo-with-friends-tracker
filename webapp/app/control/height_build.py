@@ -685,7 +685,7 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
         tops[:, 2] -= int(origin)                 # the asset's frame, like `floors`
         tops = tops[tops[:, 2] >= 0]              # (a top under the lowest floor is no top)
         asset.box_tops = tops if len(tops) else None
-    result =HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    result = HeightBuild(asset, report, found, why, not not_ready, found_walks)
     if refinement_history is not None:
         from app.control.adaptive import refine
         result = refine(result, geo, found, found_walks, round_match, floors, reasons, refinement_history)
