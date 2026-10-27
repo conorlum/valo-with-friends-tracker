@@ -1380,6 +1380,7 @@ class Tick:
             if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
+        reach = geo.box_reach if geo.cover_px is not None else None
         for s in sorted(rnd.team):
             if not rnd.alive(s, t):
                 continue
@@ -1391,7 +1392,8 @@ class Tick:
             st = None
             if geo.cover_px is not None:   # W13: only a player inside a cover piece asks for a stance
                 ix, iy = int(x), int(y)
-                if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1] and geo.cover_px[iy, ix]:
+                if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1] and (
+                        geo.cover_px[iy, ix] or (reach is not None and reach[iy, ix, 0])):
                     st = stance_at(rnd, s, t)
             ex, ey = x, y
             see_over = 0

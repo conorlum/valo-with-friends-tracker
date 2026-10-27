@@ -1,8 +1,7 @@
 """The stance rule on learnt box tops (W8a tests, W8b rule): on a box when steady at one of the piece's learnt tops
 (TOP_TOL_M), inside its outline or, off it within TOP_REACH_PX, after a stay at that top that entered the outline.
 
-Tests marked xfail(strict) fail on today's ring rule and turn green when W8b lands the tops rule (W8b removes the
-marker). Unmarked tests hold under both rules. Toys: box_hall_tops / box_hall_no_tops / three_boxes_tops
+Toys: box_hall_tops / box_hall_no_tops / three_boxes_tops
 (control_toys.py), z in metres above the ground (0.0 m), the box's learnt top 1.0 m."""
 
 import sys
@@ -18,7 +17,6 @@ from control_toys import (BOX_RING, GRID, THREE_BOXES, box_hall, box_hall_no_top
                           on_box_track, three_boxes_tops, z_track)
 from test_stance import CENTRE, round_of, stance  # noqa: E402
 
-tops_rule = pytest.mark.xfail(strict=True, raises=AssertionError, reason="W8b: tops rule")
 T_END = 10.0
 
 
@@ -47,9 +45,9 @@ def test_steady_at_the_top_inside_the_outline_is_on_box():
 
 @pytest.mark.parametrize("rise", [
     1.0, 1.25, 0.0,
-    pytest.param(0.5, marks=tops_rule, id="0.5"),
-    pytest.param(1.35, marks=tops_rule, id="1.35"),
-    pytest.param(2.0, marks=tops_rule, id="2.0"),
+    pytest.param(0.5, id="0.5"),
+    pytest.param(1.35, id="1.35"),
+    pytest.param(2.0, id="2.0"),
 ])
 def test_only_a_steady_height_within_the_tolerance_of_the_top_is_on_box(rise):
     st = stance(box_hall_tops(), on_box_track(*CENTRE, rise_m=rise), 5.0)
@@ -58,7 +56,12 @@ def test_only_a_steady_height_within_the_tolerance_of_the_top_is_on_box(rise):
     assert st.see_over == (1 if st.kind == "on_box" else 0)
 
 
-@tops_rule
+def test_a_height_that_is_not_steady_is_not_on_box_even_when_its_median_is_at_the_top():
+    zig = path(*[(0.25 * k, *CENTRE, 0.8 if k % 2 else 1.2) for k in range(41)])    # range 0.4 m over any 0.5 s
+    st = stance(box_hall_tops(), zig, 8.0)
+    assert st is not None and st.kind == "beside"
+
+
 def test_a_tops_toy_with_no_rows_is_never_on_box():
     geo = box_hall_no_tops()
     assert geo.heights is not None and not geo.box_tops
@@ -66,7 +69,6 @@ def test_a_tops_toy_with_no_rows_is_never_on_box():
     assert st is not None and st.kind == "beside"
 
 
-@tops_rule
 def test_a_flat_map_with_no_heights_is_never_on_box_even_with_a_ground_player_for_reference():
     geo = box_hall()
     assert geo.heights is None
@@ -91,7 +93,6 @@ def test_steady_on_a_three_boxes_piece_names_that_piece():
 
 # ------------------------------------------------------------------ off the outline, within reach
 
-@tops_rule
 def test_off_the_outline_after_a_stay_that_entered_it_is_on_box_with_the_node_under_the_pixel():
     geo = box_hall_tops()
     st = stance(geo, stay_then(244.0, 196.0), 8.0)
@@ -100,7 +101,6 @@ def test_off_the_outline_after_a_stay_that_entered_it_is_on_box_with_the_node_un
     assert st.anchor == geo.node_at_px(float(st.px[0]), float(st.px[1])) == BOX_RING["W"]
 
 
-@tops_rule
 def test_the_reach_edge_is_36_px_from_the_outline():
     geo = box_hall_tops()
     near = stance(geo, stay_then(212.5, 196.0), 8.0)            # 35.5 px west of the outline
@@ -145,7 +145,6 @@ def test_a_teleport_off_the_outline_at_top_height_starts_a_new_stay():
 
 # ------------------------------------------------------------------ two pieces in reach
 
-@tops_rule
 def test_the_one_stayed_on_wins_over_a_nearer_piece_that_was_never_entered():
     geo = three_boxes_tops()
     lab = labels(geo)
@@ -157,7 +156,6 @@ def test_the_one_stayed_on_wins_over_a_nearer_piece_that_was_never_entered():
     assert st is not None and st.kind == "on_box" and st.see_over == lab["A"] != lab["C"]
 
 
-@tops_rule
 @pytest.mark.parametrize("end,nearest", [((178.0, 205.0), "A"), ((182.0, 205.0), "C")])
 def test_with_a_stay_on_both_the_nearest_wins(end, nearest):
     geo = three_boxes_tops()
@@ -173,7 +171,6 @@ def test_with_a_stay_on_both_the_nearest_wins(end, nearest):
 
 # ------------------------------------------------------------------ the guards
 
-@tops_rule
 def test_boxed_stance_asks_for_a_stance_on_an_off_outline_pixel_in_reach():
     from app.control import stance as st_mod
 
@@ -183,7 +180,6 @@ def test_boxed_stance_asks_for_a_stance_on_an_off_outline_pixel_in_reach():
     assert st is not None and st.kind == "on_box"
 
 
-@tops_rule
 def test_boxed_stance_asks_for_a_stance_on_a_reach_pixel_even_when_the_answer_is_none():
     from app.control import stance as st_mod
 
@@ -204,7 +200,6 @@ def test_boxed_stance_does_not_ask_beyond_the_reach():
     assert st_mod.CALLS == before
 
 
-@tops_rule
 def test_the_engine_holds_an_off_outline_on_box_player_at_the_node_under_the_pixel():
     from app.control import engine as ce
 

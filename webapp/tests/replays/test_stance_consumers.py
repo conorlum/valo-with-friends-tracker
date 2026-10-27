@@ -58,7 +58,7 @@ def test_line_ends_for_a_ground_pair_is_their_own_positions_and_asks_for_no_stan
     from app.control import stance as st_mod
 
     geo = box_hall_tops()
-    a, b = centre_of(geo, BOX_WITNESS["W"]), centre_of(geo, BOX_WITNESS["E"])
+    a, b = (190.0, 196.0), (330.0, 196.0)       # both beyond TOP_REACH_PX of the box
     rnd, _ = inputs(geo, {0: still("A", *a, 0), 5: still("B", *b, 180)})
     pa, pb = rnd.pos(0, T), rnd.pos(5, T)
     before = st_mod.CALLS

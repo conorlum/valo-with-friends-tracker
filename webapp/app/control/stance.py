@@ -2,10 +2,11 @@
 (hugging it, crossing it in a jump, just landed, no z). Both kinds have an anchor: a walkable node near the player
 that stands in for them where the engine needs a node.
 
-The z rule (the GATE probe, W9): a player whose pixel is inside a piece is on it when, over the last
-BOX_SETTLE_S, their z stayed within BOX_STEADY_DZ_M and its median is at least BOX_RISE_M above the piece's
-reference floor. The reference is per round and per piece: the median floor of the walkable ring 8-24 px around the
-piece (known floors), else the median z of every player's samples on that ring. Nothing in the engine calls
+The z rule (R2, R3, R4): a player is on a piece when their z has been steady (range within BOX_STEADY_DZ_M over the
+last BOX_SETTLE_S) at one of the piece's learnt tops (`geo.box_tops`, from the height map), within TOP_TOL_M. Inside the
+piece's outline that is enough. Off it, within TOP_REACH_PX (`geo.box_reach`, nearest piece first), only when the
+player's current stay at that top (the run of samples at the top height in one track segment) included a sample
+inside the piece's outline. Without heights or tops nobody is ever on a box. Nothing in the engine calls
 `stance_at` yet (the identity witness reads `CALLS`)."""
 
 from __future__ import annotations
@@ -25,8 +26,6 @@ TOP_TOL_M = 0.3
 # PROVISIONAL(D4): W2, 36 replays: 98.8% of off-outline top-stay samples within 24 px, none beyond 36
 TOP_REACH_PX = 36
 
-RING_NEAR_PX = 8           # the reference ring: walkable pixels this far from the piece ...
-RING_FAR_PX = 24           # ... to this far, and in no piece (probes/gate_probe.py)
 EPS = 1e-6
 
 NO_ANCHOR = "stance: no anchor within 2 m of a box, nearest walkable node used"
@@ -43,79 +42,83 @@ class Stance:
     anchor: int | None
 
 
-def _ring(geo, piece: int):
-    """(boolean PX x PX mask of the piece's reference ring, the ring's pixels' distinct nodes), cached on geo."""
-    cache = geo.__dict__.setdefault("_stance_rings", {})
-    if piece in cache:
-        return cache[piece]
-    from scipy import ndimage
-
-    lab = np.asarray(geo.cover_px, dtype=np.int32)
-    d = ndimage.distance_transform_edt(lab != piece)
-    mask = (d >= RING_NEAR_PX) & (d <= RING_FAR_PX) & np.asarray(geo.walk_px, bool) & (lab == 0)
-    nodes = np.zeros(0, int)
-    if geo.node_z is not None and mask.any():
-        ys, xs = np.nonzero(mask)
-        _, first = np.unique((ys // 4) * 4096 + xs // 4, return_index=True)
-        nodes = np.unique([int(geo.node_at_px(float(xs[k]), float(ys[k]))) for k in first])
-    cache[piece] = (mask, nodes)
-    return cache[piece]
-
-
-def _compute_reference(rnd, piece: int):
-    """(use_heights, reference z) for one piece in this round, or None without any ring z."""
-    geo = rnd.geo
-    mask, nodes = _ring(geo, piece)
-    if geo.node_z is not None and len(nodes):
-        z = np.asarray(geo.node_z)[nodes]
-        z = z[np.isfinite(z)]
-        if len(z):
-            return True, float(np.median(z))
-    size = mask.shape[0]
-    vals = []
-    for s, tr in rnd.tracks.items():
-        zs = rnd.track_z.get(s)
-        if zs is None:
-            continue
-        xs = np.clip((tr[1] * size / 10000).astype(int), 0, size - 1)
-        ys = np.clip((tr[2] * size / 10000).astype(int), 0, size - 1)
-        keep = mask[ys, xs] & ~np.isnan(zs)
-        if keep.any():
-            vals.append(zs[keep])
-    if not vals:
+def _top_match(rnd, slot: int, i: int, tops):
+    """The learnt top (m) the player is steady at in sample i, or None: same segment and no NaN over the last
+    BOX_SETTLE_S, range within BOX_STEADY_DZ_M, window median within TOP_TOL_M of a top (the nearest one)."""
+    zs = rnd.heights.get(slot)
+    if zs is None or not tops:
         return None
-    return False, float(np.median(np.concatenate(vals)))
-
-
-def _reference(rnd, piece: int):
-    cache = rnd.__dict__.setdefault("_box_ref", {})
-    if piece not in cache:
-        cache[piece] = _compute_reference(rnd, piece)
-    return cache[piece]
-
-
-def _on_box(rnd, slot: int, i: int, ref) -> bool:
-    if ref is None:
-        return False
-    use_heights, ref_z = ref
-    zs = rnd.heights.get(slot) if use_heights else rnd.track_z.get(slot)
-    if zs is None:
-        return False
     w = int(math.floor(BOX_SETTLE_S * rnd.hz + 1e-9))
     if i - w < 0 or np.isnan(zs[i]):
-        return False
+        return None
     seg = rnd._segment[slot]
     if not (seg[i - w:i + 1] == seg[i]).all():
-        return False
+        return None
     win = zs[i - w:i + 1]
     if np.isnan(win).any():
-        return False
+        return None
     if float(win.max() - win.min()) > BOX_STEADY_DZ_M + EPS:
+        return None
+    med = float(np.median(win))
+    best = min(tops, key=lambda t: (abs(t - med), t))
+    return best if abs(best - med) <= TOP_TOL_M + EPS else None
+
+
+def _stay_starts(rnd, slot: int, top: float) -> np.ndarray:
+    """Per sample, the index where the stay at `top` containing it starts (-1 when the sample is not at the top):
+    a stay is a maximal run in one track segment with z within TOP_TOL_M of the top. Cached on the round."""
+    cache = rnd.__dict__.setdefault("_stance_stays", {})
+    key = (slot, round(float(top), 4))
+    if key not in cache:
+        zs, seg = rnd.heights[slot], rnd._segment[slot]
+        at = np.zeros(len(zs), bool)
+        ok = ~np.isnan(zs)
+        at[ok] = np.abs(zs[ok] - top) <= TOP_TOL_M + EPS
+        starts = np.full(len(zs), -1, np.int64)
+        cur = -1
+        for k in range(len(zs)):
+            if not at[k]:
+                cur = -1
+                continue
+            if cur < 0 or seg[k] != seg[k - 1]:
+                cur = k
+            starts[k] = cur
+        cache[key] = starts
+    return cache[key]
+
+
+def _inside_counts(rnd, slot: int, piece: int) -> np.ndarray:
+    """Cumulative count of the slot's samples whose pixel is inside `piece`'s outline (index k = samples 0..k)."""
+    from app.control import geometry as cg
+
+    cache = rnd.__dict__.setdefault("_stance_inside", {})
+    if (slot, piece) not in cache:
+        geo, tr = rnd.geo, rnd.tracks[slot]
+        size = geo.cover_px.shape[0]
+        xs = np.clip((tr[1] * cg.PX / 10000).astype(int), 0, size - 1)
+        ys = np.clip((tr[2] * cg.PX / 10000).astype(int), 0, size - 1)
+        cache[(slot, piece)] = np.cumsum(np.asarray(geo.cover_px)[ys, xs] == piece)
+    return cache[(slot, piece)]
+
+
+def _entered(rnd, slot: int, i: int, piece: int, top: float) -> bool:
+    """True when the stay at `top` that sample i belongs to included a sample inside the piece's outline."""
+    start = int(_stay_starts(rnd, slot, top)[i])
+    if start < 0:
         return False
-    return float(np.median(win)) - ref_z >= BOX_RISE_M - EPS
+    cnt = _inside_counts(rnd, slot, piece)
+    return int(cnt[i]) - (int(cnt[start - 1]) if start > 0 else 0) > 0
 
 
-def _anchor(rnd, slot: int, i: int, px, label: int, ref) -> int | None:
+def _on_piece(rnd, slot: int, i: int, piece: int, in_outline: bool) -> bool:
+    tops = rnd.geo.box_tops.get(piece)
+    top = _top_match(rnd, slot, i, tops)
+    if top is None:
+        return False
+    return in_outline or _entered(rnd, slot, i, piece, top)
+
+
+def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
     from app.control import geometry as cg
 
     geo = rnd.geo
@@ -154,11 +157,19 @@ def _anchor(rnd, slot: int, i: int, px, label: int, ref) -> int | None:
             return None
         chosen = int(ok[np.argmin(dist[ok])])           # first minimum: the lowest node id on a tie
         rnd.missing[NO_ANCHOR] += 1
-    if ref is not None and ref[0]:
-        node = int(geo.node_at_px(float(cen[chosen, 0]), float(cen[chosen, 1]), ref[1]))
-        if 0 <= node < walk.size and walk[node]:
-            chosen = node
     return chosen
+
+
+def _reach_ids(geo, x: float, y: float):
+    """The pieces whose reach holds pixel (x, y), nearest first, or () without box_reach."""
+    reach = geo.box_reach
+    if reach is None:
+        return ()
+    size = reach.shape[0]
+    ix, iy = int(x), int(y)
+    if not (0 <= ix < size and 0 <= iy < size):
+        return ()
+    return tuple(int(p) for p in reach[iy, ix] if p)
 
 
 def stance_at(rnd, slot, t) -> Stance | None:
@@ -178,26 +189,30 @@ def stance_at(rnd, slot, t) -> Stance | None:
     if not (0 <= x < size and 0 <= y < size):
         return None
     label = int(geo.cover_px[int(y), int(x)])
-    if label == 0:
-        return None
     memo = rnd.__dict__.setdefault("_stance_memo", {})
     if (slot, i) in memo:
         return memo[(slot, i)]
     px = (x, y)
-    ref = _reference(rnd, label)
-    anchor = _anchor(rnd, slot, i, px, label, ref)
-    if _on_box(rnd, slot, i, ref):
-        out = Stance("on_box", px, px, label, anchor)
+    out = None
+    if label:
+        if _on_piece(rnd, slot, i, label, True):
+            out = Stance("on_box", px, px, label, _anchor(rnd, slot, i, px, label))
+        else:
+            anchor = _anchor(rnd, slot, i, px, label)
+            eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
+            out = Stance("beside", px, eye, 0, anchor)
     else:
-        eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
-        out = Stance("beside", px, eye, 0, anchor)
+        for piece in _reach_ids(geo, x, y):
+            if _on_piece(rnd, slot, i, piece, False):
+                out = Stance("on_box", px, px, piece, int(geo.node_at_px(x, y)))
+                break
     memo[(slot, i)] = out
     return out
 
 
 def boxed_stance(rnd, slot, t) -> Stance | None:
     """The engine's guard, then `stance_at`: None without a position, without a cover array, outside it, or on a
-    pixel with no piece (so a player on open ground never costs a `stance_at` call)."""
+    pixel with no piece and none within a topped piece's reach (so a player on open ground never costs a call)."""
     geo = rnd.geo
     if geo.cover_px is None:
         return None
@@ -206,7 +221,9 @@ def boxed_stance(rnd, slot, t) -> Stance | None:
         return None
     size = geo.cover_px.shape[0]
     x, y = p[0], p[1]
-    if not (0 <= x < size and 0 <= y < size) or int(geo.cover_px[int(y), int(x)]) == 0:
+    if not (0 <= x < size and 0 <= y < size):
+        return None
+    if int(geo.cover_px[int(y), int(x)]) == 0 and not _reach_ids(geo, x, y):
         return None
     return stance_at(rnd, slot, t)
 

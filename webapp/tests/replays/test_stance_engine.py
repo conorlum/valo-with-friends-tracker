@@ -145,7 +145,7 @@ def test_nobody_in_the_box_never_asks_for_a_stance():
     from app.control import stance as st_mod
 
     geo = box_hall_tops()
-    x, y = ring_xy(geo, "W")
+    x, y = 190.0, 196.0         # beyond TOP_REACH_PX of the box: a reach pixel asks for a stance, open ground does not
     rnd, _ = inputs(geo, {0: still("A", x, y, 0)})
     before = st_mod.CALLS
     tk = __import__("app.control.engine", fromlist=["Tick"]).Tick(rnd, T)
