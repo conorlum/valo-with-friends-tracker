@@ -317,10 +317,9 @@ def answers(geo, viewer_xy, viewer_z, target_xy, tmp_path, monkeypatch, with_ref
 
     def gap_sight(pv, smokes):
         det = gd.GapDetector(geo, ce.RoundInputs(blob, geo, None, None))
-        if getattr(pv, "see_over", 0):
-            out = det._sight(pv.eye_x, pv.eye_y, pv.eye_z, pv.node, smokes, see_over=pv.see_over)
-        else:
-            out = det._sight(pv.x, pv.y, pv.eye_z, pv.node, smokes)
+        ex = pv.eye_x if pv.eye_x is not None else pv.x
+        ey = pv.eye_y if pv.eye_y is not None else pv.y
+        out = det._sight(ex, ey, pv.eye_z, pv.node, smokes, see_over=pv.see_over)
         return bool(out[cell])
 
     seen["gap detector"] = gap_sight(live.players[0], live.smokes)
@@ -346,7 +345,6 @@ def answers(geo, viewer_xy, viewer_z, target_xy, tmp_path, monkeypatch, with_ref
     return seen
 
 
-@red
 @pytest.mark.parametrize("side", SIDES)
 def test_every_consumer_sees_a_ground_enemy_from_a_player_on_the_box(side, tmp_path, monkeypatch):
     geo = box_hall()

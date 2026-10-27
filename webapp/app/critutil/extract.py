@@ -16,6 +16,7 @@ import math
 import re
 
 from app.control import engine
+from app.control.stance import line_ends
 from app.critutil import abilities
 from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, ARC_ROSE, ROSE_REPOP_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
@@ -719,10 +720,10 @@ def _cover_all(rnd, sides, casts: list[_Cast]) -> dict[int, dict]:
                 pb = rnd.pos(b, t)
                 if pb is None or _dist_m(rnd, pa, pb) > SIGHT_RANGE_M:
                     continue
-                la, lb = (pa[0], pa[1], None), (pb[0], pb[1], None)
-                if not engine.los(rnd.geo, la, lb, []):
+                la, lb, so = line_ends(rnd, a, b, t, pa, pb)    # each end from its stance, if it has one
+                if not engine.los(rnd.geo, la, lb, [], see_over=so):
                     continue
-                cut = [i for i in mine if not engine.los(rnd.geo, la, lb, live[i])]
+                cut = [i for i in mine if not engine.los(rnd.geo, la, lb, live[i], see_over=so)]
                 for i in cut:
                     share = SIGHT_STEP_S / len(cut)
                     acc[i]["blocked_s"] += share

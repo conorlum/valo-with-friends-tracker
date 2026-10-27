@@ -10,6 +10,7 @@ import math
 from bisect import bisect_left
 
 from app.control import engine
+from app.control.stance import line_ends
 from app.control.utility import _sees_point
 from app.moments.constants import (ABILITY_KIND, CLEAN_MAX_MOVING, CLEAN_SPOT_TO_SHOT_S, CROSSHAIR_NEAR_DEG,
                                    CROSSHAIR_ON_DEG, DASH_EXCLUDE_S, FIGHT_GAP_S, GUN_CLASS, GUN_DAMAGE_LOOKBACK_S,
@@ -314,7 +315,7 @@ def _ttk(rnd, blob: dict, tk: float, killer: int, victim: int, kd: dict) -> None
     while k * SIGHT_STEP_S < SPOT_LOOKBACK_S:
         t = tk - k * SIGHT_STEP_S
         p = _live_pos(rnd, victim, t)
-        if p is not None and _sees_point(rnd, killer, t, p[0], p[1]):
+        if p is not None and _sees_point(rnd, killer, t, p[0], p[1], target=victim):
             spot = last_seen = t
         elif last_seen is not None and last_seen - t > SPOT_GAP_S:
             break
@@ -348,7 +349,7 @@ def _first_sight(rnd, viewer: int, target: int, t_lo: float, t1: float):
     while t_lo + k * SIGHT_STEP_S <= t1:
         t = t_lo + k * SIGHT_STEP_S
         p = _live_pos(rnd, target, t)
-        if p is not None and _sees_point(rnd, viewer, t, p[0], p[1]):
+        if p is not None and _sees_point(rnd, viewer, t, p[0], p[1], target=target):
             angle = _off(rnd, viewer, target, t)
             return t, None if angle is None else int(round(angle)), angle
         k += 1
@@ -404,9 +405,9 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
         k += 1
     for t in samples:
         pk, pv = _live_pos(rnd, killer, t), _live_pos(rnd, victim, t)
-        if not kd["killer_saw"] and pv is not None and _sees_point(rnd, killer, t, pv[0], pv[1]):
+        if not kd["killer_saw"] and pv is not None and _sees_point(rnd, killer, t, pv[0], pv[1], target=victim):
             kd["killer_saw"] = True
-        if not kd["victim_saw"] and pk is not None and _sees_point(rnd, victim, t, pk[0], pk[1]):
+        if not kd["victim_saw"] and pk is not None and _sees_point(rnd, victim, t, pk[0], pk[1], target=killer):
             kd["victim_saw"] = True
     if kd["killer_saw"] or kd["victim_saw"]:
         kd["measurable"] = True
@@ -419,11 +420,11 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
         # smokes blocked (neither seeing the other can also be facing, a flash or nearsight).
         if pk is None or pv is None:
             continue
-        a, b = (pk[0], pk[1], None), (pv[0], pv[1], None)
-        if not engine.los(rnd.geo, a, b, []):
+        a, b, so = line_ends(rnd, killer, victim, t, pk, pv)      # each end from its stance, if it has one
+        if not engine.los(rnd.geo, a, b, [], see_over=so):
             continue
         clear = True    # a clear bare line: who saw whom is measurable even when facing or a flash hid it
-        if not engine.los(rnd.geo, a, b, rnd.smokes_at(t)):
+        if not engine.los(rnd.geo, a, b, rnd.smokes_at(t), see_over=so):
             kd["through_smoke"] = True
             break
     kd["measurable"] = clear or kd["wall"]
