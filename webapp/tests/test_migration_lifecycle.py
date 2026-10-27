@@ -6,6 +6,8 @@ import subprocess
 import sys
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from tests.support.postgres import command, WEBAPP, scratch_database, migrated_database  # noqa: F401
 
 
@@ -14,10 +16,11 @@ def test_empty_database_upgrade_persists_at_head_and_is_idempotent(scratch_datab
     engine = create_engine(scratch_database)
     try:
         with engine.begin() as conn:
-            assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == '0028'
+            expected_heads = set(ScriptDirectory.from_config(Config('alembic.ini')).get_heads())
+            assert set(conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalars()) == expected_heads
             tables = set(inspect(conn).get_table_names())
             assert {'players', 'impact_scores', 'replays', 'coach_feedback', 'account_group_view_cache',
-                    'map_pool_changes', 'replay_round_moments'} <= tables
+                    'map_pool_changes', 'replay_round_moments', 'replay_round_util'} <= tables
             assert 'riot_subject' in {c['name'] for c in inspect(conn).get_columns('players')}
             assert 'scoring_version' in {c['name'] for c in inspect(conn).get_columns('impact_scores')}
             conn.execute(text("INSERT INTO players (display_name, created_at) VALUES ('migration-sentinel', now())"))

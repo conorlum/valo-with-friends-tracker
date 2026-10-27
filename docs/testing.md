@@ -181,6 +181,26 @@ failures. The probes used a temporary pytest plugin outside the checkout and did
 edit application source or become an ordinary CI dependency. Docker/hosted Linux
 execution remains pending; no application or scoring source changed in this follow-up.
 
+### First hosted CI run and integration fixes
+
+The first PR run passed Chromium, the slow lane, and the actual Linux worker image.
+The offline lane passed 5,931 cases, skipped one private-input probe, and failed two:
+the copied-input guard correctly found `app/critutil` added on main, and an existing
+recovery fixture could post a fake Workflow callback before its HTTP listener existed.
+PostgreSQL never reached pytest: single quotes around its multi-word Docker health
+command were not preserved by the Actions argument parser (`unknown shorthand flag: U`).
+
+The branch now includes current main, adds the new worker path, uses double quotes
+for the health command, and gates fake callbacks on a ready listener. The recovery
+case also forces dispatch before listener setup and checks its saved deadline as
+well as its token. Main added migration 0029; the deployment test now compares the
+database revision with Alembic's actual source heads instead of a stale `0028` pin.
+These are workflow/test fixes; no production worker behavior changed.
+Local integration verification: 35 harness/workflow cases passed (one slow case
+deselected), both recovery schedules passed with two xdist workers, 20 PostgreSQL
+cases passed (one non-PostgreSQL case deselected), and all three browser journeys
+passed against the merged main. Hosted CI is the validation for Docker argument parsing.
+
 ## Deliberate limits
 
 - No new scoring oracle or golden values: release mathematics remain governed by
@@ -192,7 +212,7 @@ execution remains pending; no application or scoring source changed in this foll
   not arbitrary computed Python imports.
 - Ingest excludes fabricated surrender padding. Existing statistics treatment of
   historical surrender placeholders is unchanged pending a product-wide policy.
-- Docker was unavailable locally; CI must build and execute the actual worker image.
-  The lightweight conftest smoke does not substitute for that image run.
+- Docker is unavailable locally. The first hosted run built and passed the actual
+  worker image; local conftest smoke checks do not substitute for that image run.
 - Line/branch coverage percentages have not been measured. Case counts are execution
   evidence, not percentages; add coverage tooling separately if numerical tracking is wanted.

@@ -10,6 +10,7 @@ on:
       - 'webapp/app/gaps/**'
       - 'webapp/app/replays/**'
       - 'webapp/app/moments/**'
+      - 'webapp/app/critutil/**'
       - 'webapp/app/static/data/**'
       - 'webapp/requirements.txt'
       - 'webapp/replay_parser.json'

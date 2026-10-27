@@ -141,6 +141,7 @@ class Rig:
         self.render = FakeRender()
         self.seen, self.gate = [], threading.Event()
         self.gate.set()
+        self.callback_ready = threading.Event()
         self.disk = tmp_path / "disk"
         self.disk.mkdir()
         self.settings = server.Settings(**{
@@ -153,6 +154,9 @@ class Rig:
 
     def _answer_ok(self, kind, args):
         self.seen.append(args["job_id"])
+        # Recovered jobs dispatch from Worker.__init__, before start() has a
+        # callback URL/listener. A real Workflow would connect only once ready.
+        assert self.callback_ready.wait(10), 'test callback listener did not start'
         self.gate.wait(30)
         self.link(args).post_result({"status": "ok", "parse_seconds": 1.0,
                                      "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
@@ -166,6 +170,7 @@ class Rig:
         self.httpd = server.make_server(self.worker, runs_table=table)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.callback_ready.set()
         return self.worker
 
     def plant(self, status="parsing", **record):
@@ -295,13 +300,28 @@ def test_a_restart_reconnects_to_a_saved_run_and_starts_nothing(rig):
     assert done.status == "done" and done.parse_seconds == 3.0
 
 
-def test_a_restart_without_a_run_id_starts_over_with_the_saved_token_and_deadline(rig):
+@pytest.mark.parametrize('callback_during_startup', [False, True])
+def test_a_restart_without_a_run_id_starts_over_with_the_saved_token_and_deadline(rig, monkeypatch, callback_during_startup):
+    if callback_during_startup:
+        arrived = threading.Event()
+        answer, make_server = rig.render.runner, server.make_server
+        def early_answer(kind, args):
+            arrived.set()
+            answer(kind, args)
+        def delayed_listener(*args, **kwargs):
+            assert arrived.wait(10), 'recovered job was not dispatched before listener setup'
+            return make_server(*args, **kwargs)
+        rig.render.runner = early_answer
+        monkeypatch.setattr(server,'make_server',delayed_listener)
+    deadlines = []
+    rig.render.on_start = lambda run_id, args: deadlines.append(record_of(rig,args['job_id'])['run_deadline'])
     deadline = time.time() + 600
     job_id = rig.plant(run_token="tok", run_deadline=deadline)
     worker = rig.start()
     [done] = wait_jobs(worker, [job_id])
     assert done.status == "done" and len(rig.render.started) == 1
     assert rig.render.started[0]["input"][0]["token"] == "tok"
+    assert deadlines == [deadline]
 
 
 def test_recovery_beyond_the_queue_size_fails_nothing(tmp_path):
