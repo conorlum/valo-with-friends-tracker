@@ -17,14 +17,13 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
 
 from control_toys import (BOX_PX, BOX_RING, BOX_WITNESS, GRID, THREE_BOXES, WALL_PIECE_PX, box_hall,  # noqa: E402
-                          height_blob, hugging_track, jump_track, on_box_track, three_boxes, wall_piece_hall)
+                          box_hall_tops, height_blob, hugging_track, jump_track, on_box_track, three_boxes,
+                          wall_piece_hall)
 
 ANGLES = np.arange(0, 360, 0.25)
 FACING = {"E": 0.0, "S": 90.0, "W": 180.0, "N": 270.0}        # the side a yaw faces -> its cast angle
 CENTRE = (260.0, 196.0)                                        # the box's centre pixel
 CONE = 103.0
-
-REF_X, REF_Y = 236.0, 196.0                                    # 12 px west of the box edge (x 248)
 
 red = pytest.mark.xfail(strict=True, raises=AssertionError, reason="the standing-on-a-box rule is not built yet")
 
@@ -44,17 +43,10 @@ def round_of(geo, players, t_end=10.0):
     return RoundInputs(height_blob(players, t_end=t_end), geo, None, None)
 
 
-def ring_ref(geo, slot=5):
-    """A second player standing west of the box, 12 px from its edge (inside the 8..24 px reference band), at
-    ground z (0.0 m): the ring's z reference."""
-    return slot, ("B", [(0.0, REF_X, REF_Y, 0, 0.0), (10.0, REF_X, REF_Y, 0, 0.0)])
-
-
 def stance(geo, points, t, extra=None):
     from app.control import stance as st_mod
 
-    players = dict([ring_ref(geo)])
-    players[0] = points
+    players = {0: points}
     players.update(extra or {})
     return st_mod.stance_at(round_of(geo, players), 0, t)
 
@@ -104,9 +96,9 @@ def test_control_a_player_one_cell_off_the_box_has_no_stance_and_todays_cast(sid
     from app.control import geometry as cg
     from app.control import stance as st_mod
 
-    geo = box_hall()
+    geo = box_hall_tops()
     x, y = ring_xy(geo, side)
-    rnd = round_of(geo, {0: ("A", [(0.0, x, y, 0, 0.0), (10.0, x, y, 0, 0.0)]), **dict([ring_ref(geo)])})
+    rnd = round_of(geo, {0: ("A", [(0.0, x, y, 0, 0.0), (10.0, x, y, 0, 0.0)])})
     assert st_mod.stance_at(rnd, 0, 5.0) is None
     assert cg.cast(geo, x, y, ANGLES, [], see_over=0).tobytes() == cg.cast(geo, x, y, ANGLES, []).tobytes()
 
@@ -181,7 +173,7 @@ def test_control_see_over_does_not_look_through_the_wall_pixels_of_the_piece():
 
 
 def test_steady_on_the_box_is_on_box():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, on_box_track(*CENTRE), 5.0)
     assert st is not None
     assert st.kind == "on_box"
@@ -190,7 +182,7 @@ def test_steady_on_the_box_is_on_box():
 
 
 def test_hugging_the_box_inside_the_piece_is_beside():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, hugging_track(250, 196), 5.0)
     assert st is not None
     assert st.kind == "beside"
@@ -199,7 +191,7 @@ def test_hugging_the_box_inside_the_piece_is_beside():
 
 
 def test_a_jump_over_the_box_is_beside_in_mid_air():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, jump_track(230, 290, 196, 1.5, 2.0), 2.5)
     assert st is not None
     assert st.kind == "beside"
@@ -211,14 +203,14 @@ def _lands_on_box():
 
 
 def test_the_first_half_second_after_landing_is_beside():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, _lands_on_box(), 2.3)
     assert st is not None
     assert st.kind == "beside"
 
 
 def test_after_the_settle_time_it_is_on_box():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, _lands_on_box(), 2.6)
     assert st is not None
     assert st.kind == "on_box"
@@ -226,7 +218,7 @@ def test_after_the_settle_time_it_is_on_box():
 
 
 def test_a_player_in_the_piece_with_no_z_is_beside():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, ("A", [(0.0, *CENTRE, 0)]), 5.0)
     assert st is not None
     assert st.kind == "beside"
@@ -237,7 +229,7 @@ def test_a_player_in_the_piece_with_no_z_is_beside():
 
 
 def test_a_hugger_at_the_west_edge_anchors_west_of_the_box():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, hugging_track(250, 196), 5.0)
     assert st is not None and st.anchor is not None
     assert geo.walk.ravel()[st.anchor]
@@ -245,14 +237,14 @@ def test_a_hugger_at_the_west_edge_anchors_west_of_the_box():
 
 
 def test_two_equidistant_anchors_take_the_lowest_node_id():
-    geo = box_hall()
+    geo = box_hall_tops()
     st = stance(geo, hugging_track(256, 186), 5.0)         # 4 px from the centres of ring cells (22, 31) and (22, 32)
     assert st is not None
     assert st.anchor == 22 * GRID + 31
 
 
 def test_the_node_last_stood_on_wins_when_it_still_qualifies():
-    geo = box_hall()
+    geo = box_hall_tops()
     # stands north of the box at ring cell (22, 32), then steps into the piece's north-east corner, where the east
     # ring cell (23, 34) is closer but the north cell is still within range and has a clear line
     walk_in = ("A", [(0.0, 260, 180, 0, 0.0), (2.0, 260, 180, 0, 0.0), (3.0, 267, 190, 0, 0.0),
@@ -399,8 +391,8 @@ def test_a_new_track_segment_at_box_height_is_beside_for_half_a_second_then_on_b
     from app.control import stance as st_mod
     from control_toys import z_track
 
-    geo = box_hall()
-    players = {0: ("A", [(0.0, 230, 196, 0, 0.0), (10.0, 230, 196, 0, 0.0)]), **dict([ring_ref(geo)])}
+    geo = box_hall_tops()
+    players = {0: ("A", [(0.0, 230, 196, 0, 0.0), (10.0, 230, 196, 0, 0.0)])}
     blob = height_blob(players, t_end=10.0)
     # a teleport: the first segment ends on the ground, a second starts on the box top at z 1.0 m
     blob["tracks"]["0"] = (z_track([(0.0, 230, 196, 0, 0.0), (2.9, 230, 196, 0, 0.0)], 0.0, 2.9)
@@ -417,8 +409,8 @@ def test_a_teleport_from_the_same_height_is_still_beside_for_half_a_second():
     from app.control.engine import RoundInputs
     from control_toys import z_track
 
-    geo = box_hall()
-    players = {0: ("A", [(0.0, 300, 196, 0, 1.0), (10.0, 300, 196, 0, 1.0)]), **dict([ring_ref(geo)])}
+    geo = box_hall_tops()
+    players = {0: ("A", [(0.0, 300, 196, 0, 1.0), (10.0, 300, 196, 0, 1.0)])}
     blob = height_blob(players, t_end=10.0)
     # an Omen-like teleport between two spots at z 1.0 m: the old segment's samples must not count for the window
     blob["tracks"]["0"] = (z_track([(0.0, 300, 196, 0, 1.0), (2.9, 300, 196, 0, 1.0)], 0.0, 2.9)
@@ -456,42 +448,32 @@ def test_the_anchor_is_on_the_players_side_of_a_real_wall_not_the_nearer_node_ac
     assert st is not None and st.anchor == east
 
 
-def test_no_ring_samples_with_z_means_beside():
+def test_a_map_with_no_heights_and_nobody_else_around_is_beside():
+    # was test_no_ring_samples_with_z_means_beside (the ring and `_box_ref` are gone)
     from app.control import stance as st_mod
 
     geo = box_hall()
-    rnd = round_of(geo, {0: on_box_track(*CENTRE)})          # nobody else: nothing on the ring
+    rnd = round_of(geo, {0: on_box_track(*CENTRE)})
     st = st_mod.stance_at(rnd, 0, 5.0)
     assert st is not None and st.kind == "beside" and st.see_over == 0
-    assert rnd._box_ref[int(geo.cover_px[196, 260])] is None
 
 
-def test_a_reference_player_4_px_from_the_box_is_outside_the_band_and_gives_no_reference():
-    geo = box_hall()
-    x, y = ring_xy(geo, "W")                                 # inside the first cell: 4 px from the edge
-    st = stance(geo, on_box_track(*CENTRE), 5.0, {5: ("B", [(0.0, x, y, 0, 0.0), (10.0, x, y, 0, 0.0)])})
-    assert st is not None and st.kind == "beside"
-
-
-def test_the_reference_is_computed_once_per_round_and_piece(monkeypatch):
-    from app.control import stance as st_mod
-
-    calls = []
-    real = st_mod._compute_reference
-    monkeypatch.setattr(st_mod, "_compute_reference", lambda rnd, piece: calls.append(piece) or real(rnd, piece))
-    geo = box_hall()
-    rnd = round_of(geo, {0: on_box_track(*CENTRE), **dict([ring_ref(geo)])})
-    a, b = st_mod.stance_at(rnd, 0, 5.0), st_mod.stance_at(rnd, 0, 6.0)
-    assert a.kind == b.kind == "on_box"
-    assert len(calls) == 1
+def test_the_top_is_the_reference_so_no_other_player_is_needed():
+    # replaces test_a_reference_player_4_px_from_the_box_is_outside_the_band_and_gives_no_reference: with learnt
+    # tops nobody else's z matters, and a ground player 4 px away neither helps nor hurts
+    geo = box_hall_tops()
+    x, y = ring_xy(geo, "W")
+    alone = stance(geo, on_box_track(*CENTRE), 5.0)
+    near = stance(geo, on_box_track(*CENTRE), 5.0, {5: ("B", [(0.0, x, y, 0, 0.0), (10.0, x, y, 0, 0.0)])})
+    assert alone.kind == near.kind == "on_box" and alone.see_over == near.see_over == 1
 
 
 def test_no_anchor_within_range_uses_the_nearest_walkable_node_and_counts_it(monkeypatch):
     from app.control import stance as st_mod
 
     monkeypatch.setattr(st_mod, "ANCHOR_MAX_M", 0.001)
-    geo = box_hall()
-    rnd = round_of(geo, {0: on_box_track(*CENTRE), **dict([ring_ref(geo)])})
+    geo = box_hall_tops()
+    rnd = round_of(geo, {0: on_box_track(*CENTRE)})
     st = st_mod.stance_at(rnd, 0, 5.0)
     assert st.anchor is not None and geo.walk.ravel()[st.anchor]
     assert rnd.missing[st_mod.NO_ANCHOR] == 1
@@ -501,8 +483,8 @@ def test_the_same_sample_gives_an_equal_stance_and_counts_a_fallback_once(monkey
     from app.control import stance as st_mod
 
     monkeypatch.setattr(st_mod, "ANCHOR_MAX_M", 0.001)
-    geo = box_hall()
-    rnd = round_of(geo, {0: on_box_track(*CENTRE), **dict([ring_ref(geo)])})
+    geo = box_hall_tops()
+    rnd = round_of(geo, {0: on_box_track(*CENTRE)})
     a = st_mod.stance_at(rnd, 0, 5.0)
     b = st_mod.stance_at(rnd, 0, 5.0)
     assert a == b

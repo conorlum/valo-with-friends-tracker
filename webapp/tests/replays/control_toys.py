@@ -119,6 +119,59 @@ def wall_piece_hall():
     return geo
 
 
+def box_top_rows(rect, rise_m: float = BOX_TOY_RISE_M, fine: int = 4) -> list:
+    """The height asset's `box_tops` rows for one box: one (px x, px y, z dm above origin_z) per fine 4 px cell
+    inside `rect`, as the build writes them (a real one: [351, 310, 40])."""
+    x0, y0, x1, y1 = rect
+    z = int(round(rise_m * 10))
+    return [(x, y, z) for y in range(y0 + fine // 2, y1, fine) for x in range(x0 + fine // 2, x1, fine)]
+
+
+def tops_hall(name: str, boxes, walls=(), rises=None):
+    """The open hall with cover boxes (`boxes` = px rects, attached as pieces) and a flat height asset: every
+    walkable cell one floor at 0 m (origin_z TOY_Z0, as `z_track` writes z), plus `box_tops` rows, one set per box
+    from `rises` (m above the ground; None = a heights asset with no learnt tops at all). `walls` = px rects of real
+    wall. The tops variants of box_hall / three_boxes: same masks, then heights, then visibility."""
+    key = ("TopsHall", name, HALL, tuple(boxes), tuple(walls), None if rises is None else tuple(rises))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control import height_build as hb
+    from app.control import heights as hc
+    from app.control.geometry import attach_cover, attach_heights
+
+    floor = rect_mask([HALL])
+    box = rect_mask(list(boxes))
+    wall = rect_mask(list(walls)) if walls else np.zeros_like(box)
+    geo = geometry_from_masks(name, ~floor | box | wall, floor & ~box & ~wall, TOY_SCALE, None)
+    attach_cover(geo, box, hashlib.sha256(np.packbits(box).tobytes()).hexdigest()[:12])
+    floors = -np.ones((GRID, GRID, hc.MAX_FLOORS), np.int16)
+    floors[geo.walk, 0] = 0
+    edges = hb.connect({int(c): [0] for c in np.flatnonzero(geo.walk.ravel())}, {}, geo)
+    rows = [r for rect, rise in zip(boxes, rises or ()) for r in box_top_rows(rect, rise)]
+    asset = hc.HeightAsset(floors, np.zeros_like(floors), geo.walk.copy(), np.zeros_like(geo.walk),
+                           np.asarray(edges, np.int32).reshape(-1, 5), {"origin_z": TOY_Z0},
+                           box_tops=np.array(rows, np.int32).reshape(-1, 3) if rises is not None else None)
+    attach_heights(geo, asset)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+def box_hall_tops(rise_m: float = BOX_TOY_RISE_M):
+    """box_hall with a height asset that has learnt the box's top at `rise_m` (geo.box_tops == {1: (rise_m,)})."""
+    return tops_hall("BoxHallTops", [BOX_PX], rises=[rise_m])
+
+
+def box_hall_no_tops():
+    """box_hall with a height asset that has learnt no tops (box_tops empty, box_reach None)."""
+    return tops_hall("BoxHallNoTops", [BOX_PX], rises=None)
+
+
+def three_boxes_tops():
+    """three_boxes with every box's top learnt at BOX_TOY_RISE_M."""
+    return tops_hall("ThreeBoxesTops", list(THREE_BOXES.values()), rises=[BOX_TOY_RISE_M] * 3)
+
+
 def rect_mask(rects) -> np.ndarray:
     mask = np.zeros((PX, PX), bool)
     for x0, y0, x1, y1 in rects:

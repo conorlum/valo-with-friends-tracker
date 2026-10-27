@@ -11,7 +11,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
 
-from control_toys import BOX_WITNESS, box_hall, open_hall, on_box_track  # noqa: E402
+from control_toys import BOX_WITNESS, box_hall, box_hall_tops, open_hall, on_box_track  # noqa: E402
 from test_stance_engine import T, inputs, still  # noqa: E402
 from test_stance import CENTRE  # noqa: E402
 
@@ -47,7 +47,7 @@ def on_box_round(geo, tmp_path):
 
 
 def test_player_on_the_box_carries_the_stance_eye_and_piece(tmp_path):
-    geo = box_hall()
+    geo = box_hall_tops()
     live, cached, raw, stances, _ = on_box_round(geo, tmp_path)
     st = stances[0]
     assert st is not None and st.kind == "on_box" and st.see_over
@@ -61,7 +61,7 @@ def test_sight_from_the_eye_with_the_piece_sees_what_without_it_does_not(tmp_pat
     from app.control import engine as ce
     from app.gaps import detect as gd
 
-    geo = box_hall()
+    geo = box_hall_tops()
     live, _, _, _, blob = on_box_round(geo, tmp_path)
     pv = live[0]
 

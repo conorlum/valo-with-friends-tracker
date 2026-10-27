@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
 
-from control_toys import BOX_WITNESS, box_hall, on_box_track  # noqa: E402
+from control_toys import BOX_WITNESS, box_hall_tops, on_box_track  # noqa: E402
 from test_stance import CENTRE  # noqa: E402
 from test_stance_engine import T, bearing, centre_of, inputs, still  # noqa: E402
 
@@ -34,7 +34,7 @@ def box_viewer_round(geo):
 def test_sees_point_from_a_player_on_the_box_to_a_ground_point_behind_it():
     from app.control.utility import _sees_point
 
-    geo = box_hall()
+    geo = box_hall_tops()
     (rnd, _), e = box_viewer_round(geo)
     assert _sees_point(rnd, 0, T, *e)
     (flat, _), e = box_viewer_round(no_cover(geo))
@@ -44,7 +44,7 @@ def test_sees_point_from_a_player_on_the_box_to_a_ground_point_behind_it():
 def test_sees_point_with_a_target_on_the_box_uses_the_physical_line():
     from app.control.utility import _sees_point
 
-    geo = box_hall()
+    geo = box_hall_tops()
     w = centre_of(geo, BOX_WITNESS["W"])
     players = {0: still("A", *w, bearing(w, CENTRE)), 5: on_box_track(*CENTRE, yaw=0)}
     rnd, _ = inputs(geo, players)
@@ -57,7 +57,7 @@ def test_sees_point_with_a_target_on_the_box_uses_the_physical_line():
 def test_line_ends_for_a_ground_pair_is_their_own_positions_and_asks_for_no_stance():
     from app.control import stance as st_mod
 
-    geo = box_hall()
+    geo = box_hall_tops()
     a, b = centre_of(geo, BOX_WITNESS["W"]), centre_of(geo, BOX_WITNESS["E"])
     rnd, _ = inputs(geo, {0: still("A", *a, 0), 5: still("B", *b, 180)})
     pa, pb = rnd.pos(0, T), rnd.pos(5, T)
@@ -70,7 +70,7 @@ def test_line_ends_for_a_ground_pair_is_their_own_positions_and_asks_for_no_stan
 def test_line_ends_puts_an_on_box_end_at_its_eye_with_its_piece():
     from app.control import stance as st_mod
 
-    geo = box_hall()
+    geo = box_hall_tops()
     (rnd, _), e = box_viewer_round(geo)
     pa, pb = rnd.pos(0, T), rnd.pos(5, T)
     la, lb, so = st_mod.line_ends(rnd, 0, 5, T, pa, pb)
@@ -92,10 +92,10 @@ def _kd_for(geo):
 
 
 def test_a_kill_whose_bare_line_exists_only_over_the_box_is_measurable():
-    on = _kd_for(box_hall())
+    on = _kd_for(box_hall_tops())
     assert not on["killer_saw"] and not on["victim_saw"]
     assert on["measurable"]
-    off = _kd_for(no_cover(box_hall()))
+    off = _kd_for(no_cover(box_hall_tops()))
     assert not off["measurable"]
 
 
@@ -112,11 +112,11 @@ def _pairs(geo, monkeypatch):
 
 
 def test_a_smoke_on_the_line_from_a_player_on_the_box_counts_a_pair(monkeypatch):
-    assert _pairs(box_hall(), monkeypatch) > 0
+    assert _pairs(box_hall_tops(), monkeypatch) > 0
 
 
 def test_with_no_stance_the_bare_line_is_blocked_so_no_pair(monkeypatch):
-    assert _pairs(no_cover(box_hall()), monkeypatch) == 0
+    assert _pairs(no_cover(box_hall_tops()), monkeypatch) == 0
 
 
 # ------------------------------------------------------------------ fix round: beside viewer, off-line smoke
@@ -127,7 +127,7 @@ def test_sees_point_from_a_beside_viewer_answers_from_the_anchor_not_the_pixel()
     from app.control.utility import _sees_point
     from control_toys import hugging_track
 
-    geo = box_hall()
+    geo = box_hall_tops()
     rnd, _ = inputs(geo, {0: hugging_track(252, 196, yaw=90)})        # in the west edge, facing south
     st = st_mod.stance_at(rnd, 0, T)
     assert st is not None and st.kind == "beside" and st.eye_px != st.px
@@ -140,7 +140,7 @@ def test_sees_point_from_a_beside_viewer_answers_from_the_anchor_not_the_pixel()
 def test_a_smoke_off_the_line_from_a_player_on_the_box_counts_no_pair(monkeypatch):
     from app.critutil import extract
 
-    geo = box_hall()
+    geo = box_hall_tops()
     (rnd, _), e = box_viewer_round(geo)
     smoke = (CENTRE[0] - 40.0, CENTRE[1], 8.0, True)                  # behind the viewer, well off the line
     monkeypatch.setattr(extract, "_shapes_of", lambda *_a: [(0.0, 10.0, smoke)])
