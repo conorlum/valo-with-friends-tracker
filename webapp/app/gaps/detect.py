@@ -202,7 +202,7 @@ class GapDetector:
         """Where the player sees from: the stance's eye on or beside a box, else their position."""
         return (p.x if p.eye_x is None else p.eye_x), (p.y if p.eye_y is None else p.eye_y)
 
-    def _sight(self, x, y, eye_z, node, smokes, see_over: int = 0) -> np.ndarray:
+    def _sight(self, x, y, eye_z, node, smokes, see_over=()) -> np.ndarray:
         """Every node with a clear line from (x, y) at eye height `eye_z` (R13).
 
         Exact positions, eye heights, nodes and physical blocker values can reuse
@@ -210,6 +210,9 @@ class GapDetector:
         Geometry stays fixed for a detector; replacing it invalidates this memo.
         """
         from app.control.feature_visibility import blocker_key
+        from app.control.geometry import see_over_labels
+
+        see_over = see_over_labels(see_over)
 
         signature = (id(self.geo), id(self.geo.sight), id(self.geo.node_z), id(self.geo.heights),
                      id(self.geo.space_grid), id(self.geo.space_nodes), id(self.geo.node_of),
@@ -224,7 +227,7 @@ class GapDetector:
         blockers = blocker_key(smokes)
         reusable = blockers is not None
         key = ("sight", float(x).hex(), float(y).hex(),
-               None if eye_z is None else float(eye_z).hex(), int(node), blockers, int(see_over))
+               None if eye_z is None else float(eye_z).hex(), int(node), blockers, see_over)
         if reusable:
             entry = self._sight_cache.pop(key, None)
             if entry is not None:
@@ -233,7 +236,7 @@ class GapDetector:
                 return entry[0]
         record: dict = {}
         out = cast(self.geo, float(x), float(y), FULL_CIRCLE, smokes, eye_z=eye_z, own=int(node), record=record,
-                   see_over=int(see_over))
+                   see_over=see_over)
         self.timing["casts"] += 1
         if record.get("unresolved_rays"):
             self._note("exposure rays through unresolved terrain (2D sight there)")

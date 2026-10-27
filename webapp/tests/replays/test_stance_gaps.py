@@ -52,7 +52,7 @@ def test_player_on_the_box_carries_the_stance_eye_and_piece(tmp_path):
     st = stances[0]
     assert st is not None and st.kind == "on_box" and st.see_over
     for pv in (live[0], cached[0]):
-        assert pv.see_over == st.piece
+        assert pv.see_over == tuple(st.see_over)
         assert pv.eye_x == float(st.eye_px[0]) and pv.eye_y == float(st.eye_px[1])
     assert len(raw[0]) == 12 and tuple(raw[0][9:]) == (live[0].eye_x, live[0].eye_y, live[0].see_over)
 
@@ -98,7 +98,7 @@ def test_sight_memo_keys_on_see_over(monkeypatch):
     det._sight(124.0, 124.0, None, 0, [], see_over=0)
     det._sight(124.0, 124.0, None, 0, [], see_over=1)
     det._sight(124.0, 124.0, None, 0, [], see_over=1)
-    assert seen == [0, 1] and det.timing["casts"] == 2
+    assert seen == [(), (1,)] and det.timing["casts"] == 2
 
 
 def test_no_stance_round_keeps_nine_field_tuples_and_default_views(tmp_path):
@@ -108,7 +108,7 @@ def test_no_stance_round_keeps_nine_field_tuples_and_default_views(tmp_path):
     assert stances[0] is None
     assert all(len(t) == 9 for t in raw.values())
     for pv in list(live.values()) + list(cached.values()):
-        assert (pv.eye_x, pv.eye_y, pv.see_over) == (None, None, 0)
+        assert (pv.eye_x, pv.eye_y, pv.see_over) == (None, None, ())
 
 
 def test_round_on_a_map_without_cover_has_nine_field_tuples(tmp_path):
@@ -117,4 +117,25 @@ def test_round_on_a_map_without_cover_has_nine_field_tuples(tmp_path):
     players = {0: ("A", [(0.0, 60.0, 60.0, 0, 0.0), (10.0, 60.0, 60.0, 0, 0.0)]), 5: still("B", 330.0, 100.0, 180)}
     live, cached, raw, stances, _ = run(geo, players, tmp_path)
     assert all(len(t) == 9 for t in raw.values())
-    assert all(pv.eye_x is None and pv.see_over == 0 for pv in cached.values())
+    assert all(pv.eye_x is None and pv.see_over == () for pv in cached.values())
+
+
+def test_an_old_cache_file_with_an_int_see_over_reads_back_as_a_tuple(tmp_path):
+    """Files written before the vantage (R6) store the piece as an int, 0 for none: they read as (n,) and ()."""
+    geo = box_hall_tops()
+    on_box_round(geo, tmp_path)
+    from app.gaps import cache
+
+    path = cache.cache_path(1, 1, "oldformat", tmp_path)
+    with gzip.open(cache.cache_path(1, 1, "stance", tmp_path), "rb") as f:
+        head, body = pickle.load(f), pickle.load(f)
+    for tk in body["ticks"]:
+        tk[1].update({s: v[:11] + (3,) if len(v) == 12 else v for s, v in tk[1].items()})
+    first = body["ticks"][0][1]
+    first[99] = tuple(next(iter(first.values()))[:9]) + (1.0, 2.0, 0)
+    with gzip.open(path, "wb") as f:
+        pickle.dump(head, f)
+        pickle.dump(body, f)
+    views = [pv for rec, _ in cache.replay(path) for pv in rec.players.values() if pv.eye_x is not None]
+    assert views and all(isinstance(pv.see_over, tuple) for pv in views)
+    assert any(pv.see_over == (3,) for pv in views) and any(pv.see_over == () for pv in views)

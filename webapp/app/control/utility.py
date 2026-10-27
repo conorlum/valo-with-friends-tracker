@@ -317,8 +317,8 @@ def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | No
         return False
     vs = st_mod.boxed_stance(rnd, viewer, t)
     ex, ey = (p[0], p[1]) if vs is None else vs.eye_px
-    sv = 0 if vs is None else vs.see_over
-    st = 0
+    sv = () if vs is None else vs.see_over
+    st = ()
     if target is not None:
         ts = st_mod.boxed_stance(rnd, target, t)
         if ts is not None:

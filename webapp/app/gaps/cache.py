@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.control.geometry import see_over_labels
 from app.control.observe import PlayerView, TickRecord
 
 FORMAT = 1
@@ -127,7 +128,7 @@ def replay(path: Path):
         for (side, e), arr in state.items():
             unknown.setdefault(side, {})[e] = arr
         views = {s: PlayerView(s, f[0], f[1], f[2], f[3], f[4], _mask(f[5], n), _mask(f[6], n), _mask(f[7], n),
-                               f[8], *f[9:12])
+                               f[8], *f[9:11], *(see_over_labels(x) for x in f[11:12]))
                  for s, f in players.items()}
         yield TickRecord(t, views, unknown, events, smokes), logs
 

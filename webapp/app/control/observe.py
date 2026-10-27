@@ -23,7 +23,7 @@ class PlayerView:
     eye_z: float | None = None       # Tick._eye at their node: None on a flat map or an unresolved cell (R13)
     eye_x: float | None = None       # the stance's eye (px) when on or beside a cover piece, else None
     eye_y: float | None = None
-    see_over: int = 0                # the cover piece the eye sees over (0 = none)
+    see_over: tuple[int, ...] = ()   # the cover pieces the eye sees over (sorted labels; () = none)
 
 
 @dataclass
@@ -43,7 +43,7 @@ def record(tick, unknown) -> TickRecord:
                         tick.live[s], h.watch, tick.view.get(s), tick._eye(s, tick.t, h.cell))
         st = getattr(h, "stance", None)
         if st is not None:
-            pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), int(st.piece)
+            pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), tuple(st.see_over)
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
                       list(tick.smokes))

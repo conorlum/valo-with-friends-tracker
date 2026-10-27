@@ -346,6 +346,17 @@ def test_control_every_consumer_agrees_for_a_ground_viewer_at_a_ring_cell(side, 
     assert got == {name: expected for name in got}
 
 
+@pytest.mark.parametrize("which,expected", [("tops", True), ("bare_b", False), ("high_b", False)])
+def test_every_consumer_agrees_about_an_enemy_behind_a_lower_topped_box(which, expected, tmp_path, monkeypatch):
+    """Vantage (R6, D-E): on box A, the enemy on the ground behind box B is seen iff B is topped and lower."""
+    from control_toys import three_boxes_tops
+    from test_stance_vantage import BEHIND_B, ON_A, bare_b, high_b
+
+    geo = {"tops": three_boxes_tops, "bare_b": bare_b, "high_b": high_b}[which]()
+    got = answers(geo, ON_A, 1.0, BEHIND_B, tmp_path, monkeypatch)
+    assert got == {name: expected for name in got}, got
+
+
 # ------------------------------------------------------------------ 4. the stance's z rules
 # The ring-median section (test_the_ring_median_sets_the_floor_where_the_map_has_none) is deleted: the ring is gone,
 # and its flat-map "on_box" is now "never on_box" (test_stance_tops.py).
