@@ -52,7 +52,7 @@ def test_player_on_the_box_carries_the_stance_eye_and_piece(tmp_path):
     st = stances[0]
     assert st is not None and st.kind == "on_box" and st.see_over
     for pv in (live[0], cached[0]):
-        assert pv.see_over == int(st.see_over)
+        assert pv.see_over == st.piece
         assert pv.eye_x == float(st.eye_px[0]) and pv.eye_y == float(st.eye_px[1])
     assert len(raw[0]) == 12 and tuple(raw[0][9:]) == (live[0].eye_x, live[0].eye_y, live[0].see_over)
 

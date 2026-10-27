@@ -94,7 +94,7 @@ def test_a_hugger_in_the_piece_is_held_at_the_anchor_and_sees_no_further_than_th
     from app.control import stance as st_mod
 
     st = st_mod.stance_at(rnd, 0, T)
-    assert st is not None and st.kind == "beside" and st.see_over == 0
+    assert st is not None and st.kind == "beside" and st.see_over == ()
     tk = ce.Tick(rnd, T)
     assert tk.holders[0].cell == st.anchor
     assert not tk.view[0][BOX_WITNESS["E"]], "beside the box, the box is in the way"

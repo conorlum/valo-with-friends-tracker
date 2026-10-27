@@ -177,7 +177,7 @@ def test_steady_on_the_box_is_on_box():
     st = stance(geo, on_box_track(*CENTRE), 5.0)
     assert st is not None
     assert st.kind == "on_box"
-    assert st.see_over == 1
+    assert st.see_over == (1,)
     assert st.eye_px == st.px
 
 
@@ -186,7 +186,7 @@ def test_hugging_the_box_inside_the_piece_is_beside():
     st = stance(geo, hugging_track(250, 196), 5.0)
     assert st is not None
     assert st.kind == "beside"
-    assert st.see_over == 0
+    assert st.see_over == ()
     assert st.anchor is not None and geo.walk.ravel()[st.anchor]
 
 
@@ -195,7 +195,7 @@ def test_a_jump_over_the_box_is_beside_in_mid_air():
     st = stance(geo, jump_track(230, 290, 196, 1.5, 2.0), 2.5)
     assert st is not None
     assert st.kind == "beside"
-    assert st.see_over == 0
+    assert st.see_over == ()
 
 
 def _lands_on_box():
@@ -214,7 +214,7 @@ def test_after_the_settle_time_it_is_on_box():
     st = stance(geo, _lands_on_box(), 2.6)
     assert st is not None
     assert st.kind == "on_box"
-    assert st.see_over == 1
+    assert st.see_over == (1,)
 
 
 def test_a_player_in_the_piece_with_no_z_is_beside():
@@ -222,7 +222,7 @@ def test_a_player_in_the_piece_with_no_z_is_beside():
     st = stance(geo, ("A", [(0.0, *CENTRE, 0)]), 5.0)
     assert st is not None
     assert st.kind == "beside"
-    assert st.see_over == 0
+    assert st.see_over == ()
 
 
 # ------------------------------------------------------------------ 7. anchors on box_hall
@@ -455,7 +455,7 @@ def test_a_map_with_no_heights_and_nobody_else_around_is_beside():
     geo = box_hall()
     rnd = round_of(geo, {0: on_box_track(*CENTRE)})
     st = st_mod.stance_at(rnd, 0, 5.0)
-    assert st is not None and st.kind == "beside" and st.see_over == 0
+    assert st is not None and st.kind == "beside" and st.see_over == ()
 
 
 def test_the_top_is_the_reference_so_no_other_player_is_needed():
@@ -465,7 +465,7 @@ def test_the_top_is_the_reference_so_no_other_player_is_needed():
     x, y = ring_xy(geo, "W")
     alone = stance(geo, on_box_track(*CENTRE), 5.0)
     near = stance(geo, on_box_track(*CENTRE), 5.0, {5: ("B", [(0.0, x, y, 0, 0.0), (10.0, x, y, 0, 0.0)])})
-    assert alone.kind == near.kind == "on_box" and alone.see_over == near.see_over == 1
+    assert alone.kind == near.kind == "on_box" and alone.see_over == near.see_over == (1,)
 
 
 def test_no_anchor_within_range_uses_the_nearest_walkable_node_and_counts_it(monkeypatch):

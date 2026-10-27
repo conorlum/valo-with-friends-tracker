@@ -130,7 +130,7 @@ def box_top_rows(rect, rise_m: float = BOX_TOY_RISE_M, fine: int = 4) -> list:
 def tops_hall(name: str, boxes, walls=(), rises=None):
     """The open hall with cover boxes (`boxes` = px rects, attached as pieces) and a flat height asset: every
     walkable cell one floor at 0 m (origin_z TOY_Z0, as `z_track` writes z), plus `box_tops` rows, one set per box
-    from `rises` (m above the ground; None = a heights asset with no learnt tops at all). `walls` = px rects of real
+    from `rises` (m above the ground; an entry None = that box gets no rows; rises None = a heights asset with no learnt tops at all). `walls` = px rects of real
     wall. The tops variants of box_hall / three_boxes: same masks, then heights, then visibility."""
     key = ("TopsHall", name, HALL, tuple(boxes), tuple(walls), None if rises is None else tuple(rises))
     if key in _CACHE:
@@ -147,7 +147,7 @@ def tops_hall(name: str, boxes, walls=(), rises=None):
     floors = -np.ones((GRID, GRID, hc.MAX_FLOORS), np.int16)
     floors[geo.walk, 0] = 0
     edges = hb.connect({int(c): [0] for c in np.flatnonzero(geo.walk.ravel())}, {}, geo)
-    rows = [r for rect, rise in zip(boxes, rises or ()) for r in box_top_rows(rect, rise)]
+    rows = [r for rect, rise in zip(boxes, rises or ()) if rise is not None for r in box_top_rows(rect, rise)]
     asset = hc.HeightAsset(floors, np.zeros_like(floors), geo.walk.copy(), np.zeros_like(geo.walk),
                            np.asarray(edges, np.int32).reshape(-1, 5), {"origin_z": TOY_Z0},
                            box_tops=np.array(rows, np.int32).reshape(-1, 3) if rises is not None else None)

@@ -64,7 +64,7 @@ def test_line_ends_for_a_ground_pair_is_their_own_positions_and_asks_for_no_stan
     before = st_mod.CALLS
     la, lb, so = st_mod.line_ends(rnd, 0, 5, T, pa, pb)
     assert st_mod.CALLS == before
-    assert la == (pa[0], pa[1], None) and lb == (pb[0], pb[1], None) and so == (0, 0)
+    assert la == (pa[0], pa[1], None) and lb == (pb[0], pb[1], None) and so == ((), ())
 
 
 def test_line_ends_puts_an_on_box_end_at_its_eye_with_its_piece():
@@ -74,7 +74,7 @@ def test_line_ends_puts_an_on_box_end_at_its_eye_with_its_piece():
     (rnd, _), e = box_viewer_round(geo)
     pa, pb = rnd.pos(0, T), rnd.pos(5, T)
     la, lb, so = st_mod.line_ends(rnd, 0, 5, T, pa, pb)
-    assert so[0] > 0 and so[1] == 0 and lb == (pb[0], pb[1], None)
+    assert so[0] == (1,) and so[1] == () and lb == (pb[0], pb[1], None)
     assert la[:2] == st_mod.boxed_stance(rnd, 0, T).eye_px
 
 

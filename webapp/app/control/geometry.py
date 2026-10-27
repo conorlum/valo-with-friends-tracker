@@ -689,10 +689,19 @@ SLAB_SLOTS = 6     # blocked slope intervals kept per ray; more are merged into 
 SLOPE_EPS = 1e-9   # a blocked interval's ends count as blocked
 
 
-def sight_without(geo: Geometry, *labels: int) -> np.ndarray:
-    """`geo.sight` with the see-over pixels of the given cover pieces cleared (they don't block). Labels of 0, or a
-    map with no cover, give `geo.sight` itself. Cached on the geometry per label set."""
-    wanted = tuple(sorted({int(l) for l in labels if l}))
+def see_over_labels(x) -> tuple[int, ...]:
+    """One sorted tuple of the distinct non-zero cover labels in `x`: an int, a pair of ints, a tuple of ints, a pair
+    of tuples, or any nesting of them (0 and () = none). The single entry point for every `see_over` argument."""
+    if isinstance(x, (tuple, list, set, frozenset)):
+        return tuple(sorted({l for part in x for l in see_over_labels(part)}))
+    return (int(x),) if x else ()
+
+
+def sight_without(geo: Geometry, *labels) -> np.ndarray:
+    """`geo.sight` with the see-over pixels of the given cover pieces cleared (they don't block). Labels (ints or
+    tuples, `see_over_labels`) of 0, or a map with no cover, give `geo.sight` itself. Cached on the geometry per
+    sorted label tuple."""
+    wanted = see_over_labels(labels)
     if not wanted or geo.cover_px is None:
         return geo.sight
     cache = geo.__dict__.setdefault("_sight_without", {})
@@ -719,6 +728,7 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
     (a dict) counts those rays under "unresolved_rays"."""
+    see_over = see_over_labels(see_over)
     if geo.movement_only:
         eye_z = None
     from app.control.features import BoundedOccluder, cast_with
@@ -737,6 +747,7 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
 
 def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, see_over: int = 0) -> np.ndarray:
     """`cast` on cells, in 2D: the whole of it on a flat map. see_over: as in `cast`."""
+    see_over = see_over_labels(see_over)
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     seen = np.zeros(geo.n if geo.adaptive else GRID * GRID, bool)
@@ -782,6 +793,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     before leaving the cell (so nobody sees through their own floor or ceiling), and a plate of the cell
     being tested blocks from the cell's near edge up to the point tested (so a body on a slab is seen
     from below only over its edge). In the viewer's own cell only the viewer's own node is seen."""
+    see_over = see_over_labels(see_over)
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     rays = len(a)
@@ -930,6 +942,7 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
     rays `cast` happens to shoot, so the two check each other."""
+    see_over = see_over_labels(see_over)
     if geo.movement_only:
         a, b = (*a[:2], None), (*b[:2], None)
     from app.control.features import BoundedOccluder, los_with
@@ -958,7 +971,7 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     slope = (bz - az) / total if heights else 0.0
     step_m = RAY_STEP_PX * geo.m_per_px
     hits, flat = 0, False
-    sight = sight_without(geo, *see_over) if any(see_over) else geo.sight
+    sight = sight_without(geo, see_over) if see_over else geo.sight
     spans: list[list] = []                    # [cell, first d, last d] in order along the line
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step

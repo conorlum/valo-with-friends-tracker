@@ -43,7 +43,7 @@ def record(tick, unknown) -> TickRecord:
                         tick.live[s], h.watch, tick.view.get(s), tick._eye(s, tick.t, h.cell))
         st = getattr(h, "stance", None)
         if st is not None:
-            pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), int(st.see_over)
+            pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), int(st.piece)
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
                       list(tick.smokes))

@@ -40,7 +40,7 @@ def labels(geo):
 
 def test_steady_at_the_top_inside_the_outline_is_on_box():
     st = stance(box_hall_tops(), on_box_track(*CENTRE), 5.0)
-    assert st is not None and st.kind == "on_box" and st.see_over == 1 and st.eye_px == st.px
+    assert st is not None and st.kind == "on_box" and st.see_over == (1,) and st.eye_px == st.px
 
 
 @pytest.mark.parametrize("rise", [
@@ -53,7 +53,7 @@ def test_only_a_steady_height_within_the_tolerance_of_the_top_is_on_box(rise):
     st = stance(box_hall_tops(), on_box_track(*CENTRE, rise_m=rise), 5.0)
     assert st is not None
     assert st.kind == ("on_box" if abs(rise - 1.0) <= 0.3 else "beside")
-    assert st.see_over == (1 if st.kind == "on_box" else 0)
+    assert st.see_over == ((1,) if st.kind == "on_box" else ())
 
 
 def test_a_height_that_is_not_steady_is_not_on_box_even_when_its_median_is_at_the_top():
@@ -74,7 +74,7 @@ def test_a_flat_map_with_no_heights_is_never_on_box_even_with_a_ground_player_fo
     assert geo.heights is None
     ground = {5: ("B", [(0.0, 236.0, 196.0, 0, 0.0), (T_END, 236.0, 196.0, 0, 0.0)])}
     st = stance(geo, on_box_track(*CENTRE), 5.0, ground)
-    assert st is not None and st.kind == "beside" and st.see_over == 0
+    assert st is not None and st.kind == "beside" and st.see_over == ()
 
 
 def test_an_in_outline_on_box_anchor_is_a_walkable_node_beside_the_box():
@@ -88,7 +88,7 @@ def test_steady_on_a_three_boxes_piece_names_that_piece():
     geo = three_boxes_tops()
     for name, (x0, y0, x1, y1) in THREE_BOXES.items():
         st = stance(geo, on_box_track((x0 + x1) / 2, (y0 + y1) / 2), 5.0)
-        assert st.kind == "on_box" and st.see_over == labels(geo)[name]
+        assert st.kind == "on_box" and st.piece == labels(geo)[name] and labels(geo)[name] in st.see_over
 
 
 # ------------------------------------------------------------------ off the outline, within reach
@@ -96,7 +96,7 @@ def test_steady_on_a_three_boxes_piece_names_that_piece():
 def test_off_the_outline_after_a_stay_that_entered_it_is_on_box_with_the_node_under_the_pixel():
     geo = box_hall_tops()
     st = stance(geo, stay_then(244.0, 196.0), 8.0)
-    assert st is not None and st.kind == "on_box" and st.see_over == 1
+    assert st is not None and st.kind == "on_box" and st.see_over == (1,)
     assert int(geo.cover_px[int(st.px[1]), int(st.px[0])]) == 0, "the pixel is off the outline"
     assert st.anchor == geo.node_at_px(float(st.px[0]), float(st.px[1])) == BOX_RING["W"]
 
@@ -153,7 +153,7 @@ def test_the_one_stayed_on_wins_over_a_nearer_piece_that_was_never_entered():
     # (182, 205): box C's edge (x 192) is 10 px away, box A's (x 168) is 14: C is nearer but was never stood on
     walk = path((0.0, *start, 1.0), (3.0, *start, 1.0), (5.0, 182.0, 205.0, 1.0), (T_END, 182.0, 205.0, 1.0))
     st = stance(geo, walk, 8.0)
-    assert st is not None and st.kind == "on_box" and st.see_over == lab["A"] != lab["C"]
+    assert st is not None and st.kind == "on_box" and st.piece == lab["A"] != lab["C"]
 
 
 @pytest.mark.parametrize("end,nearest", [((178.0, 205.0), "A"), ((182.0, 205.0), "C")])
@@ -166,7 +166,7 @@ def test_with_a_stay_on_both_the_nearest_wins(end, nearest):
     walk = path((0.0, *pa, 1.0), (2.0, *pa, 1.0), (3.5, *pc, 1.0), (5.0, *pc, 1.0), (6.5, *end, 1.0),
                 (T_END, *end, 1.0))
     st = stance(geo, walk, 9.0)
-    assert st is not None and st.kind == "on_box" and st.see_over == lab[nearest]
+    assert st is not None and st.kind == "on_box" and st.piece == lab[nearest]
 
 
 # ------------------------------------------------------------------ the guards

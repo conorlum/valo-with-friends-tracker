@@ -1396,7 +1396,7 @@ class Tick:
                         geo.cover_px[iy, ix] or (reach is not None and reach[iy, ix, 0])):
                     st = stance_at(rnd, s, t)
             ex, ey = x, y
-            see_over = 0
+            see_over = ()
             if st is not None:
                 ex, ey = st.eye_px
                 see_over = st.see_over
@@ -1526,7 +1526,7 @@ class Tick:
                 continue
             e = self.holders[s]
             ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
-            e_piece = e.stance.see_over if e.stance is not None else 0
+            e_piece = e.stance.see_over if e.stance is not None else ()
             for h in self.holders.values():
                 if h.team == e.team or not _on_box(h):
                     continue

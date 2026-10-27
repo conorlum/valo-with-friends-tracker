@@ -38,8 +38,27 @@ class Stance:
     kind: str
     px: tuple[float, float]
     eye_px: tuple[float, float]
-    see_over: int
+    see_over: tuple[int, ...]          # the cover pieces the eye sees over, sorted; () for beside (R6)
     anchor: int | None
+    piece: int = 0                     # the piece stood on (0 for beside)
+
+
+def vantage(geo, piece: int, z: float) -> tuple[int, ...]:
+    """What the eye of a player steady at position-z `z` (m) on `piece` sees over (R6, D-E): `piece` itself and every
+    other piece with learnt tops whose highest top, less STAND_M (its surface), is strictly below the eye
+    (z + EYE_M). A piece with no known top is never added (it blocks). Cached on the geometry per (piece, z)."""
+    from app.control import heights as hc
+
+    cache = geo.__dict__.setdefault("_vantage", {})
+    key = (int(piece), float(z))
+    if key not in cache:
+        eye = float(z) + hc.EYE_M
+        over = {int(piece)}
+        for q, tops in geo.box_tops.items():
+            if tops and max(tops) - hc.STAND_M < eye:
+                over.add(int(q))
+        cache[key] = tuple(sorted(over))
+    return cache[key]
 
 
 def _top_match(rnd, slot: int, i: int, tops):
@@ -110,12 +129,13 @@ def _entered(rnd, slot: int, i: int, piece: int, top: float) -> bool:
     return int(cnt[i]) - (int(cnt[start - 1]) if start > 0 else 0) > 0
 
 
-def _on_piece(rnd, slot: int, i: int, piece: int, in_outline: bool) -> bool:
+def _on_piece(rnd, slot: int, i: int, piece: int, in_outline: bool) -> float | None:
+    """The matched top (m) when the player is on `piece` there, else None. The vantage's z is this top."""
     tops = rnd.geo.box_tops.get(piece)
     top = _top_match(rnd, slot, i, tops)
     if top is None:
-        return False
-    return in_outline or _entered(rnd, slot, i, piece, top)
+        return None
+    return top if in_outline or _entered(rnd, slot, i, piece, top) else None
 
 
 def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
@@ -130,7 +150,7 @@ def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
 
     def clear(node):
         return cg.los(geo, (float(cen[node, 0]), float(cen[node, 1]), None), (px[0], px[1], None),
-                      see_over=(label, label))
+                      see_over=(label,))
 
     chosen = None
     cands = {int(k) for k in near}
@@ -195,16 +215,18 @@ def stance_at(rnd, slot, t) -> Stance | None:
     px = (x, y)
     out = None
     if label:
-        if _on_piece(rnd, slot, i, label, True):
-            out = Stance("on_box", px, px, label, _anchor(rnd, slot, i, px, label))
+        top = _on_piece(rnd, slot, i, label, True)
+        if top is not None:
+            out = Stance("on_box", px, px, vantage(geo, label, top), _anchor(rnd, slot, i, px, label), label)
         else:
             anchor = _anchor(rnd, slot, i, px, label)
             eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
-            out = Stance("beside", px, eye, 0, anchor)
+            out = Stance("beside", px, eye, (), anchor)
     else:
         for piece in _reach_ids(geo, x, y):
-            if _on_piece(rnd, slot, i, piece, False):
-                out = Stance("on_box", px, px, piece, int(geo.node_at_px(x, y)))
+            top = _on_piece(rnd, slot, i, piece, False)
+            if top is not None:
+                out = Stance("on_box", px, px, vantage(geo, piece, top), int(geo.node_at_px(x, y)), piece)
                 break
     memo[(slot, i)] = out
     return out
@@ -230,13 +252,13 @@ def boxed_stance(rnd, slot, t) -> Stance | None:
 
 def line_ends(rnd, a, b, t, pa, pb):
     """The two ends of a sight line between players `a` and `b` (positions `pa`, `pb` at t): each at its player's
-    stance eye when it has one, else the player's own (x, y); and the see-over piece of each end (0 = none)."""
+    stance eye when it has one, else the player's own (x, y); and the see-over pieces of each end (a tuple, () = none)."""
     ends, over = [], []
     for slot, p in ((a, pa), (b, pb)):
         st = boxed_stance(rnd, slot, t)
         if st is None:
             ends.append((p[0], p[1], None))
-            over.append(0)
+            over.append(())
         else:
             ends.append((st.eye_px[0], st.eye_px[1], None))
             over.append(st.see_over)
