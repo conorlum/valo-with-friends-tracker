@@ -546,13 +546,16 @@ def test_zero_point_is_read_despite_its_casing_and_suppresses_enemies_for_the_ga
     rows = [spawned(20_000, pulse, "Default__Gameobject_Grenadier_E_SuppressionPulse_C", 0, 0), instigated(20_000, pulse, 100),
             oneshot(21_000, pulse, [], 9),                                   # the pulse goes off at +1 s
             oneshot(21_050, 101, [pulse], 31), oneshot(21_050, 102, [pulse], 31),  # two enemies suppressed
-            oneshot(21_050, 104, [pulse], 31),                               # a teammate: not a status
+            oneshot(21_050, 104, [pulse], 31),                               # a teammate: friendly (revision 22)
             closed(35_000, pulse)]
     extras = run7(tmp_path, rows)
     [knife] = extras.rounds[1]["abilities"]
     assert (knife["kind"], knife["code"], knife["name"], knife["fx"]) == ("GameObject", "Grenadier", "E_SuppressionPulse", [11.0])
-    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in extras.rounds[1]["statuses"]]
+    statuses = extras.rounds[1]["statuses"]
+    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in statuses
+           if not st.get("friendly")]
     assert got == [(1, 11.05, 19.05, "suppressed", 0, "object"), (2, 11.05, 19.05, "suppressed", 0, "object")]
+    assert [(st["target"], st["status"], st["slot"]) for st in statuses if st.get("friendly")] == [(4, "suppressed", 0)]
 
 
 def test_an_object_named_status_lasts_until_it_stops_and_duplicates_merge(tmp_path):
@@ -561,10 +564,12 @@ def test_an_object_named_status_lasts_until_it_stops_and_duplicates_merge(tmp_pa
             instigated(30_000, boom, 104),
             effect(30_000, 101, 1, [boom], container=7), stop(30_600, 101, 1),
             effect(30_100, 101, 2, [boom], container=8), stop(30_900, 101, 2),   # a second container, same hit
-            effect(30_000, 105, 3, [boom], container=7), stop(30_600, 105, 3),   # Waylay's teammate
+            effect(30_000, 105, 3, [boom], container=7), stop(30_600, 105, 3),   # Waylay's teammate: friendly
             closed(40_000, boom)]
     extras = run7(tmp_path, rows)
-    assert [(st["target"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1]["statuses"]] == [(1, 20.0, 20.9, "hindered")]
+    statuses = extras.rounds[1]["statuses"]
+    assert [(st["target"], st["t0"], st["t1"], st["status"]) for st in statuses if not st.get("friendly")] ==         [(1, 20.0, 20.9, "hindered")]
+    assert [(st["target"], st["status"], st["friendly"]) for st in statuses if st.get("friendly")] == [(5, "hindered", True)]
     assert "fx" not in extras.rounds[1]["abilities"][0], "no effect on itself: it pops at its spawn"
 
 
@@ -726,6 +731,127 @@ def test_utility_shot_and_destroyed_is_gone(tmp_path):
             damage(30_000, 71, 999)]                                            # hit but not destroyed
     cams = run7(tmp_path, rows).rounds[1]["abilities"]
     assert [c.get("gone") for c in cams] == [20.0, None]
+
+
+AGENTS14 = {**AGENTS7, "Aggrobot": "Gekko", "Vampire": "Reyna"}
+
+
+def run14(tmp_path, rows):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+
+
+def _leer(guid):
+    return spawned(20_000, guid, "Default__GameObject_Vampire_4_NearsightAOE_Source_C", 0, 0)
+
+
+def test_leer_hit_lethal_in_its_close_ms_is_gone_and_other_abilities_are_not(tmp_path):
+    rows = [_leer(80), damage(30_000, 80, 999, lethal=True), closed(30_000, 80),    # shot down: same ms
+            _leer(81), closed(30_000, 81),                                          # natural close
+            spawned(20_000, 82, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 82, 101),
+            damage(30_000, 82, 999, lethal=True), closed(30_000, 82)]               # D10: not widened
+    out = {a["id"]: a for a in run14(tmp_path, rows).rounds[1]["abilities"]}
+    assert out[80]["gone"] == 20.0
+    assert "gone" not in out[81]
+    assert "gone" not in out[82]
+
+
+def _dizzy_rows(close_ms=21_000, spawner=True, ray_y=60.0):
+    rows = [spawned(20_000, 90, "Default__GameObject_Aggrobot_E_DiscTurret_PowerWave_C", 0, 0), closed(close_ms, 90)]
+    if spawner:
+        rows.append(spawned(close_ms, 91, "Default__GameObject_Aggrobot_E_OrbSpawner_C", 1000, 0, z=50))
+    # A shot from the origin along +x; the spawner at (1000, 0, 50) is `ray_y` off the line's y... via the origin's y.
+    row = shot(close_ms, 200, 0, ray_y, 1, 0)
+    row["shot"]["location"]["z"] = 50
+    rows.append(row)
+    return rows
+
+
+def _dizzy(tmp_path, **kw):
+    [d] = [a for a in run14(tmp_path, _dizzy_rows(**kw)).rounds[1]["abilities"] if a["id"] == 90]
+    return d
+
+
+def test_a_dizzy_shot_down_is_gone_when_an_orb_dropped_under_a_shot_ray(tmp_path):
+    assert _dizzy(tmp_path)["gone"] == 11.0
+    assert "gone" not in _dizzy(tmp_path, ray_y=400.0)
+    assert "gone" not in _dizzy(tmp_path, close_ms=21_900)       # closed at its natural 1.9 s
+    assert "gone" not in _dizzy(tmp_path, spawner=False)
+
+
+def test_a_poison_cloud_takes_the_zones_of_its_own_owner_while_alive(tmp_path):
+    # The export gives neither emitter nor zone an Instigator: owners come by nearest / the landing.
+    em = "Default__Projectile_Pandemic_4_SmokeGrenade_C"
+    zone = "Default__Zone_Pandemic_4_SmokeZone_C"
+    rows = [spawned(20_000, 95, em, 0, 0), closed(22_000, 95),                       # player 8's, lands at 22 s
+            spawned(22_000, 96, zone, 0, 0), closed(25_000, 96),
+            spawned(20_000, 100, em, 5000, 5000), closed(23_000, 100),               # player 9's, lands at 23 s
+            spawned(23_000, 101, zone, 5000, 5000),
+            spawned(40_000, 102, em, 0, 0), closed(41_000, 102)]                     # player 8's, no zone in its life
+    table = table7()
+    table.agents[8] = table.agents[9] = "Viper"
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    extras = build_extras(path, table, WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {8: (0.0, 0.0), 9: (5000.0, 5000.0)},
+                          teams=TEAMS7)
+    out = {a["id"]: a for a in extras.rounds[1]["abilities"] if a["name"] == "4_SmokeGrenade"}
+    assert (out[95]["slot"], out[100]["slot"]) == (8, 9)
+    assert out[95]["on"] == [[12.0, 15.0]]
+    assert out[100]["on"] == [[13.0, None]]
+    assert out[102]["on"] == [], "known never on: not the same as a row stored before `on`"
+
+
+def held(t_ms, pawn, equippable):
+    # the real shape (2026-10-25 Sunset export): the character's inventory names what it now holds
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": pawn, "is_actor": False,
+            "export_group_path": "/Script/ShooterGame.AresInventory",
+            "payload": {"NetTimestamp": 1, "NewCurrentEquippable": equippable}}
+
+
+def test_a_switch_to_the_ult_equippable_is_one_equip_row_and_other_switches_none(tmp_path):
+    rows = [spawned(1_000, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # Reyna's (slot 6, pawn 106)
+            spawned(1_000, 51, "Default__Ability_Vampire_Q_Heal_C", 0, 0),
+            held(14_000, 106, 900),                                                 # her gun
+            held(15_000, 106, 50), held(15_100, 106, 50),                           # Empress: one switch, sent twice
+            held(16_000, 106, 900), held(17_000, 106, 51),                          # back to the gun, then Devour
+            held(80_000, 106, 50)]                                                  # round 2
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert extras.rounds[1]["equips"] == [{"t": 5.0, "slot": 6, "code": "Vampire", "name": "X_Frenzy"}]
+    assert extras.rounds[2]["equips"] == [{"t": 10.0, "slot": 6, "code": "Vampire", "name": "X_Frenzy"}]
+    util = util_entries(extras.rounds[1])
+    assert [e for e in util if e["k"] == "equip"] == [{"k": "equip", "t": 5.0, "by": 6, "code": "Vampire",
+                                                       "name": "X_Frenzy"}]
+    assert rounds_extras(util)["equips"] == extras.rounds[1]["equips"]
+
+
+def test_a_switch_sent_before_its_equippable_spawned_keeps_its_time_and_a_reused_guid_is_a_new_switch(tmp_path):
+    rows = [held(15_000, 106, 50),                                                  # names guid 50 before it spawns
+            spawned(15_200, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),
+            held(15_400, 106, 50),                                                  # the repeat: not another switch
+            closed(40_000, 50),
+            spawned(75_000, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # the GUID reused, a new item
+            held(80_000, 106, 50)]                                                  # held without a switch between
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert [e["t"] for e in extras.rounds[1]["equips"]] == [5.0]
+    assert [e["t"] for e in extras.rounds[2]["equips"]] == [10.0]
+
+
+def test_a_pending_switch_survives_a_later_switch_and_a_stale_one_names_no_later_item(tmp_path):
+    rows = [held(15_000, 106, 50), held(15_100, 106, 900),                        # Empress, then the gun, both
+            spawned(15_300, 50, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),       # before 50's spawn row
+            held(30_000, 106, 60),                                                  # names 60 long before it spawns
+            spawned(75_000, 60, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),
+            held(80_000, 106, 900), held(81_000, 106, 60)]                          # the real switch to it
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    extras = build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS14, lambda t_ms: {}, teams=TEAMS7)
+    assert [e["t"] for e in extras.rounds[1]["equips"]] == [5.0]
+    assert [e["t"] for e in extras.rounds[2]["equips"]] == [11.0]
 
 
 # ---------------------------------------------------------------- stored util (Stage 2, R2)

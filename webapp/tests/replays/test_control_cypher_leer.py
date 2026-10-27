@@ -50,6 +50,29 @@ def test_suppression_of_someone_else_or_after_his_death_leaves_it_alone():
     assert [w.off for w in rnd.watchers if w.kind == "trip"] == [[]]
 
 
+def test_a_friendly_suppression_leaves_his_devices_on():
+    """Revision 22 keeps a teammate's suppression of him, flagged `friendly`, for Critical Util's harm only."""
+    friendly = {**suppressed(1, 8.0, 12.0, by=0), "friendly": True}
+    b = cypher_round([trip(), friendly])
+    rnd = ce.RoundInputs(b, open_hall())
+    assert [w.off for w in rnd.watchers if w.kind == "trip"] == [[]]
+    assert not any(e.get("friendly") for e in rnd.blob["util"])
+    assert any(e.get("friendly") for e in b["util"]), "the caller's blob is left whole for Critical Util"
+
+
+def test_friendly_rows_change_nothing_control_reads():
+    plain = cypher_round([trip(), suppressed(1, 5.0, 7.0)])
+    rows = [{**suppressed(1, 8.0, 12.0, by=0), "friendly": True},
+            {**suppressed(0, 9.0, 11.0, by=1), "status": "concussed", "friendly": True},
+            {**suppressed(0, 9.0, 11.0, by=1), "status": "nearsighted", "friendly": True}]
+    with_friendly = cypher_round([trip(), suppressed(1, 5.0, 7.0), *rows])
+    a, b = ce.RoundInputs(plain, open_hall()), ce.RoundInputs(with_friendly, open_hall())
+    assert [w.off for w in a.watchers] == [w.off for w in b.watchers]
+    assert dict(a.contest_status) == dict(b.contest_status) and dict(a.downgraded) == dict(b.downgraded)
+    assert dict(a.nearsight) == dict(b.nearsight) and dict(a.flashed) == dict(b.flashed)
+    assert a.events == b.events and a.transitions == b.transitions
+
+
 def test_two_suppressions_are_two_off_spans_and_his_own_sight_stays():
     b = cypher_round([trip(), suppressed(1, 2.0, 4.0), suppressed(1, 8.0, 10.0)])
     rnd = ce.RoundInputs(b, open_hall())

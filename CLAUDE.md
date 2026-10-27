@@ -132,6 +132,41 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   team without the friends (by friendships; both teams on a tie) by agent.
 - Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
 
+### Critical Util
+
+Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
+(`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.
+
+- The worker extracts each round's casts and what followed them (`app/critutil/extract.py`) in the gap run, beside
+  Critical Moments, with its own failure status: who each cast affected, kills on affected enemies, teammates it
+  hit, sight lines a smoke cut, enemies held back or waiting at an area cast, a device's trigger, defuses stopped,
+  heals that kept someone alive, deaths holding util after engaging first. Stored in `replay_round_util`
+  (migration 0029) under the gap run's keys (`GAPS_REVISION` 5, gap protocol 3: the site and the worker image
+  must both speak it, `replay_worker/Dockerfile` ships `app/critutil`). The gap run also steps an unknown probe
+  (`app/critutil/unknown.py`): how long each trip, camera, turret or molly held the map-control unknown at its edge.
+  Statuses on teammates are kept from `CONDENSE_REVISION` 22, flagged `friendly`; control and Critical Moments
+  never see them (`RoundInputs` reads `engine.control_view(blob)`).
+- Values are the site's (`app/services/util_values.py`): the change in the caster's side's round-win chance.
+  Kills go through one ledger per round, each kill's swing split once between the casts with evidence on it and
+  the gunplay. Jobs with no kill (cover, hold, stall, triggers, heals, soft teammate harm) go through a few
+  non-negative weights fitted on round wins, adopted only when they beat the starting weights on held-out
+  matches, each match then valued with its own fold's weights. The round-win estimator (`app/services/util_model.py`)
+  is fitted on the tracker.gg kill feed of every match without a replay, on the DB clock
+  (`t_db = t_replay + clock_offset`); it stores the replay matches it left out and is refitted before a match that
+  later got a replay is valued (`util_model.ensure`).
+- Scores and calls compare each cast with the **no-util baseline** (`util_values` "the no-util baseline"): the
+  change in the side's round-win chance over the next 10 s, against moments in other matches in the same state and
+  phase with no util of that kind up (`lift`), shrunk toward the ability's mean lift (its prior). `value` is the
+  ledger-and-jobs credit, shown beside it.
+- Only rows whose gap fingerprint is current are read (`replay_util.current_rows`, Critical Moments' rule).
+  Products in `util_model` ("win", "values"), rebuilt when what they were built from changes (`corpus_key`,
+  computed from the rows a build read; `replay_util.ensure_values`, one rebuild at a time under a Postgres advisory
+  lock; the first page visit fits a missing or stale estimator). `scripts/critical_util.py fit-win | refresh |
+  measure | show` (through `with_friends_db.py`; `measure` is read-only).
+- The tab is `replays/_player.html` "Critical Util" (`app/static/js/critutil.js`, `/replays/<uuid>/util.json`); the
+  page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach
+  brief's `util_facts` are logged with ids the checker trusts (`app/coach/runner.py`).
+
 ### Running the webapp locally
 
 ```

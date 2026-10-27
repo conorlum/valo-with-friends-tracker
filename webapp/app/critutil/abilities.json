@@ -1,0 +1,3424 @@
+{
+ "abilities": [
+  {
+   "match": "^(Rift_4_BlackHole)$",
+   "agent": "Astra",
+   "ability": "Gravity Well",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Gravity Well",
+    "field": "Pull duration",
+    "value": "2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Pull duration",
+      "value": "2 seconds"
+     },
+     {
+      "label": "Vulnerable duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 10.0,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Rift_Q_FlashBurst)$",
+   "agent": "Astra",
+   "ability": "Nova Pulse",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Nova Pulse",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 2.0,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(Rift_E_SmokeZone(_Fake)?)$",
+   "agent": "Astra",
+   "ability": "Nebula",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Nebula / Dissipate",
+    "field": "Duration",
+    "value": "'''Nebula''': 14.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "'''Nebula''': 14.25 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 15.5,
+   "duration_s": 14.25
+  },
+  {
+   "match": "^(Rift_X_GlobalWall)$",
+   "agent": "Astra",
+   "ability": "Cosmic Divide",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "wall",
+    "smoke"
+   ],
+   "rule": "fixed:23",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Cosmic Divide",
+    "field": "Duration",
+    "value": "21-second total effective duration",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "21-second total effective duration"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 24.0,
+   "duration_s": 21.0
+  },
+  {
+   "match": "^(Rift_X_Markers)$",
+   "agent": "Astra",
+   "ability": "Astral Form star",
+   "slot": "X",
+   "type": "other",
+   "kinds": [
+    "other"
+   ],
+   "rule": "duration",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Astral Form",
+    "field": "Duration",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 5.7,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Breach_4_FusionBlast)$",
+   "agent": "Breach",
+   "ability": "Aftershock",
+   "slot": "C",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Aftershock",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 4.4,
+   "owner_s": 2.8,
+   "owner_note": "2.2 s windup + 2 ticks 0.6 s apart",
+   "duration_s": 2.8
+  },
+  {
+   "match": "^(Breach_breach_flashpoint)$",
+   "agent": "Breach",
+   "ability": "Flashpoint",
+   "slot": "Q",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Flashpoint",
+    "field": "Max blind duration",
+    "value": "2.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max blind duration",
+      "value": "2.25 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Breach_Q_ThroughWalls_Flash$"
+   ],
+   "replay_s": 1.2,
+   "duration_s": 2.25
+  },
+  {
+   "match": "^(Breach_E_SweetSpotFissure)$",
+   "agent": "Breach",
+   "ability": "Fault Line",
+   "slot": "E",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Fault Line",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 6.1,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(Breach_X_Shockwave)$",
+   "agent": "Breach",
+   "ability": "Rolling Thunder",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Rolling Thunder",
+    "field": "Concuss duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Concuss duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 6.9,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Sarge_E_SpeedStim)$",
+   "agent": "Brimstone",
+   "ability": "Stim Beacon",
+   "slot": "C",
+   "type": "stim",
+   "kinds": [
+    "stim"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Stim Beacon",
+    "field": "Beacon duration",
+    "value": "12 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Buff duration",
+      "value": "4 seconds"
+     },
+     {
+      "label": "Beacon duration",
+      "value": "12 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 13.7,
+   "duration_s": 12.0
+  },
+  {
+   "match": "^(Sarge_Q_Molotov_Production)$",
+   "agent": "Brimstone",
+   "ability": "Incendiary",
+   "slot": "Q",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Incendiary",
+    "field": "Duration",
+    "value": "Total 8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total 8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 12.5,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Sarge_4_Smoke_ProductionNEW|Sarge_4_SmokeManager_Production)$",
+   "agent": "Brimstone",
+   "ability": "Sky Smoke",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Sky Smoke",
+    "field": "Duration",
+    "value": "19.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "19.25 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 20.8,
+   "duration_s": 19.25
+  },
+  {
+   "match": "^(Sarge_X_OrbitalStrike_Production)$",
+   "agent": "Brimstone",
+   "ability": "Orbital Strike",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Orbital Strike",
+    "field": "Duration",
+    "value": "3 seconds at full size",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "3 seconds at full size"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 9.3,
+   "duration_s": 3.0
+  },
+  {
+   "match": "^(Deadeye_E_Trap)$",
+   "agent": "Chamber",
+   "ability": "Trademark",
+   "slot": "C",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Trademark",
+    "field": "Slow duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Recall duration",
+      "value": "0.75 seconds"
+     },
+     {
+      "label": "Slow duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Deadeye_4_Trap_Dart$",
+    "^Deadeye_E_Slow_Large$"
+   ],
+   "replay_s": 23.3,
+   "duration_s": 4.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Deadeye_E_Teleporter_Tether)$",
+   "agent": "Chamber",
+   "ability": "Rendezvous",
+   "slot": "E",
+   "type": "teleport",
+   "kinds": [
+    "teleport"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Rendezvous",
+    "field": "Teleport duration",
+    "value": "Total duration: 1.3 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Teleport duration",
+      "value": "Total duration: 1.3 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 13.3,
+   "duration_s": 1.3
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Chamber",
+   "ability": "Tour De Force",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:until_end",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Tour De Force",
+    "field": "none",
+    "rows": [
+     {
+      "label": "Slow duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Clove",
+   "ability": "Pick-Me-Up",
+   "slot": "C",
+   "type": "stim",
+   "kinds": [
+    "stim",
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Pick-Me-Up",
+    "field": "Buff duration",
+    "value": "10 seconds (Overheal)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max duration allowed for damaging assist to enable ability activation",
+      "value": "Within 6 seconds"
+     },
+     {
+      "label": "Activation duration",
+      "value": "0.7 seconds"
+     },
+     {
+      "label": "Buff duration",
+      "value": "10 seconds (Overheal)"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 10.0
+  },
+  {
+   "match": "^(Smonk_DecayNade)$",
+   "agent": "Clove",
+   "ability": "Meddle",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Meddle",
+    "field": "Decay duration",
+    "value": "5 seconds (Includes decaying and restoration times)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Decay duration",
+      "value": "5 seconds (Includes decaying and restoration times)"
+     }
+    ]
+   },
+   "pieces": [
+    "^Smonk_Q_DecayExplosion$"
+   ],
+   "replay_s": 11.7,
+   "duration_s": 5.0
+  },
+  {
+   "match": "^(Smonk_NewSmoke(_PDS)?)$",
+   "agent": "Clove",
+   "ability": "Ruse",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Ruse",
+    "field": "Duration",
+    "value": "Alive: 14 seconds (includes 0.5-second formation time and 0.5-second expiration time)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Alive: 14 seconds (includes 0.5-second formation time and 0.5-second expiration time)"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 15.0,
+   "duration_s": 14.0
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Clove",
+   "ability": "Not Dead Yet",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Not Dead Yet",
+    "field": "Revive duration",
+    "value": "1.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Revive duration",
+      "value": "1.5 seconds"
+     },
+     {
+      "label": "Maximum intangibility duration",
+      "value": "2 seconds"
+     },
+     {
+      "label": "Deactivation duration",
+      "value": "0.8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(Gumshoe_4_TripWire)$",
+   "agent": "Cypher",
+   "ability": "Trapwire",
+   "slot": "C",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Trapwire",
+    "field": "Triggered Slow duration",
+    "value": "1.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Recall duration",
+      "value": "0.5 seconds"
+     },
+     {
+      "label": "Triggered Slow duration",
+      "value": "1.25 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Gumshoe_4_TripWire_SecondWire$"
+   ],
+   "replay_s": 22.0,
+   "duration_s": 1.25,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Gumshoe_Q_CageTrap|Gumshoe_Q_Cage)$",
+   "agent": "Cypher",
+   "ability": "Cyber Cage",
+   "slot": "Q",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Cyber Cage",
+    "field": "Duration",
+    "value": "Total duration: 7.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total duration: 7.25 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 8.3,
+   "duration_s": 7.25
+  },
+  {
+   "match": "^(Gumshoe_E_PossessableCamera)$",
+   "agent": "Cypher",
+   "ability": "Spycam",
+   "slot": "E",
+   "type": "placeable",
+   "kinds": [
+    "info",
+    "device"
+   ],
+   "rule": "possessed",
+   "grace_s": 5,
+   "wiki": {
+    "page": "Spycam",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 7.8,
+   "duration_s": null,
+   "provisional": true,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Gumshoe_E_CameraTrackingDart)$",
+   "agent": "Cypher",
+   "ability": "Spycam dart",
+   "slot": "E",
+   "type": "recon",
+   "kinds": [
+    "info"
+   ],
+   "rule": "tag",
+   "grace_s": 5,
+   "wiki": {
+    "page": "Spycam",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Gumshoe_RemovableObject_GumshoeTrackingDart$"
+   ],
+   "replay_s": 2.3,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Gumshoe_X_InterrogateHat)$",
+   "agent": "Cypher",
+   "ability": "Neural Theft",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "info"
+   ],
+   "rule": "fixed:10",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Neural Theft",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 7.0,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Cable_4_NetToss)$",
+   "agent": "Deadlock",
+   "ability": "GravNet",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "GravNet",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Cable_4_RemovableNet$"
+   ],
+   "replay_s": 4.4,
+   "owner_s": 1.5,
+   "owner_note": "a netted player's 1.5 s removal channel (0.4 s windup)",
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(Cable_Q_SoundSensor)$",
+   "agent": "Deadlock",
+   "ability": "Sonic Sensor",
+   "slot": "Q",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Sonic Sensor",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Cable_Q_SoundSensor_Fissure$"
+   ],
+   "replay_s": 17.2,
+   "duration_s": 2.5,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Cable_E_CableJam)$",
+   "agent": "Deadlock",
+   "ability": "Barrier Mesh",
+   "slot": "E",
+   "type": "wall",
+   "kinds": [
+    "wall"
+   ],
+   "rule": "fixed:40",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Barrier Mesh",
+    "field": "Duration",
+    "value": "Total 30 seconds (Includes deploy time)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total 30 seconds (Includes deploy time)"
+     }
+    ]
+   },
+   "pieces": [
+    "^Cable_E_CableJam_Root$"
+   ],
+   "replay_s": 30.9,
+   "duration_s": 30.0
+  },
+  {
+   "match": "^(Cable_X_FishingHook)$",
+   "agent": "Deadlock",
+   "ability": "Annihilation",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "ult:capture",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Annihilation",
+    "field": "Cocoon duration",
+    "value": "7 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max duration",
+      "value": "10 seconds"
+     },
+     {
+      "label": "Cocoon duration",
+      "value": "7 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Cable_X_FishingHook_Cage$"
+   ],
+   "replay_s": 4.5,
+   "duration_s": 7.0
+  },
+  {
+   "match": "^(BountyHunter_4_WolfHound)$",
+   "agent": "Fade",
+   "ability": "Prowler",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Prowler",
+    "field": "Nearsight duration",
+    "value": "2.75 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Search duration",
+      "value": "2.5 seconds"
+     },
+     {
+      "label": "Nearsight duration",
+      "value": "2.75 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 2.5,
+   "duration_s": 2.75
+  },
+  {
+   "match": "^(BountyHunter_Q_TetherGrenade_SphereExpansion)$",
+   "agent": "Fade",
+   "ability": "Seize",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Seize",
+    "field": "Zone Duration",
+    "value": "4.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Zone Duration",
+      "value": "4.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^BountyHunter_Q_Tether_SphereExpansion$"
+   ],
+   "replay_s": 2.4,
+   "duration_s": 4.5
+  },
+  {
+   "match": "^(BountyHunter_E_Divebomb)$",
+   "agent": "Fade",
+   "ability": "Haunt",
+   "slot": "E",
+   "type": "recon",
+   "kinds": [
+    "info"
+   ],
+   "rule": "fixed:10",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Haunt",
+    "field": "Eye duration",
+    "value": "1.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Eye duration",
+      "value": "1.5 seconds"
+     },
+     {
+      "label": "Trail duration",
+      "value": "12 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^BountyHunter_E_LoSReveal_Source_Reactivate$"
+   ],
+   "replay_s": 3.4,
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(BountyHunter_X_WaveForm)$",
+   "agent": "Fade",
+   "ability": "Nightfall",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "fixed:18",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Nightfall",
+    "field": "Debuff duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Debuff duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 16.0,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Aggrobot_C_ExplodeyPatch)$",
+   "agent": "Gekko",
+   "ability": "Mosh Pit",
+   "slot": "C",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Mosh Pit",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Aggrobot_Reclaim_Orb_ExplodeyPatch$"
+   ],
+   "replay_s": 23.8,
+   "owner_s": 6.3,
+   "owner_note": "3 s windup + 30 ticks every 0.1 s + 3-tick explosion",
+   "duration_s": 6.3
+  },
+  {
+   "match": "^(Aggrobot_SeekerNade)$",
+   "agent": "Gekko",
+   "ability": "Wingman",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Wingman",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Search duration",
+      "value": "5 seconds"
+     },
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Aggrobot_Reclaim_Orb_SeekerNade(PlantSuccessful)?$"
+   ],
+   "replay_s": 17.9,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(Aggrobot_E_DiscTurret_PowerWave)$",
+   "agent": "Gekko",
+   "ability": "Dizzy",
+   "slot": "E",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Dizzy",
+    "field": "Plasma blind duration",
+    "value": "Total 2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Effective active duration",
+      "value": "1 second"
+     },
+     {
+      "label": "Plasma blind duration",
+      "value": "Total 2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Aggrobot_(Zamboni_Rocket|E_OrbSpawner)$",
+    "^Aggrobot_Reclaim_Orb_Turret$"
+   ],
+   "replay_s": 13.2,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Aggrobot_RollyPolly)$",
+   "agent": "Gekko",
+   "ability": "Thrash",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "ult:thrash",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Thrash",
+    "field": "Detain duration",
+    "value": "6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Deployment duration",
+      "value": "0.6 seconds"
+     },
+     {
+      "label": "Search duration",
+      "value": "6 seconds"
+     },
+     {
+      "label": "Lunge duration",
+      "value": "0.8 seconds"
+     },
+     {
+      "label": "Detain duration",
+      "value": "6 seconds"
+     },
+     {
+      "label": "Vision restoration duration",
+      "value": "1.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Aggrobot_X_Reclaim_Orb$"
+   ],
+   "replay_s": 22.1,
+   "duration_s": 6.0
+  },
+  {
+   "match": "^(Mage_harbor_storm_surge)$",
+   "agent": "Harbor",
+   "ability": "Storm Surge",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Storm Surge",
+    "field": "Nearsight duration",
+    "value": "2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Nearsight duration",
+      "value": "2 seconds"
+     },
+     {
+      "label": "Slow duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Mage_4_SplashGrenade$"
+   ],
+   "replay_s": 2.0,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Mage_Q_Wall)$",
+   "agent": "Harbor",
+   "ability": "High Tide",
+   "slot": "Q",
+   "type": "wall",
+   "kinds": [
+    "smoke",
+    "wall"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "High Tide",
+    "field": "Duration",
+    "value": "15 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "15 seconds"
+     },
+     {
+      "label": "Slow Duration",
+      "value": "0.6 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Mage_Q_WallManager$"
+   ],
+   "replay_s": 19.4,
+   "duration_s": 15.0
+  },
+  {
+   "match": "^(Mage_E_WorldSmoke)$",
+   "agent": "Harbor",
+   "ability": "Cove",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Cove",
+    "field": "Duration",
+    "value": "19.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "19.25 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 21.6,
+   "duration_s": 19.25
+  },
+  {
+   "match": "^(Mage_X_TidalWave)$",
+   "agent": "Harbor",
+   "ability": "Reckoning",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "smoke",
+    "status"
+   ],
+   "rule": "fixed:9.7",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Reckoning",
+    "field": "Duration (if stopped)",
+    "value": "7 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration (if stopped)",
+      "value": "7 seconds"
+     },
+     {
+      "label": "Nearsight duration",
+      "value": "3 seconds"
+     },
+     {
+      "label": "Slow duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Mage_X_TidalWave_Chunk$"
+   ],
+   "replay_s": 13.6,
+   "duration_s": 7.0
+  },
+  {
+   "match": "^(Sequoia_4_MovingCover)$",
+   "agent": "Iso",
+   "ability": "Contingency",
+   "slot": "C",
+   "type": "wall",
+   "kinds": [
+    "wall"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Contingency",
+    "field": "Duration",
+    "value": "5.4 seconds total",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "5.4 seconds total"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 5.4,
+   "duration_s": 5.4
+  },
+  {
+   "match": "^(Sequoia_Q_FragileMissile)$",
+   "agent": "Iso",
+   "ability": "Undercut",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Undercut",
+    "field": "Vulnerable duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "1.55 seconds"
+     },
+     {
+      "label": "Vulnerable duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Sequoia_Q_FragileMissile_TrajectoryWarning$"
+   ],
+   "replay_s": 1.6,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Sequoia_E_Shield|Sequoia_E_Orb)$",
+   "agent": "Iso",
+   "ability": "Double Tap",
+   "slot": "E",
+   "type": "other",
+   "kinds": [
+    "other"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Double Tap",
+    "field": "Flow state duration",
+    "value": "12 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Flow state duration",
+      "value": "12 seconds"
+     },
+     {
+      "label": "Energy orb duration",
+      "value": "3 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 11.6,
+   "duration_s": 12.0
+  },
+  {
+   "match": "^(Sequoia_X_LineCapture)$",
+   "agent": "Iso",
+   "ability": "Kill Contract",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:duel",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Kill Contract",
+    "field": "Max duel duration",
+    "value": "13 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Transportation duration to and from arena",
+      "value": "0.5 seconds"
+     },
+     {
+      "label": "Arena creation duration",
+      "value": "1.5 seconds"
+     },
+     {
+      "label": "Max duel duration",
+      "value": "13 seconds"
+     },
+     {
+      "label": "Contingency duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 4.0,
+   "duration_s": 13.0
+  },
+  {
+   "match": "^(Wushu_4_Smoke)$",
+   "agent": "Jett",
+   "ability": "Cloudburst",
+   "slot": "C",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Cloudburst",
+    "field": "Duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Wushu_4_SmokeZone$"
+   ],
+   "replay_s": 3.5,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Jett",
+   "ability": "Updraft",
+   "slot": "Q",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Updraft",
+    "field": "Duration",
+    "value": "0.6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "0.6 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 0.6
+  },
+  {
+   "match": "^(Wushu_E_Dash)$",
+   "agent": "Jett",
+   "ability": "Tailwind",
+   "slot": "E",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Tailwind",
+    "field": "Empowered Duration",
+    "value": "7.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Empowered Duration",
+      "value": "7.5 seconds"
+     },
+     {
+      "label": "Dash Duration",
+      "value": "0.45 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 7.5
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Jett",
+   "ability": "Blade Storm",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:until_end",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Blade Storm",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Grenadier_Q_SemtexBasic)$",
+   "agent": "KAY/O",
+   "ability": "FRAG/ment",
+   "slot": "C",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "FRAG-ment",
+    "field": "Duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 4.9,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Grenadier_kayo_flash_drive_(overhand|underhand))$",
+   "agent": "KAY/O",
+   "ability": "FLASH/drive",
+   "slot": "Q",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "FLASH-drive",
+    "field": "Max blind duration",
+    "value": "2.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max blind duration",
+      "value": "2.25 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Grenadier_C_Flash(_Underhand)?$"
+   ],
+   "replay_s": 2.6,
+   "duration_s": 2.25
+  },
+  {
+   "match": "^(Grenadier_E_SuppressionBlade)$",
+   "agent": "KAY/O",
+   "ability": "ZERO/point",
+   "slot": "E",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "ZERO-point",
+    "field": "Suppression duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Suppression duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Grenadier_E_SuppressionPulse$"
+   ],
+   "replay_s": 15.8,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Grenadier_X_UltPulseManager)$",
+   "agent": "KAY/O",
+   "ability": "NULL/cmd",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "fixed:18",
+   "grace_s": 0,
+   "wiki": {
+    "page": "NULL-cmd",
+    "field": "Suppression duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Suppression duration",
+      "value": "4 seconds"
+     },
+     {
+      "label": "Overloaded Duration",
+      "value": "12 seconds"
+     },
+     {
+      "label": "Downed Duration",
+      "value": "15 seconds"
+     },
+     {
+      "label": "Stabilization duration",
+      "value": "1.5 seconds"
+     },
+     {
+      "label": "Revive duration",
+      "value": "1.55 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Grenadier_X_UltPulse$",
+    "^Grenadier_X_RechargeUsable$"
+   ],
+   "replay_s": 13.8,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Killjoy_4_RemoteBees_MultiDetonate)$",
+   "agent": "Killjoy",
+   "ability": "Nanoswarm",
+   "slot": "C",
+   "type": "placeable",
+   "kinds": [
+    "damaging",
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Nanoswarm",
+    "field": "Duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Killjoy_4_BeeSwarm_Damage$"
+   ],
+   "replay_s": 12.8,
+   "from_trigger": true,
+   "go_off": ":Killjoy_4_BeeSwarm_Damage$",
+   "after_trigger_s": 4,
+   "duration_s": 4.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Killjoy_Q_StealthAlarmbot)$",
+   "agent": "Killjoy",
+   "ability": "Alarmbot",
+   "slot": "Q",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Alarmbot",
+    "field": "Vulnerable duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Vulnerable duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 18.7,
+   "duration_s": 4.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Killjoy_E_Turret)$",
+   "agent": "Killjoy",
+   "ability": "Turret",
+   "slot": "E",
+   "type": "placeable",
+   "kinds": [
+    "device",
+    "damaging"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Turret",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 16.7,
+   "duration_s": null,
+   "provisional": true,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Killjoy_X_Bomb)$",
+   "agent": "Killjoy",
+   "ability": "Lockdown",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "fixed:23",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Lockdown",
+    "field": "Detain duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Detain duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Killjoy_X_Shockwave$"
+   ],
+   "replay_s": 21.0,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Iris_X_SonicWave)$",
+   "agent": "Miks",
+   "ability": "Bassquake",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Bassquake",
+    "field": "Debuff duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Debuff duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 9.6,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Iris_Q_Harmonize)$",
+   "agent": "Miks",
+   "ability": "Harmonize",
+   "slot": "?",
+   "type": "stim",
+   "kinds": [
+    "stim"
+   ],
+   "rule": "buff",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Harmonize",
+    "field": "Buff duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Buff duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Iris_Concuss)$",
+   "agent": "Miks",
+   "ability": "M-pulse",
+   "slot": "?",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "M-pulse",
+    "field": "Max Concuss duration",
+    "value": "2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max Concuss duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Iris_ConcussPulse$"
+   ],
+   "replay_s": 1.8,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Iris_Heal)$",
+   "agent": "Miks",
+   "ability": "M-pulse (heal)",
+   "slot": "?",
+   "type": "heal",
+   "kinds": [
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "M-pulse",
+    "field": "none",
+    "rows": [
+     {
+      "label": "Max Concuss duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 5.3,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Iris_E_Smoke)$",
+   "agent": "Miks",
+   "ability": "Waveform",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Waveform",
+    "field": "Duration",
+    "value": "16.75 seconds (includes 0.5-second formation time and 0.5-second expiration time)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "16.75 seconds (includes 0.5-second formation time and 0.5-second expiration time)"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 18.2,
+   "duration_s": 16.75
+  },
+  {
+   "match": "^(Sprinter_4_Tunnel)$",
+   "agent": "Neon",
+   "ability": "Fast Lane",
+   "slot": "C",
+   "type": "wall",
+   "kinds": [
+    "smoke",
+    "wall"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Fast Lane",
+    "field": "Duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "4 seconds"
+     },
+     {
+      "label": "Wall Dissolve Duration",
+      "value": "2 seconds"
+     },
+     {
+      "label": "(Includes 1-second telegraph time during walls' active duration)",
+      "value": "Game files"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 6.7,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Sprinter_4_GroundStrike)$",
+   "agent": "Neon",
+   "ability": "Relay Bolt",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Relay Bolt",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max projectile duration",
+      "value": "5 seconds"
+     },
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Sprinter_Q_ElectricSphere$"
+   ],
+   "replay_s": 1.7,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Neon",
+   "ability": "High Gear",
+   "slot": "E",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "High Gear",
+    "field": "Slide duration",
+    "value": "0.6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Activation animation duration",
+      "value": "0.7 seconds"
+     },
+     {
+      "label": "Slide duration",
+      "value": "0.6 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 0.6
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Neon",
+   "ability": "Overdrive",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:until_end",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Overdrive",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Omen",
+   "ability": "Shrouded Step",
+   "slot": "C",
+   "type": "teleport",
+   "kinds": [
+    "teleport"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Shrouded Step",
+    "field": "Teleport duration",
+    "value": "Total duration: 1.2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Teleport duration",
+      "value": "Total duration: 1.2 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 1.2
+  },
+  {
+   "match": "^(Wraith_omen_paranoia)$",
+   "agent": "Omen",
+   "ability": "Paranoia",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "travel",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Paranoia",
+    "field": "Nearsight duration",
+    "value": "2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Nearsight duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Wraith_Q_NearsightMissile_TrajectoryWarning$",
+    "^Wraith_Q_NearsightMissile$"
+   ],
+   "replay_s": 2.0,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Wraith_4_Smoke)$",
+   "agent": "Omen",
+   "ability": "Dark Cover",
+   "slot": "E",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Dark Cover",
+    "field": "Duration",
+    "value": "15 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "15 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 17.9,
+   "duration_s": 15.0
+  },
+  {
+   "match": "^(Wraith_X_GlobalTeleport_Intention)$",
+   "agent": "Omen",
+   "ability": "From the Shadows",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "teleport"
+   ],
+   "rule": "ult:omen",
+   "grace_s": 0,
+   "wiki": {
+    "page": "From the Shadows",
+    "field": "Teleport duration",
+    "value": "Total duration: 4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Teleport duration",
+      "value": "Total duration: 4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 3.5,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Phoenix_Q_FlameWall_ThroughWall|Phoenix_Q_FlameWallManager_Production)$",
+   "agent": "Phoenix",
+   "ability": "Blaze",
+   "slot": "C",
+   "type": "wall",
+   "kinds": [
+    "smoke",
+    "wall"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Blaze",
+    "field": "Duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 10.7,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Phoenix_phoenix_curveball_(left|right))$",
+   "agent": "Phoenix",
+   "ability": "Curveball",
+   "slot": "Q",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Curveball",
+    "field": "Max blind duration",
+    "value": "1.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max blind duration",
+      "value": "1.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Phoenix_E_FlareCurve_Synced(_Right)?$"
+   ],
+   "replay_s": 1.6,
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(Phoenix_4_Molotov_Production)$",
+   "agent": "Phoenix",
+   "ability": "Hot Hands",
+   "slot": "E",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Hot Hands",
+    "field": "Duration",
+    "value": "4 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "4 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Phoenix_MolotovFire$"
+   ],
+   "replay_s": 8.5,
+   "duration_s": 4.0
+  },
+  {
+   "match": "^(Phoenix_X_ResTarget_Production)$",
+   "agent": "Phoenix",
+   "ability": "Run it Back",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Run it Back",
+    "field": "Duration",
+    "value": "10 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "10 seconds"
+     },
+     {
+      "label": "Revive duration",
+      "value": "Total 2.4 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 10.2,
+   "duration_s": 10.0
+  },
+  {
+   "match": "^(Clay_E_Boomba)$",
+   "agent": "Raze",
+   "ability": "Boom Bot",
+   "slot": "C",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Boom Bot",
+    "field": "Duration",
+    "value": "5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 5.1,
+   "duration_s": 5.0
+  },
+  {
+   "match": "^(Clay_Q_Satchel_Arming)$",
+   "agent": "Raze",
+   "ability": "Blast Pack",
+   "slot": "Q",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Blast Pack",
+    "field": "Max duration",
+    "value": "5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max duration",
+      "value": "5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Clay_Q_Explosion$"
+   ],
+   "replay_s": 5.7,
+   "duration_s": 5.0
+  },
+  {
+   "match": "^(Clay_4_Projectile_Primary)$",
+   "agent": "Raze",
+   "ability": "Paint Shells",
+   "slot": "E",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Paint Shells",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Clay_4_Projectile_SecondarySpawner$",
+    "^Clay_4_Projectile_Secondary$"
+   ],
+   "replay_s": 3.7,
+   "owner_s": 2.92,
+   "owner_note": "2.25 s grenade windup + 0.667 s sub-munitions",
+   "duration_s": 2.92
+  },
+  {
+   "match": "^(Clay_X_Rocket)$",
+   "agent": "Raze",
+   "ability": "Showstopper",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "damaging"
+   ],
+   "rule": "ult:raze",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Showstopper",
+    "field": "Max duration",
+    "value": "10 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max duration",
+      "value": "10 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 0.6,
+   "duration_s": 10.0
+  },
+  {
+   "match": "^(Vampire_reyna_leer)$",
+   "agent": "Reyna",
+   "ability": "Leer",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Leer",
+    "field": "Duration while applying nearsight",
+    "value": "1.6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration while applying nearsight",
+      "value": "1.6 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Vampire_4_NearsightAoE$",
+    "^Vampire_4_NearsightAOE_Source$"
+   ],
+   "replay_s": 1.6,
+   "duration_s": 1.6
+  },
+  {
+   "match": "^(Vampire_Q_Heal_HealPool_High)$",
+   "agent": "Reyna",
+   "ability": "Devour",
+   "slot": "Q",
+   "type": "heal",
+   "kinds": [
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Devour",
+    "field": "Healing duration",
+    "value": "3 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Healing duration",
+      "value": "3 seconds"
+     },
+     {
+      "label": "Overheal duration (without Empress)",
+      "value": "10 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Vampire_Q_Heal_HealPool_AutoActivate$"
+   ],
+   "replay_s": 3.0,
+   "duration_s": 3.0
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Reyna",
+   "ability": "Dismiss",
+   "slot": "E",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Dismiss",
+    "field": "Duration",
+    "value": "1.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "1.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Reyna",
+   "ability": "Empress",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:until_death",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Empress",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Thorne_E_Wall_Fortifying)$",
+   "agent": "Sage",
+   "ability": "Barrier Orb",
+   "slot": "C",
+   "type": "wall",
+   "kinds": [
+    "wall"
+   ],
+   "rule": "fixed:40",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Barrier Orb",
+    "field": "Duration",
+    "value": "Total 40 seconds (Includes deploy time)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total 40 seconds (Includes deploy time)"
+     }
+    ]
+   },
+   "pieces": [
+    "^Thorne_E_Wall_Segment_Fortifying$"
+   ],
+   "replay_s": 41.0,
+   "duration_s": 40.0
+  },
+  {
+   "match": "^(Thorne_4_SlowFIeld_Production)$",
+   "agent": "Sage",
+   "ability": "Slow Orb",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "duration",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Slow Orb",
+    "field": "Duration",
+    "value": "7 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "7 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Thorne_4_SlowField_Production$"
+   ],
+   "replay_s": 8.2,
+   "duration_s": 7.0
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Sage",
+   "ability": "Healing Orb",
+   "slot": "E",
+   "type": "heal",
+   "kinds": [
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Healing Orb",
+    "field": "Duration",
+    "value": "5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 5.0
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Sage",
+   "ability": "Resurrection",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Resurrection",
+    "field": "Revive duration",
+    "value": "1.3 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Revive duration",
+      "value": "1.3 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 1.3
+  },
+  {
+   "match": "^(Guide_4_Heal_AOE)$",
+   "agent": "Skye",
+   "ability": "Regrowth",
+   "slot": "C",
+   "type": "heal",
+   "kinds": [
+    "heal"
+   ],
+   "rule": "heal",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Regrowth",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 1.9,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Guide_Q_PossessableScout)$",
+   "agent": "Skye",
+   "ability": "Trailblazer",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Trailblazer",
+    "field": "Concuss duration",
+    "value": "Minimum: 2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "6 seconds"
+     },
+     {
+      "label": "Concuss duration",
+      "value": "Minimum: 2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 4.1,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(Guide_skye_guiding_light)$",
+   "agent": "Skye",
+   "ability": "Guiding Light",
+   "slot": "E",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Guiding Light",
+    "field": "Max flash duration",
+    "value": "1-2.25 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "2 seconds"
+     },
+     {
+      "label": "Flash max duration windup time",
+      "value": "0.75 seconds"
+     },
+     {
+      "label": "Max flash duration",
+      "value": "1-2.25 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Guide_E_HawkFlash$",
+    "^Guide_E_HawkFlash_FlashSource$"
+   ],
+   "replay_s": 2.5,
+   "duration_s": 2.25
+  },
+  {
+   "match": "^(Guide_X_Pack)$",
+   "agent": "Skye",
+   "ability": "Seekers",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "ult:seekers",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Seekers",
+    "field": "Nearsight duration",
+    "value": "3 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Nearsight duration",
+      "value": "3 seconds"
+     },
+     {
+      "label": "Slow duration",
+      "value": "5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 8.3,
+   "duration_s": 3.0
+  },
+  {
+   "match": "^(Hunter_E_Drone)$",
+   "agent": "Sova",
+   "ability": "Owl Drone",
+   "slot": "C",
+   "type": "recon",
+   "kinds": [
+    "info"
+   ],
+   "rule": "fixed:10",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Owl Drone",
+    "field": "Duration",
+    "value": "7 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "7 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Hunter_E_Drone_RevealDart$"
+   ],
+   "replay_s": 6.7,
+   "duration_s": 7.0
+  },
+  {
+   "match": "^(Hunter_4_ExplosiveBolt)$",
+   "agent": "Sova",
+   "ability": "Shock Bolt",
+   "slot": "Q",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Shock Bolt",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Hunter_4_ExplosiveBolt_Explosion$"
+   ],
+   "replay_s": 4.9,
+   "owner_s": 0.4,
+   "owner_note": "0.4 s windup",
+   "duration_s": 0.4
+  },
+  {
+   "match": "^(Hunter_Q_RevealBolt)$",
+   "agent": "Sova",
+   "ability": "Recon Bolt",
+   "slot": "E",
+   "type": "recon",
+   "kinds": [
+    "info"
+   ],
+   "rule": "fixed:10",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Recon Bolt",
+    "field": "Reveal duration",
+    "value": "0.75 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Reveal duration",
+      "value": "0.75 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Hunter_Q_SonarBolt$",
+    "^Hunter_Q_SonarPing$"
+   ],
+   "replay_s": 5.1,
+   "duration_s": 0.75
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Sova",
+   "ability": "Hunter's Fury",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "damaging",
+    "info"
+   ],
+   "rule": "duration",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Hunter's Fury",
+    "field": "Max Duration",
+    "value": "6 seconds (Not including equip time)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max Duration",
+      "value": "6 seconds (Not including equip time)"
+     },
+     {
+      "label": "Reveal duration",
+      "value": "1 second"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 6.0
+  },
+  {
+   "match": "^(Cashew_4_Spider_LockOn)$",
+   "agent": "Tejo",
+   "ability": "Stealth Drone",
+   "slot": "C",
+   "type": "recon",
+   "kinds": [
+    "info"
+   ],
+   "rule": "fixed:10",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Stealth Drone",
+    "field": "Duration",
+    "value": "6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "6 seconds"
+     },
+     {
+      "label": "Suppress duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Cashew_4_SonarPing$"
+   ],
+   "replay_s": 5.3,
+   "duration_s": 6.0
+  },
+  {
+   "match": "^(Cashew_Q_ShellShockGrenade(_Bounce)?)$",
+   "agent": "Tejo",
+   "ability": "Special Delivery",
+   "slot": "Q",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Special Delivery",
+    "field": "Concuss duration",
+    "value": "2.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max projectile duration",
+      "value": "3 seconds"
+     },
+     {
+      "label": "Concuss duration",
+      "value": "2.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 1.6,
+   "duration_s": 2.5
+  },
+  {
+   "match": "^(Cashew_E_MapMissileMarker|Cashew_E_Explosion)$",
+   "agent": "Tejo",
+   "ability": "Guided Salvo",
+   "slot": "E",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Guided Salvo",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Cashew_E_AirStrikeMortar$",
+    "^Cashew_E_MapMissileMarker_SecondRocket$"
+   ],
+   "replay_s": 4.5,
+   "owner_s": 2.85,
+   "owner_note": "1.25 s windup + 3 ticks 0.8 s apart",
+   "duration_s": 2.85
+  },
+  {
+   "match": "^(Cashew_X_Segment(Manager)?)$",
+   "agent": "Tejo",
+   "ability": "Armageddon",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Armageddon",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "replay_s": 8.0,
+   "owner_s": 7.58,
+   "owner_note": "3.08 s windup + 16 segments 0.25 s apart, 4 ticks each 0.25 s apart",
+   "duration_s": 7.58
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Veto",
+   "ability": "Chokehold",
+   "slot": "?",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Chokehold",
+    "field": "Zone Duration",
+    "value": "4.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Zone Duration",
+      "value": "4.5 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 22.5,
+   "duration_s": 4.5
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Veto",
+   "ability": "Crosscut",
+   "slot": "?",
+   "type": "teleport",
+   "kinds": [
+    "teleport"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Crosscut",
+    "field": "Teleport duration",
+    "value": "Total duration: 1.6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Teleport duration",
+      "value": "Total duration: 1.6 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 23.7,
+   "duration_s": 1.6
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Veto",
+   "ability": "Interceptor",
+   "slot": "?",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Interceptor",
+    "field": "Duration",
+    "value": "9 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "9 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 10.4,
+   "duration_s": 9.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Veto",
+   "ability": "Evolution",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "ult:until_death",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Evolution",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Pandemic_Q_AcidGrenade)$",
+   "agent": "Viper",
+   "ability": "Snake Bite",
+   "slot": "C",
+   "type": "molly",
+   "kinds": [
+    "damaging"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Snake Bite",
+    "field": "Duration",
+    "value": "6.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "6.5 seconds"
+     },
+     {
+      "label": "Vulnerable duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Pandemic_AcidMolotov_NewMolotov$"
+   ],
+   "replay_s": 8.7,
+   "duration_s": 6.5
+  },
+  {
+   "match": "^(Pandemic_4_SmokeGrenade)$",
+   "agent": "Viper",
+   "ability": "Poison Cloud",
+   "slot": "Q",
+   "type": "smoke",
+   "kinds": [
+    "smoke"
+   ],
+   "rule": "on_spans",
+   "grace_s": 5,
+   "wiki": {
+    "page": "Poison Cloud",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [
+    "^Pandemic_4_SmokeZone$"
+   ],
+   "replay_s": 9.1,
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Pandemic_E_SmokeScreen_NoCollision|Pandemic_E_SmokeScreenManager)$",
+   "agent": "Viper",
+   "ability": "Toxic Screen",
+   "slot": "E",
+   "type": "wall",
+   "kinds": [
+    "smoke",
+    "wall"
+   ],
+   "rule": "on_spans",
+   "grace_s": 5,
+   "wiki": {
+    "page": "Toxic Screen",
+    "field": "none",
+    "rows": []
+   },
+   "pieces": [],
+   "duration_s": null,
+   "provisional": true
+  },
+  {
+   "match": "^(Pandemic_X_Circular)$",
+   "agent": "Viper",
+   "ability": "Viper's Pit",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "smoke"
+   ],
+   "rule": "life",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Viper's Pit",
+    "field": "Integrity duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Integrity duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 53.4,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Nox_BarbedWire)$",
+   "agent": "Vyse",
+   "ability": "Razorvine",
+   "slot": "C",
+   "type": "placeable",
+   "kinds": [
+    "damaging",
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Razorvine",
+    "field": "Duration",
+    "value": "Total 6 seconds (Includes Windup)",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total 6 seconds (Includes Windup)"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 6.6,
+   "from_trigger": true,
+   "go_off": "^Patch:Nox_BarbedWire$",
+   "after_trigger_s": 6,
+   "duration_s": 6.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Nox_WallTrap|Nox_Wall)$",
+   "agent": "Vyse",
+   "ability": "Shear",
+   "slot": "Q",
+   "type": "placeable",
+   "kinds": [
+    "wall",
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Shear",
+    "field": "Duration",
+    "value": "Total 6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "Total 6 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 11.1,
+   "after_trigger_s": 6,
+   "duration_s": 6.0,
+   "off_at_death": true
+  },
+  {
+   "match": "^(Nox_vyse_arc_rose)$",
+   "agent": "Vyse",
+   "ability": "Arc Rose",
+   "slot": "E",
+   "type": "flash",
+   "kinds": [
+    "blind",
+    "device"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Arc Rose",
+    "field": "Max blind duration",
+    "value": "2 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max blind duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Nox_StealthingTrap_Flash_2$"
+   ],
+   "replay_s": 2.0,
+   "duration_s": 2.0
+  },
+  {
+   "match": "^(Nox_DisarmPulse)$",
+   "agent": "Vyse",
+   "ability": "Steel Garden",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Steel Garden",
+    "field": "Jammed duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Jammed duration",
+      "value": "8 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 15.0,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Terra_C_TimeSlowGrenade)$",
+   "agent": "Waylay",
+   "ability": "Saturate",
+   "slot": "C",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Saturate",
+    "field": "Hinder duration",
+    "value": "3 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Hinder duration",
+      "value": "3 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Terra_C_TimeSlowGrenade_Explosion$"
+   ],
+   "replay_s": 11.0,
+   "duration_s": 3.0
+  },
+  {
+   "match": "^(Terra_Q_DoubleDash)$",
+   "agent": "Waylay",
+   "ability": "Lightspeed",
+   "slot": "Q",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Lightspeed",
+    "field": "Dash duration",
+    "value": "0.45 seconds per dash",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Dash duration",
+      "value": "0.45 seconds per dash"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 0.45
+  },
+  {
+   "match": "^(Terra_E_RewindTime_RewindTarget)$",
+   "agent": "Waylay",
+   "ability": "Refract",
+   "slot": "E",
+   "type": "teleport",
+   "kinds": [
+    "teleport"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Refract",
+    "field": "Empowered duration",
+    "value": "8 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Empowered duration",
+      "value": "8 seconds"
+     },
+     {
+      "label": "Travel duration",
+      "value": "0.35-2 seconds based on travel distance"
+     },
+     {
+      "label": "Self-blind duration on arrival",
+      "value": "0.2 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Terra_E_RewindTime_ForObservers$"
+   ],
+   "replay_s": 9.2,
+   "duration_s": 8.0
+  },
+  {
+   "match": "^(Terra_X_DelayedBeam_Beam)$",
+   "agent": "Waylay",
+   "ability": "Convergent Paths",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Convergent Paths",
+    "field": "Debuff duration",
+    "value": "6 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Buff duration",
+      "value": "7 seconds"
+     },
+     {
+      "label": "Debuff duration",
+      "value": "6 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 3.0,
+   "duration_s": 6.0
+  },
+  {
+   "match": "^(Stealth_4_Decoy_V2|Stealth_DecoySpawner)$",
+   "agent": "Yoru",
+   "ability": "Fakeout",
+   "slot": "C",
+   "type": "placeable",
+   "kinds": [
+    "device"
+   ],
+   "rule": "placeable",
+   "grace_s": 0,
+   "wiki": {
+    "page": "Fakeout",
+    "field": "Maximum image duration",
+    "value": "10 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Maximum image duration",
+      "value": "10 seconds"
+     },
+     {
+      "label": "Max flash duration",
+      "value": "2 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 11.0,
+   "after_trigger_s": 2,
+   "duration_s": 10.0
+  },
+  {
+   "match": "^(Stealth_yoru_blindside)$",
+   "agent": "Yoru",
+   "ability": "Blindside",
+   "slot": "Q",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Blindside",
+    "field": "Max flash duration",
+    "value": "1.5 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Max flash duration",
+      "value": "1.5 seconds"
+     }
+    ]
+   },
+   "pieces": [
+    "^Stealth_Q_BounceFlash$"
+   ],
+   "replay_s": 1.9,
+   "duration_s": 1.5
+  },
+  {
+   "match": "^(Stealth_E_Teleporter(Moving|Stationary)_FakeTP)$",
+   "agent": "Yoru",
+   "ability": "Gatecrash",
+   "slot": "E",
+   "type": "teleport",
+   "kinds": [
+    "teleport"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Gatecrash",
+    "field": "Tether Duration",
+    "value": "20 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Tether Duration",
+      "value": "20 seconds"
+     },
+     {
+      "label": "Teleport duration",
+      "value": "Total 1.2 seconds"
+     },
+     {
+      "label": "Fake decal duration",
+      "value": "30 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "replay_s": 11.9,
+   "duration_s": 20.0
+  },
+  {
+   "match": "^(?!)$",
+   "agent": "Yoru",
+   "ability": "Dimensional Drift",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult"
+   ],
+   "rule": "duration",
+   "grace_s": 10,
+   "wiki": {
+    "page": "Dimensional Drift",
+    "field": "Duration",
+    "value": "10 seconds",
+    "fetched": "2026-10-24",
+    "rows": [
+     {
+      "label": "Duration",
+      "value": "10 seconds"
+     }
+    ]
+   },
+   "pieces": [],
+   "duration_s": 10.0
+  }
+ ]
+}

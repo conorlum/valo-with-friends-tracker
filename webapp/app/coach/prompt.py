@@ -39,7 +39,9 @@ evidence. An answer with "available": false means the data is missing for that r
 {COMMANDS}
 
 Each flag in the brief already has an "id" you may cite, and each round's "facts_id" cites that round's economy
-and the score going into it. Evidence for an instance must be about that instance's round. Every answer is
+and the score going into it. Each entry of a round's "util_facts" (the player's utility, measured: who it affected,
+kills on affected enemies, teammates it hit, sight lines it cut, and "value", the change in the side's chance to win
+the round after it, in percentage points) has an "id" you may cite too. Evidence for an instance must be about that instance's round. Every answer is
 recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or

@@ -2161,3 +2161,13 @@ main:has(.replay.is-linked) { max-width: none; }
 .coach-instances { list-style: none; margin: 0.25rem 0; padding: 0; }
 .coach-instance { font: inherit; cursor: pointer; }
 .coach-disputed { font-size: 0.85em; font-weight: 700; }
+
+/* Critical Util (app/static/js/critutil.js, templates/util/page.html): signed values carry a +/− glyph too */
+.util-good { color: var(--good); }
+.util-bad { color: var(--critical); }
+.util-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.util-table th, .util-table td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border, #333); }
+.util-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
+.util-list { padding-left: 1.2rem; }
+.util-list li { margin: 0.2rem 0; }
+@media (max-width: 640px) { .util-table { display: block; overflow-x: auto; } }

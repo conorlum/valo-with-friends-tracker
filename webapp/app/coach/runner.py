@@ -60,6 +60,13 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
             args = [r["round"], 0.0, "round_facts"]
             r["facts_id"] = query.append(run_dir, "flag", args, result)
             logged[r["facts_id"]] = {"cmd": "flag", "args": args, "result": result}
+    # Critical Util's facts the same way: one id per cast, so a point about utility can cite what it measured.
+    for r in built["rounds"]:
+        for fact in r.get("util_facts") or ():
+            result = {"round": r["round"], "kind": "util_fact", **fact}
+            args = [r["round"], fact["t"], "util_fact"]
+            fact["id"] = query.append(run_dir, "flag", args, result)
+            logged[fact["id"]] = {"cmd": "flag", "args": args, "result": result}
     return built, logged
 
 

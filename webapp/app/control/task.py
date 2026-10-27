@@ -17,7 +17,7 @@ it matches its own.
 
 Timing gaps (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7, "Writer"): a task with
 `"gaps": {"replay_id", "round", "fingerprint" (the control fingerprint)}` also writes the round's tick cache
-and returns `result["gaps"] = {"run", "rows", "moments"}`; with `"gaps_only": True` it returns only `status`, `geometry`
+and returns `result["gaps"] = {"run", "rows", "moments", "util"}`; with `"gaps_only": True` it returns only `status`, `geometry`
 and `gaps` (from the tick cache when it is there, else through the engine) and no control `data`. A gap
 failure is the gap run's (`gaps.run.status == "failed"`) and never changes control's result.
 The replay worker's tasks also carry `gap_fingerprint` and `engine_key` in that block (the web app computes
@@ -219,6 +219,29 @@ def _replay_cache(cache, path: Path, det) -> dict:
         det.step(record, logs)
 
 
+def _util_probe(rnd):
+    """Critical Util's unknown probe for this round (app/critutil/unknown.py), or None when it can't be built:
+    it never fails the gap run."""
+    try:
+        from app.critutil.unknown import UnknownProbe
+
+        return UnknownProbe(rnd)
+    except Exception:  # noqa: BLE001 - the util probe's failure; the extract then has no holds
+        return None
+
+
+class _Tee:
+    """Steps the gap detector and Critical Util's unknown probe on each tick; the probe never raises."""
+
+    def __init__(self, det, probe):
+        self.det, self.probe = det, probe
+
+    def step(self, record, logs) -> None:
+        self.det.step(record, logs)
+        if self.probe is not None:
+            self.probe.step(record)
+
+
 class _CacheGuard:
     """The tick cache writer behind a guard (R18): an exception while writing a tick or the file stops any
     further writes, deletes what was written, and becomes the gap run's failure. The engine never sees it."""
@@ -303,17 +326,19 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
         path = _cache_path(job, geo.name)
         rnd = engine.RoundInputs(blob, geo, link)
         det = detect.GapDetector(geo, rnd)
+        probe = _util_probe(rnd)
+        tee = _Tee(det, probe)
         missing = None
         if guard is not None:             # a full run reads back the file it just wrote: any error is the run's
             missing = cache.read_missing(path)
             for record, logs in cache.replay(path):
-                det.step(record, logs)
+                tee.step(record, logs)
         elif path.exists():
             # gaps only: any error reading the file (another format, truncated, corrupt) is a miss, and the
             # unreadable file is deleted so the engine run below rewrites it (final review M7). An error in the
             # detector itself is not a read error and still fails the run.
             try:
-                missing = _replay_cache(cache, path, det)
+                missing = _replay_cache(cache, path, tee)
             except _CacheUnreadable:
                 for stale in (path, path.with_name(path.name + ".tmp")):
                     try:
@@ -322,12 +347,14 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
                         pass
                 rnd = engine.RoundInputs(blob, geo, link)        # a fresh detector: it may have stepped
                 det, missing = detect.GapDetector(geo, rnd), None
+                probe = _util_probe(rnd)
+                tee = _Tee(det, probe)
         if missing is None:
             writer = _CacheGuard(path)
 
             def both(record, unknown):
                 writer(record, unknown)
-                det.step(record, unknown.log)
+                tee.step(record, unknown.log)
 
             rc = engine.compute_round(blob, geo, link, observer=both, knowledge=False)
             missing = dict(rc.missing_inputs)
@@ -341,18 +368,29 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
         try:
             from app.moments import fights
 
-            made = fights.round_moments(engine.RoundInputs(blob, geo, link), blob)
+            made = fights.round_moments(engine.RoundInputs(blob, geo, link), engine.control_view(blob))
             moments = _plain({"status": "ok", "v": made.get("v"), "sight": made.get("sight"),
                               "fights": made["fights"], "error": None})
         except Exception as error:  # noqa: BLE001 - the moments' failure, not the gap run's
             moments = {"status": "failed", "fights": [], "error": f"{type(error).__name__}: {error}"}
-        return {"run": run, "rows": out_rows, "moments": moments}
+        # Critical Util the same way (docs/superpowers/specs/2026-10-21-critical-util-design.md): its own fresh
+        # inputs, and its failure is its own.
+        try:
+            from app.critutil import extract
+
+            holds = probe.finish() if probe is not None else {"error": "probe not built", "items": []}
+            made = extract.round_util(engine.RoundInputs(blob, geo, link), blob, holds=holds)
+            util = _plain({"status": "ok", "data": made, "error": None})
+        except Exception as error:  # noqa: BLE001 - the util extractor's failure, not the gap run's
+            util = {"status": "failed", "data": None, "error": f"{type(error).__name__}: {error}"}
+        return {"run": run, "rows": out_rows, "moments": moments, "util": util}
     except _CacheFailed as error:
         run.update({"status": "failed", "notes": {}, "error": str(error)})
     except Exception as error:  # noqa: BLE001 - the gap run's failure, stored with its error
         run.update({"status": "failed", "notes": {},
                     "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"})
-    return {"run": run, "rows": [], "moments": {"status": "failed", "fights": [], "error": run["error"]}}
+    return {"run": run, "rows": [], "moments": {"status": "failed", "fights": [], "error": run["error"]},
+            "util": {"status": "failed", "data": None, "error": run["error"]}}
 
 
 def compute_task(task: dict) -> dict:

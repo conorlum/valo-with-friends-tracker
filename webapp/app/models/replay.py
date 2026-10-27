@@ -195,6 +195,43 @@ class ReplayRoundMoments(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ReplayRoundUtil(Base):
+    """Critical Util evidence for one round (migration 0029): the worker's casts and what followed each
+    (app/critutil/extract.py), stored with the gap run under the same keys. Written only by
+    app/services/replay_gaps_store.py. Values are not stored here: the site computes them from the corpus
+    (app/services/util_values.py)."""
+
+    __tablename__ = "replay_round_util"
+    __table_args__ = (
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_replay_round_util_status"),
+        ForeignKeyConstraint(["replay_id", "round_number"], ["replay_rounds.replay_id", "replay_rounds.round_number"],
+                             ondelete="CASCADE", name="fk_replay_round_util_round"),
+    )
+
+    replay_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    round_number: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
+    gaps_revision: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)       # round_util's output when ok
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class UtilModel(Base):
+    """Critical Util's corpus products (migration 0029), one row per `name`: "win" (the round-win estimator,
+    app/services/util_model.py), "values" (every stored cast's value and the fitted weights, app/services/
+    util_values.py). `key` says what it was built from, so a reader can tell it is stale."""
+
+    __tablename__ = "util_model"
+
+    name: Mapped[str] = mapped_column(String(16), primary_key=True)
+    version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ReplayMatchState(Base):
     """What `replay_progress.compute` says of one match with a stored replay (migration 0024;
     docs/superpowers/specs/2026-10-14-match-list-speed-design.md, section 2). Written only by

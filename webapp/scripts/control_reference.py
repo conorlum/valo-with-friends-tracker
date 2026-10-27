@@ -13,7 +13,9 @@ run). `--blobs` is a folder written by scripts/preview_control_live.py (`<n>.jso
 real rounds, so their digests are written wherever `--write` says and never committed.
 
 A digest is the sha256 of a round's stored bytes, decompressed, with the header's and the summary's
-`revision` set to 0. Rewrite the fixture only for a change that is meant to move flat maps.
+`revision` set to 0 and the summary's `fights` left out (revision 20: derived from the states and removal masks
+the data digest already covers; tests/replays/test_fight_swing.py tests it). Rewrite the fixture only for a
+change that is meant to move flat maps.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ def digest_round(rc, blob: dict) -> dict:
         data.update(name.encode("ascii") + b"\0" + streams[name])
     summary = cf.unpack_summary(encode_summary(rc, blob))
     summary["revision"] = 0
+    summary.pop("fights", None)
     text = json.dumps(summary, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {"data": data.hexdigest()[:16], "summary": hashlib.sha256(text).hexdigest()[:16]}
 

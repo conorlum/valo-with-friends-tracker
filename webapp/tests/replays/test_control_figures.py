@@ -90,8 +90,8 @@ def test_the_revisions_of_this_release():
 
     # Condense 21 adds damage causes and heals; control reads damage runs by `src`, which is unchanged (a run with two
     # causes is now two runs), and its rows are fingerprinted on the recipe, so they recompute without a control bump.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (21, 19)
-    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 4, "mixed ground gap consumers"
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (22, 20)
+    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
 
 
 def test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal():

@@ -26,6 +26,33 @@ def _economy(players: dict, stats: dict) -> dict | None:
     return dict(sorted(out.items())) or None
 
 
+def util_facts(round_util: dict | None, slot: int) -> list[dict]:
+    """The player's casts this round from Critical Util (app/services/replay_util.py): what each did, measured, and
+    its value (the change in the side's round-win chance after it, percentage points). Slots, never names."""
+    out = []
+    for c in (round_util or {}).get("casts") or ():
+        if c.get("slot") != slot:
+            continue
+        ours = [k for k in c.get("kills") or () if k.get("ours")]
+        fact = {"t": c["t"], "ability": c.get("ability"), "kind": c.get("kind"), "value": c.get("value"),
+                "enemies_affected": c.get("enemies") or 0, "kills": len(ours),
+                "teammates_hit": len(c.get("harm") or ()), "teammate_died_affected": c.get("harm_died") or 0,
+                "followed": c.get("followed"), "wasted": bool(c.get("wasted"))}
+        if c.get("scored") is False:
+            fact["after_decided"] = True        # shown, never scored: `value` is None
+        cover = c.get("cover") or {}
+        if cover.get("blocked_s"):
+            fact["blocked_s"] = cover["blocked_s"]
+        presence = c.get("presence") or {}
+        if presence.get("waiting_s"):
+            fact["waiting_s"] = presence["waiting_s"]
+        out.append(fact)
+    for u in (round_util or {}).get("unused") or ():
+        if u.get("slot") == slot:
+            out.append({"t": u["t"], "kind": u["kind"], "held": u.get("abilities") or [], "points": u.get("points")})
+    return out
+
+
 def build(snap, slot: int) -> dict:
     players = snap.context["players"]
     subject = _player(players[str(slot)])
@@ -47,6 +74,7 @@ def build(snap, slot: int) -> dict:
             "kills": [{"t": k["t"], "victim": snap.names.get(k["victim"])} for k in live if k.get("killer") == slot],
             "utility": [{k: v for k, v in row.items() if k != "by"} for row in view.utility(by=slot)],
             "flags": detectors.flags(view, slot, (control or {}).get("knew"), role),
+            "util_facts": util_facts(snap.util(n), slot),
             "gaps": snap.gaps(n)})
         if score is not None and winner is not None:
             score["own" if winner == subject["team"] else "enemy"] += 1

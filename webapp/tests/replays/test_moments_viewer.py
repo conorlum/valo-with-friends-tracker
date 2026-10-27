@@ -107,7 +107,7 @@ def test_groups_for_puts_a_two_tag_fight_in_both_groups_in_order():
     }""", payload(rounds))
     assert got["labels"][:3] == ["Moving while firing", "Alone", "With a teammate"]
     assert got["labels"][-2:] == ["Heard", "Found by utility"]
-    assert len(got["keys"]) == 21 and got["counts"][0] == 0
+    assert len(got["keys"]) == 22 and got["counts"][0] == 0
     assert got["alone"] == [[1, 30], [2, 10]]
     by_key = dict(zip(got["keys"], got["counts"]))
     assert by_key["died_not_traded"] == 1 and by_key["util_on_them"] == 1 and by_key["alone"] == 3 - 1 + 0
@@ -151,6 +151,25 @@ def test_row_text_for_each_kind_of_group():
     assert "you 12°, they 40.5°" in got["saw"]
     assert "team lost" in got["unseen"]
     assert got["info"] == "R4 1:05 flash" and got["heard"] == "R4 0:05"
+
+
+@needs_node
+def test_expensive_fight_text_carries_its_sign():
+    tf = {"t0": 30.0, "t1": 33.0, "ours": 4, "theirs": 1, "swing_m2": -1551.4, "wipe": False}
+    row = fight(died={"t": 30.0, "killer": 5}, tags=["expensive_fight"], team_fight=tf)
+    row["round"] = 18
+    got = run_node("""function run(p) {
+      const g = M.GROUPS.find(x => x.key === "expensive_fight");
+      return [M.rowText(p.row, g, p.players), M.swingText(p.up), M.swingText(p.small), M.swingText(p.tiny_loss),
+              M.swingText(p.zero), M.swingText(null),
+              M.groupsFor(p.payload, 0).find(x => x.key === "expensive_fight").rows.length];
+    }""", {"row": row, "players": PLAYERS, "up": dict(tf, swing_m2=812.0), "small": dict(tf, swing_m2=0.2),
+           "tiny_loss": dict(tf, swing_m2=-0.2), "zero": dict(tf, swing_m2=0.0),
+           "payload": payload({"18": {"status": "ok", "fights": [row]}})})
+    assert "fight swing −1,551 m² (4 for 1)" in got[0]
+    assert got[1:6] == ["fight swing +812 m² (4 for 1)", "fight swing +0.2 m² (4 for 1)",
+                        "fight swing −0.2 m² (4 for 1)", "fight swing 0 m² (4 for 1)", ""]
+    assert got[6] == 1
 
 
 @needs_node

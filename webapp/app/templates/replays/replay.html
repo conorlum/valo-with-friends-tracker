@@ -12,6 +12,7 @@
 <script src="/static/js/replay.js?v={{ static_version() }}"></script>
 {% if control %}<script src="/static/js/replay_control.js?v={{ static_version() }}"></script>{% endif %}
 {% if control %}<script src="/static/js/moments.js?v={{ static_version() }}"></script>{% endif %}
+{% if control %}<script src="/static/js/critutil.js?v={{ static_version() }}"></script>{% endif %}
 <script>
   (function () {
     var root = document.querySelector("[data-replay]");
@@ -47,6 +48,8 @@
         loadHeatmap: function (view) { return json("/replays/" + match.uuid + "/control/heatmap.json?view=" + view); },
         // Critical Moments: the player's fights by tag, fetched when the tab first opens.
         loadMoments: function () { return json("/replays/" + match.uuid + "/moments.json"); },
+        // Critical Util: each player's casts and their value, fetched when the tab first opens.
+        loadCritUtil: function () { return json("/replays/" + match.uuid + "/util.json"); },
         momentsViewerSlot: {{ viewer_slot | tojson }}{% endif %}{% if gaps %},
         // Timing gaps: a 200 says ok, stale, failed or not_computed itself; any other answer has no layer.
         gaps: true,

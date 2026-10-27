@@ -99,6 +99,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage
 from app.control import chokes
+from app.control import fight_swing
 from app.control import heights as hc
 from app.control import mollies
 from app.control import observe
@@ -304,11 +305,23 @@ class Watcher:
     node: int | None = None              # the node it sits on (heights only)
     origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
     off: list = field(default_factory=list)   # [(t0, t1)] switched off (a KJ device, its owner out of range)
+    src: int | None = None               # its util row's `id` (the actor's guid), for Critical Util's probe
 
 
 def _watching(w: Watcher, t: float) -> bool:
     """A watcher is up from its placement to its end, except while it is switched off."""
     return w.t0 <= t < w.t1 and not _during(w.off, t)
+
+
+def control_view(blob: dict) -> dict:
+    """The round as control and Critical Moments read it: without revision 22's `friendly` rows (a status on the
+    applier's own team, kept only for Critical Util's harm). Every reader of `RoundInputs.blob` then sees the round
+    a revision 21 parse gave, so a friendly suppression never turns a Cypher's trips off. The blob itself is left
+    alone (Critical Util reads it whole)."""
+    util = blob.get("util")
+    if not util or not any(e.get("friendly") for e in util):
+        return blob
+    return {**blob, "util": [e for e in util if not e.get("friendly")]}
 
 
 class RoundInputs:
@@ -318,6 +331,7 @@ class RoundInputs:
     def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None, *,
                  sight_check: bool = False):
         link = link or ControlLink()
+        blob = control_view(blob)
         self.blob, self.geo, self.link = blob, geo, link
         self.hz = blob["hz"]
         self.t_start = float(blob.get("t_start") or 0.0)
@@ -696,6 +710,8 @@ class RoundInputs:
         `off`, condenser revision 12; a row without it is never off) snapped to the grid, inside its life."""
         before = len(self.watchers)
         self._add_watcher(e, key, t0, t1)
+        for w in self.watchers[before:]:
+            w.src = e.get("id")
         if len(self.watchers) == before or not e.get("off"):
             return
         off = []
@@ -2942,6 +2958,7 @@ class RoundControl:
     # time, every analytical instant's display reasons in order (W21). Never the gap detector's input.
     reasons: dict | None = None
     map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
+    fights: list | None = None         # the round's team fights and what each side lost (app/control/fight_swing.py)
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -3170,13 +3187,24 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     sight_cache = getattr(geo, '_feature_sight_cache', None)
     if sight_cache is not None:
         sight_cache.persist()
+    cell_px = PX / GRID
+    cell_xy_m = np.stack([(walk_cells % GRID + 0.5) * cell_px, (walk_cells // GRID + 0.5) * cell_px], 1) * geo.m_per_px
+
+    def pos_m(s, t):
+        p = rnd.pos(s, t)
+        return None if p is None else (p[0] * geo.m_per_px, p[1] * geo.m_per_px)
+
+    fights = fight_swing.round_fights(
+        deaths=rnd.deaths(), left=fight_swing.left_ends(blob.get("alive")), team=rnd.team, agents={p["slot"]: p.get("agent") for p in blob["players"]},
+        alive=rnd.alive, pos_m=pos_m, frames=times, states=states, control_masks=control_masks,
+        cell_xy_m=cell_xy_m, cell_m2=cell_m2, t_start=rnd.t_start, t_decided=rnd.t_decided)
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
-                                        for side, kn in know.items()} or None)
+                                        for side, kn in know.items()} or None, fights=fights)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,

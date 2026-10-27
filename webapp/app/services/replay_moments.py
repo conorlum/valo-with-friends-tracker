@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import statistics
 
-from app.moments.constants import DEATH_MATCH_S, INFO_MERGE_S, MEDIAN_MIN_CLEAN
+from app.moments.constants import (DEATH_MATCH_S, EXPENSIVE_FIGHT_M2, EXPENSIVE_FIGHTS_SHOWN, INFO_MERGE_S,
+                                   MEDIAN_MIN_CLEAN)
 from app.services import enemy_names
 
 
@@ -47,6 +48,62 @@ def attach_deaths(fights, round_deaths) -> list[dict]:
             c["died"] = died
         out.append(c)
     return out
+
+
+def team_fight_of(slot, t, team_fights):
+    """The control summary's team fight holding this slot's death at t (app/control/fight_swing.py), seen from the
+    slot's side: deaths per side and the swing (enemy lost minus own lost, m²). None when there is none."""
+    for tf in team_fights or ():
+        mine = next((d for d in tf.get("deaths") or () if str(d[0]) == str(slot) and abs(d[1] - t) <= DEATH_MATCH_S),
+                    None)
+        if mine is None:
+            continue
+        group = mine[2]
+        lost = tf.get("lost_m2") or {}
+        other = "B" if group == "A" else "A"
+        swing = None if lost.get(group) is None or lost.get(other) is None else round(lost[other] - lost[group], 1)
+        deaths = tf.get("deaths") or []
+        return {"t0": tf.get("t0"), "t1": tf.get("t1"), "ours": sum(1 for d in deaths if d[2] == group),
+                "theirs": sum(1 for d in deaths if d[2] != group), "swing_m2": swing, "wipe": bool(tf.get("wipe"))}
+    return None
+
+
+def expensive(tf) -> bool:
+    return tf is not None and not tf["wipe"] and tf["swing_m2"] is not None and tf["swing_m2"] <= -EXPENSIVE_FIGHT_M2
+
+
+def attach_team_fights(fights, team_fights) -> list[dict]:
+    """Each fight the player died in gets its `team_fight`, and the `expensive_fight` tag when it is one."""
+    out = []
+    for f in fights:
+        c = dict(f)
+        if f.get("died") is not None:
+            tf = team_fight_of(f.get("slot"), f["died"]["t"], team_fights)
+            c["team_fight"] = tf
+            if expensive(tf):
+                c["tags"] = list(f.get("tags") or []) + ["expensive_fight"]
+        out.append(c)
+    return out
+
+
+def expensive_fights(slot, moments, team_fights) -> list[dict]:
+    """The player's most expensive non-wipe team fights (most negative swing first), at most EXPENSIVE_FIGHTS_SHOWN.
+    A team fight a revived player died in twice is listed once."""
+    rows, seen = [], set()
+    for n, rm in (moments or {}).items():
+        rnd = _as_int(n)
+        round_fights = (team_fights or {}).get(rnd, (team_fights or {}).get(str(rnd)))
+        for f in _fights_of(slot, rm):
+            if f.get("died") is None:
+                continue
+            tf = team_fight_of(slot, f["died"]["t"], round_fights)
+            if tf is not None and not tf["wipe"] and tf["swing_m2"] is not None and tf["swing_m2"] < 0 \
+                    and (rnd, tf["t0"]) not in seen:
+                seen.add((rnd, tf["t0"]))
+                rows.append({"round": rnd, "t0": tf["t0"], "t1": tf["t1"], "ours": tf["ours"], "theirs": tf["theirs"],
+                             "swing_m2": tf["swing_m2"], "fight_i": f.get("i")})
+    rows.sort(key=lambda r: (r["swing_m2"], r["round"], r["t0"]))
+    return rows[:EXPENSIVE_FIGHTS_SHOWN]
 
 
 def _merge(times: list[float]) -> list[float]:
@@ -140,19 +197,22 @@ def player_summary(slot, moments, deaths) -> dict:
             "medians": {k: _bucket(v) for k, v in buckets.items()}}
 
 
-def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=()) -> dict:
-    """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights)."""
+def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None) -> dict:
+    """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights).
+    `team_fights`: round -> the control summary's team fights (app/control/fight_swing.py), when stored."""
     rounds = {}
     for n, m in (moments or {}).items():
         ok = m.get("status") == "ok"
         rd = (deaths or {}).get(n, (deaths or {}).get(_as_int(n), {}))
+        tf = (team_fights or {}).get(n, (team_fights or {}).get(_as_int(n)))
         rounds[str(n)] = {
             "status": m.get("status"),
-            "fights": attach_deaths(m.get("fights") or [], rd) if ok else [],
+            "fights": attach_team_fights(attach_deaths(m.get("fights") or [], rd), tf) if ok else [],
         }
     summary = {}
     for slot in players:
         summary[str(slot)] = {**player_summary(slot, moments, deaths),
+                              "expensive_fights": expensive_fights(slot, moments, team_fights),
                               "info": player_info(slot, events, moments)}
     return {"players": players, "attack_round1": attack_round1, "rounds": rounds,
             "summary": summary, "stale": stale, "failed": sorted(int(n) for n in failed)}
@@ -218,6 +278,7 @@ def load_moments_payload(db, replay) -> dict:
     for n, entry in tables["rounds"].items():
         if entry.get("status") == "ok":
             deaths[int(n)] = {slot: p["lost"] for slot, p in entry["players"].items()}
+    team_fights = {int(n): s["fights"] for n, s in loaded.summaries.items() if isinstance(s.get("fights"), list)}
 
     events = {}
     rows = (db.query(ReplayRoundControl.round_number, ReplayRoundControl.data)
@@ -240,4 +301,4 @@ def load_moments_payload(db, replay) -> dict:
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
-                         events=events, stale=stale, failed=failed)
+                         events=events, stale=stale, failed=failed, team_fights=team_fights)
