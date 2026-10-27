@@ -68,15 +68,25 @@ def get_player_and_cached_views(
 
 
 def find_player_by_search_query(db: Session, query: str) -> Player | None:
-    """Looks up a player from a "Name#Tag" search box.
+    """Prefer a unique full ID, with untagged sample-name fallback for the demo.
 
-    The scraped demo data has no real Riot ID tag, so any trailing "#..."
-    is stripped before matching -- typing it out of habit still works.
+    Bare names may select a unique tagged account. Ambiguous names and SQL
+    wildcard characters never select an arbitrary account.
     """
+    query = query.strip()
     name = query.split("#", 1)[0].strip()
     if not name:
         return None
-    return db.query(Player).filter(Player.display_name.ilike(name)).one_or_none()
+    def matches(predicate):
+        return db.query(Player).filter(predicate).limit(2).all()
+    exact = matches(func.lower(Player.display_name) == query.lower())
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    if "#" in query:
+        fallback = matches(func.lower(Player.display_name) == name.lower())
+    else:
+        fallback = matches(func.lower(Player.display_name).startswith(name.lower() + "#", autoescape=True))
+    return fallback[0] if len(fallback) == 1 else None
 
 
 def get_player_profile(db: Session, player: Player, match_limit: int | None = None) -> PlayerProfile:

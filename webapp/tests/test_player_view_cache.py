@@ -514,10 +514,5 @@ def test_bootstrap_seed_is_stable_across_pythonhashseed():
 # Scope slicing
 # ---------------------------------------------------------------------------
 
-def test_scope_slicing_matches_recent_match_limit():
-    ordered = list(range(50))
-    recent = ordered[:RECENT_MATCH_LIMIT]
-    career = ordered[:]
-    assert recent == list(range(RECENT_MATCH_LIMIT))
-    assert career == ordered
-    assert len(recent) == RECENT_MATCH_LIMIT
+# The 30/31-match boundary is exercised through actual compute/cache/page
+# calls in test_profile_cache_journey.py, rather than testing list slicing.

@@ -4,12 +4,19 @@ on:
   pull_request:
     paths:
       - 'replay_worker/**'
+      - 'replay_tasks/**'
+      - 'webapp/app/__init__.py'
       - 'webapp/app/control/**'
       - 'webapp/app/gaps/**'
       - 'webapp/app/replays/**'
+      - 'webapp/app/moments/**'
+      - 'webapp/app/critutil/**'
+      - 'webapp/app/static/data/**'
+      - 'webapp/requirements.txt'
       - 'webapp/replay_parser.json'
       - 'webapp/scripts/*messages.patch'
-      - 'webapp/tests/replays/**'
+      - 'webapp/scripts/control_reference.py'
+      - 'webapp/tests/**'
       - '.github/workflows/replay-worker-review.yml'
 
 permissions:

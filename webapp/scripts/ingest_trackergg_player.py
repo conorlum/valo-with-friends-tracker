@@ -37,6 +37,7 @@ Usage:
 """
 
 import argparse
+from contextlib import ExitStack
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -77,15 +78,15 @@ def main(riot_id: str, count: int, no_prewarm: bool, ledger_path: Path) -> int:
     db = SessionLocal()
     try:
         dirty = backfill_unscored_matches(db)
-        with sync_playwright() as p:
+        with sync_playwright() as p, ExitStack() as cleanup:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             page = context.new_page()
+            cleanup.callback(page.close)
             new_dirty, outcome = ingest_paginated_history(
                 db, page, riot_id, count, ledger
             )
             dirty |= new_dirty
-            page.close()
 
         # Discovered vs requested AND ingested vs attempted, always -- a bare
         # "discovered 20" reads the same whether 20 is all they have or all we

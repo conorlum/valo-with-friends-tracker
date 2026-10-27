@@ -141,6 +141,7 @@ class Rig:
         self.render = FakeRender()
         self.seen, self.gate = [], threading.Event()
         self.gate.set()
+        self.callback_ready = threading.Event()
         self.disk = tmp_path / "disk"
         self.disk.mkdir()
         self.settings = server.Settings(**{
@@ -153,6 +154,9 @@ class Rig:
 
     def _answer_ok(self, kind, args):
         self.seen.append(args["job_id"])
+        # Recovered jobs dispatch from Worker.__init__, before start() has a
+        # callback URL/listener. A real Workflow would connect only once ready.
+        assert self.callback_ready.wait(10), 'test callback listener did not start'
         self.gate.wait(30)
         self.link(args).post_result({"status": "ok", "parse_seconds": 1.0,
                                      "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
@@ -166,6 +170,7 @@ class Rig:
         self.httpd = server.make_server(self.worker, runs_table=table)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.callback_ready.set()
         return self.worker
 
     def plant(self, status="parsing", **record):
@@ -248,22 +253,35 @@ def test_fifteen_uploads_parse_at_once(rig):
 
 
 @pytest.mark.slow
-def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig):
+def test_token_deadline_then_run_id_are_saved_and_kept_until_settlement(rig, monkeypatch):
     at_start = []
+    dispatched, finalized = threading.Event(), threading.Event()
+    write = server.archive_store.write_json
+
+    def saved(path, record):
+        write(path, record)
+        if path.name == 'job.json':
+            if record.get('run_id'): dispatched.set()
+            if record.get('status') == 'done': finalized.set()
+
+    monkeypatch.setattr(server.archive_store, 'write_json', saved)
     rig.render.on_start = lambda run_id, args: at_start.append(record_of(rig, args["job_id"]))
     worker = rig.start()
     rig.gate.clear()
     job = worker.submit(VRF + b"a")
-    wait_for(lambda: record_of(rig, job.id).get("run_id") == "trn-1")      # the durable record itself
+    # Observe completed atomic writes before opening the record. Repeatedly
+    # opening it while the writer renames it can deny replacement on Windows.
+    assert dispatched.wait(10), 'run ID was not persisted'
     # Saved before the start request: a crash before Render answers still finds the token and deadline.
     [before] = at_start
     assert before["run_token"] and before["run_deadline"] > time.time() and "run_id" not in before
     record = record_of(rig, job.id)
+    assert record['run_id'] == 'trn-1'
     assert record["status"] == "parsing" and record["run_token"] == before["run_token"]
     assert rig.render.started[0]["input"][0]["token"] == record["run_token"]
     rig.gate.set()
     wait_jobs(worker, [job.id])
-    wait_for(lambda: record_of(rig, job.id)["status"] == "done")      # the final save follows the in-memory one
+    assert finalized.wait(10), 'settled state was not persisted'
     final = record_of(rig, job.id)
     assert "run_id" not in final and "run_token" not in final
 
@@ -282,13 +300,28 @@ def test_a_restart_reconnects_to_a_saved_run_and_starts_nothing(rig):
     assert done.status == "done" and done.parse_seconds == 3.0
 
 
-def test_a_restart_without_a_run_id_starts_over_with_the_saved_token_and_deadline(rig):
+@pytest.mark.parametrize('callback_during_startup', [False, True])
+def test_a_restart_without_a_run_id_starts_over_with_the_saved_token_and_deadline(rig, monkeypatch, callback_during_startup):
+    if callback_during_startup:
+        arrived = threading.Event()
+        answer, make_server = rig.render.runner, server.make_server
+        def early_answer(kind, args):
+            arrived.set()
+            answer(kind, args)
+        def delayed_listener(*args, **kwargs):
+            assert arrived.wait(10), 'recovered job was not dispatched before listener setup'
+            return make_server(*args, **kwargs)
+        rig.render.runner = early_answer
+        monkeypatch.setattr(server,'make_server',delayed_listener)
+    deadlines = []
+    rig.render.on_start = lambda run_id, args: deadlines.append(record_of(rig,args['job_id'])['run_deadline'])
     deadline = time.time() + 600
     job_id = rig.plant(run_token="tok", run_deadline=deadline)
     worker = rig.start()
     [done] = wait_jobs(worker, [job_id])
     assert done.status == "done" and len(rig.render.started) == 1
     assert rig.render.started[0]["input"][0]["token"] == "tok"
+    assert deadlines == [deadline]
 
 
 def test_recovery_beyond_the_queue_size_fails_nothing(tmp_path):

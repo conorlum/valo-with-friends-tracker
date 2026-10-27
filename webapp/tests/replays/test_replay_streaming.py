@@ -161,6 +161,5 @@ def test_parity_with_heals_causes_and_charges(tmp_path):
     assert len(kept) == 2, "an inventory row naming no ability slot and a slot row with no contents are skipped"
 
 
-@pytest.mark.skipif(not REAL_FIXTURE.exists(), reason="no Swiftplay fixture")
 def test_parity_on_the_committed_real_fixture():
     assert_parity(*both(REAL_FIXTURE, source_sha256=None, pin=fixture_pin(REAL_FIXTURE)))
