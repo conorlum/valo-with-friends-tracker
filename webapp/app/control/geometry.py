@@ -320,6 +320,19 @@ class Geometry:
         if self.cover_px is None or label == 0:
             return np.zeros((PX, PX), bool)
         return self.cover_px == label
+
+    @property
+    def box_tops(self):
+        """{cover piece id: learnt top heights, m} read from the current heights and cover (box_tops.piece_tops)."""
+        from app.control import box_tops
+        return box_tops.piece_tops(self)
+
+    @property
+    def box_reach(self):
+        """PX x PX x 3 int16: topped pieces within reach of each pixel, nearest first; None without any."""
+        from app.control import box_tops
+        return box_tops.piece_reach(self)
+
     # --- nodes (one per cell on a flat map; `attach_heights` adds the upper floors)
     n: int = GRID * GRID                  # node count: every array the engine keeps per place has this length
     node_cell: np.ndarray = None          # node -> flat cell
