@@ -129,6 +129,28 @@ def test_stand_where_two_pieces_meet_keeps_its_pixel_and_piece():
     assert rows.tolist() == [[141, 120, 30]]
 
 
+def test_a_stand_near_a_piece_edge_stores_a_pixel_on_that_piece():
+    # x 179.7 is on piece 2 (x 140-179) when truncated; rounding the median would give 180, off every piece
+    xs, ys, zs = cat(walk_in(20), ([179.7] * 25, [120.0] * 25, list(np.linspace(20, 32, 25))),
+                     const(179.7, 120, 30, 1.0))
+    st = bt.top_stands(blob(seg(0.0, xs, ys, zs)), cover())
+    assert len(st) == 1 and st[0].piece == 2
+    rows = bt.top_rows(st)
+    assert cover()[rows[0, 1], rows[0, 0]] == 2
+
+
+def test_a_level_takes_a_members_pixel():
+    # two stands on one fine cell straddling a piece edge: the level's pixel is one of theirs, on a piece
+    c = cover()
+    c[100:140, 141] = 0                    # a notch: x 141 is off piece 2
+    a = cat(walk_in(20), ([140.2] * 25, [120.0] * 25, list(np.linspace(20, 30, 25))), const(140.2, 120, 30, 1.0))
+    b = cat(walk_in(20), ([142.2] * 25, [120.0] * 25, list(np.linspace(20, 30, 25))), const(142.2, 120, 30, 1.0))
+    st = bt.top_stands(blob(seg(0.0, *a), seg(10.0, *b)), c)
+    assert len(st) == 2
+    rows = bt.top_rows(st)
+    assert rows.shape == (1, 3) and c[rows[0, 1], rows[0, 0]] == 2
+
+
 def test_max_floors_per_fine_cell():
     parts = []
     for i, z in enumerate((30, 45, 60, 75)):

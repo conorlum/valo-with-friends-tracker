@@ -29,7 +29,7 @@ class TopStand:
     t1: float
     piece: int
     z_dm: int
-    px: tuple               # (median x, median y) of the run's samples, px
+    px: tuple               # (x, y) int px: the run's sample nearest its median, on the piece
 
 
 def _steady_runs(z: np.ndarray, need: int) -> list[tuple[int, int]]:
@@ -84,8 +84,12 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0) -> list[T
                     landed = si != 0 and label[0] == label[a]
                     if not (rose or landed):
                         continue
+                    # the run's own sample pixel nearest its median: always on the piece (a rounded median can fall
+                    # a pixel off it, or off a non-convex piece altogether)
+                    k = i + int(np.argmin((x[i:j + 1] - np.median(x[i:j + 1])) ** 2
+                                          + (y[i:j + 1] - np.median(y[i:j + 1])) ** 2))
                     out.append(TopStand(round_index, int(slot), si, float(t[i]), float(t[j]), int(label[a]),
-                                        int(round(med)), (float(np.median(x[i:j + 1])), float(np.median(y[i:j + 1])))))
+                                        int(round(med)), (int(xi[k]), int(yi[k]))))
     return out
 
 
@@ -109,8 +113,9 @@ def top_rows(stands: list[TopStand]) -> np.ndarray:
         levels.append(cur)
         levels.sort(key=lambda lv: (-len(lv), float(np.median([s.z_dm for s in lv]))))
         for lv in levels[:heights.MAX_FLOORS]:
-            rows.append((int(round(float(np.median([s.px[0] for s in lv])))),
-                         int(round(float(np.median([s.px[1] for s in lv])))),
+            mx, my = float(np.median([s.px[0] for s in lv])), float(np.median([s.px[1] for s in lv]))
+            near = min(lv, key=lambda s: ((s.px[0] - mx) ** 2 + (s.px[1] - my) ** 2, s.px[1], s.px[0]))
+            rows.append((int(near.px[0]), int(near.px[1]),       # a member's pixel: on its piece
                          int(round(float(np.median([s.z_dm for s in lv]))))))
     rows.sort(key=lambda r: (r[1], r[0], r[2]))
     return np.asarray(rows, np.int32).reshape(-1, 3)
