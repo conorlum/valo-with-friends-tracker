@@ -189,3 +189,34 @@ def stance_at(rnd, slot, t) -> Stance | None:
         out = Stance("beside", px, eye, 0, anchor)
     memo[(slot, i)] = out
     return out
+
+
+def boxed_stance(rnd, slot, t) -> Stance | None:
+    """The engine's guard, then `stance_at`: None without a position, without a cover array, outside it, or on a
+    pixel with no piece (so a player on open ground never costs a `stance_at` call)."""
+    geo = rnd.geo
+    if geo.cover_px is None:
+        return None
+    p = rnd.pos(slot, t)
+    if p is None:
+        return None
+    size = geo.cover_px.shape[0]
+    x, y = p[0], p[1]
+    if not (0 <= x < size and 0 <= y < size) or int(geo.cover_px[int(y), int(x)]) == 0:
+        return None
+    return stance_at(rnd, slot, t)
+
+
+def line_ends(rnd, a, b, t, pa, pb):
+    """The two ends of a sight line between players `a` and `b` (positions `pa`, `pb` at t): each at its player's
+    stance eye when it has one, else the player's own (x, y); and the see-over piece of each end (0 = none)."""
+    ends, over = [], []
+    for slot, p in ((a, pa), (b, pb)):
+        st = boxed_stance(rnd, slot, t)
+        if st is None:
+            ends.append((p[0], p[1], None))
+            over.append(0)
+        else:
+            ends.append((st.eye_px[0], st.eye_px[1], None))
+            over.append(st.see_over)
+    return ends[0], ends[1], (over[0], over[1])

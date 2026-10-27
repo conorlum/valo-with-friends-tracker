@@ -303,23 +303,34 @@ LEER_EYE = "Vampire_4_NearsightAOE_Source"
 LEER_LOOK_STEP_S = 0.25      # how often, while the eye is up, each enemy's view of it is tested
 
 
-def _sees_point(rnd, viewer: int, t: float, x: float, y: float) -> bool:
+def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | None = None) -> bool:
     """Whether `viewer`, alive at t, has (x, y) px in their field of view with a clear 2D line to it (walls and the
-    smokes up then; a flash or nearsight on them blinds it)."""
+    smokes up then; a flash or nearsight on them blinds it). A viewer on a box sees from their stance's eye over
+    that piece; `target` (a player slot whose position is the point), when boxed, is seen at its eye over its piece."""
     from app.control import engine as ce
+    from app.control import stance as st_mod
 
     if not rnd.alive(viewer, t) or any(a <= t < b for a, b in rnd.flashed.get(viewer, [])):
         return False
     p = rnd.pos(viewer, t)
     if p is None:
         return False
-    off = abs((math.degrees(math.atan2(y - p[1], x - p[0])) - p[2] + 180) % 360 - 180)
+    vs = st_mod.boxed_stance(rnd, viewer, t)
+    ex, ey = (p[0], p[1]) if vs is None else vs.eye_px
+    sv = 0 if vs is None else vs.see_over
+    st = 0
+    if target is not None:
+        ts = st_mod.boxed_stance(rnd, target, t)
+        if ts is not None:
+            x, y = ts.eye_px
+            st = ts.see_over
+    off = abs((math.degrees(math.atan2(y - ey, x - ex)) - p[2] + 180) % 360 - 180)
     if off > ce.FOV_HALF:
         return False
     if any(a <= t < b for a, b in rnd.nearsight.get(viewer, [])) and \
-            math.hypot(x - p[0], y - p[1]) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
+            math.hypot(x - ex, y - ey) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
         return False
-    return ce.los(rnd.geo, (p[0], p[1], None), (x, y, None), rnd.smokes_at(t))
+    return ce.los(rnd.geo, (ex, ey, None), (x, y, None), rnd.smokes_at(t), see_over=(sv, st))
 
 
 def read_leers(rnd) -> list[Info]:
