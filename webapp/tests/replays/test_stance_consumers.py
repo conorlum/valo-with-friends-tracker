@@ -117,3 +117,32 @@ def test_a_smoke_on_the_line_from_a_player_on_the_box_counts_a_pair(monkeypatch)
 
 def test_with_no_stance_the_bare_line_is_blocked_so_no_pair(monkeypatch):
     assert _pairs(no_cover(box_hall()), monkeypatch) == 0
+
+
+# ------------------------------------------------------------------ fix round: beside viewer, off-line smoke
+
+def test_sees_point_from_a_beside_viewer_answers_from_the_anchor_not_the_pixel():
+    from app.control import engine as ce
+    from app.control import stance as st_mod
+    from app.control.utility import _sees_point
+    from control_toys import hugging_track
+
+    geo = box_hall()
+    rnd, _ = inputs(geo, {0: hugging_track(252, 196, yaw=90)})        # in the west edge, facing south
+    st = st_mod.stance_at(rnd, 0, T)
+    assert st is not None and st.kind == "beside" and st.eye_px != st.px
+    x, y = 240.0, 210.0
+    assert ce.los(geo, (*st.eye_px, None), (x, y, None), []), "the anchor sees the point"
+    assert not ce.los(geo, (*st.px, None), (x, y, None), []), "the raw pixel (inside the piece) does not"
+    assert _sees_point(rnd, 0, T, x, y)
+
+
+def test_a_smoke_off_the_line_from_a_player_on_the_box_counts_no_pair(monkeypatch):
+    from app.critutil import extract
+
+    geo = box_hall()
+    (rnd, _), e = box_viewer_round(geo)
+    smoke = (CENTRE[0] - 40.0, CENTRE[1], 8.0, True)                  # behind the viewer, well off the line
+    monkeypatch.setattr(extract, "_shapes_of", lambda *_a: [(0.0, 10.0, smoke)])
+    cast = SimpleNamespace(i=0, by=0, t=0.0, t_end=10.0)
+    assert extract._cover_all(rnd, {0: "A", 5: "B", 6: "B"}, [cast])[0]["pairs"] == 0
