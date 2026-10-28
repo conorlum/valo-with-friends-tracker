@@ -89,9 +89,12 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0) -> list[T
 
 
 def ground_of(cover_px: np.ndarray, floors: np.ndarray) -> dict[int, int]:
-    """{cover piece id: the lowest floor round it} in `floors`' units. `floors` is the coarse grid's floors,
-    (GRID*GRID, levels) or (GRID, GRID, levels), -1 for none; round a piece = coarse cells holding a pixel within
-    BOX_RING_PX of its outline that is on no cover piece. A piece with no floor round it is left out."""
+    """{cover piece id: the floor it stands on} in `floors`' units: the most common of the lowest floors of the
+    cells round it (a tie takes the lower). Not the lowest: a piece at a ledge's edge has a drop on one side
+    (Ascent's piece 17: floor at 2.0 m round most of it, 0.0 m on one side, and players at 2.0 m on its outline).
+    `floors` is the coarse grid's floors, (GRID*GRID, levels) or (GRID, GRID, levels), -1 for none; round a piece =
+    coarse cells holding a pixel within BOX_RING_PX of its outline that is on no cover piece. A piece with no floor
+    round it is left out."""
     from scipy import ndimage
 
     cover = np.asarray(cover_px)
@@ -105,10 +108,12 @@ def ground_of(cover_px: np.ndarray, floors: np.ndarray) -> dict[int, int]:
         crop = cover[y0:min(ys.stop + BOX_RING_PX, PX), x0:min(xs.stop + BOX_RING_PX, PX)]
         ring = (ndimage.distance_transform_edt(crop != piece) <= BOX_RING_PX + EPS) & (crop == 0)
         ry, rx = np.nonzero(ring)
-        got = flat[np.unique((ry + y0) // CELL * GRID + (rx + x0) // CELL)]
-        got = got[got >= 0]
-        if got.size:
-            out[piece] = int(got.min())
+        got = flat[np.unique((ry + y0) // CELL * GRID + (rx + x0) // CELL)].astype(np.int32)
+        lowest = np.where(got >= 0, got, np.iinfo(np.int32).max).min(axis=1)
+        lowest = lowest[lowest < np.iinfo(np.int32).max]
+        if lowest.size:
+            values, counts = np.unique(lowest, return_counts=True)       # sorted: argmax takes the lower on a tie
+            out[piece] = int(values[np.argmax(counts)])
     return out
 
 

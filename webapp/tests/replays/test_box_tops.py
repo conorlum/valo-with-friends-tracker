@@ -191,8 +191,20 @@ def floors_at(cells_z):
     return f
 
 
-def test_ground_is_the_lowest_floor_round_the_piece():
-    # piece 1 is x 100-139, y 100-139: a floor at 2.0 m left of it, a higher ledge at 4.0 m above it
+def test_ground_is_the_floor_most_of_the_ring_stands_on():
+    # piece 1 is x 100-139, y 100-139, at a ledge's edge: 2.0 m round three sides, a drop to 0.0 m on one cell
+    g = bt.ground_of(cover(), floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0}))
+    assert g[1] == 20
+
+
+def test_a_stand_at_the_upper_floor_of_a_ledge_is_no_top():
+    """Ascent's piece 17: players stood at 2.0 m on its outline, beside a drop to 0.0 m on one side."""
+    f = floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0})
+    xs, ys, zs = const(120, 120, 20, 1.0)
+    assert tops(blob(seg(0.0, xs, ys, zs)), ground=bt.ground_of(cover(), f)) == []
+
+
+def test_a_tie_takes_the_lower_floor():
     g = bt.ground_of(cover(), floors_at({(92, 120): 20, (120, 92): 40}))
     assert g[1] == 20
 
