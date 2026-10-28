@@ -28,7 +28,8 @@ from tests.replays.control_toys import z_dm  # noqa: E402
 
 # recorded on the code before this item, for the toy builds below (no cover given)
 NO_COVER_BUILD_DIGEST = "b48acdae2528"
-NO_COVER_MANIFEST_DIGEST = "3dcbe2c75de289ad"
+# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 6 (was "3dcbe2c75de289ad" at 5); the build digest is unchanged
+NO_COVER_MANIFEST_DIGEST = "be548d2a5bc53e15"
 
 PIECE = (slice(150, 170), slice(300, 320))        # rows (y), columns (x) of the one cover piece
 

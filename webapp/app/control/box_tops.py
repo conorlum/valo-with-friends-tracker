@@ -13,10 +13,9 @@ import numpy as np
 
 from app.control import heights
 from app.control.geometry import PX
-from app.control.stance import BOX_RISE_M, BOX_SETTLE_S, BOX_STEADY_DZ_M, TOP_REACH_PX
+from app.control.heights import BOX_APPROACH_S, BOX_RISE_M, BOX_SETTLE_S, BOX_STEADY_DZ_M
+from app.control.stance import TOP_REACH_PX
 
-# PROVISIONAL(D4): W2, 36 replays: lowest top rise 0.9 m, highest hugger/follow-on rise 0.3 m
-BOX_APPROACH_S = 2.0
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6
 

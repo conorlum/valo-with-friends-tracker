@@ -16,14 +16,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-BOX_SETTLE_S = 0.5
+from app.control.heights import BOX_RISE_M, BOX_SETTLE_S, BOX_STEADY_DZ_M  # noqa: F401  (D11: the rules hash covers them)
+
 ANCHOR_MAX_M = 2.0
-# PROVISIONAL(D3): fitted by the GATE probe (W9, 36 replays); GATE 2 awaits the owner's call
-BOX_RISE_M = 0.5
-BOX_STEADY_DZ_M = 0.25
-# PROVISIONAL(D4): W2, 36 replays: 159 of 162 top stands within 0.25 m of their top, none 0.25-0.55
+# PROVISIONAL(D10): W2, 36 replays: 159 of 162 top stands within 0.25 m of their top, none 0.25-0.55
 TOP_TOL_M = 0.3
-# PROVISIONAL(D4): W2, 36 replays: 98.8% of off-outline top-stay samples within 24 px, none beyond 36
+# PROVISIONAL(D10): W2, 36 replays: 98.8% of off-outline top-stay samples within 24 px, none beyond 36
 TOP_REACH_PX = 36
 
 EPS = 1e-6
