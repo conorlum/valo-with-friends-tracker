@@ -94,7 +94,8 @@ def attach(geo, asset):
         cy, cx = divmod(child, FINE); grid[cy, cx] = sid
         walk = bool(fine_walk[cy, cx] and geo.walk.ravel()[p]); spatial_walk[sid] = walk
         if not walk and np.any(floors >= 0):
-            # PROVISIONAL(D2): a floor on top of see-over cover (a box) is dropped, not refused; any other one still refuses.
+            # A floor on top of see-over cover (a box) is dropped, not refused; any other one still refuses. Control
+            # never spreads onto a box top: nobody gets up or down one silently (owner, D1 of 2026-10-27-box-tops).
             # Either cell that made it unwalkable may hold the box: its own 4x4, or its 8x8 parent.
             py, px = divmod(p, 128)
             if geo.cover_px is not None and ((geo.cover_px[cy * 4:(cy + 1) * 4, cx * 4:(cx + 1) * 4] > 0).any()
