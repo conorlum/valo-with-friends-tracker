@@ -75,6 +75,20 @@ def test_a_cover_build_learns_the_top_and_changes_nothing_else():
     assert learnt.asset.digest != plain.asset.digest
 
 
+def test_a_top_is_learnt_without_a_climb():
+    """A player who starts the round on the box (no rise before it) still shows its top: it is a clear step."""
+    start_on = ("B", [(0.0, 308, 160, 0, 1.2), (30.0, 308, 160, 0, 1.2)])
+    tops = hb.build(covered_rounds({9: start_on}), GEO, cover_px=cover()).asset.box_tops
+    assert tops is not None and tops[:, 2].tolist() == [z_dm(1.2) - z_dm(0.0)]
+
+
+def test_a_stand_at_floor_height_inside_the_outline_is_no_top():
+    at_floor = ("B", [(0.0, 280, 160, 0, 0.0), (1.0, 308, 160, 0, 0.0), (30.0, 308, 160, 0, 0.0)])
+    plain = hb.build(covered_rounds({9: at_floor}), GEO)
+    covered = hb.build(covered_rounds({9: at_floor}), GEO, cover_px=cover())
+    assert covered.asset.box_tops is None and covered.asset.digest == plain.asset.digest
+
+
 def test_cover_with_no_top_stand_is_the_plain_asset():
     plain = hb.build(rounds(False), GEO)
     covered = hb.build(rounds(False), GEO, cover_px=cover())

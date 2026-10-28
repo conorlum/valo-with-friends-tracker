@@ -681,7 +681,8 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
                            kind.reshape(GRID, GRID))
     if box_stands:
         from app.control import box_tops
-        tops = box_tops.top_rows(box_stands)
+        ground = {p: g + int(origin) for p, g in box_tops.ground_of(cover_px, asset_floors).items()}
+        tops = box_tops.top_rows(box_tops.on_a_step(box_stands, ground))
         tops[:, 2] -= int(origin)                 # the asset's frame, like `floors`
         tops = tops[tops[:, 2] >= 0]              # (a top under the lowest floor is no top)
         asset.box_tops = tops if len(tops) else None

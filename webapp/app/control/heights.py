@@ -114,11 +114,12 @@ KILL_SAMPLE_S = 0.25       # killer and victim each need a position with z this 
 
 # --- box tops (app/control/stance.py and box_tops.py import these, so the rules hash covers them)
 BOX_SETTLE_S = 0.5
-# PROVISIONAL(D3): fitted by the GATE probe (W9, 36 replays); GATE 2 awaits the owner's call
-BOX_RISE_M = 0.5
+# PROVISIONAL(D10): z is kept in 0.1 m steps; 112 of 275 real box stands move 0.2 m, none more (review, 2026-10-28)
 BOX_STEADY_DZ_M = 0.25
-# PROVISIONAL(D10): W2, 36 replays: lowest top rise 0.9 m, highest hugger/follow-on rise 0.3 m
-BOX_APPROACH_S = 2.0
+# A top is a clear step above the floor round its box (the owner, review of 2026-10-27-box-tops).
+# PROVISIONAL(D10): every learnt top on Summit and Ascent is 1.0 m or more above it (probes/review_step.py)
+BOX_STEP_M = 0.5
+BOX_RING_PX = 16           # the floor round a box: floors within this of its outline, off every cover piece
 
 
 class HeightError(ValueError):

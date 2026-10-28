@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.control.heights import BOX_RISE_M, BOX_SETTLE_S, BOX_STEADY_DZ_M  # noqa: F401  (D11: the rules hash covers them)
+from app.control.heights import BOX_SETTLE_S, BOX_STEADY_DZ_M  # noqa: F401  (D11: the rules hash covers them)
 
 ANCHOR_MAX_M = 2.0
 # PROVISIONAL(D10): W2, 36 replays: 159 of 162 top stands within 0.25 m of their top, none 0.25-0.55

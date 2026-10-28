@@ -76,8 +76,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 20 (2026-10-23): fight swing, the summary's team fights (app/control/fight_swing.py, digested from 20).
           20: "d50d4e280c7967b4",
           # 21 (2026-10-27): box tops: stance on a learnt box top, vantage over lower topped pieces; the box constants
-          # moved into app/control/heights.py (BOX_*), so the digest covers them.
-          21: "e1abefa65afe68f9"}
+          # moved into app/control/heights.py (BOX_*), so the digest covers them. 21 is unreleased: re-pinned in place
+          # when the climb rule (BOX_RISE_M, BOX_APPROACH_S) became the step rule (was "e1abefa65afe68f9").
+          21: "15245745abf5994f"}
 
 
 def _constants_digest() -> str:

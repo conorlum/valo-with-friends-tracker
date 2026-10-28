@@ -1,7 +1,8 @@
-"""Box-top stands: where players stood steady on a cover piece they got up to, for the height build to learn each
-piece's top height from. A box stand is a run of one segment inside one piece, steady in z for BOX_SETTLE_S; it is a
-top stand when the player rose onto it (a lower sample just before) or landed in it by a teleport (a later segment
-that starts inside the piece). Pure: blob and label raster in, stands and `top_rows` out; nothing calls it yet."""
+"""Box-top stands: where players stood steady on a cover piece, for the height build to learn each piece's top
+height from. A box stand is a run of one segment inside one piece, steady in z for BOX_SETTLE_S (`top_stands`). It is
+a top stand when it is at least BOX_STEP_M above the floor round the piece (`on_a_step`): a box top is a clear step
+above the ground, so a player at ground height inside a drawn outline is no top, however they got there. Pure: blob,
+label raster and floors in, stands and `top_rows` out; the height build calls them."""
 
 from __future__ import annotations
 
@@ -12,8 +13,8 @@ from types import MappingProxyType
 import numpy as np
 
 from app.control import heights
-from app.control.geometry import PX
-from app.control.heights import BOX_APPROACH_S, BOX_RISE_M, BOX_SETTLE_S, BOX_STEADY_DZ_M
+from app.control.geometry import CELL, GRID, PX
+from app.control.heights import BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M
 from app.control.stance import TOP_REACH_PX
 
 FINE = 4                    # the fine cell's side, px
@@ -53,11 +54,10 @@ def _steady_runs(z: np.ndarray, need: int) -> list[tuple[int, int]]:
 
 
 def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0) -> list[TopStand]:
-    """The round's top stands, each player's in time order. Segments without z give none."""
+    """The round's box stands, each player's in time order, at any height (`on_a_step` keeps the tops). Segments
+    without z give none."""
     hz = blob["hz"]
     need = BOX_SETTLE_S * hz - EPS
-    approach = int(round(BOX_APPROACH_S * hz))
-    rise = BOX_RISE_M * 10
     out: list[TopStand] = []
     for slot, segments in (blob.get("tracks") or {}).items():
         for si, seg in enumerate(segments):
@@ -79,11 +79,6 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0) -> list[T
                     continue
                 for i, j in ((a + i, a + j) for i, j in _steady_runs(z[a:e], int(np.ceil(need)))):
                     med = float(np.median(z[i:j + 1]))
-                    lo = max(0, i - approach)
-                    rose = i > lo and bool((z[lo:i] <= med - rise + EPS).any())
-                    landed = si != 0 and label[0] == label[a]
-                    if not (rose or landed):
-                        continue
                     # the run's own sample pixel nearest its median: always on the piece (a rounded median can fall
                     # a pixel off it, or off a non-convex piece altogether)
                     k = i + int(np.argmin((x[i:j + 1] - np.median(x[i:j + 1])) ** 2
@@ -91,6 +86,37 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0) -> list[T
                     out.append(TopStand(round_index, int(slot), si, float(t[i]), float(t[j]), int(label[a]),
                                         int(round(med)), (int(xi[k]), int(yi[k]))))
     return out
+
+
+def ground_of(cover_px: np.ndarray, floors: np.ndarray) -> dict[int, int]:
+    """{cover piece id: the lowest floor round it} in `floors`' units. `floors` is the coarse grid's floors,
+    (GRID*GRID, levels) or (GRID, GRID, levels), -1 for none; round a piece = coarse cells holding a pixel within
+    BOX_RING_PX of its outline that is on no cover piece. A piece with no floor round it is left out."""
+    from scipy import ndimage
+
+    cover = np.asarray(cover_px)
+    flat = np.asarray(floors).reshape(GRID * GRID, -1)
+    out: dict[int, int] = {}
+    for piece, box in enumerate(ndimage.find_objects(cover.astype(np.int32)), start=1):
+        if box is None:
+            continue
+        ys, xs = box
+        y0, x0 = max(ys.start - BOX_RING_PX, 0), max(xs.start - BOX_RING_PX, 0)
+        crop = cover[y0:min(ys.stop + BOX_RING_PX, PX), x0:min(xs.stop + BOX_RING_PX, PX)]
+        ring = (ndimage.distance_transform_edt(crop != piece) <= BOX_RING_PX + EPS) & (crop == 0)
+        ry, rx = np.nonzero(ring)
+        got = flat[np.unique((ry + y0) // CELL * GRID + (rx + x0) // CELL)]
+        got = got[got >= 0]
+        if got.size:
+            out[piece] = int(got.min())
+    return out
+
+
+def on_a_step(stands: list[TopStand], ground: dict[int, int]) -> list[TopStand]:
+    """The stands at least BOX_STEP_M above the floor round their piece (`ground`, dm, as `z_dm`); a piece with no
+    floor round it has no tops."""
+    step = BOX_STEP_M * 10 - EPS
+    return [s for s in stands if s.piece in ground and s.z_dm - ground[s.piece] >= step]
 
 
 def top_rows(stands: list[TopStand]) -> np.ndarray:
