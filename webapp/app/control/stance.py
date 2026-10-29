@@ -1,6 +1,6 @@
 """A player's stance relative to a cover piece: standing on it (`on_box`, can see over the piece) or beside it
-(hugging it, crossing it in a jump, just landed, no z). Both kinds have an anchor: a walkable node near the player
-that stands in for them where the engine needs a node.
+(hugging it, crossing it in a jump, just landed, no z). An on-box anchor is the matched piece's nearest top node
+(ties: lower id); without top nodes, and for beside stances, the existing ground anchor stands in for the player.
 
 The z rule (R2, R3): over the last BOX_SETTLE_S, z must stay within BOX_STEADY_DZ_M in one track segment, with no
 NaN. The window median matches a learnt top within TOP_TOL_M above it or TOP_TOL_M + CROUCH_DROP_M below it;
@@ -140,6 +140,15 @@ def _reach_ids(geo, x: float, y: float):
     return tuple(int(p) for p in reach[iy, ix] if p)
 
 
+def _top_anchor(geo, px, piece: int) -> int | None:
+    """Nearest top node of the matched piece; None preserves the caller's ground fallback."""
+    nodes = geo.top_nodes[geo.top_piece == piece]
+    if not len(nodes):
+        return None
+    distance = np.sum((geo.centres[nodes].astype(float) - px) ** 2, axis=1)
+    return int(nodes[np.lexsort((nodes, distance))[0]])
+
+
 def stance_at(rnd, slot, t) -> Stance | None:
     global CALLS
     CALLS += 1
@@ -165,14 +174,20 @@ def stance_at(rnd, slot, t) -> Stance | None:
     if label:
         top = _on_piece(rnd, slot, i, label)
         if top is not None:
-            out = Stance("on_box", px, px, vantage(geo, label, top), _anchor(rnd, slot, i, px, label), label)
+            anchor = _top_anchor(geo, px, label)
+            if anchor is None:
+                anchor = _anchor(rnd, slot, i, px, label)
+            out = Stance("on_box", px, px, vantage(geo, label, top), anchor, label)
     if out is None:
         for piece in _reach_ids(geo, x, y):
             if piece == label:
                 continue
             top = _on_piece(rnd, slot, i, piece)
             if top is not None:
-                out = Stance("on_box", px, px, vantage(geo, piece, top), int(geo.node_at_px(x, y)), piece)
+                anchor = _top_anchor(geo, px, piece)
+                if anchor is None:
+                    anchor = int(geo.node_at_px(x, y))
+                out = Stance("on_box", px, px, vantage(geo, piece, top), anchor, piece)
                 break
     if out is None and label:
         anchor = _anchor(rnd, slot, i, px, label)

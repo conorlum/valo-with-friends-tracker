@@ -225,11 +225,169 @@ def test_terrain_audit_counts_only_ground_nodes():
     assert result['regions'][0]['walkable_nodes'] == int((geo.walk_n & ~geo.is_top).sum())
 
 
-def test_topology_has_room_for_tops_but_no_edges_to_them_yet():
-    geo = topped(); topo = topology.of(geo)
-    assert len(geo.top_nodes) > 0 and topo.n == geo.n
-    assert topo.in_from.shape[0] == geo.n
-    assert not np.isin(topo.src, geo.top_nodes).any() and not np.isin(topo.dst, geo.top_nodes).any()
-    for node in geo.top_nodes:
-        assert len(topo.around(int(node))) == 0
-        assert (topo.in_from[node] == geo.n).all()
+def top_at(geo, x, y):
+    leaf = geo.space_at_px(x, y)
+    return int(geo.top_nodes[geo.top_leaf == leaf][0])
+
+
+@pytest.mark.parametrize('rise', [0.3, 1.0, 1.0 + 1e-6, 1.00001, 1.5])
+def test_climb_limit_and_loud_drop_are_directional(rise):
+    geo = topped(((202, 202, round(rise * 10)),))
+    geo.node_z[geo.top_nodes] = rise
+    top, ground = top_at(geo, 202, 202), int(geo.node_at_px(196, 204, 0))
+    walks, loud = ag.graph(geo)
+    assert (top, ground) in walks
+    assert ((ground, top) in walks) == (rise <= 1.0 + 1e-6)
+    assert ((top, ground) in loud) == (rise > 1.0 + 1e-6)
+    assert (ground, top) not in loud
+    topo = topology.of(geo)
+    reached = np.full(geo.n, np.inf); reached[top] = 0
+    quiet = topo.spread(reached, geo.walk_n, np.zeros(geo.n), 100, 1, [], quiet=True)
+    assert bool(np.isfinite(quiet[ground])) == (rise <= 1.0 + 1e-6)
+    audible = topo.spread(reached, geo.walk_n, np.zeros(geo.n), 100, 1, [])
+    assert np.isfinite(audible[ground])
+
+
+def test_same_piece_tops_connect_only_touching_leaves_including_corners():
+    geo = topped()
+    # Make reach larger than the whole toy: same-piece candidates must still touch.
+    geo.m_per_px = .01
+    walks, loud = ag.graph(geo)
+    pairs = set()
+    for a in geo.top_nodes:
+        for b in geo.top_nodes:
+            if a != b and np.all(np.minimum(geo.node_bbox[a, 2:], geo.node_bbox[b, 2:]) >=
+                                 np.maximum(geo.node_bbox[a, :2], geo.node_bbox[b, :2])):
+                pairs.add((int(a), int(b)))
+    actual = {(a, b) for a, b in walks if geo.is_top[a] and geo.is_top[b]}
+    assert actual == pairs and pairs
+    assert not actual & loud
+    diagonal = (top_at(geo, 202, 202), top_at(geo, 206, 206))
+    assert diagonal in actual and diagonal[::-1] in actual
+    far = (top_at(geo, 202, 202), top_at(geo, 212, 204))
+    assert far not in actual and far[::-1] not in actual
+
+
+def test_climbs_are_local_to_the_top_leaf_not_the_whole_piece():
+    geo = topped(((202, 202, 10),))
+    ground = int(geo.node_at_px(220, 204, 0))
+    near, far = top_at(geo, 212, 204), top_at(geo, 202, 202)
+    walks, _ = ag.graph(geo)
+    assert (ground, near) in walks and (near, ground) in walks
+    assert (ground, far) not in walks and (far, ground) not in walks
+
+
+@pytest.mark.parametrize('offset,connected', [(0.0, True), (-1e-5, False), (-5e-7, True)])
+def test_rectangle_reach_uses_euclidean_gap_and_pixel_tolerance(offset, connected):
+    geo = topped(((202, 202, 10),))
+    top = top_at(geo, 202, 202)
+    ground = int(geo.node_at_px(220, 212, 0))
+    # Rectangles are [200,200,204,204] and [216,208,224,216]: gap hypot(12,4).
+    gap = np.hypot(12, 4)
+    geo.m_per_px = hc.TOP_REACH_M / (gap + offset)
+    walks, _ = ag.graph(geo)
+    assert ((top, ground) in walks) == connected
+    assert ((ground, top) in walks) == connected
+
+
+@pytest.mark.parametrize('finite', [False, True])
+def test_ground_connected_only_by_unresolved_fallback_gets_no_climb(finite):
+    geo = topped(((202, 202, 10),))
+    leaf = ag.BASE + CHILDREN[0]
+    ground = int(geo.space_nodes[leaf, 0]); top = top_at(geo, 202, 202)
+    geo.heights.fine_edges = geo.heights.fine_edges[
+        ~np.isin(geo.heights.fine_edges[:, (0, 2)], leaf).any(1)]
+    geo.space_unresolved[leaf] = True
+    geo.node_z[ground] = 0 if finite else np.nan
+    walks, _ = ag.graph(geo)
+    assert any(a == ground or b == ground for a, b in walks), 'fallback still connects ground'
+    assert (ground, top) not in walks and (top, ground) not in walks
+
+
+@pytest.mark.parametrize('finite', [True, False])
+def test_fine_edge_endpoints_can_climb_only_with_finite_height(finite):
+    geo = topped(((202, 202, 10),))
+    ground = int(geo.node_at_px(206, 202, 0)); top = top_at(geo, 202, 202)
+    leaf = int(geo.node_space[ground])
+    assert np.isin(geo.heights.fine_edges[:, (0, 2)], leaf).any()
+    assert not np.isin(geo.heights.edges[:, (0, 2)], leaf).any()
+    if not finite:
+        geo.node_z[ground] = np.nan
+    walks, _ = ag.graph(geo)
+    assert ((ground, top) in walks) == finite
+    assert ((top, ground) in walks) == finite
+
+
+def two_piece_tops():
+    geo = topped(None, cover=False)
+    pixels = np.zeros((1024, 1024), bool)
+    pixels[200:204, 200:204] = True
+    pixels[200:208, 208:216] = True
+    cg.attach_cover(geo, pixels, 'two-top-pieces')
+    geo.heights.box_tops = np.array([[202, 202, 10], [212, 202, 20]], np.int32)
+    return cg.attach_heights(geo, geo.heights)
+
+
+def test_quiet_spread_reaches_a_high_piece_through_a_low_piece():
+    geo = two_piece_tops()
+    low, high = top_at(geo, 202, 202), top_at(geo, 212, 204)
+    assert geo.top_piece[geo.top_nodes == low] != geo.top_piece[geo.top_nodes == high]
+    ground = int(geo.node_at_px(196, 204, 0))
+    walks, loud = ag.graph(geo)
+    assert (ground, high) not in walks
+    assert (ground, low) in walks and (low, high) in walks
+    assert (low, high) not in loud and (high, low) not in loud
+    reached = np.full(geo.n, np.inf); reached[ground] = 0
+    arrivals, parents = topology.of(geo).spread(
+        reached, geo.walk_n, np.zeros(geo.n), 100, 1, [], quiet=True, parents=True)
+    assert np.isfinite(arrivals[high]) and parents[high] == low
+    assert parents[low] == ground
+    geo.m_per_px = 1.0  # the 4 px gap now exceeds TOP_REACH_M
+    walks, _ = ag.graph(geo)
+    assert (low, high) not in walks and (high, low) not in walks
+
+
+def ground_graph_before_climbs(geo):
+    """Frozen pre-W8b graph, including fallback and the corner check."""
+    walks, loud = set(), set()
+    for edges in (geo.heights.edges, geo.heights.fine_edges):
+        for a, fa, b, fb, kind in edges:
+            na, nb = int(geo.space_nodes[a, fa]), int(geo.space_nodes[b, fb])
+            if na < 0 or nb < 0 or not geo.space_walk[a] or not geo.space_walk[b]:
+                continue
+            walks.add((na, nb))
+            if kind == hc.EDGE_FALL and geo.node_z[na] - geo.node_z[nb] > hc.SILENT_DROP_M:
+                loud.add((na, nb))
+    for a, b in ag.neighbours(geo):
+        if not geo.space_unresolved[a] and not geo.space_unresolved[b]:
+            continue
+        for na in geo.space_nodes[a]:
+            for nb in geo.space_nodes[b]:
+                if na >= 0 and nb >= 0:
+                    walks.update(((int(na), int(nb)), (int(nb), int(na))))
+    for na, nb in list(walks):
+        sides = ag.corner_sides(geo, int(geo.node_space[na]), int(geo.node_space[nb]))
+        if sides is None:
+            continue
+        if any(s < 0 or not geo.space_walk[s] or not any(n >= 0 and (na, int(n)) in walks and (int(n), nb) in walks
+                for n in geo.space_nodes[s]) for s in sides):
+            walks.discard((na, nb)); loud.discard((na, nb))
+    return walks, loud
+
+
+@pytest.mark.parametrize('unresolved', [False, True])
+def test_no_tops_preserves_the_pre_climb_graph_exactly(unresolved):
+    geo = topped(None)
+    if unresolved:
+        geo.space_unresolved[ag.BASE + CHILDREN[0]] = True
+        geo.node_z[geo.space_nodes[ag.BASE + CHILDREN[0], 0]] = np.nan
+    assert not geo.top_nodes.size
+    assert ag.graph(geo) == ground_graph_before_climbs(geo)
+
+
+def test_top_edges_leave_the_ground_graph_unchanged():
+    geo, ground = topped(), topped(None)
+    walks, loud = ag.graph(geo)
+    ground_walks = {(a, b) for a, b in walks if not geo.is_top[a] and not geo.is_top[b]}
+    ground_loud = {(a, b) for a, b in loud if not geo.is_top[a] and not geo.is_top[b]}
+    assert (ground_walks, ground_loud) == ag.graph(ground)

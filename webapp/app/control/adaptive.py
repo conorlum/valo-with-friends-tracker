@@ -207,7 +207,7 @@ def validate_edges(geo, edges):
 
 
 def graph(geo):
-    """Runtime adjacency, including the existing unresolved-ground fallback, at leaf scale."""
+    """Runtime adjacency at leaf scale: ground fallback, then local height-qualified climbs."""
     walks, loud = set(), set()
     for edges in (geo.heights.edges, geo.heights.fine_edges):
         for a, fa, b, fb, kind in edges:
@@ -233,6 +233,33 @@ def graph(geo):
         if any(s < 0 or not geo.space_walk[s] or not any(n >= 0 and (na, int(n)) in walks and (int(n), nb) in walks
                 for n in geo.space_nodes[s]) for s in sides):
             walks.discard((na, nb)); loud.discard((na, nb))
+    if len(geo.top_nodes):
+        # Only explicit ground-edge endpoints qualify, never unresolved fallback leaves.
+        endpoints = [geo.space_nodes[edges[:, (0, 2)], edges[:, (1, 3)]].ravel()
+                     for edges in (geo.heights.edges, geo.heights.fine_edges)]
+        ground = np.unique(np.concatenate(endpoints))
+        ground = ground[ground >= 0]
+        ground = ground[np.isfinite(geo.node_z[ground]) & ~geo.is_top[ground]]
+        candidates = np.union1d(ground, geo.top_nodes)  # ascending IDs, deterministic ties/iteration
+        boxes = geo.node_bbox[candidates].astype(float)
+        pieces = np.zeros(geo.n, np.int32)
+        pieces[geo.top_nodes] = geo.top_piece
+        reach = hc.TOP_REACH_M / geo.m_per_px + 1e-6
+        for t in sorted(geo.top_nodes):
+            box = geo.node_bbox[t]
+            gap = np.maximum(np.maximum(boxes[:, :2] - box[2:], box[:2] - boxes[:, 2:]), 0)
+            distance = np.hypot(gap[:, 0], gap[:, 1])
+            same_piece = pieces[candidates] == pieces[t]
+            local = np.where(same_piece, distance == 0, distance <= reach)
+            near = candidates[local & (candidates != t)]
+            dz = geo.node_z[near] - geo.node_z[t]
+            # Each direction has its own rise limit and its own loud-drop qualification.
+            up = near[dz <= hc.STEP_UP_M + 1e-6]
+            down = near[-dz <= hc.STEP_UP_M + 1e-6]
+            walks.update((int(t), int(n)) for n in up)
+            walks.update((int(n), int(t)) for n in down)
+            loud.update((int(t), int(n)) for n in near[-dz > hc.SILENT_DROP_M + 1e-6])
+            loud.update((int(n), int(t)) for n in near[dz > hc.SILENT_DROP_M + 1e-6])
     return walks, loud
 
 

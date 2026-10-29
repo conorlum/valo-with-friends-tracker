@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
 
 from control_toys import (BOX_PX, BOX_RING, GRID, THREE_BOXES, box_hall, box_hall_no_tops, box_hall_tops,  # noqa: E402
-                          on_box_track, three_boxes_tops, tops_hall, z_track)
+                          TOY_Z0, on_box_track, three_boxes_tops, tops_hall, z_track)
 from test_stance import CENTRE, round_of, stance  # noqa: E402
 
 T_END = 10.0
@@ -36,6 +36,16 @@ def stay_then(x, y, z=1.0, via=None):
 
 def labels(geo):
     return {name: int(geo.cover_px[(r[1] + r[3]) // 2, (r[0] + r[2]) // 2]) for name, r in THREE_BOXES.items()}
+
+
+def adaptive_tops(*, two_pieces=False):
+    from app.control import geometry as cg
+    from tests.replays.test_top_nodes import topped, two_piece_tops
+
+    geo = two_piece_tops() if two_pieces else topped()
+    # The graph toys use origin 0; stance tracks encode world dm above TOY_Z0.
+    geo.heights.meta['origin_z'] = TOY_Z0
+    return cg.attach_heights(geo, geo.heights)
 
 
 # ------------------------------------------------------------------ inside the outline
@@ -81,6 +91,7 @@ def test_a_flat_map_with_no_heights_is_never_on_box_even_with_a_ground_player_fo
 
 def test_an_in_outline_on_box_anchor_is_a_walkable_node_beside_the_box():
     geo = box_hall_tops()
+    assert not geo.top_nodes.size  # coarse assets retain the original anchor
     st = stance(geo, on_box_track(*CENTRE), 5.0)
     assert st.kind == "on_box" and st.anchor is not None and geo.walk.ravel()[st.anchor]
     assert st.anchor != geo.node_at_px(*st.px)           # the box cells are never walkable
@@ -97,6 +108,7 @@ def test_steady_on_a_three_boxes_piece_names_that_piece():
 
 def test_off_the_outline_without_entry_is_on_box_with_the_node_under_the_pixel():
     geo = box_hall_tops()
+    assert not geo.top_nodes.size
     st = stance(geo, on_box_track(244.0, 196.0), 8.0)
     assert st is not None and st.kind == "on_box" and st.see_over == (1,)
     assert int(geo.cover_px[int(st.px[1]), int(st.px[0])]) == 0, "the pixel is off the outline"
@@ -192,10 +204,58 @@ def test_the_nearest_matching_piece_wins_without_entry(x, nearest):
 
 def test_a_pixel_on_a_can_match_bs_top_in_reach():
     geo = close_boxes(rises=(1.0, 2.0))
+    assert not geo.top_nodes.size
     st = stance(geo, on_box_track(166.5, 196.0, rise_m=2.0), 8.0)
     assert geo.cover_px[196, 166] == 1
     assert st.kind == "on_box" and st.piece == 2
     assert st.anchor == geo.node_at_px(*st.px)
+
+
+@pytest.mark.parametrize('xy', [(202, 202), (206, 206), (198, 202)])
+def test_adaptive_on_box_anchor_is_the_pieces_nearest_top_node(xy):
+    geo = adaptive_tops()
+    st = stance(geo, on_box_track(*xy, rise_m=1.2), 8.0)
+    assert st is not None and st.kind == 'on_box'
+    nodes = geo.top_nodes[geo.top_piece == st.piece]
+    expected = min(nodes, key=lambda n: (np.linalg.norm(geo.centres[n] - st.px), n))
+    assert st.anchor == expected and geo.is_top[st.anchor]
+
+
+def test_adaptive_top_anchor_tie_uses_the_lower_node_id():
+    geo = adaptive_tops()
+    geo.centres[geo.top_nodes] = (204, 204)
+    st = stance(geo, on_box_track(204, 204, rise_m=1.2), 8.0)
+    assert st.kind == 'on_box' and st.anchor == min(geo.top_nodes)
+    assert geo.is_top[st.anchor]
+
+
+def test_adaptive_anchor_uses_the_matched_piece_even_on_another_pieces_pixel():
+    geo = adaptive_tops(two_pieces=True)
+    st = stance(geo, on_box_track(203.5, 202, rise_m=2.0), 8.0)
+    assert st.kind == 'on_box' and st.piece == 2
+    assert geo.cover_px[int(st.px[1]), int(st.px[0])] == 1
+    nearest = min(geo.top_nodes, key=lambda n: (np.linalg.norm(geo.centres[n] - st.px), n))
+    assert geo.top_piece[geo.top_nodes == nearest] == 1
+    nodes = geo.top_nodes[geo.top_piece == 2]
+    assert st.anchor == min(nodes, key=lambda n: (np.linalg.norm(geo.centres[n] - st.px), n))
+    assert geo.is_top[st.anchor]
+
+
+@pytest.mark.parametrize('xy', [(202, 202), (198, 202)])
+def test_a_piece_without_top_nodes_keeps_its_old_anchor(xy):
+    from app.control import stance as st_mod
+
+    geo = adaptive_tops(two_pieces=True)
+    keep = geo.top_piece != 1
+    geo.top_nodes, geo.top_piece, geo.top_leaf = geo.top_nodes[keep], geo.top_piece[keep], geo.top_leaf[keep]
+    assert geo.top_nodes.size  # another piece still has top nodes
+    rnd = round_of(geo, {0: on_box_track(*xy)})
+    st = st_mod.stance_at(rnd, 0, 8.0)
+    assert st.kind == 'on_box' and st.piece == 1
+    label = int(geo.cover_px[int(st.px[1]), int(st.px[0])])
+    old = (st_mod._anchor(rnd, 0, rnd._sample(0, 8.0), st.px, 1) if label
+           else int(geo.node_at_px(*st.px)))
+    assert st.anchor == old and not geo.is_top[st.anchor]
 
 
 def test_the_piece_under_the_pixel_matches_before_a_neighbour():
