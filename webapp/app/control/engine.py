@@ -420,6 +420,8 @@ class RoundInputs:
                 self.missing["approximate heights (a player's track has no z: lowest floor used)"] += 1
             if geo.height_unknown:
                 self.missing["height asset built on another walk mask (flat 2D in the cells it lacks)"] += 1
+            if geo.height_tops_ignored:
+                self.missing["learnt box tops ignored without refinement"] += 1
 
     # --- lives
 
@@ -767,7 +769,7 @@ class RoundInputs:
                 start = np.zeros(geo.n, bool)
                 start[node] = True
                 steps = int(math.ceil(AREA_TRIPS[key] / geo.cell_m)) + 1
-                walked = topology.of(geo).dilate(start, eight=True, iterations=steps, within=geo.walk_n)
+                walked = topology.of(geo).dilate(start, eight=True, iterations=steps, within=geo.walk_n & ~geo.is_top)
                 self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & seen & walked)))
         elif key in DRONES and e.get("path"):
             half, rng = DRONES[key]
@@ -2742,9 +2744,10 @@ class Unknown:
         if self.geo.adaptive:
             geo = self.geo
             layered = (geo.space_nodes >= 0).sum(1) > 1
-            stacked = set(lab[geo.walk_n & layered[geo.node_space]].tolist())
+            ground = geo.walk_n & ~geo.is_top
+            stacked = set(lab[ground & layered[geo.node_space]].tolist())
             spatial_lab = np.zeros(len(geo.space_walk), np.int32)
-            spatial_lab[geo.node_space[geo.walk_n & (lab > 0)]] = lab[geo.walk_n & (lab > 0)]
+            spatial_lab[geo.node_space[ground & (lab > 0)]] = lab[ground & (lab > 0)]
             fine = spatial_lab[geo.space_grid]
             for j in np.flatnonzero(size > DROP_PIECE_CELLS):
                 if j == 0 or j in stacked:

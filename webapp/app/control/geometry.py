@@ -345,6 +345,11 @@ class Geometry:
     node_z: np.ndarray = None             # node -> position-z in metres above the map's lowest floor; NaN if unknown
     node_of: np.ndarray = None            # GRID*GRID x MAX_FLOORS: a cell's nodes, lowest first, -1 for none
     walk_n: np.ndarray = None             # node -> walkable
+    is_top: np.ndarray = None             # node -> learnt box top, separate from ground lookup tables
+    top_nodes: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    top_piece: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    top_leaf: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    height_tops_ignored: int = 0          # learnt rows ignored by coarse attachment; reported in round missing notes
     unresolved: np.ndarray = None         # flat cell -> walkable with no known height (flat 2D sight and walking)
     heights: object = None                # the map's HeightAsset, or None on a flat map
     height_sha: str | None = None
@@ -459,6 +464,7 @@ def geometry_from_masks(name: str, sight: np.ndarray, walk_px: np.ndarray, scale
     geo.centres = np.stack([xs * CELL + CELL / 2, ys * CELL + CELL / 2], 1).astype(np.float32)
     geo.node_cell = np.arange(GRID * GRID, dtype=np.int32)
     geo.walk_n = geo.walk.ravel().copy()
+    geo.is_top = np.zeros(geo.n, bool)
     geo.node_area = np.ones(geo.n, float)
     return geo
 
@@ -498,9 +504,15 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     geo.height_cover_dropped = 0
     geo.rows = geo.row_of = None
     geo.node_area = np.ones(geo.n, float)
+    geo.is_top = np.zeros(geo.n, bool)
+    geo.top_nodes = np.empty(0, np.int32)
+    geo.top_piece = np.empty(0, np.int32)
+    geo.top_leaf = np.empty(0, np.int32)
+    geo.height_tops_ignored = 0
     if asset.refinement is not None and len(asset.fine_cells):
         from app.control.adaptive import attach
         return attach(geo, asset)
+    geo.height_tops_ignored = len(asset.box_tops) if asset.box_tops is not None else 0
     return geo
 
 
@@ -1052,7 +1064,13 @@ def cache_key(geo: Geometry) -> str:
     digest.update(np.packbits(geo.sight).tobytes())
     digest.update(np.packbits(geo.walk_px).tobytes())
     if geo.heights is not None:      # a flat map's key is what it always was
+        top_digest = hashlib.sha256()
+        if len(geo.top_nodes):
+            for values, dtype in ((geo.top_nodes, '<i4'), (geo.top_piece, '<i4'),
+                                  (geo.node_z[geo.top_nodes], '<f8')):
+                top_digest.update(np.asarray(values, dtype=dtype).tobytes())
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
+                                  **({'top_nodes': top_digest.hexdigest()} if len(geo.top_nodes) else {}),
                                   **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
                                   **({'cover_dropped': geo.height_cover_dropped}

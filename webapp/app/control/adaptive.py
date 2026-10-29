@@ -109,7 +109,34 @@ def attach(geo, asset):
             node_space.append(sid); node_parent.append(p); all_nodes[p].append(n)
             node_z.append(float(floors[level]) / 10 if floors[level] >= 0 else math.nan)
             node_walk.append(walk); node_area.append(.25)
+    # Tops have their own nodes, never ground floor slots. piece_tops reads only heights and cover,
+    # so it is safe before the mixed node arrays have been installed.
+    ground_count = len(node_z)
+    top_piece, top_leaf = [], []
+    tops = geo.box_tops
+    if tops:
+        rows = np.asarray(asset.box_tops)
+        labels = geo.cover_px[rows[:, 1], rows[:, 0]]
+        piece_rows = {p: rows[labels == p] for p in tops}
+        touched = geo.cover_px.reshape(FINE, 4, FINE, 4).any((1, 3))
+        for sid in np.unique(grid[touched]):
+            x0, y0, x1, y1 = bbox[sid]
+            pieces, counts = np.unique(geo.cover_px[y0:y1, x0:x1], return_counts=True)
+            majority = pieces[counts > (int(x1-x0) * int(y1-y0)) / 2]
+            if not len(majority) or int(majority[0]) not in tops:
+                continue
+            p = int(majority[0]); got = piece_rows[p]
+            distance = (got[:, 0] - (x0+x1)/2) ** 2 + (got[:, 1] - (y0+y1)/2) ** 2
+            # Equal pixel distances prefer the lower top, then row/column; asset row order is irrelevant.
+            nearest = np.lexsort((got[:, 0], got[:, 1], got[:, 2], distance))[0]
+            node_z.append(float(got[nearest, 2]) / 10)
+            node_walk.append(True); node_area.append(int(x1-x0) * int(y1-y0) / 64)
+            node_parent.append(int(y0) // 8 * 128 + int(x0) // 8); node_space.append(int(sid))
+            top_piece.append(p); top_leaf.append(int(sid))
     geo.n = len(node_z)
+    geo.is_top = np.arange(geo.n) >= ground_count
+    geo.top_nodes = np.arange(ground_count, geo.n, dtype=np.int32)
+    geo.top_piece = np.asarray(top_piece, np.int32); geo.top_leaf = np.asarray(top_leaf, np.int32)
     geo.node_space = np.asarray(node_space, np.int32)
     geo.node_cell = np.asarray(node_parent, np.int32)
     geo.node_z = np.asarray(node_z, float); geo.walk_n = np.asarray(node_walk, bool)

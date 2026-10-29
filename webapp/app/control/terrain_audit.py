@@ -60,7 +60,7 @@ def audit(geo, regions, *, context_px=16):
     results = []
     for region in checked:
         x0, y0, x1, y1 = region['bbox_px']
-        mask = geo.walk_n & (node_bbox[:, 2] > x0-context_px) & (node_bbox[:, 0] < x1+context_px) \
+        mask = geo.walk_n & ~geo.is_top & (node_bbox[:, 2] > x0-context_px) & (node_bbox[:, 0] < x1+context_px) \
             & (node_bbox[:, 3] > y0-context_px) & (node_bbox[:, 1] < y1+context_px)
         touches = mask[src] | mask[dst]
         candidates = touches & large & edge_quiet & (edge_kind == hc.EDGE_STEP)

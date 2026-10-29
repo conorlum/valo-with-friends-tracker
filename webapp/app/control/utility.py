@@ -401,7 +401,7 @@ def heard(rnd, side: str, t: float, x: float, y: float, range_m: float) -> bool:
 def outside_hearing(rnd, side: str, t: float, range_m: float) -> np.ndarray:
     """The walkable nodes no listening player of `side` hears from at t: everywhere they could have gone unheard."""
     geo = rnd.geo
-    out = geo.walk_n.copy()
+    out = geo.walk_n & ~geo.is_top
     r = range_m / geo.m_per_px
     for s, team in rnd.team.items():
         if team != side or not listens(rnd, s, t):
@@ -530,9 +530,9 @@ def ordered(infos) -> list[Info]:
 def footprint(info: Info, geo) -> np.ndarray:
     """The Info's nodes: its own mask, else the walkable nodes within radius_m of (x, y) px, through walls."""
     if info.mask is not None:
-        return info.mask.astype(bool) & geo.walk_n
+        return info.mask.astype(bool) & geo.walk_n & ~geo.is_top
     if info.x is None or info.y is None or info.radius_m is None:
         return np.zeros(geo.n, bool)
     r = info.radius_m / geo.m_per_px
     near = (geo.centres[:, 0] - info.x) ** 2 + (geo.centres[:, 1] - info.y) ** 2 <= r * r
-    return near & geo.walk_n
+    return near & geo.walk_n & ~geo.is_top

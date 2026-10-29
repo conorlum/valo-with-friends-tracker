@@ -72,8 +72,11 @@ def test_box_hall_tops_has_the_box_top_and_reach_round_the_box():
     reach = geo.box_reach
     x0, y0, x1, y1 = BOX_PX
     assert reach is not None and reach.shape[-1] == 3
-    for x, y in ((x0 - 10, 196), (x1 + 10, 196), (260, y0 - 10), (260, y1 + 10), (260, 196)):
+    # TOP_REACH_M is 0.75 m: 5 px at the toy's ~0.137 m per pixel is inside it, 10 px is not.
+    for x, y in ((x0 - 5, 196), (x1 + 5, 196), (260, y0 - 5), (260, y1 + 5), (260, 196)):
         assert reach[y, x, 0] == 1, (x, y)
+    for x, y in ((x0 - 10, 196), (x1 + 10, 196), (260, y0 - 10), (260, y1 + 10)):
+        assert reach[y, x, 0] == 0, (x, y)
     assert reach[196, x0 - 100, 0] == 0
     assert (geo.cover_px == box_hall().cover_px).all(), "the same cover as the tops-free toy"
 
