@@ -70,7 +70,10 @@ def test_a_cover_build_learns_the_top_and_changes_nothing_else():
     assert z == z_dm(1.2) - learnt.asset.origin_z
     for name in ("floors", "spread", "supported", "unresolved", "edges", "kind"):
         assert (getattr(plain.asset, name) == getattr(learnt.asset, name)).all(), name
-    assert as_json(plain.report) == as_json(learnt.report)
+    assert as_json(plain.report) == as_json({k: v for k, v in learnt.report.items() if not k.startswith('box_')})
+    assert learnt.report['box_conflicts'] == 0
+    assert learnt.report['box_counts']['teach'] == 6
+    assert 'box_conflicts' not in learnt.asset.meta and 'box_conflicts' not in plain.report
     assert plain.asset.meta == learnt.asset.meta
     assert learnt.asset.digest != plain.asset.digest
 
@@ -120,10 +123,81 @@ def test_none_and_empty_tops_are_the_same_asset_and_the_same_file(tmp_path, empt
     assert hc.load_asset(tmp_path / "b.npz").box_tops is None
 
 
-def test_a_refinement_that_moves_the_origin_moves_the_tops_with_the_floors():
-    from app.control import adaptive  # noqa: F401 - the shift lives there
-    src = Path(adaptive.__file__).read_text(encoding="utf-8")
-    assert "asset.box_tops[:, 2] += shift" in src
+def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monkeypatch):
+    from app.control import box_tops as bt, height_refinement as hr
+    parent = GEO.cell_of_px(292, 160)
+    previous = hr.history(GEO.name, [parent])
+    original = hr.analyze
+
+    def lower_child(*args):
+        evidence = original(*args)
+        for child in evidence['children']:
+            child['floors_world_dm'] = [(z_dm(-1), 0)]
+            child['kind'] = hc.KIND_STANDS
+        return evidence
+
+    monkeypatch.setattr(hr, 'analyze', lower_child)
+    judge = bt.judge
+    seen = []
+
+    def after_refine(stands, ground, leaf_floor):
+        # The connected child is in the new world frame and is visible to the judge.
+        assert z_dm(-1) in leaf_floor((292, 160))
+        seen.append(True)
+        return judge(stands, ground, leaf_floor)
+
+    monkeypatch.setattr(bt, 'judge', after_refine)
+    sample = hb.build(rounds(), GEO, cover_px=cover(), refinement_history=previous)
+    assert sample.asset.origin_z == z_dm(-1) and seen == [True]
+    for x, y, z in sample.asset.box_tops:
+        assert cover()[y, x] == 1 and z + sample.asset.origin_z == z_dm(1.2)
+
+
+def test_conflicts_are_world_records_in_meta_and_report_links_and_round_trip(tmp_path):
+    outside = ('B', [(0., 299, 160, 0, 3.), (30., 299, 160, 0, 3.)])
+    sample = hb.build(covered_rounds({9: outside}), GEO, cover_px=cover())
+    conflicts = sample.asset.meta['box_conflicts']
+    assert sample.report['box_conflicts'] == sample.report['box_counts']['conflict'] == len(conflicts) == 6
+    assert sample.asset.box_tops is None
+    first = conflicts[0]
+    assert first == dict(match='match-0', round=1, slot=9, t0=0., t1=30., z=z_dm(3.) / 10,
+                         candidates=[[1, []]], px=[299, 159])  # decoded toy y is 159.9488 px
+    lines = hb.report_lines('Toy', sample.report)
+    assert any('6 box conflicts' in line for line in lines)
+    assert f"  box conflict: piece(s) 1 z {first['z']} m 30.0 s https://valowithfriendstracker.onrender.com/replays/match-0?round=1&t=0.0" in lines
+    hc.save_asset(tmp_path / 'conflicts.npz', sample.asset)
+    back = hc.load_asset(tmp_path / 'conflicts.npz')
+    assert back.meta['box_conflicts'] == conflicts and back.digest == sample.asset.digest
+
+
+def test_box_stands_get_the_same_blackouts_and_platform_filter(monkeypatch):
+    from tests.replays.control_toys import toy_ability
+    monkeypatch.setattr(hb.hm, 'blackouts', lambda blob, geo: {9: [(0., 30.)]})
+    start_on = ('B', [(0., 308, 160, 0, 1.2), (30., 308, 160, 0, 1.2)])
+    blacked = hb.build(covered_rounds({9: start_on}), GEO, cover_px=cover())
+    assert blacked.asset.box_tops is None
+    assert blacked.report['box_counts']['blackout'] == 6
+    assert blacked.report['box_counts']['teach'] == 0
+    monkeypatch.setattr(hb.hm, 'blackouts', lambda blob, geo: {})
+    inputs = rounds()
+    for _, _, blob in inputs:
+        blob['util'] = [toy_ability('Thorne', 'E_Wall_Fortifying', 308, 160, 1, t=0., t1=30., kind='GameObject')]
+    platform = hb.build(inputs, GEO, cover_px=cover())
+    assert platform.asset.box_tops is None
+    assert platform.report['box_counts']['platform'] >= 6
+    assert platform.report['box_counts']['teach'] == 0
+
+
+def test_connected_leaf_floor_requires_an_edge_endpoint_at_the_matching_level():
+    asset = hb.build(covered_rounds(), GEO).asset
+    cell = GEO.cell_of_px(299, 160)
+    other = cell - 1
+    asset.floors.reshape(-1, hc.MAX_FLOORS)[cell] = [0, 20, -1]
+    asset.edges = np.array([[cell, 0, other, 0, hc.EDGE_STEP]], np.int32)
+    leaf = hb.box_leaf_floor(GEO, asset)
+    assert leaf((299, 160)) == (asset.origin_z,)
+    asset.edges = np.array([[cell, 1, other, 0, hc.EDGE_STEP]], np.int32)
+    assert hb.box_leaf_floor(GEO, asset)((299, 160)) == (asset.origin_z + 20,)
 
 
 # ---------------------------------------------------------------- the manifest

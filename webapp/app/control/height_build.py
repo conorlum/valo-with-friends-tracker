@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+import copy
 
 import hashlib
 from collections import Counter
@@ -304,7 +305,11 @@ def all_ground(rounds, geo: Geometry, cover_px=None) -> tuple[list[Stand], list[
     found, found_walks, match_of, dt, box_stands = [], [], [], [], []
     counts = {"stands": 0, "walks": 0, "on_platforms": 0, "blackouts": 0, "rounds": 0, "matches": 0,
               "rounds_without_z": 0, "visited": np.zeros(GRID * GRID, bool)}
-    for i, (match, _, blob) in enumerate(rounds):
+    if cover_px is not None:
+        from app.control import box_tops
+        reach = box_tops.reach_distances(cover_px, geo.m_per_px)
+        box_filters = dict(platform=0, blackout=0)
+    for i, (match, number, blob) in enumerate(rounds):
         match_of.append(str(match))
         dt.append(1.0 / blob["hz"])
         skip = hm.blackouts(blob, geo)
@@ -321,13 +326,20 @@ def all_ground(rounds, geo: Geometry, cover_px=None) -> tuple[list[Stand], list[
         found += kept
         found_walks += off_platforms(strides, plats, geo)
         if cover_px is not None:
-            from app.control import box_tops
-            box_stands += box_tops.top_stands(blob, cover_px, i)
+            raw = box_tops.top_stands(blob, cover_px, i, m_per_px=geo.m_per_px, reach=reach)
+            # Count original stands affected, rather than a length difference (a blackout can split one in two).
+            box_filters['blackout'] += sum(any(t0 <= s.t1 and s.t0 <= t1 for t0, t1 in skip.get(s.slot, ()))
+                                           for s in raw)
+            clean = box_tops.top_stands(blob, cover_px, i, m_per_px=geo.m_per_px, reach=reach, skip=skip) if skip else raw
+            kept_boxes = off_platforms(clean, plats, geo)
+            box_filters['platform'] += len(clean) - len(kept_boxes)
+            box_stands += [replace(s, match=str(match), round=int(number)) for s in kept_boxes]
     match_ids = sorted(set(match_of))
     counts.update({"stands": len(found), "walks": len(found_walks), "rounds": len(match_of),
                    "matches": len(match_ids), "dt": dt})
     if cover_px is not None:
         counts["box_stands"] = box_stands
+        counts["box_filters"] = box_filters
     return found, found_walks, [match_ids.index(m) for m in match_of], counts
 
 
@@ -618,13 +630,40 @@ def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, 
     return share, not_ready
 
 
+def box_leaf_floor(geo, asset):
+    """A pixel -> connected world-dm floors lookup on a copy of the final (possibly refined) geometry.
+    Only explicit edge endpoints qualify; unresolved fallback adjacency is not ground evidence."""
+    from app.control.geometry import attach_heights
+
+    candidate = attach_heights(copy.copy(geo), asset)
+    nodes = candidate.space_nodes if candidate.adaptive else candidate.node_of
+    walking = candidate.space_walk if candidate.adaptive else candidate.walk.ravel()
+    connected = defaultdict(set)
+    for edges in (candidate.heights.edges, candidate.heights.fine_edges):
+        if edges is None:
+            continue
+        for a, fa, b, fb, _ in edges:
+            na, nb = int(nodes[a, fa]), int(nodes[b, fb])
+            if na < 0 or nb < 0 or not walking[a] or not walking[b]:
+                continue
+            for sid, node in ((a, na), (b, nb)):
+                if np.isfinite(candidate.node_z[node]):
+                    connected[int(sid)].add(int(round(candidate.node_z[node] * DM)) + asset.origin_z)
+
+    def leaf_floor(px):
+        return tuple(sorted(connected.get(candidate.space_at_px(*px), ())))
+
+    return leaf_floor
+
+
 def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> HeightBuild:
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not. `cover_px` (the cover piece labels)
-    also learns the pieces' tops into the asset's `box_tops`; floors, edges and the report do not read them."""
+    also learns the pieces' tops and reports conflicts after the ground's final refinement."""
     found, found_walks, round_match, counts = all_ground(rounds, geo, cover_px)
     dt = counts.pop("dt")
     box_stands = counts.pop("box_stands", [])
+    box_filters = counts.pop("box_filters", {})
     floors, reasons, kinds = cell_floors(found, round_match, geo, found_walks)
     filled, why = fill(floors, reasons, geo)
     sloped, granted = fill_gradient(floors, why, crossings([*found, *found_walks]), geo)
@@ -679,17 +718,26 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
                            supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta,
                            kind.reshape(GRID, GRID))
-    if box_stands:
-        from app.control import box_tops
-        ground = {p: g + int(origin) for p, g in box_tops.ground_of(cover_px, asset_floors).items()}
-        tops = box_tops.top_rows(box_tops.on_a_step(box_stands, ground))
-        tops[:, 2] -= int(origin)                 # the asset's frame, like `floors`
-        tops = tops[tops[:, 2] >= 0]              # (a top under the lowest floor is no top)
-        asset.box_tops = tops if len(tops) else None
     result = HeightBuild(asset, report, found, why, not not_ready, found_walks)
     if refinement_history is not None:
         from app.control.adaptive import refine
         result = refine(result, geo, found, found_walks, round_match, floors, reasons, refinement_history)
+    if cover_px is not None:
+        from app.control import box_tops
+        asset = result.asset
+        ground = {p: g + asset.origin_z for p, g in box_tops.ground_of(
+            cover_px, asset.floors, fine_cells=asset.fine_cells, fine_floors=asset.fine_floors).items()}
+        covered_geo = copy.copy(geo)
+        covered_geo.cover_px = cover_px
+        tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset))
+        tops[:, 2] -= asset.origin_z
+        tops = tops[tops[:, 2] >= 0]
+        asset.box_tops = tops if len(tops) else None
+        if conflicts:
+            asset.meta['box_conflicts'] = conflicts
+            result.report['box_conflict_records'] = conflicts
+        box_counts.update(box_filters)
+        result.report.update(box_conflicts=len(conflicts), box_counts=box_counts)
     return result
 
 
@@ -721,6 +769,14 @@ def report_lines(name: str, report: dict) -> list[str]:
         out.append(f"  mixed 8/4px runtime: {r['refined_parents']} refined parent cells; "
                    f"supported physical area {r['supported_area_px2']}/{r['walkable_area_px2']} px2. "
                    "Visited, kind, edge and region diagnostics above use the original 8px grid.")
+    if r.get('box_conflicts'):
+        out.append(f"  {r['box_conflicts']} box conflicts")
+        for conflict in r.get('box_conflict_records', ()):
+            ids = ', '.join(str(p) for p, _ in conflict['candidates'])
+            duration = round(conflict['t1'] - conflict['t0'], 3)
+            out.append(f"  box conflict: piece(s) {ids} z {conflict['z']} m {duration} s "
+                       f"https://valowithfriendstracker.onrender.com/replays/{conflict['match']}"
+                       f"?round={conflict['round']}&t={conflict['t0']:.1f}")
     out.append(f"  {'READY' if r['ready'] else 'NOT READY: ' + '; '.join(r['not_ready'])}")
     return out
 

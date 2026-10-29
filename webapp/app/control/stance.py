@@ -76,8 +76,9 @@ def _top_match(rnd, slot: int, i: int, tops, ground):
     med = float(np.median(win))
     if med < ground + BOX_STEP_M - EPS:
         return None
-    matches = [t for t in tops if t - TOP_TOL_M - CROUCH_DROP_M - EPS <= med <= t + TOP_TOL_M + EPS]
-    return min(matches, key=lambda t: (abs(t - med), t)) if matches else None
+    from app.control.box_tops import match_top
+
+    return match_top(med, tops)
 
 
 def _on_piece(rnd, slot: int, i: int, piece: int) -> float | None:

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -57,13 +58,13 @@ def cat(*parts):
 
 
 def tops(b, c=None, ground=GROUND):
-    return bt.on_a_step(bt.top_stands(b, cover() if c is None else c), ground)
+    return bt.on_a_step(bt.top_stands(b, cover() if c is None else c, m_per_px=1.0), ground)
 
 
 def test_jump_up_is_a_top_stand():
     xs, ys, zs = cat(walk_in(20), ([121.0] * 25, [120.0] * 25, list(np.linspace(20, 32, 25))),
                      const(121, 120, 30, 1.0))
-    st = bt.on_a_step(bt.top_stands(blob(seg(5.0, xs, ys, zs)), cover(), round_index=4), GROUND)
+    st = bt.on_a_step(bt.top_stands(blob(seg(5.0, xs, ys, zs)), cover(), round_index=4, m_per_px=1.0), GROUND)
     assert len(st) == 1
     s = st[0]
     assert (s.round_index, s.slot, s.seg, s.piece, s.z_dm) == (4, 3, 0, 1, 30)
@@ -74,7 +75,7 @@ def test_jump_up_is_a_top_stand():
 def test_hugger_is_a_box_stand_but_not_a_top():
     xs, ys, zs = cat(walk_in(20), const(120, 120, 20, 2.0))
     b = blob(seg(0.0, xs, ys, zs))
-    assert [s.z_dm for s in bt.top_stands(b, cover())] == [20]
+    assert [s.z_dm for s in bt.top_stands(b, cover(), m_per_px=1.0)] == [20]
     assert tops(b) == []
 
 
@@ -226,3 +227,114 @@ def test_ground_reads_a_cells_other_floors():
 def test_a_piece_with_no_floor_round_it_is_left_out():
     g = bt.ground_of(cover(), floors_at({(190, 120): 20}))     # right of piece 2 only
     assert 1 not in g and g[2] == 20
+
+
+# W6: judging is in world dm; diagnostic records are in world metres.
+def stand(z=40, inside=1, candidates=(1,), px=(120, 120), **kw):
+    return bt.TopStand(0, 4, 0, 17.448, 26.856, inside, z, px,
+                       candidates=candidates, match="toy-match", round=13, **kw)
+
+
+def test_reach_collects_all_candidates_and_splits_when_leaving_reach():
+    parts = cat(const(139, 120, 40, 1), const(90, 120, 40, 1), const(99, 120, 40, 1))
+    found = bt.top_stands(blob(seg(0, *parts)), cover(), m_per_px=0.14)
+    assert len(found) == 2
+    assert (found[0].inside, found[0].candidates) == (1, (1, 2))
+    assert (found[1].inside, found[1].candidates) == (0, (1,))
+
+
+def test_reach_is_in_metres_and_does_not_limit_candidate_count():
+    c = np.zeros((PX, PX), np.int16)
+    for p, xy in enumerate(((120, 120), (119, 120), (121, 120), (120, 119)), 1):
+        c[xy[1], xy[0]] = p
+    b = blob(seg(0, *const(120, 120, 40, 1)))
+    assert bt.top_stands(b, c, m_per_px=0.14)[0].candidates == (1, 2, 3, 4)
+    assert bt.top_stands(b, c, m_per_px=1)[0].candidates == (1,)
+
+
+def test_one_segment_has_several_steady_stands_including_a_crouch():
+    parts = cat(const(120, 120, 40, 1), const(120, 120, 37, 1), const(120, 120, 40, 1))
+    assert [s.z_dm for s in bt.top_stands(blob(seg(0, *parts)), cover(), m_per_px=0.14)] == [40, 37, 40]
+
+
+def test_blackout_cuts_a_stand_without_joining_its_two_sides():
+    b = blob(seg(0, *const(120, 120, 40, 3)))
+    found = bt.top_stands(b, cover(), m_per_px=0.14, skip={3: [(1., 2.)]})
+    assert len(found) == 2 and found[0].t1 < 1 and found[1].t0 > 2
+    assert all(s.seg == 0 and s.t1 - s.t0 >= hc.BOX_SETTLE_S for s in found)
+
+
+def test_ring_ground_uses_child_floors_when_the_parent_has_been_refined():
+    f = floors_at({})
+    child = 120 // 4 * (PX // 4) + 92 // 4
+    ground = bt.ground_of(cover(), f, fine_cells=np.array([child], np.int32),
+                          fine_floors=np.array([[20, -1, -1]], np.int16))
+    assert ground == {1: 20}
+
+
+def test_only_inside_single_candidate_stands_teach_and_others_assign():
+    teacher = stand()
+    outside = stand(inside=0, px=(99, 120))
+    rows, assigned, conflicts, counts = bt.judge([outside, teacher], GROUND, lambda px: ())
+    assert rows.tolist() == [[120, 120, 40]]
+    assert assigned == [(outside, 1, 40)] and conflicts == []
+    assert counts == dict(teach=1, assign=1, conflict=0, ground=0, platform=0, blackout=0)
+    rows, assigned, conflicts, counts = bt.judge([outside], GROUND, lambda px: ())
+    assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
+    assert conflicts[0]['candidates'] == [[1, []]]
+
+
+def test_real_shaped_ambiguous_stand_assigns_without_teaching():
+    row = {"slot": 4, "t0": 17.448, "t1": 26.856, "z": 5.5, "px": [503, 661], "inside": 26,
+           "d": {"26": 0.0, "27": 0.469}, "match": "toy-match", "round": 13,
+           "cands": [26, 27], "fate": "assigned", "to": [26, 5.5]}
+    s = bt.TopStand(0, row['slot'], 0, row['t0'], row['t1'], row['inside'], round(row['z'] * 10),
+                    tuple(row['px']), candidates=tuple(row['cands']), match=row['match'], round=row['round'])
+    teacher = stand(55, inside=26, candidates=(26,), px=(500, 660))
+    rows, assigned, conflicts, counts = bt.judge([s, teacher], {26: 20, 27: 20}, lambda px: ())
+    assert rows.tolist() == [[500, 660, 55]]
+    assert assigned == [(s, 26, 55)] and not conflicts and counts['teach'] == 1
+
+
+def test_candidate_step_filter_is_per_piece_and_connected_ground_is_outside_only():
+    ambiguous = stand(candidates=(1, 2))
+    outside = stand(inside=0)
+    rows, assigned, conflicts, counts = bt.judge([ambiguous, outside], {1: 20, 2: 40}, lambda px: (40,))
+    assert rows.tolist() == [[120, 120, 40]] and not assigned and not conflicts
+    assert counts['teach'] == counts['ground'] == 1
+    assert bt.judge([stand(20)], GROUND, lambda px: ())[3]['ground'] == 1
+    assert bt.judge([outside], GROUND, lambda px: (44,))[3]['conflict'] == 1
+
+
+@pytest.mark.parametrize('lower', [35, 37, 38])
+def test_crouch_joins_a_better_supported_level_across_the_same_piece(lower):
+    rows, _, _, counts = bt.judge([stand(lower, px=(108, 120)), stand(), stand()], GROUND, lambda px: ())
+    assert set(rows[:, 2]) == {40} and counts['teach'] == 3
+
+
+def test_crouch_does_not_fold_equal_support_or_a_larger_drop():
+    # Separate cells: the existing row merge can still combine equal levels within FLOOR_TOL_M in one cell.
+    assert set(bt.judge([stand(35, px=(108, 120)), stand()], GROUND, lambda px: ())[0][:, 2]) == {35, 40}
+    assert set(bt.judge([stand(34), stand(), stand()], GROUND, lambda px: ())[0][:, 2]) == {34, 40}
+
+
+def test_assignment_uses_the_crouch_window_then_distance_then_lower_piece_id():
+    teachers = [stand(40, inside=1, candidates=(1,)), stand(42, inside=2, candidates=(2,), px=(150, 120))]
+    for z, expected in ((35, (1, 40)), (39, (1, 40)), (41, (1, 40)), (45, (2, 42))):
+        s = stand(z, candidates=(2, 1))
+        assert bt.judge([*teachers, s], GROUND, lambda px: ())[1] == [(s, *expected)]
+
+
+def test_decimal_tie_uses_the_lower_top_within_one_piece():
+    teachers = [stand(41, px=(108, 120)), stand(43)]
+    s = stand(42, inside=0, px=(99, 120))
+    assert bt.judge([*teachers, s], GROUND, lambda px: ())[1] == [(s, 1, 41)]
+    assert bt.match_top(4.2, (4.3, 4.1)) == 4.1
+
+
+def test_conflict_fields_and_world_z_do_not_change_the_teacher():
+    s = stand(49, candidates=(2, 1))
+    rows, assigned, conflicts, counts = bt.judge([stand(), s], GROUND, lambda px: ())
+    assert rows.tolist() == [[120, 120, 40]] and not assigned and counts['conflict'] == 1
+    assert conflicts == [{"match": "toy-match", "round": 13, "slot": 4, "t0": 17.448, "t1": 26.856,
+                          "z": 4.9, "candidates": [[1, [4.0]], [2, []]], "px": [120, 120]}]
