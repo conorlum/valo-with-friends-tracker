@@ -15,8 +15,8 @@ from tests.replays.test_adaptive_cover import covered
 from tests.replays.control_toys import height_blob
 
 
-def topped(rows=((202, 202, 12),), *, cover=True):
-    geo = mixed()
+def topped(rows=((202, 202, 12),), *, cover=True, name='Split'):
+    geo = mixed(name=name)
     if cover:
         pixels = np.zeros((1024, 1024), bool)
         pixels[200:208, 200:216] = True  # four fine leaves plus one unrefined 8 px leaf, one piece
@@ -567,3 +567,110 @@ def test_top_sight_bounded_occluder_uses_the_top_head_and_feet(monkeypatch):
     seen = cf.cast_with(geo, 196, 204, np.array([0.0]), [], [object()], eye_z=hc.EYE_M)
     assert seen[top]
     assert any(np.any(np.all(batch == [212, 204, 1 + hc.HEAD_M], axis=1)) for batch in heads)
+
+
+def stored_topped(rows=((202, 202, 12),), *, partial=False, name='Split'):
+    """Permanent masks exclude the box, as on real maps; optionally cover only one fine leaf."""
+    source = topped(rows, name=name)
+    cover = source.cover_px > 0
+    if partial:
+        cover[204:208, 200:208] = False
+        cover[200:204, 204:208] = False
+    walk = source.walk_px & ~cover
+    geo = cg.geometry_from_masks(source.name, ~walk, walk, source.uv_per_unit / 10000)
+    cg.attach_cover(geo, cover, 'stored-top-toy')
+    asset = copy.deepcopy(source.heights)
+    asset.meta['origin_z'] = 37  # control_toys' world-height origin
+    cg.attach_heights(geo, asset)
+    # Archive the filtered toy asset, rather than its input's discarded cover floors.
+    geo.heights.__dict__.pop('digest_pinned', None)
+    return cg.attach_heights(geo, geo.heights)
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_round_stores_top_parent_state_and_all_masks(tmp_path, monkeypatch, partial):
+    from tests.replays.control_toys import on_box_track
+    monkeypatch.setattr(cg, 'cache_dir', lambda: tmp_path)
+    geo = stored_topped(partial=partial)
+    before = geo.walk.copy()
+    blob = height_blob({0: on_box_track(202, 202, rise_m=1.2, t_end=8)}, t_end=8)
+    blob['map'] = geo.name
+    result = ce.compute_round(blob, geo, ticks=np.array([2.]))
+    expected = before.ravel().copy()
+    expected[geo.node_cell[geo.top_nodes]] = True
+    assert np.array_equal(result.walk_cells, np.flatnonzero(expected))
+    assert np.array_equal(geo.walk, before), 'stored columns must not mutate permanent walkability'
+    for parent in np.unique(geo.node_cell[geo.top_nodes]):
+        col = int(np.flatnonzero(result.walk_cells == parent)[0])
+        assert result.states[0, col] != ce.NONE
+    own_col = int(np.flatnonzero(result.walk_cells == PARENT)[0])
+    assert result.coverage_masks[0, 0, own_col]
+    assert result.control_masks[0, 0, own_col]
+    assert result.knew_states['A'][0, own_col] != ce.NONE
+    assert all(mask.shape == result.states.shape for mask in result.unknown.values())
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_round_top_seconds_use_exact_parent_columns_and_leaf_areas(tmp_path, monkeypatch, partial):
+    from tests.replays.control_toys import on_box_track
+    monkeypatch.setattr(cg, 'cache_dir', lambda: tmp_path)
+    geo = stored_topped(partial=partial)
+    blob = height_blob({0: on_box_track(202, 202, rise_m=1.2, t_end=8)}, t_end=8)
+    blob['map'] = geo.name
+    states = []
+    def observe(tick, unknown):
+        assert tick.holders[0].stance.kind == 'on_box'
+        assert geo.is_top[tick.holders[0].cell]
+        states.append(tick.compose()['state'].copy())
+    result = ce.compute_round(blob, geo, ticks=np.array([2.]), knowledge=False, observer=SimpleNamespace(on_tick=observe))
+    assert len(states) == 1
+    # This toy has one walking node per leaf (ground OR top), with no overlapping floors.
+    nodes = np.flatnonzero(geo.walk_n)
+    assert len(np.unique(geo.node_space[nodes])) == len(nodes)
+    for section in result.sections:
+        expected = np.zeros_like(section.totals)
+        for node in nodes:
+            col = int(np.flatnonzero(result.walk_cells == geo.node_cell[node])[0])
+            expected[states[0][node], col] += section.seconds * geo.node_area[node]
+        np.testing.assert_allclose(section.totals, expected, atol=1e-6)
+        for parent in np.unique(geo.node_cell[geo.top_nodes]):
+            col = int(np.flatnonzero(result.walk_cells == parent)[0])
+            assert section.totals[1:, col].sum() > 0
+            assert section.totals[:, col].sum() == pytest.approx(section.seconds)
+        if partial:
+            top = top_at(geo, 202, 202)
+            assert geo.node_area[top] == .25
+            assert not geo.space_walk[geo.top_leaf[geo.top_nodes == top][0]]
+
+
+@pytest.mark.parametrize('rows,cover', [(None, True), ((), True), (((202, 202, 12),), False)])
+def test_round_without_tops_is_byte_identical_when_top_step_is_bypassed(tmp_path, monkeypatch, rows, cover):
+    from tests.replays.control_toys import standing
+    monkeypatch.setattr(cg, 'cache_dir', lambda: tmp_path)
+    geo = topped(rows, cover=cover)
+    blob = height_blob({0: standing(196, 204, 0)}, t_end=8)
+    blob['map'] = geo.name
+    first = ce.compute_round(blob, geo, ticks=np.array([2., 4.]), knowledge=False)
+    # Bypass only the storage step's optional top lookup; sight still uses the real empty array.
+    import builtins
+    def without_tops(obj, name, *default):
+        return None if obj is geo and name == 'top_nodes' else builtins.getattr(obj, name, *default)
+    monkeypatch.setattr(ce, 'getattr', without_tops, raising=False)
+    second = ce.compute_round(blob, geo, ticks=np.array([2., 4.]), knowledge=False)
+    for left, right in [(first.walk_cells, second.walk_cells), (first.states, second.states),
+                        *[(a.totals, b.totals) for a, b in zip(first.sections, second.sections)]]:
+        assert left.dtype == right.dtype and left.shape == right.shape
+        assert left.tobytes() == right.tobytes()
+
+
+def test_top_and_enemy_ground_merge_into_a_contested_parent_picture():
+    geo = topped()
+    top = top_at(geo, 202, 202)
+    ground = int(geo.node_at_px(206, 206, 0))
+    assert geo.walk_n[ground] and not geo.is_top[ground]
+    assert geo.node_cell[top] == geo.node_cell[ground] == PARENT
+    state = np.zeros(geo.n, np.uint8)
+    state[top], state[ground] = ce.A_PASSIVE, ce.B_PASSIVE
+    assert ce.collapse_states(geo, state)[PARENT] == ce.CONTESTED
+    state[top] = ce.A_ACTIVE
+    assert ce.collapse_states(geo, state)[PARENT] == ce.CONTESTED_ACTIVE

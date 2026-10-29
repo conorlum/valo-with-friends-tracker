@@ -3161,7 +3161,20 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     frame_of = {round(float(t), 6): i for i, t in enumerate(times)}
     a_weights = np.maximum(np.append(analytic[1:], rnd.t_end) - analytic, 0.0)
     walk_flat = geo.walk.ravel()             # the stored result is per walkable cell
+    top_nodes = getattr(geo, 'top_nodes', None)
+    if top_nodes is not None and len(top_nodes):
+        walk_flat = walk_flat.copy()
+        walk_flat[geo.node_cell[top_nodes]] = True
     walk_cells = np.flatnonzero(walk_flat)
+    if geo.adaptive:
+        top_leaf_mask = np.zeros(len(geo.space_walk), bool)
+        if top_nodes is not None and len(top_nodes):
+            top_leaf_mask[geo.top_leaf] = True
+        grid = geo.space_grid
+        selected = (geo.space_walk | top_leaf_mask)[grid]
+        section_spaces = grid[selected]
+        parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
+        section_columns = np.searchsorted(walk_cells, parent[selected])
     n_walk, n_ticks = len(walk_cells), len(times)
     cell_m2 = geo.cell_m ** 2
     states = np.zeros((n_ticks, n_walk), np.uint8)
@@ -3288,11 +3301,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                     if geo.adaptive:
                         # Pictures keep their parent projection; section totals retain each leaf's area.
                         code = space_codes(geo, state)
-                        grid = geo.space_grid
-                        selected = geo.space_walk[grid]
-                        parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
-                        columns = np.searchsorted(walk_cells, parent[selected])
-                        np.add.at(sec.totals, (code[grid[selected]], columns), overlap / 4)
+                        np.add.at(sec.totals, (code[section_spaces], section_columns), overlap / 4)
                     else:
                         np.add.at(sec.totals, (cells_now, cols), overlap)
     missing = dict(rnd.missing)
