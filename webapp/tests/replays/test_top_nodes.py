@@ -248,6 +248,19 @@ def test_climb_limit_and_loud_drop_are_directional(rise):
     assert np.isfinite(audible[ground])
 
 
+@pytest.mark.parametrize('rise', [0.3, 1.0, 1.00001, 1.5])
+def test_a_top_below_the_ground_beside_it_climbs_up_to_it_and_the_drop_onto_it_is_judged(rise):
+    # The other way round: the ground is the higher end, so the top climbs and the ground drops.
+    geo = topped()
+    geo.node_z[geo.top_nodes] = -rise
+    top, ground = top_at(geo, 202, 202), int(geo.node_at_px(196, 204, 0))
+    walks, loud = ag.graph(geo)
+    assert (ground, top) in walks
+    assert ((top, ground) in walks) == (rise <= 1.0 + 1e-6)
+    assert ((ground, top) in loud) == (rise > 1.0 + 1e-6)
+    assert (top, ground) not in loud
+
+
 def test_same_piece_tops_connect_only_touching_leaves_including_corners():
     geo = topped()
     # Make reach larger than the whole toy: same-piece candidates must still touch.
