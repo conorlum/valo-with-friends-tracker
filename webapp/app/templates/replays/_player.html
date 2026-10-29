@@ -176,7 +176,7 @@
         <ol class="replay-feed" data-replay-control-reasons></ol>
         {% if box_conflicts %}
         <div data-replay-box-heights>
-          <p class="replay-side-note">Moments a player stood at a height no single box explains: the build couldn't tell which box they were on.</p>
+          <p class="replay-side-note"><strong>Box heights</strong>: moments a player stood at a height no single box explains: the build couldn't tell which box they were on.</p>
           <ol class="replay-feed">
             {% for c in box_conflicts %}
             {% set who = ((replay_data or {}).get('players') or {}).get(c.slot|string) %}
