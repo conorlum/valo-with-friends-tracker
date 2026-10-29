@@ -51,10 +51,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.models.replay import ReplayUpload
 from app.replays import control_format as cf
 from app.replays import db as replay_db
+from app.services import control_heights
 from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
@@ -406,7 +408,9 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
-        "gaps": bool(linked and context["match"].get("gaps"))}
+        "gaps": bool(linked and context["match"].get("gaps")),
+        "box_conflicts": (control_heights.box_conflicts(db, replay.map_name, str(replay.match_uuid).lower())
+                          if linked and context["match"]["control"] and not settings.demo_mode else [])}
 
 
 @router.get("/replays")

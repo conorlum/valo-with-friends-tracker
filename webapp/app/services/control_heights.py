@@ -136,6 +136,37 @@ def asset_bytes(db, map_name: str, digest: str) -> bytes | None:
     return None if row is None else bytes(row[0])
 
 
+_BOX_CONFLICTS: dict[str, list] = {}
+
+
+def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
+    """The map's active asset's `meta["box_conflicts"]` for one match, sorted by (round, t0).
+
+    Reads only the asset's meta member; the parsed list is kept per digest. Best effort: any problem is `[]`.
+    """
+    try:
+        import copy
+        import io
+        import numpy as np
+        row = active_rows(db).get(map_name)
+        if row is None:
+            return []
+        if row.digest not in _BOX_CONFLICTS:
+            data = asset_bytes(db, map_name, row.digest)
+            found = []
+            if data:
+                with np.load(io.BytesIO(data)) as z:
+                    meta = json.loads(bytes(z["meta"]).decode("utf-8"))
+                found = meta.get("box_conflicts") or []
+                found = [r for r in found if isinstance(r, dict)]
+            _BOX_CONFLICTS[row.digest] = found
+        out = [copy.deepcopy(r) for r in _BOX_CONFLICTS[row.digest] if r.get("match") == str(match_uuid)]
+        return sorted(out, key=lambda r: (r.get("round", 0), r.get("t0", 0)))
+    except Exception:
+        log.warning("box conflicts unavailable for %s", map_name, exc_info=True)
+        return []
+
+
 def verify_asset(data: bytes, map_name: str, timeout_s: float = 120.0, *,
                  asset_dir: Path | None = None, must_block: Path | None = None) -> dict:
     """What the bytes are, by app/control/height_verify.py in a child process: its description, or {"error"}."""
