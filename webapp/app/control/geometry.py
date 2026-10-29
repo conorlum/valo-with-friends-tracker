@@ -347,6 +347,7 @@ class Geometry:
     walk_n: np.ndarray = None             # node -> walkable
     is_top: np.ndarray = None             # node -> learnt box top, separate from ground lookup tables
     top_nodes: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    top_view: np.ndarray | None = None   # top_nodes x n: each top's smoke-free height fan, built lazily
     top_piece: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
     top_leaf: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
     height_tops_ignored: int = 0          # learnt rows ignored by coarse attachment; reported in round missing notes
@@ -506,6 +507,7 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     geo.node_area = np.ones(geo.n, float)
     geo.is_top = np.zeros(geo.n, bool)
     geo.top_nodes = np.empty(0, np.int32)
+    geo.top_view = None
     geo.top_piece = np.empty(0, np.int32)
     geo.top_leaf = np.empty(0, np.int32)
     geo.height_tops_ignored = 0
@@ -759,7 +761,12 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
             if geo.adaptive:
                 return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
             return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes, see_over))
-        return _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over)
+        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over)
+        if len(geo.top_nodes):
+            if own is None:
+                own = geo.node_at_px(x, y, float(eye_z) - hc.EYE_M)
+            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen)
+        return seen
     return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
 
 
@@ -956,6 +963,69 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     return seen
 
 
+def _top_views(geo: Geometry) -> np.ndarray:
+    """Each top's own 360-degree view over its stance's pieces, without the top pass (no recursion)."""
+    if geo.top_view is None:
+        from app.control.stance import vantage
+
+        angles = np.arange(0, 360, RAY_STEP_DEG)
+        views = np.zeros((len(geo.top_nodes), geo.n), bool)
+        for i, (t, piece) in enumerate(zip(geo.top_nodes, geo.top_piece)):
+            x, y = geo.centres[t]
+            z = float(geo.node_z[t])
+            views[i] = _cast_heights(geo, float(x), float(y), angles, [], z + hc.EYE_M,
+                                      int(t), None, vantage(geo, int(piece), z))
+        geo.top_view = views
+    return geo.top_view
+
+
+def _over_own_top(geo: Geometry, a: tuple, b: tuple, t: int, piece: int) -> bool:
+    """The line clears the target piece's surface before entering the target top's own leaf."""
+    ax, ay, az = a
+    bx, by, bz = b
+    length = math.hypot(bx - ax, by - ay)
+    if length < 1e-9:
+        return True
+    fraction = np.arange(0, int(length) + 1, RAY_STEP_PX, dtype=float) / length
+    px = np.clip(ax + (bx - ax) * fraction, 0, PX - 1).astype(np.int32)
+    py = np.clip(ay + (by - ay) * fraction, 0, PX - 1).astype(np.int32)
+    x0, y0, x1, y1 = geo.node_bbox[t]
+    in_leaf = (px >= x0) & (px < x1) & (py >= y0) & (py < y1)
+    crossing = (geo.cover_px[py, px] == piece) & ~in_leaf
+    surface = geo.node_z[t] - hc.STAND_M - hc.LEDGE_M - 1e-9
+    return bool(np.all(az + (bz - az) * fraction[crossing] >= surface))
+
+
+def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: float,
+              own: int, record: dict | None, see_over, seen: np.ndarray) -> None:
+    """Add tops in the ray fan by exact head/feet lines; a reverse top view cheaply rejects ground pairs."""
+    angles = np.asarray(angles_deg, float)
+    if not len(angles):
+        return
+    offsets = geo.centres[geo.top_nodes].astype(float) - (x, y)
+    bearings = np.degrees(np.arctan2(offsets[:, 1], offsets[:, 0]))
+    off = np.abs((bearings[:, None] - angles[None, :] + 180) % 360 - 180)
+    candidates = np.flatnonzero((geo.top_nodes != own)
+                               & (np.hypot(offsets[:, 0], offsets[:, 1]) <= RAY_MAX_PX)
+                               & (off <= RAY_STEP_DEG / 2 + 1e-9).any(axis=1))
+    if not len(candidates):
+        return
+    if not geo.is_top[own]:
+        candidates = candidates[_top_views(geo)[candidates, own]]
+    for i in candidates:
+        t = int(geo.top_nodes[i])
+        tx, ty = map(float, geo.centres[t])
+        z = float(geo.node_z[t])
+        piece = int(geo.top_piece[i])
+        over = (see_over, (piece,))
+        a = (x, y, eye)
+        for offset in (hc.HEAD_M, hc.FEET_M):
+            b = (tx, ty, z + offset)
+            if los(geo, a, b, smokes, record, see_over=over) and _over_own_top(geo, a, b, t, piece):
+                seen[t] = True
+                break
+
+
 def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
         see_over=((), ())) -> bool:
     """see_over: cover labels the ends see over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block.
@@ -1070,7 +1140,8 @@ def cache_key(geo: Geometry) -> str:
                                   (geo.node_z[geo.top_nodes], '<f8')):
                 top_digest.update(np.asarray(values, dtype=dtype).tobytes())
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
-                                  **({'top_nodes': top_digest.hexdigest()} if len(geo.top_nodes) else {}),
+                                  **({'top_nodes': top_digest.hexdigest(), 'top_sight': 1}
+                                     if len(geo.top_nodes) else {}),
                                   **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
                                   **({'cover_dropped': geo.height_cover_dropped}
@@ -1090,7 +1161,9 @@ def build_visibility(geo: Geometry) -> tuple[np.ndarray, np.ndarray]:
     angles = np.arange(0, 360, RAY_STEP_DEG)
     for i, c in enumerate(nodes):
         x, y = geo.centres[c]
-        if geo.heights is None or np.isnan(geo.node_z[c]):
+        if len(geo.top_nodes) and geo.is_top[c]:
+            rows[i] = np.packbits(_top_views(geo)[np.searchsorted(geo.top_nodes, c)])
+        elif geo.heights is None or np.isnan(geo.node_z[c]):
             rows[i] = np.packbits(cast(geo, float(x), float(y), angles, []))
         else:
             rows[i] = np.packbits(cast(geo, float(x), float(y), angles, [], eye_z=geo.node_z[c] + hc.EYE_M, own=int(c)))

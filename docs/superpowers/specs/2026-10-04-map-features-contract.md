@@ -110,6 +110,8 @@ names each). **None is switched to features in this build.**
 | `control/engine:RoundInputs._trip_end` | topo.around | `walk_only` |
 | `control/engine:Tick.__init__` | cast | `bounded_sight` |
 | `control/engine:Tick._boxed` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: one physical line from the viewer's eye to an enemy standing on a box, over the pieces both stand on) |
+| `control/geometry:_see_tops` | los | `bounded_sight` (added 2026-10-29, box-climb run: exact head and feet lines to top nodes in the sight fan, over the viewer's and target's pieces, clearing the target piece's surface outside its own leaf) |
+| `control/geometry:_top_views` | height fan | `bounded_sight` (added 2026-10-29, box-climb run: smoke-free top vantage rows used to prefilter exact sight lines and supply top visibility rows) |
 | `control/engine:Tick._backfill_shares` | topo.dilate | `walk_only` |
 | `control/engine:Tick._direct` | los | `bounded_sight` |
 | `control/engine:Tick._flood` | topo.label | `transport_reachability` |
@@ -140,7 +142,7 @@ names each). **None is switched to features in this build.**
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
 | `control/stance:_anchor.clear` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: a clear line from a candidate anchor cell to the player's pixel beside a box) |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
-| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
+| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye; extended 2026-10-29, box-climb run: a plain point on a top node's leaf sees over its piece in 2D; heights are the engine's) |
 | `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |
 | `control/utility:read_skye_flashes` | cast | `bounded_sight` (added 2026-10-05: what an empty Skye flash rules out) |
 | `gaps/detect:GapDetector._sight` | cast | `bounded_sight` |

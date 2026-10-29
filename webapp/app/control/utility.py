@@ -306,7 +306,9 @@ LEER_LOOK_STEP_S = 0.25      # how often, while the eye is up, each enemy's view
 def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | None = None) -> bool:
     """Whether `viewer`, alive at t, has (x, y) px in their field of view with a clear 2D line to it (walls and the
     smokes up then; a flash or nearsight on them blinds it). A viewer on a box sees from their stance's eye over
-    that piece; `target` (a player slot whose position is the point), when boxed, is seen at its eye over its piece."""
+    that piece; `target` (a player slot whose position is the point), when boxed, is seen at its eye over its piece.
+    Without a boxed target, a point on a top node's leaf sees over that piece too. This remains a 2D query;
+    heights are the engine's."""
     from app.control import engine as ce
     from app.control import stance as st_mod
 
@@ -319,11 +321,16 @@ def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | No
     ex, ey = (p[0], p[1]) if vs is None else vs.eye_px
     sv = () if vs is None else vs.see_over
     st = ()
+    ts = None
     if target is not None:
         ts = st_mod.boxed_stance(rnd, target, t)
         if ts is not None:
             x, y = ts.eye_px
             st = ts.see_over
+    if ts is None and len(rnd.geo.top_nodes):
+        tops = np.flatnonzero(rnd.geo.top_leaf == rnd.geo.space_at_px(x, y))
+        if len(tops):
+            st = (int(rnd.geo.top_piece[tops[0]]),)
     off = abs((math.degrees(math.atan2(y - ey, x - ex)) - p[2] + 180) % 360 - 180)
     if off > ce.FOV_HALF:
         return False

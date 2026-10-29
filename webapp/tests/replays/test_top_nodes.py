@@ -404,3 +404,166 @@ def test_top_edges_leave_the_ground_graph_unchanged():
     ground_walks = {(a, b) for a, b in walks if not geo.is_top[a] and not geo.is_top[b]}
     ground_loud = {(a, b) for a, b in loud if not geo.is_top[a] and not geo.is_top[b]}
     assert (ground_walks, ground_loud) == ag.graph(ground)
+
+
+# W9a: top sight is an exact-line addition to the existing ground fan.
+def sight_topped(rows=((202, 202, 12),), *, cover=True):
+    """The graph toy with its cover also painted into the sight mask, as on deployed maps."""
+    geo = topped(rows, cover=cover)
+    if geo.cover_px is not None:
+        geo.sight |= geo.cover_px > 0
+    return geo
+
+
+def sight_from(geo, x, y, angles, smokes=(), *, own=None, see_over=()):
+    if own is None:
+        own = int(geo.node_at_px(x, y, 0))
+    return cg.cast(geo, x, y, np.asarray(angles), list(smokes),
+                   eye_z=geo.node_z[own] + hc.EYE_M, own=own, see_over=see_over)
+
+
+@pytest.mark.parametrize('rise,x,visible', [(10, 196, True), (40, 199, False)])
+def test_top_sight_low_box_at_distance_and_tall_box_pressed_viewer(rise, x, visible):
+    geo = sight_topped(((202, 202, rise),))
+    # 16 px to the coarse top centre is about 5 m; 1 px to the tall box's edge is pressed against it.
+    geo.m_per_px = .3
+    top = top_at(geo, 212, 204)
+    seen = sight_from(geo, x, 204, [0.0])
+    assert bool(seen[top]) == visible
+
+
+def test_top_sight_tall_box_centre_is_seen_from_far_enough_back():
+    geo = sight_topped(((202, 202, 40),))
+    geo.m_per_px = .3
+    # From the west corner, the rising line reaches the box above its surface.
+    x, y = 192.0, 196.0
+    top = top_at(geo, 212, 204)
+    angle = np.degrees(np.arctan2(204-y, 212-x))
+    assert sight_from(geo, x, y, [angle])[top]
+
+
+def test_top_sight_surface_helper_is_required_to_hide_the_tall_box(monkeypatch):
+    geo = sight_topped(((202, 202, 40),))
+    top = top_at(geo, 212, 204)
+    assert not sight_from(geo, 199, 204, [0.0])[top]
+    monkeypatch.setattr(cg, '_over_own_top', lambda *a, **kw: True)
+    assert sight_from(geo, 199, 204, [0.0])[top]
+
+
+def test_top_sight_surface_check_judges_head_and_feet_separately(monkeypatch):
+    geo = sight_topped(((202, 202, 10),))
+    target = top_at(geo, 212, 204)
+    ends = []
+    monkeypatch.setattr(cg, 'los', lambda *a, **kw: True)
+    def surface(geo, a, b, t, piece):
+        if t == target:
+            ends.append(b[2])
+        return b[2] == geo.node_z[t] + hc.FEET_M
+    monkeypatch.setattr(cg, '_over_own_top', surface, raising=False)
+    assert sight_from(geo, 196, 204, [0.0])[target]
+    assert ends == [1 + hc.HEAD_M, 1 + hc.FEET_M]
+
+
+@pytest.mark.parametrize('angle,visible', [(360.0, True), (-.25, True), (.250001, False), (180, False)])
+def test_top_sight_fan_bearing_wrap_and_half_step(angle, visible):
+    geo = sight_topped(((202, 202, 10),))
+    assert bool(sight_from(geo, 196, 204, [angle])[top_at(geo, 212, 204)]) == visible
+
+
+def test_top_sight_smoke_on_the_exact_line_hides_the_top():
+    geo = sight_topped(((202, 202, 10),))
+    top = top_at(geo, 212, 204)
+    assert sight_from(geo, 196, 204, [0.0])[top]
+    assert not sight_from(geo, 196, 204, [0.0], [(198, 204, 1.5, True)])[top]
+
+
+@pytest.mark.parametrize('kind', ['no_rows', 'no_cover', 'flat', '2d'])
+def test_top_sight_pass_never_runs_outside_the_height_top_path(monkeypatch, kind):
+    geo = (sight_topped(None) if kind == 'no_rows' else sight_topped(cover=False) if kind == 'no_cover'
+           else sight_topped())
+    if kind == 'flat':
+        geo = cg.geometry_from_masks('flat', geo.sight, geo.walk_px, 7e-5)
+    angles = np.arange(0, 360, cg.RAY_STEP_DEG)
+    kw = {} if kind in ('flat', '2d') else {'eye_z': hc.EYE_M}
+    before = cg.cast(geo, 196, 204, angles, [], **kw)
+    def forbidden(*a, **kw):
+        raise AssertionError('top pass must not run')
+    monkeypatch.setattr(cg, '_see_tops', forbidden, raising=False)
+    assert np.array_equal(before, cg.cast(geo, 196, 204, angles, [], **kw))
+
+
+def test_top_sight_keeps_every_ground_fan_bit(monkeypatch):
+    geo = sight_topped(((202, 202, 10),))
+    angles = np.arange(-90, 90.01, cg.RAY_STEP_DEG)
+    with_tops = sight_from(geo, 196, 204, angles)
+    assert with_tops[geo.top_nodes].any()
+    monkeypatch.setattr(cg, '_see_tops', lambda *a, **kw: None, raising=False)
+    without = sight_from(geo, 196, 204, angles)
+    assert np.array_equal(with_tops[~geo.is_top], without[~geo.is_top])
+    assert not without[geo.top_nodes].any()
+
+
+def test_top_sight_own_views_are_lazy_reused_and_reset_by_attachment(monkeypatch):
+    geo = sight_topped(((202, 202, 10),))
+    assert geo.top_view is None
+    sight_from(geo, 196, 204, [0.0])
+    views = geo.top_view
+    assert views.dtype == bool and views.shape == (len(geo.top_nodes), geo.n)
+    original = cg._cast_heights
+    calls = []
+    def capture(*a, **kw):
+        calls.append(1)
+        return original(*a, **kw)
+    monkeypatch.setattr(cg, '_cast_heights', capture)
+    sight_from(geo, 196, 204, [0.0])
+    assert geo.top_view is views and len(calls) == 1
+    cg.attach_heights(geo, geo.heights)
+    assert geo.top_view is None
+
+
+def test_top_sight_visibility_rows_use_the_top_vantage_and_include_top_targets():
+    geo = sight_topped(((202, 202, 10),))
+    top, far = top_at(geo, 202, 202), int(geo.node_at_px(220, 204, 0))
+    ground = int(geo.node_at_px(196, 204, 0))
+    rows, row_of = cg.build_visibility(geo)
+    assert rows.shape[1] == (geo.n + 7) // 8
+    assert np.unpackbits(rows[row_of[top]])[far]
+    assert np.unpackbits(rows[row_of[ground]])[top_at(geo, 212, 204)]
+    assert np.array_equal(np.unpackbits(rows[row_of[top]])[:geo.n],
+                          geo.top_view[np.flatnonzero(geo.top_nodes == top)[0]])
+
+
+def test_top_sight_on_top_viewer_sees_another_top_on_its_piece():
+    from app.control import stance
+    geo = sight_topped()
+    own, target = top_at(geo, 202, 202), top_at(geo, 212, 204)
+    x, y = geo.centres[own]
+    tx, ty = geo.centres[target]
+    angles = [np.degrees(np.arctan2(ty-y, tx-x))]
+    over = stance.vantage(geo, 1, geo.node_z[own])
+    assert sight_from(geo, x, y, angles, own=own, see_over=over)[target]
+
+
+def test_top_sight_cache_key_versions_only_maps_with_tops(monkeypatch):
+    geo = topped()
+    dumps = json.dumps
+    def without_top_sight(value, **kw):
+        if isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k != 'top_sight'}
+        return dumps(value, **kw)
+    current = cg.cache_key(geo)
+    monkeypatch.setattr(cg.json, 'dumps', without_top_sight)
+    assert cg.cache_key(geo) != current
+
+
+def test_top_sight_bounded_occluder_uses_the_top_head_and_feet(monkeypatch):
+    geo = sight_topped(((202, 202, 10),))
+    top = top_at(geo, 212, 204)
+    heads = []
+    def blocked(occluders, a, targets, record, **kw):
+        heads.append(targets.copy())
+        return np.zeros(len(targets), bool)
+    monkeypatch.setattr(cf, 'blocked_lines', blocked)
+    seen = cf.cast_with(geo, 196, 204, np.array([0.0]), [], [object()], eye_z=hc.EYE_M)
+    assert seen[top]
+    assert any(np.any(np.all(batch == [212, 204, 1 + hc.HEAD_M], axis=1)) for batch in heads)

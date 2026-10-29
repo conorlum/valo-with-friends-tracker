@@ -146,3 +146,66 @@ def test_a_smoke_off_the_line_from_a_player_on_the_box_counts_no_pair(monkeypatc
     monkeypatch.setattr(extract, "_shapes_of", lambda *_a: [(0.0, 10.0, smoke)])
     cast = SimpleNamespace(i=0, by=0, t=0.0, t_end=10.0)
     assert extract._cover_all(rnd, {0: "A", 5: "B", 6: "B"}, [cast])[0]["pairs"] == 0
+
+
+def test_ground_view_of_adaptive_top_agrees_with_sees_point():
+    """W9a gate: a point on the top must agree with the engine's eye cast."""
+    import numpy as np
+    from app.control import geometry as cg, heights as hc
+    from app.control.utility import _sees_point
+    from tests.replays.test_top_nodes import sight_topped, top_at
+
+    geo = sight_topped(((202, 202, 10),))
+    geo.m_per_px = .3
+    viewer, point = (196.0, 204.0), (212.0, 204.0)
+    rnd, _ = inputs(geo, {0: still('A', *viewer, 0)})
+    own = int(geo.node_at_px(*viewer, 0))
+    seen = cg.cast(geo, *viewer, np.arange(-51, 51.01, cg.RAY_STEP_DEG), [],
+                   eye_z=geo.node_z[own] + hc.EYE_M, own=own)
+    assert seen[top_at(geo, *point)] == _sees_point(rnd, 0, T, *point)
+
+
+def test_pressed_view_of_tall_top_keeps_the_consumer_in_2d():
+    import numpy as np
+    from app.control import geometry as cg, heights as hc
+    from app.control.utility import _sees_point
+    from tests.replays.test_top_nodes import sight_topped, top_at
+
+    geo = sight_topped(((202, 202, 40),))
+    geo.m_per_px = .3
+    viewer, point = (199.0, 204.0), (212.0, 204.0)
+    rnd, _ = inputs(geo, {0: still('A', *viewer, 0)})
+    seen = cg.cast(geo, *viewer, np.array([0.0]), [], eye_z=hc.EYE_M)
+    assert not seen[top_at(geo, *point)]
+    # 2D consumer: heights are the engine's. Agreement is required only for the low box.
+    assert _sees_point(rnd, 0, T, *point)
+
+
+def test_plain_ground_points_and_maps_without_tops_keep_their_2d_answers():
+    from app.control import engine as ce
+    from app.control.utility import _sees_point
+    from tests.replays.test_top_nodes import sight_topped
+
+    for rows in (None, ((202, 202, 10),)):
+        geo = sight_topped(rows)
+        rnd, _ = inputs(geo, {0: still('A', 196, 196, 0)})
+        # Forward ground is clear; ground beyond the box is blocked, even with top nodes present.
+        points = [(220, 196, True), (220, 212, False)]
+        if rows is None:
+            points.append((212, 204, False))  # no top node: the cover stays opaque
+        for x, y, expected in points:
+            assert ce.los(geo, (196, 196, None), (x, y, None), []) == expected
+            assert _sees_point(rnd, 0, T, x, y) == expected
+
+
+def test_point_on_top_uses_its_piece_when_target_has_no_boxed_stance(monkeypatch):
+    from app.control import stance
+    from app.control.utility import _sees_point
+    from tests.replays.test_top_nodes import sight_topped
+
+    geo = sight_topped(((202, 202, 10),))
+    rnd, _ = inputs(geo, {0: still('A', 196, 204, 0), 5: still('B', 212, 204, 0)})
+    original = stance.boxed_stance
+    monkeypatch.setattr(stance, 'boxed_stance',
+                        lambda rnd, slot, t: None if slot == 5 else original(rnd, slot, t))
+    assert _sees_point(rnd, 0, T, 212, 204, target=5)
