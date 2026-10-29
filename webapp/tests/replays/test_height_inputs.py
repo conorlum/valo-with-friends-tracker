@@ -17,8 +17,9 @@ REPLAYS = [["m2", "p.c11.f1.a1", "b" * 64, 20], ["m1", "p.c11.f1.a1", "a" * 64, 
 # HEIGHT_RULES_REVISION -> the hash of app/control/heights.py's constants it was released with. Changed a
 # constant, or the build's code? Bump HEIGHT_RULES_REVISION in app/replays/control_format.py and pin it here.
 PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72ed40ed76a5", 5: "72ed40ed76a5",
-                6: "29ebe9bc316b"}    # 6 unreleased: re-pinned in place for reach and crouch stance (was
-                                      # "bb8b0358a9c8", then "52136ab282f4"), then for the head and feet sight points
+                6: "6d8f90ffeaa2"}    # 6 unreleased: re-pinned in place for reach and crouch stance (was
+                                      # "bb8b0358a9c8", then "52136ab282f4"), for the head and feet sight points
+                                      # ("29ebe9bc316b"), then for the 1 m step
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
@@ -34,6 +35,7 @@ def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(m
     for name in ("TOP_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M", "HEAD_M", "FEET_M"):
         monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.setattr(hc, "EYE_M", 0.7)
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
     monkeypatch.setattr(hc, "BODY_M", 0.3, raising=False)
     assert hc.rules()["constants"] == "bb8b0358a9c8"
 

@@ -70,7 +70,7 @@ FILL_MIN_NEIGHBOURS = 2
 FILL_TOL_M = 0.5
 CONNECT_S = 1.0            # two stands this close in time on neighbouring cells are a walk between them
 CONNECT_MIN_ROUNDS = 2
-STEP_UP_M = 0.7            # neighbouring floors this close connect both ways; a bigger step needs to be seen
+STEP_UP_M = 1.0            # a step anyone jumps up silently (the Range); floors this close connect both ways
 PLATFORM_R_M = 6.0         # stands this close to a live temporary platform are dropped
 # `<code>_<name>` of what players can stand on for a while (the viewer's ability catalog, replay.js)
 PLATFORMS = ("Thorne_E_Wall_Fortifying", "Thorne_E_Wall_Segment_Fortifying")

@@ -309,6 +309,14 @@ def test_neighbouring_floors_within_a_step_connect_both_ways_diagonals_too():
     assert b.report["edges"] == len(e)
 
 
+@pytest.mark.parametrize("rise, joined", [(0.9, True), (1.1, False)])
+def test_a_step_of_up_to_a_metre_connects_both_ways_a_bigger_one_needs_a_walk(rise, joined):
+    b = built(lambda m, n: {0: level_walk(160, 200, 0.0), 1: level_walk(160, 200, rise, y=Y + 8)})
+    e = edges_of(b)
+    a, south = cell(21), cell(21, ROW + 1)
+    assert ((a, 0, south, 0) in e) == joined and ((south, 0, a, 0) in e) == joined
+
+
 def test_a_floor_reached_only_through_the_air_is_listed():
     # A platform 6 m up over columns 40-41 that nobody walks onto (a rope), in a hall whose ground is all
     # resolved (an unresolved cell beside it would join it to the ground, as the engine walks it).
@@ -855,7 +863,9 @@ def test_a_crossed_slope_is_filled_along_the_gradient_and_a_ledge_is_not():
     assert ledge.asset.kind[ROW, 25] == hc.KIND_NONE
 
 
-def test_a_gradient_cell_connects_the_way_it_was_crossed():
+def test_a_gradient_cell_connects_the_way_it_was_crossed(monkeypatch):
+    # The toy's 0.9 m steps predate the 1 m step (height rules 6): at the old 0.7 m they stay too big to step.
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
     up = hb.build(gradient_rounds(1.8), GEO)
     e = {tuple(row[:4]): row[4] for row in up.asset.edges.tolist()}
     assert int(up.asset.floors[ROW, 25, 0]) == 9, "0.9 m: more than a step from either side"
@@ -891,8 +901,10 @@ def test_fill_gradient_rules():
     assert hb.fill_gradient(edge, {1: hb.NEIGHBOURS_DISAGREE}, hb.crossings([over]), GEO)[0] == {1: z_dm(0.5)}
 
 
-def test_a_drop_walked_down_is_a_slide_and_one_fallen_down_is_a_fall():
+def test_a_drop_walked_down_is_a_slide_and_one_fallen_down_is_a_fall(monkeypatch):
     # Columns 30-32: a ramp of 3 m over three cells (0.9 of rise per metre), only ever run down.
+    # Its 1 m cell steps predate the 1 m step (height rules 6): at the old 0.7 m they stay too big to step.
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
     # Column 40 at 3 m beside 41 at 0 m: only ever fallen from.
     def players(m, n):
         run_down = ("B", [(0.0, 240, Y, 0, 3.0), (2.0, 240, Y, 0, 3.0), (3.0, 264, Y, 0, 0.0), (10.0, 264, Y, 0, 0.0)])
@@ -908,7 +920,8 @@ def test_a_drop_walked_down_is_a_slide_and_one_fallen_down_is_a_fall():
     assert (b.report["slides"], b.report["falls"], b.report["falls_closed"]) == (2, 1, 1)
 
 
-def test_the_asset_keeps_kind_and_edge_kinds_and_only_the_edges_move_the_digest(tmp_path):
+def test_the_asset_keeps_kind_and_edge_kinds_and_only_the_edges_move_the_digest(tmp_path, monkeypatch):
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)     # the toy's 0.9 m steps, a slide only below the 1 m step
     b = hb.build(gradient_rounds(1.8, back=True), GEO)
     hc.save_asset(tmp_path / "Toy.height.npz", b.asset)
     back = hc.load_asset(tmp_path / "Toy.height.npz")

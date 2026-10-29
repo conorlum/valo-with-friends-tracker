@@ -257,7 +257,7 @@ cells connect:
 
 - **Observed:** a player's stand on floor a in one cell followed by a stand on floor b of the neighbouring
   cell, within `CONNECT_S` = 1.0 s, seen in at least 2 rounds, connects a to b. A step up of more than
-  `STEP_UP_M` = 0.7 m seen only downward is one-way (a drop).
+  `STEP_UP_M` = 1.0 m (0.7 m until height rules 6) seen only downward is one-way (a drop).
 - **Inferred:** two neighbouring ground floors within `STEP_UP_M` connect both ways (where nobody walked).
 - Ropes, boosts and teleports (Icebox's ropes, the map specials) are not inferred; existing 2D walk specials
   apply to every floor of their cells, and floors reached only through the air are listed in the report.
