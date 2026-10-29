@@ -68,7 +68,9 @@ Known legacy floor selectors, including ground-relative bounds.floor, are exclud
 - Occluder bounds are ground-relative (`ref: ground`, using median physical ground, node z - `STAND_M`, of automatically selected floors under its cells), world (`ref: world`, converted through the exact height asset's `origin_z`), `all_height`, or unresolved; all resolved forms still require gimmick placement to pass the one-floor rule. The band is [bottom, top).
 - One rule for every consumer (`features.blocked_lines`): the eye-to-target line is sampled every pixel
   (ends excluded) and is blocked inside an occluder's mask at a height inside its band; a straight-up line is
-  blocked when its z span meets the band. Eye = node z + `EYE_M`; target body = node z + `BODY_M`. A node
+  blocked when its z span meets the band. Eye = node z + `EYE_M` (feet + 2.0 m); target head = node z +
+  `HEAD_M` (feet + 2.0 m), target feet point = node z + `FEET_M` (feet + 0.2 m). Either clear line sees the
+  node; test the head first and feet only if the head is blocked. A node
   with no height is tested in 2D (and counted).
 - Base visibility stays the maximally open map; occluders only remove sight (`cast_with`, `los_with`,
   `seen_from_with`). A flat map has no heights: resolved bounds block in 2D there.

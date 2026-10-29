@@ -6,7 +6,8 @@ scripts/build_control_heights.py (app/control/height_build.py) and committed lik
 one stays flat 2D, exactly as before.
 
 **The reference height.** Every height is a player's position z, not their feet: a floor's height is the z
-of a player standing on it. An eye is position-z + EYE_M, a body is position-z + BODY_M, and the ground
+of a player standing on it. Eye and head are position-z + 1.1 m (feet + 2.0 m); the second sight point
+is position-z - 0.7 m (feet + 0.2 m). Either target point can be seen. The ground
 under a floor (what blocks a sight line) is position-z - STAND_M.
 
 **The asset** (all heights in whole decimetres above `origin_z`, the map's lowest floor in world dm):
@@ -46,8 +47,9 @@ MAX_FLOORS = 3
 # data). STAND_APEX_S, PLATFORMS, PLATFORM_R_M and NODE_SNAP_M are not in the spec: they fill gaps it left.
 
 # --- sight (part 4)
-EYE_M = 0.7                # eye above the position (about 1.6 m above the feet)
-BODY_M = 0.3               # the body point a viewer has to see (about 1.2 m above the feet)
+EYE_M = 1.1                # eye: feet + 2.0 m
+HEAD_M = 1.1               # head sight point: feet + 2.0 m
+FEET_M = -0.7              # lower sight point: feet + 0.2 m
 STAND_M = 0.9              # the position above the feet: the ground under a floor is this far below it
 DEVICE_EYE_M = 0.0         # a camera's or turret's eye above its own z
 LEDGE_M = 0.1              # ground is lowered this much as an obstacle, so a flat floor doesn't hide itself

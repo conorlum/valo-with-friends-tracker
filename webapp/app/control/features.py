@@ -794,10 +794,30 @@ def _eye_body(geo: Geometry, node: int, offset: float):
     return float(geo.node_z[node]) + offset
 
 
+def _blocked_sight_points(geo: Geometry, occluders: list, a: tuple, heads: np.ndarray,
+                          record: dict | None = None, sampling_steps: int | None = None) -> np.ndarray:
+    """One blocked bool per target: try the head, then the feet only for blocked head lines."""
+    from app.control import heights as hc
+
+    hit = blocked_lines(occluders, a, heads, record, sampling_steps=sampling_steps)
+    if geo.heights is None or a[2] is None or np.isnan(a[2]):
+        return hit
+    retry = hit & ~np.isnan(heads[:, 2])
+    if retry.any():
+        feet = heads[retry].copy()
+        feet[:, 2] += hc.FEET_M - hc.HEAD_M
+        # Keep the head batch's sampling grid when testing its blocked subset.
+        if sampling_steps is None:
+            sampling_steps = int(np.ceil(np.hypot(heads[:, 0] - a[0], heads[:, 1] - a[1]).max())) + 1
+        hit[retry] = blocked_lines(occluders, a, feet, record, sampling_steps=sampling_steps)
+    return hit
+
+
 def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
               own: int | None = None, record: dict | None = None, see_over=()) -> np.ndarray:
     """`geometry.cast`, minus the nodes a bounded occluder hides: each seen node is tested on the line from the
-    eye to its body (centre, node z + BODY_M), so two floors behind one XY crossing can differ."""
+    eye to its head or feet (centre, node z + HEAD_M or FEET_M). Either clear line keeps the node,
+    so two floors behind one XY crossing can differ."""
     from app.control import geometry as cg
     from app.control import heights as hc
 
@@ -805,9 +825,10 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
     if not occluders:
         return seen
     nodes = np.flatnonzero(seen)
-    z = np.array([_eye_body(geo, int(n), hc.BODY_M) for n in nodes]) if eye_z is not None else np.full(len(nodes), np.nan)
+    z = (np.array([_eye_body(geo, int(n), hc.HEAD_M) for n in nodes])
+         if geo.heights is not None and eye_z is not None else np.full(len(nodes), np.nan))
     targets = np.column_stack([geo.centres[nodes].astype(float), z])
-    hit = blocked_lines(occluders, (x, y, eye_z), targets, record)
+    hit = _blocked_sight_points(geo, occluders, (x, y, eye_z), targets, record)
     if own is not None:
         hit &= nodes != own
     seen[nodes[hit]] = False
@@ -828,8 +849,8 @@ def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: li
 def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list, skip: np.ndarray | None = None,
                    record: dict | None = None) -> np.ndarray:
     """engine.seen_from (the cached rows) with each source-target pair filtered by the bounded occluders: a
-    pair counts when the line from the source's eye (node z + EYE_M) to the target's body (node z + BODY_M) is
-    clear; a node with no height is tested in 2D. One clear source is enough."""
+    pair counts when a line from the source's eye (node z + EYE_M) to the target's head or feet
+    (node z + HEAD_M or FEET_M) is clear; a node with no height is tested in 2D. One clear source is enough."""
     from app.control import engine
     from app.control.feature_visibility import cache_for
 

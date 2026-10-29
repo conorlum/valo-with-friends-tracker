@@ -1490,8 +1490,8 @@ class Tick:
     def _direct(self, looks: dict) -> dict[tuple[int, int], bool]:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
         tests a body standing on each floor, which is right for ground and for anyone standing on it; an
-        enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by the one exact line
-        from the viewer's eye to their real body, under the same limits as the view: the field of view,
+        enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by exact lines
+        from the viewer's eye to their head or feet, under the same limits as the view: the field of view,
         a flash, nearsight, smokes and walls. It only ever adds a sighting."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
@@ -1510,12 +1510,13 @@ class Tick:
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
-                if los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.BODY_M), self.smokes, record=self.fallbacks):
+                if (los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
+                        or los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.FEET_M), self.smokes, record=self.fallbacks)):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
-        """Enemies standing on a box, seen by the one physical line from the viewer's eye to the target's pixel,
+        """Enemies standing on a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
         over the pieces both stand on (a target beside a box is held at its anchor cell and seen there, by the
         ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
@@ -1536,12 +1537,15 @@ class Tick:
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
                 z = rnd.height(h.slot, t) if geo.heights is not None else None
-                tz = None if z is None or np.isnan(z) else float(z) + hc.BODY_M
+                tz = None if z is None or np.isnan(z) else float(z) + hc.HEAD_M
                 ez = eye if tz is not None else None
                 if ez is None:
                     tz = None
-                if los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
-                       see_over=(e_piece, h.stance.see_over)):
+                if (los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
+                        see_over=(e_piece, h.stance.see_over))
+                        or (tz is not None and los(geo, (ex, ey, ez), (hx, hy, float(z) + hc.FEET_M),
+                                                   self.smokes, record=self.fallbacks,
+                                                   see_over=(e_piece, h.stance.see_over)))):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 

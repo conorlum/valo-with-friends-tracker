@@ -833,7 +833,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
     """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
     have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
     clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill line is
-    blocked only if the killer's eye sees neither the victim's body nor their head. `geo` has the
+    blocked only if the killer's eye sees neither the victim's head nor their feet. `geo` has the
     heights; excluded kills are counted by reason."""
     from app.control import engine
 
@@ -874,8 +874,8 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 continue
             qualifying += 1
             eye = kz + hc.EYE_M
-            if not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.BODY_M), smokes) and \
-                    not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.EYE_M), smokes):
+            if not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.HEAD_M), smokes) and \
+                    not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.FEET_M), smokes):
                 blocked += 1
                 if len(examples) < 10:
                     examples.append({"match": str(match), "round": n, "t": round(float(t), 2),
@@ -912,9 +912,11 @@ def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
             continue
         origin = geo.heights.origin_z if geo.heights is not None else 0
         eye = (vz - origin) / 10.0 + hc.EYE_M
-        body = (tz - origin) / 10.0 + hc.BODY_M
+        head = (tz - origin) / 10.0 + hc.HEAD_M
+        feet = (tz - origin) / 10.0 + hc.FEET_M
         results.append({"source": line.get("source"), "checked": True,
-                        "blocked": not geo_los(geo, (vx, vy, eye), (tx, ty, body), [])})
+                        "blocked": not (geo_los(geo, (vx, vy, eye), (tx, ty, head), [])
+                                        or geo_los(geo, (vx, vy, eye), (tx, ty, feet), []))})
     checked = [r for r in results if r["checked"]]
     return {"lines": len(results), "checked": len(checked), "blocked": sum(r["blocked"] for r in checked),
             "passes": len(checked) == len(results) and all(r["blocked"] for r in checked),

@@ -224,7 +224,8 @@ Everything that can watch or stand gets a height. Missing heights are stored as 
 **The reference height.** Floors are measured in the player-position coordinate itself: a floor's height is
 the height of a standing player's position sample there, not of their feet. That avoids a feet calibration,
 which player samples alone can't determine. Every height in the engine is a position-z: an eye is
-position-z + `EYE_M`, a body is position-z + `BODY_M`, and ground (for the horizon) is position-z −
+position-z + `EYE_M` (feet + 2.0 m), the target points are position-z + `HEAD_M` (feet + 2.0 m)
+and position-z + `FEET_M` (feet + 0.2 m), and ground (for the horizon) is position-z −
 `STAND_M`, where `STAND_M` is the position's height above the feet. `STAND_M` only affects how high a
 ledge is; it starts at the game's capsule half-height if a source can be found, else 0.9 m, and is checked on
 the first known drop. Utility heights are converted the same way: a device's z is its own, and its watch
@@ -308,10 +309,10 @@ unless a test shows it equals the check from every node on toy maps with heights
 then every node is a source (with a measured cost; the per-tick visibility rows are cached, as today). The
 same applies to the counterfactual Safe.
 
-**Eye and body.** A cell's floor is seen if a body on it (position-z + `BODY_M`) is in line of sight of the
-eye (position-z + `EYE_M`). Start values are those of a standing player, `EYE_M` = 0.7 and `BODY_M` = 0.3
-above the position (i.e. about 1.6 m and 1.2 m above the feet if the position sits 0.9 m up); provisional,
-tuned only with the blocked-sightline set below.
+**Eye and target points.** A cell's floor is seen if either the head (position-z + `HEAD_M`) or feet
+point (position-z + `FEET_M`) is in line of sight of the eye (position-z + `EYE_M`). `EYE_M` = 1.1,
+`HEAD_M` = 1.1 and `FEET_M` = -0.7: the eye and head are feet + 2.0 m and the lower point is feet + 0.2 m,
+with the position sitting `STAND_M` = 0.9 m above the feet. One visibility bool covers both target points.
 
 **The ray test** (`geometry.cast`), along the existing rays and steps, after the 2D wall and smoke checks as
 now. Rays that are 2D-blocked stay blocked; heights only ever remove sight.
@@ -320,8 +321,8 @@ now. Rays that are 2D-blocked stay blocked; heights only ever remove sight.
   the step's ground updates the horizon.
 - **Ground:** the horizon is the steepest slope from the eye to the ground passed so far, where a cell's
   ground is its lowest floor's position-z − `STAND_M` − `LEDGE_M`. `LEDGE_M` = 0.1 m lowers obstacles a
-  little so a flat floor doesn't hide itself. A target is seen if the slope from the eye to its body is at
-  least the horizon.
+  little so a flat floor doesn't hide itself. A target is seen if either the head or feet slope from the
+  eye is at least the horizon and passes every slab check, in the same march.
 - **Slabs:** an upper floor is a thin plate at its ground height. A ray crossing a plate's cell (not the
   source's or the target's) is blocked if the line's height entering the cell and leaving it lie on opposite
   sides of the plate. A ray whose eye and target are on the same side of a plate passes it.
@@ -362,7 +363,8 @@ map's heights afterwards makes only that map's rounds stale. `compute_control.py
 - **Qualifying kills:** both killer and victim have a position sample with z within 0.25 s of the kill, both
   stand on resolved cells, and the line is clear in 2D (walls and smokes) today. Excluded kills are counted
   by reason and reported next to the result.
-- **Endpoints:** from the killer's eye to the victim's body and to the victim's head (position-z + `EYE_M`);
+- **Endpoints:** from the killer's eye (feet + 2.0 m) to the victim's head (feet + 2.0 m, position-z +
+  `HEAD_M`), then feet (feet + 0.2 m, position-z + `FEET_M`) only if the head is blocked;
   a kill line is blocked only if both are.
 
 Passing kill lines can only catch heights that block too much; they can't catch sight through terrain. So the
@@ -464,7 +466,7 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
 - **The site picture of a cell with two floors** (proposed): if its floors agree, that state; if one floor is
   unknown, unknown; otherwise contested. The tunnel's state is then visible on the site, at the cost of a
   bridge sometimes showing the tunnel's state.
-- Start values, each tuned on real data and each change reported with numbers: `EYE_M`, `BODY_M`, `STAND_M`,
+- Start values, each tuned on real data and each change reported with numbers: `EYE_M`, `HEAD_M`, `FEET_M`, `STAND_M`,
   `DEVICE_EYE_M`, `LEDGE_M`, `STAND_S`, `STAND_TOL_M`, `FLOOR_TOL_M`, `FLOOR_SEP_M`, `FLOOR_MIN_STANDS`,
   `FLOOR_SPREAD_MAX_M`, `FILL_R`, `FILL_TOL_M`, `CONNECT_S`, `STEP_UP_M`, `PLATFORM_R_M`,
   `HEIGHT_SUPPORTED_MIN`, `UNRESOLVED_MAX`, `TRIP_HIT_M`, `TRIP_REACH_M`, `PARSE_RESERVE`, `ARCHIVE_SLACK`.

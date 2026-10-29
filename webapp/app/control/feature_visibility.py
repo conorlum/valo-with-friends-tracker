@@ -123,8 +123,8 @@ class SightCache:
         self.row_path = None
         self.rows_dirty = False
         from app.control import heights as hc
-        body = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.BODY_M
-        self.targets = np.column_stack((geo.centres.astype(float), body))
+        head = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.HEAD_M
+        self.targets = np.column_stack((geo.centres.astype(float), head))
         self.proof_coordinates_valid = bool(((geo.centres >= 0) & (geo.centres <= 1023)).all())
         if geo.features_sha and geo.visibility_source in ('built', 'cache'):
             from app.control import geometry as cg
@@ -146,6 +146,11 @@ class SightCache:
         panel still uses sparse checks; bits outside `targets` are then unspecified.
         Smoke was filtered before determining the original longest-target spacing.
         """
+        # Per-door booleans cannot be intersected when different doors can hide
+        # different target points. Test the whole set together without storing
+        # separate head/feet results.
+        if geo.heights is not None and len(occluders) > 1:
+            return None
         if any(o.mask.flags.writeable or o.bounds_px is None or o.mask_digest is None for o in occluders):
             return None
         b = self.targets[targets]
@@ -200,7 +205,7 @@ class SightCache:
                     missing = full_targets[(known[byte] & bit) == 0]
                     self.bytes -= sparse[2]
                 if len(missing):
-                    blocked[missing] = cf.blocked_lines([occ], a, self.targets[missing], sampling_steps=steps)
+                    blocked[missing] = cf._blocked_sight_points(geo, [occ], a, self.targets[missing], sampling_steps=steps)
                 packed = np.packbits(blocked)
                 packed.setflags(write=False)
                 entry = (packed, packed.nbytes + 1024, bool(getattr(occ, 'cache_resting', True)))
@@ -397,10 +402,12 @@ class SightCache:
         if not occluders:
             return result
         steps = int(np.ceil(np.hypot(b[:, 0]-a[0], b[:, 1]-a[1]).max())) + 1
+        if geo.heights is not None and len(occluders) > 1:
+            return cf._blocked_sight_points(geo, occluders, a, b, sampling_steps=steps)
         for occ in occluders:
             # Direct/caller-owned mutable masks must always use the uncached path.
             if occ.mask.flags.writeable or occ.bounds_px is None or occ.mask_digest is None:
-                result |= cf.blocked_lines([occ], a, b, sampling_steps=steps)
+                result |= cf._blocked_sight_points(geo, [occ], a, b, sampling_steps=steps)
                 continue
             key = (occ.mask_digest, occ.bottom, occ.top, occ.all_height, int(source), steps)
             entry = self.entries.pop(key, None)
@@ -414,7 +421,7 @@ class SightCache:
             self.hits += int((~missing).sum())
             self.misses += int(missing.sum())
             if missing.any():
-                hits = cf.blocked_lines([occ], a, b[missing], sampling_steps=steps)
+                hits = cf._blocked_sight_points(geo, [occ], a, b[missing], sampling_steps=steps)
                 np.bitwise_or.at(known, byte[missing], bit[missing])
                 np.bitwise_or.at(blocked, byte[missing][hits], bit[missing][hits])
             result |= (blocked[byte] & bit) != 0

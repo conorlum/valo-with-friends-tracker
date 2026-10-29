@@ -609,11 +609,11 @@ def kill_round(kills, players, n=1, t_end=10.0):
 
 
 @pytest.mark.slow
-def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body_and_head_are_hidden():
+def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_head_and_feet_are_hidden():
     geo = ledge_geo()
     x = 256 - 2 * M_PX
     players = {0: standing(x, 204, 4.0),                         # on the ledge, 2 m back from its edge
-               5: standing(x + 3 * M_PX, 204, 0.0, "B"),          # just below it: body and head hidden
+               5: standing(x + 3 * M_PX, 204, 0.0, "B"),          # just below it: head and feet hidden
                6: standing(x + 10 * M_PX, 204, 0.0, "B"),         # far out: seen
                7: ("B", [(0.0, 300, 150, 0)]),                    # no z
                8: standing(x + 10 * M_PX, 120, 0.0, "B")}
@@ -622,16 +622,16 @@ def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body
     assert (result["qualifying"], result["blocked"]) == (2, 1) and result["share"] == 0.5 and not result["passes"]
     assert result["excluded"] == {"no position with z near the kill": 1, "no killer": 1}
     assert result["examples"][0]["victim_px"] == [round(x + 3 * M_PX), 204]
-    # the head is enough: somewhere out from the ledge the body is hidden but the head isn't, and a kill there
+    # the head is enough: somewhere out from the ledge the feet are hidden but the head isn't, and a kill there
     # is not blocked
     from app.control import geometry as cg
 
     eye = 4.0 + hc.EYE_M
-    hidden_body_seen_head = [d for d in np.arange(3.0, 9.0, 0.05)
-                             if not cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.BODY_M))
-                             and cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.EYE_M))]
-    assert hidden_body_seen_head, "the band where only the head shows"
-    near = standing(x + hidden_body_seen_head[len(hidden_body_seen_head) // 2] * M_PX, 204, 0.0, "B")
+    hidden_feet_seen_head = [d for d in np.arange(3.0, 9.0, 0.05)
+                             if not cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.FEET_M))
+                             and cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.HEAD_M))]
+    assert hidden_feet_seen_head, "the band where only the head shows"
+    near = standing(x + hidden_feet_seen_head[len(hidden_feet_seen_head) // 2] * M_PX, 204, 0.0, "B")
     assert hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: players[0], 5: near})], geo)["blocked"] == 0
 
 

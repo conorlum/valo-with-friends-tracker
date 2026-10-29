@@ -827,7 +827,8 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
         upper -= 1
     # Per-cast snapshots respect caller-owned, mutable terrain arrays while moving
     # fixed arithmetic out of the sampling loop. Preserve subtraction order.
-    body_from_eye = node_z + hc.BODY_M - eye
+    head_from_eye = node_z + hc.HEAD_M - eye
+    feet_from_eye = node_z + hc.FEET_M - eye
     plate_from_eye = node_z - hc.STAND_M - eye
     ground_from_eye = ground - eye
     hor = np.full(rays, -np.inf)
@@ -893,25 +894,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             d = step * geo.m_per_px
             in_src = cell == src
             away = live & ~in_src
-            if away.any():
-                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
-                for k in range(upper + 1):
-                    node = node_of[cell, k]
-                    there = away & (node >= 0)
-                    if not there.any():
-                        continue
-                    safe_node = np.maximum(node, 0)
-                    z = node_z[safe_node]
-                    slope = body_from_eye[safe_node, None] / d
-                    ok = slope[:, 0] >= hor
-                    if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
-                        ok &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
-                            & ~((slope >= pend_lo - SLOPE_EPS) & (slope <= pend_hi + SLOPE_EPS)).any(1)
-                    # no known height (off the walk mask, or unresolved): the 2D answer
-                    ok |= flat | np.isnan(z)
-                    seen[node[there & ok]] = True
-                # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
+            # Include the current cell's plates before testing its target points.
             for k in range(upper):
                 node = node_of[cell, k + 1]
                 has = live & (node >= 0)
@@ -934,6 +917,30 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     near = plate / max(d - step_m, step_m / 2)
                     pend_lo[:, k] = np.where(else_, np.minimum(pend_lo[:, k], np.minimum(near, far)), pend_lo[:, k])
                     pend_hi[:, k] = np.where(else_, np.maximum(pend_hi[:, k], np.maximum(near, far)), pend_hi[:, k])
+            if away.any():
+                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
+                for k in range(upper + 1):
+                    node = node_of[cell, k]
+                    there = away & (node >= 0)
+                    if not there.any():
+                        continue
+                    safe_node = np.maximum(node, 0)
+                    z = node_z[safe_node]
+                    head_slope = head_from_eye[safe_node, None] / d
+                    feet_slope = feet_from_eye[safe_node, None] / d
+                    head_ok = head_slope[:, 0] >= hor
+                    feet_ok = feet_slope[:, 0] >= hor
+                    if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
+                        head_ok &= ~((head_slope >= lo - SLOPE_EPS) & (head_slope <= hi + SLOPE_EPS)).any(1) \
+                            & ~((head_slope >= pend_lo - SLOPE_EPS) & (head_slope <= pend_hi + SLOPE_EPS)).any(1)
+                        feet_ok &= ~((feet_slope >= lo - SLOPE_EPS) & (feet_slope <= hi + SLOPE_EPS)).any(1) \
+                            & ~((feet_slope >= pend_lo - SLOPE_EPS) & (feet_slope <= pend_hi + SLOPE_EPS)).any(1)
+                    ok = head_ok | feet_ok
+                    # no known height (off the walk mask, or unresolved): the 2D answer
+                    ok |= flat | np.isnan(z)
+                    seen[node[there & ok]] = True
+                # this cell's ground raises the horizon for what is beyond it
+                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
     return seen
 
 
@@ -963,7 +970,7 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
         cell = geo.space_at_px(ax, ay)
         if geo.heights is None or az is None or bz is None or geo.unresolved_at_px(ax, ay):
             return True
-        return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) < 0
+        return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) <= 0
                        for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:])
     ux, uy = (bx - ax) / length, (by - ay) / length
     circles = [s for s in smokes if not isinstance(s, Wall)]
@@ -1020,11 +1027,19 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             t0, t1 = first / geo.m_per_px, last / geo.m_per_px     # a clipped sample off the map's edge
         d0 = 0.0 if cell == src else t0 * geo.m_per_px
         d1 = total if cell == dst else t1 * geo.m_per_px
-        h0, h1 = az + slope * d0, az + slope * d1
         for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:]:
             if node >= 0:
                 plate = geo.node_z[node] - hc.STAND_M
-                if (h0 - plate) * (h1 - plate) < 0:
+                # Use the fan's inclusive slope interval and tolerance. Testing
+                # height products misses crossings at shared cell edges when
+                # rounding puts both heights just below the plate.
+                delta = plate - az
+                if d0 == 0 and delta == 0:
+                    return False
+                near = delta / d0 if d0 > 0 else math.copysign(math.inf, delta)
+                far = delta / d1 if d1 > 0 else near
+                lo, hi = sorted((near, far))
+                if lo - SLOPE_EPS <= slope <= hi + SLOPE_EPS:
                     return False
     return True
 
@@ -1042,7 +1057,7 @@ def cache_key(geo: Geometry) -> str:
                                   **({'movement_only': True} if geo.movement_only else {}),
                                   **({'cover_dropped': geo.height_cover_dropped}
                                      if geo.height_cover_dropped > 0 else {}),
-                                  "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
+                                  "eye": hc.EYE_M, "head": hc.HEAD_M, "feet": hc.FEET_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
                                  sort_keys=True).encode("ascii"))
     return digest.hexdigest()

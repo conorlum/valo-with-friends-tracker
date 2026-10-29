@@ -99,13 +99,13 @@ def test_vantage_leaves_out_a_piece_whose_surface_reaches_the_eye():
     from app.control import stance as st_mod
     from app.control import heights as hc
 
-    # on piece 1 at 1.0: eye 1.7. Piece 2's top 2.0 gives a surface of 1.1 (lower: in); 3.0 gives 2.1 (out)
+    # on piece 1 at 1.0: eye 2.1. Piece 2's top 2.0 gives a surface of 1.1 (lower: in); 3.0 gives 2.1 (out)
     assert st_mod.vantage(fake_geo({1: (1.0,), 2: (2.0,)}), 1, 1.0) == (1, 2), "a top above the eye, a surface below it"
     assert st_mod.vantage(fake_geo({1: (1.0,), 2: (3.0,)}), 1, 1.0) == (1,)
     # the highest top of a piece counts, not its lowest
     assert st_mod.vantage(fake_geo({1: (1.0,), 2: (1.0, 3.0)}), 1, 1.0) == (1,)
     # surface exactly at the eye is not strictly below it
-    z, top = 1.5, 3.1
+    z, top = 1.5, 3.5
     assert top - hc.STAND_M == z + hc.EYE_M
     assert st_mod.vantage(fake_geo({1: (z,), 2: (top,)}), 1, z) == (1,)
     assert st_mod.vantage(fake_geo({1: (z,), 2: (float(np.nextafter(top, 0)),)}), 1, z) == (1, 2)

@@ -426,9 +426,10 @@ def views(geo, viewer, target, occluders):
 
     vx, vy = (float(c) for c in geo.centres[viewer])
     tx, ty = (float(c) for c in geo.centres[target])
-    eye, body = geo.node_z[viewer] + hc.EYE_M, geo.node_z[target] + hc.BODY_M
+    eye = geo.node_z[viewer] + hc.EYE_M
     cast = cf.cast_with(geo, vx, vy, np.arange(0, 360, cg.RAY_STEP_DEG), [], occluders, eye_z=eye, own=viewer)[target]
-    los = cf.los_with(geo, (vx, vy, eye), (tx, ty, body), [], occluders)
+    los = any(cf.los_with(geo, (vx, vy, eye), (tx, ty, geo.node_z[target] + offset), [], occluders)
+              for offset in (hc.HEAD_M, hc.FEET_M))
     seen = cf.seen_from_with(geo, np.array([viewer]), [], occluders)[target]
     return bool(cast), bool(los), bool(seen)
 

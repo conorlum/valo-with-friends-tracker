@@ -1,4 +1,9 @@
-"""Frozen pre-optimization height caster (cd574b2), used as an independent oracle."""
+"""Pre-optimization height caster (cd574b2), updated for head-or-feet sight.
+
+Both target slopes use the same horizon and slab tests; either may clear. The
+current cell's plates are included before testing either target point. This
+remains an independent oracle for the optimized march.
+"""
 from app.control.geometry import *
 from app.control.geometry import hc
 
@@ -87,24 +92,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             d = step * geo.m_per_px
             in_src = cell == src
             away = live & ~in_src
-            if away.any():
-                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
-                for k in range(upper + 1):
-                    node = node_of[cell, k]
-                    there = away & (node >= 0)
-                    if not there.any():
-                        continue
-                    z = node_z[np.maximum(node, 0)]
-                    slope = (z + hc.BODY_M - eye)[:, None] / d
-                    ok = slope[:, 0] >= hor
-                    if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
-                        ok &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
-                            & ~((slope >= pend_lo - SLOPE_EPS) & (slope <= pend_hi + SLOPE_EPS)).any(1)
-                    # no known height (off the walk mask, or unresolved): the 2D answer
-                    ok |= flat | np.isnan(z)
-                    seen[node[there & ok]] = True
-                # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
+            # Include the current cell's plates before testing its target points.
             for k in range(upper):
                 node = node_of[cell, k + 1]
                 has = live & (node >= 0)
@@ -127,4 +115,25 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     near = plate / max(d - step_m, step_m / 2)
                     pend_lo[:, k] = np.where(else_, np.minimum(pend_lo[:, k], np.minimum(near, far)), pend_lo[:, k])
                     pend_hi[:, k] = np.where(else_, np.maximum(pend_hi[:, k], np.maximum(near, far)), pend_hi[:, k])
+            if away.any():
+                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
+                for k in range(upper + 1):
+                    node = node_of[cell, k]
+                    there = away & (node >= 0)
+                    if not there.any():
+                        continue
+                    z = node_z[np.maximum(node, 0)]
+                    ok = np.zeros(len(live), bool)
+                    for offset in (hc.HEAD_M, hc.FEET_M):
+                        slope = (z + offset - eye)[:, None] / d
+                        clear = slope[:, 0] >= hor
+                        if slabs:     # A line that grazes a plate's edge is blocked.
+                            clear &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
+                                & ~((slope >= pend_lo - SLOPE_EPS) & (slope <= pend_hi + SLOPE_EPS)).any(1)
+                        ok |= clear
+                    # no known height (off the walk mask, or unresolved): the 2D answer
+                    ok |= flat | np.isnan(z)
+                    seen[node[there & ok]] = True
+                # this cell's ground raises the horizon for what is beyond it
+                np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
     return seen
