@@ -1,9 +1,10 @@
 """Learnt box tops read per cover piece (W7): `Geometry.box_tops` (piece -> its top heights, m) and
-`Geometry.box_reach` (per pixel, up to 3 topped pieces within TOP_REACH_PX). Lazy, from the current heights and
+`Geometry.box_reach` (per pixel, up to 3 topped pieces within TOP_REACH_M). Lazy, from the current heights and
 cover, cached by their shas; nothing is computed on a map without both."""
 
 import copy
 import dataclasses
+import math
 import sys
 from pathlib import Path
 
@@ -18,7 +19,7 @@ sys.path.insert(0, str(HERE.parents[2]))
 from app.control import box_tops as bt  # noqa: E402
 from app.control import geometry as cg  # noqa: E402
 from app.control import heights as hc  # noqa: E402
-from app.control.stance import TOP_REACH_PX  # noqa: E402
+from app.control.heights import TOP_REACH_M  # noqa: E402
 
 A, B, D = (100, 100, 120, 120), (151, 100, 171, 120), (600, 600, 620, 620)      # x0, y0, x1, y1; labels 1, 2, 3
 
@@ -66,6 +67,42 @@ def test_tops_are_attributed_per_piece_sorted_and_in_node_z_units():
     assert geo.node_z[: cg.GRID * cg.GRID][geo.walk.ravel()][0] == 0.0
 
 
+def test_ring_ground_is_in_metres_and_has_no_requirement_for_top_rows():
+    geo = make(rows=[])
+    assert dict(geo.box_ground) == {1: 0.0, 2: 0.0, 3: 0.0}
+    floors = geo.heights.floors.copy()
+    floors[floors >= 0] = 20
+    cg.attach_heights(geo, dataclasses.replace(geo.heights, floors=floors))
+    assert dict(geo.box_ground) == {1: 2.0, 2: 2.0, 3: 2.0}
+    with pytest.raises((TypeError, AttributeError)):
+        geo.box_ground[1] = 0.0
+
+
+def test_no_ring_ground_without_heights_cover_or_known_floors():
+    assert dict(make(heights=False).box_ground) == {}
+    assert dict(make(cover=False).box_ground) == {}
+    geo = make()
+    cg.attach_heights(geo, dataclasses.replace(geo.heights, floors=np.full_like(geo.heights.floors, -1)))
+    assert dict(geo.box_ground) == {}
+
+
+def test_ring_ground_cache_follows_the_height_and_cover_shas(monkeypatch):
+    geo = make()
+    expected = dict(geo.box_ground)
+
+    def boom(*a, **k):
+        raise AssertionError("ground recomputed")
+
+    with monkeypatch.context() as m:
+        m.setattr(bt, "ground_of", boom)
+        assert dict(make().box_ground) == expected
+        assert dict(copy.copy(geo).box_ground) == expected
+        assert dict(dataclasses.replace(geo).box_ground) == expected
+    geo.cover_px = np.zeros_like(geo.cover_px)
+    geo.cover_sha = "no-ground-cover"
+    assert dict(geo.box_ground) == {}
+
+
 def test_nothing_without_heights_tops_or_cover(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("computed")
@@ -80,19 +117,36 @@ def test_reach_per_pixel():
     r = make().box_reach
     assert r.shape == (cg.PX, cg.PX, 3) and r.dtype == np.int16
     assert tuple(r[110, 110]) == (1, 0, 0)                  # inside A (B is 41 px away)
-    assert tuple(r[110, 80]) == (1, 0, 0)                   # 20 px left of A's first column (100)
-    assert tuple(r[110, 60]) == (0, 0, 0)                   # 40 px out
-    assert tuple(r[110, 140]) == (2, 1, 0)                  # B is 11 px, A 21: nearest first
-    assert tuple(r[110, 135]) == (1, 2, 0)                  # 16 and 16: the tie goes to the lower id
+    assert tuple(r[110, 95]) == (1, 0, 0)                   # 5 px left of A's first column (100)
+    assert tuple(r[110, 93]) == (0, 0, 0)                   # 7 px out, past the 6 px reach
+    assert tuple(r[110, 145]) == (2, 0, 0)                  # B is 6 px, A 26
+    assert tuple(r[110, 135]) == (0, 0, 0)                  # 16 px from either: neither reaches it
     assert tuple(r[610, 610]) == (0, 0, 0)                  # D has no top: never listed
     assert tuple(r[610, 605]) == (0, 0, 0)
     assert tuple(r[110, 160]) == (2, 0, 0)
 
 
 def test_reach_is_euclidean_within_the_constant():
-    r = make().box_reach
-    assert r[110, 100 - TOP_REACH_PX][0] == 1 and r[110, 100 - TOP_REACH_PX - 1][0] == 0
-    assert r[100 - 21, 100 - 28][0] == 1 and r[100 - 21, 100 - 30][0] == 0        # 35 px and 37 px diagonally
+    geo = make()
+    r = geo.box_reach
+    reach = math.ceil(TOP_REACH_M / geo.m_per_px - 1e-9)
+    assert r[110, 100 - reach][0] == 1 and r[110, 100 - reach - 1][0] == 0
+    assert r[100 - 3, 100 - 5][0] == 1 and r[100 - 4, 100 - 5][0] == 0        # sqrt(34) < 6 < sqrt(41)
+
+
+def test_overlapping_reach_lists_nearest_first_and_breaks_a_tie_by_piece_id():
+    geo = make()
+    cover = geo.cover_px.copy()
+    cover[100:120, 151:171] = 0
+    cover[100:120, 126:146] = 2
+    geo.cover_px, geo.cover_sha = cover, "close-reach-pieces"
+    cg.attach_heights(geo, flat_asset(geo, [(110, 110, 12), (130, 110, 8)]))
+    assert tuple(geo.box_reach[110, 122]) == (1, 2, 0)        # 3 px to A, 4 px to B
+    assert tuple(geo.box_reach[110, 123]) == (2, 1, 0)        # 4 px to A, 3 px to B
+    cover[100:120, 126:146] = 0
+    cover[100:120, 125:145] = 2
+    geo.cover_px, geo.cover_sha = cover, "tied-reach-pieces"
+    assert tuple(geo.box_reach[110, 122]) == (1, 2, 0)        # 3 px to both
 
 
 def test_attach_order_copy_and_replace_agree():
@@ -123,7 +177,7 @@ def test_cache_by_shas_and_read_only():
         a.box_tops[9] = (1.0,)
     other = make(rows=[(110, 110, 30)])
     assert dict(other.box_tops) == {1: (3.0,)} and dict(a.box_tops) == {1: (1.2, 2.5), 2: (0.8,)}
-    assert other.box_reach is not r and tuple(other.box_reach[110, 140]) == (1, 0, 0)
+    assert other.box_reach is not r and tuple(other.box_reach[110, 125]) == (1, 0, 0)
     assert make().box_reach is r                         # same shas: the cached array
 
 

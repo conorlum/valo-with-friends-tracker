@@ -2,12 +2,11 @@
 (hugging it, crossing it in a jump, just landed, no z). Both kinds have an anchor: a walkable node near the player
 that stands in for them where the engine needs a node.
 
-The z rule (R2, R3, R4): a player is on a piece when their z has been steady (range within BOX_STEADY_DZ_M over the
-last BOX_SETTLE_S) at one of the piece's learnt tops (`geo.box_tops`, from the height map), within TOP_TOL_M. Inside the
-piece's outline that is enough. Off it, within TOP_REACH_PX (`geo.box_reach`, nearest piece first), only when the
-player's current stay at that top (the run of samples at the top height in one track segment) included a sample
-inside the piece's outline. Without heights or tops nobody is ever on a box. Nothing in the engine calls
-`stance_at` yet (the identity witness reads `CALLS`)."""
+The z rule (R2, R3): over the last BOX_SETTLE_S, z must stay within BOX_STEADY_DZ_M in one track segment, with no
+NaN. The window median matches a learnt top within TOP_TOL_M above it or TOP_TOL_M + CROUCH_DROP_M below it;
+the nearest matching top wins (ties: lower). It must also be at least BOX_STEP_M above the piece's ring floor.
+Try the piece under the pixel first, then topped pieces within TOP_REACH_M, nearest first. No earlier entry
+into the outline is needed. Without heights, tops or a ring floor a piece never matches."""
 
 from __future__ import annotations
 
@@ -16,13 +15,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.control.heights import BOX_SETTLE_S, BOX_STEADY_DZ_M  # noqa: F401  (D11: the rules hash covers them)
+from app.control.heights import (BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M, CROUCH_DROP_M,
+                                 TOP_REACH_M, TOP_TOL_M)  # noqa: F401 (the rules hash covers them)
 
 ANCHOR_MAX_M = 2.0
-# PROVISIONAL(D10): W2, 36 replays: 159 of 162 top stands within 0.25 m of their top, none 0.25-0.55
-TOP_TOL_M = 0.3
-# PROVISIONAL(D10): W2, 36 replays: 98.8% of off-outline top-stay samples within 24 px, none beyond 36
-TOP_REACH_PX = 36
 
 EPS = 1e-6
 
@@ -59,11 +55,12 @@ def vantage(geo, piece: int, z: float) -> tuple[int, ...]:
     return cache[key]
 
 
-def _top_match(rnd, slot: int, i: int, tops):
+def _top_match(rnd, slot: int, i: int, tops, ground):
     """The learnt top (m) the player is steady at in sample i, or None: same segment and no NaN over the last
-    BOX_SETTLE_S, range within BOX_STEADY_DZ_M, window median within TOP_TOL_M of a top (the nearest one)."""
+    BOX_SETTLE_S, range within BOX_STEADY_DZ_M, median in a top's crouch window and at least BOX_STEP_M above
+    its ring floor (`ground`, m). The nearest matching top wins, with the lower top on a tie."""
     zs = rnd.heights.get(slot)
-    if zs is None or not tops:
+    if zs is None or not tops or ground is None:
         return None
     w = int(math.floor(BOX_SETTLE_S * rnd.hz + 1e-9))
     if i - w < 0 or np.isnan(zs[i]):
@@ -77,63 +74,15 @@ def _top_match(rnd, slot: int, i: int, tops):
     if float(win.max() - win.min()) > BOX_STEADY_DZ_M + EPS:
         return None
     med = float(np.median(win))
-    best = min(tops, key=lambda t: (abs(t - med), t))
-    return best if abs(best - med) <= TOP_TOL_M + EPS else None
-
-
-def _stay_starts(rnd, slot: int, top: float) -> np.ndarray:
-    """Per sample, the index where the stay at `top` containing it starts (-1 when the sample is not at the top):
-    a stay is a maximal run in one track segment with z within TOP_TOL_M of the top. Cached on the round."""
-    cache = rnd.__dict__.setdefault("_stance_stays", {})
-    key = (slot, round(float(top), 4))
-    if key not in cache:
-        zs, seg = rnd.heights[slot], rnd._segment[slot]
-        at = np.zeros(len(zs), bool)
-        ok = ~np.isnan(zs)
-        at[ok] = np.abs(zs[ok] - top) <= TOP_TOL_M + EPS
-        starts = np.full(len(zs), -1, np.int64)
-        cur = -1
-        for k in range(len(zs)):
-            if not at[k]:
-                cur = -1
-                continue
-            if cur < 0 or seg[k] != seg[k - 1]:
-                cur = k
-            starts[k] = cur
-        cache[key] = starts
-    return cache[key]
-
-
-def _inside_counts(rnd, slot: int, piece: int) -> np.ndarray:
-    """Cumulative count of the slot's samples whose pixel is inside `piece`'s outline (index k = samples 0..k)."""
-    from app.control import geometry as cg
-
-    cache = rnd.__dict__.setdefault("_stance_inside", {})
-    if (slot, piece) not in cache:
-        geo, tr = rnd.geo, rnd.tracks[slot]
-        size = geo.cover_px.shape[0]
-        xs = np.clip((tr[1] * cg.PX / 10000).astype(int), 0, size - 1)
-        ys = np.clip((tr[2] * cg.PX / 10000).astype(int), 0, size - 1)
-        cache[(slot, piece)] = np.cumsum(np.asarray(geo.cover_px)[ys, xs] == piece)
-    return cache[(slot, piece)]
-
-
-def _entered(rnd, slot: int, i: int, piece: int, top: float) -> bool:
-    """True when the stay at `top` that sample i belongs to included a sample inside the piece's outline."""
-    start = int(_stay_starts(rnd, slot, top)[i])
-    if start < 0:
-        return False
-    cnt = _inside_counts(rnd, slot, piece)
-    return int(cnt[i]) - (int(cnt[start - 1]) if start > 0 else 0) > 0
-
-
-def _on_piece(rnd, slot: int, i: int, piece: int, in_outline: bool) -> float | None:
-    """The matched top (m) when the player is on `piece` there, else None. The vantage's z is this top."""
-    tops = rnd.geo.box_tops.get(piece)
-    top = _top_match(rnd, slot, i, tops)
-    if top is None:
+    if med < ground + BOX_STEP_M - EPS:
         return None
-    return top if in_outline or _entered(rnd, slot, i, piece, top) else None
+    matches = [t for t in tops if t - TOP_TOL_M - CROUCH_DROP_M - EPS <= med <= t + TOP_TOL_M + EPS]
+    return min(matches, key=lambda t: (abs(t - med), t)) if matches else None
+
+
+def _on_piece(rnd, slot: int, i: int, piece: int) -> float | None:
+    """The matched top (m) when the player is on `piece` there, else None. The vantage's z is this top."""
+    return _top_match(rnd, slot, i, rnd.geo.box_tops.get(piece), rnd.geo.box_ground.get(piece))
 
 
 def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
@@ -213,19 +162,21 @@ def stance_at(rnd, slot, t) -> Stance | None:
     px = (x, y)
     out = None
     if label:
-        top = _on_piece(rnd, slot, i, label, True)
+        top = _on_piece(rnd, slot, i, label)
         if top is not None:
             out = Stance("on_box", px, px, vantage(geo, label, top), _anchor(rnd, slot, i, px, label), label)
-        else:
-            anchor = _anchor(rnd, slot, i, px, label)
-            eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
-            out = Stance("beside", px, eye, (), anchor)
-    else:
+    if out is None:
         for piece in _reach_ids(geo, x, y):
-            top = _on_piece(rnd, slot, i, piece, False)
+            if piece == label:
+                continue
+            top = _on_piece(rnd, slot, i, piece)
             if top is not None:
                 out = Stance("on_box", px, px, vantage(geo, piece, top), int(geo.node_at_px(x, y)), piece)
                 break
+    if out is None and label:
+        anchor = _anchor(rnd, slot, i, px, label)
+        eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
+        out = Stance("beside", px, eye, (), anchor)
     memo[(slot, i)] = out
     return out
 

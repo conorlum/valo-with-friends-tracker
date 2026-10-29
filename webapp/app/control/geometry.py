@@ -328,6 +328,12 @@ class Geometry:
         return box_tops.piece_tops(self)
 
     @property
+    def box_ground(self):
+        """{cover piece id: ring floor, m} from the current height asset's coarse floors and cover."""
+        from app.control import box_tops
+        return box_tops.piece_ground(self)
+
+    @property
     def box_reach(self):
         """PX x PX x 3 int16: topped pieces within reach of each pixel, nearest first; None without any."""
         from app.control import box_tops

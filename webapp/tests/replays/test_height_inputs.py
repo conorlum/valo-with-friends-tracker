@@ -17,14 +17,21 @@ REPLAYS = [["m2", "p.c11.f1.a1", "b" * 64, 20], ["m1", "p.c11.f1.a1", "a" * 64, 
 # HEIGHT_RULES_REVISION -> the hash of app/control/heights.py's constants it was released with. Changed a
 # constant, or the build's code? Bump HEIGHT_RULES_REVISION in app/replays/control_format.py and pin it here.
 PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72ed40ed76a5", 5: "72ed40ed76a5",
-                6: "bb8b0358a9c8"}    # 6 unreleased: re-pinned in place for the box-top step rule (was "45291e973b6e")
+                6: "52136ab282f4"}    # 6 unreleased: re-pinned in place for reach and crouch stance (was "bb8b0358a9c8")
 
 
-@pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2)])
+@pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
+                                       ("TOP_REACH_M", 0.8), ("TOP_TOL_M", 0.25), ("CROUCH_DROP_M", 0.3)])
 def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
     before = hc.rules()["constants"]
     monkeypatch.setattr(hc, name, value)
     assert hc.rules()["constants"] != before
+
+
+def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    for name in ("TOP_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M"):
+        monkeypatch.delattr(hc, name, raising=False)
+    assert hc.rules()["constants"] == "bb8b0358a9c8"
 
 
 def test_the_height_rules_are_pinned_to_their_revision():

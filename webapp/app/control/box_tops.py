@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import math
 from types import MappingProxyType
 
 import numpy as np
 
 from app.control import heights
 from app.control.geometry import CELL, GRID, PX
-from app.control.heights import BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M
-from app.control.stance import TOP_REACH_PX
+from app.control.heights import BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M, TOP_REACH_M
 
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6
@@ -157,6 +157,7 @@ def top_rows(stands: list[TopStand]) -> np.ndarray:
 REACH_SLOTS = 3
 _CACHE_MAX = 8
 _tops_cache: dict = {}
+_ground_cache: dict = {}
 _reach_cache: dict = {}
 
 
@@ -199,10 +200,24 @@ def piece_tops(geo):
     return MappingProxyType(tops)
 
 
+def piece_ground(geo):
+    """{cover piece id: its ring floor in m}, read-only; {} without heights or cover. Cached by their shas,
+    like piece_tops, using the attached asset's coarse floors (dm). A piece with no ring floor is left out."""
+    if geo.heights is None or geo.cover_px is None:
+        return MappingProxyType({})
+    key = _key(geo)
+    if key is not None and key in _ground_cache:
+        return MappingProxyType(_ground_cache[key])
+    ground = {piece: z / 10.0 for piece, z in ground_of(geo.cover_px, geo.heights.floors).items()}
+    if key is not None:
+        _remember(_ground_cache, key, ground)
+    return MappingProxyType(ground)
+
+
 def _reach_of(geo, tops) -> np.ndarray:
     from scipy import ndimage
 
-    reach = TOP_REACH_PX
+    reach = int(math.ceil(TOP_REACH_M / geo.m_per_px - 1e-9))
     cover = np.asarray(geo.cover_px)
     boxes = ndimage.find_objects(cover.astype(np.int32))
     dist = np.full((PX, PX, REACH_SLOTS), np.inf, np.float32)
@@ -228,7 +243,7 @@ def _reach_of(geo, tops) -> np.ndarray:
 
 
 def piece_reach(geo):
-    """PX x PX x 3 int16 (read-only): per pixel, up to 3 topped pieces within TOP_REACH_PX, nearest first (ties: lower
+    """PX x PX x 3 int16 (read-only): per pixel, up to 3 topped pieces within TOP_REACH_M, nearest first (ties: lower
     id), 0-padded; None when no piece has a top. Computed per piece on its padded bounding box, cached by shas."""
     tops = piece_tops(geo)
     if not tops:
