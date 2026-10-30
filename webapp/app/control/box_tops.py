@@ -263,7 +263,7 @@ def judge(stands, ground, leaf_floor):
 # ---------------------------------------------------------------- read from a geometry (W7)
 
 REACH_SLOTS = 3
-_CACHE_MAX = 8
+_CACHE_MAX = 16
 _tops_cache: dict = {}
 _ground_cache: dict = {}
 _reach_cache: dict = {}
@@ -322,10 +322,11 @@ def piece_ground(geo):
     return MappingProxyType(ground)
 
 
-def _reach_of(geo, tops) -> np.ndarray:
+def _reach_of(geo, tops, metres=TOP_REACH_M, metric=False) -> np.ndarray:
     from scipy import ndimage
 
-    reach = int(math.ceil(TOP_REACH_M / geo.m_per_px - 1e-9))
+    reach = int(math.ceil(metres / geo.m_per_px - 1e-9))
+    pad = math.ceil(metres / geo.m_per_px) + 1 if metric else reach + 1
     cover = np.asarray(geo.cover_px)
     boxes = ndimage.find_objects(cover.astype(np.int32))
     dist = np.full((PX, PX, REACH_SLOTS), np.inf, np.float32)
@@ -334,10 +335,13 @@ def _reach_of(geo, tops) -> np.ndarray:
         if piece > len(boxes) or boxes[piece - 1] is None:
             continue
         ys, xs = boxes[piece - 1]
-        y0, y1 = max(ys.start - reach - 1, 0), min(ys.stop + reach + 1, PX)
-        x0, x1 = max(xs.start - reach - 1, 0), min(xs.stop + reach + 1, PX)
+        y0, y1 = max(ys.start - pad, 0), min(ys.stop + pad, PX)
+        x0, x1 = max(xs.start - pad, 0), min(xs.stop + pad, PX)
         d = ndimage.distance_transform_edt(cover[y0:y1, x0:x1] != piece).astype(np.float32)
-        d[d > reach] = np.inf
+        if metric:
+            d[d * geo.m_per_px > metres + 1e-6] = np.inf
+        else:
+            d[d > reach] = np.inf
         carry_d, carry_i = d, np.full(d.shape, piece, np.int16)
         for k in range(REACH_SLOTS):
             slot_d, slot_i = dist[y0:y1, x0:x1, k], ids[y0:y1, x0:x1, k]
@@ -350,16 +354,19 @@ def _reach_of(geo, tops) -> np.ndarray:
     return ids
 
 
-def piece_reach(geo):
-    """PX x PX x 3 int16 (read-only): per pixel, up to 3 topped pieces within TOP_REACH_M, nearest first (ties: lower
-    id), 0-padded; None when no piece has a top. Computed per piece on its padded bounding box, cached by shas."""
+def piece_reach(geo, metres=TOP_REACH_M, metric=False):
+    """PX x PX x 3 int16 (read-only): up to 3 topped pieces within metres, nearest first (ties: lower id), 0-padded;
+    None without tops. Metric mode uses metres directly; the default rounds reach up to pixels. Computed per piece
+    on its padded bounding box, cached by shas, distance and metric mode."""
     tops = piece_tops(geo)
     if not tops:
         return None
     key = _key(geo)
+    if key is not None:
+        key = (key, metres, metric)
     if key is not None and key in _reach_cache:
         return _reach_cache[key]
-    reach = _reach_of(geo, tops)
+    reach = _reach_of(geo, tops, metres, metric)
     if key is not None:
         _remember(_reach_cache, key, reach)
     return reach

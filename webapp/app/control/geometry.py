@@ -339,6 +339,12 @@ class Geometry:
         from app.control import box_tops
         return box_tops.piece_reach(self)
 
+    @property
+    def box_view_reach(self):
+        """PX x PX x 3 int16: topped pieces within view reach of each pixel, nearest first; None without any."""
+        from app.control import box_tops
+        return box_tops.piece_reach(self, hc.VIEW_REACH_M, metric=True)
+
     # --- nodes (one per cell on a flat map; `attach_heights` adds the upper floors)
     n: int = GRID * GRID                  # node count: every array the engine keeps per place has this length
     node_cell: np.ndarray = None          # node -> flat cell

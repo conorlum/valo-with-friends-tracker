@@ -1,8 +1,10 @@
 """Box-top stands: a steady stand inside a cover piece (W5a), kept as a top when it is a clear step above the floor
 round the piece (the owner's review of 2026-10-27-box-tops)."""
 
+import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -11,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.control import box_tops as bt  # noqa: E402
 from app.control import heights as hc  # noqa: E402
-from app.control.geometry import CELL, GRID, PX  # noqa: E402
+from app.control.geometry import CELL, GRID, PX, Geometry  # noqa: E402
 
 HZ = 125
 UV = 10000 / PX
@@ -250,6 +252,63 @@ def test_reach_is_in_metres_and_does_not_limit_candidate_count():
     b = blob(seg(0, *const(120, 120, 40, 1)))
     assert bt.top_stands(b, c, m_per_px=0.14)[0].candidates == (1, 2, 3, 4)
     assert bt.top_stands(b, c, m_per_px=1)[0].candidates == (1,)
+
+
+def reach_geo():
+    c = np.zeros((PX, PX), np.int16)
+    c[100:140, 100:140] = 1
+    return Geometry("Reach", np.zeros_like(c, bool), c == 0, np.ones((GRID, GRID), bool),
+                    m_per_px=0.1302, uv_per_unit=1, tol_hits=0, cover_px=c,
+                    cover_sha="toy-reach-cover", height_sha="toy-reach-height",
+                    heights=SimpleNamespace(box_tops=np.array([[120, 120, 40]], np.int32)))
+
+
+def test_view_reach_keeps_eight_pixels_but_not_nine_at_summit_scale():
+    geo = reach_geo()
+    view = bt.piece_reach(geo, 1.1, metric=True)
+    assert tuple(view[120, 100 - 8]) == (1, 0, 0)
+    assert tuple(view[120, 100 - 9]) == (0, 0, 0)
+    assert geo.box_view_reach is view
+    assert not view.flags.writeable
+
+
+def test_default_reach_is_byte_identical_to_the_old_pixel_formula():
+    from scipy import ndimage
+
+    geo = reach_geo()
+    # Independent copy of the old formula for this one-piece toy (R4).
+    reach = math.ceil(0.75 / geo.m_per_px - 1e-9)
+    d = ndimage.distance_transform_edt(geo.cover_px != 1).astype(np.float32)
+    d[d > reach] = np.inf
+    old = np.zeros((PX, PX, bt.REACH_SLOTS), np.int16)
+    old[:, :, 0] = np.where(np.isfinite(d), 1, 0)
+    current = bt._reach_of(geo, bt.piece_tops(geo))
+    assert np.array_equal(current, old)
+    assert current.tobytes() == old.tobytes()
+    assert tuple(current[120, 100 - 6]) == (1, 0, 0)
+    assert tuple(current[120, 100 - 7]) == (0, 0, 0)
+    assert np.array_equal(bt.piece_reach(geo), old)
+
+
+def test_reach_cache_separates_distance_and_metric(monkeypatch):
+    monkeypatch.setattr(bt, "_reach_cache", {})
+    geo = reach_geo()
+    standing = bt.piece_reach(geo)
+    view = bt.piece_reach(geo, 1.1, metric=True)
+    rounded_view = bt.piece_reach(geo, 1.1)
+    assert standing is not view and view is not rounded_view and standing is not rounded_view
+    assert tuple(rounded_view[120, 100 - 9]) == (1, 0, 0)
+    assert bt.piece_reach(geo) is standing
+    assert bt.piece_reach(geo, 1.1, metric=True) is view
+    assert bt.piece_reach(geo, 1.1) is rounded_view
+
+
+@pytest.mark.parametrize("rows", [None, np.empty((0, 3), np.int32)])
+def test_view_reach_is_none_without_tops(rows):
+    geo = reach_geo()
+    geo.height_sha = None
+    geo.heights.box_tops = rows
+    assert geo.box_view_reach is None
 
 
 def test_one_segment_has_several_steady_stands_including_a_crouch():

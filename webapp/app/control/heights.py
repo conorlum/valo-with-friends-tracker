@@ -122,8 +122,9 @@ BOX_STEADY_DZ_M = 0.25
 BOX_STEP_M = 0.5
 BOX_RING_PX = 16           # the floor round a box: floors within this of its outline, off every cover piece
 TOP_REACH_M = 0.75        # a box's real top reaches about 0.75 m past its drawn outline (the Range)
+VIEW_REACH_M = 1.1   # seeing over boxes from a top: feet within 1.1 m of the box's drawn outline (owner, 2026-10-30, "for now")
 TOP_TOL_M = 0.3           # standing z is within 0.3 m of a learnt top (159 of 162 measured stands within 0.25 m)
-CROUCH_DROP_M = 0.2       # a crouch lowers the replay z by 0.2 m: 526 of 601 measured dips
+CROUCH_DROP_M = 0.2       # a crouch lowers the replay z by 0.2 m: 501 of 601 measured dips at exactly 0.2 m
 
 
 class HeightError(ValueError):
