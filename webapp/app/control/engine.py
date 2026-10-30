@@ -1243,13 +1243,43 @@ def seen_from(geo: Geometry, src: np.ndarray, smokes: list, skip: np.ndarray | N
     q = geo.centres[targets]
     seen_t = np.zeros(len(targets), bool)
     for lo in range(0, len(src), 256):
-        rows = np.unpackbits(packed[lo:lo + 256], axis=1)[:, : geo.n][:, targets].astype(bool)
-        p = geo.centres[src[lo:lo + 256]]
+        todo = np.flatnonzero(~seen_t)       # a target an earlier block already sees needs no more pairs
+        if not len(todo):
+            break
+        rows = np.unpackbits(packed[lo:lo + 256], axis=1)[:, : geo.n][:, targets[todo]].astype(bool)
+        si, ti = np.nonzero(rows)            # only the statically visible pairs, each smoke on what's left
+        p, qt = geo.centres[src[lo:lo + 256]], q[todo]
         for smoke in smokes:
-            rows &= ~smoke_blocks(p, q, smoke)
-        seen_t |= rows.any(0)
+            if not len(si):
+                break
+            keep = ~_pair_blocks(p, qt, si, ti, smoke)
+            si, ti = si[keep], ti[keep]
+        seen_t[todo[ti]] = True
     out[targets] = seen_t
     return out
+
+
+def _pair_blocks(p: np.ndarray, q: np.ndarray, si: np.ndarray, ti: np.ndarray, smoke) -> np.ndarray:
+    """smoke_blocks(p, q, smoke)[si, ti] without the S x N matrix: the same arithmetic per pair, so the same
+    answers bit for bit."""
+    if isinstance(smoke, Wall):
+        us, inv_s = np.unique(si, return_inverse=True)
+        ut, inv_t = np.unique(ti, return_inverse=True)
+        return wall_blocks(p[us], q[ut], smoke)[inv_s, inv_t]
+    sx, sy, r, solid = smoke
+    px, py, qx, qy = p[si, 0], p[si, 1], q[ti, 0], q[ti, 1]
+    dx = qx - px
+    dy = qy - py
+    fx = sx - px
+    fy = sy - py
+    l2 = np.maximum(dx * dx + dy * dy, 1e-6)
+    tt = np.clip((fx * dx + fy * dy) / l2, 0, 1)
+    hit = (fx - tt * dx) ** 2 + (fy - tt * dy) ** 2 < r * r
+    if solid:
+        return hit
+    in_p = fx ** 2 + fy ** 2 < r * r
+    in_q = (qx - sx) ** 2 + (qy - sy) ** 2 < r * r
+    return hit & ~(in_p & in_q)
 
 
 def _yaw_at(w: Watcher, t: float, default: float) -> float:

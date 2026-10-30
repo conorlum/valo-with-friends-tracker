@@ -4,13 +4,18 @@ first timing the whole suite (an AFK run's serial baseline spent 92 min doing on
     python scripts/test_timings.py refresh <junit.xml> [<junit.xml> ...] [--prune]
     python scripts/test_timings.py show [--by dir|file] [--top N]
 
-`refresh` takes the times from `pytest --junitxml` files, later files winning per test, and keeps every other
-test's old time. Skipped tests are left out (a skip's time says nothing). Feed it serial (`-n 0`) runs: a
-parallel run's times are inflated by its neighbours. Any subset is fine: one file's run refreshes that file.
-`--prune` drops tests whose file no longer exists. `show` totals the file by directory or file.
+The file lists, per test file, every test of at least LISTED_S by name, and the rest only as a count and a
+total: a part is packed in minutes, so a quick test's own time doesn't matter, and the names of ~5000 quick tests
+were 85% of the file. A test that isn't listed is timed at its file's mean quick test.
 
-Run from webapp/. The AFK skill's split_suite.py reads this file through `--times`; a test's id here is pytest's
-node id (`tests/x/test_y.py::TestK::test_z[param]`), the same id split_suite.py derives from the XML.
+`refresh` takes the times from `pytest --junitxml` files (later files winning per test) and changes only the files
+they ran. A file the XMLs ran whole (at least as many tests as it holds) is replaced; a partly run file has its
+ran tests updated, and its quick-test count and total replaced only when the run had at least as many quick tests.
+Skipped tests are left out (a skip's time says nothing). Feed it serial (`-n 0`) runs: a parallel run's times are
+inflated by its neighbours. `--prune` drops files that no longer exist. `show` totals the file by directory or file.
+
+Run from webapp/. The AFK skill's split_suite.py reads this file through `--times`; a test's id is pytest's node id
+(`tests/x/test_y.py::TestK::test_z[param]`) split at its first `::`, the same id split_suite.py derives from the XML.
 """
 
 import argparse
@@ -22,9 +27,11 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 PATH = os.path.join("tests", "timings.json")
-ABOUT = ("Seconds per test, serial (-n 0), slow tests included, on the owner's 12-core dev machine. Tests that "
-         "build toy maps (tests/replays/control_toys.py) may hold cold-cache times, far above a warm run's. "
-         "Refresh: python scripts/test_timings.py refresh <junit.xml>. A machine under load runs up to ~2x these.")
+LISTED_S = 0.5
+ABOUT = ("Seconds per test, serial (-n 0), slow tests included, on the owner's 12-core dev machine. Per test file: "
+         f"each test of {LISTED_S} s or more by name, the rest as [count, total s]. Tests that build toy maps "
+         "(tests/replays/control_toys.py) may hold cold-cache times, far above a warm run's. Refresh: python "
+         "scripts/test_timings.py refresh <junit.xml>. A machine under load runs up to ~2x these.")
 
 
 def _file_of(classname: str) -> str | None:
@@ -47,24 +54,57 @@ def node_id(case) -> str | None:
 
 
 def load() -> dict:
+    """{file: {"tests": {name: s}, "rest": [count, total]}}; the flat {"tests": {node id: s}} form is read too."""
     if not os.path.isfile(PATH):
         return {}
     with open(PATH, encoding="utf-8") as f:
-        return json.load(f).get("tests", {})
+        data = json.load(f)
+    if "files" in data:
+        return {f: {"tests": dict(e.get("tests", {})), "rest": list(e.get("rest", [0, 0.0]))}
+                for f, e in data["files"].items()}
+    return _compact({nid: s for nid, s in data.get("tests", {}).items()})
 
 
-def save(tests: dict) -> None:
-    data = {"about": ABOUT, "updated": datetime.date.today().isoformat(),
-            "tests": {k: tests[k] for k in sorted(tests)}}
-    with open(PATH, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, indent=0, ensure_ascii=False)
-        f.write("\n")
+def _compact(flat: dict) -> dict:
+    files = defaultdict(lambda: {"tests": {}, "rest": [0, 0.0]})
+    for nid, s in flat.items():
+        f, name = nid.split("::", 1)
+        if s >= LISTED_S:
+            files[f]["tests"][name] = s
+        else:
+            files[f]["rest"][0] += 1
+            files[f]["rest"][1] += s
+    return dict(files)
+
+
+def save(files: dict) -> None:
+    out = {}
+    for f in sorted(files):
+        e = files[f]
+        entry = {}
+        if e["tests"]:
+            entry["tests"] = {k: round(e["tests"][k], 1) for k in sorted(e["tests"])}
+        if e["rest"][0]:
+            entry["rest"] = [e["rest"][0], round(e["rest"][1], 1)]
+        if entry:
+            out[f] = entry
+    data = {"about": ABOUT, "updated": datetime.date.today().isoformat(), "files": out}
+    with open(PATH, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(data, fh, indent=0, ensure_ascii=False)
+        fh.write("\n")
+
+
+def count(e: dict) -> int:
+    return len(e["tests"]) + e["rest"][0]
+
+
+def total(e: dict) -> float:
+    return sum(e["tests"].values()) + e["rest"][1]
 
 
 def refresh(xmls: list[str], prune: bool) -> int:
-    tests = load()
-    before = dict(tests)
-    unresolved = 0
+    files = load()
+    ran, unresolved = {}, 0
     for x in xmls:
         for case in ET.parse(x).getroot().iter("testcase"):
             if case.find("skipped") is not None:
@@ -73,28 +113,40 @@ def refresh(xmls: list[str], prune: bool) -> int:
             if nid is None:
                 unresolved += 1
                 continue
-            tests[nid] = round(float(case.get("time") or 0), 2)
+            ran[nid] = float(case.get("time") or 0)
+    replaced = updated = 0
+    for f, new in _compact(ran).items():
+        old = files.get(f)
+        if old is None or count(new) >= count(old):
+            files[f] = new
+            replaced += 1
+            continue
+        for name in [n for n in old["tests"] if f + "::" + n in ran]:
+            del old["tests"][name]                 # re-filed below, listed or quick, from this run
+        old["tests"].update(new["tests"])
+        if new["rest"][0] >= old["rest"][0]:
+            old["rest"] = new["rest"]
+        updated += 1
     dropped = 0
     if prune:
-        for nid in [k for k in tests if not os.path.isfile(k.split("::", 1)[0])]:
-            del tests[nid]
+        for f in [f for f in files if not os.path.isfile(f)]:
+            del files[f]
             dropped += 1
-    save(tests)
-    changed = sum(1 for k, v in tests.items() if before.get(k) != v)
-    print(f"{len(tests)} tests, {changed} new or changed, {dropped} pruned, {unresolved} not found under tests/; "
-          f"total {sum(tests.values()) / 60:.1f} min serial")
-    return 1 if unresolved and not changed else 0
+    save(files)
+    n = sum(count(e) for e in files.values())
+    print(f"{n} tests in {len(files)} files: {replaced} files replaced, {updated} partly updated, {dropped} pruned, "
+          f"{unresolved} tests not found under tests/; total {sum(total(e) for e in files.values()) / 60:.1f} min serial")
+    return 1 if unresolved and not ran else 0
 
 
 def show(by: str, top: int) -> int:
-    tests = load()
+    files = load()
     agg = defaultdict(lambda: [0.0, 0])
-    for nid, s in tests.items():
-        f = nid.split("::", 1)[0]
+    for f, e in files.items():
         key = os.path.dirname(f) if by == "dir" else f
-        agg[key][0] += s
-        agg[key][1] += 1
-    print(f"{len(tests)} tests, {sum(tests.values()) / 60:.1f} min serial")
+        agg[key][0] += total(e)
+        agg[key][1] += count(e)
+    print(f"{sum(count(e) for e in files.values())} tests, {sum(total(e) for e in files.values()) / 60:.1f} min serial")
     for key, (s, n) in sorted(agg.items(), key=lambda kv: -kv[1][0])[:top]:
         print(f"{s:8.0f} s {n:6d}  {key}")
     return 0
