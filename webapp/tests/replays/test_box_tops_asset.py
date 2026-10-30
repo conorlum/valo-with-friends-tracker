@@ -161,13 +161,24 @@ def test_conflicts_are_world_records_in_meta_and_report_links_and_round_trip(tmp
     assert sample.asset.box_tops is None
     first = conflicts[0]
     assert first == dict(match='match-0', round=1, slot=9, t0=0., t1=30., z=z_dm(3.) / 10,
-                         candidates=[[1, []]], px=[299, 159])  # decoded toy y is 159.9488 px
+                         candidates=[[1, [], round(GEO.m_per_px, 2)]], px=[299, 159])  # decoded toy y is 159.9488 px
     lines = hb.report_lines('Toy', sample.report)
     assert any('6 box conflicts' in line for line in lines)
-    assert f"  box conflict: piece(s) 1 z {first['z']} m 30.0 s https://valowithfriendstracker.onrender.com/replays/match-0?round=1&t=0.0" in lines
+    assert f"  box conflict: piece(s) 1 ({GEO.m_per_px:.2f} m) z {first['z']} m 30.0 s https://valowithfriendstracker.onrender.com/replays/match-0?round=1&t=0.0" in lines
     hc.save_asset(tmp_path / 'conflicts.npz', sample.asset)
     back = hc.load_asset(tmp_path / 'conflicts.npz')
     assert back.meta['box_conflicts'] == conflicts and back.digest == sample.asset.digest
+
+
+def test_report_reads_legacy_and_distance_candidates_together():
+    report = dict(hb.build(covered_rounds(), GEO).report)
+    record = dict(match='toy-match', round=1, slot=9, t0=0., t1=1., z=3., px=[299, 159])
+    report.update(box_conflicts=2, box_conflict_records=[
+        dict(record, candidates=[[5, [4.0]], [6, []]]),
+        dict(record, candidates=[[15, [4.0], 0.58], [6, [], 0.7]])])
+    lines = hb.report_lines('Toy', report)
+    assert any('piece(s) 5, 6 z' in line for line in lines)
+    assert any('piece(s) 15 (0.58 m), 6 (0.70 m) z' in line for line in lines)
 
 
 def test_box_stands_get_the_same_blackouts_and_platform_filter(monkeypatch):

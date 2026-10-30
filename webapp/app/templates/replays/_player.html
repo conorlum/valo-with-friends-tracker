@@ -182,7 +182,7 @@
             {% set who = ((replay_data or {}).get('players') or {}).get(c.slot|string) %}
             <li><a href="?round={{ c.round }}&amp;t={{ '%.1f'|format(c.t0) }}">R{{ c.round }} {{ '%.1f'|format(c.t0) }} s</a>
               {{ (who and who.agent) or ('slot ' ~ c.slot) }}, at {{ '%.1f'|format(c.z) }} m:
-              {% for box, tops in c.candidates %}box {{ box }} ({% if tops %}top {{ tops|map('string')|join(', ') }} m{% else %}no top{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</li>
+              {% for cand in c.candidates %}box {{ cand[0] }} ({% if cand[1] %}top {{ cand[1]|map('string')|join(', ') }} m{% else %}no top{% endif %}){% if cand|length > 2 %} {{ '%.2f'|format(cand[2]) }} m away{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</li>
             {% endfor %}
           </ol>
         </div>

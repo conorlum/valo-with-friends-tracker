@@ -30,6 +30,7 @@ class TopStand:
     z_dm: int
     px: tuple               # (x, y) int px: the run's sample nearest its median
     candidates: tuple = ()
+    cand_dist: tuple = ()    # metres to each candidate's outline, in candidates order
     match: str = ""
     round: int = 0
 
@@ -116,11 +117,14 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
                     k = i + int(np.argmin((x[i:j + 1] - np.median(x[i:j + 1])) ** 2
                                           + (y[i:j + 1] - np.median(y[i:j + 1])) ** 2))
                     px = (int(xi[k]), int(yi[k]))
-                    cands = tuple(p for p, ((ys, xs), d) in reach.items()
+                    nearby = tuple((p, float(d[px[1] - ys.start, px[0] - xs.start]))
+                                   for p, ((ys, xs), d) in reach.items()
                                   if xs.start <= px[0] < xs.stop and ys.start <= px[1] < ys.stop
                                   and d[px[1] - ys.start, px[0] - xs.start] <= TOP_REACH_M + EPS)
+                    cands = tuple(p for p, _ in nearby)
+                    cand_dist = tuple(dist for _, dist in nearby)
                     out.append(TopStand(round_index, int(slot), si, float(t[i]), float(t[j]),
-                                        int(cover_px[px[1], px[0]]), int(round(med)), px, cands))
+                                        int(cover_px[px[1], px[0]]), int(round(med)), px, cands, cand_dist))
     return out
 
 
@@ -252,9 +256,17 @@ def judge(stands, ground, leaf_floor):
             assigned.append((s, piece, z))
             counts['assign'] += 1
         else:
+            distances = dict(zip(s.candidates, s.cand_dist))
+            candidates = []
+            for p in cands:
+                candidate = [p, [round(z / 10, 1) for z in learnt.get(p, ())]]
+                dist = distances.get(p)
+                if dist is not None:
+                    candidate.append(round(dist, 2))
+                candidates.append(candidate)
             conflicts.append({'match': s.match, 'round': s.round, 'slot': s.slot, 't0': s.t0, 't1': s.t1,
                               'z': round(s.z_dm / 10, 1), 'px': list(s.px),
-                              'candidates': [[p, [round(z / 10, 1) for z in learnt.get(p, ())]] for p in cands]})
+                              'candidates': candidates})
             counts['conflict'] += 1
     rows.sort(key=lambda r: (r[1], r[0], r[2]))
     return np.asarray(rows, np.int32).reshape(-1, 3), assigned, conflicts, counts

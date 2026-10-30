@@ -772,7 +772,8 @@ def report_lines(name: str, report: dict) -> list[str]:
     if r.get('box_conflicts'):
         out.append(f"  {r['box_conflicts']} box conflicts")
         for conflict in r.get('box_conflict_records', ()):
-            ids = ', '.join(str(p) for p, _ in conflict['candidates'])
+            ids = ', '.join(str(c[0]) + (f" ({c[2]:.2f} m)" if len(c) > 2 else "")
+                            for c in conflict['candidates'])
             duration = round(conflict['t1'] - conflict['t0'], 3)
             out.append(f"  box conflict: piece(s) {ids} z {conflict['z']} m {duration} s "
                        f"https://valowithfriendstracker.onrender.com/replays/{conflict['match']}"

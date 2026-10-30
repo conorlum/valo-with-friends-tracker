@@ -254,6 +254,20 @@ def test_reach_is_in_metres_and_does_not_limit_candidate_count():
     assert bt.top_stands(b, c, m_per_px=1)[0].candidates == (1,)
 
 
+def test_reach_records_each_candidates_edt_distance_in_candidate_order():
+    c = cover()
+    reach = bt.reach_distances(c, 0.14)
+    found = bt.top_stands(blob(seg(0, *const(139, 99, 49, 1))), c, m_per_px=0.14, reach=reach)
+    assert len(found) == 1
+    s = found[0]
+    assert s.candidates == (1, 2)
+    assert len(s.cand_dist) == len(s.candidates)
+    for piece, distance in zip(s.candidates, s.cand_dist):
+        (ys, xs), edt = reach[piece]
+        assert isinstance(distance, float) and 0 <= distance <= hc.TOP_REACH_M
+        assert distance == edt[s.px[1] - ys.start, s.px[0] - xs.start]
+
+
 def reach_geo():
     c = np.zeros((PX, PX), np.int16)
     c[100:140, 100:140] = 1
@@ -348,11 +362,34 @@ def test_real_shaped_ambiguous_stand_assigns_without_teaching():
            "d": {"26": 0.0, "27": 0.469}, "match": "toy-match", "round": 13,
            "cands": [26, 27], "fate": "assigned", "to": [26, 5.5]}
     s = bt.TopStand(0, row['slot'], 0, row['t0'], row['t1'], row['inside'], round(row['z'] * 10),
-                    tuple(row['px']), candidates=tuple(row['cands']), match=row['match'], round=row['round'])
+                    tuple(row['px']), candidates=tuple(row['cands']),
+                    cand_dist=tuple(row['d'][str(p)] for p in row['cands']),
+                    match=row['match'], round=row['round'])
     teacher = stand(55, inside=26, candidates=(26,), px=(500, 660))
     rows, assigned, conflicts, counts = bt.judge([s, teacher], {26: 20, 27: 20}, lambda px: ())
     assert rows.tolist() == [[500, 660, 55]]
     assert assigned == [(s, 26, 55)] and not conflicts and counts['teach'] == 1
+
+
+def test_real_shaped_ground_row_keeps_candidate_distances_without_changing_its_fate():
+    row = {"mode": "rule", "slot": 5, "t0": 1.648, "t1": 5.528, "z": 2.0, "px": [774, 414],
+           "inside": 0, "d": {"15": 0.582}, "leaf": 6624, "floors": [[6624, 2.0, True]],
+           "plat": False, "match": "toy-match", "round": 1, "cand0": [15], "cands": [],
+           "fate": "ground_nocand"}
+    s = bt.TopStand(0, row['slot'], 0, row['t0'], row['t1'], row['inside'], round(row['z'] * 10),
+                    tuple(row['px']), candidates=tuple(row['cand0']),
+                    cand_dist=tuple(row['d'][str(p)] for p in row['cand0']),
+                    match=row['match'], round=row['round'])
+    assert s.cand_dist == (0.582,)
+    rows, assigned, conflicts, counts = bt.judge([s], {15: 20}, lambda px: (20,))
+    assert rows.shape == (0, 3) and not assigned and not conflicts and counts['ground'] == 1
+
+
+def test_conflict_distances_follow_piece_ids_after_sorting_and_filtering():
+    s = stand(49, candidates=(2, 3, 1), cand_dist=(0.582, 0.333, 0.004))
+    rows, assigned, conflicts, counts = bt.judge([stand(), s], {1: 20, 2: 20, 3: 49}, lambda px: ())
+    assert rows.tolist() == [[120, 120, 40]] and not assigned and counts['conflict'] == 1
+    assert conflicts[0]['candidates'] == [[1, [4.0], 0.0], [2, [], 0.58]]
 
 
 def test_candidate_step_filter_is_per_piece_and_connected_ground_is_outside_only():

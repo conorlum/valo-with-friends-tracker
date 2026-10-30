@@ -119,6 +119,14 @@ def test_partial_falls_back_to_the_slot():
     assert "slot 1" in html
 
 
+def test_partial_shows_candidate_distances_and_legacy_records_together():
+    record = dict(RECORD, candidates=[[5, [4.0], 0.42], [6, [], 0.7]])
+    html = render_player(linked=True, control={"cover_reviewed": True}, box_conflicts=[RECORD, record],
+                         replay_data={"players": {}})
+    for text in ("box 5 (top 4.0 m)", "box 6 (no top)", "0.42 m away", "0.70 m away"):
+        assert text in html, text
+
+
 def test_partial_hides_the_section():
     full = dict(control={"cover_reviewed": True}, replay_data={"players": {}})
     assert "data-replay-box-heights" not in render_player(linked=True, box_conflicts=[], **full)
