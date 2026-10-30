@@ -15,6 +15,24 @@ from test_stance import CENTRE  # noqa: E402
 from test_stance_engine import T, bearing, centre_of, inputs, still  # noqa: E402
 
 
+def test_over_observation_utility_and_line_ends_agree_with_engine(tmp_path, monkeypatch):
+    from app.control import engine, observe, stance
+    from test_stance_engine import answers
+
+    geo = box_hall_tops()
+    viewer, enemy = (252.0, 196.0), centre_of(geo, BOX_WITNESS["E"])
+    rnd, _ = inputs(geo, {0: on_box_track(*viewer, rise_m=3.0), 5: still("B", *enemy, 0)})
+    tk = engine.Tick(rnd, T)
+    st = tk.holders[0].stance
+    assert st is not None and st.kind == "over"
+    rec = observe.record(tk, SimpleNamespace(entry={}, events={}))
+    assert rec.players[0].own == st.own
+    a, b, pieces = stance.line_ends(rnd, 0, 5, T, rnd.pos(0, T), rnd.pos(5, T))
+    assert a[:2] == st.eye_px and b[:2] == rnd.pos(5, T)[:2] and pieces == (st.see_over, ())
+    got = answers(geo, viewer, 3.0, enemy, tmp_path, monkeypatch)
+    assert got == {name: True for name in got}, got
+
+
 def no_cover(geo):
     """The same geometry as the engine would see it with no cover piece (no stance anywhere)."""
     g = copy.copy(geo)

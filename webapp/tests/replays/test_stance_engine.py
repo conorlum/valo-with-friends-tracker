@@ -100,6 +100,80 @@ def test_a_hugger_in_the_piece_is_held_at_the_anchor_and_sees_no_further_than_th
     assert not tk.view[0][BOX_WITNESS["E"]], "beside the box, the box is in the way"
 
 
+def test_over_view_keeps_the_beside_cell_and_ground_presence():
+    geo = box_hall_tops()
+    over = tick(geo, {0: on_box_track(252, 196, rise_m=3.0, yaw=0)})
+    beside = tick(geo, {0: hugging_track(252, 196, yaw=0)})
+    h, b = over.holders[0], beside.holders[0]
+    assert h.stance is not None and h.stance.kind == "over"
+    assert h.cell == b.cell == h.stance.anchor
+    assert np.array_equal(over._presence(h.x, h.y, h.cell, h.stance, 0, T),
+                          beside._presence(b.x, b.y, b.cell, b.stance, 0, T))
+    assert over.view[0][BOX_WITNESS["E"]] and not beside.view[0][BOX_WITNESS["E"]]
+    assert "_presence_memo" not in over.rnd.__dict__
+
+
+def test_over_view_reach_guard_extends_beyond_the_on_box_reach():
+    geo = box_hall_tops()
+    tk = tick(geo, {0: on_box_track(241, 196, rise_m=3.0, yaw=0)})
+    h = tk.holders[0]
+    assert not geo.box_reach[196, 241, 0] and geo.box_view_reach[196, 241, 0]
+    assert h.stance is not None and h.stance.kind == "over"
+    assert tk.view[0][BOX_WITNESS["E"]]
+
+
+def test_over_own_view_cast_uses_the_real_z_node(monkeypatch):
+    from app.control import engine as ce
+
+    geo = box_hall_tops()
+    calls, original = [], ce.cast
+
+    def cast(*args, **kwargs):
+        calls.append(kwargs["own"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ce, "cast", cast)
+    h = tick(geo, {0: on_box_track(252, 196, rise_m=3.0)}).holders[0]
+    assert h.stance is not None and h.stance.kind == "over"
+    assert h.stance.own != h.cell
+    assert calls[0] == h.stance.own
+
+
+def test_over_sees_a_top_visible_only_from_box_height():
+    from app.control import geometry as cg
+    from control_toys import TOY_Z0
+    from tests.replays.test_top_nodes import sight_topped, top_at
+
+    geo = sight_topped(((202, 202, 40),))
+    geo.m_per_px = .3
+    geo.heights.meta["origin_z"] = TOY_Z0
+    cg.attach_heights(geo, geo.heights)
+    cg.visibility(geo)
+    players = {0: on_box_track(199, 204, rise_m=4.0, yaw=0)}
+    high = tick(geo, players, t=0.0)
+    low = tick(geo, {0: still("A", 199, 204, 0)}, t=0.0)
+    assert high.holders[0].stance.kind == "over"
+    top = top_at(geo, 212, 204)
+    assert high.view[0][top] and not low.view[0][top]
+
+
+def test_enemy_sees_over_holder_by_the_boxed_line_and_switch_off_uses_ground(monkeypatch):
+    from app.control import engine as ce
+
+    geo = box_hall_tops()
+    players = {0: on_box_track(252, 196, rise_m=3.0), 5: still("B", 300, 196, 180)}
+    high = tick(geo, players)
+    assert high.holders[0].stance.kind == "over"
+    assert not high.holders[5].body[high.holders[0].cell]
+    assert (5, 0) in high.direct and 0 in high.sees[5]
+    monkeypatch.setattr(ce, "OVER_SEEN", False)
+    ground = tick(geo, players)
+    assert (5, 0) not in ground.direct and 0 not in ground.sees[5]
+    # The on-box target keeps its exact-line visibility even with the provisional switch off.
+    on = tick(geo, {**players, 0: on_box_track(*CENTRE)})
+    assert (5, 0) in on.direct and 0 in on.sees[5]
+
+
 def test_the_on_box_presence_is_memoised_per_piece_cell_and_smokes():
     from app.control import engine as ce
 
@@ -306,12 +380,12 @@ def answers(geo, viewer_xy, viewer_z, target_xy, tmp_path, monkeypatch):
         det = gd.GapDetector(geo, ce.RoundInputs(blob, geo, None, None))
         ex = pv.eye_x if pv.eye_x is not None else pv.x
         ey = pv.eye_y if pv.eye_y is not None else pv.y
-        out = det._sight(ex, ey, pv.eye_z, pv.node, smokes, see_over=pv.see_over)
+        out = det._sight(ex, ey, pv.eye_z, pv.node, smokes, see_over=pv.see_over, own=pv.own)
         return bool(out[cell])
 
     seen["gap detector"] = gap_sight(live.players[0], live.smokes)
     cached = next(rec for rec, _ in cache.replay(writer.path) if abs(rec.t - T) < 1e-6)
-    for field in ("eye_x", "eye_y", "see_over"):
+    for field in ("eye_x", "eye_y", "see_over", "own"):
         assert getattr(cached.players[0], field, None) == getattr(live.players[0], field, None), \
             f"the tick cache drops PlayerView.{field}"
     seen["cached gap replay"] = gap_sight(cached.players[0], cached.smokes)

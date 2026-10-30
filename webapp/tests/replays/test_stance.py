@@ -51,6 +51,21 @@ def stance(geo, points, t, extra=None):
     return st_mod.stance_at(round_of(geo, players), 0, t)
 
 
+def assert_over_keeps_ground_cell(geo, blob, t, monkeypatch):
+    """Compare fresh rounds so switching the rule cannot reuse a memoised stance."""
+    from app.control import engine, stance as st_mod
+
+    assert not st_mod.OVER
+    before = engine.Tick(engine.RoundInputs(blob, geo, None, None), t).holders[0]
+    assert before.stance is None or before.stance.kind == "beside"
+    monkeypatch.setattr(st_mod, "OVER", True)
+    after = engine.Tick(engine.RoundInputs(blob, geo, None, None), t).holders[0]
+    st = after.stance
+    assert st is not None and st.kind == "over" and st.piece == 1 and st.see_over == (1,)
+    assert st.anchor == (before.stance.anchor if before.stance is not None else None)
+    assert after.cell == before.cell
+
+
 # ------------------------------------------------------------------ 1. the 360 degree view from the box
 
 
@@ -190,7 +205,11 @@ def test_hugging_the_box_inside_the_piece_is_beside():
     assert st.anchor is not None and geo.walk.ravel()[st.anchor]
 
 
-def test_a_jump_over_the_box_is_beside_in_mid_air():
+def test_a_jump_over_the_box_is_beside_in_mid_air(monkeypatch):
+    from app.control import stance as st_mod
+
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     geo = box_hall_tops()
     st = stance(geo, jump_track(230, 290, 196, 1.5, 2.0), 2.5)
     assert st is not None
@@ -202,7 +221,11 @@ def _lands_on_box():
     return "A", [(0.0, 230, 196, 0, 0.0), (1.9, 236, 196, 0, 0.0), (2.0, 260, 196, 0, 1.0), (10.0, 260, 196, 0, 1.0)]
 
 
-def test_the_first_half_second_after_landing_is_beside():
+def test_the_first_half_second_after_landing_is_beside(monkeypatch):
+    from app.control import stance as st_mod
+
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     geo = box_hall_tops()
     st = stance(geo, _lands_on_box(), 2.3)
     assert st is not None
@@ -387,7 +410,7 @@ def test_a_line_from_the_box_to_the_ground_behind_it_clears_with_the_eyes_piece_
 # ------------------------------------------------------------------ W12: segments, references, memo, fallback
 
 
-def test_a_new_track_segment_at_box_height_is_beside_for_half_a_second_then_on_box():
+def test_a_new_track_segment_at_box_height_is_beside_for_half_a_second_then_on_box(monkeypatch):
     from app.control import stance as st_mod
     from control_toys import z_track
 
@@ -399,12 +422,15 @@ def test_a_new_track_segment_at_box_height_is_beside_for_half_a_second_then_on_b
                            + z_track([(3.0, *CENTRE, 0, 1.0), (10.0, *CENTRE, 0, 1.0)], 3.0, 10.0))
     from app.control.engine import RoundInputs
 
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     rnd = RoundInputs(blob, geo, None, None)
     assert st_mod.stance_at(rnd, 0, 3.2).kind == "beside"
     assert st_mod.stance_at(rnd, 0, 3.6).kind == "on_box"
+    assert_over_keeps_ground_cell(geo, blob, 3.2, monkeypatch)
 
 
-def test_a_teleport_from_the_same_height_is_still_beside_for_half_a_second():
+def test_a_teleport_from_the_same_height_is_still_beside_for_half_a_second(monkeypatch):
     from app.control import stance as st_mod
     from app.control.engine import RoundInputs
     from control_toys import z_track
@@ -415,9 +441,12 @@ def test_a_teleport_from_the_same_height_is_still_beside_for_half_a_second():
     # an Omen-like teleport between two spots at z 1.0 m: the old segment's samples must not count for the window
     blob["tracks"]["0"] = (z_track([(0.0, 300, 196, 0, 1.0), (2.9, 300, 196, 0, 1.0)], 0.0, 2.9)
                            + z_track([(3.0, *CENTRE, 0, 1.0), (10.0, *CENTRE, 0, 1.0)], 3.0, 10.0))
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     rnd = RoundInputs(blob, geo, None, None)
     assert st_mod.stance_at(rnd, 0, 3.2).kind == "beside"
     assert st_mod.stance_at(rnd, 0, 3.6).kind == "on_box"
+    assert_over_keeps_ground_cell(geo, blob, 3.2, monkeypatch)
 
 
 def test_the_anchor_is_on_the_players_side_of_a_real_wall_not_the_nearer_node_across_it():
@@ -499,8 +528,8 @@ def test_over_off_keeps_the_existing_jump_and_landing_rules(monkeypatch):
     from app.control import stance as st_mod
 
     monkeypatch.setattr(st_mod, "OVER", False)
-    test_a_jump_over_the_box_is_beside_in_mid_air()
-    test_the_first_half_second_after_landing_is_beside()
+    test_a_jump_over_the_box_is_beside_in_mid_air(monkeypatch)
+    test_the_first_half_second_after_landing_is_beside(monkeypatch)
 
 
 @pytest.mark.slow

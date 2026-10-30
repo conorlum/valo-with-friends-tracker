@@ -24,6 +24,7 @@ class PlayerView:
     eye_x: float | None = None       # the stance's eye (px) when on or beside a cover piece, else None
     eye_y: float | None = None
     see_over: tuple[int, ...] = ()   # the cover pieces the eye sees over (sorted labels; () = none)
+    own: int | None = None          # sight node under the real z; node remains the control anchor
 
 
 @dataclass
@@ -44,6 +45,7 @@ def record(tick, unknown) -> TickRecord:
         st = getattr(h, "stance", None)
         if st is not None:
             pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), tuple(st.see_over)
+            pv.own = st.own
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
                       list(tick.smokes))

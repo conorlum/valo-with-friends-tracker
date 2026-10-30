@@ -17,7 +17,7 @@ sys.path.insert(0, str(HERE.parents[1]))
 
 from control_toys import (BOX_PX, BOX_RING, GRID, THREE_BOXES, box_hall, box_hall_no_tops, box_hall_tops,  # noqa: E402
                           TOY_Z0, on_box_track, three_boxes_tops, tops_hall, z_track)
-from test_stance import CENTRE, round_of, stance  # noqa: E402
+from test_stance import CENTRE, assert_over_keeps_ground_cell, round_of, stance  # noqa: E402
 
 T_END = 10.0
 
@@ -61,17 +61,33 @@ def test_steady_at_the_top_inside_the_outline_is_on_box():
     pytest.param(1.35, id="1.35"),
     pytest.param(2.0, id="2.0"),
 ])
-def test_only_a_steady_height_within_the_tolerance_of_the_top_is_on_box(rise):
-    st = stance(box_hall_tops(), on_box_track(*CENTRE, rise_m=rise), 5.0)
+def test_only_a_steady_height_within_the_tolerance_of_the_top_is_on_box(rise, monkeypatch):
+    from app.control import stance as st_mod
+
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
+    geo, points = box_hall_tops(), on_box_track(*CENTRE, rise_m=rise)
+    st = stance(geo, points, 5.0)
     assert st is not None
     assert st.kind == ("on_box" if 0.5 <= rise <= 1.3 else "beside")
     assert st.see_over == ((1,) if st.kind == "on_box" else ())
+    if rise in (1.35, 2.0):
+        from control_toys import height_blob
+
+        assert_over_keeps_ground_cell(geo, height_blob({0: points}, t_end=T_END), 5.0, monkeypatch)
 
 
-def test_a_height_that_is_not_steady_is_not_on_box_even_when_its_median_is_at_the_top():
+def test_a_height_that_is_not_steady_is_not_on_box_even_when_its_median_is_at_the_top(monkeypatch):
+    from app.control import stance as st_mod
+    from control_toys import height_blob
+
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     zig = path(*[(0.25 * k, *CENTRE, 0.8 if k % 2 else 1.2) for k in range(41)])    # range 0.4 m over any 0.5 s
-    st = stance(box_hall_tops(), zig, 8.0)
+    geo = box_hall_tops()
+    st = stance(geo, zig, 8.0)
     assert st is not None and st.kind == "beside"
+    assert_over_keeps_ground_cell(geo, height_blob({0: zig}, t_end=T_END), 8.0, monkeypatch)
 
 
 def test_a_tops_toy_with_no_rows_is_never_on_box():
@@ -116,13 +132,20 @@ def test_off_the_outline_without_entry_is_on_box_with_the_node_under_the_pixel()
 
 
 @pytest.mark.parametrize("m_per_px", [0.125, 0.05])
-def test_reach_in_metres_is_on_at_07_and_off_at_08_without_entry(m_per_px):
+def test_reach_in_metres_is_on_at_07_and_off_at_08_without_entry(m_per_px, monkeypatch):
+    from app.control import stance as st_mod
+    from control_toys import height_blob
+
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     # Two raster scales whose pixels distinguish 0.7 m from 0.8 m; no shared-sha cache for a rescaled toy.
     geo = dataclasses.replace(box_hall_tops(), m_per_px=m_per_px, height_sha=None)
     x0, y = BOX_PX[0], CENTRE[1]
     near = stance(geo, on_box_track(x0 - 0.7 / geo.m_per_px, y), 8.0)
     assert near is not None and near.kind == "on_box"
     assert stance(geo, on_box_track(x0 - 0.8 / geo.m_per_px, y), 8.0) is None
+    points = on_box_track(x0 - 0.8 / geo.m_per_px, y)
+    assert_over_keeps_ground_cell(geo, height_blob({0: points}, t_end=T_END), 8.0, monkeypatch)
 
 
 def test_beyond_the_reach_a_stay_at_the_top_height_is_not_on_box():
@@ -175,7 +198,7 @@ def test_a_previous_drop_does_not_prevent_a_new_steady_window_in_reach():
     assert stance(geo, dipped, 8.0).kind == "on_box"
 
 
-def test_a_teleport_off_the_outline_at_top_height_needs_only_a_new_steady_window():
+def test_a_teleport_off_the_outline_at_top_height_needs_only_a_new_steady_window(monkeypatch):
     from control_toys import height_blob
     from app.control import stance as st_mod
     from app.control.engine import RoundInputs
@@ -184,9 +207,12 @@ def test_a_teleport_off_the_outline_at_top_height_needs_only_a_new_steady_window
     blob = height_blob({0: ("A", [(0.0, *CENTRE, 0, 1.0), (T_END, *CENTRE, 0, 1.0)])}, t_end=T_END)
     blob["tracks"]["0"] = (z_track([(0.0, *CENTRE, 0, 1.0), (2.9, *CENTRE, 0, 1.0)], 0.0, 2.9)
                            + z_track([(3.0, 244.0, 196.0, 0, 1.0), (T_END, 244.0, 196.0, 0, 1.0)], 3.0, T_END))
+    # the on_box/beside rule alone (R4); OVER on is asserted below
+    monkeypatch.setattr(st_mod, "OVER", False)
     rnd = RoundInputs(blob, geo, None, None)
     assert st_mod.stance_at(rnd, 0, 3.2) is None
     assert st_mod.stance_at(rnd, 0, 3.6).kind == "on_box"
+    assert_over_keeps_ground_cell(geo, blob, 3.2, monkeypatch)
 
 
 # ------------------------------------------------------------------ two pieces in reach

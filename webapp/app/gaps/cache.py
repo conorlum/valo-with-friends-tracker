@@ -74,6 +74,7 @@ class Writer:
             del self.prev[k]
         players = {s: (p.team, p.node, p.x, p.y, p.yaw, _nodes(p.live), _nodes(p.utility), _nodes(p.view), p.eye_z)
                    + (() if p.eye_x is None else (p.eye_x, p.eye_y, p.see_over))
+                   + (p.own,)
                    for s, p in rec.players.items()}
         events = {side: list(ev) for side, ev in rec.events.items()}
         self.ticks.append((rec.t, players, diff, gone, events, list(rec.smokes), unknown.geo.n))
@@ -127,8 +128,11 @@ def replay(path: Path):
         unknown: dict = {"A": {}, "B": {}}
         for (side, e), arr in state.items():
             unknown.setdefault(side, {})[e] = arr
+        # Legacy tuples have 9 fields, or 12 with the eye tuple; own extends either shape by one.
         views = {s: PlayerView(s, f[0], f[1], f[2], f[3], f[4], _mask(f[5], n), _mask(f[6], n), _mask(f[7], n),
-                               f[8], *f[9:11], *(see_over_labels(x) for x in f[11:12]))
+                               f[8], *(f[9:11] if len(f) >= 12 else ()),
+                               *(see_over_labels(x) for x in f[11:12]),
+                               own=f[-1] if len(f) in (10, 13) else None)
                  for s, f in players.items()}
         yield TickRecord(t, views, unknown, events, smokes), logs
 

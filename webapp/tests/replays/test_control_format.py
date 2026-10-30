@@ -81,8 +81,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # again for the 0.75 m reach and the crouch window (TOP_REACH_M, TOP_TOL_M, CROUCH_DROP_M; was
           # "15245745abf5994f"), and again for the box climb (2026-10-29: the 2.0 m eye and head/feet sight
           # points, the 1 m step STEP_UP_M, box-top nodes; was "5e8858df6e0999c4"), and again for the 1.1 m view
-          # reach (VIEW_REACH_M, 2026-10-30; was "6a62ad6a009229f9").
-          21: "35ef13cb014b5946"}
+          # reach (VIEW_REACH_M, 2026-10-30; was "6a62ad6a009229f9"),
+          # and again for the over stance (stance.OVER, engine.OVER_SEEN; was "35ef13cb014b5946").
+          21: "7cd7ad7dc50b5450"}
 
 
 def _constants_digest() -> str:
@@ -115,6 +116,14 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
     assert PINNED.get(cf.CONTROL_REVISION) == digest, (
         f"the engine's or geometry's constants changed (digest {digest}): bump CONTROL_REVISION in "
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
+
+
+def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    from app.control import stance
+
+    monkeypatch.setattr(stance, "OVER", False)
+    monkeypatch.delattr(ce, "OVER_SEEN")
+    assert _constants_digest() == "35ef13cb014b5946"
 
 
 def test_the_formats_agree_with_the_engine():

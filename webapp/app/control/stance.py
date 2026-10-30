@@ -24,7 +24,7 @@ ANCHOR_MAX_M = 2.0
 
 EPS = 1e-6
 
-OVER = False
+OVER = True
 
 NO_ANCHOR = "stance: no anchor within 2 m of a box, nearest walkable node used"
 

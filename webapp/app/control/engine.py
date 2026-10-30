@@ -105,6 +105,7 @@ from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
+from app.control import stance
 from app.control.stance import Stance, stance_at
 from app.control.routes import RouteLog
 from app.replays import choke_assets
@@ -117,6 +118,7 @@ SHOT_WINDOW_S = 0.25
 SECTION_S = 10.0
 
 FOV_HALF = 51.5
+OVER_SEEN = True  # PROVISIONAL(D4): enemies see a player over a box by the exact line, like on_box
 RUN_MPS, WALK_MPS = 5.0, 1.5
 # "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
 # seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
@@ -1207,6 +1209,10 @@ def _on_box(h) -> bool:
     return h.stance is not None and h.stance.kind == "on_box"
 
 
+def _seen_over(h) -> bool:
+    return _on_box(h) or (OVER_SEEN and h.stance is not None and h.stance.kind == "over")
+
+
 def _smoke_key(smokes: list) -> tuple:
     """A hashable of a tick's smokes by content (circles as they are, a Wall by its segments, a bounded
     occluder by its owner, band and mask), for the on-box presence memo."""
@@ -1382,7 +1388,7 @@ class Tick:
             if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
-        reach = geo.box_reach if geo.cover_px is not None else None
+        reach = (geo.box_view_reach if stance.OVER else geo.box_reach) if geo.cover_px is not None else None
         for s in sorted(rnd.team):
             if not rnd.alive(s, t):
                 continue
@@ -1409,7 +1415,9 @@ class Tick:
                 raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
             else:
                 raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
-                           eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks, see_over=see_over)
+                           eye_z=self._eye(s, t, cell),
+                           own=st.own if st is not None and st.own is not None else cell,
+                           record=self.fallbacks, see_over=see_over)
             body = raw.copy()
             blind = _during(rnd.flashed[s], t)
             if blind:
@@ -1444,7 +1452,7 @@ class Tick:
         self._head_clear: set[tuple[int, int]] = set()
         self._feet_only: set[tuple[int, int]] | None = None
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
-        if any(_on_box(h) for h in self.holders.values()):   # W14: on-box targets by the physical line
+        if any(_seen_over(h) for h in self.holders.values()):   # on-box and over targets by the physical line
             self.direct.update(self._boxed(every))
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
@@ -1506,8 +1514,8 @@ class Tick:
             for h in self.holders.values():
                 z = rnd.height(h.slot, t) if h.team != e.team else None
                 floor = geo.node_z[h.cell]
-                if _on_box(h):
-                    continue    # an on-box target is `_boxed`'s
+                if _seen_over(h):
+                    continue    # on-box and over targets are `_boxed`'s
                 if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
                     continue
                 dx, dy = h.x - e.x, h.y - e.y
@@ -1523,8 +1531,8 @@ class Tick:
         return out
 
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
-        """Enemies standing on a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
-        over the pieces both stand on (a target beside a box is held at its anchor cell and seen there, by the
+        """Enemies on or over a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
+        over their stance pieces (a target beside a box is held at its anchor cell and seen there, by the
         ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
         geo, rnd, t = self.geo, self.rnd, self.t
@@ -1536,7 +1544,7 @@ class Tick:
             ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
             e_piece = e.stance.see_over if e.stance is not None else ()
             for h in self.holders.values():
-                if h.team == e.team or not _on_box(h):
+                if h.team == e.team or not _seen_over(h):
                     continue
                 hx, hy = h.x, h.y
                 dx, dy = hx - ex, hy - ey
