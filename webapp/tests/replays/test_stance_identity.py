@@ -81,9 +81,20 @@ def test_the_flat_round_and_the_input_identity_match_the_base_code():
 
 @pytest.mark.slow       # the toy height asset's visibility build alone is ~40 s
 def test_the_heights_round_matches_the_base_code():
+    # heights_ledge.data: re-pinned in place for EYE_M 1.05 (was "0e088c75b2f2a880")
+    # heights_ledge.summary: re-pinned in place for EYE_M 1.05 (was "7c06afb6c393e12d")
     recorded = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert computed(flat=False, box=False)["heights_ledge"] == recorded["heights_ledge"], \
         "a heights round's output moved"
+
+
+@pytest.mark.slow
+def test_with_the_previous_eye_the_heights_round_matches_the_old_pins(monkeypatch):
+    from app.control import heights as hc
+
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    assert computed(flat=False, box=False)["heights_ledge"] == {
+        "data": "0e088c75b2f2a880", "summary": "7c06afb6c393e12d"}
 
 
 @pytest.mark.slow       # the toy height asset's visibility build alone is ~40 s

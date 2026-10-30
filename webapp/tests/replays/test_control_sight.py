@@ -2,7 +2,7 @@
 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, "The ray test"; Testing, "Sight").
 
 Heights here are position-z in metres (heights.py): a floor at z is a player standing with their position
-at z, their feet STAND_M below it, and their eye and head 1.1 m above it (feet + 2.0 m).
+at z, their feet STAND_M below it, and their eye 1.05 m and head 1.1 m above it (eye at feet + 1.95 m).
 The lower sight point is z - 0.7 m (feet + 0.2 m); either target line may be clear.
 The toys are Ascent's scale: 0.14 m a pixel, 1.12 m a cell."""
 
@@ -137,7 +137,7 @@ def test_head_or_feet_sight_points(case):
     for angles in (EAST, EAST + FAN):
         seen = cg.cast(geo, sx, Y, angles, [], eye_z=eye(sz))
         assert bool(seen[target]) == any(expected)
-    assert (hc.EYE_M, hc.HEAD_M, hc.FEET_M) == (1.1, 1.1, -0.7)
+    assert (hc.EYE_M, hc.HEAD_M, hc.FEET_M) == (1.05, 1.1, -0.7)
 
 
 def test_kill_line_accepts_a_target_visible_only_at_the_feet():

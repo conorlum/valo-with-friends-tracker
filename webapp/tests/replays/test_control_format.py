@@ -83,7 +83,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # points, the 1 m step STEP_UP_M, box-top nodes; was "5e8858df6e0999c4"), and again for the 1.1 m view
           # reach (VIEW_REACH_M, 2026-10-30; was "6a62ad6a009229f9"),
           # and again for the over stance (stance.OVER, engine.OVER_SEEN; was "35ef13cb014b5946").
-          21: "7cd7ad7dc50b5450"}
+          # re-pinned in place for EYE_M 1.05 (was "7cd7ad7dc50b5450")
+          21: "8c91e53977c08c1a"}
 
 
 def _constants_digest() -> str:
@@ -121,9 +122,15 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
 def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch):
     from app.control import stance
 
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
     monkeypatch.setattr(stance, "OVER", False)
     monkeypatch.delattr(ce, "OVER_SEEN")
     assert _constants_digest() == "35ef13cb014b5946"
+
+
+def test_with_the_previous_eye_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    assert _constants_digest() == "7cd7ad7dc50b5450"
 
 
 def test_the_formats_agree_with_the_engine():

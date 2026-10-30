@@ -47,7 +47,7 @@ MAX_FLOORS = 3
 # data). STAND_APEX_S, PLATFORMS, PLATFORM_R_M and NODE_SNAP_M are not in the spec: they fill gaps it left.
 
 # --- sight (part 4)
-EYE_M = 1.1                # eye: feet + 2.0 m
+EYE_M = 1.05               # eye: feet + 1.95 m
 HEAD_M = 1.1               # head sight point: feet + 2.0 m
 FEET_M = -0.7              # lower sight point: feet + 0.2 m
 STAND_M = 0.9              # the position above the feet: the ground under a floor is this far below it
