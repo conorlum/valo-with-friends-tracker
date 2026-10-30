@@ -79,8 +79,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # moved into app/control/heights.py (BOX_*), so the digest covers them. 21 is unreleased: re-pinned in place
           # when the climb rule (BOX_RISE_M, BOX_APPROACH_S) became the step rule (was "e1abefa65afe68f9"), and
           # again for the 0.75 m reach and the crouch window (TOP_REACH_M, TOP_TOL_M, CROUCH_DROP_M; was
-          # "15245745abf5994f").
-          21: "5e8858df6e0999c4"}
+          # "15245745abf5994f"), and again for the box climb (2026-10-29: the 2.0 m eye and head/feet sight
+          # points, the 1 m step STEP_UP_M, box-top nodes; was "5e8858df6e0999c4").
+          21: "6a62ad6a009229f9"}
 
 
 def _constants_digest() -> str:
