@@ -139,6 +139,21 @@ def asset_bytes(db, map_name: str, digest: str) -> bytes | None:
 _BOX_CONFLICTS: dict[str, list] = {}
 
 
+def _asset_meta(data: bytes) -> dict:
+    """The JSON in an asset's `meta` member, read without numpy (the web app's control views stay light,
+    tests/replays/test_control_isolation.py): the member is a 1-D uint8 .npy inside the .npz zip, so its bytes
+    after the .npy header are the JSON."""
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        raw = archive.read("meta.npy")
+    width = 2 if raw[6] == 1 else 4
+    start = 8 + width + int.from_bytes(raw[8:8 + width], "little")
+    if "'|u1'" not in raw[8 + width:start].decode("latin1"):
+        raise ValueError("the meta member is not uint8")
+    return json.loads(raw[start:].decode("utf-8"))
+
+
 def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
     """The map's active asset's `meta["box_conflicts"]` for one match, sorted by (round, t0).
 
@@ -146,8 +161,6 @@ def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
     """
     try:
         import copy
-        import io
-        import numpy as np
         row = active_rows(db).get(map_name)
         if row is None:
             return []
@@ -155,8 +168,7 @@ def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
             data = asset_bytes(db, map_name, row.digest)
             found = []
             if data:
-                with np.load(io.BytesIO(data)) as z:
-                    meta = json.loads(bytes(z["meta"]).decode("utf-8"))
+                meta = _asset_meta(data)
                 found = meta.get("box_conflicts") or []
                 found = [r for r in found if isinstance(r, dict)]
             _BOX_CONFLICTS[row.digest] = found

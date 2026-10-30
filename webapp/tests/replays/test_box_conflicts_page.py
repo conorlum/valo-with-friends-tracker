@@ -67,6 +67,29 @@ def test_service_empty_cases(monkeypatch):
     assert ch.box_conflicts(None, "Summit", MATCH) == []
 
 
+def test_service_reads_an_asset_as_save_asset_writes_it(monkeypatch, tmp_path):
+    """The real writer (heights.save_asset: savez_compressed, sorted JSON) read through the numpy-free meta reader."""
+    from app.control import heights as hc
+
+    floors = np.zeros((2, 2), "<i2")
+    built = SimpleNamespace(meta={"box_conflicts": [RECORD]}, refinement=None, box_tops=None, floors=floors,
+                            spread=floors, supported=floors.astype(bool), unresolved=floors.astype(bool),
+                            edges=np.zeros((0, 5), "<i4"), kind=np.zeros((2, 2), "i1"))
+    path = tmp_path / "asset.npz"
+    hc.save_asset(path, built)
+    stub(monkeypatch, path.read_bytes())
+    assert ch.box_conflicts(None, "Summit", MATCH) == [RECORD]
+
+
+def test_service_refuses_a_meta_member_that_is_not_uint8(monkeypatch):
+    payload = json.dumps({"box_conflicts": [RECORD]}).encode()
+    payload += b" " * (len(payload) % 2)
+    out = io.BytesIO()
+    np.savez(out, meta=np.frombuffer(payload, "<i2"))
+    stub(monkeypatch, out.getvalue())
+    assert ch.box_conflicts(None, "Summit", MATCH) == []
+
+
 def test_service_caches_per_digest(monkeypatch):
     reads = stub(monkeypatch, asset({"version": 3, "box_conflicts": [RECORD]}))
     first = ch.box_conflicts(None, "Summit", MATCH)
