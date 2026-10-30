@@ -155,7 +155,7 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
         # Optional (W21): a row stored before this has no list, and the panel says so instead of guessing.
         header["knowledge_events"] = knowledge_events(rc.reasons)
     if getattr(rc, "feet_only", None):
-        # PROVISIONAL(D9): optional feet-only sightings ([frame, viewer, target], head blocked and feet clear), for
+        # Optional feet-only sightings ([frame, viewer, target], head blocked and feet clear), for
         # one-way smokes later; rows without them read as before.
         header["feet_only"] = rc.feet_only
     return cf.pack_data(header, streams)
