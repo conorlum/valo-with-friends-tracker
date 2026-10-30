@@ -1441,6 +1441,8 @@ class Tick:
                 if geo.heights is not None:
                     looks[s] = look
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
+        self._head_clear: set[tuple[int, int]] = set()
+        self._feet_only: set[tuple[int, int]] | None = None
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
         if any(_on_box(h) for h in self.holders.values()):   # W14: on-box targets by the physical line
             self.direct.update(self._boxed(every))
@@ -1512,7 +1514,10 @@ class Tick:
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
-                if (los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
+                head_clear = los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
+                if head_clear:
+                    self._head_clear.add((s, h.slot))
+                if (head_clear
                         or los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.FEET_M), self.smokes, record=self.fallbacks)):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
@@ -1543,12 +1548,45 @@ class Tick:
                 ez = eye if tz is not None else None
                 if ez is None:
                     tz = None
-                if (los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
-                        see_over=(e_piece, h.stance.see_over))
+                head_clear = los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
+                                 see_over=(e_piece, h.stance.see_over))
+                if head_clear:
+                    self._head_clear.add((s, h.slot))
+                if (head_clear
                         or (tz is not None and los(geo, (ex, ey, ez), (hx, hy, float(z) + hc.FEET_M),
                                                    self.smokes, record=self.fallbacks,
                                                    see_over=(e_piece, h.stance.see_over)))):
                     out[(s, h.slot)] = cone is not None and off <= cone
+        return out
+
+    def feet_only(self) -> set[tuple[int, int]]:
+        """Seen enemies whose head line is blocked but feet line is clear; lazy metadata, never changing sees."""
+        if self._feet_only is not None:
+            return self._feet_only
+        out: set[tuple[int, int]] = set()
+        geo, rnd, t = self.geo, self.rnd, self.t
+        if geo.heights is not None:
+            for viewer, targets in self.sees.items():
+                e = self.holders[viewer]
+                for target in targets:
+                    pair = (viewer, target)
+                    if pair in self.direct:
+                        if pair not in self._head_clear:
+                            out.add(pair)
+                        continue
+                    h = self.holders[target]
+                    eye = self._eye(viewer, t, e.cell)
+                    z = rnd.height(target, t)
+                    if z is None:
+                        z = geo.node_z[h.cell]
+                    if eye is None or np.isnan(eye) or z is None or np.isnan(z):
+                        continue    # unresolved height: the fan's 2D answer is not a feet-only sighting
+                    start = (e.x, e.y, eye)
+                    # no record: these lines are metadata, so they never add to the tick's unresolved-terrain count
+                    if (not los(geo, start, (h.x, h.y, z + hc.HEAD_M), self.smokes)
+                            and los(geo, start, (h.x, h.y, z + hc.FEET_M), self.smokes)):
+                        out.add(pair)
+        self._feet_only = out
         return out
 
     def _presence(self, x: float, y: float, cell: int, st: Stance | None = None, s: int = 0,
@@ -3075,6 +3113,7 @@ class RoundControl:
     reasons: dict | None = None
     map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
     fights: list | None = None         # the round's team fights and what each side lost (app/control/fight_swing.py)
+    feet_only: list | None = None      # [frame index, viewer slot, target slot]: head blocked, feet clear
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -3198,6 +3237,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
     reasons: dict[str, list] = {"A": [], "B": []}
+    feet_only: list = []
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
@@ -3216,6 +3256,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
             reasons[side] += runner.unknown.reasons[side]
         if n is None:
             timings["analytic_only_ticks"] += 1
+        else:
+            feet_only.extend([n, viewer, target] for viewer, target in sorted(tick.feet_only()))
         if tick.fallbacks.get("unresolved_rays"):
             # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
             # "reported where the user will see it"; preview_control_live.py warns on it)
@@ -3329,7 +3371,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
-                                        for side, kn in know.items()} or None, fights=fights)
+                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,
