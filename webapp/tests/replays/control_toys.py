@@ -1,14 +1,19 @@
 """Toy maps and rounds for the map-control tests (app/control).
 
 A toy map is a few floor rectangles (in minimap pixels, 0..1024) with walls inside them; the rest is
-void. Rooms are small so each map's visibility bitsets build in seconds; `toy_geometry` caches them
-per test session under one temporary directory. A toy round is a blob in format v1 (format.py) where
-each player stands still (or walks a straight line) and faces a fixed direction.
+void. Rooms are small, but a toy with heights still takes up to a minute to build its visibility bitsets
+(nearly all of a slow height test's time), so `toy_geometry` and `toy_heights` keep them on disk between runs,
+in a folder named by a digest of the code that builds them (`_cache_dir`). A toy round is a blob in format v1
+(format.py) where each player stands still (or walks a straight line) and faces a fixed direction.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +23,40 @@ from app.control.geometry import PX, geometry_from_masks, visibility
 TOY_SCALE = 7e-5          # Ascent's: 0.14 m per pixel, 1.12 m cells
 HZ = 16
 
+# What a visibility build reads besides the toy itself (geometry.cache_key covers the masks, heights and
+# parameters, but not the casting code: a change to it must never be answered from an old build).
+_BUILD_SOURCES = ("app/control/geometry.py", "app/control/heights.py", "app/control/height_build.py",
+                  "app/replays/format.py")
+_KEEP_DAYS = 14
+
+
+def _cache_dir() -> Path:
+    """`CONTROL_TOY_CACHE_DIR` (or ~/.cache/valo-tests/control-toys) / <digest of _BUILD_SOURCES>, shared by
+    every checkout, worktree and xdist worker on the machine. Folders of other digests unused for _KEEP_DAYS
+    are removed. `CONTROL_TOY_CACHE_DIR=off` builds into a fresh temporary folder, as every run once did."""
+    configured = os.environ.get("CONTROL_TOY_CACHE_DIR", "")
+    if configured.lower() == "off":
+        return Path(tempfile.mkdtemp(prefix="control-toys-"))
+    root = Path(configured) if configured else Path.home() / ".cache" / "valo-tests" / "control-toys"
+    webapp = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for rel in _BUILD_SOURCES:     # line endings normalised: a CRLF checkout must share an LF one's builds
+        digest.update(rel.encode() + b"\0" + (webapp / rel).read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    here = root / digest.hexdigest()[:16]
+    here.mkdir(parents=True, exist_ok=True)
+    os.utime(here)
+    cutoff = time.time() - _KEEP_DAYS * 86400
+    for other in root.iterdir():
+        try:
+            if other != here and other.is_dir() and other.stat().st_mtime < cutoff:
+                shutil.rmtree(other, ignore_errors=True)
+        except OSError:
+            pass
+    return here
+
+
 _CACHE: dict = {}
-_DIR = Path(tempfile.mkdtemp(prefix="control-toys-"))
+_DIR = _cache_dir()
 
 # A hall of 40 x 25 cells (x 96-416, y 96-296 px; cells are 8 px).
 HALL = (96, 96, 416, 296)

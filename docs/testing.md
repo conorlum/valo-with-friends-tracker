@@ -35,6 +35,20 @@ separate; its path filters now cover its shared runtime, configuration, and fixt
 The default local command excludes `slow`, `browser`, and `corpus`; PostgreSQL tests
 may skip locally without an explicit test URL. Use the lane commands for acceptance.
 
+### Run times
+
+`webapp/tests/timings.json` holds each test's serial run time, so a selection can be sized and split into
+parts without first timing the whole suite (`python scripts/test_timings.py show --by file`). Refresh it from
+any serial run's JUnit XML: `python scripts/test_timings.py refresh <junit.xml> [--prune]`. A parallel run's
+times are inflated by its neighbours, so don't feed it those.
+
+The toy maps in `tests/replays/control_toys.py` keep their visibility bitsets in
+`~/.cache/valo-tests/control-toys/<digest>`, shared by every checkout and worker. The digest covers the code
+that builds them (`geometry.py`, `heights.py`, `height_build.py`, `format.py`), so a change there rebuilds
+them on the next run. That build is most of a slow height test's time: `test_control_floors.py` ran 587 s
+cold and 8 s warm, serially.
+`CONTROL_TOY_CACHE_DIR=<dir>` moves the cache and `CONTROL_TOY_CACHE_DIR=off` gives each run a fresh one.
+
 ### Database isolation
 
 - Use PostgreSQL 18 and a disposable parent database ending in `_test`, with a role
