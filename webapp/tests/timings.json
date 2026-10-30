@@ -131,7 +131,7 @@
 "tests/critutil/test_build.py": {
 "rest": [
 8,
-0.9
+1.4
 ]
 },
 "tests/critutil/test_extract.py": {
@@ -155,14 +155,14 @@
 "tests/critutil/test_page.py": {
 "rest": [
 19,
-0.3
+0.5
 ]
 },
 "tests/critutil/test_unknown.py": {
 "tests": {
-"test_a_trip_across_the_door_holds_the_unknown_at_its_line": 6.1,
-"test_a_trip_earns_nothing_while_switched_off_after_its_owner_dies_or_once_the_round_is_decided": 3.0,
-"test_two_buy_phase_trips_at_zero_each_get_their_own_probe_item": 0.8
+"test_a_trip_across_the_door_holds_the_unknown_at_its_line": 1.4,
+"test_a_trip_earns_nothing_while_switched_off_after_its_owner_dies_or_once_the_round_is_decided": 5.0,
+"test_two_buy_phase_trips_at_zero_each_get_their_own_probe_item": 1.4
 },
 "rest": [
 2,
@@ -171,7 +171,11 @@
 },
 "tests/critutil/test_util_web.py": {
 "tests": {
-"test_unknown_replays_and_demo_mode_are_plain_404s": 2.7
+"test_a_row_from_an_older_link_clock_or_geometry_is_stale": 0.6,
+"test_an_estimator_trained_on_a_match_that_now_has_a_replay_is_refitted_first": 0.5,
+"test_the_payload_never_mutates_the_build_or_shares_with_it": 0.6,
+"test_the_tab_reads_a_casts_lift_from_the_stored_build": 0.6,
+"test_unknown_replays_and_demo_mode_are_plain_404s": 4.9
 },
 "rest": [
 23,
@@ -180,12 +184,11 @@
 },
 "tests/critutil/test_values.py": {
 "tests": {
-"test_fit_weights_needs_enough_rounds_then_stays_non_negative": 1.8,
-"test_the_leave_one_match_out_gate_equals_a_brute_force_recompute": 16.8
+"test_the_leave_one_match_out_gate_equals_a_brute_force_recompute": 29.4
 },
 "rest": [
-28,
-0.3
+29,
+1.1
 ]
 },
 "tests/critutil/test_windows.py": {
@@ -203,64 +206,65 @@
 "tests/moments/test_fights_core.py": {
 "rest": [
 22,
-0.4
+0.7
 ]
 },
 "tests/moments/test_fights_moving.py": {
 "rest": [
 12,
-0.1
+0.2
 ]
 },
 "tests/moments/test_fights_sight.py": {
 "rest": [
 12,
-0.5
+0.9
 ]
 },
 "tests/moments/test_fights_ttk.py": {
 "rest": [
 25,
-0.5
+0.8
 ]
 },
 "tests/moments/test_fights_util.py": {
 "rest": [
 18,
-0.3
+0.4
 ]
 },
 "tests/moments/test_golden.py": {
 "tests": {
-"test_round_9_killing_a_player_who_could_not_see_you_is_killed_unseen": 1.3
+"test_round_9_killing_a_player_who_could_not_see_you_is_killed_unseen": 1.7
 },
 "rest": [
 3,
-0.2
+0.3
 ]
 },
 "tests/replays/test_adaptive_ground.py": {
 "tests": {
-"test_archive_digest_history_and_replacement": 0.7,
-"test_bundle_candidate_keeps_fine_spatial_identity": 0.5,
-"test_collapsed_picture_ignores_disabled_parent_but_section_area_is_physical": 0.5,
-"test_exact_xy_and_area_preserve_parent_size": 0.5,
-"test_height_domain_warning_counts_undeclared_leaf_holes_only": 0.6,
-"test_ledge_is_not_a_diagonal_shortcut_and_rope_landing_uses_exact_leaf": 0.9,
-"test_real_engine_accumulates_multiple_sections_and_preserves_parent_area": 1.1,
-"test_refinement_does_not_double_walking_speed_or_area": 0.9,
-"test_sight_and_visibility_cache_use_child_nodes": 0.6
+"test_archive_digest_history_and_replacement": 1.0,
+"test_bundle_candidate_keeps_fine_spatial_identity": 1.0,
+"test_collapsed_picture_ignores_disabled_parent_but_section_area_is_physical": 0.8,
+"test_exact_xy_and_area_preserve_parent_size": 1.0,
+"test_height_domain_warning_counts_undeclared_leaf_holes_only": 1.0,
+"test_ledge_is_not_a_diagonal_shortcut_and_rope_landing_uses_exact_leaf": 1.4,
+"test_moving_panel_majority_is_measured_per_leaf": 0.8,
+"test_real_engine_accumulates_multiple_sections_and_preserves_parent_area": 1.7,
+"test_refinement_does_not_double_walking_speed_or_area": 1.4,
+"test_sight_and_visibility_cache_use_child_nodes": 0.9
 },
 "rest": [
-2,
-0.5
+1,
+0.0
 ]
 },
 "tests/replays/test_ascent_feature_integration.py": {
 "tests": {
-"test_archive_engine_and_gaps_only_use_the_same_domain_and_timeline": 34.0,
-"test_archived_conservative_cutoff_is_eligible_and_samples_exact_boundary": 10.7,
-"test_ascent_compiler_refuses_duplicate_binding_flat_map_and_unresolved_clearance": 5.3
+"test_archive_engine_and_gaps_only_use_the_same_domain_and_timeline": 56.0,
+"test_archived_conservative_cutoff_is_eligible_and_samples_exact_boundary": 18.5,
+"test_ascent_compiler_refuses_duplicate_binding_flat_map_and_unresolved_clearance": 9.0
 },
 "rest": [
 1,
@@ -270,50 +274,51 @@
 "tests/replays/test_ascent_features.py": {
 "rest": [
 10,
-0.3
+0.4
 ]
 },
 "tests/replays/test_compare_height_builds.py": {
 "tests": {
-"test_a_preview_records_what_it_read_and_two_builds_of_one_folder_agree": 2.9,
-"test_freezing_writes_the_stored_bytes_and_a_changed_folder_is_refused": 3.0
+"test_a_preview_records_what_it_read_and_two_builds_of_one_folder_agree": 4.7,
+"test_freezing_writes_the_stored_bytes_and_a_changed_folder_is_refused": 5.0
 },
 "rest": [
 3,
-0.2
+0.3
 ]
 },
 "tests/replays/test_control_ability_walls.py": {
 "tests": {
-"test_a_broken_section_reopens_only_there": 0.8,
-"test_a_mesh_arm_shot_out_reopens_its_side": 0.6,
-"test_a_mesh_blocks_walking_but_not_sight": 0.5,
-"test_a_shear_lets_the_crossing_through_then_blocks_until_it_ends": 1.7,
-"test_a_sonic_sensor_holds_nothing": 1.1,
-"test_a_wall_up_entirely_between_frames_is_evaluated_and_integrated": 1.2,
-"test_an_intact_sage_wall_holds_the_unknown_and_blocks_sight": 1.4,
-"test_expiry_reopens_the_whole_wall": 0.6,
-"test_ground_already_crossed_stays_crossed_when_a_wall_goes_up": 0.7
+"test_a_broken_section_reopens_only_there": 2.0,
+"test_a_mesh_arm_shot_out_reopens_its_side": 0.8,
+"test_a_mesh_blocks_walking_but_not_sight": 1.0,
+"test_a_shear_lets_the_crossing_through_then_blocks_until_it_ends": 2.7,
+"test_a_sonic_sensor_holds_nothing": 1.6,
+"test_a_wall_up_entirely_between_frames_is_evaluated_and_integrated": 2.0,
+"test_an_intact_sage_wall_holds_the_unknown_and_blocks_sight": 3.1,
+"test_expiry_reopens_the_whole_wall": 1.2,
+"test_ground_already_crossed_stays_crossed_when_a_wall_goes_up": 1.2,
+"test_the_counterfactual_and_the_knowledge_picture_respect_the_wall": 0.6
 },
-"rest": [
-4,
-0.4
-]
-},
-"tests/replays/test_control_abyss_barriers.py": {
 "rest": [
 3,
 0.0
 ]
 },
+"tests/replays/test_control_abyss_barriers.py": {
+"rest": [
+3,
+0.1
+]
+},
 "tests/replays/test_control_assets.py": {
 "tests": {
 "test_a_cover_tag_is_the_box_inside_its_drawn_outline": 1.0,
+"test_committed_masks_match_a_fresh_build[Abyss]": 0.7,
+"test_committed_masks_match_a_fresh_build[Sunset]": 0.7,
 "test_cover_is_its_own_asset_and_sight_is_wall_plus_cover[Abyss]": 1.4,
 "test_cover_is_its_own_asset_and_sight_is_wall_plus_cover[Summit]": 2.0,
-"test_cover_is_its_own_asset_and_sight_is_wall_plus_cover[Sunset]": 1.7,
-"test_kill_lines_pass_risk1[Abyss]": 0.5,
-"test_kill_lines_pass_risk1[Summit]": 0.5
+"test_cover_is_its_own_asset_and_sight_is_wall_plus_cover[Sunset]": 1.7
 },
 "rest": [
 39,
@@ -323,52 +328,60 @@
 "tests/replays/test_control_barriers.py": {
 "rest": [
 3,
-0.4
+0.6
 ]
 },
 "tests/replays/test_control_blind.py": {
 "tests": {
-"test_a_blinded_sole_survivor_keeps_alive_time_and_gets_zero_from_the_exact_start": 0.9,
-"test_a_round_without_a_blind_matches_its_reference_digest": 9.6,
-"test_a_zero_duration_hit_changes_nothing": 1.3,
-"test_dying_while_blinded_charges_no_loss": 1.5,
-"test_no_locate_or_death_event_comes_from_a_blind": 0.8
+"test_a_blinded_player_holds_nothing_personal_but_keeps_their_body": 0.6,
+"test_a_blinded_sole_survivor_keeps_alive_time_and_gets_zero_from_the_exact_start": 1.5,
+"test_a_round_without_a_blind_matches_its_reference_digest": 5.2,
+"test_a_whole_team_blinded_is_credited_nothing_and_still_holds_ground": 0.8,
+"test_a_zero_duration_hit_changes_nothing": 2.1,
+"test_cached_and_live_gaps_agree_on_a_blinded_round": 0.6,
+"test_dying_while_blinded_charges_no_loss": 2.4,
+"test_no_locate_or_death_event_comes_from_a_blind": 1.4,
+"test_their_trip_keeps_watching_for_the_team_and_their_camera_shows_nothing": 0.6
 },
 "rest": [
-11,
-2.4
+7,
+1.3
 ]
 },
 "tests/replays/test_control_cases.py": {
 "rest": [
 21,
-1.4
+2.1
 ]
 },
 "tests/replays/test_control_causality.py": {
 "tests": {
-"test_a_destination_seen_later_does_not_change_what_was_known_before": 0.9,
-"test_after_a_wall_ends_the_unknown_crosses_it_at_its_own_speed": 0.5
+"test_a_destination_seen_later_does_not_change_what_was_known_before": 1.5,
+"test_a_pause_holds_a_region_that_began_at_a_sighting": 0.6,
+"test_after_a_wall_ends_the_unknown_crosses_it_at_its_own_speed": 0.9,
+"test_an_info_between_the_last_frame_and_the_rounds_end_is_evaluated": 0.7
 },
 "rest": [
-5,
-0.8
+3,
+0.0
 ]
 },
 "tests/replays/test_control_collapse.py": {
 "tests": {
-"test_floors_one_team_takes_its_strongest": 41.0,
-"test_section_totals_code_of_a_two_node_leaf": 0.9,
-"test_three_floors_one_team": 64.5
+"test_adaptive_active_beside_nothing_stays_active": 0.8,
+"test_adaptive_both_teams_is_contested_active": 0.8,
+"test_adaptive_one_team_takes_its_strongest": 0.8,
+"test_adaptive_other_team_active_is_contested_active": 0.8,
+"test_section_totals_code_of_a_two_node_leaf": 1.2
 },
 "rest": [
-7,
-1.9
+5,
+0.2
 ]
 },
 "tests/replays/test_control_cypher_leer.py": {
 "tests": {
-"test_after_the_restriction_her_region_grows_again": 0.9
+"test_after_the_restriction_her_region_grows_again": 1.4
 },
 "rest": [
 12,
@@ -376,61 +389,60 @@
 ]
 },
 "tests/replays/test_control_engine.py": {
+"tests": {
+"test_the_tick_schedule": 0.6
+},
 "rest": [
-42,
-2.3
+41,
+3.2
 ]
 },
 "tests/replays/test_control_feature_artifacts_db.py": {
 "tests": {
-"test_archive_does_not_commit_callers_transaction": 3.3,
-"test_committed_height_is_retained_without_creating_activation_history": 11.8,
-"test_concurrent_first_inserts_use_a_savepoint_and_converge": 6.2,
-"test_header_lookup_does_not_decompress_assets_but_full_read_rehashes": 3.6,
-"test_missing_lookup_is_explicit_and_exact_keys_do_not_fall_back": 3.3,
-"test_nonflat_archive_requires_its_exact_retained_height": 3.3,
-"test_same_key_never_overwrites_a_hash_valid_different_compilation": 7.2,
-"test_same_key_shares_one_immutable_row_and_audit_changes_are_idempotent": 7.8,
-"test_separate_connections_converge_on_existing_durable_representation": 6.0
+"test_archive_does_not_commit_callers_transaction": 5.6,
+"test_committed_height_is_retained_without_creating_activation_history": 19.4,
+"test_concurrent_first_inserts_use_a_savepoint_and_converge": 10.0,
+"test_header_lookup_does_not_decompress_assets_but_full_read_rehashes": 6.4,
+"test_missing_lookup_is_explicit_and_exact_keys_do_not_fall_back": 5.6,
+"test_nonflat_archive_requires_its_exact_retained_height": 5.5,
+"test_same_key_never_overwrites_a_hash_valid_different_compilation": 12.0,
+"test_same_key_shares_one_immutable_row_and_audit_changes_are_idempotent": 12.5,
+"test_separate_connections_converge_on_existing_durable_representation": 9.9
 }
 },
 "tests/replays/test_control_feature_verification.py": {
 "tests": {
-"test_corrupt_archive_fails_independently_of_compiler_availability[assets]": 29.7,
-"test_corrupt_archive_fails_independently_of_compiler_availability[height_asset]": 30.7,
-"test_current_source_failure_does_not_prevent_historical_reproduction": 40.9,
-"test_historical_round_verifies_old_archive_after_height_and_tag_changes": 42.6,
-"test_missing_archive_and_legacy_provenance_are_unavailable": 30.5,
-"test_recorded_base_mask_identity_must_match_archive_even_with_rehashed_provenance": 33.2,
-"test_review_bad_current_structure_keeps_historical_verdict_independent[bad1]": 41.0,
-"test_review_bad_current_structure_keeps_historical_verdict_independent[bad]": 41.5,
-"test_review_historical_child_reports_unavailable_consumer_independently[available0]": 39.4,
-"test_review_historical_child_reports_unavailable_consumer_independently[available1]": 40.1,
-"test_tampered_provenance_fails_before_unsupported_recompilation": 29.5,
-"test_unsupported_recompilation_keeps_independent_integrity": 34.8
+"test_corrupt_archive_fails_independently_of_compiler_availability[assets]": 48.8,
+"test_corrupt_archive_fails_independently_of_compiler_availability[height_asset]": 47.1,
+"test_current_source_failure_does_not_prevent_historical_reproduction": 66.7,
+"test_historical_round_verifies_old_archive_after_height_and_tag_changes": 73.8,
+"test_missing_archive_and_legacy_provenance_are_unavailable": 49.5,
+"test_recorded_base_mask_identity_must_match_archive_even_with_rehashed_provenance": 54.6,
+"test_review_bad_current_structure_keeps_historical_verdict_independent[bad1]": 67.7,
+"test_review_bad_current_structure_keeps_historical_verdict_independent[bad]": 66.9,
+"test_review_historical_child_reports_unavailable_consumer_independently[available0]": 55.0,
+"test_review_historical_child_reports_unavailable_consumer_independently[available1]": 43.9,
+"test_tampered_provenance_fails_before_unsupported_recompilation": 49.4,
+"test_unsupported_recompilation_keeps_independent_integrity": 56.7
 }
 },
 "tests/replays/test_control_features.py": {
 "tests": {
-"test_a_band_is_rebased_when_a_rebuild_moves_the_maps_lowest_floor": 40.8,
-"test_a_bundle_whose_states_bind_no_floor_publishes_nothing": 0.8,
-"test_a_floor_that_moved_out_of_its_band_is_pending_and_the_rest_still_bind": 45.0,
-"test_a_one_way_zipline_endpoint_only_versus_intermediate_access": 3.1,
-"test_a_published_generation_does_not_survive_a_new_height_digest": 0.5,
-"test_panel_bounds_culling_matches_unculled_sampling_for_clipped_and_vertical_lines[False]": 1.0,
-"test_panel_bounds_culling_matches_unculled_sampling_for_clipped_and_vertical_lines[True]": 0.9,
-"test_routes_never_touch_the_maps_legacy_specials": 3.1,
-"test_the_manifest_tracks_runtime_inputs_and_ignores_editorial_ones": 1.0,
-"test_verification_rehashes_loaded_assets_and_recompiles_definitions": 0.5
+"test_a_bundle_whose_states_bind_no_floor_publishes_nothing": 1.2,
+"test_a_published_generation_does_not_survive_a_new_height_digest": 0.8,
+"test_panel_bounds_culling_matches_unculled_sampling_for_clipped_and_vertical_lines[False]": 1.4,
+"test_panel_bounds_culling_matches_unculled_sampling_for_clipped_and_vertical_lines[True]": 1.3,
+"test_the_manifest_tracks_runtime_inputs_and_ignores_editorial_ones": 1.5,
+"test_verification_rehashes_loaded_assets_and_recompiles_definitions": 0.8
 },
 "rest": [
-42,
-3.9
+46,
+6.3
 ]
 },
 "tests/replays/test_control_figures.py": {
 "tests": {
-"test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal": 2.0
+"test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal": 2.5
 },
 "rest": [
 12,
@@ -439,30 +451,19 @@
 },
 "tests/replays/test_control_floors.py": {
 "tests": {
-"test_a_fall_edge_between_stacked_floors_is_judged_by_its_own_two_floors": 64.0,
-"test_a_raised_node_inside_the_unknown_sees_what_its_boundary_cannot": 32.0,
-"test_a_round_on_a_height_map_is_stored_per_walkable_cell": 2.5,
-"test_a_wire_beside_a_step_extends_to_the_step": 32.1,
-"test_a_wire_between_two_walls_or_with_nothing_in_reach_does_not_change": 52.5,
-"test_an_enemy_above_their_floor_is_spotted_at_their_own_height": 36.2,
-"test_an_enemy_in_the_tunnel_is_not_spotted_from_the_bridge_side_or_from_right_above": 24.0,
-"test_on_a_ramp_a_wire_stops_where_the_ground_reaches_it": 31.9,
-"test_specials_join_every_floor_of_their_cells": 63.6,
-"test_the_task_records_the_heights_and_a_round_counts_looks_into_unresolved_terrain": 0.9,
-"test_the_unknown_climbs_a_connected_step": 32.2,
-"test_the_unknown_crosses_an_unresolved_strip_as_it_does_in_2d": 32.0,
-"test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up": 64.2,
-"test_the_unknown_stops_at_a_fall_too_high_to_land_quietly": 63.2
+"test_a_round_on_a_height_map_is_stored_per_walkable_cell": 2.7,
+"test_the_task_records_the_heights_and_a_round_counts_looks_into_unresolved_terrain": 1.0,
+"test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up": 0.7
 },
 "rest": [
-18,
-1.0
+29,
+3.7
 ]
 },
 "tests/replays/test_control_format.py": {
 "tests": {
-"test_data_round_trips_every_tick": 1.7,
-"test_what_each_team_knew_round_trips_as_optional_streams": 1.2
+"test_data_round_trips_every_tick": 1.8,
+"test_what_each_team_knew_round_trips_as_optional_streams": 1.3
 },
 "rest": [
 10,
@@ -471,9 +472,9 @@
 },
 "tests/replays/test_control_geometry.py": {
 "tests": {
-"test_a_tag_whose_shape_moved_refuses": 0.9,
+"test_a_tag_whose_shape_moved_refuses": 1.0,
 "test_cover_blocks_and_see_over_does_not": 1.3,
-"test_see_across_tag_and_paint_open_a_void_but_keep_it_unwalkable": 0.8
+"test_see_across_tag_and_paint_open_a_void_but_keep_it_unwalkable": 0.9
 },
 "rest": [
 7,
@@ -482,123 +483,122 @@
 },
 "tests/replays/test_control_hearing.py": {
 "tests": {
-"test_a_kill_still_names_the_killer_with_the_other_unseen": 0.8,
-"test_a_spike_tap_with_another_enemy_unseen_names_nobody": 0.6,
-"test_an_orb_taken_names_the_taker_only_by_elimination": 1.0,
-"test_footsteps_with_another_enemy_unseen_name_nobody": 0.5,
-"test_footsteps_with_the_other_enemy_spotted_name_the_runner": 0.6,
+"test_a_capture_let_go_is_heard_as_it_starts": 0.5,
+"test_a_kill_still_names_the_killer_with_the_other_unseen": 1.0,
+"test_a_spike_tap_with_another_enemy_unseen_names_nobody": 0.5,
+"test_an_orb_capture_is_heard_as_its_channel_starts_too": 0.5,
+"test_an_orb_taken_names_the_taker_only_by_elimination": 1.2,
+"test_footsteps_with_another_enemy_unseen_name_nobody": 0.6,
+"test_footsteps_with_the_other_enemy_spotted_name_the_runner": 0.7,
 "test_gunfire_the_only_one_to_fire_that_gun_still_names_nobody": 0.6,
-"test_gunfire_the_other_carrying_another_gun_still_names_nobody": 0.6,
+"test_gunfire_the_other_carrying_another_gun_still_names_nobody": 0.5,
 "test_gunfire_with_no_gun_and_the_other_unseen_names_nobody": 0.6
 },
 "rest": [
-8,
-3.6
+6,
+2.5
 ]
 },
 "tests/replays/test_control_height_job.py": {
 "tests": {
-"test_a_build_lists_the_tagged_features_that_no_longer_fit": 62.7,
-"test_a_build_runs_from_a_folder_and_its_result_is_what_the_web_app_verifies": 3.1,
-"test_a_missing_or_broken_check_set_fails_the_check": 2.5,
-"test_corrupt_or_foreign_bytes_are_never_an_asset": 10.2,
-"test_empty_must_block_evidence_cannot_pass_a_nonempty_maps_set": 1.5,
-"test_fresh_job_retains_selection_without_previous_asset_file": 5.2,
-"test_real_builder_and_verifier_do_not_read_tags[malformed]": 1.8,
+"test_a_build_lists_the_tagged_features_that_no_longer_fit": 0.6,
+"test_a_build_runs_from_a_folder_and_its_result_is_what_the_web_app_verifies": 3.3,
+"test_a_missing_or_broken_check_set_fails_the_check": 2.8,
+"test_corrupt_or_foreign_bytes_are_never_an_asset": 7.4,
+"test_empty_must_block_evidence_cannot_pass_a_nonempty_maps_set": 1.7,
+"test_fresh_job_retains_selection_without_previous_asset_file": 5.5,
+"test_real_builder_and_verifier_do_not_read_tags[malformed]": 1.6,
 "test_real_builder_and_verifier_do_not_read_tags[missing]": 1.6,
 "test_reports_cannot_invent_map_size_or_hide_an_unresolved_area": 1.7,
 "test_rounds_are_read_one_at_a_time_and_twice": 1.2,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[cell index]": 1.7,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[edge kind]": 1.7,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[edge shape]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor gap]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor index]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor sentinel]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[ground kind]": 1.6,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[lossy cast]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[missing floor]": 1.6,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[not neighbours]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[spread shape]": 1.5,
-"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[support on void]": 1.5,
-"test_the_child_answers_in_json_and_proves_what_it_was_built_from": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[cell index]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[edge kind]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[edge shape]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor gap]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor index]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[floor sentinel]": 1.7,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[ground kind]": 1.7,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[lossy cast]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[missing floor]": 1.7,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[not neighbours]": 1.6,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[spread shape]": 1.8,
+"test_structurally_invalid_assets_are_refused_before_the_engine_can_read_them[support on void]": 1.8,
+"test_the_child_answers_in_json_and_proves_what_it_was_built_from": 1.7,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[a manifest for another map-<lambda>]": 0.6,
-"test_the_child_refuses_inputs_that_are_not_the_manifests[a match the manifest doesn't name-<lambda>]": 1.5,
+"test_the_child_refuses_inputs_that_are_not_the_manifests[a match the manifest doesn't name-<lambda>]": 1.6,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[a match with a round missing-<lambda>]": 1.5,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[another check set on this worker-<lambda>]": 0.6,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[another walk mask on this worker-<lambda>]": 0.6,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[no manifest-<lambda>]": 0.6,
-"test_the_child_refuses_inputs_that_are_not_the_manifests[no rounds folder-<lambda>]": 0.5,
+"test_the_child_refuses_inputs_that_are_not_the_manifests[no rounds folder-<lambda>]": 0.6,
 "test_the_child_refuses_inputs_that_are_not_the_manifests[other rules on this worker-<lambda>]": 0.6,
-"test_the_report_compares_with_the_asset_before": 4.2
+"test_the_report_compares_with_the_asset_before": 4.6
 }
 },
 "tests/replays/test_control_heights.py": {
 "tests": {
-"test_a_crossed_slope_is_filled_along_the_gradient_and_a_ledge_is_not": 1.3,
-"test_a_drop_walked_down_is_a_slide_and_one_fallen_down_is_a_fall": 0.6,
-"test_a_floor_reached_only_through_the_air_is_listed": 1.4,
-"test_a_gradient_cell_connects_the_way_it_was_crossed": 1.3,
-"test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify": 53.1,
+"test_a_crossed_slope_is_filled_along_the_gradient_and_a_ledge_is_not": 1.4,
+"test_a_drop_walked_down_is_a_slide_and_one_fallen_down_is_a_fall": 0.7,
+"test_a_floor_reached_only_through_the_air_is_listed": 1.6,
+"test_a_gradient_cell_connects_the_way_it_was_crossed": 1.4,
 "test_a_player_after_a_dash_gives_no_floor_for_three_seconds": 0.5,
 "test_a_preview_never_writes_inside_the_repository": 0.6,
 "test_an_asset_of_another_version_is_refused": 1.4,
-"test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body_and_head_are_hidden": 32.9,
 "test_only_a_preview_may_make_floors_from_one_match": 2.2,
-"test_permanent_wall_proves_required_blockage_without_fabricating_endpoint_heights": 18.9,
-"test_separate_unresolved_areas_are_listed_largest_first": 1.3,
+"test_separate_unresolved_areas_are_listed_largest_first": 1.4,
 "test_stairs_nobody_stops_on_get_floors_from_walks": 0.7,
 "test_the_asset_keeps_kind_and_edge_kinds_and_only_the_edges_move_the_digest": 0.7,
-"test_the_asset_round_trips_and_its_digest_is_stable": 4.3,
-"test_the_bar_refuses_a_thin_map_and_passes_a_covered_one": 1.4,
-"test_the_command_refuses_a_map_that_fails_the_kill_lines_unless_accepted": 2.3,
-"test_the_command_refuses_a_map_when_the_check_set_cant_be_read": 1.6,
-"test_the_command_refuses_a_map_whose_must_block_lines_cant_be_checked_yet": 2.4,
+"test_the_asset_round_trips_and_its_digest_is_stable": 4.5,
+"test_the_bar_refuses_a_thin_map_and_passes_a_covered_one": 1.5,
+"test_the_command_refuses_a_map_that_fails_the_kill_lines_unless_accepted": 2.5,
+"test_the_command_refuses_a_map_when_the_check_set_cant_be_read": 2.0,
+"test_the_command_refuses_a_map_whose_must_block_lines_cant_be_checked_yet": 2.8,
 "test_the_command_writes_a_ready_maps_asset_and_index_entry": 1.5,
-"test_the_report_prints_air_only_floors_and_the_counts": 1.4
+"test_the_report_prints_air_only_floors_and_the_counts": 1.7
 },
 "rest": [
-47,
-3.7
+50,
+4.3
 ]
 },
 "tests/replays/test_control_heights_db.py": {
 "tests": {
-"test_a_build_at_the_bar_goes_live_and_the_one_before_it_is_superseded": 9.5,
-"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep0-under 60%]": 2.3,
-"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep1-unresolved]": 2.5,
+"test_a_build_at_the_bar_goes_live_and_the_one_before_it_is_superseded": 6.1,
+"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep0-under 60%]": 5.1,
+"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep1-unresolved]": 2.6,
 "test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep2-kill lines]": 2.5,
-"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep3-must-block]": 2.3,
-"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep4-must-block]": 2.3,
-"test_a_row_from_another_format_is_not_active": 1.2,
-"test_activate_puts_an_earlier_asset_back_and_off_leaves_none": 11.0,
-"test_activating_the_digest_that_is_already_active_leaves_it_active": 8.0,
-"test_every_caller_passes_the_active_heights": 6.1,
-"test_new_heights_make_a_maps_rounds_stale_and_they_are_still_served": 4.6,
-"test_old_height_rollback_and_off_remain_available": 6.7,
-"test_tags_or_legacy_pointer_cannot_freeze_valid_height_activation": 6.8,
-"test_the_operator_lists_activates_exports_and_turns_off": 10.1
+"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep3-must-block]": 2.6,
+"test_a_build_below_the_bar_or_failing_a_check_is_rejected_and_the_old_heights_stay[rep4-must-block]": 2.5,
+"test_a_row_from_another_format_is_not_active": 1.3,
+"test_activate_puts_an_earlier_asset_back_and_off_leaves_none": 7.5,
+"test_activating_the_digest_that_is_already_active_leaves_it_active": 5.1,
+"test_diagnostic_failure_does_not_gate_valid_heights_and_manual_audit_preserves_reports": 4.8,
+"test_every_caller_passes_the_active_heights": 5.9,
+"test_new_heights_make_a_maps_rounds_stale_and_they_are_still_served": 4.4,
+"test_old_height_rollback_and_off_remain_available": 6.8,
+"test_tags_or_legacy_pointer_cannot_freeze_valid_height_activation": 6.6,
+"test_the_operator_lists_activates_exports_and_turns_off": 6.4
 },
 "rest": [
-22,
-0.2
+21,
+0.1
 ]
 },
 "tests/replays/test_control_isolation.py": {
 "tests": {
-"test_control_does_not_import_scoring": 0.5,
 "test_the_gap_pattern_service_loads_no_engine_detector_or_numpy": 1.3,
-"test_the_web_app_does_not_import_the_engine": 3.1,
+"test_the_web_app_does_not_import_the_engine": 3.0,
 "test_the_worker_copied_code_stays_stdlib_only": 0.6
 },
 "rest": [
-3,
-0.8
+4,
+1.4
 ]
 },
 "tests/replays/test_control_knew.py": {
 "rest": [
 7,
-1.3
+1.4
 ]
 },
 "tests/replays/test_control_knife_skye.py": {
@@ -613,44 +613,42 @@
 },
 "tests/replays/test_control_mollies.py": {
 "tests": {
-"test_a_circle_passes_the_wall_only_when_it_pierces[Phoenix-MolotovFire-False]": 2.3,
-"test_a_hostile_molly_blocks_until_it_ends_and_arrivals_start_from_the_end[A's fire holds B]": 0.8,
+"test_a_hostile_molly_blocks_until_it_ends_and_arrivals_start_from_the_end[A's fire holds B]": 0.7,
 "test_a_hostile_molly_blocks_until_it_ends_and_arrivals_start_from_the_end[B's fire holds A]": 0.8,
 "test_a_hostile_molly_blocks_until_it_ends_and_arrivals_start_from_the_end[sides from the link, swapped]": 0.7,
-"test_a_molly_blocks_only_the_floor_it_burns_on": 9.1,
-"test_a_molly_landing_behind_the_unknown_takes_nothing_away": 1.3,
-"test_a_round_without_a_molly_matches_its_reference_digest": 3.9,
-"test_a_route_around_a_partly_covered_hall_stays_open": 5.3,
-"test_a_special_link_over_the_zone_still_carries_the_unknown_but_not_into_it": 1.9,
-"test_an_unknown_owner_adds_no_block_and_is_counted": 1.3,
+"test_a_molly_blocks_only_the_floor_it_burns_on": 2.7,
+"test_a_molly_landing_behind_the_unknown_takes_nothing_away": 1.4,
+"test_a_round_without_a_molly_matches_its_reference_digest": 4.1,
+"test_a_route_around_a_partly_covered_hall_stays_open": 0.7,
+"test_a_special_link_over_the_zone_still_carries_the_unknown_but_not_into_it": 0.9,
+"test_an_unknown_owner_adds_no_block_and_is_counted": 1.4,
 "test_cached_and_live_gaps_agree_on_a_molly_round": 0.8,
-"test_full_and_incremental_counterfactuals_agree_on_a_molly_round": 1.1,
-"test_overlapping_mollies_hold_until_the_last_ends_through_the_owners_blind_and_death": 0.7,
+"test_full_and_incremental_counterfactuals_agree_on_a_molly_round": 1.2,
+"test_overlapping_mollies_hold_until_the_last_ends_through_the_owners_blind_and_death": 0.8,
 "test_the_counterfactual_without_a_holder_does_not_flood_through_the_fire": 1.1,
-"test_the_footprint_side_and_instants_are_the_rows": 1.1,
-"test_the_knowledge_picture_does_not_walk_through_the_fire": 1.0,
+"test_the_knowledge_picture_does_not_walk_through_the_fire": 1.2,
 "test_the_rows_end_caps_the_burn": 0.8,
 "test_uncertainty_inside_is_kept_not_grown_and_moves_again_only_from_the_end": 1.6,
-"test_what_is_not_an_enemy_damaging_molly_holds_nothing[a non-damaging area]": 1.3,
-"test_what_is_not_an_enemy_damaging_molly_holds_nothing[instant blasts and a molly still in flight]": 1.3,
-"test_what_is_not_an_enemy_damaging_molly_holds_nothing[its own team's molly]": 1.4
+"test_what_is_not_an_enemy_damaging_molly_holds_nothing[a non-damaging area]": 1.4,
+"test_what_is_not_an_enemy_damaging_molly_holds_nothing[instant blasts and a molly still in flight]": 1.5,
+"test_what_is_not_an_enemy_damaging_molly_holds_nothing[its own team's molly]": 1.5
 },
 "rest": [
-27,
-0.1
+29,
+0.2
 ]
 },
 "tests/replays/test_control_pinned_inputs.py": {
 "tests": {
-"test_manual_off_selects_flat_even_with_committed_fallback": 4.7,
+"test_manual_off_selects_flat_even_with_committed_fallback": 4.2,
 "test_parent_mask_snapshot_matches_existing_decoder_and_flat_bypasses_pointer": 0.7,
-"test_pending_is_read_only_and_preparation_is_shared_per_map": 11.7,
-"test_result_provenance_tamper_and_runtime_edit_preserve_old_row": 13.5,
-"test_review_gap_writer_rechecks_tags_after_existing_run_lookup[False]": 11.5,
-"test_review_gap_writer_rechecks_tags_after_existing_run_lookup[True]": 11.8,
-"test_review_match_summary_explicit_off_beats_committed_fallback": 4.4,
-"test_review_match_summary_freshness_uses_current_tagged_context": 11.5,
-"test_source_failure_cannot_reuse_last_valid_snapshot": 4.4
+"test_pending_is_read_only_and_preparation_is_shared_per_map": 10.4,
+"test_result_provenance_tamper_and_runtime_edit_preserve_old_row": 9.9,
+"test_review_gap_writer_rechecks_tags_after_existing_run_lookup[False]": 7.8,
+"test_review_gap_writer_rechecks_tags_after_existing_run_lookup[True]": 7.7,
+"test_review_match_summary_explicit_off_beats_committed_fallback": 4.2,
+"test_review_match_summary_freshness_uses_current_tagged_context": 7.7,
+"test_source_failure_cannot_reuse_last_valid_snapshot": 4.7
 },
 "rest": [
 13,
@@ -659,8 +657,8 @@
 },
 "tests/replays/test_control_reasons.py": {
 "tests": {
-"test_a_continuous_sighting_is_one_reason_but_every_tick_of_locating_history": 0.5,
-"test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence": 0.6
+"test_a_continuous_sighting_is_one_reason_but_every_tick_of_locating_history": 0.6,
+"test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence": 0.5
 },
 "rest": [
 6,
@@ -669,89 +667,88 @@
 },
 "tests/replays/test_control_reference.py": {
 "tests": {
-"test_a_flat_round_is_byte_identical_to_the_reference[barrier]": 3.3,
+"test_a_flat_round_is_byte_identical_to_the_reference[barrier]": 3.5,
 "test_a_flat_round_is_byte_identical_to_the_reference[door]": 1.4,
-"test_a_flat_round_is_byte_identical_to_the_reference[midwall]": 2.6,
-"test_a_flat_round_is_byte_identical_to_the_reference[open]": 3.9,
-"test_a_flat_round_is_byte_identical_to_the_reference[pawns]": 3.8,
-"test_a_flat_round_is_byte_identical_to_the_reference[rooms]": 0.9,
-"test_a_flat_round_is_byte_identical_to_the_reference[setups]": 4.5,
-"test_midwall_molly_changes_nothing_before_it_burns": 5.3,
-"test_midwall_now_has_the_blind_rule_and_exact_intervals": 2.7,
-"test_midwall_with_every_heard_sound_naming_its_maker_is_its_pre_r1_reference": 2.7,
-"test_midwall_without_the_blind_rule_and_exact_intervals_is_its_old_reference": 2.4,
-"test_midwall_without_the_molly_rule_is_its_p07_reference": 2.6,
-"test_midwall_without_the_nearsight_change_is_its_p07a_reference": 2.7,
-"test_the_fixture_names_every_reference_round": 17.9
+"test_a_flat_round_is_byte_identical_to_the_reference[midwall]": 2.8,
+"test_a_flat_round_is_byte_identical_to_the_reference[open]": 4.3,
+"test_a_flat_round_is_byte_identical_to_the_reference[pawns]": 3.9,
+"test_a_flat_round_is_byte_identical_to_the_reference[rooms]": 0.8,
+"test_a_flat_round_is_byte_identical_to_the_reference[setups]": 5.1,
+"test_midwall_molly_changes_nothing_before_it_burns": 5.8,
+"test_midwall_now_has_the_blind_rule_and_exact_intervals": 2.8,
+"test_midwall_with_every_heard_sound_naming_its_maker_is_its_pre_r1_reference": 2.8,
+"test_midwall_without_the_blind_rule_and_exact_intervals_is_its_old_reference": 2.6,
+"test_midwall_without_the_molly_rule_is_its_p07_reference": 2.9,
+"test_midwall_without_the_nearsight_change_is_its_p07a_reference": 2.9
 },
 "rest": [
-1,
+2,
 0.1
 ]
 },
 "tests/replays/test_control_remote.py": {
 "tests": {
-"test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored": 1.8,
-"test_a_detector_failure_on_a_gaps_only_task_is_stored_and_not_asked_again": 2.0,
-"test_a_full_task_that_lands_on_an_older_worker_is_asked_again_plain": 0.9,
+"test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored": 1.6,
+"test_a_detector_failure_on_a_gaps_only_task_is_stored_and_not_asked_again": 2.2,
+"test_a_full_task_that_lands_on_an_older_worker_is_asked_again_plain": 1.1,
 "test_a_gaps_only_job_waits_and_times_out_like_any_other": 0.6,
-"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_figures]": 0.9,
-"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_geometry]": 0.8,
+"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_figures]": 1.2,
+"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_geometry]": 0.9,
 "test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_revision0]": 0.8,
 "test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_revision1]": 1.1,
-"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped0]": 1.1,
+"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped0]": 1.0,
 "test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped1]": 0.9,
-"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped2]": 0.9,
-"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped3]": 1.2,
-"test_a_gaps_only_result_that_arrives_after_control_moved_is_skipped": 1.3,
-"test_a_job_queued_through_a_long_parse_batch_is_still_collected": 1.0,
-"test_a_link_that_moves_between_the_two_stores_skips_the_gaps": 1.6,
-"test_a_machine_failure_on_a_gaps_only_task_backs_off_and_stops_after_the_budget": 1.4,
+"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped2]": 1.0,
+"test_a_gaps_only_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-gaps_dropped3]": 0.9,
+"test_a_gaps_only_result_that_arrives_after_control_moved_is_skipped": 1.0,
+"test_a_job_queued_through_a_long_parse_batch_is_still_collected": 0.8,
+"test_a_link_that_moves_between_the_two_stores_skips_the_gaps": 1.5,
+"test_a_machine_failure_on_a_gaps_only_task_backs_off_and_stops_after_the_budget": 1.2,
 "test_a_map_with_heights_in_the_database_sends_their_digest_and_pushes_the_asset_once": 2.2,
 "test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out[conflict]": 1.8,
-"test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out[refused]": 1.9,
-"test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out[rejected]": 1.7,
-"test_a_result_computed_with_other_heights_is_dropped": 2.7,
-"test_a_result_from_another_deploy_is_dropped_and_asked_again[<lambda>-dropped_geometry0]": 0.6,
-"test_a_round_spent_on_plain_tasks_is_not_given_up_once_the_worker_takes_gaps": 1.3,
-"test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok": 1.7,
-"test_a_tagged_map_waits_for_capability_then_pins_exact_inputs": 29.1,
-"test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[control_off]": 0.8,
+"test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out[refused]": 1.7,
+"test_a_refused_round_spends_a_try_and_the_rounds_behind_it_still_go_out[rejected]": 1.5,
+"test_a_result_computed_with_other_heights_is_dropped": 2.9,
+"test_a_round_spent_on_plain_tasks_is_not_given_up_once_the_worker_takes_gaps": 1.4,
+"test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok": 1.5,
+"test_a_tagged_map_waits_for_capability_then_pins_exact_inputs": 24.5,
+"test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[control_off]": 0.9,
 "test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[older]": 0.7,
 "test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[other_protocol]": 0.9,
-"test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[unreachable_health]": 0.7,
-"test_gap_rows_the_model_refuses_are_dropped_without_stopping_the_cycle": 1.4,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>0]": 1.1,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>10]": 0.9,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>11]": 1.1,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>1]": 0.9,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>2]": 0.9,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>3]": 1.1,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>4]": 1.1,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>5]": 0.9,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>6]": 0.8,
+"test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work[unreachable_health]": 0.8,
+"test_gap_rows_the_model_refuses_are_dropped_without_stopping_the_cycle": 1.7,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>0]": 1.0,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>10]": 1.1,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>11]": 0.9,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>1]": 0.8,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>2]": 1.0,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>3]": 1.0,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>4]": 0.8,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>5]": 1.0,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>6]": 0.9,
 "test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>7]": 1.1,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>8]": 0.9,
-"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>9]": 1.1,
-"test_gaps_source_failure_preserves_control_and_stops_retrying": 3.5,
-"test_missing_feature_source_is_stored_once_and_not_retried": 1.6,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>8]": 0.8,
+"test_gaps_from_other_rules_or_assets_are_dropped_and_control_is_kept[<lambda>9]": 1.0,
+"test_gaps_source_failure_preserves_control_and_stops_retrying": 3.3,
+"test_gaps_under_old_rules_are_sent_again_and_a_current_gap_failure_is_left": 0.6,
+"test_missing_feature_source_is_stored_once_and_not_retried": 1.5,
 "test_missing_rounds_are_sent_then_stored": 6.1,
-"test_no_gaps_only_work_goes_to_a_worker_without_the_protocol_until_it_has_it": 1.5,
-"test_once_health_names_the_protocol_rounds_still_needing_control_go_out_with_gaps": 1.0,
-"test_planning_is_throttled_when_control_and_gaps_are_both_current": 0.6,
-"test_rounds_with_current_control_and_no_gaps_are_sent_for_gaps_alone": 1.8,
-"test_the_rounds_own_failure_is_stored_and_the_machines_is_retried_then_left": 0.8,
-"test_the_runs_limit_caps_one_match": 0.9
+"test_no_gaps_only_work_goes_to_a_worker_without_the_protocol_until_it_has_it": 1.3,
+"test_once_health_names_the_protocol_rounds_still_needing_control_go_out_with_gaps": 0.8,
+"test_planning_is_throttled_when_control_and_gaps_are_both_current": 0.5,
+"test_rounds_with_current_control_and_no_gaps_are_sent_for_gaps_alone": 1.6,
+"test_the_rounds_own_failure_is_stored_and_the_machines_is_retried_then_left": 0.9,
+"test_the_runs_limit_caps_one_match": 1.3
 },
 "rest": [
 40,
-6.6
+6.9
 ]
 },
 "tests/replays/test_control_reveals.py": {
 "tests": {
 "test_a_haunt_clears_what_it_sees_and_not_behind_a_wall": 1.3,
-"test_each_neural_theft_ping_locates_where_the_enemy_is_then": 0.6
+"test_each_neural_theft_ping_locates_where_the_enemy_is_then": 0.7
 },
 "rest": [
 6,
@@ -760,65 +757,65 @@
 },
 "tests/replays/test_control_sight.py": {
 "tests": {
-"test_a_continuous_ramp_hides_nothing_on_itself[120]": 33.7,
-"test_a_flat_floor_never_hides_itself": 56.5,
-"test_a_ray_into_an_unresolved_cell_gives_the_2d_answer_and_is_recorded": 29.4,
-"test_a_walkable_cell_the_asset_does_not_know_is_unresolved_and_counted": 24.2,
-"test_what_a_single_line_sees_the_rays_see_too[bridge]": 0.5
+"test_what_a_single_line_sees_the_rays_see_too[bridge]": 0.8,
+"test_what_a_single_line_sees_the_rays_see_too[ledge]": 0.5,
+"test_what_a_single_line_sees_the_rays_see_too[ramp]": 0.7
 },
 "rest": [
-16,
-1.0
+18,
+0.9
 ]
 },
 "tests/replays/test_control_stats.py": {
 "tests": {
-"test_sections_split_at_the_plant_and_cover_the_live_round_only": 1.7
+"test_sections_split_at_the_plant_and_cover_the_live_round_only": 2.5,
+"test_space_taken_accrues_only_in_the_live_round": 0.7,
+"test_the_spawn_rotator_controls_nothing_and_the_lurker_a_lot": 0.5
 },
 "rest": [
-10,
-1.8
+8,
+1.4
 ]
 },
 "tests/replays/test_control_store.py": {
 "tests": {
-"test_sides_follow_the_attacking_team_and_swap_at_the_half": 2.8
+"test_sides_follow_the_attacking_team_and_swap_at_the_half": 4.8
 },
 "rest": [
 36,
-3.9
+5.6
 ]
 },
 "tests/replays/test_control_tagger.py": {
 "tests": {
-"test_a_candidate_tag_composes_exactly_like_geometry": 1.5,
-"test_abyss_tags_and_see_across_paint_compose_exactly_like_geometry": 1.1,
-"test_an_unchanged_page_exports_the_loaded_tags": 1.6,
-"test_ascent_walls_only_blocks_the_same_lines_as_index_json": 0.7,
-"test_every_paint_composes_exactly_like_geometry": 0.9,
+"test_a_candidate_tag_composes_exactly_like_geometry": 2.2,
+"test_abyss_tags_and_see_across_paint_compose_exactly_like_geometry": 1.8,
+"test_an_unchanged_page_exports_the_loaded_tags": 2.3,
+"test_ascent_walls_only_blocks_the_same_lines_as_index_json": 1.0,
+"test_every_paint_composes_exactly_like_geometry": 1.3,
 "test_summit_cover_tags_compose_and_judge_kill_lines_like_geometry": 1.1,
-"test_the_page_builds_with_every_map": 1.2,
-"test_the_page_builds_with_the_choke_mode": 0.7,
+"test_the_page_builds_with_every_map": 1.8,
+"test_the_page_builds_with_the_choke_mode": 1.0,
 "test_with_every_kill_line_on_cover_nothing_is_judged_alike_in_both": 0.8
 },
 "rest": [
 5,
-0.4
+0.6
 ]
 },
 "tests/replays/test_control_task.py": {
 "tests": {
-"test_a_round_gives_the_same_bytes_as_the_engine": 0.6
+"test_a_round_gives_the_same_bytes_as_the_engine": 0.8
 },
 "rest": [
 5,
-0.1
+0.2
 ]
 },
 "tests/replays/test_control_teleports.py": {
 "tests": {
-"test_a_heard_recall_restarts_her_region_and_no_one_elses": 0.8,
-"test_the_channel_freezes_his_region_and_a_cancelled_unheard_addition_is_kept": 0.5
+"test_a_heard_recall_restarts_her_region_and_no_one_elses": 1.1,
+"test_the_channel_freezes_his_region_and_a_cancelled_unheard_addition_is_kept": 0.7
 },
 "rest": [
 14,
@@ -827,35 +824,23 @@
 },
 "tests/replays/test_control_unknown.py": {
 "tests": {
-"test_a_map_with_heights_seals_a_wires_end_the_same_way": 21.5,
-"test_a_screen_across_a_narrow_door_or_a_smoke_filling_a_corridor_stays_walkable": 7.1,
-"test_a_wire_on_the_upper_floor_seals_only_that_floor": 100.2,
-"test_unknown_cannot_squeeze_between_a_wires_end_and_a_wall_corner": 7.7,
-"test_unknown_cannot_squeeze_through_a_pinch_between_a_smoke_and_a_wall[208-True]": 7.7,
-"test_unknown_cannot_squeeze_through_a_pinch_between_a_smoke_and_a_wall[224-False]": 8.1
+"test_unknown_cannot_step_diagonally_through_a_wire_laid_at_45_degrees": 0.5
 },
 "rest": [
-57,
-4.9
+62,
+7.4
 ]
 },
 "tests/replays/test_control_utility.py": {
 "tests": {
-"test_a_hypothesis_in_a_one_cell_room_survives_the_sliver_cleanup_while_unseen": 13.5,
-"test_a_locate_restarts_the_region_at_its_exact_time_and_shows_from_the_next_frame": 0.5,
-"test_a_pause_stops_the_spread_and_nothing_is_caught_up_after": 0.5,
-"test_a_round_with_no_info_has_only_its_frames": 0.5,
-"test_an_operation_that_would_leave_the_enemy_nowhere_is_ignored_and_counted": 0.5,
-"test_an_unprotected_broadening_there_is_cleaned_up_as_before": 0.7,
-"test_between_frame_instants_integrate_like_frames_would": 1.4,
-"test_exclusion_touches_one_enemy_only": 0.7,
-"test_restriction_keeps_disconnected_parts_and_recentres_nothing": 4.4,
-"test_two_operations_between_frames_both_happen_in_order": 1.2,
-"test_vision_clears_a_hypothesis_for_good": 0.5
+"test_between_frame_instants_integrate_like_frames_would": 1.1,
+"test_exclusion_touches_one_enemy_only": 0.6,
+"test_restriction_keeps_disconnected_parts_and_recentres_nothing": 3.2,
+"test_two_operations_between_frames_both_happen_in_order": 0.5
 },
 "rest": [
-7,
-0.2
+14,
+3.4
 ]
 },
 "tests/replays/test_control_veto.py": {
@@ -866,45 +851,44 @@
 },
 "tests/replays/test_control_viewer.py": {
 "tests": {
-"test_the_js_decoder_matches_the_reference_in_order": 2.2
+"test_the_js_decoder_matches_the_reference_in_order": 2.0
 },
 "rest": [
 24,
-2.4
+2.6
 ]
 },
 "tests/replays/test_control_views.py": {
 "tests": {
-"test_the_endpoint_lists_every_round_and_flags_missing_and_stale_ones": 4.9,
-"test_the_heatmap_view_is_checked_and_etagged": 0.5
+"test_the_endpoint_lists_every_round_and_flags_missing_and_stale_ones": 4.9
 },
 "rest": [
-22,
-2.2
+23,
+2.5
 ]
 },
 "tests/replays/test_feature_acceptance.py": {
 "tests": {
-"test_actual_control_runner_fresh_children_and_persistent_pool": 53.3,
-"test_artifact_cross_process_measurements[all_pending]": 20.9,
-"test_artifact_cross_process_measurements[larger]": 194.2,
-"test_artifact_cross_process_measurements[small]": 35.1
+"test_actual_control_runner_fresh_children_and_persistent_pool": 39.6,
+"test_artifact_cross_process_measurements[all_pending]": 17.0,
+"test_artifact_cross_process_measurements[larger]": 143.3,
+"test_artifact_cross_process_measurements[small]": 24.8
 }
 },
 "tests/replays/test_feature_audit.py": {
 "rest": [
 33,
-0.5
+0.6
 ]
 },
 "tests/replays/test_feature_audit_tools.py": {
 "tests": {
-"test_diagnostic_command_uses_exact_private_source_and_explicit_flat_context": 1.1,
-"test_exact_height_diagnostics_expose_newly_pending_after_multifloor_rebuild": 1.6,
-"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change0-height]": 5.5,
-"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change1-versions]": 5.7,
-"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change2-identity]": 5.8,
-"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change3-image identity]": 5.9
+"test_diagnostic_command_uses_exact_private_source_and_explicit_flat_context": 1.2,
+"test_exact_height_diagnostics_expose_newly_pending_after_multifloor_rebuild": 1.8,
+"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change0-height]": 6.2,
+"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change1-versions]": 6.2,
+"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change2-identity]": 6.2,
+"test_tagger_refuses_stale_or_mismatched_compiler_attachment[change3-image identity]": 6.3
 },
 "rest": [
 4,
@@ -913,28 +897,28 @@
 },
 "tests/replays/test_feature_diagnostics.py": {
 "tests": {
-"test_diagnostics_compare_physical_ground_and_pending_transitions": 14.0,
-"test_full_catalogue_reports_disabled_placement_separately": 3.7,
-"test_phase_panel_without_authored_bounds_is_pending_in_report_and_artifact": 4.8,
-"test_real_diagnostic_child_uses_exact_snapshot_and_rejects_hash_mismatch": 3.9,
-"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[False-False]": 0.8,
+"test_diagnostics_compare_physical_ground_and_pending_transitions": 9.6,
+"test_full_catalogue_reports_disabled_placement_separately": 4.0,
+"test_phase_panel_without_authored_bounds_is_pending_in_report_and_artifact": 5.3,
+"test_real_diagnostic_child_uses_exact_snapshot_and_rejects_hash_mismatch": 4.0,
+"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[False-False]": 1.1,
 "test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[False-True]": 0.8,
-"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[True-False]": 0.9,
-"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[True-True]": 0.9
+"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[True-False]": 0.8,
+"test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels[True-True]": 0.8
 },
 "rest": [
 7,
-1.2
+1.3
 ]
 },
 "tests/replays/test_feature_job.py": {
 "tests": {
-"test_child_verify_detects_tampered_archive_and_does_not_read_current_tags": 17.4,
-"test_durable_preparation_hit_skips_child_and_rehashes_archive": 13.7,
-"test_parent_archive_service_import_does_not_load_heavy_modules": 1.4,
-"test_real_child_compilation_matches_direct_compiler_bytes": 12.1,
-"test_unknown_mode_and_conflicting_fields_fail_explicitly": 2.2,
-"test_verified_cache_rehashes_hits_and_never_caches_failed_correspondence": 13.7
+"test_child_verify_detects_tampered_archive_and_does_not_read_current_tags": 11.8,
+"test_durable_preparation_hit_skips_child_and_rehashes_archive": 9.0,
+"test_parent_archive_service_import_does_not_load_heavy_modules": 1.3,
+"test_real_child_compilation_matches_direct_compiler_bytes": 8.1,
+"test_unknown_mode_and_conflicting_fields_fail_explicitly": 2.3,
+"test_verified_cache_rehashes_hits_and_never_caches_failed_correspondence": 9.6
 },
 "rest": [
 1,
@@ -949,8 +933,8 @@
 },
 "tests/replays/test_feature_review_regressions.py": {
 "tests": {
-"test_compiled_descending_door_on_refined_ground_and_wall_attachment[False]": 10.4,
-"test_compiled_descending_door_on_refined_ground_and_wall_attachment[True]": 10.1
+"test_compiled_descending_door_on_refined_ground_and_wall_attachment[False]": 7.0,
+"test_compiled_descending_door_on_refined_ground_and_wall_attachment[True]": 7.2
 },
 "rest": [
 1,
@@ -959,10 +943,10 @@
 },
 "tests/replays/test_feature_transport.py": {
 "tests": {
-"test_atomic_cache_validates_before_replacement_and_removes_corruption": 9.7,
-"test_exact_loader_checks_context_and_digestless_never_reads_cache": 20.1,
-"test_real_http_push_miss_corruption_and_client_protocol": 22.4,
-"test_verified_cache_hit_cannot_apply_to_different_permanent_geometry": 17.6
+"test_atomic_cache_validates_before_replacement_and_removes_corruption": 6.7,
+"test_exact_loader_checks_context_and_digestless_never_reads_cache": 14.8,
+"test_real_http_push_miss_corruption_and_client_protocol": 15.4,
+"test_verified_cache_hit_cannot_apply_to_different_permanent_geometry": 11.5
 },
 "rest": [
 5,
@@ -971,12 +955,11 @@
 },
 "tests/replays/test_feature_visibility_cache.py": {
 "tests": {
-"test_batched_visibility_keeps_height_band_and_thin_panel_answers": 68.1,
 "test_source_proof_encloses_expanded_raster_cells_at_every_rotation_pose": 1.4
 },
 "rest": [
-19,
-0.7
+20,
+1.2
 ]
 },
 "tests/replays/test_feature_visibility_rows.py": {
@@ -994,7 +977,7 @@
 "tests/replays/test_gap_patterns.py": {
 "rest": [
 31,
-1.7
+1.9
 ]
 },
 "tests/replays/test_gap_patterns_web.py": {
@@ -1006,26 +989,26 @@
 "tests/replays/test_gaps_backshots.py": {
 "tests": {
 "test_a_backshot_links_to_the_open_gap_and_marks_it_shot_and_killed": 0.8,
-"test_a_break_in_the_path_keeps_two_pieces_and_no_choke_sequence": 0.8,
-"test_a_kill_after_the_result_window_is_not_the_backshots": 0.9,
-"test_a_sighting_less_than_5s_before_cancels_it_and_one_5s_before_does_not": 1.7,
-"test_a_wallbang_counts_and_is_tagged": 0.8,
+"test_a_break_in_the_path_keeps_two_pieces_and_no_choke_sequence": 0.9,
+"test_a_kill_after_the_result_window_is_not_the_backshots": 1.0,
+"test_a_sighting_less_than_5s_before_cancels_it_and_one_5s_before_does_not": 1.8,
+"test_a_wallbang_counts_and_is_tagged": 0.9,
 "test_ability_damage_is_not_a_backshot": 0.9,
-"test_an_early_sprint_is_the_peak": 0.8,
+"test_an_early_sprint_is_the_peak": 0.9,
 "test_backshot_context_has_the_predicted_rows_keys": 0.9,
-"test_backshot_rows_are_json_safe": 0.8,
+"test_backshot_rows_are_json_safe": 0.9,
 "test_damage_from_behind_by_an_unlocated_enemy_is_a_backshot": 0.9,
 "test_damage_from_in_front_is_not_a_backshot": 1.0,
-"test_damage_just_before_the_decision_still_locates_the_shooter": 1.7,
-"test_damage_lost_for_5s_again_is_a_new_backshot": 0.8,
-"test_earlier_gunfire_does_cancel_it": 0.8,
+"test_damage_just_before_the_decision_still_locates_the_shooter": 1.8,
+"test_damage_lost_for_5s_again_is_a_new_backshot": 0.9,
+"test_earlier_gunfire_does_cancel_it": 0.9,
 "test_follow_up_damage_within_5s_is_the_same_backshot": 0.9,
 "test_missing_positions_record_nothing_and_are_counted": 0.7,
-"test_no_kill_after_the_round_is_decided_counts": 0.8,
-"test_nothing_after_the_round_is_decided": 0.8,
-"test_the_candidate_distance_and_distance_m_differ": 0.8,
+"test_no_kill_after_the_round_is_decided_counts": 0.9,
+"test_nothing_after_the_round_is_decided": 0.9,
+"test_the_candidate_distance_and_distance_m_differ": 1.0,
 "test_the_shooters_own_gunfire_does_not_cancel_the_backshot": 0.9,
-"test_two_runs_starting_together_are_one_backshot": 0.8
+"test_two_runs_starting_together_are_one_backshot": 0.9
 },
 "rest": [
 10,
@@ -1042,24 +1025,25 @@
 "tests": {
 "test_a_kill_at_the_moment_of_stood_still_counts_as_killed": 1.3,
 "test_a_same_tick_damage_event_opens_a_gap": 0.7,
-"test_a_teammate_turning_away_from_the_door_is_route_released_through_the_engine": 0.8,
+"test_a_teammate_turning_away_from_the_door_is_route_released_through_the_engine": 0.9,
 "test_an_enemy_behind_a_player_opens_one_gap_with_open_timing": 0.6,
-"test_an_enemy_in_front_opens_nothing": 0.6,
+"test_an_enemy_in_front_opens_nothing": 0.7,
 "test_flicker_flag": 0.7,
-"test_nothing_is_detected_after_the_round_is_decided": 0.7,
-"test_rows_are_json_safe": 1.2,
+"test_nothing_is_detected_after_the_round_is_decided": 0.8,
+"test_rows_are_json_safe": 1.4,
+"test_stood_is_recorded_when_the_enemy_stands_in_the_gap": 0.5,
 "test_the_5s_wait_after_a_sighting": 0.9,
 "test_the_victims_death_closes_their_gap": 0.6,
-"test_turning_to_face_the_enemy_and_away_again_keeps_one_gap": 1.0
+"test_turning_to_face_the_enemy_and_away_again_keeps_one_gap": 0.9
 },
 "rest": [
-39,
-2.4
+38,
+2.3
 ]
 },
 "tests/replays/test_gaps_locating.py": {
 "tests": {
-"test_a_kill_collapses_the_killers_unknown_to_an_area": 0.6,
+"test_a_kill_collapses_the_killers_unknown_to_an_area": 0.7,
 "test_a_revival_between_ticks_is_located_at_the_lifes_start": 0.7,
 "test_a_shot_with_no_gun_uses_the_longest_range_in_the_table": 0.8,
 "test_gunfire_out_of_hearing_range_locates_nobody": 0.9,
@@ -1068,31 +1052,32 @@
 },
 "rest": [
 10,
-3.2
+3.4
 ]
 },
 "tests/replays/test_gaps_observe.py": {
 "tests": {
-"test_control_is_byte_identical_with_an_observer": 1.0,
-"test_eye_z_is_the_engines_eye_height_on_a_map_with_heights": 52.0,
-"test_the_cache_keeps_players_events_and_smokes": 52.2,
-"test_the_cache_replays_what_the_observer_saw": 0.5,
-"test_the_cache_stores_the_missing_inputs": 1.0,
-"test_the_observer_sees_every_tick_with_players_and_unknown": 0.5
+"test_control_is_byte_identical_with_an_observer": 1.2,
+"test_eye_z_is_the_engines_eye_height_on_a_map_with_heights": 0.5,
+"test_the_cache_keeps_players_events_and_smokes": 0.6,
+"test_the_cache_replays_what_the_observer_saw": 0.6,
+"test_the_cache_stores_the_missing_inputs": 1.1,
+"test_the_observer_sees_every_tick_with_players_and_unknown": 0.5,
+"test_the_view_is_the_players_own_sight_before_memory": 0.6
 },
 "rest": [
-9,
-1.1
+8,
+0.7
 ]
 },
 "tests/replays/test_gaps_routes.py": {
 "tests": {
-"test_every_tick_of_a_reference_round_keeps_routes_consistent[barrier]": 1.2,
+"test_every_tick_of_a_reference_round_keeps_routes_consistent[barrier]": 1.3,
 "test_every_tick_of_a_reference_round_keeps_routes_consistent[midwall]": 1.5
 },
 "rest": [
 8,
-1.0
+1.1
 ]
 },
 "tests/replays/test_gaps_sight_cache.py": {
@@ -1102,12 +1087,9 @@
 ]
 },
 "tests/replays/test_gaps_spread.py": {
-"tests": {
-"test_parents_do_not_change_arrivals[<lambda>]": 55.1
-},
 "rest": [
-6,
-0.2
+7,
+0.6
 ]
 },
 "tests/replays/test_gaps_standalone.py": {
@@ -1118,7 +1100,7 @@
 },
 "tests/replays/test_gaps_store.py": {
 "tests": {
-"test_store_replaces_a_rounds_gaps_in_one_go": 4.9
+"test_store_replaces_a_rounds_gaps_in_one_go": 4.7
 },
 "rest": [
 23,
@@ -1127,31 +1109,34 @@
 },
 "tests/replays/test_gaps_task.py": {
 "tests": {
-"test_a_cache_in_another_format_is_a_miss": 7.3,
-"test_a_choke_edit_misses_the_old_cache": 7.3,
-"test_a_close_exception_leaves_control_ok_and_the_gap_run_failed": 4.0,
-"test_a_detector_error_while_replaying_the_cache_still_fails_the_gap_run": 4.1,
-"test_a_detector_failure_leaves_control_ok": 4.2,
+"test_a_cache_in_another_format_is_a_miss": 5.2,
+"test_a_choke_edit_misses_the_old_cache": 5.8,
+"test_a_close_exception_leaves_control_ok_and_the_gap_run_failed": 3.9,
+"test_a_current_failed_gap_run_waits_for_retry_failed": 0.5,
+"test_a_detector_error_while_replaying_the_cache_still_fails_the_gap_run": 3.9,
+"test_a_detector_failure_leaves_control_ok": 4.1,
+"test_a_failed_gap_run_makes_the_command_fail": 0.6,
+"test_a_full_round_carries_its_gap_job_and_stores_both": 0.5,
 "test_a_gap_run_carries_the_rounds_critical_util": 4.1,
-"test_a_gap_run_carries_the_rounds_moments": 4.2,
-"test_a_gaps_block_on_an_image_without_the_detector_fails_the_whole_task": 3.3,
-"test_a_gaps_only_task_with_the_sites_keys_needs_no_services_either": 2.9,
-"test_a_moments_failure_never_fails_the_gap_run": 4.1,
+"test_a_gap_run_carries_the_rounds_moments": 4.0,
+"test_a_gaps_block_on_an_image_without_the_detector_fails_the_whole_task": 3.7,
+"test_a_gaps_only_task_with_the_sites_keys_needs_no_services_either": 3.2,
+"test_a_moments_failure_never_fails_the_gap_run": 4.0,
 "test_a_task_with_the_sites_gap_keys_never_imports_the_web_apps_services": 3.8,
-"test_a_task_without_gaps_is_unchanged": 3.7,
+"test_a_task_without_gaps_is_unchanged": 3.5,
 "test_a_util_failure_never_fails_the_gap_run_or_the_moments": 4.0,
-"test_an_error_building_the_tick_record_fails_the_gap_run_not_control": 7.3,
-"test_an_observer_exception_leaves_control_ok_and_the_gap_run_failed": 3.8,
-"test_an_ok_gap_run_is_stored_without_rewriting_control": 0.7,
-"test_an_unreadable_cache_is_a_miss_and_is_deleted": 13.7,
+"test_an_error_building_the_tick_record_fails_the_gap_run_not_control": 5.2,
+"test_an_observer_exception_leaves_control_ok_and_the_gap_run_failed": 3.7,
+"test_an_ok_gap_run_is_stored_without_rewriting_control": 0.5,
+"test_an_unreadable_cache_is_a_miss_and_is_deleted": 10.2,
 "test_gaps_only_uses_the_cache_written_by_a_full_run": 4.1,
-"test_gaps_only_without_a_cache_runs_the_engine_and_matches_the_full_run": 7.4,
-"test_the_notes_carry_the_compute_time_missing_inputs": 4.1,
-"test_the_plan_takes_fresh_ok_control_without_current_gaps": 5.2
+"test_gaps_only_without_a_cache_runs_the_engine_and_matches_the_full_run": 5.2,
+"test_the_notes_carry_the_compute_time_missing_inputs": 3.9,
+"test_the_plan_takes_fresh_ok_control_without_current_gaps": 5.4
 },
 "rest": [
-13,
-2.2
+10,
+1.0
 ]
 },
 "tests/replays/test_gaps_view.py": {
@@ -1163,40 +1148,42 @@
 "tests/replays/test_gaps_viewer.py": {
 "rest": [
 15,
-1.2
+1.4
 ]
 },
 "tests/replays/test_gaps_web.py": {
 "tests": {
-"test_a_fresh_run_serves_its_rows_in_seq_order_with_the_chokes": 4.5
+"test_a_fresh_run_serves_its_rows_in_seq_order_with_the_chokes": 4.9,
+"test_a_run_from_older_inputs_is_stale_but_still_served": 0.5
 },
 "rest": [
-21,
-1.8
+20,
+1.9
 ]
 },
 "tests/replays/test_height_cast_compaction.py": {
 "tests": {
-"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-flat]": 0.7,
-"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-ledge]": 0.6,
-"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-unresolved]": 0.7,
-"test_compacted_rays_preserve_nodes_and_diagnostics[hollow-fine-flat]": 0.8,
-"test_compacted_rays_preserve_nodes_and_diagnostics[hollow-fine-ledge]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-flat]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-ledge]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[combined-fine-unresolved]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[hollow-fine-flat]": 0.9,
+"test_compacted_rays_preserve_nodes_and_diagnostics[hollow-fine-ledge]": 0.9,
 "test_compacted_rays_preserve_nodes_and_diagnostics[hollow-fine-unresolved]": 0.8,
-"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-flat]": 1.1,
-"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-ledge]": 0.8,
-"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-unresolved]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[none-bridge]": 0.5,
+"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-flat]": 0.9,
+"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-ledge]": 0.9,
+"test_compacted_rays_preserve_nodes_and_diagnostics[none-fine-unresolved]": 0.9,
 "test_compacted_rays_preserve_nodes_and_diagnostics[solid-fine-flat]": 0.8,
-"test_compacted_rays_preserve_nodes_and_diagnostics[solid-fine-ledge]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[solid-fine-ledge]": 1.1,
 "test_compacted_rays_preserve_nodes_and_diagnostics[solid-fine-unresolved]": 0.8,
-"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-flat]": 0.6,
-"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-ledge]": 0.7,
-"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-unresolved]": 0.7,
-"test_each_cast_observes_mutable_terrain_and_angle_changes": 0.8
+"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-flat]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-ledge]": 0.8,
+"test_compacted_rays_preserve_nodes_and_diagnostics[wall-fine-unresolved]": 0.8,
+"test_each_cast_observes_mutable_terrain_and_angle_changes": 1.0
 },
 "rest": [
-5,
-0.8
+4,
+0.4
 ]
 },
 "tests/replays/test_height_inputs.py": {
@@ -1208,13 +1195,13 @@
 "tests/replays/test_height_motion.py": {
 "rest": [
 22,
-0.5
+0.6
 ]
 },
 "tests/replays/test_height_refinement.py": {
 "rest": [
 11,
-0.0
+0.1
 ]
 },
 "tests/replays/test_height_refinement_cli.py": {
@@ -1226,79 +1213,79 @@
 "tests/replays/test_height_viewer.py": {
 "rest": [
 29,
-2.3
+2.4
 ]
 },
 "tests/replays/test_heights_remote.py": {
 "tests": {
-"test_a_build_below_the_bar_is_rejected_the_old_heights_stay_and_the_rounds_flow": 8.4,
+"test_a_build_below_the_bar_is_rejected_the_old_heights_stay_and_the_rounds_flow": 5.8,
 "test_a_build_nobody_can_finish_sending_is_given_up_on": 0.8,
-"test_a_build_that_fails_on_the_worker_spends_the_budget_and_other_maps_are_never_stopped": 3.4,
-"test_a_build_the_worker_refused_for_a_while_is_judged_from_when_it_was_accepted": 1.4,
-"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[check set]": 1.3,
-"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[format]": 1.3,
-"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[mask]": 1.3,
-"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[rule]": 1.3,
-"test_a_collected_build_is_not_reopened_in_the_same_cycle": 5.8,
+"test_a_build_that_fails_on_the_worker_spends_the_budget_and_other_maps_are_never_stopped": 3.7,
+"test_a_build_the_worker_refused_for_a_while_is_judged_from_when_it_was_accepted": 1.6,
+"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[check set]": 1.4,
+"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[format]": 1.4,
+"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[mask]": 1.4,
+"test_a_changed_rule_mask_or_check_set_makes_the_rebuild_due_at_once[rule]": 1.4,
+"test_a_collected_build_is_not_reopened_in_the_same_cycle": 5.7,
 "test_a_due_maps_rounds_wait_and_its_build_goes_live": 6.3,
-"test_a_good_result_for_inputs_that_changed_meanwhile_is_not_stored": 1.6,
-"test_a_lost_start_response_is_recovered_by_asking": 5.9,
-"test_a_match_deleted_after_the_build_started_keeps_its_result_from_going_live": 7.7,
-"test_a_match_deleted_while_its_rounds_are_being_sent_drops_the_build": 6.3,
-"test_a_real_worker_restart_resends_from_the_first_round": 7.1,
+"test_a_good_result_for_inputs_that_changed_meanwhile_is_not_stored": 2.1,
+"test_a_lost_start_response_is_recovered_by_asking": 5.6,
+"test_a_match_deleted_after_the_build_started_keeps_its_result_from_going_live": 6.5,
+"test_a_match_deleted_while_its_rounds_are_being_sent_drops_the_build": 6.1,
+"test_a_real_worker_restart_resends_from_the_first_round": 4.9,
 "test_a_refused_request_is_a_failed_try_not_an_unreachable_worker": 2.2,
-"test_a_restarted_dispatcher_adopts_a_running_build_and_never_resends_to_it": 7.3,
-"test_a_restarted_dispatcher_finishes_a_half_sent_build_without_double_counting": 6.4,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a check run against another list-mode12]": 6.0,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a digest the bytes don't have-mode8]": 6.1,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a report that isn't one-mode9]": 3.6,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a report whose counts aren't the asset's-mode10]": 6.0,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[an asset that isn't base64-mode2]": 2.3,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[another build's key-mode4]": 2.5,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[another map-mode5]": 2.5,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[bytes that aren't an asset-mode3]": 6.1,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[fewer rounds than the manifest-mode7]": 2.9,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[no asset-mode1]": 2.5,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[no must-block evidence-mode11]": 6.0,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[not JSON-mode0]": 3.7,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[other inputs-mode6]": 2.5,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules of another format-mode14]": 2.5,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules of another revision-mode15]": 3.0,
-"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules that aren't an object-mode13]": 2.5,
-"test_a_round_too_large_to_send_fails_the_build_instead_of_being_sent": 2.1,
-"test_a_worker_of_another_deploy_is_waited_for_at_no_cost[<lambda>0]": 8.1,
-"test_a_worker_of_another_deploy_is_waited_for_at_no_cost[<lambda>1]": 8.1,
+"test_a_restarted_dispatcher_adopts_a_running_build_and_never_resends_to_it": 5.5,
+"test_a_restarted_dispatcher_finishes_a_half_sent_build_without_double_counting": 6.1,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a check run against another list-mode12]": 4.7,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a digest the bytes don't have-mode8]": 5.1,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a report that isn't one-mode9]": 3.0,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[a report whose counts aren't the asset's-mode10]": 4.9,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[an asset that isn't base64-mode2]": 2.4,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[another build's key-mode4]": 2.4,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[another map-mode5]": 2.3,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[bytes that aren't an asset-mode3]": 5.1,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[fewer rounds than the manifest-mode7]": 2.3,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[no asset-mode1]": 2.0,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[no must-block evidence-mode11]": 5.3,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[not JSON-mode0]": 3.1,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[other inputs-mode6]": 2.3,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules of another format-mode14]": 2.1,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules of another revision-mode15]": 2.4,
+"test_a_result_that_cant_be_trusted_is_never_stored_and_spends_the_budget[rules that aren't an object-mode13]": 2.1,
+"test_a_round_too_large_to_send_fails_the_build_instead_of_being_sent": 2.0,
+"test_a_worker_of_another_deploy_is_waited_for_at_no_cost[<lambda>0]": 6.8,
+"test_a_worker_of_another_deploy_is_waited_for_at_no_cost[<lambda>1]": 6.3,
 "test_a_worker_with_a_local_heights_runner_gets_one_build_at_a_time": 1.0,
 "test_a_workflow_heights_runner_gets_up_to_max_builds": 1.2,
-"test_after_a_build_the_next_is_due_five_new_matches_later_whatever_its_status": 1.3,
-"test_an_answer_that_isnt_shaped_as_the_protocol_says_spends_a_try_and_is_not_met_again": 7.5,
-"test_an_error_inside_the_height_step_never_stops_round_dispatch": 0.8,
+"test_after_a_build_the_next_is_due_five_new_matches_later_whatever_its_status": 1.4,
+"test_an_answer_that_isnt_shaped_as_the_protocol_says_spends_a_try_and_is_not_met_again": 5.5,
+"test_an_error_inside_the_height_step_never_stops_round_dispatch": 1.1,
 "test_deleted_or_recondensed_evidence_is_due_at_once_and_too_little_left_turns_heights_off": 2.5,
-"test_evidence_deleted_and_the_rebuild_rejected_turns_the_maps_heights_off": 9.8,
-"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[deleted]": 7.7,
-"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[intact]": 6.5,
-"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[recondensed]": 8.3,
-"test_fewer_than_two_matches_left_turns_heights_off_without_a_build": 5.1,
+"test_evidence_deleted_and_the_rebuild_rejected_turns_the_maps_heights_off": 6.6,
+"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[deleted]": 5.6,
+"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[intact]": 5.7,
+"test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence[recondensed]": 6.1,
+"test_fewer_than_two_matches_left_turns_heights_off_without_a_build": 5.0,
 "test_it_is_off_by_default_and_in_demo_mode": 0.9,
 "test_malformed_health_before_open_spends_the_selected_manifests_budget[answer0]": 1.4,
-"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer1]": 1.4,
-"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer2]": 1.6,
-"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer3]": 1.4,
+"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer1]": 1.6,
+"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer2]": 1.5,
+"test_malformed_health_before_open_spends_the_selected_manifests_budget[answer3]": 1.5,
 "test_malformed_health_before_open_spends_the_selected_manifests_budget[answer4]": 1.4,
-"test_one_maps_failure_leaves_the_other_building": 1.3,
+"test_one_maps_failure_leaves_the_other_building": 1.4,
 "test_queued_behind_a_parse_is_never_a_failure_and_queued_on_an_idle_worker_is": 1.5,
 "test_refinement_manifest_uses_durable_rejected_build_after_cache_restart": 4.8,
-"test_repeated_404s_exhaust_the_budget_and_release_the_map[known build]": 4.5,
-"test_repeated_404s_exhaust_the_budget_and_release_the_map[open]": 4.1,
-"test_retirement_keeps_an_operator_replacement_with_current_evidence": 2.5,
-"test_spent_manifest_retries_retirement_after_a_write_failure": 5.0,
+"test_repeated_404s_exhaust_the_budget_and_release_the_map[known build]": 4.7,
+"test_repeated_404s_exhaust_the_budget_and_release_the_map[open]": 4.2,
+"test_retirement_keeps_an_operator_replacement_with_current_evidence": 2.6,
+"test_spent_manifest_retries_retirement_after_a_write_failure": 4.7,
 "test_tag_changes_during_collection_do_not_reject_valid_height_result": 6.1,
-"test_tag_edit_and_web_restart_preserve_admitted_snapshot_without_rebuilding": 13.5,
-"test_tagged_two_then_five_match_rebuild_pending_and_recovery": 197.4,
+"test_tag_edit_and_web_restart_preserve_admitted_snapshot_without_rebuilding": 17.5,
+"test_tagged_two_then_five_match_rebuild_pending_and_recovery": 134.1,
 "test_the_cap_opens_one_and_holds_both": 0.8,
-"test_the_height_step_never_commits_or_rolls_back_the_dispatchers_own_session": 9.8,
-"test_two_due_maps_build_at_once": 11.6,
-"test_waiting_behind_another_build_is_never_a_failure": 1.5
+"test_the_height_step_never_commits_or_rolls_back_the_dispatchers_own_session": 6.2,
+"test_two_due_maps_build_at_once": 8.0,
+"test_waiting_behind_another_build_is_never_a_failure": 1.6
 },
 "rest": [
 3,
@@ -1327,7 +1314,7 @@
 },
 "tests/replays/test_lotus_door_seals.py": {
 "tests": {
-"test_both_door_bundles_publish_with_heights": 1.5
+"test_both_door_bundles_publish_with_heights": 1.6
 },
 "rest": [
 4,
@@ -1336,32 +1323,32 @@
 },
 "tests/replays/test_map_feature_artifacts.py": {
 "tests": {
-"test_archive_contains_loadable_masks_and_pending_is_not_none": 16.7,
-"test_bounded_expansion_rejects_zip_bombs": 2.9,
-"test_decode_rejects_duplicate_keys_nonfinite_bad_base64_and_wire_versions": 5.0,
-"test_equivalent_gzip_stream_is_accepted_but_trailing_and_partial_streams_are_not": 6.9,
-"test_ground_origin_and_audit_metadata_have_distinct_identity_effects": 11.0,
-"test_hash_valid_but_forged_compilation_fails_heavy_correspondence": 10.1,
-"test_review_historical_verifier_requires_available_consumer_versions[available0]": 7.3,
-"test_review_historical_verifier_requires_available_consumer_versions[available1]": 7.3,
-"test_tampered_input_manifest_and_loaded_parts_fail_integrity": 3.6,
-"test_unavailable_compiler_is_separate_from_hash_integrity": 7.2
+"test_archive_contains_loadable_masks_and_pending_is_not_none": 10.5,
+"test_bounded_expansion_rejects_zip_bombs": 3.1,
+"test_decode_rejects_duplicate_keys_nonfinite_bad_base64_and_wire_versions": 5.4,
+"test_equivalent_gzip_stream_is_accepted_but_trailing_and_partial_streams_are_not": 7.3,
+"test_ground_origin_and_audit_metadata_have_distinct_identity_effects": 6.4,
+"test_hash_valid_but_forged_compilation_fails_heavy_correspondence": 5.9,
+"test_review_historical_verifier_requires_available_consumer_versions[available0]": 4.2,
+"test_review_historical_verifier_requires_available_consumer_versions[available1]": 4.4,
+"test_tampered_input_manifest_and_loaded_parts_fail_integrity": 3.8,
+"test_unavailable_compiler_is_separate_from_hash_integrity": 7.5
 },
 "rest": [
 9,
-1.6
+1.7
 ]
 },
 "tests/replays/test_map_feature_events.py": {
 "rest": [
 25,
-0.2
+0.1
 ]
 },
 "tests/replays/test_map_feature_inputs.py": {
 "rest": [
 15,
-0.5
+0.6
 ]
 },
 "tests/replays/test_map_feature_release_audit.py": {
@@ -1372,26 +1359,26 @@
 },
 "tests/replays/test_map_feature_schema.py": {
 "tests": {
-"test_contract_doc_names_a_policy_for_every_consumer": 0.5
+"test_contract_doc_names_a_policy_for_every_consumer": 0.6
 },
 "rest": [
 13,
-0.1
+0.2
 ]
 },
 "tests/replays/test_map_feature_sources_cache.py": {
 "tests": {
-"test_compute_is_equal_cold_and_warm_and_geometry_key_is_unchanged": 16.4,
+"test_compute_is_equal_cold_and_warm_and_geometry_key_is_unchanged": 8.7,
 "test_corrupt_png_raises_twice_and_stores_nothing": 0.6,
-"test_each_file_read_once_per_call": 1.9,
-"test_entry_or_scale_change_is_a_miss[cant_walk_paint]": 8.8,
-"test_entry_or_scale_change_is_a_miss[cover_paint]": 7.3,
-"test_entry_or_scale_change_is_a_miss[scale]": 7.6,
-"test_entry_or_scale_change_is_a_miss[specials]": 7.5,
-"test_miss_then_hit_equal_uncached": 4.8,
-"test_mutating_the_input_entry_after_a_miss_leaves_the_cache_alone": 4.9,
-"test_replaced_walk_png_is_decoded_afresh": 5.3,
-"test_returned_value_is_a_copy": 7.3
+"test_each_file_read_once_per_call": 2.1,
+"test_entry_or_scale_change_is_a_miss[cant_walk_paint]": 5.2,
+"test_entry_or_scale_change_is_a_miss[cover_paint]": 4.4,
+"test_entry_or_scale_change_is_a_miss[scale]": 4.6,
+"test_entry_or_scale_change_is_a_miss[specials]": 5.5,
+"test_miss_then_hit_equal_uncached": 5.5,
+"test_mutating_the_input_entry_after_a_miss_leaves_the_cache_alone": 5.5,
+"test_replaced_walk_png_is_decoded_afresh": 6.3,
+"test_returned_value_is_a_copy": 8.2
 },
 "rest": [
 2,
@@ -1400,7 +1387,7 @@
 },
 "tests/replays/test_map_feature_sources_real_assets.py": {
 "tests": {
-"test_every_real_map_cached_equals_uncached": 54.1
+"test_every_real_map_cached_equals_uncached": 31.4
 }
 },
 "tests/replays/test_map_feature_state.py": {
@@ -1411,45 +1398,44 @@
 },
 "tests/replays/test_map_feature_tagger.py": {
 "tests": {
-"test_a_downloaded_draft_restores_after_a_storage_failure": 8.1,
-"test_an_import_is_previewed_against_the_working_edits_and_only_replace_loses_them": 3.8,
+"test_a_downloaded_draft_restores_after_a_storage_failure": 5.6,
+"test_an_import_is_previewed_against_the_working_edits_and_only_replace_loses_them": 3.9,
 "test_annotations_of_another_schema_are_never_replaced": 3.0,
-"test_attached_compiler_report_becomes_stale_after_edit_and_recovers_on_undo": 2.3,
-"test_copy_state_footprint_is_one_undoable_persistent_shape_only_edit[False]": 2.3,
-"test_copy_state_footprint_is_one_undoable_persistent_shape_only_edit[True]": 2.3,
-"test_current_exact_diagnostics_replace_approximate_rope_placement_until_edited": 2.5,
+"test_attached_compiler_report_becomes_stale_after_edit_and_recovers_on_undo": 2.4,
+"test_copy_state_footprint_is_one_undoable_persistent_shape_only_edit[False]": 2.5,
+"test_copy_state_footprint_is_one_undoable_persistent_shape_only_edit[True]": 2.5,
+"test_current_exact_diagnostics_replace_approximate_rope_placement_until_edited": 2.4,
 "test_drawn_sight_edge_exports_and_reimports_as_a_valid_polyline": 2.9,
 "test_existing_line_drafts_repair_without_losing_edits[autosave]": 2.8,
-"test_existing_line_drafts_repair_without_losing_edits[download]": 3.0,
+"test_existing_line_drafts_repair_without_losing_edits[download]": 3.1,
 "test_existing_line_drafts_repair_without_losing_edits[embedded]": 2.7,
-"test_finer_grid_requires_current_compiler_report_and_preserves_edits": 2.4,
-"test_guided_placement_issue_selects_exact_state_and_field_without_editing": 1.7,
-"test_ids_are_never_reused_through_undo_branches_saves_imports_and_recovery": 5.3,
-"test_js_composition_matches_python_for_every_state_and_after_reset": 0.5,
+"test_finer_grid_requires_current_compiler_report_and_preserves_edits": 2.5,
+"test_guided_placement_issue_selects_exact_state_and_field_without_editing": 1.8,
+"test_ids_are_never_reused_through_undo_branches_saves_imports_and_recovery": 5.4,
+"test_js_composition_matches_python_for_every_state_and_after_reset": 0.6,
 "test_legacy_line_repair_leaves_malformed_geometry_pending[uv0]": 2.2,
 "test_legacy_line_repair_leaves_malformed_geometry_pending[uv1]": 2.2,
-"test_measured_multifloor_issue_highlights_cells_and_edit_clears_stale_overlay": 34.5,
-"test_placement_issue_groups_union_cells_and_selects_state_with_dots": 2.0,
-"test_review_route_creation_and_unplaced_access_remain_editable[vertical_rope]": 2.2,
-"test_review_route_creation_and_unplaced_access_remain_editable[zipline]": 2.2,
-"test_the_page_carries_the_features_panel_and_the_python_contract": 1.8,
-"test_with_no_feature_edits_the_export_is_exactly_export_tags": 0.8
+"test_measured_multifloor_issue_highlights_cells_and_edit_clears_stale_overlay": 25.8,
+"test_placement_issue_groups_union_cells_and_selects_state_with_dots": 1.9,
+"test_review_route_creation_and_unplaced_access_remain_editable[vertical_rope]": 2.4,
+"test_review_route_creation_and_unplaced_access_remain_editable[zipline]": 2.4,
+"test_the_page_carries_the_features_panel_and_the_python_contract": 2.0,
+"test_with_no_feature_edits_the_export_is_exactly_export_tags": 0.9
 },
 "rest": [
 38,
-5.9
+6.2
 ]
 },
 "tests/replays/test_map_pool_runtime.py": {
 "tests": {
-"test_full_control_fresh_gaps_and_cached_gaps_share_source_bound_geometry": 50.4,
-"test_lotus_keeps_a_partial_sight_panel_while_movement_is_passable": 35.0,
+"test_full_control_fresh_gaps_and_cached_gaps_share_source_bound_geometry": 30.8,
 "test_newly_vacated_cell_cannot_be_reached_before_its_movement_release": 0.6,
 "test_unresolved_rotating_panel_bounds_cannot_publish_even_with_valid_state_bounds": 0.6
 },
 "rest": [
-34,
-2.2
+35,
+2.4
 ]
 },
 "tests/replays/test_moments_standalone.py": {
@@ -1460,7 +1446,7 @@
 },
 "tests/replays/test_moments_viewer.py": {
 "tests": {
-"test_viewer_context_has_the_logged_in_players_slot": 4.9
+"test_viewer_context_has_the_logged_in_players_slot": 4.8
 },
 "rest": [
 10,
@@ -1469,13 +1455,14 @@
 },
 "tests/replays/test_moments_web.py": {
 "tests": {
-"test_etag_gives_a_304_and_follows_the_moments": 0.8,
+"test_etag_gives_a_304_and_follows_the_moments": 0.5,
+"test_knowledge_events_reach_the_summary": 0.7,
 "test_old_fingerprint_old_revision_and_missing_rows_are_stale": 0.5,
-"test_the_endpoint_404s_like_the_gaps_route": 4.6
+"test_the_endpoint_404s_like_the_gaps_route": 4.7
 },
 "rest": [
-8,
-1.8
+7,
+1.5
 ]
 },
 "tests/replays/test_panel_feature_grid.py": {
@@ -1484,7 +1471,7 @@
 "test_grid_preserves_unknowns_and_distinct_stacked_floors": 1.0,
 "test_half_coverage_is_open_for_each_child_not_the_old_parent": 0.9,
 "test_molly_hits_refined_children_on_only_its_own_floor": 0.9,
-"test_panel_grid_reproduces_through_archived_inputs_and_original_height": 21.1,
+"test_panel_grid_reproduces_through_archived_inputs_and_original_height": 13.2,
 "test_swept_area_refines_only_locally_and_preserves_original_measurements": 1.5
 }
 },
@@ -1520,7 +1507,7 @@
 },
 "tests/replays/test_quiet_routes.py": {
 "tests": {
-"test_compiler_archives_quiet_arcs_and_reverifies_against_exact_height_context": 7.0
+"test_compiler_archives_quiet_arcs_and_reverifies_against_exact_height_context": 7.2
 },
 "rest": [
 12,
@@ -1876,8 +1863,8 @@
 },
 "tests/replays/test_replay_tracers.py": {
 "tests": {
-"test_a_see_across_void_is_open_to_shots_too": 1.0,
-"test_a_see_over_box_stops_a_shot_and_not_sight": 1.7,
+"test_a_see_across_void_is_open_to_shots_too": 1.1,
+"test_a_see_over_box_stops_a_shot_and_not_sight": 1.8,
 "test_bullet_paint_adds_an_obstacle_the_map_only_outlines": 0.6
 },
 "rest": [
@@ -2241,7 +2228,7 @@
 "tests/replays/test_rope_landing_evidence.py": {
 "rest": [
 15,
-0.0
+0.1
 ]
 },
 "tests/replays/test_rope_positions.py": {
@@ -2253,12 +2240,12 @@
 "tests/replays/test_rope_positions_cli.py": {
 "rest": [
 12,
-0.3
+0.2
 ]
 },
 "tests/replays/test_rope_tagger_bindings.py": {
 "tests": {
-"test_quiet_direction_edit_preserves_physical_directions_and_persists": 2.7
+"test_quiet_direction_edit_preserves_physical_directions_and_persists": 2.8
 },
 "rest": [
 4,
@@ -2267,15 +2254,21 @@
 },
 "tests/replays/test_rope_walking_ground.py": {
 "tests": {
-"test_isolated_compiler_reproduces_walking_archive_without_global_height_bytes": 10.5,
-"test_quiet_rope_cost_and_reverse_policy_cannot_be_bypassed_by_unknown_ground": 3.0,
-"test_refined_children_keep_exact_footprints_and_unknown_children": 0.8,
-"test_reviewed_rope_only_platform_compiles_and_restores_without_a_walk_exemption": 11.5,
-"test_walking_archive_reproduces_after_cache_loss_and_does_not_get_a_global_height_key": 26.2
+"test_isolated_compiler_reproduces_walking_archive_without_global_height_bytes": 6.9,
+"test_quiet_rope_cost_and_reverse_policy_cannot_be_bypassed_by_unknown_ground": 3.3,
+"test_refined_children_keep_exact_footprints_and_unknown_children": 0.9,
+"test_reviewed_rope_only_platform_compiles_and_restores_without_a_walk_exemption": 7.5,
+"test_walking_archive_reproduces_after_cache_loss_and_does_not_get_a_global_height_key": 15.5
 },
 "rest": [
 11,
 0.3
+]
+},
+"tests/replays/test_seen_from_pairs.py": {
+"rest": [
+1,
+0.5
 ]
 },
 "tests/replays/test_sliding_feature_motion.py": {
@@ -2301,17 +2294,17 @@
 },
 "tests/replays/test_terrain_audit.py": {
 "tests": {
-"test_audit_distinguishes_grounded_returns_noisy_falls_and_legacy_step_candidates[0-quiet_large_step_descents_to_review]": 1.4,
+"test_audit_distinguishes_grounded_returns_noisy_falls_and_legacy_step_candidates[0-quiet_large_step_descents_to_review]": 1.5,
 "test_audit_distinguishes_grounded_returns_noisy_falls_and_legacy_step_candidates[1-quiet_large_ground_descents]": 1.5,
-"test_audit_distinguishes_grounded_returns_noisy_falls_and_legacy_step_candidates[2-blocked_large_falls]": 1.4,
+"test_audit_distinguishes_grounded_returns_noisy_falls_and_legacy_step_candidates[2-blocked_large_falls]": 1.5,
 "test_cli_pins_asset_and_regions_and_never_writes_into_the_repository": 1.7,
-"test_invalid_or_duplicate_scopes_are_rejected[regions0]": 0.8,
-"test_invalid_or_duplicate_scopes_are_rejected[regions1]": 1.3,
-"test_invalid_or_duplicate_scopes_are_rejected[regions2]": 0.9,
+"test_invalid_or_duplicate_scopes_are_rejected[regions0]": 0.9,
+"test_invalid_or_duplicate_scopes_are_rejected[regions1]": 0.9,
+"test_invalid_or_duplicate_scopes_are_rejected[regions2]": 1.1,
 "test_invalid_or_duplicate_scopes_are_rejected[regions3]": 0.9,
-"test_invalid_or_duplicate_scopes_are_rejected[regions4]": 0.9,
+"test_invalid_or_duplicate_scopes_are_rejected[regions4]": 0.8,
 "test_invalid_or_duplicate_scopes_are_rejected[regions5]": 0.9,
-"test_noisy_direct_drop_can_have_a_known_quiet_route_via_landings": 1.4
+"test_noisy_direct_drop_can_have_a_known_quiet_route_via_landings": 1.5
 }
 },
 "tests/replays/test_topology_frontier.py": {
@@ -2328,8 +2321,8 @@
 },
 "tests/replays/test_vertical_feature_motion.py": {
 "tests": {
-"test_page_conservative_passage_preview_and_export_with_unresolved_height": 1.7,
-"test_page_vertical_sketch_scrubs_estimate_and_preserves_bounds_and_extra_edge": 1.8
+"test_page_conservative_passage_preview_and_export_with_unresolved_height": 1.8,
+"test_page_vertical_sketch_scrubs_estimate_and_preserves_bounds_and_extra_edge": 2.1
 },
 "rest": [
 25,
