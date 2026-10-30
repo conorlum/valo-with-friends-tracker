@@ -489,3 +489,189 @@ def test_the_same_sample_gives_an_equal_stance_and_counts_a_fallback_once(monkey
     b = st_mod.stance_at(rnd, 0, 5.0)
     assert a == b
     assert rnd.missing[st_mod.NO_ANCHOR] == 1
+
+
+# ------------------------------------------------------------------ W5b: immediate over vision, behind OVER
+
+
+@pytest.mark.slow
+def test_over_off_keeps_the_existing_jump_and_landing_rules(monkeypatch):
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", False)
+    test_a_jump_over_the_box_is_beside_in_mid_air()
+    test_the_first_half_second_after_landing_is_beside()
+
+
+@pytest.mark.slow
+def test_over_a_jump_above_the_top_keeps_the_beside_ground_anchor(monkeypatch):
+    from app.control import stance as st_mod
+
+    geo = box_hall_tops()
+    points = jump_track(230, 290, 196, 1.5, 2.0)
+    monkeypatch.setattr(st_mod, "OVER", False)
+    beside = stance(geo, points, 2.5)
+    monkeypatch.setattr(st_mod, "OVER", True)
+    st = stance(geo, points, 2.5)
+    assert st is not None and st.kind == "over" and st.see_over == (1,)
+    assert st.eye_px == st.px
+    assert st.anchor == beside.anchor
+    rnd = round_of(geo, {0: points})
+    z = rnd.heights[0][rnd._sample(0, 2.5)]
+    assert st.own == int(geo.node_at_px(*st.px, z))
+
+
+@pytest.mark.slow
+def test_over_the_first_half_second_after_landing_has_immediate_vision(monkeypatch):
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    st = stance(box_hall_tops(), _lands_on_box(), 2.3)
+    assert st is not None and st.kind == "over" and st.see_over == (1,)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("offset, expected", [(8, "over"), (9, None)])
+def test_over_view_reach_is_1_1_metres_and_the_guard_uses_it(monkeypatch, offset, expected):
+    import dataclasses
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = dataclasses.replace(box_hall_tops(), m_per_px=0.1302, height_sha=None)
+    # Stay within the intended raster column after track-coordinate quantisation.
+    x, y = BOX_PX[0] - offset + 0.05, CENTRE[1]
+    rnd = round_of(geo, {0: on_box_track(x, y)})
+    st = st_mod.stance_at(rnd, 0, 5.0)
+    assert (st.kind if st else None) == expected
+    guarded = st_mod.boxed_stance(rnd, 0, 5.0)
+    assert guarded == st
+    if st is not None:
+        assert st.anchor is None
+        assert st.own == int(geo.node_at_px(*st.px, 1.0))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("rise, expected", [(0.4, "beside"), (0.5, "over"), (1.0, "over"), (3.0, "over")])
+def test_over_has_a_crouch_limit_and_no_upper_height_or_time_limit(monkeypatch, rise, expected):
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    # The first sample cannot satisfy the half-second on_box window.
+    st = stance(box_hall_tops(), on_box_track(*CENTRE, rise_m=rise), 0.0)
+    assert st is not None and st.kind == expected
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("missing", ["top", "ground", "heights", "nan"])
+def test_over_requires_a_learnt_top_ring_floor_and_valid_z(monkeypatch, missing):
+    import dataclasses
+    from app.control import geometry as cg
+    from app.control import stance as st_mod
+    from control_toys import box_hall_no_tops
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = dataclasses.replace(box_hall_tops())
+    if missing == "top":
+        geo = box_hall_no_tops()
+    elif missing == "ground":
+        cg.attach_heights(geo, dataclasses.replace(geo.heights, floors=np.full_like(geo.heights.floors, -1)))
+    rnd = round_of(geo, {0: on_box_track(*CENTRE)})
+    if missing == "heights":
+        rnd.heights.pop(0)
+    elif missing == "nan":
+        rnd.heights[0][rnd._sample(0, 5.0)] = np.nan
+    st = st_mod.stance_at(rnd, 0, 5.0)
+    assert st is not None and st.kind == "beside" and st.see_over == ()
+
+
+@pytest.mark.slow
+def test_over_does_not_match_below_the_ring_floor_step(monkeypatch):
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    st = stance(box_hall_tops(rise_m=0.5), on_box_track(*CENTRE, rise_m=0.2), 0.0)
+    assert st is not None and st.kind == "beside"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("xy", [CENTRE, (244.0, 196.0)])
+def test_over_a_half_second_steady_still_wins_as_on_box(monkeypatch, xy):
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    st = stance(box_hall_tops(), on_box_track(*xy), 0.5)
+    assert st is not None and st.kind == "on_box" and st.see_over == (1,)
+    assert st.own is None
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("rises, rise, expected", [((2.0, 4.0), 4.0, 2), ((2.0, 2.0), 3.0, 1)])
+def test_over_nearest_top_wins_across_pieces_with_piece_id_as_last_tie(monkeypatch, rises, rise, expected):
+    from app.control import stance as st_mod
+    from control_toys import tops_hall
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = tops_hall("OverPair", [(144, 184, 168, 208), (172, 184, 196, 208)], rises=rises)
+    # Both pieces are within view reach. At the first sample neither can be on_box.
+    st = stance(geo, on_box_track(170.5, 196.0, rise_m=rise), 0.0)
+    assert st is not None and st.kind == "over" and st.piece == expected
+
+
+@pytest.mark.slow
+def test_over_an_untopped_pixel_piece_blocks_a_neighbours_vantage(monkeypatch):
+    from app.control import stance as st_mod
+    from control_toys import tops_hall
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = tops_hall("OverBarePair", [(144, 184, 168, 208), (172, 184, 196, 208)], rises=(None, 2.0))
+    st = stance(geo, on_box_track(166.5, 196.0, rise_m=2.0), 0.0)
+    assert geo.cover_px[int(st.px[1]), int(st.px[0])] == 1
+    assert st.kind == "beside" and st.see_over == ()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("xy", [(156.0, 196.0), (169.5, 196.0)])
+def test_over_on_box_vantage_uses_the_samples_real_height(monkeypatch, xy):
+    from app.control import stance as st_mod
+    from control_toys import tops_hall
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = tops_hall("OverRealHeight", [(144, 184, 168, 208), (240, 184, 264, 208)], rises=(1.0, 3.0))
+    # At the learnt 1.0 top, B's surface reaches the eye; at the sample's 1.3 it is below it.
+    st = stance(geo, on_box_track(*xy, rise_m=1.3), 5.0)
+    assert st is not None and st.kind == "on_box" and st.piece == 1
+    assert st.see_over == (1, 2)
+
+
+@pytest.mark.slow
+def test_over_mid_jump_vantage_uses_the_samples_real_height(monkeypatch):
+    from app.control import stance as st_mod
+    from control_toys import tops_hall
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = tops_hall("OverJumpHeight", [(144, 184, 168, 208), (240, 184, 264, 208)], rises=(1.0, 4.0))
+    st = stance(geo, jump_track(126, 186, 196, 3.0, 2.0), 2.5)
+    assert st is not None and st.kind == "over" and st.see_over == (1, 2)
+
+
+def test_over_vantage_rounds_the_cache_key_and_the_computed_eye(monkeypatch):
+    from types import SimpleNamespace
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    geo = SimpleNamespace(box_tops={1: (1.0,), 2: (3.03,)})
+    # An unrounded eye at 1.04 would see over piece 2; the rounded 1.0 eye does not.
+    assert st_mod.vantage(geo, 1, 1.04) == (1,)
+    assert st_mod.vantage(geo, 1, 1.01) == (1,)
+    assert list(geo._vantage) == [(1, 1.0)]
+
+
+def test_over_top_match_chooses_the_nearest_height_and_lower_on_a_tie(monkeypatch):
+    from types import SimpleNamespace
+    from app.control import stance as st_mod
+
+    monkeypatch.setattr(st_mod, "OVER", True)
+    rnd = SimpleNamespace(geo=SimpleNamespace(box_tops={1: (1.0, 1.6)}, box_ground={1: 0.0}),
+                          heights={0: np.array([1.3, 1.6])})
+    assert st_mod._over_match(rnd, 0, 0, 1) == 1.0
+    assert st_mod._over_match(rnd, 0, 1, 1) == 1.6

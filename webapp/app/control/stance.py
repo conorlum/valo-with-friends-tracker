@@ -6,7 +6,9 @@ The z rule (R2, R3): over the last BOX_SETTLE_S, z must stay within BOX_STEADY_D
 NaN. The window median matches a learnt top within TOP_TOL_M above it or TOP_TOL_M + CROUCH_DROP_M below it;
 the nearest matching top wins (ties: lower). It must also be at least BOX_STEP_M above the piece's ring floor.
 Try the piece under the pixel first, then topped pieces within TOP_REACH_M, nearest first. No earlier entry
-into the outline is needed. Without heights, tops or a ring floor a piece never matches."""
+into the outline is needed. Without heights, tops or a ring floor a piece never matches.
+With OVER enabled, `over` sees over a learnt top immediately within 1.1 m of its outline, at or above its
+crouch window, using the sample's real z. On-box stances win; vision alone keeps the beside ground anchor."""
 
 from __future__ import annotations
 
@@ -22,6 +24,8 @@ ANCHOR_MAX_M = 2.0
 
 EPS = 1e-6
 
+OVER = False
+
 NO_ANCHOR = "stance: no anchor within 2 m of a box, nearest walkable node used"
 
 CALLS = 0                  # how many times stance_at has been called (the identity witness reads it)
@@ -35,18 +39,19 @@ class Stance:
     see_over: tuple[int, ...]          # the cover pieces the eye sees over, sorted; () for beside (R6)
     anchor: int | None
     piece: int = 0                     # the piece stood on (0 for beside)
+    own: int | None = None             # the node the eye stands over; None = the caller's cell
 
 
 def vantage(geo, piece: int, z: float) -> tuple[int, ...]:
-    """What the eye of a player steady at position-z `z` (m) on `piece` sees over (R6, D-E): `piece` itself and every
+    """What the eye of a player at position-z `z` (m) over `piece` sees over (R6, D-E): `piece` itself and every
     other piece with learnt tops whose highest top, less STAND_M (its surface), is strictly below the eye
-    (z + EYE_M). A piece with no known top is never added (it blocks). Cached on the geometry per (piece, z)."""
+    (z + EYE_M). A piece with no known top is never added (it blocks). Cached and computed with z rounded to 0.1 m."""
     from app.control import heights as hc
 
     cache = geo.__dict__.setdefault("_vantage", {})
-    key = (int(piece), float(z))
+    key = (int(piece), round(float(z), 1))
     if key not in cache:
-        eye = float(z) + hc.EYE_M
+        eye = key[1] + hc.EYE_M
         over = {int(piece)}
         for q, tops in geo.box_tops.items():
             if tops and max(tops) - hc.STAND_M < eye:
@@ -82,8 +87,21 @@ def _top_match(rnd, slot: int, i: int, tops, ground):
 
 
 def _on_piece(rnd, slot: int, i: int, piece: int) -> float | None:
-    """The matched top (m) when the player is on `piece` there, else None. The vantage's z is this top."""
+    """The matched top (m) when the player is on `piece` there, else None."""
     return _top_match(rnd, slot, i, rnd.geo.box_tops.get(piece), rnd.geo.box_ground.get(piece))
+
+
+def _over_match(rnd, slot: int, i: int, piece: int) -> float | None:
+    """Nearest learnt top at or below the sample's crouch window; no steady-time requirement."""
+    zs = rnd.heights.get(slot)
+    tops, ground = rnd.geo.box_tops.get(piece), rnd.geo.box_ground.get(piece)
+    if zs is None or not tops or ground is None:
+        return None
+    z = float(zs[i])
+    if np.isnan(z) or z < ground + BOX_STEP_M - EPS:
+        return None
+    matches = [t for t in tops if z >= t - TOP_TOL_M - CROUCH_DROP_M - EPS]
+    return min(matches, key=lambda t: (round(abs(t - z), 9), t)) if matches else None
 
 
 def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
@@ -140,6 +158,18 @@ def _reach_ids(geo, x: float, y: float):
     return tuple(int(p) for p in reach[iy, ix] if p)
 
 
+def _view_ids(geo, x: float, y: float):
+    """The pieces whose view reach holds pixel (x, y), nearest first, or () without box_view_reach."""
+    reach = geo.box_view_reach
+    if reach is None:
+        return ()
+    size = reach.shape[0]
+    ix, iy = int(x), int(y)
+    if not (0 <= ix < size and 0 <= iy < size):
+        return ()
+    return tuple(int(p) for p in reach[iy, ix] if p)
+
+
 def _top_anchor(geo, px, piece: int) -> int | None:
     """Nearest top node of the matched piece; None preserves the caller's ground fallback."""
     nodes = geo.top_nodes[geo.top_piece == piece]
@@ -177,7 +207,8 @@ def stance_at(rnd, slot, t) -> Stance | None:
             anchor = _top_anchor(geo, px, label)
             if anchor is None:
                 anchor = _anchor(rnd, slot, i, px, label)
-            out = Stance("on_box", px, px, vantage(geo, label, top), anchor, label)
+            z = rnd.heights[slot][i] if OVER else top
+            out = Stance("on_box", px, px, vantage(geo, label, z), anchor, label)
     if out is None:
         for piece in _reach_ids(geo, x, y):
             if piece == label:
@@ -187,8 +218,23 @@ def stance_at(rnd, slot, t) -> Stance | None:
                 anchor = _top_anchor(geo, px, piece)
                 if anchor is None:
                     anchor = int(geo.node_at_px(x, y))
-                out = Stance("on_box", px, px, vantage(geo, piece, top), anchor, piece)
+                z = rnd.heights[slot][i] if OVER else top
+                out = Stance("on_box", px, px, vantage(geo, piece, z), anchor, piece)
                 break
+    if out is None and OVER:
+        candidates = dict.fromkeys(((label,) if label else ()) + _view_ids(geo, x, y))
+        matches = []
+        for piece in candidates:
+            top = _over_match(rnd, slot, i, piece)
+            if top is not None:
+                z = float(rnd.heights[slot][i])
+                matches.append((abs(top - z), top, piece))
+        if matches:
+            _, _, piece = min(matches)
+            see_over = vantage(geo, piece, z)
+            if not label or label in see_over:
+                anchor = _anchor(rnd, slot, i, px, label) if label else None
+                out = Stance("over", px, px, see_over, anchor, piece, own=int(geo.node_at_px(x, y, z)))
     if out is None and label:
         anchor = _anchor(rnd, slot, i, px, label)
         eye = (float(geo.centres[anchor][0]), float(geo.centres[anchor][1])) if anchor is not None else px
@@ -210,7 +256,8 @@ def boxed_stance(rnd, slot, t) -> Stance | None:
     x, y = p[0], p[1]
     if not (0 <= x < size and 0 <= y < size):
         return None
-    if int(geo.cover_px[int(y), int(x)]) == 0 and not _reach_ids(geo, x, y):
+    reach_ids = _view_ids if OVER else _reach_ids
+    if int(geo.cover_px[int(y), int(x)]) == 0 and not reach_ids(geo, x, y):
         return None
     return stance_at(rnd, slot, t)
 
