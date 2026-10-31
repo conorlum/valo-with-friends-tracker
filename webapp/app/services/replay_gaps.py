@@ -67,6 +67,40 @@ def gap_fingerprint(control_fingerprint: str, map_name: str, *, chokes=_UNSET, h
     return _hex16(f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}")
 
 
+class Freshness:
+    """Which stored util rounds are current, by Critical Moments' rule (replay_moments.load_moments_payload): the
+    gap run's revision, and its fingerprint against the round's now (the link and its deaths, so a relink or a
+    clock correction; the geometry and heights; the chokes; the hearing table). Built once per request: each map's
+    geometry and each replay's side groups are read once."""
+
+    def __init__(self, db):
+        from app.services import replay_gaps
+
+        self.db, self.hearing = db, replay_gaps.hearing_hash()
+        self.maps: dict[str, tuple] = {}
+        self.groups: dict[int, dict] = {}
+
+    def expected(self, replay, n: int) -> str | None:
+        from app.replays import choke_assets
+        from app.services import replay_control, replay_gaps
+
+        if replay.map_name not in self.maps:
+            self.maps[replay.map_name] = (replay_control.resolve_current_geometry(self.db, replay.map_name),
+                                          choke_assets.asset_hash(replay.map_name))
+        context, chokes = self.maps[replay.map_name]
+        if replay.id not in self.groups:
+            self.groups[replay.id] = replay_control.side_groups(self.db, replay)
+        control = replay_control.round_fingerprint(replay, self.groups[replay.id], n, context=context)
+        if control is None:
+            return None
+        return replay_gaps.gap_fingerprint(control, replay.map_name, chokes=chokes, hearing=self.hearing)
+
+    def current(self, replay, n: int, revision: int, fingerprint: str) -> bool:
+        from app.services import replay_gaps
+
+        return revision == replay_gaps.GAPS_REVISION and fingerprint == self.expected(replay, n)
+
+
 def round_gaps(db, replay, n: int) -> tuple[str, list]:
     """The gaps.json endpoint's answer for round n: (status, rows). `not_computed` when the round has no gap run,
     `failed` when its run failed (no rows either way); else its `ReplayGap` rows in seq order, `stale` when the

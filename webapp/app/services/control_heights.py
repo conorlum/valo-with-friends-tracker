@@ -154,6 +154,37 @@ def _asset_meta(data: bytes) -> dict:
     return json.loads(raw[start:].decode("utf-8"))
 
 
+def _box_conflict_records(db, row) -> list[dict]:
+    """Cached asset metadata, shared by the match view and the corpus errors reader."""
+    if row.digest not in _BOX_CONFLICTS:
+        data = asset_bytes(db, row.map_name, row.digest)
+        found = (_asset_meta(data).get("box_conflicts") or []) if data else []
+        _BOX_CONFLICTS[row.digest] = [r for r in found if isinstance(r, dict)]
+    return _BOX_CONFLICTS[row.digest]
+
+
+def all_box_conflicts(db) -> list[tuple]:
+    """(map, rules, built_at, record) for every active asset's conflicts, across all matches.
+
+    Best effort like `box_conflicts`; a bad asset leaves other maps available. Deep copies out.
+    """
+    import copy
+
+    out = []
+    try:
+        rows_ = active_rows(db)
+    except Exception:
+        log.warning("box conflicts unavailable", exc_info=True)
+        return out
+    for map_name, row in rows_.items():
+        try:
+            out.extend((map_name, copy.deepcopy(row.rules), row.built_at, copy.deepcopy(record))
+                       for record in _box_conflict_records(db, row))
+        except Exception:
+            log.warning("box conflicts unavailable for %s", map_name, exc_info=True)
+    return out
+
+
 def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
     """The map's active asset's `meta["box_conflicts"]` for one match, sorted by (round, t0).
 
@@ -164,15 +195,7 @@ def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
         row = active_rows(db).get(map_name)
         if row is None:
             return []
-        if row.digest not in _BOX_CONFLICTS:
-            data = asset_bytes(db, map_name, row.digest)
-            found = []
-            if data:
-                meta = _asset_meta(data)
-                found = meta.get("box_conflicts") or []
-                found = [r for r in found if isinstance(r, dict)]
-            _BOX_CONFLICTS[row.digest] = found
-        out = [copy.deepcopy(r) for r in _BOX_CONFLICTS[row.digest] if r.get("match") == str(match_uuid)]
+        out = [copy.deepcopy(r) for r in _box_conflict_records(db, row) if r.get("match") == str(match_uuid)]
         return sorted(out, key=lambda r: (r.get("round", 0), r.get("t0", 0)))
     except Exception:
         log.warning("box conflicts unavailable for %s", map_name, exc_info=True)

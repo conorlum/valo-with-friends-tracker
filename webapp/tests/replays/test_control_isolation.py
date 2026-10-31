@@ -73,6 +73,7 @@ def test_the_web_apps_control_views_import_nothing_heavy():
                  WEBAPP / "app" / "services" / "replay_gaps.py",
                  WEBAPP / "app" / "services" / "replay_gaps_store.py",
                  WEBAPP / "app" / "services" / "replay_match_states.py",
+                 WEBAPP / "app" / "services" / "replay_errors.py",
                  WEBAPP / "scripts" / "refresh_replay_states.py",
                  WEBAPP / "app" / "services" / "replay_gaps_view.py",
                  WEBAPP / "app" / "services" / "gap_patterns.py",
@@ -98,6 +99,15 @@ def test_the_gap_view_rows_load_no_engine_detector_or_numpy():
 def test_the_gap_pattern_service_loads_no_engine_detector_or_numpy():
     # The pattern page (plan 3, review amendment 7): standard library and the DB only, indirectly too.
     code = ("import sys, app.services.gap_patterns; "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
+            "or m.startswith(('app.control', 'app.gaps'))))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "[]"
+
+
+def test_the_replay_errors_service_loads_no_engine_detector_or_numpy():
+    code = ("import sys, app.services.replay_errors; "
             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
             "or m.startswith(('app.control', 'app.gaps'))))")
     out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP, capture_output=True, text=True, timeout=120)
