@@ -114,6 +114,8 @@ names each). **None is switched to features in this build.**
 | `control/geometry:_top_views` | height fan | `bounded_sight` (added 2026-10-29, box-climb run: smoke-free top vantage rows used to prefilter exact sight lines and supply top visibility rows) |
 | `control/engine:Tick._backfill_shares` | topo.dilate | `walk_only` |
 | `control/engine:Tick._direct` | los | `bounded_sight` |
+| `control/engine:Tick._air_line` | los | `bounded_sight` (one eye-to-eye plate line for a pair with an airborne end, skipping only the end pieces) |
+| `control/engine:Tick._air_viewers` | via _air_line | `bounded_sight` (airborne viewers add exact lines to grounded targets missed by their ground view, under the same sight limits) |
 | `control/engine:Tick.feet_only` | los | `bounded_sight` (added 2026-10-29, box-climb run: the head and feet lines of a sighting the fan already made, to store which ones the feet alone saw; never changes `sees`) |
 | `control/engine:Tick._flood` | topo.label | `transport_reachability` |
 | `control/engine:Tick._links` | special_links, topo.links | `transport_reachability` (arcs replace the all-floor specials for features) |

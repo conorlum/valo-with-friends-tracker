@@ -119,7 +119,7 @@ SECTION_S = 10.0
 
 FOV_HALF = 51.5
 OVER_SEEN = True  # Enemies see a player over a box by the exact line, like on_box
-JUMP_SIGHT = True  # Airborne holders cast against learnt box plates (R2/R3).
+JUMP_SIGHT = True  # Airborne fans and pairs use learnt box plates (R2/R3).
 _plate_calls = 0
 RUN_MPS, WALK_MPS = 5.0, 1.5
 # "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
@@ -1465,6 +1465,8 @@ class Tick:
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
         if any(_seen_over(h) for h in self.holders.values()):   # on-box and over targets by the physical line
             self.direct.update(self._boxed(every))
+        if JUMP_SIGHT and any(h.air for h in self.holders.values()):
+            self.direct.update(self._air_viewers(every))
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
@@ -1537,7 +1539,8 @@ class Tick:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
         tests a body standing on each floor, which is right for ground and for anyone standing on it; an
         enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by exact lines
-        from the viewer's eye to their head or feet, under the same limits as the view: the field of view,
+        from the viewer's eye to their head or feet (one eye-to-eye plate line for an airborne target),
+        under the same limits as the view: the field of view,
         a flash, nearsight, smokes and walls. It only ever adds a sighting."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
@@ -1548,13 +1551,19 @@ class Tick:
             for h in self.holders.values():
                 z = rnd.height(h.slot, t) if h.team != e.team else None
                 floor = geo.node_z[h.cell]
-                if _seen_over(h):
+                if h.team == e.team or _seen_over(h):
                     continue    # on-box and over targets are `_boxed`'s
-                if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
+                air = JUMP_SIGHT and h.air
+                if e.body[h.cell] or (not air and (z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M)):
                     continue
-                dx, dy = h.x - e.x, h.y - e.y
+                ex, ey = e.stance.eye_px if air and e.stance is not None else (e.x, e.y)
+                dx, dy = h.x - ex, h.y - ey
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if air:
+                    if self._air_line(e, h):
+                        out[(s, h.slot)] = cone is not None and off <= cone
                     continue
                 head_clear = los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
                 if head_clear:
@@ -1564,8 +1573,49 @@ class Tick:
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
+    def _air_line(self, e: Holder, h: Holder) -> bool:
+        """One eye-to-eye plate line; skip only the pieces at its two ends (R3/R4)."""
+        global _plate_calls
+        geo = self.geo
+        ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+        pieces = []
+        for end in (e, h):
+            piece = int(end.stance.piece) if end.stance is not None else 0
+            if end.stance is None and geo.cover_px is not None:
+                ix, iy = int(end.x), int(end.y)
+                if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]:
+                    piece = int(geo.cover_px[iy, ix])
+            pieces.append(piece)
+        _plate_calls += 1
+        return los(geo, (ex, ey, self._eye(e.slot, self.t, e.cell)),
+                   (h.x, h.y, self._eye(h.slot, self.t, h.cell)), self.smokes,
+                   record=self.fallbacks, plates=True, skip=tuple(pieces))
+
+    def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
+        """Airborne viewers of grounded, non-box targets missed by the ground view (R2/R4)."""
+        out = {}
+        if not JUMP_SIGHT:
+            return out
+        for s, (yaw, eye, flashed, nearsighted, cone) in every.items():
+            e = self.holders[s]
+            if not e.air or flashed:
+                continue
+            ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+            for h in self.holders.values():
+                if (h.team == e.team or h.air or _seen_over(h) or e.body[h.cell]
+                        or (s, h.slot) in self.direct):
+                    continue
+                dx, dy = h.x - ex, h.y - ey
+                off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
+                if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * self.geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if self._air_line(e, h):
+                    out[(s, h.slot)] = cone is not None and off <= cone
+        return out
+
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
         """Enemies on or over a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
+        or one eye-to-eye plate line when either end is airborne;
         over their stance pieces (a target beside a box is held at its anchor cell and seen there, by the
         ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
@@ -1584,6 +1634,10 @@ class Tick:
                 dx, dy = hx - ex, hy - ey
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if JUMP_SIGHT and (e.air or h.air):
+                    if self._air_line(e, h):
+                        out[(s, h.slot)] = cone is not None and off <= cone
                     continue
                 z = rnd.height(h.slot, t) if geo.heights is not None else None
                 tz = None if z is None or np.isnan(z) else float(z) + hc.HEAD_M

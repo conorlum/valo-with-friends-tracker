@@ -1,4 +1,4 @@
-"""W7a: only airborne holders opt in to learnt-box plate sight (R2/R3/R5)."""
+"""W7a/W7b1: airborne fans and eye-to-eye plate sight; grounded paths stay frozen (R2-R5)."""
 from types import SimpleNamespace
 
 import numpy as np
@@ -126,3 +126,129 @@ def test_flat_map_unchanged(monkeypatch):
     assert enabled.direct == disabled.direct and enabled.sees == disabled.sees
     for encode in (encode_data, encode_summary):
         assert encode(enabled_round, blob) == encode(disabled_round, blob)
+
+
+def pair_tick(geo, *, left_z=0.0, right_z=1.2, right_x=308, yaw=0,
+              flashed=False, near=False, cone=None, smokes=()):
+    """PlateToy's two opponents, with heights in its own world origin."""
+    if geo.row_of is None:
+        cg.visibility(geo)
+    rnd, _ = inputs(geo, {0: still("A", 164, Y, yaw, left_z or 0),
+                          5: still("B", right_x, Y, 180, right_z or 0)})
+    rnd.height = lambda s, t: left_z if s == 0 else right_z
+    for s, z in ((0, left_z), (5, right_z)):
+        rnd.heights[s] = np.full_like(rnd.heights[s], np.nan if z is None else z)
+    rnd.smokes_at = lambda t: list(smokes)
+    if flashed:
+        rnd.flashed[0] = [(0, 10)]
+    if near:
+        rnd.nearsight[0] = [(0, 10)]
+    if cone is False:
+        rnd.downgraded[0] = [(0, 10)]
+    return ce.Tick(rnd, 5.0)
+
+
+@pytest.mark.parametrize("left_z,right_z", [(0.0, 1.2), (1.2, 0.0), (1.2, 1.2)])
+def test_eye_lines_see_both_directions_over_a_learnt_box(left_z, right_z):
+    tk = pair_tick(box(), left_z=left_z, right_z=right_z)
+    assert 5 in tk.sees[0] and 0 in tk.sees[5]
+    assert not tk._head_clear, "airborne pairs never populate the ground head-line cache"
+
+
+def test_jumper_does_not_see_a_low_target_just_behind_the_box():
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0, right_x=236)
+    assert not tk.holders[5].air
+    assert (0, 5) not in tk.direct and 5 not in tk.sees[0]
+
+
+def test_unknown_box_top_blocks_both_directions():
+    tk = pair_tick(box(()))
+    assert tk.direct == {} and tk.sees == {0: set(), 5: set()}
+
+
+def test_grounded_pairs_keep_direct_and_head_cache_and_make_no_plate_calls(monkeypatch):
+    geo = box()
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    enabled = pair_tick(geo, right_z=0.0)
+    assert ce._plate_calls == 0
+    monkeypatch.setattr(ce, "JUMP_SIGHT", False)
+    disabled = pair_tick(geo, right_z=0.0)
+    assert enabled.direct == disabled.direct == {}
+    assert enabled._head_clear == disabled._head_clear == set()
+    assert enabled.sees == disabled.sees == {0: set(), 5: set()}
+
+
+def test_switch_off_preserves_old_pair_direct_and_sees(monkeypatch):
+    geo = box()
+    enabled = pair_tick(geo)
+    assert (0, 5) in enabled.direct and 5 in enabled.sees[0]
+    monkeypatch.setattr(ce, "JUMP_SIGHT", False)
+    disabled = pair_tick(geo)
+    assert disabled.direct == {} and disabled.sees == {0: set(), 5: set()}
+
+
+@pytest.mark.parametrize("limits,expected", [({}, True), ({"yaw": 180}, False),
+    ({"flashed": True}, False), ({"near": True}, False), ({"cone": False}, False),
+    ({"smokes": [(260, Y, 8, True)]}, False)])
+def test_air_viewer_adds_only_a_permitted_eye_line(monkeypatch, limits, expected):
+    # Force a fan miss: the exact line pass must work independently of sampled cell sight.
+    monkeypatch.setattr(ce, "cast", lambda geo, *a, **kw: np.zeros(geo.n, bool))
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0, **limits)
+    assert not tk.holders[0].body[tk.holders[5].cell]
+    if expected or limits.get("cone") is False:
+        assert tk.direct[(0, 5)] is expected and 5 in tk.sees[0]
+    else:
+        assert (0, 5) not in tk.direct and 5 not in tk.sees[0]
+
+
+def test_missing_target_height_uses_the_target_floor_for_the_eye(monkeypatch):
+    monkeypatch.setattr(ce, "cast", lambda geo, *a, **kw: np.zeros(geo.n, bool))
+    tk = pair_tick(box(), left_z=1.2, right_z=None)
+    assert not tk.holders[5].air
+    assert (0, 5) in tk.direct and 5 in tk.sees[0]
+
+
+@pytest.mark.parametrize("viewer_air,target_air", [(True, False), (False, True)])
+def test_boxed_air_pair_uses_one_eye_line_and_counts_it(monkeypatch, viewer_air, target_air):
+    geo = box()
+    tk = ce.Tick.__new__(ce.Tick)
+    tk.geo, tk.t, tk.smokes, tk.fallbacks = geo, 5.0, [], {}
+    tk.rnd = SimpleNamespace(height=lambda s, t: 1.2 if s == 0 else 0.0)
+    cell = geo.node_at_px(164, Y, 0)
+    st = SimpleNamespace(kind="on_box" if viewer_air else "over", piece=1,
+                         eye_px=(226, Y), see_over=(1,))
+    viewer_st = SimpleNamespace(kind="beside", piece=2, eye_px=(166, Y), see_over=())
+    tk.holders = {0: SimpleNamespace(slot=0, team="A", cell=cell, x=164, y=Y,
+                                    air=viewer_air, stance=viewer_st),
+                  5: SimpleNamespace(slot=5, team="B", cell=cell, x=226, y=Y,
+                                     air=target_air, stance=st)}
+    tk._head_clear = set()
+    calls = []
+    monkeypatch.setattr(ce, "los", lambda *a, **kw: calls.append((a, kw)) or True)
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    assert tk._boxed({0: (0, 2.25, False, False, 30)}) == {(0, 5): True}
+    assert len(calls) == ce._plate_calls == 1 and not tk._head_clear
+    args, kwargs = calls[0]
+    assert args[1] == (166, Y, 2.25) and args[2] == (226, Y, hc.EYE_M)
+    assert kwargs["plates"] is True and set(kwargs["skip"]) == {1, 2}
+    assert "see_over" not in kwargs
+
+
+def test_airborne_teammate_is_never_a_direct_enemy():
+    tk = pair_tick(box())
+    tk.holders[5].team = "A"
+    assert tk._direct({0: (0, hc.EYE_M, False, False, 30)}) == {}
+
+
+def test_air_line_uses_cover_pixels_without_stances(monkeypatch):
+    tk = pair_tick(box())
+    a, b = tk.holders[0], tk.holders[5]
+    a.stance = b.stance = None
+    tk.geo.cover_px = tk.geo.cover_px.copy()
+    tk.geo.cover_px[int(a.y), int(a.x)] = 7
+    tk.geo.cover_px[int(b.y), int(b.x)] = 9
+    calls = []
+    monkeypatch.setattr(ce, "los", lambda *a, **kw: calls.append(kw) or True)
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    assert tk._air_line(a, b)
+    assert calls[0]["skip"] == (7, 9) and ce._plate_calls == 1

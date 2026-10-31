@@ -167,6 +167,10 @@ def test_enemy_sees_over_holder_by_the_boxed_line_and_switch_off_uses_ground(mon
     assert not high.holders[5].body[high.holders[0].cell]
     assert (5, 0) in high.direct and 0 in high.sees[5]
     monkeypatch.setattr(ce, "OVER_SEEN", False)
+    # R2: jump sight still sees this airborne target when the over-stance rule is off.
+    jump = tick(geo, players)
+    assert jump.holders[0].air and (5, 0) in jump.direct and 0 in jump.sees[5]
+    monkeypatch.setattr(ce, "JUMP_SIGHT", False)
     ground = tick(geo, players)
     assert (5, 0) not in ground.direct and 0 not in ground.sees[5]
     # The on-box target keeps its exact-line visibility even with the provisional switch off.

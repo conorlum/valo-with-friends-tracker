@@ -88,10 +88,14 @@ def test_flat_map_does_not_check_los_or_write_a_header(monkeypatch):
 @pytest.mark.parametrize("path, expected_calls, expected_pairs", [
     ("direct", 2, {(0, 5)}), ("boxed", 1, set()),
 ])
-def test_exact_sight_keeps_its_original_los_count(monkeypatch, path, expected_calls, expected_pairs):
+@pytest.mark.parametrize("jump_sight", [False, True])
+def test_exact_sight_los_count_with_legacy_witness(monkeypatch, path, expected_calls, expected_pairs, jump_sight):
+    monkeypatch.setattr(ce, "JUMP_SIGHT", jump_sight)
     if path == "direct":
         # Same plate, but the target is lifted above a 0 m floor. The floor fan misses;
-        # the exact head is blocked and the feet are clear: exactly two LOS calls.
+        # R4: one blocked eye-to-eye line with jump sight; switched off, the original
+        # blocked head and clear feet still need exactly two calls (the legacy witness).
+        expected_calls = 1 if jump_sight else 2
         geo = toy_heights("FeetOnlyLifted", [(192, 192, 288, 216)], upper=[((216, 192, 288, 216), 2.6)])
         b = overhang_blob()
     else:
@@ -104,8 +108,10 @@ def test_exact_sight_keeps_its_original_los_count(monkeypatch, path, expected_ca
     tick = ce.Tick(ce.RoundInputs(b, geo), 0.5)  # allow the box stance to settle
     assert len(calls) == expected_calls
     assert ce._on_box(tick.holders[5]) == (path == "boxed")
-    assert (0, 5) in tick.direct and tick.sees[0] == {5}
-    assert tick.feet_only() == expected_pairs
+    seen = not (jump_sight and path == "direct")
+    assert ((0, 5) in tick.direct) is seen
+    assert tick.sees[0] == ({5} if seen else set())
+    assert tick.feet_only() == (expected_pairs if seen else set())
     assert len(calls) == expected_calls, "reuse the exact sight's head result"
 
 
