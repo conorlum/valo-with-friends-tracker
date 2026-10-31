@@ -395,6 +395,21 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
 - **Recompute:** a committed height asset makes its map's control rows stale; the user runs
   `compute_control.py --map <Map>` when ready, as with any geometry change.
 
+## Jump sight
+
+With `JUMP_SIGHT` enabled, a pair touches the air when either holder is airborne: their recorded z is more
+than `STAND_TOL_M` above their anchor floor, excluding an `on_box` stance. Unresolved ground uses the nearby
+piece's ring floor when available (`Tick._airborne`). Airborne fans and pair lines use plates: a box with a
+learnt top blocks below its surface; a box without a learnt top blocks at any height. Pair sight tests eye to
+eye (`z + EYE_M`, falling back to `node_z[cell] + EYE_M` without recorded z), skipping only each endpoint's
+stance piece, or its cover pixel's piece when there is no stance. FOV, flash, nearsight, walls and smokes still
+apply.
+
+Feet-only metadata for a seen air pair independently tests eye to target head and eye to target feet with
+the same plates and own-piece skips: only a blocked head and clear feet qualify. These lazy lines count in
+`_plate_calls`, leave unresolved-terrain counts alone, and never change `sees`. Grounded pairs retain their
+existing direct/head-cache/sight/feet-only paths; disabling `JUMP_SIGHT` restores the previous paths for all pairs.
+
 ## Testing
 
 - **Format:** a segment with z round-trips; a blob without z decodes as before, and `decode_segment` still

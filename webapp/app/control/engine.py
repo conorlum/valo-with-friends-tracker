@@ -1573,8 +1573,8 @@ class Tick:
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
-    def _air_line(self, e: Holder, h: Holder) -> bool:
-        """One eye-to-eye plate line; skip only the pieces at its two ends (R3/R4)."""
+    def _air_line(self, e: Holder, h: Holder, *, target_z: float | None = None, record: bool = True) -> bool:
+        """One plate line, eye-to-eye unless metadata supplies head/feet z; skip only its ends (R3/R4)."""
         global _plate_calls
         geo = self.geo
         ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
@@ -1588,8 +1588,8 @@ class Tick:
             pieces.append(piece)
         _plate_calls += 1
         return los(geo, (ex, ey, self._eye(e.slot, self.t, e.cell)),
-                   (h.x, h.y, self._eye(h.slot, self.t, h.cell)), self.smokes,
-                   record=self.fallbacks, plates=True, skip=tuple(pieces))
+                   (h.x, h.y, self._eye(h.slot, self.t, h.cell) if target_z is None else target_z), self.smokes,
+                   record=self.fallbacks if record else None, plates=True, skip=tuple(pieces))
 
     def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
         """Airborne viewers of grounded, non-box targets missed by the ground view (R2/R4)."""
@@ -1666,11 +1666,24 @@ class Tick:
                 e = self.holders[viewer]
                 for target in targets:
                     pair = (viewer, target)
+                    h = self.holders[target]
+                    if JUMP_SIGHT and (e.air or h.air):
+                        eye = self._eye(viewer, t, e.cell)
+                        z = rnd.height(target, t)
+                        if z is None:
+                            z = geo.node_z[h.cell]
+                        if eye is None or np.isnan(eye) or z is None or np.isnan(z):
+                            continue
+                        # Air sight's eye line says nothing about the head/feet lines. Metadata
+                        # uses the same plates and own pieces, without recording unresolved rays.
+                        if (not self._air_line(e, h, target_z=z + hc.HEAD_M, record=False)
+                                and self._air_line(e, h, target_z=z + hc.FEET_M, record=False)):
+                            out.add(pair)
+                        continue
                     if pair in self.direct:
                         if pair not in self._head_clear:
                             out.add(pair)
                         continue
-                    h = self.holders[target]
                     eye = self._eye(viewer, t, e.cell)
                     z = rnd.height(target, t)
                     if z is None:

@@ -252,3 +252,79 @@ def test_air_line_uses_cover_pixels_without_stances(monkeypatch):
     monkeypatch.setattr(ce, "_plate_calls", 0)
     assert tk._air_line(a, b)
     assert calls[0]["skip"] == (7, 9) and ce._plate_calls == 1
+
+
+@pytest.mark.parametrize("left_z,right_z", [(0.0, 1.2), (1.2, 0.0), (1.2, 1.2)])
+def test_air_pair_with_a_clear_head_is_not_feet_only(left_z, right_z):
+    tk = pair_tick(box(), left_z=left_z, right_z=right_z)
+    before = {s: targets.copy() for s, targets in tk.sees.items()}
+    assert tk.feet_only() == set()
+    assert tk.sees == before
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("viewer_air,target_air", [(True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("head,feet", [(True, True), (False, True), (False, False)])
+def test_air_feet_only_checks_its_own_plate_lines(monkeypatch, direct, viewer_air, target_air, head, feet):
+    tk = pair_tick(box(), left_z=1.2 if viewer_air else 0.0,
+                   right_z=1.2 if target_air else None)
+    e, h = tk.holders[0], tk.holders[5]
+    e.stance = SimpleNamespace(piece=7, eye_px=(166, Y))
+    h.stance = None
+    tk.geo.cover_px = tk.geo.cover_px.copy()
+    tk.geo.cover_px[int(h.y), int(h.x)] = 9
+    tk.sees = {0: {5}, 5: set()}
+    tk.direct = {(0, 5): True} if direct else {}
+    tk._head_clear = {(0, 5)}  # Metadata must not borrow a ground head-line result either.
+    calls = []
+
+    def line(geo, start, end, smokes, **kwargs):
+        calls.append((start, end, smokes, kwargs))
+        return head if len(calls) == 1 else feet
+
+    monkeypatch.setattr(ce, "los", line)
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    before = tk.fallbacks.copy()
+    expected = {(0, 5)} if not head and feet else set()
+    assert tk.feet_only() == expected
+    assert len(calls) == ce._plate_calls == (1 if head else 2)
+    z = 1.2 if target_air else tk.geo.node_z[h.cell]
+    assert [end[2] for _, end, _, _ in calls] == [z + hc.HEAD_M] + ([] if head else [z + hc.FEET_M])
+    for start, end, smokes, kwargs in calls:
+        assert start == (166, Y, (1.2 if viewer_air else 0.0) + hc.EYE_M)
+        assert end[:2] == (h.x, h.y) and smokes is tk.smokes
+        assert kwargs["plates"] is True and kwargs["skip"] == (7, 9)
+        assert kwargs.get("record") is None and "see_over" not in kwargs
+    assert tk.fallbacks == before and tk.sees == {0: {5}, 5: set()}
+    assert tk.feet_only() == expected and len(calls) == ce._plate_calls
+
+
+@pytest.mark.parametrize("jump_sight", [False, True])
+def test_grounded_feet_only_keeps_the_old_head_and_feet_lines(monkeypatch, jump_sight):
+    from tests.replays.test_control_feet_only import overhang_blob
+    from tests.replays.test_control_sight import low_overhang
+
+    monkeypatch.setattr(ce, "JUMP_SIGHT", jump_sight)
+    tk = ce.Tick(ce.RoundInputs(overhang_blob(), low_overhang()), 0.0)
+    calls, original = [], ce.los
+
+    def line(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ce, "los", line)
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    assert not any(h.air for h in tk.holders.values())
+    assert tk.feet_only() == {(0, 5)} and len(calls) == 2
+    assert ce._plate_calls == 0 and all(not kw.get("plates") for kw in calls)
+
+
+def test_switch_off_keeps_the_old_direct_feet_only_shortcut(monkeypatch):
+    tk = pair_tick(box())
+    tk.sees = {0: {5}}
+    assert set(tk.direct) == {(0, 5)}
+    monkeypatch.setattr(ce, "JUMP_SIGHT", False)
+    monkeypatch.setattr(ce, "_plate_calls", 0)
+    monkeypatch.setattr(ce, "los", lambda *a, **kw: pytest.fail("legacy direct pair needs no LOS"))
+    assert tk.feet_only() == set(tk.direct)
+    assert ce._plate_calls == 0
