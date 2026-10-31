@@ -125,9 +125,10 @@ def collect(db, live=None, *, stale: Counter | None = None) -> dict[str, list[di
         for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
                                getattr(model, revision).label("revision")).filter(model.status == "failed"):
             state = states.get((stored.replay_id, stored.round_number))
-            if state == key.replace("failed", "stale"):
+            if state != key:
+                # Stale, or behind an earlier step (a re-parse): the worker gets to it on its own.
                 stale[key] += 1
-            elif state == key:
+            else:
                 replay = replays[stored.replay_id]
                 rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
                                       revision={revision: stored.revision, "computed_at": _iso(stored.computed_at)},

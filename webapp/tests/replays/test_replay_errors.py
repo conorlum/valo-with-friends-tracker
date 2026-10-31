@@ -139,6 +139,19 @@ def test_current_and_stale_round_failures(errors, factory, db, linked, key, mode
     assert kind(errors, db, key)["note"] == "1 failed rows from older rules: the worker will retry them"
 
 
+@pytest.mark.parametrize("key", ["control_failed", "gaps_failed"])
+def test_failures_behind_an_earlier_step_are_counted_not_listed(errors, factory, db, linked, key):
+    # Probe W9a: 21 live failed control rows sat behind a re-parse, neither listed nor counted.
+    put_row(db, linked, 1, status="failed" if key == "control_failed" else "ok")
+    if key == "gaps_failed":
+        _gap_run(factory, linked, 1, status="failed")
+    linked.recipe, linked.source = "000000000000.c9.f1.000000000", "upload"
+    db.commit()
+    found = kind(errors, db, key)
+    assert found["count"] == 0
+    assert found["note"] == "1 failed rows from older rules: the worker will retry them"
+
+
 @pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
 def test_moments_and_util_use_util_freshness(errors, db, linked, key, model):
     from app.services import replay_gaps
