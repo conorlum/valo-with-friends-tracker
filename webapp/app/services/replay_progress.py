@@ -98,7 +98,8 @@ def round_states(db) -> dict:
         return "done"
 
     states = {key: state(key) for key in rounds}
-    return {"states": states, "replays": replays, "recipe": recipe}
+    return {"states": states, "replays": replays, "recipe": recipe,
+            "fingerprints": {key: planned.fingerprint for key, planned in every.items()}}
 
 
 def compute(db) -> dict:

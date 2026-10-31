@@ -4,7 +4,9 @@ import importlib
 import inspect
 import io
 import json
+import re
 import sys
+import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,8 +31,8 @@ from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 KEYS = ["box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
-        "heights_rejected", "upload_failed", "upload_held", "store_failed", "ack_missing", "stuck",
-        "unlinked", "needs_a_person"]
+        "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
+        "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
 RECORD = {"match": "0a9ab548-718b-41ee-94ce-db25fd430bf8", "round": 1, "slot": 5,
           "t0": 1.648, "t1": 5.528, "z": 2.0, "px": [774, 414],
@@ -43,6 +45,14 @@ def errors(db, monkeypatch):
     module = importlib.import_module("app.services.replay_errors")
     monkeypatch.setattr(module, "now", lambda: STAMP)
     monkeypatch.setattr(module, "_cached", None)
+    monkeypatch.setattr(module, "_verification_results", {}, raising=False)
+    monkeypatch.setattr(module, "_verification_started", False, raising=False)
+    monkeypatch.setattr(module, "_verification_running", False, raising=False)
+    monkeypatch.setattr(module, "_verification_progress", (0, 0), raising=False)
+    monkeypatch.setattr(module, "_digests", {}, raising=False)
+    monkeypatch.setattr(module, "_real_start_verification", getattr(module, "_start_verification", None), raising=False)
+    # Ordinary inventory tests never start a real verifier/child.
+    monkeypatch.setattr(module, "_start_verification", lambda: None, raising=False)
     ch._BOX_CONFLICTS.clear()
     yield module
     ch._BOX_CONFLICTS.clear()
@@ -243,6 +253,9 @@ def test_all_rows_kept_sorted_then_first_fifty_shown(errors, db, monkeypatch):
     assert all_rows == expected and len(all_rows) == 53
     found = kind(errors, db, "box_conflict")
     assert found["count"] == 53 and found["rows"] == expected[:50]
+    full = errors.compute(db, limit=None)
+    assert len(full["kinds"][0]["rows"]) == 53
+    assert len(errors.cached(db)["kinds"][0]["rows"]) == 53
 
 
 def test_demo_never_reads_db_even_with_warm_cache(errors, db, monkeypatch):
@@ -281,10 +294,11 @@ def test_no_identity_or_private_upload_columns(errors, db, linked):
 
 def test_cached_shares_result_for_ttl(errors, db, monkeypatch):
     calls = []
-    monkeypatch.setattr(errors, "compute", lambda db: calls.append(1) or {"n": len(calls)})
+    monkeypatch.setattr(errors, "compute", lambda db, **kw: calls.append(kw) or {"n": len(calls)})
     first = errors.cached(db, now=100)
     assert errors.cached(db, now=100 + errors.TTL_S - 1) is first
     assert errors.cached(db, now=100 + errors.TTL_S) == {"n": 2}
+    assert calls[0]["limit"] is None
 
 
 def test_all_box_conflicts_best_effort(errors, db, monkeypatch):
@@ -295,8 +309,41 @@ def test_all_box_conflicts_best_effort(errors, db, monkeypatch):
     monkeypatch.setattr(ch, "active_rows", broken)
     assert ch.all_box_conflicts(db) == []
 
-def test_live_argument_is_reserved(errors, db):
-    assert errors.compute(db, live=object()) == errors.compute(db)
+def test_live_kinds_match_current_work_and_fingerprint(errors, db, linked, monkeypatch):
+    from app.services.replay_control_remote import Live, MAX_TRIES
+    states = {(linked.id, 1): "control_missing", (linked.id, 2): "gaps_stale",
+              (linked.id, 3): "done", (linked.id, 4): "control_stale"}
+    monkeypatch.setattr(progress, "round_states", lambda db: {
+        "states": states, "replays": {linked.id: linked},
+        "fingerprints": {key: "current" for key in states}})
+    live = Live(at=10000, given_up=((linked.id, 1, "control", "current"),
+                (linked.id, 2, "gaps", "current"), (linked.id, 3, "control", "current"),
+                (linked.id, 4, "control", "old"), (linked.id, 4, "gaps", "current")),
+                held=(linked.id, 99999), heights_out_of_tries=("Ascent",),
+                in_flight=((linked.id, 2, 100, "gaps"), (linked.id, 1, 6400, "control")))
+    found = {k["key"]: k for k in errors.compute(db, live)["kinds"]}
+    assert found["given_up"]["count"] == 2
+    assert found["given_up"]["note"] == "3 older give-ups no longer apply"
+    assert found["given_up"]["rows"][0]["figures"] == {"kind": "control", "tries": MAX_TRIES}
+    assert found["given_up"]["rows"][0]["revision"] == {"fingerprint": "current"}
+    assert found["held"]["rows"][0]["figures"] == {"rounds": 4}
+    assert found["held"]["count"] == 1
+    assert found["heights_out_of_tries"]["rows"][0]["figures"] == {"map": "Ascent"}
+    assert found["heights_out_of_tries"]["rows"][0]["link"].endswith("/upload")
+    assert found["stuck"]["count"] == 1
+    assert found["stuck"]["rows"][0]["figures"] == {"kind": "gaps", "minutes": 165}
+    for key in ("held", "heights_out_of_tries", "given_up"):
+        absent = kind(errors, db, key)
+        assert absent["count"] == 0
+        assert absent["note"] == "not known in this process (no dispatcher here)"
+
+
+def test_cached_uses_dispatcher_snapshot(errors, db, monkeypatch):
+    from app.services import replay_control_remote as remote
+    live = remote.Live(100, (), (), ("Ascent",), ())
+    monkeypatch.setattr(remote, "LIVE", live)
+    body = errors.cached(db)
+    assert next(k for k in body["kinds"] if k["key"] == "heights_out_of_tries")["count"] == 1
 
 
 def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, linked, monkeypatch):
@@ -328,7 +375,8 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     monkeypatch.setattr(progress, "round_states", with_manual_step)
     collected = errors.collect(db)
     assert set(collected) == set(KEYS)
-    assert all(collected.values()), "exercise every stored kind"
+    assert all(rows for key, rows in collected.items()
+               if key not in {"heights_out_of_tries", "given_up", "held", "feature_failed"}), "stored kinds"
     for key, rows in collected.items():
         for row in rows:
             command = row["reproduce"]
@@ -433,3 +481,188 @@ def test_progress_split_preserves_mixed_fixture_output(errors, factory, db, link
     states = progress.round_states(db)["states"]
     assert [states[linked.id, n] for n in range(1, 6)] == [
         "done", "control_stale", "control_failed", "gaps_failed", "gaps_stale"]
+
+
+def feature_rows(db, linked):
+    for n, digest in [(1, "digest-a"), (2, "digest-a"), (3, "digest-b")]:
+        put_row(db, linked, n)
+        row = db.get(ReplayRoundControl, (linked.id, n))
+        row.summary = cf.pack_summary({"provenance": {"inputs": {"geometry": {"features": digest}}}})
+    put_row(db, linked, 4)  # no provenance
+    db.commit()
+
+
+def test_feature_verification_groups_current_rounds_and_keeps_results(errors, db, factory, linked, monkeypatch):
+    from app.services.control_feature_verification import VerificationResult
+    feature_rows(db, linked)
+    calls = []
+    def verify(session, row):
+        calls.append((row.replay_id, row.round_number))
+        return VerificationResult("verified", "failed" if row.round_number == 1 else "verified", "current",
+                                  ("stored reason", "second reason"))
+    assert kind(errors, db, "feature_failed")["note"] == "not checked yet"
+    errors._verify_features(factory, verify)
+    found = kind(errors, db, "feature_failed")
+    assert calls == [(linked.id, 1), (linked.id, 3)]
+    assert found["count"] == 1
+    row = found["rows"][0]
+    assert row["round"] == 1 and row["match"] == str(linked.match_uuid)
+    assert row["figures"] == {"digest": "digest-a", "integrity": "verified", "recompilation": "failed",
+                              "freshness": "current", "rounds": 2}
+    assert row["error"] == "stored reason; second reason"
+    assert "verify_stored_round" in row["reproduce"] and "--read-only python -c" in row["reproduce"]
+    assert found["note"] == "2 verified, 1 unavailable or unsupported"
+    monkeypatch.setattr(errors, "_start_verification", errors._real_start_verification)
+    errors.cached(db, now=100)
+    errors.cached(db, now=200)
+    errors._verify_features(factory, verify)
+    assert len(calls) == 2
+    put_row(db, linked, 1, fingerprint="old")
+    assert kind(errors, db, "feature_failed")["rows"][0]["round"] == 2
+    assert kind(errors, db, "feature_failed")["rows"][0]["figures"]["rounds"] == 1
+
+
+def test_verification_reports_progress_during_serial_run(errors, db, factory, linked, monkeypatch):
+    from app.services.control_feature_verification import VerificationResult
+    feature_rows(db, linked)
+    representatives, missing = errors._feature_representatives(db)
+    monkeypatch.setattr(errors, "_feature_representatives", lambda session, collected=None: (representatives, missing))
+    # The in-memory SQLite connection is per thread: the worker thread can't read the fixture's rows back.
+    monkeypatch.setattr(errors, "_load_round", lambda session, row: row)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def verify(session, row):
+        calls.append(row.round_number)
+        if len(calls) == 2:
+            entered.set()
+            assert release.wait(10)
+        return VerificationResult("verified", "verified", "current")
+    worker = threading.Thread(target=errors._verify_features, args=(factory, verify))
+    worker.start()
+    try:
+        assert entered.wait(10)
+        assert kind(errors, db, "feature_failed")["note"] == "checking 1 of 2"
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive() and calls == [1, 3]
+
+
+def test_cached_starts_one_daemon_verifier_and_none_in_demo(errors, db, monkeypatch):
+    # Restore the actual starter, suppressed by the ordinary inventory fixture.
+    monkeypatch.setattr(errors, "_start_verification", errors._real_start_verification)
+    workers = []
+    entered, release = threading.Event(), threading.Event()
+    def body():
+        workers.append(threading.current_thread())
+        entered.set()
+        assert release.wait(10)
+    monkeypatch.setattr(errors, "_verify_features", body)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    errors.cached(None, now=100)
+    errors.cached(None, now=101)
+    assert workers == []
+    monkeypatch.setattr(settings, "demo_mode", False)
+    try:
+        errors.cached(db, now=100)
+        assert entered.wait(10)
+        errors.cached(db, now=101)
+        assert len(workers) == 1 and workers[0].daemon
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(10)
+    assert all(not worker.is_alive() for worker in workers)
+
+
+def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(errors, db, linked):
+    linked.match_uuid = RECORD["match"]
+    db.query(Player).update({Player.display_name: "synthetic-private-name"})
+    db.commit()
+    height(db, linked.map_name, asset=asset([RECORD]), status="active")
+    body = errors.compute(db, limit=None)
+    text = errors.prompt(body, "box_conflict")
+    for value in ("conorlum/valo-with-friends-tracker", "webapp/", "read-only", "likely cause", "propose a fix",
+                  "owner approves", "--expect-database valowithfriendsdb --read-only", "z: 2.0", '"piece": 15',
+                  '"tops": [2.4]', '"dist_m": 0.58', '"dist_m": null', "heights_revision", STAMP.isoformat()):
+        assert value in text
+    row = body["kinds"][0]["rows"][0]
+    for key in ("map", "match", "agent", "link", "reproduce"):
+        assert str(row[key]) in text
+    assert "synthetic-private-name" not in text
+    with pytest.raises(KeyError):
+        errors.prompt(body, "unknown")
+    assert "nothing to fix" in errors.prompt(body, "control_failed")
+
+
+def prompt_fixture(errors, counts):
+    return {"kinds": [{"key": key, "label": dict(errors.KINDS)[key], "count": count, "note": "synthetic note",
+                       "rows": [errors._row(map_name="Ascent", match=str(UUID(int=i + 1)), n=i + 1,
+                                            error="stored error\nwith newline", revision={"revision": 9})
+                                for i in range(count)]} for key, count in counts], "checked_at": STAMP.isoformat()}
+
+
+def test_prompt_limit_and_page_keep_full_counts(errors):
+    body = prompt_fixture(errors, [("control_failed", 201)])
+    text = errors.prompt(body, "control_failed")
+    assert text.count("\nmatch:") == 200
+    assert "1 more" in text and "SELECT" in text and "replay_round_control" in text
+    assert not re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE)\b", text, re.I)
+    assert "stored error\nwith newline" in text
+    shown = errors.page(body)
+    assert shown["kinds"][0]["count"] == 201 and len(shown["kinds"][0]["rows"]) == 50
+    assert len(body["kinds"][0]["rows"]) == 201
+
+
+def test_all_prompt_shares_200_in_kind_order(errors):
+    body = prompt_fixture(errors, [("control_failed", 150), ("gaps_failed", 100)])
+    text = errors.prompt(body)
+    assert text.count("\nmatch:") == 200 and "50 more" in text
+    assert text.index("Map control failed") < text.index("Timing gaps failed")
+    assert "replay_round_gap_runs" in text
+
+
+def test_feature_representatives_never_load_the_control_blob(errors, db, linked):
+    from sqlalchemy import event
+
+    feature_rows(db, linked)
+    statements = []
+    listen = lambda conn, cursor, sql, *rest: statements.append(sql)  # noqa: E731
+    event.listen(db.get_bind(), "before_cursor_execute", listen)
+    try:
+        groups, missing = errors._feature_representatives(db)
+    finally:
+        event.remove(db.get_bind(), "before_cursor_execute", listen)
+    assert set(groups) == {"digest-a", "digest-b"} and missing == 1
+    chosen = [s for s in statements if "replay_round_control" in s and "summary" in s]
+    assert chosen and not any("replay_round_control.data" in s for s in chosen)
+
+
+def test_feature_summaries_are_read_once_per_fingerprint(errors, db, linked):
+    from sqlalchemy import event
+
+    feature_rows(db, linked)
+    statements = []
+    listen = lambda conn, cursor, sql, *rest: statements.append(sql)  # noqa: E731
+    event.listen(db.get_bind(), "before_cursor_execute", listen)
+    try:
+        first = errors._feature_representatives(db)
+        reads = sum("replay_round_control.summary" in s for s in statements)
+        second = errors._feature_representatives(db)
+        again = sum("replay_round_control.summary" in s for s in statements) - reads
+        put_row(db, linked, 2, fingerprint="new")      # a recompute: its summary is read afresh
+        row = db.get(ReplayRoundControl, (linked.id, 2))
+        row.summary = cf.pack_summary({"provenance": {"inputs": {"geometry": {"features": "digest-c"}}}})
+        db.commit()
+        collected = errors.replay_progress.round_states(db)
+        collected["states"][linked.id, 2] = "done"     # as if the new fingerprint were the planner's
+        before = sum("replay_round_control.summary" in s for s in statements)
+        third = errors._feature_representatives(db, collected)
+        reread = sum("replay_round_control.summary" in s for s in statements) - before
+    finally:
+        event.remove(db.get_bind(), "before_cursor_execute", listen)
+    assert reads == 1 and again == 0
+    assert {d: c for d, (_, _, c) in first[0].items()} == {d: c for d, (_, _, c) in second[0].items()}
+    assert reread == 1
+    assert {d: c for d, (_, _, c) in third[0].items()} == {"digest-a": 1, "digest-b": 1, "digest-c": 1}
+    assert (linked.id, 2, "new") in errors._digests and len(errors._digests) == 4

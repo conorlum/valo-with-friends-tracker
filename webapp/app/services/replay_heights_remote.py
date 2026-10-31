@@ -119,6 +119,7 @@ class Build:
 class HeightState:
     builds: dict = field(default_factory=dict)     # manifest key -> Build, one per map, at most MAX_BUILDS
     tries: dict = field(default_factory=dict)       # manifest key -> (failures, last)
+    out_of_tries: frozenset = frozenset()
 
     @property
     def build(self) -> Build | None:
@@ -451,6 +452,7 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             counts["heights_off"] += 1
             log.info("heights: %s off: what its heights were built from is gone", name)
     due = {hi.key(d.manifest): d for d in plan.due}
+    hstate.out_of_tries = frozenset(d.map_name for key, d in due.items() if hstate.spent(key))
     for key, d in due.items():
         if hstate.spent(key):
             # Also retry a retirement that failed to commit on the last failed build's cycle.
