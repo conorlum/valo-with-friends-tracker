@@ -35,6 +35,60 @@ separate; its path filters now cover its shared runtime, configuration, and fixt
 The default local command excludes `slow`, `browser`, and `corpus`; PostgreSQL tests
 may skip locally without an explicit test URL. Use the lane commands for acceptance.
 
+### Suites: what to run for a change
+
+`webapp/tests/suites.toml` sorts every test file into one of 24 suites. Each suite says what it checks
+(`about`) and which code it guards (`guards`). `scripts/test_catalog.py` reads it, from `webapp/`:
+
+```
+python scripts/test_catalog.py list                    # every suite: what it checks, its tests, serial time
+python scripts/test_catalog.py plan --git              # the suites this branch needs, per-lane time and commands
+python scripts/test_catalog.py plan app/control/engine.py
+python scripts/test_catalog.py run --git [--slow]      # run them serially, then a per-suite report
+python scripts/test_catalog.py check                   # the catalog is complete (tests/test_test_catalog.py)
+```
+
+How `plan` works:
+- It takes paths in git's form or relative to `webapp/`.
+- It picks each suite that guards a changed file, plus the suite of any changed test.
+- A changed helper in a test folder picks every suite with tests in that folder.
+- A change to `pytest.ini`, `tests/conftest.py`, `tests/support/` or the requirements picks every suite.
+- Changed code that no suite guards is listed, never silently dropped.
+
+`plan` then collects the chosen files and sorts their tests by marker into lanes:
+- default
+- slow (`--slow`)
+- postgres (needs `VALO_TEST_DATABASE_URL`)
+- browser (`--browser`)
+
+For each lane it prints a time estimate from `timings.json`, a window allowing for a loaded machine, and the
+command. It also warns when the toy-map cache has no build for the current casting code.
+
+`run` runs the lanes and then reports each suite: passed, failed and skipped tests, and its actual time against
+the estimate. It also lists any test that took over 3x its recorded time. `--record` writes the run's times
+back to `timings.json`.
+
+`check` fails when:
+- a test file is in no suite, or in two;
+- a glob matches nothing;
+- a file under `app/` or `replay_worker/` is guarded by no suite.
+
+So a new test file or module must be added to `suites.toml`.
+
+### Run times
+
+`webapp/tests/timings.json` holds each test's serial run time, so a selection can be sized and split into
+parts without first timing the whole suite (`python scripts/test_timings.py show --by file`). Refresh it from
+any serial run's JUnit XML: `python scripts/test_timings.py refresh <junit.xml> [--prune]`. A parallel run's
+times are inflated by its neighbours, so don't feed it those.
+
+The toy maps in `tests/replays/control_toys.py` keep their visibility bitsets in
+`~/.cache/valo-tests/control-toys/<digest>`, shared by every checkout and worker. The digest covers the code
+that builds them (`geometry.py`, `heights.py`, `height_build.py`, `format.py`), so a change there rebuilds
+them on the next run. That build is most of a slow height test's time: `test_control_floors.py` ran 587 s
+cold and 8 s warm, serially.
+`CONTROL_TOY_CACHE_DIR=<dir>` moves the cache and `CONTROL_TOY_CACHE_DIR=off` gives each run a fresh one.
+
 ### Database isolation
 
 - Use PostgreSQL 18 and a disposable parent database ending in `_test`, with a role

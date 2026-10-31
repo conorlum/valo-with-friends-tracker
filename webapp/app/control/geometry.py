@@ -939,9 +939,14 @@ def visibility(geo: Geometry, directory: Path | None = None) -> Geometry:
     else:
         geo.rows, geo.row_of = build_visibility(geo)
         directory.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp.npz")
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")   # one per process: a shared folder
         np.savez(tmp, rows=geo.rows, row_of=geo.row_of)
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except PermissionError:      # Windows: another process wrote the same build and has it open
+            tmp.unlink(missing_ok=True)
+            if not path.is_file():
+                raise
         geo.visibility_source = "built"
     geo.visibility_s = time.perf_counter() - started
     return geo

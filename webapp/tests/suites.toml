@@ -1,0 +1,341 @@
+# The test suites: what each one checks, which code it guards, and which test files it holds.
+#
+#   python scripts/test_catalog.py list                     every suite, with its size and serial time
+#   python scripts/test_catalog.py plan --git               the suites a branch's changes need, the time, the commands
+#   python scripts/test_catalog.py plan app/control/engine.py
+#   python scripts/test_catalog.py run --git [--slow]       run them, then a per-suite report against the estimate
+#   python scripts/test_catalog.py check                    every test file in exactly one suite (tests/test_test_catalog.py)
+#
+# Paths are relative to webapp/ ("../" reaches the repo root) and are globs: `*` stays inside one folder, `**`
+# crosses folders. `tests` names each test file exactly once across all suites. `guards` names the code a suite
+# protects; a file may be guarded by several suites, and every file under app/ and ../replay_worker/ must be
+# guarded by at least one. A suite's own test files and their helpers count as guarded by it without listing.
+# Times are never written here: they come from tests/timings.json (scripts/test_timings.py).
+
+# ---------------------------------------------------------------------------------------------------- Impact
+
+[impact]
+about = "The Impact score: the formula, its econ, trade and kill-order terms, the manifest's runtime switch, and golden scores."
+tests = [
+  "tests/test_impact_alive_counts.py", "tests/test_impact_attacking_team_migration.py",
+  "tests/test_impact_bonus_denial_integration.py", "tests/test_impact_buy_disruption_integration.py",
+  "tests/test_impact_econ_hook.py", "tests/test_impact_econ_observer.py", "tests/test_impact_exante_swing.py",
+  "tests/test_impact_golden_both_regimes.py", "tests/test_impact_kill_observer.py",
+  "tests/test_impact_kill_order_bonus_net.py", "tests/test_impact_manifest.py", "tests/test_impact_manifest_rc3.py",
+  "tests/test_impact_manifest_v4.py", "tests/test_impact_persistence_contract.py", "tests/test_impact_postplant_hook.py",
+  "tests/test_impact_preplant_empirical_hook.py", "tests/test_impact_reconstruction.py",
+  "tests/test_impact_trade_credit.py", "tests/test_impact_v4_flags.py",
+  "tests/test_econ_*.py", "tests/test_formula_weights.py", "tests/test_trade_count_window.py",
+  "tests/test_trade_schedule.py", "tests/test_scoring_float_sums.py", "tests/test_round_rewards.py",
+  "tests/test_weapon_prices.py", "tests/test_credit_events.py", "tests/test_alive_count_replays.py",
+  "tests/test_replay_score_isolation.py",
+]
+guards = [
+  "app/scoring/**", "app/models/impact_score.py", "app/models/kill_event.py", "app/models/round.py",
+  "app/models/match.py",
+]
+
+[impact-timing]
+about = "Impact's time terms: the plant window, 'round decided', and the pre-plant and post-plant factors and their fits."
+tests = [
+  "tests/test_plant_window.py", "tests/test_round_decided.py", "tests/test_postplant_*.py", "tests/test_preplant_*.py",
+  "tests/test_fit_preplant_time_factor_report.py",
+]
+guards = [
+  "app/scoring/plant_window.py", "app/scoring/postplant_*", "app/scoring/preplant_*",
+  "scripts/fit_preplant_time_factor.py", "scripts/postplant_v4_variants.py",
+]
+
+[impact-release]
+about = "Scoring-release tooling: freeze, backfill, decomposition and reference checks, swap, write gate, and the DB-choosing wrappers."
+tests = [
+  "tests/test_release_*.py", "tests/test_swap_*.py", "tests/test_freeze_impact_candidate.py",
+  "tests/test_backfill_impact_candidate.py", "tests/test_compare_*.py", "tests/test_export_configuration_sources.py",
+  "tests/test_impact_artifact_export.py", "tests/test_report_rc3_measurements.py", "tests/test_solve_impact_weights.py",
+  "tests/test_recompute_impact_script.py", "tests/test_with_demo_db.py", "tests/test_with_friends_db.py",
+]
+guards = [
+  "app/scoring/impact_manifest.py", "app/scoring/impact_runtime.py", "app/scoring/impact_config.py",
+  "app/scoring/write_gate.py", "scripts/release_*.py", "scripts/swap_*.py", "scripts/freeze_*.py",
+  "scripts/backfill_*.py", "scripts/compare_*.py", "scripts/export_*.py", "scripts/install_release_write_gate.py",
+  "scripts/report_rc3*.py", "scripts/solve_impact_weights.py", "scripts/recompute_impact.py",
+  "scripts/with_demo_db.py", "scripts/with_friends_db.py",
+]
+
+[kill-order-eval]
+about = "Kill-order leverage and its refits, the win-probability model, Impact evaluation and its cache, and the stats maths."
+tests = [
+  "tests/test_kill_order_*.py", "tests/test_win_probability.py", "tests/test_impact_eval.py",
+  "tests/test_impact_eval_cache_identity.py", "tests/test_stage0_cohorts.py", "tests/test_stats_math.py",
+]
+guards = [
+  "app/services/kill_order_*.py", "app/services/impact_eval*.py", "app/services/win_probability.py",
+  "app/services/impact_stage0.py", "app/services/stats_math.py",
+]
+
+# ---------------------------------------------------------------------------------------------------- Data in
+
+[ingest]
+about = "tracker.gg ingestion: discovery and paging, the ledger, retries, outcome reports, write preflight, and the demo adapter."
+tests = [
+  "tests/test_ingest_*.py", "tests/test_tracker_ingest_contract.py", "tests/test_trackergg_history_pagination.py",
+  "tests/test_round_player_spend_ingest.py", "tests/test_demo_adapter_contract.py",
+]
+guards = [
+  "app/adapters/**", "app/scoring/ingest_preflight.py", "app/scoring/write_gate.py", "app/models/round_player_spend.py",
+  "scripts/ingest_trackergg_player.py", "scripts/refresh_tracked_players.py", "scripts/tracked_players.json",
+]
+
+[map-pool]
+about = "The Competitive map pool's history: the seed, the daily patch-notes refresh, the loader, the CLI, and migration 0023."
+tests = [
+  "tests/test_map_pool.py", "tests/test_map_pool_*.py", "tests/test_build_map_pool_seed.py", "tests/test_patch_notes.py",
+  "tests/test_migration_0023.py",
+]
+guards = [
+  "app/services/map_pool.py", "app/services/map_pool_refresh.py", "app/services/patch_notes.py", "app/models/map_pool.py",
+  "app/data/map_pool_seed.json", "scripts/map_pool.py", "scripts/build_map_pool_seed.py", "alembic/versions/0023*",
+]
+
+# ---------------------------------------------------------------------------------------------------- Pages
+
+[player-page]
+about = "The player page and its caches: data load, fight-EV, state diagrams, role/agent filters, pre-warm and cache checks."
+tests = [
+  "tests/test_player_*.py", "tests/test_filter_cache.py", "tests/test_form_card_filter.py", "tests/test_fight_ev.py",
+  "tests/test_state_replay.py", "tests/test_state_diagram_from_replay.py", "tests/test_step1_query_merges.py",
+  "tests/test_prewarm_player_cache_ids.py", "tests/test_verify_player_cache_coverage.py",
+  "tests/test_verify_cache_matches_scores.py", "tests/test_profile_cache_journey.py", "tests/test_recent_match_rows.py",
+  "tests/test_economy_graphs.py", "tests/test_time_player_views.py", "tests/test_agent_roles.py",
+  "tests/test_migration_0028.py",
+]
+guards = [
+  "app/services/player_*.py", "app/services/players.py", "app/services/fight_ev.py", "app/services/state_replay.py",
+  "app/services/economy_graphs.py", "app/services/recent_match_rows.py", "app/services/agent_roles.py",
+  "app/routers/players.py", "app/templates/players/**", "app/templates/_form_card.html",
+  "app/templates/_recent_match_rows.html", "app/templates/_econ_tier_matrix*.html", "app/data/agent_roles.json",
+  "app/models/player_view_cache.py", "scripts/recompute_player_views.py", "scripts/prewarm*.py", "scripts/verify_*.py",
+  "scripts/time_player_views.py", "alembic/versions/0028*",
+]
+
+[accounts-circle]
+about = "Friendships, linked accounts (account groups) and the friend circle every 'friends' reader uses, with cache invalidation."
+tests = ["tests/test_account_groups*.py", "tests/test_circle*.py"]
+guards = [
+  "app/services/account_groups.py", "app/services/circle.py", "app/services/friends.py", "app/services/auth.py",
+  "app/routers/accounts.py", "app/routers/friends.py", "app/models/account_group.py", "app/models/friendship.py",
+  "app/models/player.py", "app/templates/accounts.html", "app/templates/friends.html",
+]
+
+[site-stats]
+about = "The /stats page: its two populations and caches, every stat card, and map and match streaks."
+tests = [
+  "tests/test_site_stats.py", "tests/test_site_stats_cache.py", "tests/test_force_buy_stats.py",
+  "tests/test_halftime_conversion_stats.py", "tests/test_map_side_stats.py", "tests/test_round_streak_stats.py",
+  "tests/test_score_reached_stats.py", "tests/test_round_combo_stats.py", "tests/test_eco_followup.py",
+  "tests/test_enemy_at_11_response.py", "tests/test_map_control_card.py", "tests/test_map_streaks.py",
+  "tests/test_match_streaks.py",
+]
+guards = [
+  "app/services/site_stats*.py", "app/services/viewer_site_stats_cache.py", "app/services/*_stats.py",
+  "app/services/eco_followup.py", "app/services/enemy_at_11_response.py", "app/services/map_streaks.py",
+  "app/services/match_streaks.py", "app/services/surrender_rounds.py", "app/routers/site_stats.py",
+  "app/templates/stats/**", "app/templates/_*_card.html", "app/templates/players/_map_streaks.html",
+  "app/models/site_stats_cache.py", "app/models/viewer_site_stats_cache.py",
+]
+
+[matches-sessions-squad]
+about = "The match page's result and shoutouts, sessions and their replay stats, and the squad page."
+tests = [
+  "tests/test_sessions.py", "tests/test_clutch_sides.py", "tests/test_squad.py", "tests/test_squad_overview_db.py",
+  "tests/test_shoutouts.py", "tests/test_match_page_result.py",
+]
+guards = [
+  "app/services/sessions.py", "app/services/session_stats.py", "app/services/squad.py", "app/services/shoutouts.py",
+  "app/services/matches.py", "app/routers/sessions.py", "app/routers/squad.py", "app/routers/matches.py",
+  "app/templates/sessions/**", "app/templates/squad/**", "app/templates/matches/**",
+]
+
+[app-shell]
+about = "The app around the pages: the two site modes, wide layouts, login, demo write protection, startup and shutdown, maintenance, migrations."
+tests = [
+  "tests/test_site_modes.py", "tests/test_wide_layout_*.py", "tests/test_page_sections.py",
+  "tests/test_auth_navigation.py", "tests/test_demo_http_contract.py", "tests/test_app_lifespan.py",
+  "tests/test_maintenance_mode.py", "tests/test_request_trace.py", "tests/test_vendor_map_assets.py",
+  "tests/test_migration_lifecycle.py",
+]
+guards = [
+  "app/__init__.py", "app/main.py", "app/config.py", "app/db.py", "app/maintenance.py", "app/migration_guards.py",
+  "app/templates.py", "app/templates/*.html", "app/static/css/**", "app/static/img/**", "app/static/data/*.json",
+  "app/models/__init__.py", "app/routers/__init__.py", "app/services/__init__.py", "app/services/auth.py",
+  "app/services/request_trace.py", "app/routers/auth.py", "alembic/**", "../render.yaml",
+  "scripts/load_seed_data.py", "scripts/dump_seed_data.py", "seed_data/**",
+]
+
+[browser]
+about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
+tests = ["tests/browser/**/test_*.py"]
+guards = ["app/static/js/**", "app/templates/**"]
+
+# ---------------------------------------------------------------------------------------------------- Coach and analysis tabs
+
+[coach]
+about = "The AI coach: snapshot, brief, prompt, checker, runner, storage, the coach page and per-moment feedback. No model is called."
+tests = ["tests/coach/test_*.py", "tests/test_coach_journey.py"]
+guards = [
+  "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
+  "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
+  "scripts/coach*",
+]
+
+[critical-util]
+about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, the round-win estimator, cast values, the tab and /util."
+tests = ["tests/critutil/test_*.py"]
+guards = [
+  "app/critutil/**", "app/services/util_model.py", "app/services/util_values.py", "app/services/replay_util.py",
+  "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
+]
+
+[critical-moments]
+about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
+tests = ["tests/moments/test_*.py", "tests/replays/test_moments_*.py", "tests/replays/test_replay_moments.py"]
+guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/moments.js"]
+
+# ---------------------------------------------------------------------------------------------------- Replays
+
+[replay-format]
+about = "Reading a replay export: the contract, condensing, linking to a match, the stored format, player state and utility events."
+tests = [
+  "tests/replays/test_replay_activations.py", "tests/replays/test_replay_buffs.py", "tests/replays/test_replay_condense.py",
+  "tests/replays/test_replay_contract.py", "tests/replays/test_replay_deadlock.py",
+  "tests/replays/test_replay_eligibility.py", "tests/replays/test_replay_extras.py", "tests/replays/test_replay_fixture.py",
+  "tests/replays/test_replay_format.py", "tests/replays/test_replay_gate.py", "tests/replays/test_replay_header.py",
+  "tests/replays/test_replay_impact.py", "tests/replays/test_replay_isolation.py",
+  "tests/replays/test_replay_lifecycle.py", "tests/replays/test_replay_link.py", "tests/replays/test_replay_ownership.py",
+  "tests/replays/test_replay_phases.py", "tests/replays/test_replay_streaming.py",
+  "tests/replays/test_replay_teleports.py", "tests/replays/test_replay_util.py", "tests/replays/test_replay_walls.py",
+  "tests/replays/test_player_state*.py", "tests/replays/test_status_intervals.py",
+  "tests/replays/test_utility_fixtures.py", "tests/replays/test_ingest_replay.py",
+]
+guards = [
+  "app/replays/__init__.py", "app/replays/condense.py", "app/replays/contract.py", "app/replays/format.py",
+  "app/replays/extras.py", "app/replays/header.py", "app/replays/link.py", "app/replays/causes.py",
+  "app/replays/player_state*.py", "app/replays/status_intervals.py", "app/services/replay_impact.py",
+  "scripts/make_replay_fixture.py", "scripts/ingest_replay.py", "scripts/inspect_replay_utility.py",
+  "tests/fixtures/replays/**",
+]
+
+[replay-web]
+about = "Replays on the site: upload and held uploads, storage and links, routes, re-parse queue, match states, the viewer and its JS."
+tests = [
+  "tests/replays/test_replay_store.py", "tests/replays/test_replay_routes.py", "tests/replays/test_replay_upload.py",
+  "tests/replays/test_replay_upload_held.py", "tests/replays/test_replay_progress.py",
+  "tests/replays/test_replay_reparse_auto.py", "tests/replays/test_replay_match_states.py",
+  "tests/replays/test_replay_archive_web.py", "tests/replays/test_replay_view.py", "tests/replays/test_replay_viewer.py",
+  "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py",
+]
+guards = [
+  "app/replays/store.py", "app/replays/db.py", "app/routers/replays.py", "app/routers/replay_admin.py",
+  "app/services/replays.py", "app/services/replay_upload.py", "app/services/replay_progress.py",
+  "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
+  "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
+  "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
+]
+
+[replay-worker]
+about = "The replay worker service: upload queue, .vrf archive, parse, control and height jobs, and Render Workflow runs."
+tests = ["tests/replays/test_replay_worker*.py", "tests/replays/test_replay_archive.py"]
+guards = ["../replay_worker/**"]
+
+# ---------------------------------------------------------------------------------------------------- Map control
+
+[control-engine]
+about = "The map-control engine's rules on toy maps: knowledge, unknown spread, utility, hearing, reveals, agents' abilities, stored bytes, the case runner."
+tests = [
+  "tests/replays/test_control_ability_walls.py", "tests/replays/test_control_abyss_barriers.py",
+  "tests/replays/test_control_blind.py", "tests/replays/test_control_causality.py", "tests/replays/test_control_collapse.py",
+  "tests/replays/test_control_cypher_leer.py", "tests/replays/test_control_engine.py",
+  "tests/replays/test_control_figures.py", "tests/replays/test_control_format.py", "tests/replays/test_control_hearing.py",
+  "tests/replays/test_control_knew.py", "tests/replays/test_control_knife_skye.py", "tests/replays/test_control_mollies.py",
+  "tests/replays/test_control_reasons.py", "tests/replays/test_control_reveals.py", "tests/replays/test_control_stats.py",
+  "tests/replays/test_control_task.py", "tests/replays/test_control_teleports.py", "tests/replays/test_control_unknown.py",
+  "tests/replays/test_control_utility.py", "tests/replays/test_control_veto.py", "tests/replays/test_control_cases.py",
+  "tests/replays/test_seen_from_pairs.py", "tests/replays/test_fight_swing.py", "tests/replays/test_replay_tracers.py",
+]
+guards = [
+  "app/control/__init__.py", "app/control/engine.py", "app/control/utility.py", "app/control/utility.json",
+  "app/control/hearing.json", "app/control/mollies.py", "app/control/encode.py", "app/control/task.py",
+  "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py",
+  "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
+  "tests/fixtures/control/**", "tests/replays/control_toys.py", "tests/replays/conftest.py",
+]
+
+[control-geometry]
+about = "Map-control geometry: masks, sight casting, heights and floors, the height build and its jobs, ropes, terrain, routes and topology."
+tests = [
+  "tests/replays/test_control_geometry.py", "tests/replays/test_control_floors.py", "tests/replays/test_control_sight.py",
+  "tests/replays/test_control_heights.py", "tests/replays/test_control_heights_db.py",
+  "tests/replays/test_control_height_job.py", "tests/replays/test_height_*.py", "tests/replays/test_heights_remote.py",
+  "tests/replays/test_compare_height_builds.py", "tests/replays/test_rope_*.py", "tests/replays/test_terrain_audit.py",
+  "tests/replays/test_topology_frontier.py", "tests/replays/test_adaptive_ground.py", "tests/replays/test_quiet_*.py",
+]
+guards = [
+  "app/control/geometry.py", "app/control/heights.py", "app/control/height_*.py", "app/control/adaptive.py",
+  "app/control/rope_*.py", "app/control/terrain_audit.py", "app/control/topology.py", "app/control/route_runtime.py",
+  "app/control/routes.py", "app/replays/height_inputs.py", "app/replays/format.py", "app/services/control_heights.py",
+  "app/services/replay_heights_remote.py", "app/static/data/control/**", "scripts/build_control_heights.py",
+  "scripts/compare_height_builds.py", "scripts/height_viewer*", "tests/replays/control_toys.py",
+  "tests/replays/conftest.py",
+]
+
+[control-store-web]
+about = "Map control outside the engine: committed assets and barriers, storage and freshness, the worker dispatcher, views, viewer, tagger, reference bytes."
+tests = [
+  "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
+  "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
+  "tests/replays/test_control_tagger.py", "tests/replays/test_control_pinned_inputs.py",
+  "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
+  "tests/replays/test_preview_control_live.py",
+]
+guards = [
+  "app/services/replay_control.py", "app/services/replay_control_store.py", "app/services/replay_control_remote.py",
+  "app/services/replay_control_views.py", "app/static/js/replay_control.js", "app/static/data/control/**",
+  "app/templates/stats/_map_control_table.html", "scripts/build_control_geometry.py", "scripts/place_control_barriers.py",
+  "scripts/compute_control.py", "scripts/control_tagger*", "scripts/preview_control_live.py",
+  "scripts/control_reference.py",
+]
+
+[map-features]
+about = "Map features (doors, walls, ropes, Ascent, Lotus, Sunset): schema, inputs, compiled artifacts, runtime, sight caches, jobs, audits."
+tests = [
+  "tests/replays/test_*feature*.py", "tests/replays/test_map_pool_runtime.py", "tests/replays/test_lotus_door_seals.py",
+  "tests/replays/test_sunset_door_seals.py",
+]
+guards = [
+  "app/control/feature*.py", "app/control/map_pool_runtime.py", "app/replays/map_feature_*.py",
+  "app/replays/ascent_features.py", "app/replays/feature_audit.py", "app/services/control_feature_*.py",
+  "scripts/prepare_ascent_features.py", "scripts/*feature*",
+]
+
+[timing-gaps]
+about = "Timing gaps: chokes, the observer and route history, predicted gaps and back-shots, storage, views, the gaps layer and the patterns page."
+tests = ["tests/replays/test_gaps_*.py", "tests/replays/test_gap_patterns*.py"]
+guards = [
+  "app/gaps/**", "app/control/observe.py", "app/control/routes.py", "app/control/chokes.py", "app/replays/choke_assets.py",
+  "app/services/replay_gaps*.py", "app/services/gap_patterns.py", "app/routers/gap_patterns.py",
+  "app/templates/gaps/**", "app/static/js/replay_gaps.js", "app/static/js/gap_patterns.js",
+  "app/static/data/**/*.chokes.json",
+]
+
+# ---------------------------------------------------------------------------------------------------- The tests themselves
+
+[test-harness]
+about = "The test machinery: lane selection and required prerequisites, the Postgres guard, the architecture and golden checks, this catalog."
+tests = [
+  "tests/test_test_lanes.py", "tests/test_postgres_test_guard.py", "tests/test_architecture_guard.py",
+  "tests/test_golden_contract.py", "tests/test_test_catalog.py",
+]
+guards = [
+  "pytest.ini", "tests/conftest.py", "tests/support/**", "tests/suites.toml", "tests/timings.json",
+  "scripts/test_catalog.py", "scripts/test_timings.py", "requirements*.txt",
+]

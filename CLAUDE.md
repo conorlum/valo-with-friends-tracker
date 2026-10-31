@@ -184,6 +184,11 @@ Run from `webapp/` with `./.venv313/Scripts/python.exe -m pytest`. The default e
 `browser`, and optional `corpus` measurements; xdist uses a third of the cores and reserves the last four.
 See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-audit implementation map.
 
+**Which tests a change needs:** `python scripts/test_catalog.py plan --git` (or `plan <paths>`) names the suites
+from `tests/suites.toml` that guard the changed files, with each lane's estimated time and command; `run --git`
+runs them and reports each suite against its estimate; `list` describes all 24 suites. A new test file or app
+module goes into `tests/suites.toml` (`check`, run by `tests/test_test_catalog.py`, fails otherwise).
+
 | Lane | Arguments after `-m pytest` |
 |---|---|
 | Offline, including Node helpers | `-n 2 -m "not slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
