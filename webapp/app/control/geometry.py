@@ -740,8 +740,45 @@ def sight_without(geo: Geometry, *labels) -> np.ndarray:
     return view[1]
 
 
+def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sight without learnt boxes, their nearest-row surfaces (m), and int32 cover labels.
+
+    Each topped pixel takes its piece's nearest learnt (x px, y px, z dm) row, preferring the lower
+    top on ties. Surface is position-z minus STAND_M, NaN elsewhere. box_tops returns a fresh proxy,
+    so retain and compare the stable heights, cover and sight objects, never their ids.
+    """
+    cached = geo.__dict__.get('_plate_surface')
+    if cached is not None and cached[0] is geo.heights and cached[1] is geo.cover_px and cached[2] is geo.sight:
+        return cached[3]
+    topped = tuple(geo.box_tops)
+    # sight_without retains its old, sight-only cache contract. A cover replacement must also
+    # refresh this particular cleared mask, without changing the default sight path.
+    geo.__dict__.get('_sight_without', {}).pop(topped, None)
+    sight = sight_without(geo, topped)
+    surface = np.full((PX, PX), np.nan, np.float32)
+    piece = np.zeros((PX, PX), np.int32) if geo.cover_px is None else geo.cover_px.astype(np.int32)
+    if topped:
+        rows = np.asarray(geo.heights.box_tops, np.int64).reshape(-1, 3)
+        labels = piece[np.clip(rows[:, 1], 0, PX - 1), np.clip(rows[:, 0], 0, PX - 1)]
+        for p in topped:
+            got = rows[labels == p]
+            got = got[np.lexsort((got[:, 0], got[:, 1], got[:, 2]))]
+            ys, xs = np.nonzero(piece == p)
+            distance = np.full(len(xs), np.iinfo(np.int64).max, np.int64)
+            z = np.empty(len(xs), np.float32)
+            for rx, ry, rz in got:
+                d = (xs - rx) ** 2 + (ys - ry) ** 2
+                nearer = d < distance  # sorted rows make equal distances prefer the lower top
+                distance[nearer] = d[nearer]
+                z[nearer] = float(rz) / 10 - hc.STAND_M
+            surface[ys, xs] = z
+    result = (sight, surface, piece)
+    geo.__dict__['_plate_surface'] = (geo.heights, geo.cover_px, geo.sight, result)
+    return result
+
+
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
-         own: int | None = None, record: dict | None = None, see_over=()) -> np.ndarray:
+         own: int | None = None, record: dict | None = None, see_over=(), plates=False) -> np.ndarray:
     """see_over: cover labels the eye sees over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block (`sight_without`).
 
     The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
@@ -753,7 +790,8 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (see the module docstring) and `own` is the viewer's own node, the only one of its cell it sees
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
-    (a dict) counts those rays under "unresolved_rays"."""
+    (a dict) counts those rays under "unresolved_rays". With `plates=True`, learnt boxes raise the
+    height horizon at their nearest learnt surface instead of acting as unlimited sight walls."""
     see_over = see_over_labels(see_over)
     if geo.movement_only:
         eye_z = None
@@ -761,17 +799,17 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
-                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over)
+                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over, plates=plates)
     if geo.heights is not None:
         if eye_z is None:
             if geo.adaptive:
                 return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
             return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes, see_over))
-        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over)
+        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, plates=plates)
         if len(geo.top_nodes):
             if own is None:
                 own = geo.node_at_px(x, y, float(eye_z) - hc.EYE_M)
-            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen)
+            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen, plates=plates)
         return seen
     return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
 
@@ -814,7 +852,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
-                  own: int | None, record: dict | None, see_over=()) -> np.ndarray:
+                  own: int | None, record: dict | None, see_over=(), plates=False) -> np.ndarray:
     """`cast` on nodes, with the height test (see_over: as in `cast`). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
@@ -838,6 +876,10 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
     sight = sight_without(geo, see_over) if see_over else geo.sight
+    if plates:
+        plate_sight, surface, piece = plate_surface(geo)
+        sight = sight & plate_sight if see_over else plate_sight
+        own_piece = piece[int(np.clip(y, 0, PX - 1)), int(np.clip(x, 0, PX - 1))]
     src = geo.space_at_px(x, y)
     own = geo.node_at_px(x, y, eye - hc.EYE_M) if own is None else own
     seen[own] = True
@@ -966,6 +1008,9 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     seen[node[there & ok]] = True
                 # this cell's ground raises the horizon for what is beyond it
                 np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
+                if plates:
+                    on_piece = away & (piece[pyc, pxc] != own_piece)
+                    np.fmax(hor, np.where(on_piece, (surface[pyc, pxc] - eye) / d, np.nan), out=hor)
     return seen
 
 
@@ -1003,7 +1048,7 @@ def _over_own_top(geo: Geometry, a: tuple, b: tuple, t: int, piece: int) -> bool
 
 
 def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: float,
-              own: int, record: dict | None, see_over, seen: np.ndarray) -> None:
+              own: int, record: dict | None, see_over, seen: np.ndarray, plates=False) -> None:
     """Add tops in the ray fan by exact head/feet lines; a reverse top view cheaply rejects ground pairs."""
     angles = np.asarray(angles_deg, float)
     if not len(angles):
@@ -1016,8 +1061,10 @@ def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: 
                                & (off <= RAY_STEP_DEG / 2 + 1e-9).any(axis=1))
     if not len(candidates):
         return
-    if not geo.is_top[own]:
+    if not plates and not geo.is_top[own]:
         candidates = candidates[_top_views(geo)[candidates, own]]
+    if plates:
+        own_piece = int(plate_surface(geo)[2][int(np.clip(y, 0, PX - 1)), int(np.clip(x, 0, PX - 1))])
     for i in candidates:
         t = int(geo.top_nodes[i])
         tx, ty = map(float, geo.centres[t])
@@ -1027,13 +1074,17 @@ def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: 
         a = (x, y, eye)
         for offset in (hc.HEAD_M, hc.FEET_M):
             b = (tx, ty, z + offset)
-            if los(geo, a, b, smokes, record, see_over=over) and _over_own_top(geo, a, b, t, piece):
+            if plates:
+                clear = los(geo, a, b, smokes, record, see_over=over, plates=True, skip=(piece, own_piece))
+            else:
+                clear = los(geo, a, b, smokes, record, see_over=over) and _over_own_top(geo, a, b, t, piece)
+            if clear:
                 seen[t] = True
                 break
 
 
 def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
-        see_over=((), ())) -> bool:
+        see_over=((), ()), plates=False, skip=()) -> bool:
     """see_over: cover labels the ends see over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block.
 
     Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
@@ -1042,7 +1093,8 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     abilities; the ground of every cell between the two ends' cells; and every upper floor on the way,
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
-    rays `cast` happens to shoot, so the two check each other."""
+    rays `cast` happens to shoot, so the two check each other. `plates=True` replaces learnt box walls
+    with surfaces that block samples below them; `skip` exempts those cover piece labels from surfaces."""
     see_over = see_over_labels(see_over)
     if geo.movement_only:
         a, b = (*a[:2], None), (*b[:2], None)
@@ -1050,7 +1102,7 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record,
-                        see_over=see_over)
+                        see_over=see_over, plates=plates, skip=skip)
     (ax, ay, az), (bx, by, bz) = a, b
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
@@ -1058,6 +1110,11 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
         cell = geo.space_at_px(ax, ay)
         if geo.heights is None or az is None or bz is None or geo.unresolved_at_px(ax, ay):
             return True
+        if plates:
+            _, surface, piece = plate_surface(geo)
+            px, py = int(np.clip(ax, 0, PX - 1)), int(np.clip(ay, 0, PX - 1))
+            if piece[py, px] not in skip and min(az, bz) < surface[py, px]:
+                return False
         return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) <= 0
                        for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:])
     ux, uy = (bx - ax) / length, (by - ay) / length
@@ -1073,6 +1130,9 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     step_m = RAY_STEP_PX * geo.m_per_px
     hits, flat = 0, False
     sight = sight_without(geo, see_over) if see_over else geo.sight
+    if plates:
+        plate_sight, surface, piece = plate_surface(geo)
+        sight = sight & plate_sight if see_over else plate_sight
     spans: list[list] = []                    # [cell, first d, last d] in order along the line
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step
@@ -1084,6 +1144,9 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
         for (sx, sy, r, solid), inside0 in zip(circles, started_in):
             inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
             if (inside if solid and step > 0 else inside != inside0):
+                return False
+        if plates and heights and piece[pyc, pxc] not in skip:
+            if az + slope * step * geo.m_per_px < surface[pyc, pxc]:
                 return False
         if not heights or flat:
             continue
