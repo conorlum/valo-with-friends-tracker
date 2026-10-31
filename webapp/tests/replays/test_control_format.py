@@ -84,7 +84,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # reach (VIEW_REACH_M, 2026-10-30; was "6a62ad6a009229f9"),
           # and again for the over stance (stance.OVER, engine.OVER_SEEN; was "35ef13cb014b5946").
           # re-pinned in place for EYE_M 1.05 (was "7cd7ad7dc50b5450")
-          21: "8c91e53977c08c1a"}
+          21: "8c91e53977c08c1a",
+          # R9/W7a: JUMP_SIGHT enables airborne plate casts; the moving counter is lowercase.
+          22: "f07e02b01cd7d18a"}
 
 
 def _constants_digest() -> str:
@@ -125,12 +127,19 @@ def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch)
     monkeypatch.setattr(hc, "EYE_M", 1.1)
     monkeypatch.setattr(stance, "OVER", False)
     monkeypatch.delattr(ce, "OVER_SEEN")
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
     assert _constants_digest() == "35ef13cb014b5946"
 
 
 def test_with_the_previous_eye_the_revision_21_constants_digest_is_unchanged(monkeypatch):
     monkeypatch.setattr(hc, "EYE_M", 1.1)
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
     assert _constants_digest() == "7cd7ad7dc50b5450"
+
+
+def test_without_the_jump_switch_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
+    assert _constants_digest() == PINNED[21]
 
 
 def test_the_formats_agree_with_the_engine():

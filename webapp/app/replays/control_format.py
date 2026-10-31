@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 21    # 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
+CONTROL_REVISION = 22    # 22: airborne holders cast against learnt box plates (2026-10-31); 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

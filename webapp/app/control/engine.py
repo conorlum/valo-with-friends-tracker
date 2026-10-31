@@ -119,6 +119,8 @@ SECTION_S = 10.0
 
 FOV_HALF = 51.5
 OVER_SEEN = True  # Enemies see a player over a box by the exact line, like on_box
+JUMP_SIGHT = True  # Airborne holders cast against learnt box plates (R2/R3).
+_plate_calls = 0
 RUN_MPS, WALK_MPS = 5.0, 1.5
 # "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
 # seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
@@ -1156,6 +1158,7 @@ class Holder:
     memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
     blind: bool = False      # flashed now (P07): alive, in place and seen, with no personal control
     stance: Stance | None = None   # W12: standing on / beside a cover piece (nothing sets it yet)
+    air: bool = False
 
 
 # Zero personal control while blinded (P07; the design's section 2, the plan's amendment "Blinded control"). A
@@ -1373,6 +1376,7 @@ class Tick:
     """The inputs of one tick, and `compose` (the state) with or without a removed player."""
 
     def __init__(self, rnd: RoundInputs, t: float, timings: dict | None = None):
+        global _plate_calls
         geo = self.geo = rnd.geo
         self.topo = topology.of(geo)
         self.rnd, self.t = rnd, t
@@ -1410,9 +1414,16 @@ class Tick:
                 see_over = st.see_over
                 if st.anchor is not None:
                     cell = st.anchor
+            air = self._airborne(s, t, cell, st)
             mode = rnd.movement(s, t, p)
             if s in using:
                 raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
+            elif air:
+                raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
+                           eye_z=self._eye(s, t, cell),
+                           own=st.own if st is not None and st.own is not None else cell,
+                           record=self.fallbacks, see_over=(), plates=True)
+                _plate_calls += 1
             else:
                 raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
                            eye_z=self._eye(s, t, cell),
@@ -1441,7 +1452,7 @@ class Tick:
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
             self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode,
-                                     blind=blind, stance=st)
+                                     blind=blind, stance=st, air=air)
             if s not in using:
                 look = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
                         None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
@@ -1488,6 +1499,29 @@ class Tick:
         self.hazard: dict[str, np.ndarray] | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
+
+    def _airborne(self, s: int, t: float, cell: int, st: Stance | None) -> bool:
+        """R2: feet above the anchor floor; unresolved ground uses the nearby piece's ring floor."""
+        geo = self.geo
+        if not JUMP_SIGHT or geo.heights is None or (st is not None and st.kind == "on_box"):
+            return False
+        z = self.rnd.height(s, t)
+        if z is None:
+            return False
+        floor = float(geo.node_z[cell])
+        if math.isnan(floor):
+            piece = int(st.piece) if st is not None and st.piece else 0
+            x, y, _ = self.rnd.pos(s, t)
+            ix, iy = int(x), int(y)
+            if (not piece and geo.cover_px is not None
+                    and 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]):
+                piece = int(geo.cover_px[iy, ix])
+                if not piece and geo.box_view_reach is not None:
+                    piece = int(geo.box_view_reach[iy, ix, 0])
+            if not piece or piece not in geo.box_ground:
+                return False
+            floor = float(geo.box_ground[piece])
+        return bool(z - floor > hc.STAND_TOL_M)
 
     def _eye(self, s: int, t: float, node: int) -> float | None:
         """Slot s's eye height: their own z + EYE_M, the floor they stand on without z, None (2D) on a
