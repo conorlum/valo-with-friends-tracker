@@ -120,7 +120,7 @@ def test_real_shaped_box_conflict_and_shared_copy_cache(errors, db, linked, monk
     assert row["revision"] == {"heights_revision": 9, "built_at": STAMP.isoformat()}
     assert row["reproduce"].endswith(
         f'control_heights.py export --map {linked.map_name} --out "$TEMP/{linked.map_name}_heights.npz"')
-    assert ch.box_conflicts(db, linked.map_name, RECORD["match"]) == [RECORD]
+    assert [(map_name, record) for map_name, _, _, record in ch.all_box_conflicts(db)] == [(linked.map_name, RECORD)]
     monkeypatch.setattr(ch, "asset_bytes", lambda *args: pytest.fail("cached asset reread"))
     all_rows = ch.all_box_conflicts(db)
     all_rows[0][1]["revision"] = 99

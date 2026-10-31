@@ -174,19 +174,6 @@
         <div class="replay-control-table" data-replay-control-table></div>
         <p class="replay-side-note">Why the unknown changed: what each team learnt about an enemy in the last 10 seconds, newest first. Click one to jump to it.</p>
         <ol class="replay-feed" data-replay-control-reasons></ol>
-        {% if box_conflicts %}
-        <div data-replay-box-heights>
-          <p class="replay-side-note"><strong>Box heights</strong>: moments a player stood at a height no single box explains: the build couldn't tell which box they were on.</p>
-          <ol class="replay-feed">
-            {% for c in box_conflicts %}
-            {% set who = ((replay_data or {}).get('players') or {}).get(c.slot|string) %}
-            <li><a href="?round={{ c.round }}&amp;t={{ '%.1f'|format(c.t0) }}">R{{ c.round }} {{ '%.1f'|format(c.t0) }} s</a>
-              {{ (who and who.agent) or ('slot ' ~ c.slot) }}, at {{ '%.1f'|format(c.z) }} m:
-              {% for cand in c.candidates %}box {{ cand[0] }} ({% if cand[1] %}top {{ cand[1]|map('string')|join(', ') }} m{% else %}no top{% endif %}){% if cand|length > 2 %} {{ '%.2f'|format(cand[2]) }} m away{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</li>
-            {% endfor %}
-          </ol>
-        </div>
-        {% endif %}
       </div>
       {% endif %}
       {% if linked and control %}

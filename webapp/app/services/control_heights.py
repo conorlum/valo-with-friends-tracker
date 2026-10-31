@@ -155,7 +155,7 @@ def _asset_meta(data: bytes) -> dict:
 
 
 def _box_conflict_records(db, row) -> list[dict]:
-    """Cached asset metadata, shared by the match view and the corpus errors reader."""
+    """Cached asset metadata for the corpus errors reader."""
     if row.digest not in _BOX_CONFLICTS:
         data = asset_bytes(db, row.map_name, row.digest)
         found = (_asset_meta(data).get("box_conflicts") or []) if data else []
@@ -166,7 +166,7 @@ def _box_conflict_records(db, row) -> list[dict]:
 def all_box_conflicts(db) -> list[tuple]:
     """(map, rules, built_at, record) for every active asset's conflicts, across all matches.
 
-    Best effort like `box_conflicts`; a bad asset leaves other maps available. Deep copies out.
+    Best effort: a bad asset leaves other maps available. Deep copies out.
     """
     import copy
 
@@ -183,23 +183,6 @@ def all_box_conflicts(db) -> list[tuple]:
         except Exception:
             log.warning("box conflicts unavailable for %s", map_name, exc_info=True)
     return out
-
-
-def box_conflicts(db, map_name: str, match_uuid: str) -> list[dict]:
-    """The map's active asset's `meta["box_conflicts"]` for one match, sorted by (round, t0).
-
-    Reads only the asset's meta member; the parsed list is kept per digest. Best effort: any problem is `[]`.
-    """
-    try:
-        import copy
-        row = active_rows(db).get(map_name)
-        if row is None:
-            return []
-        out = [copy.deepcopy(r) for r in _box_conflict_records(db, row) if r.get("match") == str(match_uuid)]
-        return sorted(out, key=lambda r: (r.get("round", 0), r.get("t0", 0)))
-    except Exception:
-        log.warning("box conflicts unavailable for %s", map_name, exc_info=True)
-        return []
 
 
 def verify_asset(data: bytes, map_name: str, timeout_s: float = 120.0, *,

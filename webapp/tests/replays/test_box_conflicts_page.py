@@ -1,4 +1,4 @@
-"""Box-height conflicts from the active height asset's meta, shown on the replay page's Control tab (W11)."""
+"""Corpus box-height metadata stays available after the Control tab's Box heights list is removed."""
 
 import io
 import json
@@ -33,7 +33,7 @@ def fresh_cache():
 
 def stub(monkeypatch, data, digest="d1"):
     reads = []
-    row = SimpleNamespace(map_name="Summit", digest=digest, id=1)
+    row = SimpleNamespace(map_name="Summit", digest=digest, id=1, rules={"version": 3}, built_at=None)
     monkeypatch.setattr(ch, "active_rows", lambda db: {"Summit": row})
 
     def read(db, map_name, dig):
@@ -43,28 +43,27 @@ def stub(monkeypatch, data, digest="d1"):
     return reads
 
 
-def test_service_filters_and_sorts(monkeypatch):
+def test_service_filters_records_and_keeps_all_matches(monkeypatch):
     other = dict(RECORD, match="other")
     early = dict(RECORD, round=2, t0=50.0)
     later = dict(RECORD, t0=40.0)
-    stub(monkeypatch, asset({"version": 3, "box_conflicts": [later, other, RECORD, early]}))
-    got = ch.box_conflicts(None, "Summit", MATCH)
-    assert got == [early, RECORD, later]
-    assert ch.box_conflicts(None, "Summit", "nobody") == []
+    stub(monkeypatch, asset({"version": 3, "box_conflicts": [later, None, other, RECORD, "bad", early]}))
+    assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, record)
+                                         for record in [later, other, RECORD, early]]
 
 
 def test_service_empty_cases(monkeypatch):
     stub(monkeypatch, asset({"version": 3}))
-    assert ch.box_conflicts(None, "Summit", MATCH) == []
+    assert ch.all_box_conflicts(None) == []
     stub(monkeypatch, b"not an npz", digest="d2")
-    assert ch.box_conflicts(None, "Summit", MATCH) == []
+    assert ch.all_box_conflicts(None) == []
     monkeypatch.setattr(ch, "active_rows", lambda db: {})
-    assert ch.box_conflicts(None, "Summit", MATCH) == []
+    assert ch.all_box_conflicts(None) == []
 
     def boom(db):
         raise RuntimeError("db down")
     monkeypatch.setattr(ch, "active_rows", boom)
-    assert ch.box_conflicts(None, "Summit", MATCH) == []
+    assert ch.all_box_conflicts(None) == []
 
 
 def test_service_reads_an_asset_as_save_asset_writes_it(monkeypatch, tmp_path):
@@ -78,7 +77,7 @@ def test_service_reads_an_asset_as_save_asset_writes_it(monkeypatch, tmp_path):
     path = tmp_path / "asset.npz"
     hc.save_asset(path, built)
     stub(monkeypatch, path.read_bytes())
-    assert ch.box_conflicts(None, "Summit", MATCH) == [RECORD]
+    assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, RECORD)]
 
 
 def test_service_refuses_a_meta_member_that_is_not_uint8(monkeypatch):
@@ -87,16 +86,21 @@ def test_service_refuses_a_meta_member_that_is_not_uint8(monkeypatch):
     out = io.BytesIO()
     np.savez(out, meta=np.frombuffer(payload, "<i2"))
     stub(monkeypatch, out.getvalue())
-    assert ch.box_conflicts(None, "Summit", MATCH) == []
+    assert ch.all_box_conflicts(None) == []
 
 
 def test_service_caches_per_digest(monkeypatch):
     reads = stub(monkeypatch, asset({"version": 3, "box_conflicts": [RECORD]}))
-    first = ch.box_conflicts(None, "Summit", MATCH)
+    first = ch.all_box_conflicts(None)
     first.append("junk")
-    first[0]["z"] = 99
-    assert ch.box_conflicts(None, "Summit", MATCH) == [RECORD]
+    first[0][3]["z"] = 99
+    first[0][1]["version"] = 99
+    assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, RECORD)]
     assert reads == ["d1"]
+    next_record = dict(RECORD, round=3)
+    next_reads = stub(monkeypatch, asset({"box_conflicts": [next_record]}), digest="d2")
+    assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, next_record)]
+    assert next_reads == ["d2"]
 
 
 def render_player(**context):
@@ -105,33 +109,13 @@ def render_player(**context):
         replay={"map_name": "Summit", "round_numbers": [1, 18]}, **context)
 
 
-def test_partial_shows_the_section():
-    html = render_player(linked=True, control={"cover_reviewed": True}, box_conflicts=[RECORD],
+@pytest.mark.parametrize("linked", [True, False])
+@pytest.mark.parametrize("records", [[], [RECORD]])
+def test_partial_never_has_box_heights(linked, records):
+    html = render_player(linked=linked, control={"cover_reviewed": True}, box_conflicts=records,
                          replay_data={"players": {"1": {"agent": "Omen"}}})
-    assert "data-replay-box-heights" in html
-    for text in ("R18", "35.2", "Omen", "at 3.0 m", "box 5 (top 4.0 m)", "box 6 (no top)", "?round=18&amp;t=35.2"):
-        assert text in html, text
-
-
-def test_partial_falls_back_to_the_slot():
-    html = render_player(linked=True, control={"cover_reviewed": True}, box_conflicts=[RECORD],
-                         replay_data={"players": {}})
-    assert "slot 1" in html
-
-
-def test_partial_shows_candidate_distances_and_legacy_records_together():
-    record = dict(RECORD, candidates=[[5, [4.0], 0.42], [6, [], 0.7]])
-    html = render_player(linked=True, control={"cover_reviewed": True}, box_conflicts=[RECORD, record],
-                         replay_data={"players": {}})
-    for text in ("box 5 (top 4.0 m)", "box 6 (no top)", "0.42 m away", "0.70 m away"):
-        assert text in html, text
-
-
-def test_partial_hides_the_section():
-    full = dict(control={"cover_reviewed": True}, replay_data={"players": {}})
-    assert "data-replay-box-heights" not in render_player(linked=True, box_conflicts=[], **full)
-    assert "data-replay-box-heights" not in render_player(linked=True, **full)
-    assert "data-replay-box-heights" not in render_player(linked=False, box_conflicts=[RECORD], **full)
+    assert "data-replay-box-heights" not in html
+    assert "Box heights" not in html
 
 
 def context(monkeypatch, linked, control, demo=False):
@@ -139,13 +123,13 @@ def context(monkeypatch, linked, control, demo=False):
             "players": {}}
     monkeypatch.setattr(router.replay_service, "page_context", lambda db, replay: page)
     monkeypatch.setattr(router.settings, "demo_mode", demo, raising=False)
-    monkeypatch.setattr(router.control_heights, "box_conflicts", lambda db, m, u: [RECORD])
     request = SimpleNamespace(query_params={}, scope={})
     return router.viewer_context(request, None, SimpleNamespace(map_name="Summit", match_uuid=MATCH))
 
 
-def test_route_context(monkeypatch):
-    assert context(monkeypatch, True, {"cover_reviewed": True})["box_conflicts"] == [RECORD]
-    assert context(monkeypatch, True, None)["box_conflicts"] == []
-    assert context(monkeypatch, False, None)["box_conflicts"] == []
-    assert context(monkeypatch, True, {"cover_reviewed": True}, demo=True)["box_conflicts"] == []
+@pytest.mark.parametrize("linked,control,demo", [
+    (True, {"cover_reviewed": True}, False), (True, None, False),
+    (False, None, False), (True, {"cover_reviewed": True}, True),
+])
+def test_route_context_has_no_box_conflicts(monkeypatch, linked, control, demo):
+    assert "box_conflicts" not in context(monkeypatch, linked, control, demo)

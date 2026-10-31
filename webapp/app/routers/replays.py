@@ -48,7 +48,7 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -56,11 +56,11 @@ from app.db import get_db
 from app.models.replay import ReplayUpload
 from app.replays import control_format as cf
 from app.replays import db as replay_db
-from app.services import control_heights
 from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import replay_errors
 from app.services import replay_moments
 from app.services import replay_util
 from app.services import replay_progress as progress
@@ -249,6 +249,36 @@ def upload_progress(request: Request, db: Session = Depends(get_db)):
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
+def _upload_errors_result(request: Request, db: Session) -> dict:
+    _upload_enabled_or_404()
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    if not request.session.get("replay_upload_ok"):
+        raise HTTPException(status_code=403)
+    try:
+        return replay_errors.cached(db)
+    finally:
+        db.rollback()
+
+
+@router.get("/replays/upload/errors.json")
+def upload_errors(request: Request, db: Session = Depends(get_db)):
+    """The upload-code session's corpus errors, capped for display while keeping full counts."""
+    body = replay_errors.page(_upload_errors_result(request, db))
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/replays/upload/errors/prompt.txt")
+def upload_errors_prompt(request: Request, db: Session = Depends(get_db), kind: str | None = None):
+    """Copyable investigation evidence for all errors or a single kind, including undisplayed rows."""
+    result = _upload_errors_result(request, db)
+    try:
+        text = replay_errors.prompt(result, kind)
+    except KeyError:
+        raise HTTPException(status_code=404) from None
+    return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
+
+
 # ---------------------------------------------------------------- replay pages
 
 
@@ -408,9 +438,7 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
-        "gaps": bool(linked and context["match"].get("gaps")),
-        "box_conflicts": (control_heights.box_conflicts(db, replay.map_name, str(replay.match_uuid).lower())
-                          if linked and context["match"]["control"] and not settings.demo_mode else [])}
+        "gaps": bool(linked and context["match"].get("gaps"))}
 
 
 @router.get("/replays")

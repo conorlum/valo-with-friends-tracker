@@ -2039,6 +2039,12 @@ main:has(.replay.is-linked) { max-width: none; }
 .replay-progress-meter progress { flex: 0 1 14rem; height: 0.75rem; accent-color: var(--good); }
 .replay-progress-meter span { flex: 1 1 16rem; font-variant-numeric: tabular-nums; }
 .replay-progress .num { text-align: right; }
+.replay-errors summary { cursor: pointer; font-weight: 600; }
+.replay-errors[open] summary { margin-bottom: 0.5rem; }
+.replay-errors section { margin-top: 1rem; }
+.replay-errors-table { overflow-x: auto; }
+.replay-errors td { overflow-wrap: anywhere; }
+.replay-errors-prompt { display: block; width: 100%; box-sizing: border-box; margin-top: 0.75rem; }
 
 /* Map control (docs/replay-map-control-plan.md, "Cell states"; Stage 4) */
 .replay-control-badge { font-size: 0.78rem; padding: 0.05rem 0.45rem; border: 1px dashed var(--ink-muted); border-radius: 999px; color: var(--ink-secondary); align-self: center; }
