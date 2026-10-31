@@ -118,7 +118,7 @@ SHOT_WINDOW_S = 0.25
 SECTION_S = 10.0
 
 FOV_HALF = 51.5
-OVER_SEEN = True  # PROVISIONAL(D4): enemies see a player over a box by the exact line, like on_box
+OVER_SEEN = True  # Enemies see a player over a box by the exact line, like on_box
 RUN_MPS, WALK_MPS = 5.0, 1.5
 # "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
 # seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
