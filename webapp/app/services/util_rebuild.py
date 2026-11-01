@@ -65,7 +65,9 @@ def main() -> int:
     from sqlalchemy import text
 
     from app.db import SessionLocal, engine
-    from app.services import replay_util
+    from app.services import mask_accel, replay_util
+
+    mask_accel.register()
 
     holder = None
     if engine.dialect.name == "postgresql":

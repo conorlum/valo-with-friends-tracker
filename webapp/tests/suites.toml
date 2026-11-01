@@ -302,7 +302,7 @@ guards = [
   "app/services/replay_control_views.py", "app/static/js/replay_control.js", "app/static/data/control/**",
   "app/templates/stats/_map_control_table.html", "scripts/build_control_geometry.py", "scripts/place_control_barriers.py",
   "scripts/compute_control.py", "scripts/control_tagger*", "scripts/preview_control_live.py",
-  "scripts/control_reference.py",
+  "scripts/control_reference.py", "app/services/mask_accel.py",
 ]
 
 [map-features]

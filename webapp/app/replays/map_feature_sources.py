@@ -11,10 +11,17 @@ import zlib
 from app.replays.map_feature_artifacts import pack_mask
 from app.replays.map_feature_inputs import FeatureInputsError
 
-try:        # the per-pixel work below, vectorised; the pure-Python paths give the same bytes without it
-    import numpy as _np
-except ImportError:         # pragma: no cover - every interpreter that runs this today has numpy
-    _np = None
+# The per-pixel work below, vectorised, when a caller has registered an accelerator: app/services/mask_accel.py
+# (numpy), registered by the web app. This module stays standard library only (the replay worker's image copies
+# it), and its own loops give the same bytes without one.
+_accel = None
+
+
+def use_accelerator(module) -> None:
+    """Route the per-pixel work through `module` (unfilter_up, expand, pack, barrier_cells, legacy_large), or back
+    to this module's own loops with None."""
+    global _accel
+    _accel = module
 
 
 def png_mask(raw):
@@ -56,8 +63,8 @@ def _png_mask(raw):
         method, line = pixels[start], bytearray(pixels[start + 1:start + 1 + width])
         if method > 4:
             raise FeatureInputsError('invalid PNG filter')
-        if method == 2 and _np is not None:     # "up", nearly every row of these masks
-            line = bytearray((_np.frombuffer(line, _np.uint8) + _np.frombuffer(previous, _np.uint8)).tobytes())
+        if method == 2 and _accel is not None:      # "up", nearly every row of these masks
+            line = _accel.unfilter_up(line, previous)
         else:
             for x in range(width) if method else ():
                 a, b, c = line[x - 1] if x else 0, previous[x], previous[x - 1] if x else 0
@@ -68,44 +75,35 @@ def _png_mask(raw):
         rows.append(line)
         previous = line
     lines = b''.join(rows)
-    if _np is not None:
-        values = _np.frombuffer(lines, _np.uint8)
-        return (_np.unpackbits(values) if depth == 1 else (values > 127).astype(_np.uint8)).tobytes()
+    if _accel is not None:
+        return _accel.expand(lines, depth)
     if depth == 1:
         return bytes((value >> bit) & 1 for value in lines for bit in range(7, -1, -1))
     return bytes(int(value > 127) for value in lines)
 
 
 def _pack(raw, shape):
-    """map_feature_artifacts.pack_mask's descriptor, vectorised when numpy is there."""
-    if _np is None:
-        return pack_mask(raw, shape)
-    count = 1
-    for n in shape:
-        count *= n
-    values = _np.frombuffer(raw, _np.uint8)
-    if len(raw) != count or (count and values.max() > 1):
-        return pack_mask(raw, shape)        # its own checks and errors
-    packed = _np.packbits(values, bitorder='little').tobytes()
-    return {'shape': list(shape), 'bitorder': 'little', 'count': count, 'bytes': len(packed),
-            'data': base64.b64encode(packed).decode('ascii')}
+    """map_feature_artifacts.pack_mask's descriptor, through the accelerator when one is registered."""
+    if _accel is not None:
+        found = _accel.pack(raw, shape)
+        if found is not None:
+            return found
+    return pack_mask(raw, shape)        # its own checks and errors
 
 
 def _barrier_cells(pixels):
     """1 per 8x8 block of the 1024-square barrier paint holding any paint, rows then columns (128x128)."""
-    if _np is not None:
-        blocks = _np.frombuffer(pixels, _np.uint8).reshape(128, 8, 128, 8)
-        return blocks.any(axis=(1, 3)).astype(_np.uint8).tobytes()
+    if _accel is not None:
+        return _accel.barrier_cells(pixels)
     return bytes(int(any(pixels[(r * 8 + y) * 1024 + c * 8 + x] for y in range(8) for x in range(8)))
                  for r in range(128) for c in range(128))
 
 
 def _legacy_large(bits):
     """A 256-square legacy paint (8 cells a byte, low bit first) scaled 4x to 1024-square, a byte a cell."""
-    if _np is not None:
-        small = _np.unpackbits(_np.frombuffer(bits, _np.uint8), bitorder='little').reshape(256, 256)
-        return small.repeat(4, axis=0).repeat(4, axis=1).tobytes()
-    small = bytes((value >> bit) & 1 for value in bits for bit in range(8))
+    if _accel is not None:
+        return _accel.legacy_large(bits)
+    small =bytes((value >> bit) & 1 for value in bits for bit in range(8))
     return bytes(small[(r // 4) * 256 + c // 4] for r in range(1024) for c in range(1024))
 
 
