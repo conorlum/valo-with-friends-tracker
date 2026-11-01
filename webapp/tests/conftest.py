@@ -91,8 +91,12 @@ def pytest_runtest_makereport(item, call):
 @pytest.fixture(autouse=True)
 def _no_background_util_build(monkeypatch):
     """A request that finds Critical Util's build stale starts it in a child process (app/services/util_rebuild.py),
-    which would connect to the configured DATABASE_URL, not the test's database: never spawn one in a test."""
-    from app.services import util_rebuild
+    which would connect to the configured DATABASE_URL, not the test's database: never spawn one in a test.
+    The worker image's tests run without app/services: nothing to guard there."""
+    try:
+        from app.services import util_rebuild
+    except ImportError:
+        return
 
     class _Finished:
         pid = 0
