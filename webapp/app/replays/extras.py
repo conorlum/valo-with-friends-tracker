@@ -181,6 +181,51 @@ def _seconds(t_ms: int, start: int) -> float:
     return round((t_ms - start) / 1000.0, 3)
 
 
+def crouch_spans(rows: list[tuple[int, int, bool]], pawn_slot: dict[int, int],
+                 windows: list[tuple[int, int, int]]) -> dict[int, dict[int, list[list[float]]]]:
+    """CrouchHeld transitions per pawn, clipped to each playback window in round seconds.
+
+    Repeated True rows leave the span open; False closes it. Unknown pawns are ignored. State
+    carries across windows, with gaps omitted, and an unclosed span lasts to each round's end.
+    Spans touching or overlapping on the same slot merge (including successive character pawns).
+    """
+    if not windows:
+        return {}
+    by_pawn: dict[int, list[tuple[int, bool]]] = defaultdict(list)
+    for t_ms, pawn, held in rows:
+        if pawn in pawn_slot:
+            by_pawn[pawn].append((t_ms, held))
+    clipped: dict[int, dict[int, list[list[float]]]] = {}
+    for pawn, changes in by_pawn.items():
+        opened = None
+        intervals = []
+        for t_ms, held in sorted(changes, key=lambda change: change[0]):
+            if held:
+                if opened is None:
+                    opened = t_ms
+            elif opened is not None:
+                intervals.append((opened, t_ms))
+                opened = None
+        if opened is not None:
+            intervals.append((opened, windows[-1][2]))
+        for lo, hi in intervals:
+            for n, (start, _, end) in enumerate(windows, 1):
+                t0, t1 = max(lo, start), min(hi, end)
+                if t0 < t1:
+                    clipped.setdefault(n, {}).setdefault(pawn_slot[pawn], []).append(
+                        [_seconds(t0, start), _seconds(t1, start)])
+    for slots in clipped.values():
+        for slot, spans in slots.items():
+            merged = []
+            for lo, hi in sorted(spans):
+                if merged and lo <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], hi)
+                else:
+                    merged.append([lo, hi])
+            slots[slot] = merged
+    return clipped
+
+
 def _dm(z: float) -> int:
     """World z (cm) as the blob stores a height: whole decimetres, no map offset."""
     return int(round(z / 10.0))
@@ -282,6 +327,8 @@ class Raw:
     # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
     # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
+    # Every raw CrouchHeld transition, including unknown pawns for the diagnostic count.
+    crouch: list[tuple[int, int, bool]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -296,7 +343,7 @@ _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
-                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"',
+                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"', '"CrouchHeld"',
                            '"FragmentDelta"')   # every ground delta, a delete-only one too (branch review B19)
 
 
@@ -535,6 +582,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
                     continue
+                if "CrouchHeld" in payload:
+                    raw.crouch.append((t_ms, guid, bool(payload["CrouchHeld"])))
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
                 held_now = payload.get("NewCurrentEquippable")
@@ -1799,6 +1848,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     out = Extras()
     counts: Counter[str] = Counter()
+    crouch = crouch_spans(raw.crouch, players.pawn_slot, windows)
+    for n, slots in crouch.items():
+        out.rounds.setdefault(n, {"abilities": [], "shots": []})["crouch"] = slots
+    counts["crouch_rows"] = len(raw.crouch)
+    counts["crouch_unknown_pawn"] = sum(pawn not in players.pawn_slot for _, pawn, _ in raw.crouch)
+    counts["crouch_spans"] = sum(len(spans) for slots in crouch.values() for spans in slots.values())
     for equip in raw.equips:
         equip.code, equip.name = normalize_archetype(equip.code, equip.name, agents_by_code)
     resolve_equippables(raw.equips, players, agent_code, counts)

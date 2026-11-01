@@ -6,6 +6,7 @@ A round blob is `gzip(json)` of:
      "players": [{"slot": 0, "agent": "Jett", "side": "A"}, ...],
      "tracks": {"0": [{"t0": 0.0, "u": [4121, 9, -3], "v": [...], "yaw": [...]}, ...]},
      "alive": {"0": [[0.0, 41.3, "kill"]]},
+     "crouch": {"0": [[12.0, 14.3]]},
      "kills": [{"i": 0, "t": 41.3, "killer": 5, "victim": 0, "u": 4500, "v": 6012}],
      "plant": null, "defuse": null,
      "util": [{"k": "flash", "t": 12.4, "by": 3, "u": 5120, "v": 4410, "ability": "...", "targets": [6, 8]},
@@ -35,6 +36,10 @@ Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-sl
 `{"k": "cast", "t", "by", "code", "name"}` per use of a movement ability (app/replays/extras.py
 MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser
 looked for them, so a round with that key and no cast had none. A blob without the key was condensed before.
+
+Crouch (revision 24): `"crouch": {"0": [[from, to], ...], ...}` keeps the raw `CrouchHeld` spans per
+slot in round seconds, clipped to the playback window. An empty dict means crouch was looked for;
+a blob without the key predates this revision and reads as before.
 
 Ult equips (revision 22): `{"k": "equip", "t", "by", "code", "name"}` each time a player's inventory switched to their
 ult's equippable (an `X_` one: `Vampire` `X_Frenzy`), from its `NewCurrentEquippable`. Equipping is not using for most
@@ -111,7 +116,9 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 23   # 23: a lethal hit in an object's close ms is `gone` (any object, not only Leer), Veto's
+CONDENSE_REVISION = 24
+# 24: per-round "crouch": the CrouchHeld key spans per slot, round clock
+                         # 23: a lethal hit in an object's close ms is `gone` (any object, not only Leer), Veto's
                          #     Evolution `buff` rows (2026-10-25);
                          # 22: statuses an ability put on its owner's own team, flagged `friendly` (2026-10-21),
                          #     Leer / Dizzy `gone`, Poison Cloud `on`, Harmonize `buff` rows (2026-10-24),
