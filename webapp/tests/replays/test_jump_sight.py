@@ -40,6 +40,33 @@ def test_switch_off_gives_the_old_cast_byte_for_byte(monkeypatch):
     assert tk.view[0].tobytes() == old_view.tobytes()
 
 
+def jumper_target_tick(geo, target_z):
+    if geo.row_of is None:
+        cg.visibility(geo)
+    rnd, _ = inputs(geo, {0: still("A", 196, Y, 0, 0.0), 1: still("B", 268, Y, 180, target_z)})
+    rnd.height = lambda s, t: {0: 0.0, 1: target_z}[s]
+    return ce.Tick(rnd, 5.0)
+
+
+def test_a_jumper_seen_only_at_the_feet_counts_as_seen():
+    from tests.replays.test_control_sight import low_overhang
+    tk = jumper_target_tick(low_overhang(), 2.0)
+    e, h = tk.holders[0], tk.holders[1]
+    assert h.air and not tk._air_line(e, h, record=False)
+    assert tk._air_line(e, h, target_z=2.0 + hc.FEET_M, record=False)
+    assert 1 in tk.sees[0] and (0, 1) in tk.direct
+    assert (0, 1) in tk.feet_only()
+
+
+def test_a_jumper_whose_eye_and_feet_lines_are_blocked_is_not_seen_through_their_floor(monkeypatch):
+    from tests.replays.test_control_sight import low_overhang
+    monkeypatch.setattr(ce, "los", lambda *a, **kw: False)      # both exact lines blocked; the fan doesn't use los
+    tk = jumper_target_tick(low_overhang(), 2.0)
+    e, h = tk.holders[0], tk.holders[1]
+    assert h.air and e.body[h.cell], "the floor spot under them is in view"
+    assert 1 not in tk.sees[0] and (0, 1) not in tk.direct
+
+
 def test_gap_sight_of_a_jumper_matches_control_live_and_through_the_cache(tmp_path):
     from app.control.observe import record
     from app.gaps import cache
@@ -313,7 +340,7 @@ def test_air_feet_only_checks_its_own_plate_lines(monkeypatch, direct, viewer_ai
     assert tk.feet_only() == expected
     assert len(calls) == ce._plate_calls == (1 if head else 2)
     z = 1.2 if target_air else tk.geo.node_z[h.cell]
-    assert [end[2] for _, end, _, _ in calls] == [z + hc.HEAD_M] + ([] if head else [z + hc.FEET_M])
+    assert [end[2] for _, end, _, _ in calls] == [z + hc.EYE_M] + ([] if head else [z + hc.FEET_M])
     for start, end, smokes, kwargs in calls:
         assert start == (166, Y, (1.2 if viewer_air else 0.0) + hc.EYE_M)
         assert end[:2] == (h.x, h.y) and smokes is tk.smokes

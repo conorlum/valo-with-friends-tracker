@@ -1479,7 +1479,7 @@ class Tick:
             self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
-                              if h.team != e.team and ((e.slot, h.slot) in self.direct if _on_box(h)
+                              if h.team != e.team and ((e.slot, h.slot) in self.direct if self._by_lines_only(e, h)
                                                        else (e.body[h.cell] or (e.slot, h.slot) in self.direct))}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
@@ -1535,13 +1535,18 @@ class Tick:
             z = self.geo.node_z[node]
         return None if np.isnan(z) else float(z) + hc.EYE_M
 
+    def _by_lines_only(self, e: Holder, h: Holder) -> bool:
+        """Is h judged only by exact lines, never by e's view of the floor under them? True on a box, and in the air
+        when e's eye has a height: the floor spot says nothing about a body above it."""
+        return _on_box(h) or (h.air and self._eye(e.slot, self.t, e.cell) is not None)
+
     def _direct(self, looks: dict) -> dict[tuple[int, int], bool]:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
         tests a body standing on each floor, which is right for ground and for anyone standing on it; an
         enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by exact lines
-        from the viewer's eye to their head or feet (one eye-to-eye plate line for an airborne target),
-        under the same limits as the view: the field of view,
-        a flash, nearsight, smokes and walls. It only ever adds a sighting."""
+        from the viewer's eye to their head or feet (eye and feet plate lines for an airborne target, whose
+        floor spot no longer counts: `_by_lines_only`), under the same limits as the view: the field of view,
+        a flash, nearsight, smokes and walls."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
         for s, (yaw, eye, flashed, nearsighted, cone) in looks.items():
@@ -1554,7 +1559,7 @@ class Tick:
                 if h.team == e.team or _seen_over(h):
                     continue    # on-box and over targets are `_boxed`'s
                 air = JUMP_SIGHT and h.air
-                if e.body[h.cell] or (not air and (z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M)):
+                if not air and (e.body[h.cell] or z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M):
                     continue
                 ex, ey = e.stance.eye_px if air and e.stance is not None else (e.x, e.y)
                 dx, dy = h.x - ex, h.y - ey
@@ -1562,7 +1567,7 @@ class Tick:
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
                 if air:
-                    if self._air_line(e, h):
+                    if self._air_seen(e, h):
                         out[(s, h.slot)] = cone is not None and off <= cone
                     continue
                 head_clear = los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
@@ -1591,6 +1596,15 @@ class Tick:
                    (h.x, h.y, self._eye(h.slot, self.t, h.cell) if target_z is None else target_z), self.smokes,
                    record=self.fallbacks if record else None, plates=True, skip=tuple(pieces))
 
+    def _air_seen(self, e: Holder, h: Holder) -> bool:
+        """A pair touching the air: a clear plate line from e's eye to h's eye, or to h's feet (the owner's rule)."""
+        if self._air_line(e, h):
+            return True
+        z = self.rnd.height(h.slot, self.t)
+        if z is None or np.isnan(z):
+            z = self.geo.node_z[h.cell]
+        return not np.isnan(z) and self._air_line(e, h, target_z=float(z) + hc.FEET_M)
+
     def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
         """Airborne viewers of grounded, non-box targets missed by the ground view (R2/R4)."""
         out = {}
@@ -1609,13 +1623,13 @@ class Tick:
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * self.geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
-                if self._air_line(e, h):
+                if self._air_seen(e, h):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
         """Enemies on or over a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
-        or one eye-to-eye plate line when either end is airborne;
+        or a plate line to the target's eye or feet when either end is airborne;
         over their stance pieces (a target beside a box is held at its anchor cell and seen there, by the
         ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
@@ -1636,7 +1650,7 @@ class Tick:
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
                 if JUMP_SIGHT and (e.air or h.air):
-                    if self._air_line(e, h):
+                    if self._air_seen(e, h):
                         out[(s, h.slot)] = cone is not None and off <= cone
                     continue
                 z = rnd.height(h.slot, t) if geo.heights is not None else None
@@ -1674,9 +1688,9 @@ class Tick:
                             z = geo.node_z[h.cell]
                         if eye is None or np.isnan(eye) or z is None or np.isnan(z):
                             continue
-                        # Air sight's eye line says nothing about the head/feet lines. Metadata
-                        # uses the same plates and own pieces, without recording unresolved rays.
-                        if (not self._air_line(e, h, target_z=z + hc.HEAD_M, record=False)
+                        # The same eye and feet lines as the sighting, with the same plates and own pieces,
+                        # without recording unresolved rays.
+                        if (not self._air_line(e, h, record=False)
                                 and self._air_line(e, h, target_z=z + hc.FEET_M, record=False)):
                             out.add(pair)
                         continue
@@ -2333,7 +2347,7 @@ class Knowledge:
         kt.holders = holders
         # only enemies the team sees can contest its players
         kt.sees = {x.slot: {h.slot for h in holders.values()
-                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if _on_box(h)
+                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if tick._by_lines_only(x, h)
                                                      else (x.body[h.cell] or (x.slot, h.slot) in tick.direct))}
                    for x in holders.values()}
         kt._dist = {}
