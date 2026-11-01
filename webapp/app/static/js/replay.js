@@ -2688,7 +2688,7 @@
     });
   };
 
-  // The ult orbs lying at t (player_state `orbs`): a small gold orb with a dark ring; one just taken, a ring in the
+  // The ult orbs lying at t (player_state `orbs`): a small black orb with a white shine; one just taken, a ring in the
   // taker's colour opening out from it as it fades.
   ReplayViewer.prototype.drawOrbs = function (ctx, s, r, hits, index) {
     var t = this.t, self = this, gold = this.css("--replay-orb", "#f2c94c");
@@ -2703,8 +2703,20 @@
         ctx.beginPath(); ctx.arc(x, y, k * (1 + 2.5 * f), 0, 2 * Math.PI); ctx.stroke();
       }
       ctx.globalAlpha = taken ? 1 - Math.min(1, (t - o.t1) / ORB_TAKEN_S) : 1;
-      ctx.beginPath(); ctx.arc(x, y, k + 2, 0, 2 * Math.PI); ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y, k, 0, 2 * Math.PI); ctx.fillStyle = gold; ctx.fill();
+      // The orb as the game draws it: a black sphere with a faint rim and a white four-point shine.
+      var body = ctx.createRadialGradient(x - k * 0.3, y - k * 0.3, 0, x, y, k + 1);
+      body.addColorStop(0, "#2a2a30"); body.addColorStop(1, "#000");
+      ctx.beginPath(); ctx.arc(x, y, k + 1, 0, 2 * Math.PI); ctx.fillStyle = body; ctx.fill();
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"; ctx.stroke();
+      var sx = x - k * 0.15, sy = y - k * 0.15, sl = k * 0.85, sw = k * 0.16;
+      ctx.save();
+      ctx.shadowColor = "rgba(255, 255, 255, 0.9)"; ctx.shadowBlur = k * 0.8; ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - sl); ctx.lineTo(sx + sw, sy - sw); ctx.lineTo(sx + sl, sy); ctx.lineTo(sx + sw, sy + sw);
+      ctx.lineTo(sx, sy + sl); ctx.lineTo(sx - sw, sy + sw); ctx.lineTo(sx - sl, sy); ctx.lineTo(sx - sw, sy - sw);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy, sw * 1.4, 0, 2 * Math.PI); ctx.fill();
+      ctx.restore();
       // A capture: a 2 s channel (wiki), a ring in the capturer's colour filling until it's theirs or let go,
       // drawn outside a player's marker (the capturer stands on the orb, over it).
       function channel(from, slot) {
