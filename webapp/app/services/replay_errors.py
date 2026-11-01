@@ -50,6 +50,7 @@ _cached: tuple[float, dict] | None = None
 _verification_lock = threading.Lock()
 _verification_results: dict = {}
 _verification_started = False
+_verification_pending = False   # the last compute saw a current artifact with no result
 _verification_running = False
 _verification_progress = (0, 0)
 _digests: dict = {}     # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
@@ -217,14 +218,17 @@ def _verify_features(session_factory=None, verifier=None):
 
 
 def _start_verification():
-    """First card open starts one daemon for this process; compute never calls this."""
-    global _verification_started, _verification_running
+    """First card open starts one daemon for this process, and a later open starts another once the card has seen
+    current artifacts with no result (a recompute published them after the last pass). Never two at once; compute
+    never calls this."""
+    global _verification_started, _verification_running, _verification_pending
     if settings.demo_mode:
         return
     with _verification_lock:
-        if _verification_started:
+        if _verification_running or (_verification_started and not _verification_pending):
             return
         _verification_started = _verification_running = True
+        _verification_pending = False
     threading.Thread(target=_verify_features, name="replay-error-features", daemon=True).start()
 
 
@@ -368,10 +372,12 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         rows["needs_a_person"].append(_row(replay=replay, figures={"rounds": count, "step": manual[step]},
                                             revision={"recipe": replay.recipe}))
     representatives, missing = _feature_representatives(db, collected)
+    global _verification_pending
     with _verification_lock:
         results = dict(_verification_results)
         started, running = _verification_started, _verification_running
         done, total = _verification_progress
+        _verification_pending = any(digest not in results for digest in representatives)
     unavailable = missing
     verified = 0
     for digest, (stored, replay, count) in representatives.items():

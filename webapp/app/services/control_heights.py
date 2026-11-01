@@ -136,7 +136,13 @@ def asset_bytes(db, map_name: str, digest: str) -> bytes | None:
     return None if row is None else bytes(row[0])
 
 
-_BOX_CONFLICTS: dict[str, list] = {}
+def asset_bytes_of_row(db, row_id: int) -> bytes | None:
+    """One build's asset. A digest can't name a build: it covers what the engine reads, not the asset's meta."""
+    row = db.query(ControlHeight.asset).filter(ControlHeight.id == row_id).first()
+    return None if row is None else bytes(row[0])
+
+
+_BOX_CONFLICTS: dict[int, list] = {}     # build row id -> its conflict records; a row's asset never changes
 
 
 def _asset_meta(data: bytes) -> dict:
@@ -156,11 +162,11 @@ def _asset_meta(data: bytes) -> dict:
 
 def _box_conflict_records(db, row) -> list[dict]:
     """Cached asset metadata for the corpus errors reader."""
-    if row.digest not in _BOX_CONFLICTS:
-        data = asset_bytes(db, row.map_name, row.digest)
+    if row.id not in _BOX_CONFLICTS:
+        data = asset_bytes_of_row(db, row.id)
         found = (_asset_meta(data).get("box_conflicts") or []) if data else []
-        _BOX_CONFLICTS[row.digest] = [r for r in found if isinstance(r, dict)]
-    return _BOX_CONFLICTS[row.digest]
+        _BOX_CONFLICTS[row.id] = [r for r in found if isinstance(r, dict)]
+    return _BOX_CONFLICTS[row.id]
 
 
 def all_box_conflicts(db) -> list[tuple]:

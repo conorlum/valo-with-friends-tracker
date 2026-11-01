@@ -48,6 +48,7 @@ def errors(db, monkeypatch):
     monkeypatch.setattr(module, "_verification_results", {}, raising=False)
     monkeypatch.setattr(module, "_verification_started", False, raising=False)
     monkeypatch.setattr(module, "_verification_running", False, raising=False)
+    monkeypatch.setattr(module, "_verification_pending", False, raising=False)
     monkeypatch.setattr(module, "_verification_progress", (0, 0), raising=False)
     monkeypatch.setattr(module, "_digests", {}, raising=False)
     monkeypatch.setattr(module, "_real_start_verification", getattr(module, "_start_verification", None), raising=False)
@@ -573,6 +574,34 @@ def test_cached_starts_one_daemon_verifier_and_none_in_demo(errors, db, monkeypa
         for worker in workers:
             worker.join(10)
     assert all(not worker.is_alive() for worker in workers)
+
+
+def test_artifacts_arriving_after_the_first_pass_get_a_new_pass(errors, db, factory, linked, monkeypatch):
+    from app.services.control_feature_verification import VerificationResult
+
+    def verify(session, row):
+        return VerificationResult("verified", "verified", "current")
+    errors._verify_features(factory, verify)    # nothing to check yet: the rounds are still recomputing
+    assert errors._verification_started and not errors._verification_running
+    real_pass = errors._verify_features
+    spawned = []
+    monkeypatch.setattr(errors, "_verify_features", lambda: spawned.append(threading.current_thread()))
+
+    def start_and_wait():
+        errors._real_start_verification()
+        for worker in spawned:
+            worker.join(10)
+    start_and_wait()
+    assert spawned == [], "nothing current is unchecked, so no new pass"
+    feature_rows(db, linked)
+    kind(errors, db, "feature_failed")    # the card's next refresh sees them
+    start_and_wait()
+    assert len(spawned) == 1, "the new artifacts get a pass"
+    monkeypatch.setattr(errors, "_verification_running", False)
+    real_pass(factory, verify)
+    assert kind(errors, db, "feature_failed")["note"] == "2 verified, 1 unavailable or unsupported"
+    start_and_wait()
+    assert len(spawned) == 1, "all checked again: no third pass"
 
 
 def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(errors, db, linked):

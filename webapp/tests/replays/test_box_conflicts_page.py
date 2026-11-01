@@ -31,15 +31,15 @@ def fresh_cache():
     ch._BOX_CONFLICTS.clear()
 
 
-def stub(monkeypatch, data, digest="d1"):
+def stub(monkeypatch, data, digest="d1", row_id=1):
     reads = []
-    row = SimpleNamespace(map_name="Summit", digest=digest, id=1, rules={"version": 3}, built_at=None)
+    row = SimpleNamespace(map_name="Summit", digest=digest, id=row_id, rules={"version": 3}, built_at=None)
     monkeypatch.setattr(ch, "active_rows", lambda db: {"Summit": row})
 
-    def read(db, map_name, dig):
-        reads.append(dig)
+    def read(db, wanted):
+        reads.append(wanted)
         return data
-    monkeypatch.setattr(ch, "asset_bytes", read)
+    monkeypatch.setattr(ch, "asset_bytes_of_row", read, raising=False)
     return reads
 
 
@@ -55,7 +55,7 @@ def test_service_filters_records_and_keeps_all_matches(monkeypatch):
 def test_service_empty_cases(monkeypatch):
     stub(monkeypatch, asset({"version": 3}))
     assert ch.all_box_conflicts(None) == []
-    stub(monkeypatch, b"not an npz", digest="d2")
+    stub(monkeypatch, b"not an npz", digest="d2", row_id=2)
     assert ch.all_box_conflicts(None) == []
     monkeypatch.setattr(ch, "active_rows", lambda db: {})
     assert ch.all_box_conflicts(None) == []
@@ -89,18 +89,19 @@ def test_service_refuses_a_meta_member_that_is_not_uint8(monkeypatch):
     assert ch.all_box_conflicts(None) == []
 
 
-def test_service_caches_per_digest(monkeypatch):
+def test_service_caches_per_build_not_per_digest(monkeypatch):
     reads = stub(monkeypatch, asset({"version": 3, "box_conflicts": [RECORD]}))
     first = ch.all_box_conflicts(None)
     first.append("junk")
     first[0][3]["z"] = 99
     first[0][1]["version"] = 99
     assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, RECORD)]
-    assert reads == ["d1"]
+    assert reads == [1]
+    # The digest covers what the engine reads, not the conflict list: a second build can share it.
     next_record = dict(RECORD, round=3)
-    next_reads = stub(monkeypatch, asset({"box_conflicts": [next_record]}), digest="d2")
+    next_reads = stub(monkeypatch, asset({"box_conflicts": [next_record]}), digest="d1", row_id=2)
     assert ch.all_box_conflicts(None) == [("Summit", {"version": 3}, None, next_record)]
-    assert next_reads == ["d2"]
+    assert next_reads == [2]
 
 
 def render_player(**context):
