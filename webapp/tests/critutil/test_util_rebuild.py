@@ -46,11 +46,14 @@ def test_main_builds_through_ensure_values(monkeypatch, capsys):
     from sqlalchemy.orm import sessionmaker
 
     import app.db
+    from app.replays import map_feature_sources
     from app.services import replay_util
 
+    monkeypatch.setattr(map_feature_sources, "_accel", None)       # main() registers it: undone after the test
     engine = create_engine("sqlite://")      # never the configured DATABASE_URL
     monkeypatch.setattr(app.db, "engine", engine)
     monkeypatch.setattr(app.db, "SessionLocal", sessionmaker(bind=engine))
     monkeypatch.setattr(replay_util, "ensure_values", lambda db: {"rows": [1, 2, 3]})
     assert util_rebuild.main() == 0
     assert "stored 3 valued casts" in capsys.readouterr().out
+    assert map_feature_sources._accel is not None, "the child decodes masks with numpy"
