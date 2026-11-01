@@ -529,8 +529,42 @@ def test_top_sight_visibility_rows_use_the_top_vantage_and_include_top_targets()
     assert rows.shape[1] == (geo.n + 7) // 8
     assert np.unpackbits(rows[row_of[top]])[far]
     assert np.unpackbits(rows[row_of[ground]])[top_at(geo, 212, 204)]
-    assert np.array_equal(np.unpackbits(rows[row_of[top]])[:geo.n],
-                          geo.top_view[np.flatnonzero(geo.top_nodes == top)[0]])
+    row = np.unpackbits(rows[row_of[top]])[:geo.n].astype(bool)
+    view = geo.top_view[np.flatnonzero(geo.top_nodes == top)[0]]
+    assert np.array_equal(row[~geo.is_top], view[~geo.is_top]), "the top pass adds tops and leaves ground alone"
+
+
+def test_cached_top_row_sees_the_other_top_a_live_cast_sees():
+    geo = sight_topped()
+    own, target = top_at(geo, 202, 202), top_at(geo, 212, 204)
+    rows, row_of = cg.build_visibility(geo)
+    assert np.unpackbits(rows[row_of[own]])[target]
+
+
+def test_beside_a_box_on_refined_ground_anchors_on_a_live_node(tmp_path, monkeypatch):
+    from tests.replays.test_stance_engine import inputs, still
+    monkeypatch.setattr(cg, 'cache_dir', lambda: tmp_path)
+    geo = stored_topped(partial=True)
+    cg.visibility(geo)
+    rnd, _ = inputs(geo, {0: still("A", 202, 202, 0, 0.0)})
+    h = ce.Tick(rnd, 5.0).holders[0]
+    assert h.stance.kind == "beside"
+    assert geo.walk_n[h.cell] and not geo.is_top[h.cell]
+
+
+def test_piece_ground_reads_refined_floors_like_the_build():
+    from app.control import box_tops
+    cover = np.zeros((cg.PX, cg.PX), np.int32)
+    cover[200:208, 200:208] = 1
+    levels = hc.MAX_FLOORS
+    floors = np.full((cg.GRID, cg.GRID, levels), -1, np.int16)     # refinement removed every parent floor here
+    span = range(40, 64)
+    fine_cells = np.array(sorted(y * 2 * cg.GRID + x for y in span for x in span), np.int32)
+    fine_floors = np.full((len(fine_cells), levels), -1, np.int16)
+    fine_floors[:, 0] = 0
+    geo = SimpleNamespace(cover_px=cover, height_sha=None, cover_sha=None,
+                          heights=SimpleNamespace(floors=floors, fine_cells=fine_cells, fine_floors=fine_floors))
+    assert dict(box_tops.piece_ground(geo)) == {1: 0.0}
 
 
 def test_top_sight_on_top_viewer_sees_another_top_on_its_piece():

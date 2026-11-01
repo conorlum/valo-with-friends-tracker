@@ -344,13 +344,16 @@ def piece_tops(geo):
 
 def piece_ground(geo):
     """{cover piece id: its ring floor in m}, read-only; {} without heights or cover. Cached by their shas,
-    like piece_tops, using the attached asset's coarse floors (dm). A piece with no ring floor is left out."""
+    like piece_tops, using the attached asset's floors (dm), refined ones included, as the build does. A piece with
+    no ring floor is left out."""
     if geo.heights is None or geo.cover_px is None:
         return MappingProxyType({})
     key = _key(geo)
     if key is not None and key in _ground_cache:
         return MappingProxyType(_ground_cache[key])
-    ground = {piece: z / 10.0 for piece, z in ground_of(geo.cover_px, geo.heights.floors).items()}
+    ground = {piece: z / 10.0 for piece, z in ground_of(
+        geo.cover_px, geo.heights.floors, fine_cells=getattr(geo.heights, "fine_cells", None),
+        fine_floors=getattr(geo.heights, "fine_floors", None)).items()}
     if key is not None:
         _remember(_ground_cache, key, ground)
     return MappingProxyType(ground)

@@ -108,11 +108,12 @@ def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
     from app.control import geometry as cg
 
     geo = rnd.geo
-    walk = geo.walk.ravel()
-    n = min(len(geo.centres), walk.size)
+    # Every live ground node: on refined ground the coarse parent is disabled and its fine leaves hold the floor.
+    walk = geo.walk_n & ~geo.is_top
+    n = len(walk)
     cen = np.asarray(geo.centres[:n], float)
     dist = np.hypot(cen[:, 0] - px[0], cen[:, 1] - px[1])
-    near = np.nonzero(walk[:n] & (dist * geo.m_per_px <= ANCHOR_MAX_M + EPS))[0]
+    near = np.nonzero(walk & (dist * geo.m_per_px <= ANCHOR_MAX_M + EPS))[0]
 
     def clear(node):
         return cg.los(geo, (float(cen[node, 0]), float(cen[node, 1]), None), (px[0], px[1], None),
@@ -138,7 +139,7 @@ def _anchor(rnd, slot: int, i: int, px, label: int) -> int | None:
                     chosen = node
                     break
     if chosen is None:
-        ok = np.nonzero(walk[:n])[0]
+        ok = np.nonzero(walk)[0]
         if not len(ok):
             return None
         chosen = int(ok[np.argmin(dist[ok])])           # first minimum: the lowest node id on a tie

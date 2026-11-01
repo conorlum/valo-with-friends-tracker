@@ -1209,7 +1209,7 @@ def cache_key(geo: Geometry) -> str:
                                   (geo.node_z[geo.top_nodes], '<f8')):
                 top_digest.update(np.asarray(values, dtype=dtype).tobytes())
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
-                                  **({'top_nodes': top_digest.hexdigest(), 'top_sight': 1}
+                                  **({'top_nodes': top_digest.hexdigest(), 'top_sight': 2}
                                      if len(geo.top_nodes) else {}),
                                   **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
@@ -1231,7 +1231,14 @@ def build_visibility(geo: Geometry) -> tuple[np.ndarray, np.ndarray]:
     for i, c in enumerate(nodes):
         x, y = geo.centres[c]
         if len(geo.top_nodes) and geo.is_top[c]:
-            rows[i] = np.packbits(_top_views(geo)[np.searchsorted(geo.top_nodes, c)])
+            from app.control.stance import vantage
+
+            k = np.searchsorted(geo.top_nodes, c)
+            row = _top_views(geo)[k].copy()     # the ground-only views stay the top pass's reverse filter
+            z = float(geo.node_z[c])
+            _see_tops(geo, float(x), float(y), angles, [], z + hc.EYE_M, int(c), None,
+                      vantage(geo, int(geo.top_piece[k]), z), row)
+            rows[i] = np.packbits(row)
         elif geo.heights is None or np.isnan(geo.node_z[c]):
             rows[i] = np.packbits(cast(geo, float(x), float(y), angles, []))
         else:
