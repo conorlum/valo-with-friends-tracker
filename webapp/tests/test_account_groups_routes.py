@@ -331,3 +331,33 @@ def test_add_route_other_operational_errors_are_not_swallowed(site, monkeypatch)
     _lose_a_race(monkeypatch, OperationalError("INSERT", {}, Other()))
     with pytest.raises(OperationalError):
         accounts_router.add_account_route(_request(main, "/accounts/add"), display_name="alt#2", db=site)
+
+
+# --- add-account search -----------------------------------------------------------
+
+
+def test_search_route_returns_addable_names_and_refuses_the_demo(site, monkeypatch):
+    import json
+    main, _, _ = _group(site)
+    free, = _players(site, "freeagent#9")
+    site.commit()
+    res = accounts_router.search_accounts_route(_request(main, "/accounts/search"), q="free", db=site)
+    assert json.loads(res.body) == {"names": ["freeagent#9"]}
+    res = accounts_router.search_accounts_route(_request(main, "/accounts/search"), q="ma", db=site)
+    assert json.loads(res.body) == {"names": []}
+    assert accounts_router.search_accounts_route(_request(None, "/accounts/search"), q="free", db=site).status_code == 401
+    _demo(monkeypatch)
+    with pytest.raises(HTTPException):
+        accounts_router.search_accounts_route(_request(main, "/accounts/search"), q="free", db=site)
+
+
+def test_adding_an_unknown_typed_name_shows_an_error(site):
+    main, _, _ = _group(site)
+    page = accounts_router.add_account_route(_request(main, "/accounts"), display_name="nobody#0", db=site)
+    assert "No player named nobody#0" in _body(page)
+
+
+def test_accounts_page_has_the_search_box_not_a_dropdown(site):
+    main, _, _ = _group(site)
+    html = _body(accounts_router.accounts_page(_request(main, "/accounts"), db=site))
+    assert 'id="account-search"' in html and "<select" not in html

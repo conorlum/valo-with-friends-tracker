@@ -120,7 +120,20 @@ def test_a_linked_account_cant_be_claimed_by_anyone_else(db):
     assert link_account(db, c.id, b.id) is not None
     assert _ids(list_group_members(db, a.id)) == [a.id, b.id]
     assert _ids(list_group_members(db, c.id)) == [c.id, d.id]
-    assert account_groups.linked_display_names(db) == {"a#1", "b#2", "c#3", "d#4"}
+    e, = _players(db, "e#5")
+    assert account_groups.search_addable_accounts(db, "#", e.id) == []          # under 3 characters
+    assert account_groups.search_addable_accounts(db, "e#5", a.id) == ["e#5"]
+    assert account_groups.search_addable_accounts(db, "#1", e.id) == []         # a#1 is linked
+
+
+def test_search_offers_the_closest_ten_addable_names(db):
+    me, = _players(db, "jett#me")
+    _players(db, *[f"zjett{i:02d}#NA1" for i in range(12)], "Jett#EUW", "jetty#2", "ajett#3", "a_b#1", "axb#1")
+    found = account_groups.search_addable_accounts(db, "  JeT ", me.id)
+    assert found[:3] == ["jetty#2", "Jett#EUW", "ajett#3"]   # starts-with first, then shorter, then alphabetical
+    assert len(found) == account_groups.SEARCH_LIMIT and "jett#me" not in found
+    assert account_groups.search_addable_accounts(db, "a_b", me.id) == ["a_b#1"]   # _ is literal, not a wildcard
+    assert account_groups.search_addable_accounts(db, "je", me.id) == []
 
 
 def test_linking_yourself_or_an_existing_member_is_a_no_op(db):

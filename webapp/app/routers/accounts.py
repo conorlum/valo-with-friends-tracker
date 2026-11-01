@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -7,17 +7,18 @@ from app.config import settings
 from app.db import get_db
 from app.services.account_groups import (
     link_account,
-    linked_display_names,
     list_group_members,
     lock_group,
     make_main_account,
+    search_addable_accounts,
     set_account_label,
     unlink_account,
 )
+from app.models import Player
 from app.services.auth import get_current_player
 from app.services.circle import circle_dependents
 from app.services.player_view_cache import invalidate_player_cache
-from app.services.players import get_player_or_404, list_player_display_names
+from app.services.players import get_player_or_404
 from app.services.viewer_site_stats_cache import invalidate_viewer_site_stats
 from app.templates import templates
 
@@ -56,14 +57,22 @@ def accounts_page(request: Request, error: str | None = None, db: Session = Depe
         members = []
     main = members[0] if members else None
     is_main = main is None or main.player_id == current_player.id
-    # Accounts already linked anywhere can't be added, so they aren't offered.
-    unavailable = linked_display_names(db) | {current_player.display_name}
-    all_players = [name for name in list_player_display_names(db) if name not in unavailable]
     return templates.TemplateResponse(
         request,
         "accounts.html",
-        {"members": members, "main": main, "is_main": is_main, "all_players": all_players, "error": error},
+        {"members": members, "main": main, "is_main": is_main, "error": error},
     )
+
+
+@router.get("/search")
+def search_accounts_route(request: Request, q: str = "", db: Session = Depends(get_db)):
+    """The add form's suggestions: up to 10 addable names closest to `q`,
+    nothing under 3 characters (see search_addable_accounts)."""
+    _reject_in_demo_mode()
+    current_player = get_current_player(request, db)
+    if current_player is None:
+        return JSONResponse({"names": []}, status_code=401)
+    return JSONResponse({"names": search_addable_accounts(db, q, current_player.id)})
 
 
 @router.post("/add")
@@ -73,7 +82,9 @@ def add_account_route(request: Request, display_name: str = Form(...), db: Sessi
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
 
-    other = get_player_or_404(db, display_name)
+    other = db.query(Player).filter_by(display_name=display_name.strip()).one_or_none()
+    if other is None:   # typed rather than picked from the suggestions
+        return accounts_page(request, error=f"No player named {display_name.strip()} on the site.", db=db)
     try:
         error = link_account(db, current_player.id, other.id)
         if not error:
