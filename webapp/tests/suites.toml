@@ -28,11 +28,11 @@ tests = [
   "tests/test_econ_*.py", "tests/test_formula_weights.py", "tests/test_trade_count_window.py",
   "tests/test_trade_schedule.py", "tests/test_scoring_float_sums.py", "tests/test_round_rewards.py",
   "tests/test_weapon_prices.py", "tests/test_credit_events.py", "tests/test_alive_count_replays.py",
-  "tests/test_replay_score_isolation.py",
+  "tests/test_replay_score_isolation.py", "tests/test_active_manifest_verifies.py",
 ]
 guards = [
   "app/scoring/**", "app/models/impact_score.py", "app/models/kill_event.py", "app/models/round.py",
-  "app/models/match.py",
+  "app/models/match.py", "app/models/indexes.py",
 ]
 
 [impact-timing]
