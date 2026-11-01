@@ -125,6 +125,8 @@ TOP_REACH_M = 0.75        # a box's real top reaches about 0.75 m past its drawn
 VIEW_REACH_M = 1.1   # seeing over boxes from a top: feet within 1.1 m of the box's drawn outline (owner, 2026-10-30, "for now")
 TOP_TOL_M = 0.3           # standing z is within 0.3 m of a learnt top (159 of 162 measured stands within 0.25 m)
 CROUCH_DROP_M = 0.2       # a crouch lowers the replay z by 0.2 m: 501 of 601 measured dips at exactly 0.2 m
+CROUCH_LAG_S = 0.21      # PROVISIONAL(D6): the body follows the crouch key by about 0.21 s, down and up
+CROUCH_NEAR_S = 2.5      # PROVISIONAL(D6): key activity this near a stand means this player's key is recorded
 
 
 class HeightError(ValueError):

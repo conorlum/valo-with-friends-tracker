@@ -13,7 +13,7 @@ import numpy as np
 from app.control import heights
 from app.control.geometry import CELL, GRID, PX
 from app.control.heights import (BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M,
-                                 CROUCH_DROP_M, TOP_REACH_M, TOP_TOL_M)
+                                 CROUCH_DROP_M, CROUCH_LAG_S, CROUCH_NEAR_S, TOP_REACH_M, TOP_TOL_M)
 
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6
@@ -33,6 +33,7 @@ class TopStand:
     cand_dist: tuple = ()    # metres to each candidate's outline, in candidates order
     match: str = ""
     round: int = 0
+    crouch: str = "none"
 
     @property
     def piece(self):
@@ -94,6 +95,13 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
     need = BOX_SETTLE_S * hz - EPS
     out: list[TopStand] = []
     for slot, segments in (blob.get("tracks") or {}).items():
+        crouch_spans = []
+        if "crouch" in blob:
+            crouch_spans = [(t0 + CROUCH_LAG_S, t1 + CROUCH_LAG_S)
+                            for t0, t1 in blob["crouch"].get(str(slot), ())]
+            crouch_spans.extend((row["t"], row["t1"]) for row in blob.get("util", ())
+                                if row.get("k") == "status" and row.get("status") == "netted"
+                                and row.get("target") == int(slot))
         for si, seg in enumerate(segments):
             m = len(seg["u"])
             if m == 0 or "z" not in seg:
@@ -102,6 +110,9 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
             x = np.cumsum(np.asarray(seg["u"], np.int64)) * PX / 10000
             y = np.cumsum(np.asarray(seg["v"], np.int64)) * PX / 10000
             z = np.cumsum(np.asarray(seg["z"], np.int64))
+            crouched = np.zeros(m, bool)
+            for t0, t1 in crouch_spans:
+                crouched |= (t >= t0) & (t <= t1)
             xi = np.clip(x.astype(int), 0, PX - 1)
             yi = np.clip(y.astype(int), 0, PX - 1)
             near = np.zeros(m, bool)
@@ -112,7 +123,15 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
                 near &= ~((t >= t0) & (t <= t1))
             for a, e in hm._runs_of(near):
                 for i, j in ((a + i, a + j) for i, j in _steady_runs(z[a:e], int(np.ceil(need)))):
-                    med = float(np.median(z[i:j + 1]))
+                    crouch = "none"
+                    if crouched[i:j + 1].any():
+                        med = float(np.median(z[i:j + 1] + crouched[i:j + 1] * CROUCH_DROP_M * 10))
+                        crouch = "key"
+                    else:
+                        med = float(np.median(z[i:j + 1]))
+                        if any(t0 - CROUCH_NEAR_S <= t[j] and t1 + CROUCH_NEAR_S >= t[i]
+                               for t0, t1 in crouch_spans):
+                            crouch = "up"
                     # A member's pixel, rather than a rounded median that may lie off a non-convex outline.
                     k = i + int(np.argmin((x[i:j + 1] - np.median(x[i:j + 1])) ** 2
                                           + (y[i:j + 1] - np.median(y[i:j + 1])) ** 2))
@@ -124,7 +143,8 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
                     cands = tuple(p for p, _ in nearby)
                     cand_dist = tuple(dist for _, dist in nearby)
                     out.append(TopStand(round_index, int(slot), si, float(t[i]), float(t[j]),
-                                        int(cover_px[px[1], px[0]]), int(round(med)), px, cands, cand_dist))
+                                        int(cover_px[px[1], px[0]]), int(round(med)), px, cands, cand_dist,
+                                        crouch=crouch))
     return out
 
 
@@ -208,7 +228,8 @@ def match_top(z_m, tops):
 
 def _fold_crouches(stands):
     """Fold lower levels into better-supported higher levels of one piece, before emitting any rows.
-    Support is the original number of stands, fixed before folds; equal support keeps both levels."""
+    Support is the original number of stands, fixed before folds; equal support keeps both levels.
+    Known key/up stances keep their heights, but still support their original levels."""
     # Keep the recorded dm levels separate here: FLOOR_TOL_M would already merge the entire crouch window.
     levels = defaultdict(list)
     for s in stands:
@@ -218,7 +239,8 @@ def _fold_crouches(stands):
         higher = [h for h, other in levels.items() if len(other) > len(lv)
                   and 0 < h - z <= (TOP_TOL_M + CROUCH_DROP_M) * 10 + EPS]
         target = min(higher) if higher else None
-        folded.extend(replace(s, z_dm=int(round(target))) if target is not None else s for s in lv)
+        folded.extend(replace(s, z_dm=int(round(target)))
+                      if target is not None and s.crouch == "none" else s for s in lv)
     return folded
 
 
