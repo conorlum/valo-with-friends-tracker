@@ -170,6 +170,36 @@ def _current_snapshot():
     raise fi.FeatureInputsError('current control source is changing')
 
 
+_features_memo: dict[tuple, object] = {}
+_FEATURES_MEMO_MAX = 64
+_features_lock = threading.Lock()
+
+
+def _identify_features(map_name, height_digest, source, base):
+    """fi.identify_features, remembered on everything it reads: the map, the height digest, the source bytes'
+    sha, the decoded base (by its canonical JSON's sha) and the versions it stamps. It is pure, and every round's
+    freshness check asks for it again (replay_util.Freshness, once per map per request): validating and encoding
+    the map's features is most of a map's cost. Errors are never remembered."""
+    import hashlib
+
+    try:
+        key = (map_name, height_digest, source.raw_sha256,
+               hashlib.sha256(fi.canonical_json(base)).hexdigest() if base else None,
+               tuple(sorted(fi.CONSUMER_VERSIONS.items())), fi.FEATURE_COMPILER_VERSION,
+               fi.FEATURE_NORMALIZATION_VERSION)
+    except (TypeError, ValueError):         # a base that is not plain JSON: not remembered
+        return fi.identify_features(map_name, height_digest, source, base)
+    with _features_lock:
+        if key in _features_memo:
+            return _features_memo[key]
+    found = fi.identify_features(map_name, height_digest, source, base)
+    with _features_lock:
+        _features_memo[key] = found
+        while len(_features_memo) > _FEATURES_MEMO_MAX:
+            _features_memo.pop(next(iter(_features_memo)))
+    return found
+
+
 def resolve_current_geometry(db, map_name):
     selection = HeightSelection('flat')
     try:
@@ -201,7 +231,7 @@ def resolve_current_geometry(db, map_name):
             base = base_snapshot(map_name, CONTROL_DIR, source_entry, maps[map_name]['xMultiplier'])
             if _current_snapshot() != (index, tags, maps, raw):
                 raise fi.FeatureInputsError('source changed while reading masks')
-        inp = fi.identify_features(map_name, selection.digest, source, base)
+        inp = _identify_features(map_name, selection.digest, source, base)
         geometry = {'sight': entry.get('sight_sha'), 'walk': entry.get('walk_sha'),
                     'barrier': entry.get('barrier_sha'), 'specials': source_entry.get('specials') or [],
                     'scale': (maps.get(map_name) or {}).get('xMultiplier')}

@@ -10,8 +10,11 @@
 <h1>Critical Util</h1>
 {% if login_note %}
 <p class="page-meta">{{ login_note }}</p>
+{% elif building_note %}
+<p class="page-meta">{{ building_note }}</p>
 {% else %}
 <p class="page-meta">Which utility wins rounds for you and your friends, which to keep throwing, and the patterns in how you use it. {{ thin_note }}</p>
+{% if updating_note %}<p class="page-meta">{{ updating_note }}</p>{% endif %}
 <p class="page-meta">{{ page.n }} casts from your circle.{% if page.fit and not page.fit.fitted %} The job weights are still the starting values (fewer than {{ 300 }} rounds to fit them on).{% endif %}{% if page.estimator and page.estimator.check %} Win-odds estimator: {{ page.estimator.matches }} matches; held-out log loss {{ page.estimator.check.log_loss }} vs {{ page.estimator.check.log_loss_man }} for man advantage alone.{% endif %}</p>
 
 <div class="scope-toggle">

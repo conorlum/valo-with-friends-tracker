@@ -161,7 +161,10 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
 - Only rows whose gap fingerprint is current are read (`replay_util.current_rows`, Critical Moments' rule).
   Products in `util_model` ("win", "values"), rebuilt when what they were built from changes (`corpus_key`,
   computed from the rows a build read; `replay_util.ensure_values`, one rebuild at a time under a Postgres advisory
-  lock; the first page visit fits a missing or stale estimator). `scripts/critical_util.py fit-win | refresh |
+  lock). Requests never build: `/util` and the replay tab read the stored build (`replay_util.page_values`,
+  `match_payload`) and, when it is stale or missing, start `python -m app.services.util_rebuild` as a lower-priority
+  child process (one per process at a time, one builder overall under a Postgres session lock) and show the last
+  build with an "updating" note. The build takes minutes. The coach waits for a current build (`wait=True`). `scripts/critical_util.py fit-win | refresh |
   measure | show` (through `with_friends_db.py`; `measure` is read-only).
 - The tab is `replays/_player.html` "Critical Util" (`app/static/js/critutil.js`, `/replays/<uuid>/util.json`); the
   page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach

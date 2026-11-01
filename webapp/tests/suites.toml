@@ -193,7 +193,7 @@ about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, t
 tests = ["tests/critutil/test_*.py"]
 guards = [
   "app/critutil/**", "app/services/util_model.py", "app/services/util_values.py", "app/services/replay_util.py",
-  "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
+  "app/services/util_rebuild.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
 ]
 
 [critical-moments]
@@ -295,7 +295,7 @@ tests = [
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
   "tests/replays/test_control_tagger.py", "tests/replays/test_control_pinned_inputs.py",
   "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
-  "tests/replays/test_preview_control_live.py",
+  "tests/replays/test_preview_control_live.py", "tests/replays/test_freshness_memos.py",
 ]
 guards = [
   "app/services/replay_control.py", "app/services/replay_control_store.py", "app/services/replay_control_remote.py",
