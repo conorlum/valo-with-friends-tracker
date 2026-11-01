@@ -37,11 +37,7 @@ class RoundPlayerStat(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     round_id: Mapped[int] = mapped_column(ForeignKey("rounds.id"), nullable=False)
-    # Indexed on its own (migration 0030): the unique constraint leads with
-    # round_id, so a lookup by match_player_id alone was a full table scan.
-    match_player_id: Mapped[int] = mapped_column(
-        ForeignKey("match_players.id"), nullable=False, index=True
-    )
+    match_player_id: Mapped[int] = mapped_column(ForeignKey("match_players.id"), nullable=False)
     score: Mapped[int] = mapped_column(Integer, default=0)
     kills: Mapped[int] = mapped_column(Integer, default=0)
     deaths: Mapped[int] = mapped_column(Integer, default=0)
