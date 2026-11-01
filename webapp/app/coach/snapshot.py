@@ -74,7 +74,7 @@ def read(db, match_uuid: str) -> dict:
     try:
         from app.services import replay_util
 
-        util = replay_util.match_payload(db, replay)["rounds"]
+        util = replay_util.match_payload(db, replay, wait=True)["rounds"]      # cited figures must be current
     except Exception:  # noqa: BLE001 - Critical Util is extra evidence: without it the run goes on, with the gap named
         util = {}
     return assemble(context, blobs, controls, links, util)

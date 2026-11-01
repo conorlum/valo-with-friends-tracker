@@ -162,6 +162,20 @@ class Freshness:
         self.maps: dict[str, tuple] = {}
         self.groups: dict[int, dict] = {}
 
+    def preload(self, replay_ids) -> None:
+        """Every one of these replays' side groups in one query (replay_control.side_groups, one replay each)."""
+        from app.models.replay import ReplayPlayer
+
+        wanted = [rid for rid in set(replay_ids) if rid not in self.groups]
+        if not wanted:
+            return
+        for rid in wanted:
+            self.groups[rid] = {}
+        for rid, slot, group in self.db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.side_group
+                                              ).filter(ReplayPlayer.replay_id.in_(wanted)):
+            if group:
+                self.groups[rid][slot] = group
+
     def expected(self, replay, n: int) -> str | None:
         from app.replays import choke_assets
         from app.services import replay_control, replay_gaps
@@ -198,6 +212,7 @@ def current_rows(db, replay_ids=None, *, with_data: bool = True) -> list[tuple]:
     ids = {r[0] for r in rows}
     replays = {r.id: r for r in db.query(Replay).filter(Replay.id.in_(list(ids)))} if ids else {}
     fresh = Freshness(db)
+    fresh.preload(replays)
     return [tuple(r) for r in rows if r[0] in replays
             and fresh.current(replays[r[0]], r[1], replay_gaps.GAPS_REVISION, r[2])]
 
@@ -596,6 +611,28 @@ def ensure_values(db, *, force: bool = False) -> dict:
     return data
 
 
+def values_current(db, stored: tuple[str, dict] | None = None) -> bool:
+    """Whether the stored build is what `ensure_values` would return now, without building anything: the stored
+    estimator covers every match with a replay, and the build's key matches its inputs."""
+    model = util_model.load(db)
+    if not util_model.covers(model, util_model.replay_match_ids(db)):
+        return False
+    stored = _values_row(db) if stored is None else stored
+    return stored is not None and stored[0] == corpus_key(db, current_rows(db, with_data=False), model)
+
+
+def page_values(db) -> tuple[dict | None, bool]:
+    """(the stored build or None, whether it is current), for a request: never builds. When it is stale or missing
+    the build is started in the background (app/services/util_rebuild.py) and the caller shows what is stored."""
+    from app.services import util_rebuild
+
+    stored = _values_row(db)
+    if values_current(db, stored):
+        return stored[1], True
+    util_rebuild.request()
+    return (stored[1] if stored else None), False
+
+
 # --- the cross-match page
 
 
@@ -779,9 +816,13 @@ def _ult_table(rows):
 # --- the replay viewer's tab
 
 
-def match_payload(db, replay) -> dict:
+def match_payload(db, replay, *, wait: bool = False) -> dict:
     """The tab's body for one linked replay: each player's casts with values, best and worst, unused util, harm.
-    Opponents named by agent."""
+    Opponents named by agent.
+
+    When the stored build (or the estimator) is out of date, `wait` rebuilds it first (the coach, which must cite
+    current figures); otherwise the rebuild starts in the background (util_rebuild) and the body says `updating`,
+    valued meanwhile with the stored estimator and weights."""
     from sqlalchemy import or_
 
     from app.models.friendship import Friendship
@@ -799,8 +840,13 @@ def match_payload(db, replay) -> dict:
     players = tab_players(page, friends)
     ctx = _replay_context(db, {replay.id}).get(replay.id)
     model = util_model.load(db)
+    updating = False
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
-        model = util_model.ensure(db)       # this match was in the stored estimator's training: refit it first
+        # this match was in the stored estimator's training: refit it first, or (not waiting) in the background
+        if wait or model is None:
+            model = util_model.ensure(db)
+        else:
+            updating = True
     key, corpus = _values_row(db) or (None, {})
     weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
     rounds_out, stale, failed = {}, 0, []
@@ -816,13 +862,22 @@ def match_payload(db, replay) -> dict:
             continue
         current[n] = row.data
     covered = corpus.get("fingerprints", {}).get(str(replay.id), {})
-    # rebuilt, once per request, when the stored build does not cover this replay's rounds or anything else it is
-    # made from changed (another replay's rows, the estimator, the table, the friendships: `corpus_key`)
-    if any(stored[n].fingerprint != covered.get(str(n)) for n in current) \
+    # rebuilt when the stored build does not cover this replay's rounds or anything else it is made from changed
+    # (another replay's rows, the estimator, the table, the friendships: `corpus_key`): first when waiting, else in
+    # the background, once per process at a time
+    if updating or any(stored[n].fingerprint != covered.get(str(n)) for n in current) \
             or key != corpus_key(db, current_rows(db, with_data=False), model):
-        ensure_values(db)
-        corpus = (_values_row(db) or (None, {}))[1]
-        weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
+        if wait:
+            ensure_values(db)
+            model = util_model.load(db)
+            corpus = (_values_row(db) or (None, {}))[1]
+            weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
+            updating = False
+        else:
+            from app.services import util_rebuild
+
+            util_rebuild.request()
+            updating = True
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
     flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True) if ctx else []
@@ -873,7 +928,7 @@ def match_payload(db, replay) -> dict:
     return {"players": players, "rounds": rounds_out, "summary": summary, "stale": stale,
             "failed": sorted(failed), "estimator": bool(model and model.get("n")),
             "weights_fitted": weights != util_values.DEFAULT_WEIGHTS,
-            "baseline": bool(corpus.get("rows"))}
+            "baseline": bool(corpus.get("rows")), "updating": updating}
 
 
 def unused_ults(rounds: dict[int, dict]) -> dict[int, list]:

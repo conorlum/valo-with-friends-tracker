@@ -89,6 +89,22 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(autouse=True)
+def _no_background_util_build(monkeypatch):
+    """A request that finds Critical Util's build stale starts it in a child process (app/services/util_rebuild.py),
+    which would connect to the configured DATABASE_URL, not the test's database: never spawn one in a test."""
+    from app.services import util_rebuild
+
+    class _Finished:
+        pid = 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda: _Finished())
+    monkeypatch.setattr(util_rebuild, "_child", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_required_postgres_case(request, monkeypatch):
     """Legacy PG fixtures delete whole tables: give each required-lane case its own migrated database.
 

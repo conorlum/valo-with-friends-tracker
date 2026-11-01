@@ -168,6 +168,7 @@
     if ((payload.failed || []).length) out.push("Util could not be computed for rounds " + payload.failed.join(", "));
     if (!payload.estimator) out.push("The win-odds estimator isn't built yet: kill values read 0 until it is");
     if (!payload.baseline) out.push("No comparison with rounds without util yet: it comes with the Critical Util page's first build");
+    if (payload.updating) out.push("Critical Util is being rebuilt with new replays (a few minutes): values and comparisons are from the last build until then");
     return out;
   }
 

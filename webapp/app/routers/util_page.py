@@ -24,7 +24,10 @@ THIN_NOTE = ("These come from the uploaded replays only, so samples are small: e
              "and matches it is out of. Values are the share of the change in your side's chance to win the round "
              "(percentage points) credited to each cast; scores compare what followed each cast with moments in the "
              "same state with no such util up: evidence, not proof.")
-PHASE_WORDS = {"pre_contact": "before first contact", "contact": "after contact", "post_plant": "after the plant"}
+BUILDING_NOTE = ("Critical Util is being built from every uploaded replay. This takes a few minutes; "
+                 "refresh the page in a little while.")
+UPDATING_NOTE = ("Being rebuilt with new replays (a few minutes): these figures are from the last build until then.")
+PHASE_WORDS ={"pre_contact": "before first contact", "contact": "after contact", "post_plant": "after the plant"}
 
 
 @router.get("/util")
@@ -35,7 +38,10 @@ def util_page(request: Request, db: Session = Depends(get_db), mode: str = "your
     viewer = get_current_player(request, db)
     if viewer is None:
         return templates.TemplateResponse(request, "util/page.html", {"login_note": LOGIN_NOTE, "page": None})
-    corpus = replay_util.ensure_values(db)
+    corpus, current = replay_util.page_values(db)       # never builds here: a stale build is redone in the background
+    if corpus is None:
+        return templates.TemplateResponse(request, "util/page.html", {"login_note": None, "page": None,
+                                                                      "building_note": BUILDING_NOTE})
     ids = circle.circle_ids(db, viewer.id) | {viewer.id}
     page = replay_util.page_for(corpus, ids, mode)
     names = {p.id: p.display_name for p in db.query(Player.id, Player.display_name).filter(Player.id.in_(list(ids)))}
@@ -45,5 +51,5 @@ def util_page(request: Request, db: Session = Depends(get_db), mode: str = "your
                      key=lambda p: (p["name"] != names.get(viewer.id), p["name"].lower()))
     return templates.TemplateResponse(request, "util/page.html", {
         "page": page, "players": players, "thin_note": THIN_NOTE, "phase_words": PHASE_WORDS, "login_note": None,
-        "mode": mode,
+        "mode": mode, "updating_note": None if current else UPDATING_NOTE,
     })
