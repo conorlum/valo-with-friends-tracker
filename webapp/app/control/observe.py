@@ -25,6 +25,7 @@ class PlayerView:
     eye_y: float | None = None
     see_over: tuple[int, ...] = ()   # the cover pieces the eye sees over (sorted labels; () = none)
     own: int | None = None          # sight node under the real z; node remains the control anchor
+    air: bool = False               # Holder.air: their sight is cast against box plates
 
 
 @dataclass
@@ -46,6 +47,7 @@ def record(tick, unknown) -> TickRecord:
         if st is not None:
             pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), tuple(st.see_over)
             pv.own = st.own
+        pv.air = bool(getattr(h, "air", False))
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
                       list(tick.smokes))

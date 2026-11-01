@@ -202,8 +202,9 @@ class GapDetector:
         """Where the player sees from: the stance's eye on or beside a box, else their position."""
         return (p.x if p.eye_x is None else p.eye_x), (p.y if p.eye_y is None else p.eye_y)
 
-    def _sight(self, x, y, eye_z, node, smokes, see_over=(), own=None) -> np.ndarray:
-        """Every node with a clear line from (x, y) at eye height `eye_z` (R13).
+    def _sight(self, x, y, eye_z, node, smokes, see_over=(), own=None, plates=False) -> np.ndarray:
+        """Every node with a clear line from (x, y) at eye height `eye_z` (R13). `plates`: an airborne player's
+        sight, cast against box plates with no see-over, as the engine's fan is.
 
         Exact positions, eye heights, nodes and physical blocker values can reuse
         a cast across ticks. Mutable/untrusted panels retain the uncached path.
@@ -212,7 +213,7 @@ class GapDetector:
         from app.control.feature_visibility import blocker_key
         from app.control.geometry import see_over_labels
 
-        see_over = see_over_labels(see_over)
+        see_over = () if plates else see_over_labels(see_over)
         own = int(node if own is None else own)
 
         signature = (id(self.geo), id(self.geo.sight), id(self.geo.node_z), id(self.geo.heights),
@@ -228,7 +229,7 @@ class GapDetector:
         blockers = blocker_key(smokes)
         reusable = blockers is not None
         key = ("sight", float(x).hex(), float(y).hex(),
-               None if eye_z is None else float(eye_z).hex(), int(node), blockers, see_over, own)
+               None if eye_z is None else float(eye_z).hex(), int(node), blockers, see_over, own, bool(plates))
         if reusable:
             entry = self._sight_cache.pop(key, None)
             if entry is not None:
@@ -237,7 +238,7 @@ class GapDetector:
                 return entry[0]
         record: dict = {}
         out = cast(self.geo, float(x), float(y), FULL_CIRCLE, smokes, eye_z=eye_z, own=own, record=record,
-                   see_over=see_over)
+                   see_over=see_over, plates=plates)
         self.timing["casts"] += 1
         if record.get("unresolved_rays"):
             self._note("exposure rays through unresolved terrain (2D sight there)")
@@ -408,8 +409,10 @@ class GapDetector:
         feature_blockers = [s for s in rec.smokes if isinstance(s, BoundedOccluder)]
         if feature_blockers:
             regular = [s for s in rec.smokes if not isinstance(s, BoundedOccluder)]
-            with_features = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own)
-            without_features = self._sight(*self._eye(p), p.eye_z, p.node, regular, see_over=p.see_over, own=p.own)
+            with_features = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own,
+                                        plates=p.air)
+            without_features = self._sight(*self._eye(p), p.eye_z, p.node, regular, see_over=p.see_over, own=p.own,
+                                           plates=p.air)
             feature_hidden = (without_features & ~with_features)[nodes]
             out[feature_hidden] = _CODE['map_feature_closed']
             rest &= ~feature_hidden
@@ -435,8 +438,9 @@ class GapDetector:
         key = ("smoked", p.slot)
         if key not in self._tick_cache:
             kept = [s for s in rec.smokes if _smoke_key(s) in old]
-            with_all = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own)
-            without = self._sight(*self._eye(p), p.eye_z, p.node, kept, see_over=p.see_over, own=p.own)
+            with_all = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own,
+                                   plates=p.air)
+            without = self._sight(*self._eye(p), p.eye_z, p.node, kept, see_over=p.see_over, own=p.own, plates=p.air)
             self._tick_cache[key] = without & ~with_all
         return self._tick_cache[key]
 
@@ -474,7 +478,8 @@ class GapDetector:
         front = np.zeros(self.geo.n, bool)                 # exposed unknown nodes not behind the victim (I1)
         sight = None
         if any((ent >= 0).any() for ent in judged.values()):
-            sight = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own)
+            sight = self._sight(*self._eye(p), p.eye_z, p.node, rec.smokes, see_over=p.see_over, own=p.own,
+                                plates=p.air)
             cx, cy = self.geo.centres[:, 0], self.geo.centres[:, 1]
             for enemy, ent in sorted(judged.items()):
                 nodes = np.flatnonzero(sight & (ent >= 0))
@@ -526,7 +531,7 @@ class GapDetector:
         self._victim_prev[p.slot] = {"t": t, "node": p.node, "yaw": p.yaw, "x": p.x, "y": p.y, "eye_z": p.eye_z,
                                      "eye_x": p.x if p.eye_x is None else p.eye_x,
                                      "eye_y": p.y if p.eye_y is None else p.eye_y, "see_over": p.see_over,
-                                     "own": p.own,
+                                     "own": p.own, "air": p.air,
                                      "smokes": list(rec.smokes), "sight": sight, "front": front}
 
     def _open_gap(self, p, rec, log, sid: int, found: list, life: int, judged: dict, prev) -> Gap:
@@ -585,7 +590,7 @@ class GapDetector:
                 old = prev["sight"]
                 if old is None:
                     old = self._sight(prev["eye_x"], prev["eye_y"], prev["eye_z"], prev["node"], prev["smokes"],
-                                      see_over=prev["see_over"], own=prev.get("own"))
+                                      see_over=prev["see_over"], own=prev.get("own"), plates=prev.get("air", False))
                 if any((~old[nodes]).any() for _, nodes in found):
                     options.append((t, "victim_moved", {}))
         best = max(options, key=lambda o: (o[0], -CAUSE_ORDER.index(o[1])))

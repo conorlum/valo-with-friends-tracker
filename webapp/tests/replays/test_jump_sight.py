@@ -40,6 +40,30 @@ def test_switch_off_gives_the_old_cast_byte_for_byte(monkeypatch):
     assert tk.view[0].tobytes() == old_view.tobytes()
 
 
+def test_gap_sight_of_a_jumper_matches_control_live_and_through_the_cache(tmp_path):
+    from app.control.observe import record
+    from app.gaps import cache
+    from app.gaps.detect import GapDetector
+
+    geo = box()
+    tk = jump_tick(geo)
+    target = geo.node_at_px(308, Y, 0)
+    assert tk.view[0][target]
+    rec = record(tk, SimpleNamespace(entry={}, events={}))
+    path = cache.cache_path(1, 1, "jump", tmp_path)
+    writer = cache.Writer(path)
+    writer(rec, SimpleNamespace(geo=geo, log=[]))
+    writer.close({})
+    (stored, _), = cache.replay(path)
+    detector = GapDetector(geo, tk.rnd)
+    for p in (rec.players[0], stored.players[0]):
+        assert p.air
+        sight = detector._sight(*detector._eye(p), p.eye_z, p.node, [], see_over=p.see_over, own=p.own, plates=p.air)
+        assert sight[target]
+        walled = detector._sight(*detector._eye(p), p.eye_z, p.node, [], see_over=p.see_over, own=p.own)
+        assert not walled[target], "the memo keeps the two modes apart"
+
+
 @pytest.mark.slow
 def test_on_box_is_never_airborne():
     h = tick(box_hall_tops(), {0: on_box_track(260, 196)}).holders[0]
