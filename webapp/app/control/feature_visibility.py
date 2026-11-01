@@ -22,6 +22,7 @@ MAX_ROW_BYTES = 64 * 1024 * 1024
 MAX_MOVING_ROW_BYTES = 16 * 1024 * 1024
 MAX_UNION_BYTES = 16 * 1024 * 1024
 ROW_VERSION = 1  # Bump when row sampling/height semantics change without a geometry-key change.
+MAX_PERMANENT_LINES = 1 << 20   # about 150 MB at worst; a line recomputes after eviction
 
 
 def blocker_key(blockers):
@@ -123,6 +124,7 @@ class SightCache:
         self.row_path = None
         self.rows_dirty = False
         self.height_rows = geo.heights is not None
+        self.permanent_lines: dict = {}     # (source, target, feet?) -> fixed geometry leaves that line clear
         from app.control import heights as hc
         head = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.HEAD_M
         self.targets = np.column_stack((geo.centres.astype(float), head))
@@ -270,6 +272,11 @@ class SightCache:
                 out &= ~entry[0]
         if two_points:
             out &= ~(head_union & feet_union)
+            byte, bit = targets // 8, (128 >> (targets % 8)).astype(np.uint8)
+            head_hit, feet_hit = (head_union[byte] & bit) != 0, (feet_union[byte] & bit) != 0
+            lost = self._other_point_lost(geo, source, targets, head_hit, feet_hit)
+            if lost.any():
+                np.bitwise_and.at(out, byte[lost], ~bit[lost])
         while (self.row_bytes > MAX_ROW_BYTES or self.moving_row_bytes > MAX_MOVING_ROW_BYTES) and self.rows:
             # Resting rows can borrow unused moving space, but rotations need
             # their own working set too. Reserve a quarter of the total budget
@@ -444,7 +451,40 @@ class SightCache:
     def blocked(self, geo, source, targets, occluders, record):
         """A target is blocked only when every complete point line is blocked."""
         head, feet = self._blocked_points(geo, source, targets, occluders, record)
-        return head if feet is None else head & feet
+        if feet is None:
+            return head
+        return (head & feet) | self._other_point_lost(geo, source, targets, head, feet)
+
+    def _other_point_lost(self, geo, source, targets, head, feet):
+        """Per target: a door blocks one sight point and fixed geometry the other (the stored row keeps one bool per
+        pair, so it can't say). Each line is asked once per source; a door's band never changes the answer."""
+        from app.control import features as cf, heights as hc
+
+        lost = np.zeros(len(targets), bool)
+        one = np.flatnonzero(head != feet)
+        if not len(one):
+            return lost
+        a = (*geo.centres[source].astype(float), cf._eye_body(geo, source, hc.EYE_M))
+        see_over = ()
+        if geo.is_top[source]:
+            from app.control.stance import vantage
+
+            see_over = vantage(geo, int(geo.top_piece[np.searchsorted(geo.top_nodes, source)]),
+                               float(geo.node_z[source]))
+        for i in one:
+            target = int(targets[i])
+            use_feet = bool(head[i])
+            key = (int(source), target, use_feet)
+            clear = self.permanent_lines.get(key)
+            if clear is None:
+                x, y, z = self.targets[target]
+                point = (float(x), float(y), float(z) + (hc.FEET_M - hc.HEAD_M if use_feet else 0.0))
+                clear = cf.permanent_line_clear(geo, a, point, target, see_over=see_over)
+                if len(self.permanent_lines) >= MAX_PERMANENT_LINES:
+                    self.permanent_lines.pop(next(iter(self.permanent_lines)))
+                self.permanent_lines[key] = clear
+            lost[i] = not clear
+        return lost
 
     def _blocked_points(self, geo, source, targets, occluders, record):
         from app.control import features as cf, heights as hc

@@ -47,6 +47,37 @@ def test_complete_rows_promote_and_keep_batch_spacing(monkeypatch, height_bands)
         assert memo.row_hits == len(blockers)
 
 
+@pytest.mark.parametrize('band, seen', [((0.0, 1.1), False), ((5.0, 6.0), True)])
+def test_terrain_on_one_sight_point_and_a_door_on_the_other_hide_the_player(band, seen):
+    """low_overhang: the plate blocks the eye-height line and leaves the feet line; a door low enough to block the
+    feet line leaves nothing, a door above both changes nothing. Every route to the answer agrees."""
+    from app.control import engine as ce, geometry as cg, heights as hc
+    from tests.replays.test_control_sight import low_overhang
+
+    geo = low_overhang()
+    source = int(geo.node_of[geo.cell_of_px(196, 204), 0])
+    target = int(geo.node_of[geo.cell_of_px(268, 204), 0])
+    mask = np.zeros((1024, 1024), bool)
+    mask[192:216, 256:264] = True
+    door = cf._bounded_occluder('door', mask, *band)
+    a = (*geo.centres[source].astype(float), hc.EYE_M)
+    b = geo.centres[target].astype(float)
+    z = float(geo.node_z[target])
+    assert cf.los_with(geo, a, (*b, z + hc.FEET_M), [], [door]) is seen
+    assert not cf.los_with(geo, a, (*b, z + hc.HEAD_M), [], [door])
+    assert bool(cf.cast_with(geo, a[0], a[1], np.array([0.0]), [], [door], eye_z=hc.EYE_M, own=source)[target]) is seen
+    memo = fv.SightCache(geo)
+    assert bool(memo.blocked(geo, source, np.array([target]), [door], None)[0]) is not seen
+    assert bool(ce.seen_from(geo, np.array([source]), [door])[target]) is seen
+    full = np.flatnonzero(np.unpackbits(geo.rows[geo.row_of[source]])[:geo.n])
+    packed = None
+    for _ in range(1000):
+        packed = memo.clear_row(geo, source, full, [door])
+        if packed is not None:
+            break
+    assert bool(np.unpackbits(packed)[target]) is seen
+
+
 def test_head_and_feet_rows_combine_across_doors_and_reuse_intersections(monkeypatch):
     from app.control import heights as hc
     from tests.replays.control_toys import toy_heights

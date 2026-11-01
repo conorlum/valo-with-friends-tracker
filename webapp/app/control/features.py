@@ -794,23 +794,56 @@ def _eye_body(geo: Geometry, node: int, offset: float):
     return float(geo.node_z[node]) + offset
 
 
+def permanent_line_clear(geo: Geometry, a: tuple, b: tuple, node: int, smokes: list = (), see_over=(),
+                         plates=False) -> bool:
+    """Does permanent geometry leave the line from eye `a` to point `b` on `node` clear, the way `cast` judges that
+    node? The view keeps one bool per node, so a caller with a feature on the other sight point asks here."""
+    from app.control import geometry as cg
+
+    piece = 0
+    if geo.is_top[node]:
+        piece = int(geo.top_piece[np.searchsorted(geo.top_nodes, node)])
+    over = (see_over, (piece,) if piece else ())
+    if plates:
+        own_piece = int(cg.plate_surface(geo)[2][int(np.clip(a[1], 0, cg.PX - 1)), int(np.clip(a[0], 0, cg.PX - 1))])
+        return cg.los(geo, a, b, smokes, see_over=over, plates=True, skip=(piece, own_piece))
+    if not cg.los(geo, a, b, smokes, see_over=over):
+        return False
+    return not piece or cg._over_own_top(geo, a, b, node, piece)
+
+
 def _blocked_sight_points(geo: Geometry, occluders: list, a: tuple, heads: np.ndarray,
-                          record: dict | None = None, sampling_steps: int | None = None) -> np.ndarray:
-    """One blocked bool per target: try the head, then the feet only for blocked head lines."""
+                          record: dict | None = None, sampling_steps: int | None = None,
+                          permanent=None) -> np.ndarray:
+    """One blocked bool per target. Both sight points must be lost, each to anything: a target is blocked when
+    occluders block both lines, or block one while `permanent(i, point)` says fixed geometry blocks the other (the
+    owner's rule: not seen by two different things is not seen). Without `permanent`, occluders alone decide."""
     from app.control import heights as hc
 
     hit = blocked_lines(occluders, a, heads, record, sampling_steps=sampling_steps)
     if geo.heights is None or a[2] is None or np.isnan(a[2]):
         return hit
-    retry = hit & ~np.isnan(heads[:, 2])
+    known = ~np.isnan(heads[:, 2])
+    if not known.any():
+        return hit
+    feet = heads.copy()
+    feet[known, 2] += hc.FEET_M - hc.HEAD_M
+    # Keep the head batch's sampling grid when testing a subset.
+    if sampling_steps is None:
+        sampling_steps = int(np.ceil(np.hypot(heads[:, 0] - a[0], heads[:, 1] - a[1]).max())) + 1
+    retry = hit & known
+    feet_hit = hit.copy()
     if retry.any():
-        feet = heads[retry].copy()
-        feet[:, 2] += hc.FEET_M - hc.HEAD_M
-        # Keep the head batch's sampling grid when testing its blocked subset.
-        if sampling_steps is None:
-            sampling_steps = int(np.ceil(np.hypot(heads[:, 0] - a[0], heads[:, 1] - a[1]).max())) + 1
-        hit[retry] = blocked_lines(occluders, a, feet, record, sampling_steps=sampling_steps)
-    return hit
+        feet_hit[retry] = blocked_lines(occluders, a, feet[retry], record, sampling_steps=sampling_steps)
+    out = hit & feet_hit
+    if permanent is None:
+        return out
+    rest = ~hit & known
+    if rest.any():      # not logical occluder tests of the old kind: left out of `record`
+        feet_hit[rest] = blocked_lines(occluders, a, feet[rest], None, sampling_steps=sampling_steps)
+    for i in np.flatnonzero(known & (hit != feet_hit)):
+        out[i] = not permanent(int(i), tuple(feet[i] if hit[i] else heads[i]))
+    return out
 
 
 def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
@@ -829,7 +862,10 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
     z = (np.array([_eye_body(geo, int(n), hc.HEAD_M) for n in nodes])
          if geo.heights is not None and eye_z is not None else np.full(len(nodes), np.nan))
     targets = np.column_stack([geo.centres[nodes].astype(float), z])
-    hit = _blocked_sight_points(geo, occluders, (x, y, eye_z), targets, record)
+    eye = (x, y, eye_z)
+    hit = _blocked_sight_points(geo, occluders, eye, targets, record,
+                                permanent=lambda i, point: permanent_line_clear(geo, eye, point, int(nodes[i]), smokes,
+                                                                                see_over, plates))
     if own is not None:
         hit &= nodes != own
     seen[nodes[hit]] = False
