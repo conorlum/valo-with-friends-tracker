@@ -32,8 +32,8 @@ def test_every_real_map_cached_equals_uncached():
 @pytest.mark.slow
 def test_every_real_map_numpy_decode_equals_pure_python(monkeypatch):
     """The vectorised decode is a speed-up only: the same descriptors, byte for byte, as the pure-Python one."""
-    accel = pytest.importorskip('app.services.mask_accel')
-    monkeypatch.setattr(mfs, '_accel', accel)
+    if mfs._np is None:
+        pytest.skip('numpy not installed')
     tags = json.loads((rc.CONTROL_DIR / 'tags.json').read_text(encoding='utf-8')).get('maps', {})
     maps = json.loads(rc.MAPS_JSON.read_text(encoding='utf-8'))
     fast, checked = {}, 0
@@ -42,7 +42,7 @@ def test_every_real_map_numpy_decode_equals_pure_python(monkeypatch):
         scale = (maps.get(name) or {}).get('xMultiplier')
         if name in tags and scale is not None:
             fast[name] = mfs._base_snapshot(name, rc.CONTROL_DIR, tags[name], scale)
-    monkeypatch.setattr(mfs, '_accel', None)
+    monkeypatch.setattr(mfs, '_np', None)
     for name, got in fast.items():
         scale = maps[name]['xMultiplier']
         assert got == mfs._base_snapshot(name, rc.CONTROL_DIR, tags[name], scale), name
@@ -51,8 +51,8 @@ def test_every_real_map_numpy_decode_equals_pure_python(monkeypatch):
 
 
 def test_numpy_helpers_equal_pure_python_on_edge_inputs(monkeypatch):
-    accel = pytest.importorskip('app.services.mask_accel')
-    monkeypatch.setattr(mfs, '_accel', accel)
+    if mfs._np is None:
+        pytest.skip('numpy not installed')
     import random
 
     rng = random.Random(7)
@@ -62,7 +62,7 @@ def test_numpy_helpers_equal_pure_python_on_edge_inputs(monkeypatch):
             mfs._pack(bytes(16), [4, 4]))
     with pytest.raises(Exception) as fast_err:
         mfs._pack(b'\x02' + bytes(15), [4, 4])
-    monkeypatch.setattr(mfs, '_accel', None)
+    monkeypatch.setattr(mfs, '_np', None)
     slow = (mfs._pack(pixels, [1024, 1024]), mfs._barrier_cells(pixels), mfs._legacy_large(bits),
             mfs._pack(bytes(16), [4, 4]))
     assert fast == slow

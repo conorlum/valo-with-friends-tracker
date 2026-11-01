@@ -36,11 +36,7 @@ async def lifespan(_app: FastAPI):
     # The Competitive map pool's daily patch-notes check (app/services/map_pool_refresh.py); off unless MAP_POOL_AUTO.
     # The per-match state table the match lists read (app/services/replay_match_states.py): on whenever not in demo mode.
     from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states
-    # numpy for the map-mask decode every replay freshness check needs (app/services/mask_accel.py): app/replays
-    # stays standard library only, so the web app hands it the fast path.
-    from app.services import mask_accel
 
-    mask_accel.register()
     stops = []
     try:
         for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states):
