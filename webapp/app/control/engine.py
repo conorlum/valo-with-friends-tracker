@@ -1544,8 +1544,8 @@ class Tick:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
         tests a body standing on each floor, which is right for ground and for anyone standing on it; an
         enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by exact lines
-        from the viewer's eye to their head or feet (eye and feet plate lines for an airborne target, whose
-        floor spot no longer counts: `_by_lines_only`), under the same limits as the view: the field of view,
+        from the viewer's eye to their head or feet (plate lines for an airborne target, whose floor spot no
+        longer counts: `_by_lines_only`), under the same limits as the view: the field of view,
         a flash, nearsight, smokes and walls."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
@@ -1578,8 +1578,8 @@ class Tick:
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
-    def _air_line(self, e: Holder, h: Holder, *, target_z: float | None = None, record: bool = True) -> bool:
-        """One plate line, eye-to-eye unless metadata supplies head/feet z; skip only its ends (R3/R4)."""
+    def _air_line(self, e: Holder, h: Holder, *, target_z: float, record: bool = True) -> bool:
+        """One plate line from e's eye to h's point at target_z (head or feet); skip only its ends (R3/R4)."""
         global _plate_calls
         geo = self.geo
         ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
@@ -1593,17 +1593,19 @@ class Tick:
             pieces.append(piece)
         _plate_calls += 1
         return los(geo, (ex, ey, self._eye(e.slot, self.t, e.cell)),
-                   (h.x, h.y, self._eye(h.slot, self.t, h.cell) if target_z is None else target_z), self.smokes,
+                   (h.x, h.y, target_z), self.smokes,
                    record=self.fallbacks if record else None, plates=True, skip=tuple(pieces))
 
     def _air_seen(self, e: Holder, h: Holder) -> bool:
-        """A pair touching the air: a clear plate line from e's eye to h's eye, or to h's feet (the owner's rule)."""
-        if self._air_line(e, h):
-            return True
+        """A pair touching the air: a clear plate line from e's eye to h's head (feet + 2 m) or to h's feet, at h's real
+        height (the owner's rule)."""
         z = self.rnd.height(h.slot, self.t)
         if z is None or np.isnan(z):
             z = self.geo.node_z[h.cell]
-        return not np.isnan(z) and self._air_line(e, h, target_z=float(z) + hc.FEET_M)
+        if np.isnan(z):
+            return False
+        return (self._air_line(e, h, target_z=float(z) + hc.HEAD_M)
+                or self._air_line(e, h, target_z=float(z) + hc.FEET_M))
 
     def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
         """Airborne viewers of grounded, non-box targets missed by the ground view (R2/R4)."""
@@ -1629,7 +1631,7 @@ class Tick:
 
     def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
         """Enemies on or over a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
-        or a plate line to the target's eye or feet when either end is airborne;
+        or plate lines to the same two points when either end is airborne;
         over their stance pieces (a target beside a box is held at its anchor cell and seen there, by the
         ground rule): not flashed, inside the field of view, inside the
         nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
@@ -1690,7 +1692,7 @@ class Tick:
                             continue
                         # The same eye and feet lines as the sighting, with the same plates and own pieces,
                         # without recording unresolved rays.
-                        if (not self._air_line(e, h, record=False)
+                        if (not self._air_line(e, h, target_z=z + hc.HEAD_M, record=False)
                                 and self._air_line(e, h, target_z=z + hc.FEET_M, record=False)):
                             out.add(pair)
                         continue

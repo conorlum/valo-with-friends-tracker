@@ -52,10 +52,25 @@ def test_a_jumper_seen_only_at_the_feet_counts_as_seen():
     from tests.replays.test_control_sight import low_overhang
     tk = jumper_target_tick(low_overhang(), 2.0)
     e, h = tk.holders[0], tk.holders[1]
-    assert h.air and not tk._air_line(e, h, record=False)
+    assert h.air and not tk._air_line(e, h, target_z=2.0 + hc.HEAD_M, record=False)
     assert tk._air_line(e, h, target_z=2.0 + hc.FEET_M, record=False)
     assert 1 in tk.sees[0] and (0, 1) in tk.direct
     assert (0, 1) in tk.feet_only()
+
+
+def test_a_pair_touching_the_air_is_judged_eye_to_head_then_eye_to_feet(monkeypatch):
+    from tests.replays.test_control_sight import low_overhang
+    tk = jumper_target_tick(low_overhang(), 2.0)
+    e, h = tk.holders[0], tk.holders[1]
+    ends = []
+
+    def line(geo, start, end, smokes, **kw):
+        ends.append((start[2], end[2]))
+        return False
+    monkeypatch.setattr(ce, "los", line)
+    assert not tk._air_seen(e, h)
+    assert ends == [(hc.EYE_M, 2.0 + hc.HEAD_M), (hc.EYE_M, 2.0 + hc.FEET_M)]
+    assert hc.HEAD_M + hc.STAND_M == pytest.approx(2.0), "the head point is feet + 2 m"
 
 
 def test_a_jumper_whose_eye_and_feet_lines_are_blocked_is_not_seen_through_their_floor(monkeypatch):
@@ -260,7 +275,7 @@ def test_missing_target_height_uses_the_target_floor_for_the_eye(monkeypatch):
 
 
 @pytest.mark.parametrize("viewer_air,target_air", [(True, False), (False, True)])
-def test_boxed_air_pair_uses_one_eye_line_and_counts_it(monkeypatch, viewer_air, target_air):
+def test_boxed_air_pair_stops_at_a_clear_head_line_and_counts_it(monkeypatch, viewer_air, target_air):
     geo = box()
     tk = ce.Tick.__new__(ce.Tick)
     tk.geo, tk.t, tk.smokes, tk.fallbacks = geo, 5.0, [], {}
@@ -280,7 +295,7 @@ def test_boxed_air_pair_uses_one_eye_line_and_counts_it(monkeypatch, viewer_air,
     assert tk._boxed({0: (0, 2.25, False, False, 30)}) == {(0, 5): True}
     assert len(calls) == ce._plate_calls == 1 and not tk._head_clear
     args, kwargs = calls[0]
-    assert args[1] == (166, Y, 2.25) and args[2] == (226, Y, hc.EYE_M)
+    assert args[1] == (166, Y, 2.25) and args[2] == (226, Y, hc.HEAD_M)
     assert kwargs["plates"] is True and set(kwargs["skip"]) == {1, 2}
     assert "see_over" not in kwargs
 
@@ -301,7 +316,7 @@ def test_air_line_uses_cover_pixels_without_stances(monkeypatch):
     calls = []
     monkeypatch.setattr(ce, "los", lambda *a, **kw: calls.append(kw) or True)
     monkeypatch.setattr(ce, "_plate_calls", 0)
-    assert tk._air_line(a, b)
+    assert tk._air_line(a, b, target_z=1.0)
     assert calls[0]["skip"] == (7, 9) and ce._plate_calls == 1
 
 
@@ -340,7 +355,7 @@ def test_air_feet_only_checks_its_own_plate_lines(monkeypatch, direct, viewer_ai
     assert tk.feet_only() == expected
     assert len(calls) == ce._plate_calls == (1 if head else 2)
     z = 1.2 if target_air else tk.geo.node_z[h.cell]
-    assert [end[2] for _, end, _, _ in calls] == [z + hc.EYE_M] + ([] if head else [z + hc.FEET_M])
+    assert [end[2] for _, end, _, _ in calls] == [z + hc.HEAD_M] + ([] if head else [z + hc.FEET_M])
     for start, end, smokes, kwargs in calls:
         assert start == (166, Y, (1.2 if viewer_air else 0.0) + hc.EYE_M)
         assert end[:2] == (h.x, h.y) and smokes is tk.smokes
