@@ -41,21 +41,44 @@ def test_jump_fan_sees_beyond_box_but_not_the_low_target_just_behind_it():
 
 
 def test_surface_uses_each_pixels_nearest_top_and_lower_top_on_a_tie():
-    rows = [(228, Y, 33), (220, Y, 22)]
+    rows = [(228, Y, 22), (220, Y, 12)]
     geo = box(rows)
     sight, surface, piece = cg.plate_surface(geo)
     assert surface.dtype == np.float32 and piece.dtype == np.int32
     assert surface.shape == piece.shape == (cg.PX, cg.PX)
-    assert surface[Y, 220] == pytest.approx(1.3)
-    assert surface[Y, 228] == pytest.approx(2.4)
-    assert surface[Y, 224] == pytest.approx(1.3)
+    assert surface[Y, 220] == pytest.approx(0.3)
+    assert surface[Y, 228] == pytest.approx(1.3)
+    assert surface[Y, 224] == pytest.approx(0.3)
     assert np.isnan(surface[geo.cover_px == 0]).all()
     assert not sight[geo.cover_px == 1].any()
     assert np.array_equal(piece, geo.cover_px)
     reverse = cg.plate_surface(box(rows[::-1]))[1]
     assert np.array_equal(surface, reverse, equal_nan=True)
-    # The lower top's feet point (2.2 - .7) is clear from above on its side of the stack.
-    assert cg.los(geo, (196, Y, 2.25), (220, Y, 1.5), plates=True)
+    # The lower top's feet point (1.2 - .7) is clear from above on its side of the stack.
+    assert cg.los(geo, (196, Y, 2.25), (220, Y, 0.5), plates=True)
+
+
+@pytest.mark.parametrize('top_dm,peekable', [(10, True), (20, True), (22, True), (24, False), (25, False), (30, False)])
+def test_only_a_box_up_to_2m_above_its_floor_can_be_jump_peeked(top_dm, peekable):
+    # The top of a 1 m jump: position 1.0, eye 2.05. It clears 2.0 m plates and would clear 2.5 m by height alone.
+    geo = box(((222, Y, top_dm),))
+    assert cg.los(geo, (164, Y, 2.05), (308, Y, 1.1), plates=True) is peekable
+    assert bool(cg.cast(geo, 164, Y, EAST, [], eye_z=2.05, plates=True)[geo.node_at_px(308, Y, 0)]) is peekable
+
+
+def test_a_box_too_high_to_peek_counts_as_4m_and_a_taller_one_keeps_its_height():
+    for top_dm, surface_m in ((25, 3.1), (40, 3.1), (51, 4.2)):
+        assert cg.plate_surface(box(((222, Y, top_dm),)))[1][Y, 222] == pytest.approx(surface_m)
+    # Someone already high enough, on a taller box for instance, still sees over it.
+    assert cg.los(box(((222, Y, 25),)), (164, Y, 3.6), (308, Y, 3.6), plates=True)
+
+
+def test_the_limit_is_measured_from_the_boxs_own_floor():
+    geo = box(((222, Y, 25),))
+    geo.heights = copy.deepcopy(geo.heights)
+    geo.heights.floors[geo.walk, 0] = 10  # the floor is now 1 m up, so this top is 1.5 m above it
+    assert dict(geo.box_ground)[1] == pytest.approx(1.0)
+    assert cg.plate_surface(geo)[1][Y, 222] == pytest.approx(1.6)
 
 
 @pytest.mark.parametrize('a,b', [((220, Y, 1.05), (308, Y, 1.1)),
@@ -101,9 +124,9 @@ def test_surface_cache_holds_stable_inputs_and_refreshes_replacements():
     second = cg.plate_surface(geo)
     assert second is not first and cg.plate_surface(geo) is second
     geo.heights = copy.deepcopy(geo.heights)
-    geo.heights.box_tops = np.array([[222, Y, 33]], np.int32)
+    geo.heights.box_tops = np.array([[222, Y, 12]], np.int32)
     third = cg.plate_surface(geo)
-    assert third is not second and third[1][Y, 222] == pytest.approx(2.4)
+    assert third is not second and third[1][Y, 222] == pytest.approx(0.3)
     geo.cover_px = geo.cover_px.copy()
     geo.cover_px[Y, 222] = 0
     assert np.isnan(cg.plate_surface(geo)[1][Y, 222])

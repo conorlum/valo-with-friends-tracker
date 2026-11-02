@@ -86,8 +86,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # re-pinned in place for EYE_M 1.05 (was "7cd7ad7dc50b5450")
           21: "8c91e53977c08c1a",
           # R9/W7a: JUMP_SIGHT enables airborne plate casts; the moving counter is lowercase.
-          # Re-pinned in place for the crouch key (was "f07e02b01cd7d18a").
-          22: "06e87d971e6cbc11"}
+          # Re-pinned in place for the crouch key (was "f07e02b01cd7d18a"), and for the jump-peek limit
+          # (was "06e87d971e6cbc11").
+          22: "712c484f6a0ae747"}
 
 
 def _constants_digest() -> str:
@@ -122,9 +123,20 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
 
 
+def _without_the_jump_peek_limit(monkeypatch):
+    for name in ("JUMP_PEEK_MAX_M", "JUMP_PEEK_TOL_M", "TWO_HEIGHT_BOX_M"):
+        monkeypatch.delattr(cg, name)
+
+
+def test_without_the_jump_peek_limit_the_revision_22_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
+    assert _constants_digest() == "06e87d971e6cbc11"
+
+
 def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch):
     from app.control import stance
 
+    _without_the_jump_peek_limit(monkeypatch)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.setattr(hc, "EYE_M", 1.1)
@@ -135,6 +147,7 @@ def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch)
 
 
 def test_with_the_previous_eye_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.setattr(hc, "EYE_M", 1.1)
@@ -143,6 +156,7 @@ def test_with_the_previous_eye_the_revision_21_constants_digest_is_unchanged(mon
 
 
 def test_without_the_jump_switch_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.delattr(ce, "JUMP_SIGHT")
@@ -150,6 +164,7 @@ def test_without_the_jump_switch_the_revision_21_constants_digest_is_unchanged(m
 
 
 def test_without_the_crouch_key_constants_the_revision_22_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     assert _constants_digest() == "f07e02b01cd7d18a"

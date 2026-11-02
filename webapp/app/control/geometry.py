@@ -740,12 +740,21 @@ def sight_without(geo: Geometry, *labels) -> np.ndarray:
     return view[1]
 
 
+# The owner's rule (2026-11-01): a box more than 2 m above its floor is too high to jump-peek over, so it counts as a
+# 2-height box, as a box with no height data does. The tolerance is the 0.2 m a stand's z moves (BOX_STEADY_DZ_M); Summit's
+# learnt tops go from 2.0 m straight to 2.4 m. Read when sight runs, not by the height build, so not in the rules hash.
+JUMP_PEEK_MAX_M = 2.0
+JUMP_PEEK_TOL_M = 0.2
+TWO_HEIGHT_BOX_M = 4.0
+
+
 def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Sight without learnt boxes, their nearest-row surfaces (m), and int32 cover labels.
 
     Each topped pixel takes its piece's nearest learnt (x px, y px, z dm) row, preferring the lower
-    top on ties. Surface is position-z minus STAND_M, NaN elsewhere. box_tops returns a fresh proxy,
-    so retain and compare the stable heights, cover and sight objects, never their ids.
+    top on ties. Surface is position-z minus STAND_M, NaN elsewhere; a top too high to jump-peek over
+    is raised to TWO_HEIGHT_BOX_M above the piece's floor. box_tops returns a fresh proxy, so retain
+    and compare the stable heights, cover and sight objects, never their ids.
     """
     cached = geo.__dict__.get('_plate_surface')
     if cached is not None and cached[0] is geo.heights and cached[1] is geo.cover_px and cached[2] is geo.sight:
@@ -760,7 +769,9 @@ def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if topped:
         rows = np.asarray(geo.heights.box_tops, np.int64).reshape(-1, 3)
         labels = piece[np.clip(rows[:, 1], 0, PX - 1), np.clip(rows[:, 0], 0, PX - 1)]
+        ground = geo.box_ground
         for p in topped:
+            floor = ground.get(p)
             got = rows[labels == p]
             got = got[np.lexsort((got[:, 0], got[:, 1], got[:, 2]))]
             ys, xs = np.nonzero(piece == p)
@@ -770,7 +781,11 @@ def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
                 d = (xs - rx) ** 2 + (ys - ry) ** 2
                 nearer = d < distance  # sorted rows make equal distances prefer the lower top
                 distance[nearer] = d[nearer]
-                z[nearer] = float(rz) / 10 - hc.STAND_M
+                top = float(rz) / 10
+                base = top if floor is None else float(floor)  # no floor: as high as a box can be read
+                if floor is None or top - base > JUMP_PEEK_MAX_M + JUMP_PEEK_TOL_M + 1e-9:
+                    top = max(top, base + TWO_HEIGHT_BOX_M)
+                z[nearer] = top - hc.STAND_M
             surface[ys, xs] = z
     result = (sight, surface, piece)
     geo.__dict__['_plate_surface'] = (geo.heights, geo.cover_px, geo.sight, result)
