@@ -142,7 +142,9 @@ def test_errors_dom_groups_rows_and_copies_with_manual_fallback(result, clipboar
                   if 'document.querySelector("[data-errors]")' in script)
     shown = replay_errors.page(result)
     for entry in shown["kinds"][1:]:
-        entry.update(count=0, rows=[])
+        entry.update(count=0, rows=[], note=None)
+    unfinished = next(entry for entry in shown["kinds"] if entry["key"] == "feature_failed")
+    unfinished["note"] = "checking 0 of 3"
     shown["kinds"][0]["rows"] = shown["kinds"][0]["rows"][:3]
     shown["kinds"][0]["rows"][1]["map"] = "Ascent"
     shown["kinds"][0]["rows"][2]["map"] = "Ascent"
@@ -194,6 +196,9 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(descendants(body, "tbody").map(node => node.children.length), [2, 1]);
   assert.equal(descendants(body, "h3")[0].textContent, "Box height conflicts (51)");
   assert.match(body.textContent, /Stored evidence/); assert.match(body.textContent, /Nothing in: Map control failed/);
+  // A check still running or unavailable isn't "nothing": it shows its note, and stays out of that list.
+  assert.match(body.textContent, /Map features failed to verify: checking 0 of 3/);
+  assert.doesNotMatch(body.textContent, /Nothing in:[^]*Map features failed to verify/);
   assert.match(body.textContent, /z: 3/); assert.match(body.textContent, /candidates: \[\[5,\[4\],0.42\]\]/);
   assert.match(body.textContent, /<img src=x onerror="fail\(\)">/); assert.equal(descendants(body, "img").length, 0);
   assert.equal(descendants(body, "a").length, 3);

@@ -170,7 +170,12 @@
     function render(result) {
       var empty = [];
       result.kinds.forEach(function (kind) {
-        if (!kind.count) { empty.push(kind.label); return; }
+        if (!kind.count) {
+          // A check still running or unavailable isn't "nothing": it says so.
+          if (kind.note) element(body, "p", kind.label + ": " + kind.note, "page-meta");
+          else empty.push(kind.label);
+          return;
+        }
         var section = element(body, "section");
         element(section, "h3", kind.label + " (" + kind.count + ")");
         if (kind.note) element(section, "p", kind.note, "page-meta");
