@@ -194,13 +194,13 @@ def test_flat_map_unchanged(monkeypatch):
         assert encode(enabled_round, blob) == encode(disabled_round, blob)
 
 
-def pair_tick(geo, *, left_z=0.0, right_z=1.2, right_x=308, yaw=0,
+def pair_tick(geo, *, left_z=0.0, right_z=1.2, right_x=308, right_y=Y, yaw=0,
               flashed=False, near=False, cone=None, smokes=()):
     """PlateToy's two opponents, with heights in its own world origin."""
     if geo.row_of is None:
         cg.visibility(geo)
     rnd, _ = inputs(geo, {0: still("A", 164, Y, yaw, left_z or 0),
-                          5: still("B", right_x, Y, 180, right_z or 0)})
+                          5: still("B", right_x, right_y, 180, right_z or 0)})
     rnd.height = lambda s, t: left_z if s == 0 else right_z
     for s, z in ((0, left_z), (5, right_z)):
         rnd.heights[s] = np.full_like(rnd.heights[s], np.nan if z is None else z)
@@ -219,6 +219,23 @@ def test_eye_lines_see_both_directions_over_a_learnt_box(left_z, right_z):
     tk = pair_tick(box(), left_z=left_z, right_z=right_z)
     assert 5 in tk.sees[0] and 0 in tk.sees[5]
     assert not tk._head_clear, "airborne pairs never populate the ground head-line cache"
+
+
+def test_a_jumper_with_both_lines_blocked_doesnt_see_a_grounded_enemy_through_their_cell():
+    # The fan reaches the enemy's cell, but the body sits behind the box from this eye: the owner's rule is the two lines.
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0, right_x=244, right_y=212)
+    jumper, enemy = tk.holders[0], tk.holders[5]
+    assert jumper.air and not enemy.air and jumper.body[enemy.cell]
+    assert not tk._air_seen(jumper, enemy)
+    assert (0, 5) not in tk.direct and 5 not in tk.sees[0]
+    assert tk._by_lines_only(jumper, enemy), "the knowledge view's sees reads the same rule"
+
+
+def test_a_jumper_whose_view_reaches_the_cell_still_sees_by_a_clear_line(monkeypatch):
+    monkeypatch.setattr(ce, "cast", lambda geo, *a, **kw: np.ones(geo.n, bool))
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0)
+    assert tk.holders[0].body[tk.holders[5].cell]
+    assert (0, 5) in tk.direct and 5 in tk.sees[0]
 
 
 def test_jumper_does_not_see_a_low_target_just_behind_the_box():
@@ -388,9 +405,9 @@ def test_grounded_feet_only_keeps_the_old_head_and_feet_lines(monkeypatch, jump_
 def test_switch_off_keeps_the_old_direct_feet_only_shortcut(monkeypatch):
     tk = pair_tick(box())
     tk.sees = {0: {5}}
-    assert set(tk.direct) == {(0, 5)}
+    assert (0, 5) in tk.direct
     monkeypatch.setattr(ce, "JUMP_SIGHT", False)
     monkeypatch.setattr(ce, "_plate_calls", 0)
     monkeypatch.setattr(ce, "los", lambda *a, **kw: pytest.fail("legacy direct pair needs no LOS"))
-    assert tk.feet_only() == set(tk.direct)
+    assert tk.feet_only() == {(0, 5)}
     assert ce._plate_calls == 0

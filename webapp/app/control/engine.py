@@ -1536,9 +1536,10 @@ class Tick:
         return None if np.isnan(z) else float(z) + hc.EYE_M
 
     def _by_lines_only(self, e: Holder, h: Holder) -> bool:
-        """Is h judged only by exact lines, never by e's view of the floor under them? True on a box, and in the air
-        when e's eye has a height: the floor spot says nothing about a body above it."""
-        return _on_box(h) or (h.air and self._eye(e.slot, self.t, e.cell) is not None)
+        """Is h judged only by exact lines, never by e's view of the floor under them? True on a box, and for a pair
+        touching the air when e's eye has a height: the floor spot says nothing about a body above it, and a fan from
+        the air reaching some of h's cell says nothing about h's head or feet."""
+        return _on_box(h) or ((h.air or e.air) and self._eye(e.slot, self.t, e.cell) is not None)
 
     def _direct(self, looks: dict) -> dict[tuple[int, int], bool]:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
@@ -1608,7 +1609,7 @@ class Tick:
                 or self._air_line(e, h, target_z=float(z) + hc.FEET_M))
 
     def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
-        """Airborne viewers of grounded, non-box targets missed by the ground view (R2/R4)."""
+        """Airborne viewers of grounded, non-box targets, by the two exact lines whatever the fan reached (R2/R4)."""
         out = {}
         if not JUMP_SIGHT:
             return out
@@ -1618,8 +1619,7 @@ class Tick:
                 continue
             ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
             for h in self.holders.values():
-                if (h.team == e.team or h.air or _seen_over(h) or e.body[h.cell]
-                        or (s, h.slot) in self.direct):
+                if h.team == e.team or h.air or _seen_over(h) or (s, h.slot) in self.direct:
                     continue
                 dx, dy = h.x - ex, h.y - ey
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
