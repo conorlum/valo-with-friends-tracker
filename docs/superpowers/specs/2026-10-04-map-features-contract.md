@@ -116,6 +116,7 @@ names each). **None is switched to features in this build.**
 | `control/engine:Tick._direct` | los | `bounded_sight` |
 | `control/engine:Tick._air_line` | los | `bounded_sight` (one eye-to-eye plate line for a pair with an airborne end, skipping only the end pieces) |
 | `control/engine:Tick._air_viewers` | via _air_line | `bounded_sight` (airborne viewers add exact lines to grounded targets missed by their ground view, under the same sight limits) |
+| `control/engine:_plate_line` | los | `bounded_sight` (added 2026-11-01, review B12: the module form of `Tick._air_line`, shared with the unknown and fight sight so every consumer of a pair touching the air uses the same eye-to-eye plate line) |
 | `control/engine:Tick.feet_only` | los | `bounded_sight` (added 2026-10-29, box-climb run: the head and feet lines of a sighting the fan already made, to store which ones the feet alone saw; never changes `sees`) |
 | `control/engine:Tick._flood` | topo.label | `transport_reachability` |
 | `control/engine:Tick._links` | special_links, topo.links | `transport_reachability` (arcs replace the all-floor specials for features) |
