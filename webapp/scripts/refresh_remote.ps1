@@ -44,6 +44,42 @@ $ErrorActionPreference = "Stop"
 $webappRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $webappRoot
 
+# --- Bring this checkout up to date with origin/main ------------------------
+# Other sessions merge migrations from their own worktrees and the deploy
+# applies them to the remote DB, so a main checkout left behind fails the
+# ingest preflight ("the database is at migration X but this checkout's head
+# is Y"). Fast-forward first. Local edits to files the update touches are
+# stashed under a tagged message, never discarded.
+$repoRoot = Split-Path -Parent $webappRoot
+$branch = (git -C $repoRoot rev-parse --abbrev-ref HEAD).Trim()
+if ($branch -ne "main") {
+    Write-Warning "This checkout is on '$branch', not main -- not updating it. If the ingest preflight refuses, switch it back to main."
+} else {
+    git -C $repoRoot fetch -q origin main
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Couldn't fetch origin/main -- running with this checkout as it is."
+    } else {
+        $behind = [int](git -C $repoRoot rev-list --count HEAD..origin/main)
+        if ($behind -gt 0) {
+            $incoming = @(git -C $repoRoot diff --name-only HEAD origin/main)
+            $local = @(git -C $repoRoot diff --name-only HEAD) + @(git -C $repoRoot ls-files --others --exclude-standard)
+            $blocking = @($incoming | Where-Object { $local -contains $_ })
+            if ($blocking.Count -gt 0) {
+                $tag = "matches auto-stash $(Get-Date -Format s)"
+                git -C $repoRoot stash push -q -u -m $tag -- $blocking
+                if ($LASTEXITCODE -ne 0) { throw "Couldn't stash local changes to: $($blocking -join ', ')" }
+                Write-Warning ("Stashed your local changes to $($blocking -join ', ') as '$tag' " +
+                               "so main could update. See them with: git stash list")
+            }
+            git -C $repoRoot merge -q --ff-only origin/main
+            if ($LASTEXITCODE -ne 0) {
+                throw "main can't fast-forward to origin/main (it has local commits?). Sort that out, then re-run."
+            }
+            Write-Host "Updated main by $behind commit(s) from origin."
+        }
+    }
+}
+
 # --- Load the remote connection string from the local env file -------------
 $envRemotePath = Join-Path $webappRoot ".env.remote"
 if (-not (Test-Path $envRemotePath)) {
