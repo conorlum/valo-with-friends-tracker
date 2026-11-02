@@ -527,6 +527,18 @@ def test_veto_use_is_his_evolution_row_and_every_regen_heal_in_it_counts():
     assert "ult" in c["kinds"]
 
 
+def test_veto_evolution_cast_keeps_the_uses_signals_so_its_window_ends_with_the_buff():
+    # An environmental death at 20 s: no kill row, and the ult line drops only at the round's end, at 58 s.
+    from app.critutil import abilities, windows
+
+    out = run([evolution(10.0, 20.0)], player_state=ult_state(0, drop=58.0), agents={0: "Veto"}, t_end=60.0)
+    (c,) = [c for c in out["casts"] if c["by"] == 0 and c["ability_id"] == "Veto/Evolution"]
+    assert c["signals"]["ult_end"] == 20.0 and c["signals"]["exact"] is True
+    assert c["signals"]["seen_end"] == 20.0, "the row's own signals stay"
+    entry = next(e for e in abilities.load() if f"{e['agent']}/{e['ability']}" == c["ability_id"])
+    assert windows.window(c, entry, 60.0)["segments"] == [[10.0, 20.0]]
+
+
 def test_veto_without_the_row_falls_back_to_his_first_regen_heal():
     # a blob before CONDENSE 23: no buff row; the first regen heal is a floor on the start
     out = run([regen(27.7, 20.0), regen(40.0, 10.0)], player_state=ult_state(0, drop=55.0), agents={0: "Veto"},

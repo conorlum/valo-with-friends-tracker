@@ -1547,11 +1547,15 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             "signals": _signals(rnd, blob, sides, c, enemy_eff, cast_type),
         })
     ults = _ults(rnd, blob, sides, agents)
-    # a use a recorded row already made a cast of (Veto's Evolution `buff` row, CONDENSE 23) is not made again
-    have = {(c["by"], c["ability_id"], c["t"]) for c in out_casts}
-    out_casts.extend(x for x in _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts),
-                                                 blob.get("util") or ())
-                     if (x["by"], x["ability_id"], x["t"]) not in have)
+    # a use a recorded row already made a cast of (Veto's Evolution `buff` row, CONDENSE 23) is not made again, but
+    # that cast takes the use's signals: they say when the ult ended, which the ult line alone doesn't
+    have = {(c["by"], c["ability_id"], c["t"]): c for c in out_casts}
+    for x in _timed_ult_casts(rnd, sides, ps, ults, agents, contact, plant, len(out_casts), blob.get("util") or ()):
+        kept = have.get((x["by"], x["ability_id"], x["t"]))
+        if kept is None:
+            out_casts.append(x)
+        else:
+            kept["signals"].update(x["signals"])
     for i, c in enumerate(out_casts):
         c["i"] = i
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
