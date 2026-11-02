@@ -1224,20 +1224,31 @@ def _airborne_at(geo, rnd, s: int, t: float, cell: int, st: Stance | None) -> bo
     z = rnd.height(s, t)
     if z is None:
         return False
-    floor = float(geo.node_z[cell])
-    if math.isnan(floor):
-        piece = int(st.piece) if st is not None and st.piece else 0
-        x, y, _ = rnd.pos(s, t)
-        ix, iy = int(x), int(y)
-        if (not piece and geo.cover_px is not None
-                and 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]):
-            piece = int(geo.cover_px[iy, ix])
-            if not piece and geo.box_view_reach is not None:
-                piece = int(geo.box_view_reach[iy, ix, 0])
-        if not piece or piece not in geo.box_ground:
-            return False
-        floor = float(geo.box_ground[piece])
+    floor = _floor_at(geo, rnd, s, t, cell, st)
+    if floor is None:
+        return False
     return bool(z - floor > hc.STAND_TOL_M)
+
+
+def _floor_at(geo, rnd, s: int, t: float, cell: int, st: Stance | None) -> float | None:
+    """The floor slot s stands or jumps from (position-z): the anchor's; on unresolved ground, the nearby piece's ring
+    floor; None when neither is known. The jump-peek limit is measured from it (`geometry.plate_z`)."""
+    floor = float(geo.node_z[cell])
+    if not math.isnan(floor):
+        return floor
+    piece = int(st.piece) if st is not None and st.piece else 0
+    p = rnd.pos(s, t)
+    if p is None:
+        return None
+    ix, iy = int(p[0]), int(p[1])
+    if (not piece and geo.cover_px is not None
+            and 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]):
+        piece = int(geo.cover_px[iy, ix])
+        if not piece and geo.box_view_reach is not None:
+            piece = int(geo.box_view_reach[iy, ix, 0])
+    if not piece or piece not in geo.box_ground:
+        return None
+    return float(geo.box_ground[piece])
 
 
 def _eye_at(geo, rnd, s: int, t: float, node: int) -> float | None:
@@ -1266,7 +1277,7 @@ def _plate_line(geo, rnd, t: float, smokes, e, h, target_z: float, record: dict 
         pieces.append(piece)
     _plate_calls += 1
     return los(geo, (ex, ey, _eye_at(geo, rnd, e.slot, t, e.cell)), (h.x, h.y, target_z), smokes,
-               record=record, plates=True, skip=tuple(pieces))
+               record=record, plates=True, skip=tuple(pieces), floor=_floor_at(geo, rnd, e.slot, t, e.cell, e.stance))
 
 
 def _air_pair_sight(rnd, viewer: int, target: int, t: float, smokes) -> bool | None:
@@ -1501,7 +1512,7 @@ class Tick:
                 raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
                            eye_z=self._eye(s, t, cell),
                            own=st.own if st is not None and st.own is not None else cell,
-                           record=self.fallbacks, see_over=(), plates=True)
+                           record=self.fallbacks, see_over=(), plates=True, floor=_floor_at(geo, rnd, s, t, cell, st))
                 _plate_calls += 1
             else:
                 raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,

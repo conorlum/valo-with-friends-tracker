@@ -765,6 +765,9 @@ def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     geo.__dict__.get('_sight_without', {}).pop(topped, None)
     sight = sight_without(geo, topped)
     surface = np.full((PX, PX), np.nan, np.float32)
+    learnt = np.full((PX, PX), np.nan, np.float32)    # the nearest learnt row's surface, never raised
+    raised = np.full((PX, PX), np.nan, np.float32)    # the same as a 2-height box
+    below = np.full((PX, PX), -np.inf, np.float32)    # a viewer floor under this counts it as 2-height
     piece = np.zeros((PX, PX), np.int32) if geo.cover_px is None else geo.cover_px.astype(np.int32)
     if topped:
         rows = np.asarray(geo.heights.box_tops, np.int64).reshape(-1, 3)
@@ -777,23 +780,49 @@ def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             ys, xs = np.nonzero(piece == p)
             distance = np.full(len(xs), np.iinfo(np.int64).max, np.int64)
             z = np.empty(len(xs), np.float32)
+            z_learnt, z_raised, z_below = (np.empty(len(xs), np.float32) for _ in range(3))
             for rx, ry, rz in got:
                 d = (xs - rx) ** 2 + (ys - ry) ** 2
                 nearer = d < distance  # sorted rows make equal distances prefer the lower top
                 distance[nearer] = d[nearer]
                 top = float(rz) / 10
                 base = top if floor is None else float(floor)  # no floor: as high as a box can be read
-                if floor is None or top - base > JUMP_PEEK_MAX_M + JUMP_PEEK_TOL_M + 1e-9:
-                    top = max(top, base + TWO_HEIGHT_BOX_M)
-                z[nearer] = top - hc.STAND_M
+                high = max(top, base + TWO_HEIGHT_BOX_M)
+                limit = np.inf if floor is None else top - (JUMP_PEEK_MAX_M + JUMP_PEEK_TOL_M) - 1e-9
+                z[nearer] = (high if base < limit else top) - hc.STAND_M
+                z_learnt[nearer] = top - hc.STAND_M
+                z_raised[nearer] = high - hc.STAND_M
+                z_below[nearer] = limit
             surface[ys, xs] = z
+            learnt[ys, xs], raised[ys, xs], below[ys, xs] = z_learnt, z_raised, z_below
     result = (sight, surface, piece)
+    geo.__dict__['_plate_peek'] = (learnt, raised, below)
     geo.__dict__['_plate_surface'] = (geo.heights, geo.cover_px, geo.sight, result)
     return result
 
 
+def plate_z(geo: Geometry, py, px, floor: float | None = None):
+    """The plate surface at pixel(s) (py, px) for a viewer whose floor (position-z, as node_z) is `floor`. The owner's rule
+    (2026-11-02): the 2 m jump-peek limit is measured from the floor the viewer jumps from, so a box counts as 2-height when
+    its learnt top is over JUMP_PEEK_MAX_M (+ tolerance) above that floor. No floor known: from the box's own floor, as
+    `plate_surface`'s surface. A box with no floor of its own is 2-height for every viewer."""
+    surface = plate_surface(geo)[1]
+    if floor is None or not math.isfinite(floor):
+        return surface[py, px]
+    learnt, raised, below = geo.__dict__['_plate_peek']
+    return np.where(floor < below[py, px], raised[py, px], learnt[py, px])
+
+
+def _viewer_floor(geo: Geometry, node: int | None) -> float | None:
+    if node is None or geo.heights is None:
+        return None
+    z = float(geo.node_z[node])
+    return z if math.isfinite(z) else None
+
+
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
-         own: int | None = None, record: dict | None = None, see_over=(), plates=False) -> np.ndarray:
+         own: int | None = None, record: dict | None = None, see_over=(), plates=False,
+         floor: float | None = None) -> np.ndarray:
     """see_over: cover labels the eye sees over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block (`sight_without`).
 
     The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
@@ -814,17 +843,20 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
-                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over, plates=plates)
+                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over, plates=plates,
+                         floor=floor)
     if geo.heights is not None:
         if eye_z is None:
             if geo.adaptive:
                 return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
             return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes, see_over))
-        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, plates=plates)
+        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, plates=plates,
+                             floor=floor)
         if len(geo.top_nodes):
             if own is None:
                 own = geo.node_at_px(x, y, float(eye_z) - hc.EYE_M)
-            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen, plates=plates)
+            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen, plates=plates,
+                      floor=floor)
         return seen
     return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
 
@@ -867,7 +899,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
-                  own: int | None, record: dict | None, see_over=(), plates=False) -> np.ndarray:
+                  own: int | None, record: dict | None, see_over=(), plates=False, floor: float | None = None) -> np.ndarray:
     """`cast` on nodes, with the height test (see_over: as in `cast`). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
@@ -892,12 +924,14 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
     sight = sight_without(geo, see_over) if see_over else geo.sight
     if plates:
-        plate_sight, surface, piece = plate_surface(geo)
+        plate_sight, _, piece = plate_surface(geo)
         sight = sight & plate_sight if see_over else plate_sight
         own_piece = piece[int(np.clip(y, 0, PX - 1)), int(np.clip(x, 0, PX - 1))]
     src = geo.space_at_px(x, y)
     own = geo.node_at_px(x, y, eye - hc.EYE_M) if own is None else own
     seen[own] = True
+    if plates and floor is None:
+        floor = _viewer_floor(geo, own)
     node_of, node_z, unresolved = (geo.space_nodes if geo.adaptive else geo.node_of), geo.node_z, (geo.space_unresolved if geo.adaptive else geo.unresolved)
     ground = (node_z[np.maximum(node_of[:, 0], 0)] if geo.adaptive else node_z[: GRID * GRID]) - hc.STAND_M - hc.LEDGE_M
     if geo.adaptive:
@@ -1025,7 +1059,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                 np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
                 if plates:
                     on_piece = away & (piece[pyc, pxc] != own_piece)
-                    np.fmax(hor, np.where(on_piece, (surface[pyc, pxc] - eye) / d, np.nan), out=hor)
+                    np.fmax(hor, np.where(on_piece, (plate_z(geo, pyc, pxc, floor) - eye) / d, np.nan), out=hor)
     return seen
 
 
@@ -1063,7 +1097,8 @@ def _over_own_top(geo: Geometry, a: tuple, b: tuple, t: int, piece: int) -> bool
 
 
 def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: float,
-              own: int, record: dict | None, see_over, seen: np.ndarray, plates=False) -> None:
+              own: int, record: dict | None, see_over, seen: np.ndarray, plates=False,
+              floor: float | None = None) -> None:
     """Add tops in the ray fan by exact head/feet lines; a reverse top view cheaply rejects ground pairs."""
     angles = np.asarray(angles_deg, float)
     if not len(angles):
@@ -1090,7 +1125,8 @@ def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: 
         for offset in (hc.HEAD_M, hc.FEET_M):
             b = (tx, ty, z + offset)
             if plates:
-                clear = los(geo, a, b, smokes, record, see_over=over, plates=True, skip=(piece, own_piece))
+                clear = los(geo, a, b, smokes, record, see_over=over, plates=True, skip=(piece, own_piece),
+                            floor=floor if floor is not None else _viewer_floor(geo, own))
             else:
                 clear = los(geo, a, b, smokes, record, see_over=over) and _over_own_top(geo, a, b, t, piece)
             if clear:
@@ -1099,8 +1135,10 @@ def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: 
 
 
 def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
-        see_over=((), ()), plates=False, skip=()) -> bool:
+        see_over=((), ()), plates=False, skip=(), floor: float | None = None) -> bool:
     """see_over: cover labels the ends see over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block.
+    floor: with `plates`, the viewer's floor (position-z) the jump-peek limit is measured from (`plate_z`); default the
+    floor under the eye at `a`.
 
     Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
     z already at the eye's and the target point's own heights (None for a 2D check, and on a flat map).
@@ -1117,8 +1155,10 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record,
-                        see_over=see_over, plates=plates, skip=skip)
+                        see_over=see_over, plates=plates, skip=skip, floor=floor)
     (ax, ay, az), (bx, by, bz) = a, b
+    if plates and floor is None and geo.heights is not None and az is not None:
+        floor = _viewer_floor(geo, geo.node_at_px(ax, ay, az - hc.EYE_M))
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
         # straight up or down: only the cell's own plates can be in the way
@@ -1126,9 +1166,9 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
         if geo.heights is None or az is None or bz is None or geo.unresolved_at_px(ax, ay):
             return True
         if plates:
-            _, surface, piece = plate_surface(geo)
+            piece = plate_surface(geo)[2]
             px, py = int(np.clip(ax, 0, PX - 1)), int(np.clip(ay, 0, PX - 1))
-            if piece[py, px] not in skip and min(az, bz) < surface[py, px]:
+            if piece[py, px] not in skip and min(az, bz) < float(plate_z(geo, py, px, floor)):
                 return False
         return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) <= 0
                        for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:])
@@ -1148,6 +1188,9 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     if plates:
         plate_sight, surface, piece = plate_surface(geo)
         sight = sight & plate_sight if see_over else plate_sight
+        if floor is not None and math.isfinite(floor):   # `plate_z` for this viewer, read per sample below
+            learnt, raised, below = geo.__dict__['_plate_peek']
+            surface = None
     spans: list[list] = []                    # [cell, first d, last d] in order along the line
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step
@@ -1161,7 +1204,9 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             if (inside if solid and step > 0 else inside != inside0):
                 return False
         if plates and heights and piece[pyc, pxc] not in skip:
-            if az + slope * step * geo.m_per_px < surface[pyc, pxc]:
+            top = surface[pyc, pxc] if surface is not None else (
+                raised[pyc, pxc] if floor < below[pyc, pxc] else learnt[pyc, pxc])
+            if az + slope * step * geo.m_per_px < top:
                 return False
         if not heights or flat:
             continue

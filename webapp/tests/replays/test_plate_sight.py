@@ -11,13 +11,15 @@ Y = 204
 EAST = np.array([0.0])
 
 
-def box(rows=((222, Y, 22),)):
+def box(rows=((222, Y, 22),), west_dm=0):
+    """west_dm: the floor (dm) of every cell west of x = 192 px, the viewer's side; the box's ring floor stays 0."""
     floor = rect_mask([(96, 192, 352, 224)])
     cover = rect_mask([(216, 200, 232, 216)])
     geo = cg.geometry_from_masks('PlateToy', ~floor | cover, floor & ~cover, TOY_SCALE, None)
     cg.attach_cover(geo, cover, None)
     floors = np.full((cg.GRID, cg.GRID, hc.MAX_FLOORS), -1, np.int16)
     floors[geo.walk, 0] = 0
+    floors[geo.walk & (np.arange(cg.GRID)[None, :] * cg.CELL < 192), 0] = west_dm
     asset = hc.HeightAsset(floors, np.zeros_like(floors), geo.walk.copy(), np.zeros_like(geo.walk),
                            np.empty((0, 5), np.int32), {'origin_z': 0},
                            box_tops=np.asarray(rows, np.int32).reshape(-1, 3))
@@ -73,12 +75,30 @@ def test_a_box_too_high_to_peek_counts_as_4m_and_a_taller_one_keeps_its_height()
     assert cg.los(box(((222, Y, 25),)), (164, Y, 3.6), (308, Y, 3.6), plates=True)
 
 
-def test_the_limit_is_measured_from_the_boxs_own_floor():
+def test_without_a_viewer_floor_the_limit_is_measured_from_the_boxs_own_floor():
     geo = box(((222, Y, 25),))
     geo.heights = copy.deepcopy(geo.heights)
     geo.heights.floors[geo.walk, 0] = 10  # the floor is now 1 m up, so this top is 1.5 m above it
     assert dict(geo.box_ground)[1] == pytest.approx(1.0)
     assert cg.plate_surface(geo)[1][Y, 222] == pytest.approx(1.6)
+    assert cg.plate_z(geo, Y, 222) == pytest.approx(1.6)
+
+
+def test_the_limit_is_measured_from_the_floor_the_viewer_jumps_from():
+    # The owner's rule (2026-11-02): a 2.5 m box on a floor at 0 is only 2.0 m above a viewer on a slope 0.5 m up.
+    geo = box(((222, Y, 25),), west_dm=5)
+    assert dict(geo.box_ground)[1] == pytest.approx(0.0)
+    up = geo.node_at_px(164, Y, 0.5)
+    assert geo.node_z[up] == pytest.approx(0.5)
+    eye, target = (164, Y, 0.5 + 1.0 + hc.EYE_M), (308, Y, 1.1)   # the top of a 1 m jump from that floor
+    assert cg.los(geo, eye, target, plates=True)
+    assert cg.los(geo, eye, target, plates=True, floor=0.5)
+    assert cg.cast(geo, 164, Y, EAST, [], eye_z=eye[2], plates=True)[geo.node_at_px(308, Y, 0)]
+    assert cf.los_with(geo, eye, target, plates=True)
+    # The same eye over a floor at the box's own level can't peek it: the box counts as 2-height there.
+    assert not cg.los(geo, eye, target, plates=True, floor=0.0)
+    assert not cg.cast(geo, 164, Y, EAST, [], eye_z=eye[2], plates=True, floor=0.0)[geo.node_at_px(308, Y, 0)]
+    assert cg.plate_z(geo, Y, 222, 0.5) == pytest.approx(1.6) and cg.plate_z(geo, Y, 222, 0.0) == pytest.approx(3.1)
 
 
 @pytest.mark.parametrize('a,b', [((220, Y, 1.05), (308, Y, 1.1)),

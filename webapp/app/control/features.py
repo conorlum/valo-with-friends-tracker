@@ -795,7 +795,7 @@ def _eye_body(geo: Geometry, node: int, offset: float):
 
 
 def permanent_line_clear(geo: Geometry, a: tuple, b: tuple, node: int, smokes: list = (), see_over=(),
-                         plates=False) -> bool:
+                         plates=False, floor: float | None = None) -> bool:
     """Does permanent geometry leave the line from eye `a` to point `b` on `node` clear, the way `cast` judges that
     node? The view keeps one bool per node, so a caller with a feature on the other sight point asks here."""
     from app.control import geometry as cg
@@ -806,7 +806,7 @@ def permanent_line_clear(geo: Geometry, a: tuple, b: tuple, node: int, smokes: l
     over = (see_over, (piece,) if piece else ())
     if plates:
         own_piece = int(cg.plate_surface(geo)[2][int(np.clip(a[1], 0, cg.PX - 1)), int(np.clip(a[0], 0, cg.PX - 1))])
-        return cg.los(geo, a, b, smokes, see_over=over, plates=True, skip=(piece, own_piece))
+        return cg.los(geo, a, b, smokes, see_over=over, plates=True, skip=(piece, own_piece), floor=floor)
     if not cg.los(geo, a, b, smokes, see_over=over):
         return False
     return not piece or cg._over_own_top(geo, a, b, node, piece)
@@ -847,7 +847,8 @@ def _blocked_sight_points(geo: Geometry, occluders: list, a: tuple, heads: np.nd
 
 
 def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
-              own: int | None = None, record: dict | None = None, see_over=(), plates=False) -> np.ndarray:
+              own: int | None = None, record: dict | None = None, see_over=(), plates=False,
+              floor: float | None = None) -> np.ndarray:
     """`geometry.cast`, minus the nodes a bounded occluder hides: each seen node is tested on the line from the
     eye to its head or feet (centre, node z + HEAD_M or FEET_M). Either clear line keeps the node,
     so two floors behind one XY crossing can differ."""
@@ -855,7 +856,7 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
     from app.control import heights as hc
 
     seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record, see_over=see_over,
-                   plates=plates)
+                   plates=plates, floor=floor)
     if not occluders:
         return seen
     nodes = np.flatnonzero(seen)
@@ -865,7 +866,7 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
     eye = (x, y, eye_z)
     hit = _blocked_sight_points(geo, occluders, eye, targets, record,
                                 permanent=lambda i, point: permanent_line_clear(geo, eye, point, int(nodes[i]), smokes,
-                                                                                see_over, plates))
+                                                                                see_over, plates, floor))
     if own is not None:
         hit &= nodes != own
     seen[nodes[hit]] = False
@@ -873,11 +874,11 @@ def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occlu
 
 
 def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None,
-             see_over=((), ()), plates=False, skip=()) -> bool:
+             see_over=((), ()), plates=False, skip=(), floor: float | None = None) -> bool:
     """`geometry.los` (eye at a, target point b; z None for 2D), and no bounded occluder on the line."""
     from app.control import geometry as cg
 
-    if not cg.los(geo, a, b, smokes, record, see_over=see_over, plates=plates, skip=skip):
+    if not cg.los(geo, a, b, smokes, record, see_over=see_over, plates=plates, skip=skip, floor=floor):
         return False
     target = np.array([[b[0], b[1], np.nan if b[2] is None else b[2]]], float)
     return not bool(blocked_lines(list(occluders), a, target, record)[0])
