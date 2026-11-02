@@ -161,7 +161,8 @@ def test_source_fingerprint_moves_only_with_its_own_matchs_rows():
 
 # ---- the runtime switch ------------------------------------------------------------------
 
-def test_runtime_default_is_the_live_legacy_formula():
+def test_runtime_can_explicitly_select_the_legacy_comparator(monkeypatch):
+    monkeypatch.setattr(impact_runtime, "ACTIVE_MANIFEST", None)
     assert impact_runtime.ACTIVE_MANIFEST is None
     assert impact_runtime.active_scoring_config() is None
 

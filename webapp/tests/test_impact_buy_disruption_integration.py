@@ -308,11 +308,11 @@ def test_negative_econ_persists_aggregates_and_displays_signed():
             assert player.average_impact == summary[mp_id].average_impact
 
 
-def test_default_persistence_path_is_unchanged_legacy():
+def test_explicit_legacy_persistence_path_is_unchanged():
     db = session()
     match, _, _ = build_match(db, "leg", kills={7: [("A1", "B1", 10.0)]}, loadouts=B_BROKE_NEXT)
     expected = build_impact_rows_for_match(db, match.id, use_realized_swing=True)
-    compute_impact_for_match(db, match.id)
+    compute_impact_for_match(db, match.id, config=ImpactScoringConfig("legacy-test", use_realized_swing=True))
     stored = {(s.round_id, s.match_player_id): s for s in db.query(ImpactScore).all()}
     for row in expected:
         assert stored[(row.round_id, row.match_player_id)].impact == row.impact

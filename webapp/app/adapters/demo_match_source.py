@@ -57,7 +57,7 @@ def _parse_played_at(filename: str) -> datetime | None:
     if map_name is None:
         return None
     digits = filename[len(map_name) :]
-    if len(digits) < 6:
+    if len(digits) < 6 or not digits.isascii() or not digits.isdigit():
         return None
 
     minute = digits[-2:]

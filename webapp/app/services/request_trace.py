@@ -74,6 +74,7 @@ class RequestTrace:
     # requests' log lines instead of re-deriving it from relative offsets.
     epoch_start: float = field(default_factory=time.time)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _token: object = field(default=None, repr=False)
 
     def record(self, name: str, start: float, end: float, **meta) -> None:
         with self._lock:
@@ -85,6 +86,9 @@ class RequestTrace:
 
     def finish(self) -> None:
         self.wall_end = time.perf_counter()
+        if self._token is not None and _current_trace.get() is self:
+            _current_trace.reset(self._token)
+            self._token = None
 
 
 _current_trace: ContextVar[RequestTrace | None] = ContextVar("_current_trace", default=None)
@@ -103,7 +107,7 @@ def get_current_trace() -> RequestTrace | None:
 
 def start_trace(request_id: str, **tags) -> RequestTrace:
     trace = RequestTrace(request_id=request_id, tags=tags)
-    _current_trace.set(trace)
+    trace._token = _current_trace.set(trace)
     return trace
 
 

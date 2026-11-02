@@ -11,6 +11,18 @@ import zlib
 from app.replays.map_feature_artifacts import pack_mask
 from app.replays.map_feature_inputs import FeatureInputsError
 
+# The per-pixel work below, vectorised, when a caller has registered an accelerator: app/services/mask_accel.py
+# (numpy), registered by the web app. This module stays standard library only (the replay worker's image copies
+# it), and its own loops give the same bytes without one.
+_accel = None
+
+
+def use_accelerator(module) -> None:
+    """Route the per-pixel work through `module` (unfilter_up, expand, pack, barrier_cells, legacy_large), or back
+    to this module's own loops with None."""
+    global _accel
+    _accel = module
+
 
 def png_mask(raw):
     try:
@@ -45,24 +57,54 @@ def _png_mask(raw):
     pixels = inflater.decompress(compressed, (width + 1) * 1024 + 1)
     if len(pixels) != (width + 1) * 1024 or not inflater.eof or inflater.unused_data:
         raise FeatureInputsError('invalid mask PNG expansion')
-    previous, expanded = bytearray(width), bytearray()
+    previous, rows = bytearray(width), []
     for row in range(1024):
         start = row * (width + 1)
         method, line = pixels[start], bytearray(pixels[start + 1:start + 1 + width])
         if method > 4:
             raise FeatureInputsError('invalid PNG filter')
-        for x in range(width) if method else ():
-            a, b, c = line[x - 1] if x else 0, previous[x], previous[x - 1] if x else 0
-            p = a + b - c
-            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-            predictor = a if pa <= pb and pa <= pc else b if pb <= pc else c
-            line[x] = (line[x] + (0, a, b, (a + b) // 2, predictor)[method]) & 255
-        if depth == 1:
-            expanded.extend((value >> bit) & 1 for value in line for bit in range(7, -1, -1))
+        if method == 2 and _accel is not None:      # "up", nearly every row of these masks
+            line = _accel.unfilter_up(line, previous)
         else:
-            expanded.extend(int(value > 127) for value in line)
+            for x in range(width) if method else ():
+                a, b, c = line[x - 1] if x else 0, previous[x], previous[x - 1] if x else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                predictor = a if pa <= pb and pa <= pc else b if pb <= pc else c
+                line[x] = (line[x] + (0, a, b, (a + b) // 2, predictor)[method]) & 255
+        rows.append(line)
         previous = line
-    return bytes(expanded)
+    lines = b''.join(rows)
+    if _accel is not None:
+        return _accel.expand(lines, depth)
+    if depth == 1:
+        return bytes((value >> bit) & 1 for value in lines for bit in range(7, -1, -1))
+    return bytes(int(value > 127) for value in lines)
+
+
+def _pack(raw, shape):
+    """map_feature_artifacts.pack_mask's descriptor, through the accelerator when one is registered."""
+    if _accel is not None:
+        found = _accel.pack(raw, shape)
+        if found is not None:
+            return found
+    return pack_mask(raw, shape)        # its own checks and errors
+
+
+def _barrier_cells(pixels):
+    """1 per 8x8 block of the 1024-square barrier paint holding any paint, rows then columns (128x128)."""
+    if _accel is not None:
+        return _accel.barrier_cells(pixels)
+    return bytes(int(any(pixels[(r * 8 + y) * 1024 + c * 8 + x] for y in range(8) for x in range(8)))
+                 for r in range(128) for c in range(128))
+
+
+def _legacy_large(bits):
+    """A 256-square legacy paint (8 cells a byte, low bit first) scaled 4x to 1024-square, a byte a cell."""
+    if _accel is not None:
+        return _accel.legacy_large(bits)
+    small =bytes((value >> bit) & 1 for value in bits for bit in range(8))
+    return bytes(small[(r // 4) * 256 + c // 4] for r in range(1024) for c in range(1024))
 
 
 def descriptor_digest(descriptor):
@@ -91,24 +133,21 @@ def _decode(map_name, raws, entry, scale):
     barrier, barrier_sha = None, None
     if raws[2] is not None:
         pixels = png_mask(raws[2])
-        barrier_sha = descriptor_digest(pack_mask(pixels, [1024, 1024]))
-        barrier = bytes(int(any(pixels[(r * 8 + y) * 1024 + c * 8 + x] for y in range(8) for x in range(8)))
-                        for r in range(128) for c in range(128))
+        barrier_sha = descriptor_digest(_pack(pixels, [1024, 1024]))
+        barrier = _barrier_cells(pixels)
     legacy = {}
     for kind in ('cover_paint', 'cant_walk_paint'):
         if entry.get(kind):
             bits = base64.b64decode(entry[kind], validate=True)
             if len(bits) != 256 * 256 // 8:
                 raise FeatureInputsError('invalid legacy paint size')
-            small = bytes((value >> bit) & 1 for value in bits for bit in range(8))
-            large = bytes(small[(r // 4) * 256 + c // 4] for r in range(1024) for c in range(1024))
-            legacy[kind] = pack_mask(large, [1024, 1024])
-    out = {'sight': pack_mask(masks['sight'], [1024, 1024]), 'walk': pack_mask(masks['walk'], [1024, 1024]),
-           'barrier': None if barrier is None else pack_mask(barrier, [128, 128]),
+            legacy[kind] = _pack(_legacy_large(bits), [1024, 1024])
+    out = {'sight': _pack(masks['sight'], [1024, 1024]), 'walk': _pack(masks['walk'], [1024, 1024]),
+           'barrier': None if barrier is None else _pack(barrier, [128, 128]),
            'barrier_sha': barrier_sha,
            'scale': scale, 'specials': entry.get('specials') or [], 'legacy': legacy}
     if len(raws) > 3 and raws[3] is not None:                   # only a map with cover: other maps' base is what it was
-        cover = pack_mask(png_mask(raws[3]), [1024, 1024])
+        cover = _pack(png_mask(raws[3]), [1024, 1024])
         out['cover'], out['cover_sha'] = cover, descriptor_digest(cover)
     return out
 

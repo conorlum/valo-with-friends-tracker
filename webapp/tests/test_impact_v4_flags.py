@@ -360,5 +360,9 @@ def test_time_impact_is_unweighted_net_k_times_t_including_trade_credit():
     assert on["A1"].time_impact == round(0.54 * trade_kill_x_time - a1_death_x_time)
 
 
-def test_impact_version_is_unchanged_on_this_branch():
-    assert impact.IMPACT_CALCULATION_VERSION == 3
+def test_runtime_version_matches_the_activated_manifest():
+    import json
+    from app.scoring.impact_runtime import ACTIVE_MANIFEST
+    from app.scoring.impact_manifest import REPO_ROOT
+    manifest = json.loads((REPO_ROOT / ACTIVE_MANIFEST).read_text(encoding="utf-8"))
+    assert impact.IMPACT_CALCULATION_VERSION == manifest["activation_impact_calculation_version"]

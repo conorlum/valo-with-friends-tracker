@@ -58,6 +58,16 @@ def linked(page_linked):
     return page_linked
 
 
+@pytest.fixture
+def rebuilds(monkeypatch):
+    """Each background build a request starts (app/services/util_rebuild.py), recorded instead of spawned."""
+    from app.services import util_rebuild
+
+    started = []
+    monkeypatch.setattr(util_rebuild, "request", lambda: started.append(1) or True)
+    return started
+
+
 def put_util(db, replay, n, payload=None, status="ok", revision=None, fingerprint=None):
     """A stored util row; by default with the round's current gap fingerprint, as a gap run writes it."""
     fingerprint = fingerprint or replay_util.Freshness(db).expected(replay, n)
@@ -156,10 +166,21 @@ def test_an_estimator_trained_on_a_match_that_now_has_a_replay_is_refitted_first
         return model
 
     monkeypatch.setattr(util_model, "refresh", refresh)
-    body_of(call(db))
+    replay_util.match_payload(db, linked, wait=True)
     assert refits == [1]
-    body_of(call(db))
+    replay_util.match_payload(db, linked, wait=True)
     assert refits == [1], "refitted once: the stored one now leaves this match out"
+
+
+def test_the_tab_never_refits_or_builds_in_the_request(db, linked, monkeypatch, rebuilds):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), set())       # fitted before this match had a replay
+    put_util(db, linked, 1)
+    monkeypatch.setattr(util_model, "refresh", lambda session: pytest.fail("refitted in the request"))
+    monkeypatch.setattr(replay_util, "ensure_values", lambda *a, **k: pytest.fail("built in the request"))
+    body = body_of(call(db))
+    assert body["updating"] is True and rebuilds == [1], "the stored estimator is used; the rebuild runs elsewhere"
 
 
 def test_a_build_that_raced_new_evidence_is_stored_under_its_own_inputs_and_built_again(db, linked, monkeypatch):
@@ -269,28 +290,31 @@ def test_the_payload_passes_omens_spike_signals_and_the_heals_kept_alive(db, lin
     assert heal and heal[0]["kept_alive"] is True and heal[0]["hits_after"] == 2
 
 
-def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeypatch):
+def test_a_build_missing_this_replays_rounds_is_rebuilt_once(db, linked, monkeypatch, rebuilds):
     _stored_build(db, linked, {"lift": 0.0}, fingerprints=False)
     calls = []
     monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
-    call(db)
-    assert calls == [1]
+    assert body_of(call(db))["updating"] is True
+    assert rebuilds == [1] and calls == [], "the tab starts the build in the background"
+    replay_util.match_payload(db, linked, wait=True)
+    assert calls == [1], "a waiting caller (the coach) builds first"
 
 
-def test_a_build_whose_corpus_key_moved_is_rebuilt_though_this_replays_rounds_match(db, linked, monkeypatch):
+def test_a_build_whose_corpus_key_moved_is_rebuilt_though_this_replays_rounds_match(db, linked, monkeypatch, rebuilds):
     # Branch review B7: another replay joining, a refit estimator or a new table changes corpus_key without
     # touching this replay's fingerprints; the stored lifts and gates are then stale.
     built = _stored_build(db, linked, {"lift": 0.0})
     replay_util._store_values(db, "an older corpus", built)
     calls = []
     monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
-    call(db)
+    assert body_of(call(db))["updating"] is True and rebuilds == [1] and calls == []
+    replay_util.match_payload(db, linked, wait=True)
     assert calls == [1]
 
 
 def test_a_rebuild_that_refits_the_estimator_scores_with_the_new_one(db, linked, monkeypatch):
     # Branch review B14: ensure_values can refit the estimator while rebuilding; the casts must then be scored with
-    # the estimator that build used, not the one loaded before it.
+    # the estimator that build used, not the one loaded before it. Only a waiting caller (the coach) rebuilds.
     built = _stored_build(db, linked, {"lift": 0.0})
     replay_util._store_values(db, "an older corpus", built)
     old, new = {"key": "old", "n": 1, "excluded": []}, {"key": "new", "n": 1, "excluded": []}
@@ -301,26 +325,24 @@ def test_a_rebuild_that_refits_the_estimator_scores_with_the_new_one(db, linked,
     seen, real = [], replay_util._cast_rows
     monkeypatch.setattr(replay_util, "_cast_rows", lambda rid, ctx, cur, model, *a, **k: (seen.append(model["key"]),
                                                                                          real(rid, ctx, cur, None, *a, **k))[1])
-    call(db)
+    replay_util.match_payload(db, linked, wait=True)
     assert seen == ["new"]
 
 
-def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypatch):
+def test_a_build_with_matching_fingerprints_is_not_rebuilt(db, linked, monkeypatch, rebuilds):
     _stored_build(db, linked, {"lift": 0.0})
     monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: pytest.fail("rebuilt"))
-    call(db)
+    assert body_of(call(db))["updating"] is False and rebuilds == []
+    replay_util.match_payload(db, linked, wait=True)
 
 
 def test_a_build_whose_inputs_changed_elsewhere_is_rebuilt_though_this_replays_fingerprints_match(
-        db, linked, monkeypatch):
+        db, linked, monkeypatch, rebuilds):
     from app.critutil import abilities
 
     _stored_build(db, linked, {"lift": 0.0})
-    calls = []
-    monkeypatch.setattr(replay_util, "ensure_values", lambda d, *a, **k: calls.append(1))
     monkeypatch.setattr(abilities, "table_hash", lambda entries=None: "another table")
-    call(db)
-    assert calls == [1]
+    assert body_of(call(db))["updating"] is True and rebuilds == [1]
 
 
 def test_the_payload_never_mutates_the_build_or_shares_with_it(db, linked):
@@ -378,17 +400,35 @@ def test_page_needs_a_login_and_404s_in_demo_mode(db, linked, monkeypatch):
         render(db, monkeypatch)
 
 
-def test_page_for_a_viewer_shows_only_their_circle(db, linked, monkeypatch):
+def test_page_for_a_viewer_shows_only_their_circle(db, linked, monkeypatch, rebuilds):
+    from app.models.player import Player
+
+    put_util(db, linked, 1)
+    replay_util.ensure_values(db)
+    ctx = replay_util._replay_context(db, {linked.id})[linked.id]
+    me = db.get(Player, ctx["players"][0]["player_id"])
+    seen = render(db, monkeypatch, viewer=me)
+    assert seen["login_note"] is None and seen["updating_note"] is None
+    assert [p["name"] for p in seen["players"]] == [me.display_name]
+    other = db.get(Player, ctx["players"][5]["player_id"])
+    assert render(db, monkeypatch, viewer=other)["players"] == []
+    assert rebuilds == [], "the stored build is current: nothing to rebuild"
+
+
+def test_page_never_builds_in_the_request(db, linked, monkeypatch, rebuilds):
     from app.models.player import Player
 
     put_util(db, linked, 1)
     ctx = replay_util._replay_context(db, {linked.id})[linked.id]
     me = db.get(Player, ctx["players"][0]["player_id"])
+    real = replay_util.ensure_values
+    monkeypatch.setattr(replay_util, "ensure_values", lambda *a, **k: pytest.fail("built in the request"))
     seen = render(db, monkeypatch, viewer=me)
-    assert seen["login_note"] is None
-    assert [p["name"] for p in seen["players"]] == [me.display_name]
-    other = db.get(Player, ctx["players"][5]["player_id"])
-    assert render(db, monkeypatch, viewer=other)["players"] == []
+    assert seen["page"] is None and seen["building_note"] and rebuilds == [1], "no build yet: it starts elsewhere"
+    real(db)
+    put_util(db, linked, 2)                         # a new round since the build
+    seen = render(db, monkeypatch, viewer=me)
+    assert seen["page"] is not None and seen["updating_note"] and rebuilds == [1, 1], "the last build, while redone"
 
 
 def test_page_modes_toggle_and_failing_lengths(db, monkeypatch):
@@ -401,7 +441,7 @@ def test_page_modes_toggle_and_failing_lengths(db, monkeypatch):
     db.add(me)
     db.flush()
     corpus = mode_corpus([mrow(i, pid=me.id) for i in range(6)], failing=(5, 7))
-    monkeypatch.setattr(replay_util, "ensure_values", lambda db_: corpus)
+    monkeypatch.setattr(replay_util, "page_values", lambda db_: (corpus, True))
     monkeypatch.setattr(circle, "circle_ids", lambda db_, pid: set())
     monkeypatch.setattr(util_page, "get_current_player", lambda request, db_: me)
     monkeypatch.setattr("app.templates.get_current_player", lambda request, db_: None)   # the nav's own lookup

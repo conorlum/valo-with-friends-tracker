@@ -33,6 +33,17 @@ def test_span_is_a_noop_without_an_active_trace():
     assert rt.get_current_trace() is None
 
 
+def test_finishing_a_trace_restores_the_enclosing_context():
+    outer = rt.start_trace("outer")
+    try:
+        inner = rt.start_trace("inner")
+        inner.finish()
+        assert rt.get_current_trace() is outer
+    finally:
+        outer.finish()
+    assert rt.get_current_trace() is None
+
+
 # ---------------------------------------------------------------------------
 # Basic span recording + summarize()
 # ---------------------------------------------------------------------------

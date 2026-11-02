@@ -72,16 +72,67 @@
 {% if not demo_mode and is_main %}
 <div class="card">
   <h2>Add an account</h2>
-  <p class="page-meta">Only accounts that appear in a match on the site and aren't linked to anyone yet are listed.</p>
+  <p class="page-meta">Type at least 3 letters of the account's name. Only accounts that appear in a match on the site and aren't linked to anyone yet are suggested.</p>
   <form class="player-picker" action="/accounts/add" method="post">
-    <select name="display_name" required>
-      <option value="" disabled selected>Choose a player&hellip;</option>
-      {% for player in all_players %}
-      <option value="{{ player }}">{{ player }}</option>
-      {% endfor %}
-    </select>
+    <input type="text" id="account-search" class="player-search" name="display_name" required
+           placeholder="Search players&hellip;" autocomplete="off" aria-label="Account to add"
+           aria-controls="account-suggestions">
+    <ul class="player-list" id="account-suggestions" hidden></ul>
+    <p class="page-meta" id="account-search-status" aria-live="polite"></p>
     <button type="submit">Add account</button>
   </form>
 </div>
+
+<script>
+(() => {
+  const MIN_CHARS = 3;
+  const input = document.getElementById("account-search");
+  const list = document.getElementById("account-suggestions");
+  const status = document.getElementById("account-search-status");
+  let timer = null;
+  let latest = 0;   // a slow older response never overwrites a newer one
+
+  function show(names, query) {
+    list.replaceChildren(...names.map((name) => {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = name;
+      button.addEventListener("click", () => {
+        input.value = name;
+        list.hidden = true;
+        status.textContent = "";
+        input.focus();
+      });
+      li.append(button);
+      return li;
+    }));
+    list.hidden = names.length === 0;
+    status.textContent = names.length ? "" : `No addable accounts match "${query}".`;
+  }
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (query.length < MIN_CHARS) {
+      latest++;
+      list.hidden = true;
+      list.replaceChildren();
+      status.textContent = "";
+      return;
+    }
+    timer = setTimeout(async () => {
+      const ticket = ++latest;
+      try {
+        const res = await fetch(`/accounts/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        if (ticket === latest) show(data.names || [], query);
+      } catch (err) {
+        if (ticket === latest) status.textContent = "Search failed. Try again.";
+      }
+    }, 200);
+  });
+})();
+</script>
 {% endif %}
 {% endblock %}

@@ -987,7 +987,8 @@ def uploaded(db, on, condensed, monkeypatch):  # noqa: F811
 
 @pytest.mark.parametrize("kind", ["control", "gaps"])
 @pytest.mark.parametrize("waiting", ["eligible", "resolving", "in_flight", "backoff"])
-def test_a_replay_waiting_for_its_re_parse_gets_no_control_or_gaps_work(db, on, uploaded, waiting, kind):
+@pytest.mark.parametrize("workflow", [False, True])
+def test_a_replay_waiting_for_its_re_parse_gets_no_control_or_gaps_work(db, on, uploaded, waiting, kind, workflow):
     stale, local, worker, target = uploaded
     if kind == "gaps":
         all_control(db, stale)                     # its control is current: only its gaps are owed
@@ -998,13 +999,15 @@ def test_a_replay_waiting_for_its_re_parse_gets_no_control_or_gaps_work(db, on, 
     elif waiting == "backoff":
         add_attempt(db, stale, target=target, finished=T0 - timedelta(minutes=10))
     control = FakeWorker(gaps=1)
+    if workflow: control.runners = {'control': 'workflow'}
     counts = cycle(on, control, worker)
     db.expire_all()
     states_now = {e.replay_id: e.state for e in auto.classify(db, target, auto.index_of(worker.archive()),
                                                               auto.supported_builds(), NOW)}
     assert states_now == {stale.id: waiting, local.id: "local"}
     assert counts["held_back"] == 1 and replay_ids(control) == {local.id}, "the local replay's control goes on"
-    assert counts["sent"] == remote.IN_FLIGHT
+    budget = remote.IN_FLIGHT if workflow else remote.LOCAL_IN_FLIGHT
+    assert counts["sent"] == min(budget, local.round_count)
 
 
 def test_a_released_replay_is_planned_at_once_despite_the_throttle(db, on, uploaded):
@@ -1017,14 +1020,14 @@ def test_a_released_replay_is_planned_at_once_despite_the_throttle(db, on, uploa
     assert state.last_planned == NOW, "nothing changed: the throttle holds"
     add_attempt(db, stale, target=target, finished=T0)                           # the second: it gave up
     counts = cycle(on, control, worker, state, now=NOW + 40)
-    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and replay_ids(control) == {stale.id}
+    assert counts["held_back"] == 0 and counts["sent"] == remote.LOCAL_IN_FLIGHT and replay_ids(control) == {stale.id}
 
 
 def test_a_finished_replacement_sends_the_new_replays_rounds_in_the_same_cycle(db, on, uploaded, condensed):  # noqa: F811
     stale, local, worker, target = uploaded
     stale_uuid, old_id = stale.match_uuid, stale.id
     finish_everything(db, local)
-    control, state = FakeWorker(gaps=1), remote.State()
+    control, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     first = cycle(on, control, worker, state)
     assert (first["reparse_reserved"], first["reparse_sent"], first["sent"], first["held_back"]) == (1, 1, 0, 1)
     [row] = auto.unfinished_attempts(db)
@@ -1034,7 +1037,7 @@ def test_a_finished_replacement_sends_the_new_replays_rounds_in_the_same_cycle(d
     new = db.query(Replay).filter(Replay.match_uuid == stale_uuid).one()
     assert (new.recipe, new.source) == (target, "upload")
     assert (second["reparse_finished"], second["held_back"]) == (1, 0)
-    assert second["sent"] == remote.IN_FLIGHT and replay_ids(control) == {new.id}
+    assert second["sent"] == remote.LOCAL_IN_FLIGHT and replay_ids(control) == {new.id}
     assert all("gaps" in task for task in control.tasks.values())
     assert len(worker.acks) == 1 and db.get(ReplayUpload, row.id).store_outcome == "replaced"
     # Until those rounds are back, the queue takes no other replay: the barrier reads the database.
@@ -1062,7 +1065,7 @@ def test_with_the_queue_stopped_nothing_is_held_or_reserved_and_control_goes_on(
     finish_everything(db, local)   # only the stale upload has rounds to send
     control = FakeWorker(gaps=1)
     counts = cycle(on, control, None if off == "no upload client" else worker)
-    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and replay_ids(control) == {stale.id}
+    assert counts["held_back"] == 0 and counts["sent"] == remote.LOCAL_IN_FLIGHT and replay_ids(control) == {stale.id}
     assert not any(counts[name] for name in auto.COUNTS) and db.query(ReplayUpload).count() == 0
     assert "reparse" not in worker.calls and "archive" not in worker.calls
 
@@ -1074,7 +1077,7 @@ def test_switched_off_with_no_attempt_the_cycle_is_the_one_without_an_upload_cli
     one = cycle(on, with_client, worker)
     other = cycle(on, without, None)
     assert worker.calls == [], "no health, no archive index, no attempt lookup"
-    assert one == other and with_client.tasks == without.tasks and one["sent"] == remote.IN_FLIGHT
+    assert one == other and with_client.tasks == without.tasks and one["sent"] == remote.LOCAL_IN_FLIGHT
 
 
 def test_a_failing_automatic_pass_holds_nothing_and_control_goes_on(db, on, uploaded, monkeypatch, caplog):
@@ -1088,7 +1091,7 @@ def test_a_failing_automatic_pass_holds_nothing_and_control_goes_on(db, on, uplo
     control, state = FakeWorker(gaps=1), remote.State()
     state.held = frozenset({stale.id})
     counts = cycle(on, control, worker, state)
-    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and state.held == frozenset()
+    assert counts["held_back"] == 0 and counts["sent"] == remote.LOCAL_IN_FLIGHT and state.held == frozenset()
     assert "automatic re-parse pass failed" in caplog.text
     db.expire_all()
     assert phase(db.get(ReplayUpload, reserved.id)) == ("queued", "reserved"), "the reservation is untouched"
@@ -1143,6 +1146,7 @@ def test_pg_a_failed_transaction_in_the_automatic_pass_keeps_the_lock_and_contro
     from sqlalchemy.exc import DBAPIError
 
     pg_settings(monkeypatch)
+    feature_free_source(monkeypatch)
     session = pg()
     add_match(session)
     store.store_replay(session, condensed, source="local")
@@ -1169,8 +1173,8 @@ def test_pg_a_failed_transaction_in_the_automatic_pass_keeps_the_lock_and_contro
     worker, control = ProtocolWorker(), Control()
     counts = remote.cycle(pg, control, remote.State(), now=0, worker=worker)
     assert failures == ["ProgrammingError"] and worker.calls == [], "the pass died in its own session"
-    assert counts["sent"] == remote.IN_FLIGHT and counts["held_back"] == 0, "planning used a usable session"
-    assert len(locked) == remote.IN_FLIGHT and all(locked), "the dispatcher's lock outlived the failure"
+    assert counts["sent"] == remote.LOCAL_IN_FLIGHT and counts["held_back"] == 0, "planning used a usable session"
+    assert len(locked) == remote.LOCAL_IN_FLIGHT and all(locked), "the dispatcher's lock outlived the failure"
     assert lock_is_free(pg), "and is released when the cycle ends"
 
 

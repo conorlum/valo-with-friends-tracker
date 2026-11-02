@@ -60,11 +60,36 @@ def group_id_for(db: Session, player_id: int) -> int | None:
     return db.query(AccountGroupMember.group_id).filter_by(player_id=player_id).scalar()
 
 
-def linked_display_names(db: Session) -> set[str]:
-    """Every account in some group -- none of them can be added to another."""
-    return {
-        name for (name,) in db.query(Player.display_name).join(AccountGroupMember, AccountGroupMember.player_id == Player.id)
-    }
+SEARCH_MIN_CHARS = 3
+SEARCH_LIMIT = 10
+
+
+def search_addable_accounts(db: Session, query: str, exclude_player_id: int) -> list[str]:
+    """Up to SEARCH_LIMIT names of accounts that could be added, closest
+    first: names starting with `query` before names containing it, then
+    shorter names, then alphabetical. Case-insensitive; a query under
+    SEARCH_MIN_CHARS characters returns nothing, so a short prefix never
+    pulls back most of the player table. Linked accounts and the asker are
+    left out, as `/accounts/add` would refuse them."""
+    query = query.strip()
+    if len(query) < SEARCH_MIN_CHARS:
+        return []
+    name = func.lower(Player.display_name)
+    needle = query.lower()
+    linked = select(AccountGroupMember.player_id)
+    rows = (
+        db.query(Player.display_name)
+        .filter(name.contains(needle, autoescape=True))
+        .filter(Player.id != exclude_player_id)
+        .filter(Player.id.not_in(linked))
+        .order_by(
+            case((name.startswith(needle, autoescape=True), 0), else_=1),
+            func.length(Player.display_name),
+            name,
+        )
+        .limit(SEARCH_LIMIT)
+    )
+    return [display_name for (display_name,) in rows]
 
 
 def _group_of(db: Session, player_id: int) -> AccountGroup | None:

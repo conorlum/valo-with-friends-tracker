@@ -443,12 +443,15 @@ def test_a_forgotten_job_is_asked_again_and_a_busy_worker_stops_the_cycle(factor
     assert counts["forgotten"] == 3 and counts["sent"] == remote.IN_FLIGHT
 
 
-def test_pg_one_instance_dispatches_at_a_time(pg, condensed):
+def test_pg_one_instance_dispatches_at_a_time(pg, condensed, monkeypatch):
     from sqlalchemy import text
 
     from test_replay_store import add_match
 
     from app.replays import store
+    from test_control_store import feature_free_source
+
+    feature_free_source(monkeypatch)
 
     session = pg()
     add_match(session)

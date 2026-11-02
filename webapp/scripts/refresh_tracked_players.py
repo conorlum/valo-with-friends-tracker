@@ -35,6 +35,7 @@ Usage:
 """
 
 import argparse
+from contextlib import ExitStack
 import json
 import random
 import sys
@@ -146,10 +147,11 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
     db = SessionLocal()
     try:
         all_dirty: set[int] = backfill_unscored_matches(db)
-        with sync_playwright() as p:
+        with sync_playwright() as p, ExitStack() as cleanup:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             page = context.new_page()
+            cleanup.callback(page.close)
 
             for i, riot_id in enumerate(roster):
                 try:
@@ -182,7 +184,6 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
                     print(f"waiting {delay:.1f}s before next player...")
                     time.sleep(delay)
 
-            page.close()
 
         if all_dirty and not no_prewarm:
             print(f"pre-warming cache for {len(all_dirty)} player(s)...")

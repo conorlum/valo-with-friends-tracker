@@ -41,7 +41,9 @@ import base64
 import gzip
 import hashlib
 import json
+import os
 import struct
+import time
 from pathlib import Path
 
 CONTROL_REVISION = 22    # 22: airborne holders cast against learnt box plates (2026-10-31); 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
@@ -93,11 +95,41 @@ def _numbers(value):
     return None
 
 
+_figures_memo: dict[tuple, str] = {}
+RACY_NS = 2_000_000_000     # a file changed this recently may change again within one mtime tick: never trusted
+
+
+def _stat_key(path):
+    """(path, mtime, size, inode), or None for a file modified in the last RACY_NS (git's racy-file rule)."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return (str(path), None)
+    if time.time_ns() - st.st_mtime_ns < RACY_NS:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def figures_hash(hearing=None, utility=None) -> str:
     """16 hex of the game figures the engine consumes (the 2026-10-05 plan, W22): app/control/hearing.json's and
     app/control/utility.json's numbers, as sorted JSON. One view for control's fingerprint and the gap keys, so a
     changed range makes both stale and an edited citation makes neither. Read as files, never imported (the web
-    app has no engine); a missing file reads as empty."""
+    app has no engine); a missing file reads as empty.
+
+    Every round's fingerprint asks for it, so it is remembered per file state (path, mtime, size): an edited or
+    removed file is read afresh."""
+    key = (_stat_key(hearing or HEARING_FILE), _stat_key(utility or UTILITY_FILE))
+    if None in key:
+        return _figures_hash(hearing, utility)
+    found = _figures_memo.get(key)
+    if found is None:
+        found = _figures_memo[key] = _figures_hash(hearing, utility)
+        if len(_figures_memo) > 16:
+            _figures_memo.pop(next(iter(_figures_memo)))
+    return found
+
+
+def _figures_hash(hearing=None, utility=None) -> str:
     view = {}
     for name, path in (("hearing", hearing or HEARING_FILE), ("utility", utility or UTILITY_FILE)):
         try:

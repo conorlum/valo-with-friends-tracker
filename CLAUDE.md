@@ -161,7 +161,10 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
 - Only rows whose gap fingerprint is current are read (`replay_util.current_rows`, Critical Moments' rule).
   Products in `util_model` ("win", "values"), rebuilt when what they were built from changes (`corpus_key`,
   computed from the rows a build read; `replay_util.ensure_values`, one rebuild at a time under a Postgres advisory
-  lock; the first page visit fits a missing or stale estimator). `scripts/critical_util.py fit-win | refresh |
+  lock). Requests never build: `/util` and the replay tab read the stored build (`replay_util.page_values`,
+  `match_payload`) and, when it is stale or missing, start `python -m app.services.util_rebuild` as a lower-priority
+  child process (one per process at a time, one builder overall under a Postgres session lock) and show the last
+  build with an "updating" note. The build takes minutes. The coach waits for a current build (`wait=True`). `scripts/critical_util.py fit-win | refresh |
   measure | show` (through `with_friends_db.py`; `measure` is read-only).
 - The tab is `replays/_player.html` "Critical Util" (`app/static/js/critutil.js`, `/replays/<uuid>/util.json`); the
   page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach
@@ -180,24 +183,32 @@ A `.venv` with `requirements.txt` installed already exists in `webapp/` (include
 
 ### Running the tests
 
-From `webapp/`, `.\.venv313\Scripts\python.exe -m pytest` (`webapp/pytest.ini`). By default it leaves out the tests
-marked `slow` (5 s or more each) and runs the rest on `pytest-xdist` workers: a third of the machine's cores, pinned
-off its last four cores (`tests/conftest.py`). Child processes inherit the pin. Times on the 12-thread dev machine:
+Run from `webapp/` with `./.venv313/Scripts/python.exe -m pytest`. The default excludes `slow`,
+`browser`, and optional `corpus` measurements; xdist uses a third of the cores and reserves the last four.
+See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-audit implementation map.
 
-| Run | Command (after `-m pytest`) | Time |
-|---|---|---|
-| Everyday: all but `slow` | (nothing) | ~11 min |
-| Everything outside the replays | `tests --ignore=tests/replays` | ~40 s |
-| Replays without the map-control engine | `tests/replays -m "not geometry"` | ~2 min |
-| The map-control engine (control, heights, features, gaps) | `tests/replays -m geometry` | most of the 11 min |
-| Only the slow tests | `-m slow` | ~15 min |
-| Everything | `-m ""` | ~26 min |
+**Which tests a change needs:** `python scripts/test_catalog.py plan --git` (or `plan <paths>`) names the suites
+from `tests/suites.toml` that guard the changed files, with each lane's estimated time and command; `run --git`
+runs them and reports each suite against its estimate; `list` describes all 25 suites. A new test file or app
+module goes into `tests/suites.toml` (`check`, run by `tests/test_test_catalog.py`, fails otherwise).
 
-`-n 0` runs in one process, and `-n 2` sets the worker count. `geometry` is set by `tests/replays/conftest.py` on
-every replay test module that imports the engine or its toy maps. Run `-m slow`, or everything, before merging a
-change to `app/control`, `app/gaps` or the height build. Mark a new test `@pytest.mark.slow` if it takes 5 s or
-more on its own. A test must not depend on the machine's free memory or load, because parallel workers change both
-(`test_gaps_task.py` fakes `compute_control.free_memory` for this reason).
+| Lane | Arguments after `-m pytest` |
+|---|---|
+| Offline, including Node helpers | `-n 2 -m "not slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
+| PostgreSQL integration | `-n 0 -m "postgres and not corpus and not slow" --require-postgres` |
+| Browser journeys | `tests/browser -n 0 -m browser --require-browser --require-fixtures` |
+| Slow geometry/reference | `-n 2 -m "slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
+
+PostgreSQL is opt-in through `VALO_TEST_DATABASE_URL` only. Use a disposable local `*_test` database and a role
+allowed to create scratch databases. The required lane gives each legacy case its own Alembic-migrated database,
+installs the release gate only for gate/release tests, and drops only the scratch databases it created.
+It runs serially: a shared PostgreSQL URL with xdist workers is refused. Never use the friends/demo DB or a
+measurement restore for writing tests. Optional corpus measurements remain separate and require approved inputs.
+
+`--require-node`, `--require-fixtures`, `--require-postgres`, and `--require-browser` turn missing prerequisites
+into failures in their designated lanes. Only private-owner replay inputs and corpus probes may remain optional.
+Run the slow lane before merging changes to control, gaps, heights, or features. Mark expensive new cases `slow`;
+do not make correctness depend on available memory, machine load, or long sleeps.
 
 ## Changing how Impact is scored
 

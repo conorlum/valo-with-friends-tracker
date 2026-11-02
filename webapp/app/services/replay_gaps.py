@@ -80,6 +80,20 @@ class Freshness:
         self.maps: dict[str, tuple] = {}
         self.groups: dict[int, dict] = {}
 
+    def preload(self, replay_ids) -> None:
+        """Every one of these replays' side groups in one query (replay_control.side_groups, one replay each)."""
+        from app.models.replay import ReplayPlayer
+
+        wanted = [rid for rid in set(replay_ids) if rid not in self.groups]
+        if not wanted:
+            return
+        for rid in wanted:
+            self.groups[rid] = {}
+        for rid, slot, group in self.db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.side_group
+                                              ).filter(ReplayPlayer.replay_id.in_(wanted)):
+            if group:
+                self.groups[rid][slot] = group
+
     def expected(self, replay, n: int) -> str | None:
         from app.replays import choke_assets
         from app.services import replay_control, replay_gaps

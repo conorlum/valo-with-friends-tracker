@@ -1,10 +1,9 @@
 """Step 1 (docs/player_page_render_speed.txt) merges the player-page router's
-Q1+Q2 and Q3+Q4 into single round trips. No DB fixture exists in this repo
-(see tests/test_player_view_cache.py's precedent), so these tests fabricate
+Q1+Q2 and Q3+Q4 into single round trips. These focused query-shape tests fabricate
 plain in-memory model instances and a MagicMock Session standing in for the
 query chain -- the goal is the SHAPE of each merge (join condition present,
 404 preserved, decode delegated, the no-session short-circuit still issues
-ZERO queries), not a real round trip.
+ZERO queries). tests/test_profile_cache_journey.py covers the real PostgreSQL/HTTP path.
 """
 
 from unittest.mock import MagicMock

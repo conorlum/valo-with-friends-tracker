@@ -3,6 +3,7 @@ the scoring models (docs/replay-viewer-plan.md, decision 5)."""
 
 import ast
 from pathlib import Path
+from tests.support.architecture import imports
 
 REPLAYS = Path(__file__).resolve().parents[2] / "app" / "replays"
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
@@ -11,23 +12,19 @@ FORBIDDEN = ("app.scoring.impact", "app.scoring.kill_order_leverage", "app.scori
 
 
 def _imports(path: Path) -> set[str]:
-    names = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
-    return names
+    root = Path(__file__).resolve().parents[3]
+    relative = path.relative_to(root)
+    if relative.parts[0] == 'webapp': relative = Path(*relative.parts[1:])
+    return imports(path, '.'.join(relative.with_suffix('').parts))
 
 
 def test_replay_code_does_not_import_scoring():
-    files = [*REPLAYS.glob("*.py"), *(SCRIPTS / name for name in ("ingest_replay.py", "make_replay_fixture.py",
+    assert REPLAYS.is_dir() and WORKER.is_dir()
+    files = [*REPLAYS.rglob("*.py"), *(SCRIPTS / name for name in ("ingest_replay.py", "make_replay_fixture.py",
                                                                    "replay_gate.py")),
-             *WORKER.glob("*.py")]
+             *WORKER.rglob("*.py")]
     for path in files:
-        if not path.exists():
-            continue
+        assert path.is_file(), f'required architecture input missing: {path}'
         hits = [name for name in _imports(path) if name.startswith(FORBIDDEN)]
         assert hits == [], f"{path.name} imports {hits}"
 
@@ -44,7 +41,7 @@ APP = REPLAYS.parent
 
 
 def test_the_worker_is_covered_and_imports_no_database_code():
-    files = list(WORKER.glob("*.py"))
+    files = list(WORKER.rglob("*.py"))
     assert files, "replay_worker/ must exist on this branch"
     for path in files:
         hits = [name for name in _imports(path) if name.startswith(("sqlalchemy", "app.db", "app.models", "app.config"))]
@@ -64,7 +61,7 @@ def test_the_per_kill_split_only_reads_impact():
 def test_web_code_imports_no_scoring_and_not_the_split():
     """The web service never runs the scorer (AFK run decision D3): no router, and no replay
     service a router uses, imports scoring code or replay_impact."""
-    files = [*(APP / "routers").glob("*.py"), *(APP / "services").glob("replay*.py"), *REPLAYS.glob("*.py")]
+    files = [*(APP / "routers").rglob("*.py"), *(APP / "services").rglob("replay*.py"), *REPLAYS.rglob("*.py")]
     for path in files:
         if path.name == "replay_impact.py":
             continue
@@ -73,18 +70,6 @@ def test_web_code_imports_no_scoring_and_not_the_split():
         assert not [n for n in names if n.startswith("app.services.replay_impact")], path.name
 
 
-def test_no_scoring_hashed_source_changed():
-    """migration 0012 adds players.riot_subject without touching the ORM models the scoring
-    manifest hashes (app/scoring/impact_manifest.py HASHED_SOURCES)."""
-    import subprocess
-
-    from app.scoring.impact_manifest import HASHED_SOURCES
-
-    root = APP.parents[1]
-    diff = subprocess.run(["git", "diff", "--name-only", "origin/main", "--", *(f"webapp/{p}" for p in HASHED_SOURCES)],
-                          cwd=root, capture_output=True, text=True)
-    if diff.returncode != 0:
-        import pytest
-
-        pytest.skip("no origin/main to compare with")
-    assert diff.stdout.strip() == ""
+# A branch-wide origin/main diff belonged to the original replay-only migration
+# review. Runtime/import isolation above is the lasting invariant; legitimate
+# scoring releases are checked by their independent frozen manifests instead.

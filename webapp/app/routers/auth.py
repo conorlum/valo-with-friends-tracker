@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -33,7 +35,7 @@ def logout(request: Request):
 def search(request: Request, q: str = "", db: Session = Depends(get_db)):
     player = find_player_by_search_query(db, q) if q else None
     if player is not None:
-        return RedirectResponse(url=f"/players/{player.display_name}", status_code=303)
+        return RedirectResponse(url=f"/players/{quote(player.display_name, safe='')}", status_code=303)
     return templates.TemplateResponse(
         request, "landing.html", {"search_query": q, "not_found": bool(q)}
     )

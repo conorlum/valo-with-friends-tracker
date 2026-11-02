@@ -28,6 +28,8 @@ import os
 
 import pytest
 from sqlalchemy import create_engine, pool
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import sessionmaker
 
 TEST_URL_ENV = "VALO_TEST_DATABASE_URL"
@@ -39,7 +41,15 @@ WRITABLE_SUFFIX = "_test"
 
 
 def database_name(url: str) -> str:
-    return url.rsplit("/", 1)[-1].split("?")[0]
+    try:
+        parsed = make_url(url)
+    except ArgumentError:
+        pytest.fail('invalid test database URL (value omitted)')
+    if parsed.get_backend_name() != 'postgresql':
+        pytest.fail('test database URL must use PostgreSQL')
+    if {'dbname', 'database', 'service'} & {key.lower() for key in parsed.query}:
+        pytest.fail('test database URL may not override its database through query parameters')
+    return parsed.database or ''
 
 
 def postgres_url_or_skip(*, empties_tables: bool = False, writes: bool = False) -> str:

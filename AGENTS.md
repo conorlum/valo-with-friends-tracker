@@ -62,6 +62,30 @@ docker compose -p valomaths-private up -d            # start local Postgres on p
 
 A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
 
+### Running the tests
+
+Run from `webapp/` with `./.venv313/Scripts/python.exe -m pytest`. The default excludes `slow`,
+`browser`, and optional `corpus` measurements; xdist uses a third of the cores and reserves the last four.
+See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-audit implementation map.
+
+| Lane | Arguments after `-m pytest` |
+|---|---|
+| Offline, including Node helpers | `-n 2 -m "not slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
+| PostgreSQL integration | `-n 0 -m "postgres and not corpus and not slow" --require-postgres` |
+| Browser journeys | `tests/browser -n 0 -m browser --require-browser --require-fixtures` |
+| Slow geometry/reference | `-n 2 -m "slow and not postgres and not browser and not corpus" --require-node --require-fixtures` |
+
+PostgreSQL is opt-in through `VALO_TEST_DATABASE_URL` only. Use a disposable local `*_test` database and a role
+allowed to create scratch databases. The required lane gives each legacy case its own Alembic-migrated database,
+installs the release gate only for gate/release tests, and drops only the scratch databases it created.
+It runs serially: a shared PostgreSQL URL with xdist workers is refused. Never use the friends/demo DB or a
+measurement restore for writing tests. Optional corpus measurements remain separate and require approved inputs.
+
+`--require-node`, `--require-fixtures`, `--require-postgres`, and `--require-browser` turn missing prerequisites
+into failures in their designated lanes. Only private-owner replay inputs and corpus probes may remain optional.
+Run the slow lane before merging changes to control, gaps, heights, or features. Mark expensive new cases `slow`;
+do not make correctness depend on available memory, machine load, or long sleeps.
+
 ## Changing how Impact is scored
 
 Any change to Impact scoring -- a new term, a changed factor, new weights -- and any release of one follows
