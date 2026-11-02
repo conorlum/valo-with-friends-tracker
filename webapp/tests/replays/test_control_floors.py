@@ -100,7 +100,8 @@ def test_an_enemy_above_their_floor_is_spotted_at_their_own_height():
     assert 5 not in on_ground.sees[0] and on_ground.direct == {}
     raised = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)})
     assert raised.holders[5].cell == on_ground.holders[5].cell and not raised.holders[0].body[raised.holders[5].cell]
-    assert 5 in raised.sees[0] and raised.direct == {(0, 5): True}, "seen, and in the active cone"
+    assert 5 in raised.sees[0] and raised.direct[(0, 5)] is True, "seen, and in the active cone"
+    assert 0 in raised.sees[5] and (5, 0) in raised.direct, "a pair touching the air: the same lines the other way"
     away = tick(geo, {0: still("A", x, Y, 180, 4.0), 5: still("B", out, Y, 180, 2.4)})
     assert 5 not in away.sees[0], "not behind the viewer"
     flashed = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)},

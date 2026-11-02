@@ -231,6 +231,61 @@ def test_a_jumper_with_both_lines_blocked_doesnt_see_a_grounded_enemy_through_th
     assert tk._by_lines_only(jumper, enemy), "the knowledge view's sees reads the same rule"
 
 
+def test_a_rejected_sighting_never_reaches_the_unknown():
+    # The same blocked pair: the jumper's active fan covers the enemy's cell, and nothing is spotted.
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0, right_x=244, right_y=212)
+    assert tk.holders[0].active[tk.holders[5].cell]
+    unknown = ce.Unknown(tk.geo)
+    unknown.apply(tk)
+    assert 5 not in unknown.seen["A"]
+
+
+def test_a_clear_air_pair_in_the_cone_reaches_the_unknown():
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0)
+    unknown = ce.Unknown(tk.geo)
+    unknown.apply(tk)
+    assert unknown.seen["A"][5][0] == tk.holders[5].cell
+
+
+def test_a_grounded_pair_is_still_spotted_by_the_active_view(monkeypatch):
+    # Nobody in the air: an active view of the cell spots them, with no lines asked.
+    monkeypatch.setattr(ce, "cast", lambda geo, *a, **kw: np.ones(geo.n, bool))
+    tk = pair_tick(box(), left_z=0.0, right_z=0.0)
+    assert not tk._air_pair(tk.holders[0], tk.holders[5]) and (0, 5) not in tk.direct
+    unknown = ce.Unknown(tk.geo)
+    unknown.apply(tk)
+    assert 5 in unknown.seen["A"]
+
+
+@pytest.mark.parametrize("left_z,right_z,right_x,right_y,forward,back", [
+    (1.2, 0.0, 308, Y, True, True),    # over the box both ways
+    (1.2, 0.0, 244, 212, False, False),  # both lines blocked, whichever end looks
+    (0.0, 1.2, 308, Y, True, True),
+])
+def test_fight_sight_queries_agree_with_the_tick(left_z, right_z, right_x, right_y, forward, back):
+    from app.control import utility as ut
+
+    tk = pair_tick(box(), left_z=left_z, right_z=right_z, right_x=right_x, right_y=right_y)
+    a, b = tk.holders[0], tk.holders[5]
+    assert ut._sees_point(tk.rnd, 0, 5.0, b.x, b.y, target=5) is forward is (5 in tk.sees[0])
+    assert ut._sees_point(tk.rnd, 5, 5.0, a.x, a.y, target=0) is back is (0 in tk.sees[5])
+
+
+def test_a_grounded_fight_sight_query_keeps_its_2d_line():
+    from app.control import utility as ut
+
+    tk = pair_tick(box(), left_z=0.0, right_z=0.0)
+    assert ut._sees_point(tk.rnd, 0, 5.0, tk.holders[5].x, Y, target=5) is False  # the box is a wall from the ground
+
+
+def test_a_point_query_never_asks_the_pair_lines(monkeypatch):
+    from app.control import utility as ut
+
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0)
+    monkeypatch.setattr(ce, "_air_pair_sight", lambda *a, **kw: pytest.fail("a point isn't a player"))
+    ut._sees_point(tk.rnd, 0, 5.0, 308, Y)
+
+
 def test_a_jumper_whose_view_reaches_the_cell_still_sees_by_a_clear_line(monkeypatch):
     monkeypatch.setattr(ce, "cast", lambda geo, *a, **kw: np.ones(geo.n, bool))
     tk = pair_tick(box(), left_z=1.2, right_z=0.0)

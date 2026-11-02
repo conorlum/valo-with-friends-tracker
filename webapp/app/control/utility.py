@@ -307,8 +307,8 @@ def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | No
     """Whether `viewer`, alive at t, has (x, y) px in their field of view with a clear 2D line to it (walls and the
     smokes up then; a flash or nearsight on them blinds it). A viewer on a box sees from their stance's eye over
     that piece; `target` (a player slot whose position is the point), when boxed, is seen at its eye over its piece.
-    Without a boxed target, a point on a top node's leaf sees over that piece too. This remains a 2D query;
-    heights are the engine's."""
+    Without a boxed target, a point on a top node's leaf sees over that piece too. This remains a 2D query, heights
+    being the engine's, except for a `target` when either end is airborne: then the engine's own two pair lines."""
     from app.control import engine as ce
     from app.control import stance as st_mod
 
@@ -337,6 +337,10 @@ def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | No
     if any(a <= t < b for a, b in rnd.nearsight.get(viewer, [])) and \
             math.hypot(x - ex, y - ey) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
         return False
+    if target is not None:
+        seen = ce._air_pair_sight(rnd, viewer, target, t, rnd.smokes_at(t))
+        if seen is not None:
+            return seen
     return ce.los(rnd.geo, (ex, ey, None), (x, y, None), rnd.smokes_at(t), see_over=(sv, st))
 
 
