@@ -182,11 +182,15 @@ def _seconds(t_ms: int, start: int) -> float:
 
 
 def crouch_spans(rows: list[tuple[int, int, bool]], pawn_slot: dict[int, int],
-                 windows: list[tuple[int, int, int]]) -> dict[int, dict[int, list[list[float]]]]:
+                 windows: list[tuple[int, int, int]],
+                 pawn_changes: dict[int, list[tuple[int, int]]] | None = None,
+                 ) -> dict[int, dict[int, list[list[float]]]]:
     """CrouchHeld transitions per pawn, clipped to each playback window in round seconds.
 
     Repeated True rows leave the span open; False closes it. Unknown pawns are ignored. State
     carries across windows, with gaps omitted, and an unclosed span lasts to each round's end.
+    A pawn's spans end at the spawn of the slot's next pawn (`pawn_changes`, slot -> [(spawn ms,
+    pawn)]): a player who dies holding the key records no False, and the next pawn can't close it.
     Spans touching or overlapping on the same slot merge (including successive character pawns).
     """
     if not windows:
@@ -195,6 +199,11 @@ def crouch_spans(rows: list[tuple[int, int, bool]], pawn_slot: dict[int, int],
     for t_ms, pawn, held in rows:
         if pawn in pawn_slot:
             by_pawn[pawn].append((t_ms, held))
+    replaced_at: dict[int, int] = {}
+    for spawns in (pawn_changes or {}).values():
+        ordered = sorted(spawns)
+        for (_, pawn), (next_spawn, _) in zip(ordered, ordered[1:]):
+            replaced_at[pawn] = next_spawn
     clipped: dict[int, dict[int, list[list[float]]]] = {}
     for pawn, changes in by_pawn.items():
         opened = None
@@ -208,9 +217,10 @@ def crouch_spans(rows: list[tuple[int, int, bool]], pawn_slot: dict[int, int],
                 opened = None
         if opened is not None:
             intervals.append((opened, windows[-1][2]))
+        last = replaced_at.get(pawn, windows[-1][2])
         for lo, hi in intervals:
             for n, (start, _, end) in enumerate(windows, 1):
-                t0, t1 = max(lo, start), min(hi, end)
+                t0, t1 = max(lo, start), min(hi, end, last)
                 if t0 < t1:
                     clipped.setdefault(n, {}).setdefault(pawn_slot[pawn], []).append(
                         [_seconds(t0, start), _seconds(t1, start)])
@@ -1848,7 +1858,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     out = Extras()
     counts: Counter[str] = Counter()
-    crouch = crouch_spans(raw.crouch, players.pawn_slot, windows)
+    crouch = crouch_spans(raw.crouch, players.pawn_slot, windows, players.pawn_changes)
     for n, slots in crouch.items():
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["crouch"] = slots
     counts["crouch_rows"] = len(raw.crouch)

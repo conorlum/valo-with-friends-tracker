@@ -76,6 +76,35 @@ def test_unknown_post_death_pawn_is_dropped_and_reported(tmp_path):
     assert result.report["crouch_spans"] == 1
 
 
+def test_a_replaced_pawns_open_span_ends_at_the_next_pawns_spawn(tmp_path):
+    # Dies holding the key: pawn 1106 never records False, and its replacement can't close it.
+    evidence, _ = raw(tmp_path, [row(20_000), row(70_000, False, 2106)])
+    changes = {0: [(0, 1106), (65_000, 2106)]}
+    assert extras.crouch_spans(evidence.crouch, {1106: 0, 2106: 0}, WINDOWS, changes) == {1: {0: [[10.0, 50.0]]}}
+
+
+def test_a_replaced_pawns_span_is_cut_where_the_next_pawn_spawns_inside_a_round(tmp_path):
+    evidence, _ = raw(tmp_path, [row(20_000)])
+    assert extras.crouch_spans(evidence.crouch, {1106: 0, 2106: 0}, WINDOWS,
+                               {0: [(0, 1106), (30_000, 2106)]}) == {1: {0: [[10.0, 20.0]]}}
+
+
+def test_the_last_pawn_keeps_its_open_span_across_rounds(tmp_path):
+    evidence, _ = raw(tmp_path, [row(55_000)])
+    assert extras.crouch_spans(evidence.crouch, {1106: 0}, WINDOWS, {0: [(0, 1106)]}) == {
+        1: {0: [[45.0, 50.0]]}, 2: {0: [[0.0, 50.0]]}}
+
+
+def test_build_extras_passes_the_players_spawns(tmp_path):
+    evidence, path = raw(tmp_path, [row(20_000), row(70_000, False, 2106)])
+    players = cd.PlayerTable(subjects=[None], agents=["Cypher"], pawn_slot={1106: 0, 2106: 0},
+                             other_slot={}, pawn_changes={0: [(0, 1106), (65_000, 2106)]}, gone_ms={})
+    game_map = cd.MapInfo("Testmap", "Test", 1e-4, 1e-4, 0.5, 0.5)
+    result = extras.build_extras(path, players, WINDOWS, game_map, {"Gumshoe": "Cypher"}, lambda t: {})
+    assert result.rounds[1]["crouch"] == {0: [[10.0, 50.0]]}
+    assert "crouch" not in result.rounds.get(2, {})
+
+
 def test_empty_false_only_and_outside_round_spans_are_empty(tmp_path):
     assert spans(tmp_path, []) == {}
     assert spans(tmp_path, [row(20_000, False), row(61_000), row(69_000, False)]) == {}
