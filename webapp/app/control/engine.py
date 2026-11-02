@@ -1306,6 +1306,19 @@ def _air_pair_sight(rnd, viewer: int, target: int, t: float, smokes) -> bool | N
             or _plate_line(geo, rnd, t, smokes, e, h, float(z) + hc.FEET_M, None))
 
 
+def _air_pair_clear(rnd, a: int, b: int, t: float, smokes) -> bool | None:
+    """A sight line between a and b either way, for callers that ask whether a line exists (smoke cover, a kill
+    through smoke) rather than who sees whom: for a pair touching the air, either way's two lines (`_air_pair_sight`).
+    None when the pair isn't one: the caller's 2D line applies (branch review 2)."""
+    one = _air_pair_sight(rnd, a, b, t, smokes)
+    if one:
+        return True
+    other = _air_pair_sight(rnd, b, a, t, smokes)
+    if one is None and other is None:
+        return None
+    return bool(other)
+
+
 def _smoke_key(smokes: list) -> tuple:
     """A hashable of a tick's smokes by content (circles as they are, a Wall by its segments, a bounded
     occluder by its owner, band and mask), for the on-box presence memo."""

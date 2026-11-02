@@ -667,6 +667,22 @@ def test_feature_representatives_never_load_the_control_blob(errors, db, linked)
     assert chosen and not any("replay_round_control.data" in s for s in chosen)
 
 
+def test_a_concurrent_reader_replacing_the_digest_cache_never_breaks_this_one(errors, db, linked):
+    # Branch review 2, finding 4: the request reader and the background verifier share _digests. One replacing it
+    # with its own snapshot mid-loop must not leave the other indexing a key it no longer holds.
+    feature_rows(db, linked)
+    collected = errors.replay_progress.round_states(db)
+
+    class Replays(dict):
+        def __getitem__(self, key):
+            errors._digests = {}          # another reader's snapshot, without this one's keys
+            return super().__getitem__(key)
+
+    collected["replays"] = Replays(collected["replays"])
+    groups, missing = errors._feature_representatives(db, collected)
+    assert set(groups) == {"digest-a", "digest-b"} and missing == 1
+
+
 def test_feature_summaries_are_read_once_per_fingerprint(errors, db, linked):
     from sqlalchemy import event
 

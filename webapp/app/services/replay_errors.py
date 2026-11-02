@@ -139,9 +139,11 @@ def _feature_representatives(db, collected=None):
             except (KeyError, TypeError, ValueError, OSError, EOFError):
                 digest = None
             known[rid, n, fp] = digest
-    _digests = {key: known.get(key) for key in ((r.replay_id, r.round_number, r.fingerprint) for r in current)}
+    # This call's own snapshot: another reader (a request, the verifier) may replace the shared cache meanwhile.
+    digests = {key: known.get(key) for key in ((r.replay_id, r.round_number, r.fingerprint) for r in current)}
+    _digests = digests
     for row in current:
-        digest = _digests[row.replay_id, row.round_number, row.fingerprint]
+        digest = digests[row.replay_id, row.round_number, row.fingerprint]
         if digest is None:
             unavailable += 1
             continue

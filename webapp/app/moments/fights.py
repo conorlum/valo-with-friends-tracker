@@ -420,11 +420,17 @@ def _kd(rnd, blob: dict, tk: float, killer: int, victim: int, sight: bool) -> di
         # smokes blocked (neither seeing the other can also be facing, a flash or nearsight).
         if pk is None or pv is None:
             continue
-        a, b, so = line_ends(rnd, killer, victim, t, pk, pv)      # each end from its stance, if it has one
-        if not engine.los(rnd.geo, a, b, [], see_over=so):
+        air = engine._air_pair_clear(rnd, killer, victim, t, [])   # a pair touching the air: its two lines
+        if air is not None:
+            bare, smoked = air, lambda: engine._air_pair_clear(rnd, killer, victim, t, rnd.smokes_at(t))
+        else:
+            a, b, so = line_ends(rnd, killer, victim, t, pk, pv)  # each end from its stance, if it has one
+            bare = engine.los(rnd.geo, a, b, [], see_over=so)
+            smoked = lambda: engine.los(rnd.geo, a, b, rnd.smokes_at(t), see_over=so)  # noqa: E731
+        if not bare:
             continue
         clear = True    # a clear bare line: who saw whom is measurable even when facing or a flash hid it
-        if not engine.los(rnd.geo, a, b, rnd.smokes_at(t), see_over=so):
+        if not smoked():
             kd["through_smoke"] = True
             break
     kd["measurable"] = clear or kd["wall"]

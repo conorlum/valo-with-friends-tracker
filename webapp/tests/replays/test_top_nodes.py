@@ -303,6 +303,25 @@ def test_rectangle_reach_uses_euclidean_gap_and_pixel_tolerance(offset, connecte
     assert ((ground, top) in walks) == connected
 
 
+def test_a_tall_learnt_box_between_the_ground_and_a_low_top_stops_the_climb():
+    # Branch review 2, finding 1: the wall check cleared every learnt box, so this climb went over a 4 m box.
+    geo = mixed(name='Split')
+    pixels = np.zeros((1024, 1024), bool)
+    pixels[200:208, 203:216] = True      # the low box, 1 m
+    pixels[200:208, 199:201] = True      # a 4 m box, 2 px wide, between the ground and the low box
+    cg.attach_cover(geo, pixels, 'climb-third-piece')
+    asset = copy.deepcopy(geo.heights)
+    asset.box_tops = np.asarray([(206, 202, 10), (199, 204, 40)], np.int32)
+    geo = cg.attach_heights(geo, asset)
+    low = int(geo.cover_px[202, 206])
+    assert dict(geo.box_tops)[low] == (1.0,) and dict(geo.box_tops)[int(geo.cover_px[204, 199])] == (4.0,)
+    top, ground = top_at(geo, 206, 202), int(geo.node_at_px(196, 204, 0))
+    walks, loud = ag.graph(geo)
+    assert (ground, top) not in walks and (top, ground) not in walks
+    # The low box's own other leaves still join it: its own piece never blocks.
+    assert (top, top_at(geo, 206, 206)) in walks
+
+
 def test_a_permanent_wall_between_a_top_and_the_ground_beside_it_stops_the_climb():
     geo = topped(((202, 202, 10),))
     top, ground = top_at(geo, 202, 202), int(geo.node_at_px(196, 204, 0))

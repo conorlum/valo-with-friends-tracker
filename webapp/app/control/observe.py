@@ -26,6 +26,7 @@ class PlayerView:
     see_over: tuple[int, ...] = ()   # the cover pieces the eye sees over (sorted labels; () = none)
     own: int | None = None          # sight node under the real z; node remains the control anchor
     air: bool = False               # Holder.air: their sight is cast against box plates
+    floor: float | None = None      # when air: the floor they jump from (engine._floor_at), for the jump-peek limit
 
 
 @dataclass
@@ -48,6 +49,10 @@ def record(tick, unknown) -> TickRecord:
             pv.eye_x, pv.eye_y, pv.see_over = float(st.eye_px[0]), float(st.eye_px[1]), tuple(st.see_over)
             pv.own = st.own
         pv.air = bool(getattr(h, "air", False))
+        if pv.air:
+            from app.control.engine import _floor_at
+
+            pv.floor = _floor_at(tick.geo, tick.rnd, s, tick.t, int(h.cell), st)
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
                       list(tick.smokes))

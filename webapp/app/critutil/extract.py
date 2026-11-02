@@ -735,10 +735,16 @@ def _cover_all(rnd, sides, casts: list[_Cast]) -> dict[int, dict]:
                 pb = rnd.pos(b, t)
                 if pb is None or _dist_m(rnd, pa, pb) > SIGHT_RANGE_M:
                     continue
-                la, lb, so = line_ends(rnd, a, b, t, pa, pb)    # each end from its stance, if it has one
-                if not engine.los(rnd.geo, la, lb, [], see_over=so):
-                    continue
-                cut = [i for i in mine if not engine.los(rnd.geo, la, lb, live[i], see_over=so)]
+                air = engine._air_pair_clear(rnd, a, b, t, [])     # a pair touching the air: its two lines
+                if air is not None:
+                    if not air:
+                        continue
+                    cut = [i for i in mine if not engine._air_pair_clear(rnd, a, b, t, live[i])]
+                else:
+                    la, lb, so = line_ends(rnd, a, b, t, pa, pb)    # each end from its stance, if it has one
+                    if not engine.los(rnd.geo, la, lb, [], see_over=so):
+                        continue
+                    cut = [i for i in mine if not engine.los(rnd.geo, la, lb, live[i], see_over=so)]
                 for i in cut:
                     share = SIGHT_STEP_S / len(cut)
                     acc[i]["blocked_s"] += share

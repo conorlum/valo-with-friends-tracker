@@ -106,6 +106,49 @@ def test_gap_sight_of_a_jumper_matches_control_live_and_through_the_cache(tmp_pa
         assert not walled[target], "the memo keeps the two modes apart"
 
 
+def test_gap_sight_measures_the_jump_peek_limit_from_the_floor_control_used(tmp_path, monkeypatch):
+    # Branch review 2, finding 2: a jumper on a floor 0.5 m up peeks a 2.5 m box (2.0 m above them). Gap sight, live
+    # and replayed from the cache, must pass the floor control used rather than fall back to the box's own floor.
+    from app.control.observe import record
+    from app.gaps import cache, detect
+    from app.gaps.detect import GapDetector
+
+    geo = box(((222, Y, 25),), west_dm=5)
+    tk = jump_tick(geo, z=1.5)
+    target = geo.node_at_px(308, Y, 0)
+    assert tk.holders[0].air and tk.view[0][target]
+    rec = record(tk, SimpleNamespace(entry={}, events={}))
+    path = cache.cache_path(1, 1, "jump-floor", tmp_path)
+    writer = cache.Writer(path)
+    writer(rec, SimpleNamespace(geo=geo, log=[]))
+    writer.close({})
+    (stored, _), = cache.replay(path)
+    floors, real = [], detect.cast
+    monkeypatch.setattr(detect, "cast", lambda *a, **kw: (floors.append(kw.get("floor")), real(*a, **kw))[1])
+    detector = GapDetector(geo, tk.rnd)
+    for p in (rec.players[0], stored.players[0]):
+        assert p.air and p.floor == pytest.approx(0.5)
+        sight = detector._sight(*detector._eye(p), p.eye_z, p.node, [], see_over=p.see_over, own=p.own, plates=p.air,
+                                floor=p.floor)
+        assert sight[target]
+    assert floors == [pytest.approx(0.5)], "one cast, the replayed view reusing the live one's memo"
+    # With the box's own floor the same eye can't peek it: the floor is part of the memo key.
+    p = rec.players[0]
+    assert not detector._sight(*detector._eye(p), p.eye_z, p.node, [], see_over=p.see_over, own=p.own, plates=True,
+                               floor=0.0)[target]
+
+
+def test_the_gap_detector_passes_each_players_floor_to_its_sight():
+    from pathlib import Path
+
+    from app.gaps import detect
+
+    text = Path(detect.__file__).read_text(encoding="utf-8")
+    calls = text.count("self._sight(")
+    assert calls == text.count("floor=p.floor)") + text.count('floor=prev.get("floor"))'), \
+        "every gap sight call passes the player's floor"
+
+
 @pytest.mark.slow
 def test_on_box_is_never_airborne():
     h = tick(box_hall_tops(), {0: on_box_track(260, 196)}).holders[0]
@@ -269,6 +312,38 @@ def test_fight_sight_queries_agree_with_the_tick(left_z, right_z, right_x, right
     a, b = tk.holders[0], tk.holders[5]
     assert ut._sees_point(tk.rnd, 0, 5.0, b.x, b.y, target=5) is forward is (5 in tk.sees[0])
     assert ut._sees_point(tk.rnd, 5, 5.0, a.x, a.y, target=0) is back is (0 in tk.sees[5])
+
+
+SMOKE = (280, Y, 12, False)     # a hollow smoke on the line, short of the far player at 308
+
+
+def test_smoke_cover_counts_a_line_over_a_box_to_a_jumper(monkeypatch):
+    # Branch review 2, finding 3: the cover credit used the 2D line, which the box blocks, so a smoke on a jumper's
+    # line over the box earned nothing.
+    from app.critutil import extract
+
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0)
+    rnd = tk.rnd
+    assert ce._air_pair_clear(rnd, 0, 5, 5.0, []) is True
+    assert ce._air_pair_clear(rnd, 0, 5, 5.0, [SMOKE]) is False
+    monkeypatch.setattr(extract, "_shapes_of", lambda r, sides, c: [(0.0, 10.0, SMOKE)])
+    got = extract._cover_all(rnd, {0: "A", 5: "B"}, [SimpleNamespace(i=0, t=4.0, t_end=6.0, by=0)])
+    assert got[0]["pairs"] == 1 and got[0]["blocked_s"] > 0
+
+
+def test_a_grounded_pairs_cover_keeps_the_2d_line():
+    tk = pair_tick(box(), left_z=0.0, right_z=0.0)
+    assert ce._air_pair_clear(tk.rnd, 0, 5, 5.0, []) is None
+
+
+def test_a_kill_on_a_jumper_through_smoke_over_a_box_is_measurable(monkeypatch):
+    from app.moments import fights
+
+    tk = pair_tick(box(), left_z=1.2, right_z=0.0, smokes=[SMOKE])
+    monkeypatch.setattr(fights, "_sees_point", lambda *a, **kw: False)   # neither faced the other
+    blob = {"util": [{"k": "damage", "src": "gun", "by": 5, "target": 0, "t": 5.0}]}
+    kd = fights._kd(tk.rnd, blob, 5.2, 5, 0, True)
+    assert kd["measurable"] is True and kd["through_smoke"] is True
 
 
 def test_a_grounded_fight_sight_query_keeps_its_2d_line():
