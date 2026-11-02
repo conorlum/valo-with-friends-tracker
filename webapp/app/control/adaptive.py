@@ -245,6 +245,8 @@ def graph(geo):
         pieces = np.zeros(geo.n, np.int32)
         pieces[geo.top_nodes] = geo.top_piece
         reach = hc.TOP_REACH_M / geo.m_per_px + 1e-6
+        from app.control.geometry import sight_without  # geometry imports this module
+        walls = sight_without(geo, tuple(geo.box_tops))
         for t in sorted(geo.top_nodes):
             box = geo.node_bbox[t]
             gap = np.maximum(np.maximum(boxes[:, :2] - box[2:], box[:2] - boxes[:, 2:]), 0)
@@ -252,6 +254,8 @@ def graph(geo):
             same_piece = pieces[candidates] == pieces[t]
             local = np.where(same_piece, distance == 0, distance <= reach)
             near = candidates[local & (candidates != t)]
+            # No climb through a wall thinner than the reach: only learnt boxes may stand between the two ends.
+            near = near[np.fromiter((_clear_between(walls, geo.centres[t], geo.centres[n]) for n in near), bool, len(near))]
             dz = geo.node_z[near] - geo.node_z[t]
             # Each direction has its own rise limit and its own loud-drop qualification.
             up = near[dz <= hc.STEP_UP_M + 1e-6]
@@ -261,6 +265,14 @@ def graph(geo):
             loud.update((int(t), int(n)) for n in near[-dz > hc.SILENT_DROP_M + 1e-6])
             loud.update((int(n), int(t)) for n in near[dz > hc.SILENT_DROP_M + 1e-6])
     return walks, loud
+
+
+def _clear_between(walls, a, b) -> bool:
+    """No wall pixel on the straight line between two points (x, y) px, one sample a pixel."""
+    steps = int(max(abs(float(b[0]) - float(a[0])), abs(float(b[1]) - float(a[1])))) + 1
+    xs = np.clip(np.linspace(float(a[0]), float(b[0]), steps + 1).astype(int), 0, walls.shape[1] - 1)
+    ys = np.clip(np.linspace(float(a[1]), float(b[1]), steps + 1).astype(int), 0, walls.shape[0] - 1)
+    return not walls[ys, xs].any()
 
 
 def corner_sides(geo, a, b):

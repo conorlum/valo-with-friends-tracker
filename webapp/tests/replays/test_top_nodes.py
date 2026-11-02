@@ -303,6 +303,19 @@ def test_rectangle_reach_uses_euclidean_gap_and_pixel_tolerance(offset, connecte
     assert ((ground, top) in walks) == connected
 
 
+def test_a_permanent_wall_between_a_top_and_the_ground_beside_it_stops_the_climb():
+    geo = topped(((202, 202, 10),))
+    top, ground = top_at(geo, 202, 202), int(geo.node_at_px(196, 204, 0))
+    walks, _ = ag.graph(geo)
+    assert (top, ground) in walks and (ground, top) in walks
+    geo.sight = geo.sight.copy()
+    geo.sight[196:212, 198] = True  # a wall one pixel thick, inside the reach
+    geo.__dict__.pop('_sight_without', None)
+    walks, loud = ag.graph(geo)
+    assert (top, ground) not in walks and (ground, top) not in walks
+    assert (top, ground) not in loud and (ground, top) not in loud
+
+
 @pytest.mark.parametrize('finite', [False, True])
 def test_ground_connected_only_by_unresolved_fallback_gets_no_climb(finite):
     geo = topped(((202, 202, 10),))
