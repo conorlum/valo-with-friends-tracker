@@ -235,6 +235,10 @@ def resolve_current_geometry(db, map_name):
         geometry = {'sight': entry.get('sight_sha'), 'walk': entry.get('walk_sha'),
                     'barrier': entry.get('barrier_sha'), 'specials': source_entry.get('specials') or [],
                     'scale': (maps.get(map_name) or {}).get('xMultiplier')}
+        if entry.get('cover_sha'):         # only a map with cover: a map without keeps its identity as it was
+            if base and base.get('cover_sha') != entry['cover_sha']:
+                raise fi.FeatureInputsError('cover mask does not match the index')
+            geometry['cover'] = entry['cover_sha']
         if selection.digest:
             geometry['height'] = selection.digest
         if inp is not None:
@@ -318,6 +322,8 @@ def geometry_inputs(map_name: str, heights: dict | None = None, *, context=None)
     inputs = {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
               "specials": (tags.get(map_name) or {}).get("specials") or [],
               "scale": (maps.get(map_name) or {}).get("xMultiplier")}
+    if entry.get("cover_sha"):
+        inputs["cover"] = entry["cover_sha"]
     height = (heights or {}).get(map_name) or entry.get("height_sha")
     if height:
         inputs["height"] = height

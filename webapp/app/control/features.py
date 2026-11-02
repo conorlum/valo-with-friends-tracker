@@ -440,6 +440,7 @@ def _candidate_geometry(geo, mf, members):
         candidate = geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
         attach_heights(candidate, geo.heights)
         candidate.barrier, candidate.barrier_sha = geo.barrier, geo.barrier_sha
+        candidate.cover_px, candidate.cover_sha = geo.cover_px, geo.cover_sha
         return candidate
     return replace(geo, walk_px=walk, sight=sight,
                    walk=walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5,
@@ -793,31 +794,91 @@ def _eye_body(geo: Geometry, node: int, offset: float):
     return float(geo.node_z[node]) + offset
 
 
+def permanent_line_clear(geo: Geometry, a: tuple, b: tuple, node: int, smokes: list = (), see_over=(),
+                         plates=False, floor: float | None = None) -> bool:
+    """Does permanent geometry leave the line from eye `a` to point `b` on `node` clear, the way `cast` judges that
+    node? The view keeps one bool per node, so a caller with a feature on the other sight point asks here."""
+    from app.control import geometry as cg
+
+    piece = 0
+    if geo.is_top[node]:
+        piece = int(geo.top_piece[np.searchsorted(geo.top_nodes, node)])
+    over = (see_over, (piece,) if piece else ())
+    if plates:
+        own_piece = int(cg.plate_surface(geo)[2][int(np.clip(a[1], 0, cg.PX - 1)), int(np.clip(a[0], 0, cg.PX - 1))])
+        return cg.los(geo, a, b, smokes, see_over=over, plates=True, skip=(piece, own_piece), floor=floor)
+    if not cg.los(geo, a, b, smokes, see_over=over):
+        return False
+    return not piece or cg._over_own_top(geo, a, b, node, piece)
+
+
+def _blocked_sight_points(geo: Geometry, occluders: list, a: tuple, heads: np.ndarray,
+                          record: dict | None = None, sampling_steps: int | None = None,
+                          permanent=None) -> np.ndarray:
+    """One blocked bool per target. Both sight points must be lost, each to anything: a target is blocked when
+    occluders block both lines, or block one while `permanent(i, point)` says fixed geometry blocks the other (the
+    owner's rule: not seen by two different things is not seen). Without `permanent`, occluders alone decide."""
+    from app.control import heights as hc
+
+    hit = blocked_lines(occluders, a, heads, record, sampling_steps=sampling_steps)
+    if geo.heights is None or a[2] is None or np.isnan(a[2]):
+        return hit
+    known = ~np.isnan(heads[:, 2])
+    if not known.any():
+        return hit
+    feet = heads.copy()
+    feet[known, 2] += hc.FEET_M - hc.HEAD_M
+    # Keep the head batch's sampling grid when testing a subset.
+    if sampling_steps is None:
+        sampling_steps = int(np.ceil(np.hypot(heads[:, 0] - a[0], heads[:, 1] - a[1]).max())) + 1
+    retry = hit & known
+    feet_hit = hit.copy()
+    if retry.any():
+        feet_hit[retry] = blocked_lines(occluders, a, feet[retry], record, sampling_steps=sampling_steps)
+    out = hit & feet_hit
+    if permanent is None:
+        return out
+    rest = ~hit & known
+    if rest.any():      # not logical occluder tests of the old kind: left out of `record`
+        feet_hit[rest] = blocked_lines(occluders, a, feet[rest], None, sampling_steps=sampling_steps)
+    for i in np.flatnonzero(known & (hit != feet_hit)):
+        out[i] = not permanent(int(i), tuple(feet[i] if hit[i] else heads[i]))
+    return out
+
+
 def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
-              own: int | None = None, record: dict | None = None) -> np.ndarray:
+              own: int | None = None, record: dict | None = None, see_over=(), plates=False,
+              floor: float | None = None) -> np.ndarray:
     """`geometry.cast`, minus the nodes a bounded occluder hides: each seen node is tested on the line from the
-    eye to its body (centre, node z + BODY_M), so two floors behind one XY crossing can differ."""
+    eye to its head or feet (centre, node z + HEAD_M or FEET_M). Either clear line keeps the node,
+    so two floors behind one XY crossing can differ."""
     from app.control import geometry as cg
     from app.control import heights as hc
 
-    seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record)
+    seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record, see_over=see_over,
+                   plates=plates, floor=floor)
     if not occluders:
         return seen
     nodes = np.flatnonzero(seen)
-    z = np.array([_eye_body(geo, int(n), hc.BODY_M) for n in nodes]) if eye_z is not None else np.full(len(nodes), np.nan)
+    z = (np.array([_eye_body(geo, int(n), hc.HEAD_M) for n in nodes])
+         if geo.heights is not None and eye_z is not None else np.full(len(nodes), np.nan))
     targets = np.column_stack([geo.centres[nodes].astype(float), z])
-    hit = blocked_lines(occluders, (x, y, eye_z), targets, record)
+    eye = (x, y, eye_z)
+    hit = _blocked_sight_points(geo, occluders, eye, targets, record,
+                                permanent=lambda i, point: permanent_line_clear(geo, eye, point, int(nodes[i]), smokes,
+                                                                                see_over, plates, floor))
     if own is not None:
         hit &= nodes != own
     seen[nodes[hit]] = False
     return seen
 
 
-def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None) -> bool:
+def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None,
+             see_over=((), ()), plates=False, skip=(), floor: float | None = None) -> bool:
     """`geometry.los` (eye at a, target point b; z None for 2D), and no bounded occluder on the line."""
     from app.control import geometry as cg
 
-    if not cg.los(geo, a, b, smokes, record):
+    if not cg.los(geo, a, b, smokes, record, see_over=see_over, plates=plates, skip=skip, floor=floor):
         return False
     target = np.array([[b[0], b[1], np.nan if b[2] is None else b[2]]], float)
     return not bool(blocked_lines(list(occluders), a, target, record)[0])
@@ -826,8 +887,8 @@ def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: li
 def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list, skip: np.ndarray | None = None,
                    record: dict | None = None) -> np.ndarray:
     """engine.seen_from (the cached rows) with each source-target pair filtered by the bounded occluders: a
-    pair counts when the line from the source's eye (node z + EYE_M) to the target's body (node z + BODY_M) is
-    clear; a node with no height is tested in 2D. One clear source is enough."""
+    pair counts when a line from the source's eye (node z + EYE_M) to the target's head or feet
+    (node z + HEAD_M or FEET_M) is clear; a node with no height is tested in 2D. One clear source is enough."""
     from app.control import engine
     from app.control.feature_visibility import cache_for
 
@@ -1520,6 +1581,9 @@ def geometry_from_feature_inputs(inputs: fi.FeatureInput, asset=None) -> Geometr
                               _archived_mask(base['walk'], (PX, PX)), base['scale'], base['specials'])
     geo.barrier = None if base['barrier'] is None else _archived_mask(base['barrier'], (GRID, GRID))
     geo.barrier_sha = base.get('barrier_sha')
+    if base.get('cover') is not None:            # before the heights: they read the cover pieces
+        from app.control.geometry import attach_cover
+        attach_cover(geo, _archived_mask(base['cover'], (PX, PX)), base.get('cover_sha'))
     if inputs.key.height_digest == 'flat':
         if asset is not None:
             raise fa.FeatureArtifactCorrupt('flat key cannot attach heights')
@@ -1544,6 +1608,9 @@ def verify_permanent_context(geo: Geometry, inputs: fi.FeatureInput) -> None:
             or ((geo.barrier is None) != (reconstructed.barrier is None)) \
             or (geo.barrier is not None and not np.array_equal(geo.barrier, reconstructed.barrier)):
         raise fa.FeatureArtifactCorrupt('compiler permanent context does not match archive')
+    if geo.cover_sha != reconstructed.cover_sha or ((geo.cover_px is None) != (reconstructed.cover_px is None)) \
+            or (geo.cover_px is not None and not np.array_equal(geo.cover_px, reconstructed.cover_px)):
+        raise fa.FeatureArtifactCorrupt('compiler permanent cover does not match archive')
 
 
 def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -> fa.FeatureArtifact:
@@ -1602,9 +1669,11 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
                 triggers[trigger['id']] = {'nodes': list(p.nodes), 'mask': _packed_mask(to_px(raster(trigger['geometry']))),
                                           'targets': trigger.get('targets', [])}
     sight, walk, _ = reconcile(geo.sight, geo.walk_px, mf, statuses)
-    assets.update(bindings=bindings, triggers=triggers, base_deltas=deltas, phases=phases,
-                  base_domain={'sight': _packed_mask(sight), 'walk': _packed_mask(walk),
-                               'barrier': None if geo.barrier is None else _packed_mask(geo.barrier)})
+    base_domain = {'sight': _packed_mask(sight), 'walk': _packed_mask(walk),
+                   'barrier': None if geo.barrier is None else _packed_mask(geo.barrier)}
+    if geo.cover_px is not None:                 # only a map with cover
+        base_domain['cover'] = _packed_mask(geo.cover_px > 0)
+    assets.update(bindings=bindings, triggers=triggers, base_deltas=deltas, phases=phases, base_domain=base_domain)
     pending = {bid: {'reasons': status.reasons, 'placement': {m: [dict(r, members=status.members) for r in p.reasons]
                for m, p in placement(geo, mf).items() if m in status.members}}
                for bid, status in sorted(statuses.items()) if not status.publishable}

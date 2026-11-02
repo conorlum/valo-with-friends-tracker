@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
 from collections import defaultdict
 
@@ -87,18 +88,55 @@ def attach(geo, asset):
             node_walk[n] = False; node_area[n] = 0
         all_nodes[p] = []
     fine_walk = geo.walk_px.reshape(FINE, 4, FINE, 4).mean((1, 3)) > .5
-    for child, floors in zip(asset.fine_cells, asset.fine_floors):
+    dropped = []
+    for row, (child, floors) in enumerate(zip(asset.fine_cells, asset.fine_floors)):
         child = int(child); sid = BASE + child; p = hm.coarse_of_fine(child)
         cy, cx = divmod(child, FINE); grid[cy, cx] = sid
         walk = bool(fine_walk[cy, cx] and geo.walk.ravel()[p]); spatial_walk[sid] = walk
         if not walk and np.any(floors >= 0):
-            raise ValueError('child floor lies outside permanent walk mask')
+            # A floor on top of see-over cover (a box) is dropped, not refused; any other one still refuses. Control
+            # never spreads onto a box top: nobody gets up or down one silently (owner, D1 of 2026-10-27-box-tops).
+            # Either cell that made it unwalkable may hold the box: its own 4x4, or its 8x8 parent.
+            py, px = divmod(p, 128)
+            if geo.cover_px is not None and ((geo.cover_px[cy * 4:(cy + 1) * 4, cx * 4:(cx + 1) * 4] > 0).any()
+                    or (not geo.walk.ravel()[p] and (geo.cover_px[py * 8:(py + 1) * 8, px * 8:(px + 1) * 8] > 0).any())):
+                dropped.append(row)
+                floors = np.full_like(floors, -1)
+            else:
+                raise ValueError('child floor lies outside permanent walk mask')
         for level in range(max(1, int((floors >= 0).sum()))):
             n = len(node_z); spatial_nodes[sid, level] = n
             node_space.append(sid); node_parent.append(p); all_nodes[p].append(n)
             node_z.append(float(floors[level]) / 10 if floors[level] >= 0 else math.nan)
             node_walk.append(walk); node_area.append(.25)
+    # Tops have their own nodes, never ground floor slots. piece_tops reads only heights and cover,
+    # so it is safe before the mixed node arrays have been installed.
+    ground_count = len(node_z)
+    top_piece, top_leaf = [], []
+    tops = geo.box_tops
+    if tops:
+        rows = np.asarray(asset.box_tops)
+        labels = geo.cover_px[rows[:, 1], rows[:, 0]]
+        piece_rows = {p: rows[labels == p] for p in tops}
+        touched = geo.cover_px.reshape(FINE, 4, FINE, 4).any((1, 3))
+        for sid in np.unique(grid[touched]):
+            x0, y0, x1, y1 = bbox[sid]
+            pieces, counts = np.unique(geo.cover_px[y0:y1, x0:x1], return_counts=True)
+            majority = pieces[counts > (int(x1-x0) * int(y1-y0)) / 2]
+            if not len(majority) or int(majority[0]) not in tops:
+                continue
+            p = int(majority[0]); got = piece_rows[p]
+            distance = (got[:, 0] - (x0+x1)/2) ** 2 + (got[:, 1] - (y0+y1)/2) ** 2
+            # Equal pixel distances prefer the lower top, then row/column; asset row order is irrelevant.
+            nearest = np.lexsort((got[:, 0], got[:, 1], got[:, 2], distance))[0]
+            node_z.append(float(got[nearest, 2]) / 10)
+            node_walk.append(True); node_area.append(int(x1-x0) * int(y1-y0) / 64)
+            node_parent.append(int(y0) // 8 * 128 + int(x0) // 8); node_space.append(int(sid))
+            top_piece.append(p); top_leaf.append(int(sid))
     geo.n = len(node_z)
+    geo.is_top = np.arange(geo.n) >= ground_count
+    geo.top_nodes = np.arange(ground_count, geo.n, dtype=np.int32)
+    geo.top_piece = np.asarray(top_piece, np.int32); geo.top_leaf = np.asarray(top_leaf, np.int32)
     geo.node_space = np.asarray(node_space, np.int32)
     geo.node_cell = np.asarray(node_parent, np.int32)
     geo.node_z = np.asarray(node_z, float); geo.walk_n = np.asarray(node_walk, bool)
@@ -118,6 +156,25 @@ def attach(geo, asset):
     geo.node_bbox = bbox[geo.node_space]
     geo.unresolved = geo.to_cells(geo.space_unresolved[geo.node_space] & geo.walk_n)
     geo.rows = geo.row_of = geo.topo = None
+    # attach_heights already took the floor off an unwalkable 8x8 cell; when a box made it unwalkable,
+    # the fine edges into it go too (any other unwalkable end still refuses, in validate_edges).
+    ends = np.unique(asset.fine_edges[:, (0, 2)]) if len(asset.fine_edges) else np.empty(0, np.int64)
+    boxes = [int(s) for s in ends[ends < BASE] if not geo.walk.ravel()[s] and geo.cover_px is not None
+             and (geo.cover_px[(s // 128) * 8:(s // 128) * 8 + 8, (s % 128) * 8:(s % 128) * 8 + 8] > 0).any()]
+    carried = int(getattr(asset, 'cover_dropped', 0))      # an already-filtered copy remembers its count
+    geo.height_cover_dropped = carried + len(dropped) + len(boxes)
+    if dropped or boxes:
+        # geo.heights is read later for its edges: give it a copy (the asset is cached and shared)
+        # with those children's floors gone and every edge that names them or a box cell removed.
+        gone = np.concatenate([BASE + np.asarray(asset.fine_cells)[dropped].astype(np.int64),
+                               np.asarray(boxes, np.int64)])
+        edges = asset.fine_edges[~np.isin(asset.fine_edges[:, (0, 2)], gone).any(1)]
+        floors = asset.fine_floors.copy(); floors[dropped] = -1
+        supported = asset.fine_supported.copy(); supported[dropped] = False
+        filtered = dataclasses.replace(asset, fine_floors=floors, fine_supported=supported, fine_edges=edges)
+        filtered.digest_pinned = asset.digest
+        filtered.cover_dropped = geo.height_cover_dropped
+        geo.heights = asset = filtered
     validate_edges(geo, asset.fine_edges)
     return geo
 
@@ -150,7 +207,7 @@ def validate_edges(geo, edges):
 
 
 def graph(geo):
-    """Runtime adjacency, including the existing unresolved-ground fallback, at leaf scale."""
+    """Runtime adjacency at leaf scale: ground fallback, then local height-qualified climbs."""
     walks, loud = set(), set()
     for edges in (geo.heights.edges, geo.heights.fine_edges):
         for a, fa, b, fb, kind in edges:
@@ -176,7 +233,57 @@ def graph(geo):
         if any(s < 0 or not geo.space_walk[s] or not any(n >= 0 and (na, int(n)) in walks and (int(n), nb) in walks
                 for n in geo.space_nodes[s]) for s in sides):
             walks.discard((na, nb)); loud.discard((na, nb))
+    if len(geo.top_nodes):
+        # Only explicit ground-edge endpoints qualify, never unresolved fallback leaves.
+        endpoints = [geo.space_nodes[edges[:, (0, 2)], edges[:, (1, 3)]].ravel()
+                     for edges in (geo.heights.edges, geo.heights.fine_edges)]
+        ground = np.unique(np.concatenate(endpoints))
+        ground = ground[ground >= 0]
+        ground = ground[np.isfinite(geo.node_z[ground]) & ~geo.is_top[ground]]
+        candidates = np.union1d(ground, geo.top_nodes)  # ascending IDs, deterministic ties/iteration
+        boxes = geo.node_bbox[candidates].astype(float)
+        pieces = np.zeros(geo.n, np.int32)
+        pieces[geo.top_nodes] = geo.top_piece
+        reach = hc.TOP_REACH_M / geo.m_per_px + 1e-6
+        from app.control.geometry import sight_without  # geometry imports this module
+        topped = tuple(geo.box_tops)
+        walls = sight_without(geo, topped)
+        cover = geo.cover_px if geo.cover_px is not None else np.zeros(walls.shape, np.int32)
+        topped = np.asarray(topped, np.int64)
+        for t in sorted(geo.top_nodes):
+            box = geo.node_bbox[t]
+            gap = np.maximum(np.maximum(boxes[:, :2] - box[2:], box[:2] - boxes[:, 2:]), 0)
+            distance = np.hypot(gap[:, 0], gap[:, 1])
+            same_piece = pieces[candidates] == pieces[t]
+            local = np.where(same_piece, distance == 0, distance <= reach)
+            near = candidates[local & (candidates != t)]
+            # No climb through a wall thinner than the reach, or over another learnt box (branch review 2): only the
+            # two ends' own pieces may stand between them.
+            near = near[np.fromiter((_clear_between(walls, geo.centres[t], geo.centres[n], cover, topped,
+                                                    (int(pieces[t]), int(pieces[n]))) for n in near), bool, len(near))]
+            dz = geo.node_z[near] - geo.node_z[t]
+            # Each direction has its own rise limit and its own loud-drop qualification.
+            up = near[dz <= hc.STEP_UP_M + 1e-6]
+            down = near[-dz <= hc.STEP_UP_M + 1e-6]
+            walks.update((int(t), int(n)) for n in up)
+            walks.update((int(n), int(t)) for n in down)
+            loud.update((int(t), int(n)) for n in near[-dz > hc.SILENT_DROP_M + 1e-6])
+            loud.update((int(n), int(t)) for n in near[dz > hc.SILENT_DROP_M + 1e-6])
     return walks, loud
+
+
+def _clear_between(walls, a, b, cover=None, topped=(), ends=()) -> bool:
+    """No wall pixel on the straight line between two points (x, y) px, one sample a pixel, and no pixel of a learnt
+    box (`topped` labels in `cover`) other than the two ends' own pieces (`ends`)."""
+    steps = int(max(abs(float(b[0]) - float(a[0])), abs(float(b[1]) - float(a[1])))) + 1
+    xs = np.clip(np.linspace(float(a[0]), float(b[0]), steps + 1).astype(int), 0, walls.shape[1] - 1)
+    ys = np.clip(np.linspace(float(a[1]), float(b[1]), steps + 1).astype(int), 0, walls.shape[0] - 1)
+    if walls[ys, xs].any():
+        return False
+    if cover is None or not len(topped):
+        return True
+    labels = cover[ys, xs]
+    return not (np.isin(labels, topped) & ~np.isin(labels, np.asarray(ends, np.int64))).any()
 
 
 def corner_sides(geo, a, b):
@@ -238,6 +345,7 @@ def refine(build, geo, found, walks, round_match, direct_floors, reasons, previo
         raise ValueError('refined height frame exceeds asset range')
     if shift:
         asset.floors[asset.floors >= 0] += shift
+        # Box tops are learnt by build only after refinement, in this final origin frame.
         asset.meta['origin_z'] = origin
     for i, child in enumerate(ids):
         row = children.get(child)

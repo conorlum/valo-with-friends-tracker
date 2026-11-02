@@ -16,7 +16,53 @@ REPLAYS = [["m2", "p.c11.f1.a1", "b" * 64, 20], ["m1", "p.c11.f1.a1", "a" * 64, 
 
 # HEIGHT_RULES_REVISION -> the hash of app/control/heights.py's constants it was released with. Changed a
 # constant, or the build's code? Bump HEIGHT_RULES_REVISION in app/replays/control_format.py and pin it here.
-PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72ed40ed76a5", 5: "72ed40ed76a5"}
+PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72ed40ed76a5", 5: "72ed40ed76a5",
+                # re-pinned in place for EYE_M 1.05 (was "0eb4ba581603")
+                6: "93c941558c40"}    # 6 unreleased: re-pinned in place for reach and crouch stance (was
+                                      # "bb8b0358a9c8", then "52136ab282f4"), for the head and feet sight points
+                                      # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
+                                      # (was "ef8175ac1844"), then for the crouch key
+
+
+@pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
+                                       ("TOP_REACH_M", 0.8), ("VIEW_REACH_M", 1.2), ("TOP_TOL_M", 0.25), ("CROUCH_DROP_M", 0.3),
+                                       ("EYE_M", 1.1), ("HEAD_M", 1.0), ("FEET_M", -0.6),
+                                       ("CROUCH_LAG_S", 0.3), ("CROUCH_NEAR_S", 3.0)])
+def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
+    before = hc.rules()["constants"]
+    monkeypatch.setattr(hc, name, value)
+    assert hc.rules()["constants"] != before
+
+
+def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    for name in ("TOP_REACH_M", "VIEW_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M", "HEAD_M", "FEET_M",
+                 "CROUCH_LAG_S", "CROUCH_NEAR_S"):
+        monkeypatch.delattr(hc, name, raising=False)
+    monkeypatch.setattr(hc, "EYE_M", 0.7)
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
+    monkeypatch.setattr(hc, "BODY_M", 0.3, raising=False)
+    assert hc.rules()["constants"] == "bb8b0358a9c8"
+
+
+def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    monkeypatch.delattr(hc, "VIEW_REACH_M")
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    assert hc.rules()["constants"] == "6d8f90ffeaa2"
+
+
+def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    assert hc.rules()["constants"] == "0eb4ba581603"
+
+
+def test_without_the_crouch_key_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    assert hc.rules()["constants"] == "ef8175ac1844"
 
 
 def test_the_height_rules_are_pinned_to_their_revision():
@@ -45,12 +91,19 @@ def test_the_manifest_is_the_same_whatever_order_the_replays_come_in():
     ("a deleted match", lambda r, g, k: (r[:1], g, k)),
     ("a re-drawn walk mask", lambda r, g, k: (r, {**g, "walk": "x" * 12}, k)),
     ("a re-drawn sight mask", lambda r, g, k: (r, {**g, "sight": "x" * 12}, k)),
+    ("a cover mask added", lambda r, g, k: (r, {**g, "cover": "c" * 12}, k)),
     ("another check set", lambda r, g, k: (r, g, "z" * 12)),
     ("no check set", lambda r, g, k: (r, g, None)),
 ])
 def test_every_input_moves_the_digest(name, change):
     base = hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)
     assert hi.digest(hi.manifest("Sunset", *change(REPLAYS, GEOMETRY, "k" * 12))) != hi.digest(base), name
+
+
+def test_a_re_drawn_cover_mask_moves_the_digest():
+    covered = {**GEOMETRY, "cover": "c" * 12}
+    base = hi.digest(hi.manifest("Sunset", REPLAYS, covered, "k" * 12))
+    assert hi.digest(hi.manifest("Sunset", REPLAYS, {**covered, "cover": "d" * 12}, "k" * 12)) != base
 
 
 def test_the_rule_revisions_are_inputs_too(monkeypatch):

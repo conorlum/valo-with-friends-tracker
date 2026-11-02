@@ -1,0 +1,513 @@
+"""Read-only inventory of stored replay problems, across the friends site's corpus.
+
+No persistent state or dismissal: once a recompute agrees, a problem disappears. `cached` keeps all evidence
+for prompts; `page` caps the rows shown. Feature checks run serially, outside request threads.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import logging
+import threading
+import time
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
+
+from app.config import settings
+from app.replays import control_format as cf
+from app.models.replay import (ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
+                               ReplayRoundUtil, ReplayUpload)
+from app.services import control_heights, replay_progress
+from app.services.replay_gaps import Freshness
+
+SHOW = 50
+TTL_S = 55
+SITE = "https://valowithfriendstracker.onrender.com"
+KINDS = (
+    ("box_conflict", "Box height conflicts"),
+    ("control_failed", "Map control failed"),
+    ("gaps_failed", "Timing gaps failed"),
+    ("moments_failed", "Critical Moments failed"),
+    ("util_failed", "Critical Util failed"),
+    ("heights_rejected", "Height builds rejected"),
+    ("heights_out_of_tries", "Height rebuilds out of tries"),
+    ("given_up", "Rounds given up on"),
+    ("held", "Replays held for a re-parse"),
+    ("upload_failed", "Uploads failed"),
+    ("upload_held", "Uploads held"),
+    ("store_failed", "Replay storage failed"),
+    ("ack_missing", "Archive acknowledgement missing"),
+    ("stuck", "Uploads stuck"),
+    ("unlinked", "Replays unlinked"),
+    ("needs_a_person", "Needs a person"),
+    ("feature_failed", "Map features failed to verify"),
+)
+log = logging.getLogger(__name__)
+_lock = threading.Lock()
+_cached: tuple[float, dict] | None = None
+_verification_lock = threading.Lock()
+_verification_results: dict = {}
+_verification_started = False
+_verification_pending = False   # the last compute saw a current artifact with no result
+_verification_running = False
+_verification_progress = (0, 0)
+_digests: dict = {}     # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
+
+
+def now() -> datetime:
+    """UTC clock, replaceable in tests."""
+    return datetime.now(timezone.utc)
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return _utc(value).isoformat() if value is not None else None
+
+
+def _inventory_command() -> str:
+    return ('scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only python -c '
+            '"import json; from app.db import SessionLocal; from app.services.replay_errors import compute; '
+            'print(json.dumps(compute(SessionLocal(), limit=None), indent=2))"')
+
+
+def _row(*, replay=None, map_name=None, match=None, n=None, t=None, agent=None, figures=None,
+         error=None, revision=None, reproduce=None) -> dict:
+    match = str(replay.match_uuid) if replay is not None else (str(match) if match is not None else None)
+    map_name = replay.map_name if replay is not None else map_name
+    params = {}
+    if n is not None:
+        params["round"] = n
+    if t is not None:
+        params["t"] = t
+    link = f"{SITE}/replays/{match}" if match is not None else f"{SITE}/replays/upload"
+    if params:
+        link += "?" + urlencode(params)
+    return {"map": map_name, "match": match, "round": n, "t": t, "agent": agent,
+            "figures": copy.deepcopy(figures) if figures is not None else {}, "link": link,
+            "error": error, "revision": revision, "reproduce": reproduce or _inventory_command()}
+
+
+def _round_command(replay, n) -> str:
+    return ("scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only "
+            f"scripts/compute_control.py --match {replay.match_uuid} --round {n} --retry-failed --dry-run")
+
+
+def _height_command(map_name) -> str:
+    # The export CLI requires a directory outside any repository; the wrapper runs from webapp/.
+    return ("scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only "
+            f'scripts/control_heights.py export --map {map_name} --out "$TEMP/{map_name}_heights.npz"')
+
+
+def _sort_key(row):
+    return (row["map"] or "", row["match"] or "", row["round"] if row["round"] is not None else -1,
+            row["t"] if row["t"] is not None else -1)
+
+
+def _feature_representatives(db, collected=None):
+    """Current rounds grouped by immutable artifact, lowest replay/round first."""
+    global _digests
+    collected = replay_progress.round_states(db) if collected is None else collected
+    groups, unavailable = {}, 0
+    # Never the `data` blob (one round's map control is large), and a summary only for a current round not read
+    # before: a round's summary is fixed by its fingerprint, and this runs on every refresh of the card.
+    current = []
+    for row in db.query(ReplayRoundControl.replay_id, ReplayRoundControl.round_number,
+                        ReplayRoundControl.fingerprint, ReplayRoundControl.control_revision,
+                        ReplayRoundControl.computed_at).filter(
+            ReplayRoundControl.status == "ok").order_by(
+            ReplayRoundControl.replay_id, ReplayRoundControl.round_number):
+        step = collected["states"].get((row.replay_id, row.round_number), "")
+        if step == "done" or step.startswith("gaps_"):
+            current.append(row)
+    known = {key: digest for key, digest in _digests.items()}
+    unread = sorted({row.replay_id for row in current
+                     if (row.replay_id, row.round_number, row.fingerprint) not in known})
+    for i in range(0, len(unread), 200):
+        for rid, n, fp, summary in db.query(
+                ReplayRoundControl.replay_id, ReplayRoundControl.round_number, ReplayRoundControl.fingerprint,
+                ReplayRoundControl.summary).filter(ReplayRoundControl.status == "ok",
+                                                   ReplayRoundControl.replay_id.in_(unread[i:i + 200])):
+            try:
+                digest = cf.unpack_summary(summary)["provenance"]["inputs"]["geometry"]["features"]
+                if not isinstance(digest, str) or not digest:
+                    raise ValueError("missing artifact digest")
+            except (KeyError, TypeError, ValueError, OSError, EOFError):
+                digest = None
+            known[rid, n, fp] = digest
+    # This call's own snapshot: another reader (a request, the verifier) may replace the shared cache meanwhile.
+    digests = {key: known.get(key) for key in ((r.replay_id, r.round_number, r.fingerprint) for r in current)}
+    _digests = digests
+    for row in current:
+        digest = digests[row.replay_id, row.round_number, row.fingerprint]
+        if digest is None:
+            unavailable += 1
+            continue
+        if digest in groups:
+            representative, replay, count = groups[digest]
+            groups[digest] = (representative, replay, count + 1)
+        else:
+            groups[digest] = (row, collected["replays"][row.replay_id], 1)
+    return groups, unavailable
+
+
+def _feature_command(row):
+    return ('scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only python -c '
+            '"from app.db import SessionLocal; from app.models.replay import ReplayRoundControl; '
+            'from app.services.control_feature_verification import verify_stored_round; '
+            f'db = SessionLocal(); print(verify_stored_round(db, db.get(ReplayRoundControl, '
+            f'({int(row.replay_id)}, {int(row.round_number)})))); db.close()"')
+
+
+def _load_round(db, row):
+    """The whole stored row for one representative (the verifier reads its summary); a test seam."""
+    full = db.get(ReplayRoundControl, (row.replay_id, row.round_number))
+    if full is None:
+        raise LookupError("round no longer stored")
+    return full
+
+
+def _verification_changed():
+    global _cached
+    with _lock:
+        _cached = None
+
+
+def _verify_features(session_factory=None, verifier=None):
+    """Background body, injectable for offline tests. One session and one verifier call at a time."""
+    global _verification_started, _verification_running, _verification_progress
+    if settings.demo_mode:
+        return
+    from app.services.control_feature_verification import VerificationResult, verify_stored_round
+
+    if session_factory is None:
+        from app.db import SessionLocal
+
+        session_factory = SessionLocal
+    verifier = verify_stored_round if verifier is None else verifier
+    with _verification_lock:
+        _verification_started = _verification_running = True
+    try:
+        with session_factory() as db:
+            representatives, _ = _feature_representatives(db)
+            with _verification_lock:
+                done = sum(digest in _verification_results for digest in representatives)
+                _verification_progress = (done, len(representatives))
+            _verification_changed()
+            for digest, (row, _, _) in representatives.items():
+                with _verification_lock:
+                    if digest in _verification_results:
+                        continue
+                try:
+                    result = verifier(db, _load_round(db, row))
+                except Exception as exc:  # keep the inventory available if a check cannot run
+                    result = VerificationResult("unavailable", "unavailable", "unavailable", (str(exc),))
+                with _verification_lock:
+                    _verification_results[digest] = result
+                    done += 1
+                    _verification_progress = (done, len(representatives))
+                _verification_changed()
+    except Exception:
+        log.exception("replay error feature verification could not finish")
+    finally:
+        with _verification_lock:
+            _verification_running = False
+        _verification_changed()
+
+
+def _start_verification():
+    """First card open starts one daemon for this process, and a later open starts another once the card has seen
+    current artifacts with no result (a recompute published them after the last pass). Never two at once; compute
+    never calls this."""
+    global _verification_started, _verification_running, _verification_pending
+    if settings.demo_mode:
+        return
+    with _verification_lock:
+        if _verification_running or (_verification_started and not _verification_pending):
+            return
+        _verification_started = _verification_running = True
+        _verification_pending = False
+    threading.Thread(target=_verify_features, name="replay-error-features", daemon=True).start()
+
+
+def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None = None) -> dict[str, list[dict]]:
+    """All stored rows, sorted within each kind. Optional `stale` receives obsolete failure counts.
+
+    No query at all in demo mode. Only agents are selected for slot annotations.
+    """
+    rows = {key: [] for key, _ in KINDS}
+    if settings.demo_mode:
+        return rows
+    stale = Counter() if stale is None else stale
+    notes = {} if notes is None else notes
+    collected = replay_progress.round_states(db)
+    states, replays = collected["states"], collected["replays"]
+    if live is None:
+        for key in ("heights_out_of_tries", "given_up", "held"):
+            notes[key] = "not known in this process (no dispatcher here)"
+    else:
+        from app.services.replay_control_remote import MAX_TRIES
+
+        for map_name in live.heights_out_of_tries:
+            rows["heights_out_of_tries"].append(_row(
+                map_name=map_name, figures={"map": map_name}, reproduce=_height_command(map_name)))
+        older = 0
+        for rid, n, work, fp in live.given_up:
+            if (states.get((rid, n)) not in {f"{work}_missing", f"{work}_stale"}
+                    or collected.get("fingerprints", {}).get((rid, n)) != fp):
+                older += 1
+                continue
+            rows["given_up"].append(_row(
+                replay=replays[rid], n=n, figures={"kind": work, "tries": MAX_TRIES},
+                revision={"fingerprint": fp}, reproduce=_round_command(replays[rid], n)))
+        if older:
+            notes["given_up"] = f"{older} older give-ups no longer apply"
+        round_counts = Counter(rid for rid, _ in states)
+        for rid in live.held:
+            if rid in replays:
+                rows["held"].append(_row(replay=replays[rid], figures={"rounds": round_counts[rid]}))
+        for rid, n, sent_at, work in live.in_flight:
+            if live.at - sent_at > 3600 and rid in replays:
+                rows["stuck"].append(_row(
+                    replay=replays[rid], n=n, figures={"kind": work, "minutes": (live.at - sent_at) / 60},
+                    reproduce=_round_command(replays[rid], n)))
+    by_match = {str(r.match_uuid).lower(): r for r in replays.values()}
+    agents = {(rid, slot): agent for rid, slot, agent in db.query(
+        ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.agent)}
+
+    for map_name, rules, built_at, record in control_heights.all_box_conflicts(db):
+        replay = by_match.get(str(record.get("match")).lower())
+        candidates = [{"piece": c[0], "tops": c[1], "dist_m": c[2] if len(c) > 2 else None}
+                      for c in record.get("candidates", [])]
+        rows["box_conflict"].append(_row(
+            map_name=map_name, match=record.get("match"), n=record.get("round"), t=record.get("t0"),
+            agent=agents.get((replay.id, record.get("slot"))) if replay is not None else None,
+            figures={"z": record.get("z"), "candidates": candidates, "px": record.get("px"),
+                     "slot": record.get("slot"), "t1": record.get("t1")},
+            revision={"heights_revision": (rules or {}).get("revision"), "built_at": _iso(built_at)},
+            reproduce=_height_command(map_name)))
+
+    for key, model, revision in (("control_failed", ReplayRoundControl, "control_revision"),
+                                 ("gaps_failed", ReplayRoundGapRun, "gaps_revision")):
+        for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
+                               getattr(model, revision).label("revision")).filter(model.status == "failed"):
+            state = states.get((stored.replay_id, stored.round_number))
+            if state != key:
+                # Stale, or behind an earlier step (a re-parse): the worker gets to it on its own.
+                stale[key] += 1
+            else:
+                replay = replays[stored.replay_id]
+                rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
+                                      revision={revision: stored.revision, "computed_at": _iso(stored.computed_at)},
+                                      reproduce=_round_command(replay, stored.round_number)))
+
+    fresh = Freshness(db)
+    for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)):
+        for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
+                               model.gaps_revision, model.fingerprint).filter(model.status == "failed"):
+            replay = replays.get(stored.replay_id)
+            if replay is None:
+                continue
+            if not fresh.current(replay, stored.round_number, stored.gaps_revision, stored.fingerprint):
+                stale[key] += 1
+                continue
+            rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
+                                  revision={"gaps_revision": stored.gaps_revision,
+                                            "computed_at": _iso(stored.computed_at)},
+                                  reproduce=_round_command(replay, stored.round_number)))
+
+    for map_name, height in control_heights.last_builds(db).items():
+        if height.status == control_heights.REJECTED:
+            rows["heights_rejected"].append(_row(
+                map_name=map_name, figures={"reasons": control_heights.gate(height.report),
+                                           "digest": height.digest, "inputs_sha": height.inputs_sha},
+                revision={"heights_revision": (height.rules or {}).get("revision"),
+                          "built_at": _iso(height.built_at)},
+                reproduce=_height_command(map_name)))
+
+    uploads = list(db.query(ReplayUpload.id, ReplayUpload.status, ReplayUpload.error, ReplayUpload.source_sha256,
+                            ReplayUpload.size_bytes, ReplayUpload.created_at, ReplayUpload.finished_at,
+                            ReplayUpload.replay_id, ReplayUpload.worker_job_id, ReplayUpload.store_outcome,
+                            ReplayUpload.archive_ack))
+    latest_stored = {}
+    for upload in uploads:
+        if upload.status == "stored" and upload.source_sha256 is not None:
+            sha, created = upload.source_sha256, _utc(upload.created_at)
+            if sha not in latest_stored or created > latest_stored[sha]:
+                latest_stored[sha] = created
+    cutoff = _utc(now()) - timedelta(hours=1)
+    for upload in uploads:
+        kinds = []
+        superseded = (upload.source_sha256 is not None and upload.source_sha256 in latest_stored
+                      and latest_stored[upload.source_sha256] > _utc(upload.created_at))
+        if upload.status == "failed" and not superseded:
+            kinds.append("upload_failed")
+        if upload.status == "held":
+            kinds.append("upload_held")
+        if upload.store_outcome == "failed":
+            kinds.append("store_failed")
+        if (upload.status == "stored" and upload.archive_ack is None
+                and _utc(upload.finished_at or upload.created_at) < cutoff):
+            kinds.append("ack_missing")
+        if upload.status in ("queued", "parsing") and _utc(upload.created_at) < cutoff:
+            kinds.append("stuck")
+        for key in kinds:
+            rows[key].append(_row(
+                replay=replays.get(upload.replay_id), error=upload.error,
+                figures={"upload_id": str(upload.id), "size_bytes": upload.size_bytes,
+                         "worker_job_id": upload.worker_job_id},
+                revision={"created_at": _iso(upload.created_at), "finished_at": _iso(upload.finished_at)}))
+
+    for replay in replays.values():
+        if replay.link_status in ("unlinked", "refused"):
+            rows["unlinked"].append(_row(replay=replay, figures=replay.link_report,
+                                          revision={"recipe": replay.recipe}))
+    manual = {key: label for key, label, automatic in replay_progress.STEPS
+              if not automatic and key not in ("control_failed", "gaps_failed")}
+    counts = Counter((rid, step) for (rid, _), step in states.items() if step in manual)
+    for (rid, step), count in counts.items():
+        replay = replays[rid]
+        rows["needs_a_person"].append(_row(replay=replay, figures={"rounds": count, "step": manual[step]},
+                                            revision={"recipe": replay.recipe}))
+    representatives, missing = _feature_representatives(db, collected)
+    global _verification_pending
+    with _verification_lock:
+        results = dict(_verification_results)
+        started, running = _verification_started, _verification_running
+        done, total = _verification_progress
+        _verification_pending = any(digest not in results for digest in representatives)
+    unavailable = missing
+    verified = 0
+    for digest, (stored, replay, count) in representatives.items():
+        result = results.get(digest)
+        if result is None:
+            unavailable += 1
+            continue
+        failed = result.integrity == "failed" or result.recompilation == "failed"
+        if not failed and (result.integrity in ("unavailable", "unsupported")
+                           or result.recompilation in ("unavailable", "unsupported")):
+            unavailable += 1
+        else:
+            verified += 1
+        if failed:
+            rows["feature_failed"].append(_row(
+                replay=replay, n=stored.round_number,
+                figures={"digest": digest, "integrity": result.integrity, "recompilation": result.recompilation,
+                         "freshness": result.freshness, "rounds": count}, error="; ".join(result.reasons),
+                revision={"fingerprint": stored.fingerprint, "control_revision": stored.control_revision,
+                          "computed_at": _iso(stored.computed_at)}, reproduce=_feature_command(stored)))
+    notes["feature_failed"] = (f"checking {done} of {total}" if running else
+                               f"{verified} verified, {unavailable} unavailable or unsupported" if started else
+                               "not checked yet")
+    for values in rows.values():
+        values.sort(key=_sort_key)
+    return rows
+
+
+def compute(db, live=None, *, limit=SHOW) -> dict:
+    """Read stored evidence and finished verification results; never start work here."""
+    stale = Counter()
+    notes = {}
+    rows = collect(db, live=live, stale=stale, notes=notes)
+    return {"kinds": [{"key": key, "label": label, "count": len(rows[key]),
+                       "note": (f"{stale[key]} failed rows from older rules: the worker will retry them"
+                                if stale[key] else notes.get(key)), "rows": rows[key][:limit]}
+                      for key, label in KINDS],
+            "checked_at": _iso(now())}
+
+
+def cached(db, now: float | None = None) -> dict:
+    """One computation shared by every viewer for TTL_S."""
+    global _cached
+    if settings.demo_mode:
+        return compute(db, limit=None)
+    from app.services import replay_control_remote
+
+    _start_verification()
+    stamp = time.monotonic() if now is None else now
+    with _lock:
+        if _cached is None or stamp - _cached[0] >= TTL_S:
+            _cached = (stamp, compute(db, live=replay_control_remote.LIVE, limit=None))
+        return _cached[1]
+
+
+def page(result):
+    """An independent display copy; counts and the cached prompt evidence stay intact."""
+    shown = {**result, "kinds": [{**kind, "rows": kind["rows"][:SHOW]} for kind in result["kinds"]]}
+    return copy.deepcopy(shown)
+
+
+def _sql_string(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _rest_query(key, rows):
+    """Select exactly the remaining stored identities, with only diagnostic columns."""
+    models = {"control_failed": ReplayRoundControl, "gaps_failed": ReplayRoundGapRun,
+              "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
+    if key in models:
+        identities = ", ".join(f"({_sql_string(r['match'])}, {int(r['round'])})" for r in rows)
+        return (f"SELECT r.map_name, r.match_uuid, e.round_number, e.error, e.computed_at "
+                f"FROM {models[key].__tablename__} e JOIN replays r ON r.id = e.replay_id "
+                f"WHERE e.status = 'failed' AND (r.match_uuid, e.round_number) IN ({identities}) "
+                "ORDER BY r.map_name, r.match_uuid, e.round_number;")
+    if key == "heights_rejected":
+        maps = ", ".join(sorted({_sql_string(r["map"]) for r in rows}))
+        return ("SELECT h.map_name, h.digest, h.report, h.rules, h.built_at FROM control_heights h "
+                f"WHERE h.status = 'rejected' AND h.map_name IN ({maps}) "
+                "AND h.id = (SELECT x.id FROM control_heights x WHERE x.map_name = h.map_name "
+                "ORDER BY x.built_at DESC, x.id DESC LIMIT 1) ORDER BY h.map_name;")
+    filters = {"upload_failed": "u.status = 'failed'", "upload_held": "u.status = 'held'",
+               "store_failed": "u.store_outcome = 'failed'", "ack_missing": "u.archive_ack IS NULL",
+               "stuck": "u.status IN ('queued', 'parsing')"}
+    if key in filters and all("upload_id" in r["figures"] for r in rows):
+        ids = ", ".join(_sql_string(r["figures"]["upload_id"]) for r in rows)
+        return ("SELECT u.id, u.replay_id, u.status, u.error, u.created_at, u.finished_at, "
+                "u.worker_job_id, u.store_outcome, u.archive_ack FROM replay_uploads u "
+                f"WHERE {filters[key]} AND u.id IN ({ids}) ORDER BY u.id;")
+    if key in ("unlinked", "needs_a_person"):
+        matches = ", ".join(sorted({_sql_string(r["match"]) for r in rows}))
+        status = " AND link_status IN ('unlinked', 'refused')" if key == "unlinked" else ""
+        return ("SELECT map_name, match_uuid, recipe, link_status, link_report FROM replays "
+                f"WHERE match_uuid IN ({matches}){status} ORDER BY map_name, match_uuid;")
+    return "\n".join(dict.fromkeys(r["reproduce"] for r in rows))
+
+
+def prompt(result, kind=None) -> str:
+    """Plain-text read-only investigation prompt, sharing 200 evidence blocks across kinds."""
+    if kind is not None and kind not in dict(KINDS):
+        raise KeyError(kind)
+    by_key = {entry["key"]: entry for entry in result["kinds"]}
+    chosen = [by_key[key] for key, _ in KINDS if key in by_key and (kind is None or kind == key)]
+    if kind is not None and not any(entry["rows"] for entry in chosen):
+        return f"{dict(KINDS)[kind]}: nothing to fix."
+    lines = ["Investigate replay errors that need a human.",
+             "Repo: conorlum/valo-with-friends-tracker on GitHub; code is under webapp/.",
+             "Investigate read-only: read the code, and access the DB only from webapp/ through",
+             "scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only",
+             "For each item, name the likely cause and propose a fix. Change nothing until the owner approves.",
+             f"Inventory checked at: {result.get('checked_at')}"]
+    remaining = 200
+    for entry in chosen:
+        if not entry["rows"]:
+            continue
+        lines.extend(["", f"{entry['label']} ({entry['count']})", f"note: {entry['note'] or ''}"])
+        shown = entry["rows"][:remaining]
+        for row in shown:
+            lines.append("")
+            for field in ("map", "match", "round", "t", "agent"):
+                lines.append(f"{field}: {row[field]}")
+            for name, value in row["figures"].items():
+                lines.append(f"{name}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+            lines.extend([f"link: {row['link']}", f"error: {row['error']}",
+                          f"revision: {json.dumps(row['revision'], ensure_ascii=False, sort_keys=True)}",
+                          f"reproduce: {row['reproduce']}"])
+        remaining -= len(shown)
+        rest = entry["rows"][len(shown):]
+        if rest:
+            lines.extend(["", f"{len(rest)} more. List the rest read-only:", _rest_query(entry["key"], rest)])
+    return "\n".join(lines)

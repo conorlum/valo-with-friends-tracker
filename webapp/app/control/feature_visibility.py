@@ -22,6 +22,7 @@ MAX_ROW_BYTES = 64 * 1024 * 1024
 MAX_MOVING_ROW_BYTES = 16 * 1024 * 1024
 MAX_UNION_BYTES = 16 * 1024 * 1024
 ROW_VERSION = 1  # Bump when row sampling/height semantics change without a geometry-key change.
+MAX_PERMANENT_LINES = 1 << 20   # about 150 MB at worst; a line recomputes after eviction
 
 
 def blocker_key(blockers):
@@ -122,14 +123,18 @@ class SightCache:
         self.row_hits = self.row_builds = self.union_hits = self.union_misses = 0
         self.row_path = None
         self.rows_dirty = False
+        self.height_rows = geo.heights is not None
+        self.permanent_lines: dict = {}     # (source, target, feet?) -> fixed geometry leaves that line clear
         from app.control import heights as hc
-        body = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.BODY_M
-        self.targets = np.column_stack((geo.centres.astype(float), body))
+        head = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.HEAD_M
+        self.targets = np.column_stack((geo.centres.astype(float), head))
         self.proof_coordinates_valid = bool(((geo.centres >= 0) & (geo.centres <= 1023)).all())
         if geo.features_sha and geo.visibility_source in ('built', 'cache'):
             from app.control import geometry as cg
             from pathlib import Path
-            identity = hashlib.sha256(f'{ROW_VERSION}:{cg.cache_key(geo)}:{geo.features_sha}'.encode()).hexdigest()
+            # Height rows now retain both points. Leave flat persistence identities unchanged.
+            version = f'{ROW_VERSION}:head-feet' if self.height_rows else ROW_VERSION
+            identity = hashlib.sha256(f'{version}:{cg.cache_key(geo)}:{geo.features_sha}'.encode()).hexdigest()
             directory = Path(os.environ['CONTROL_FEATURE_ROW_CACHE_DIR']) if os.environ.get('CONTROL_FEATURE_ROW_CACHE_DIR') else cg.cache_dir() / 'feature-rows'
             self.row_path = directory / f'{geo.name}.{identity}.npz'
             self._load_rows(geo)
@@ -137,6 +142,26 @@ class SightCache:
     @staticmethod
     def _key(occ, source, steps):
         return (occ.mask_digest, occ.bottom, occ.top, occ.all_height, int(source), steps)
+
+    @staticmethod
+    def _point_blocks(geo, occ, a, heads, steps):
+        """Uncached per-door point results on one sampling grid.
+
+        Feet must be checked even when this door leaves the head clear: another
+        door can block the head. Missing target heights reuse the 2D head result.
+        """
+        from app.control import features as cf, heights as hc
+
+        head = cf.blocked_lines([occ], a, heads, sampling_steps=steps)
+        if geo.heights is None or np.isnan(a[2]):
+            return head, None
+        feet = head.copy()
+        known = ~np.isnan(heads[:, 2])
+        if known.any() and not occ.all_height:
+            targets = heads[known].copy()
+            targets[:, 2] += hc.FEET_M - hc.HEAD_M
+            feet[known] = cf.blocked_lines([occ], a, targets, sampling_steps=steps)
+        return head, feet
 
     def clear_row(self, geo, source, targets, occluders):
         """Packed exact sight for the requested targets and door sampling context.
@@ -175,13 +200,21 @@ class SightCache:
             if not any(key in self.rows for key in keys):
                 return None
         out = geo.rows[geo.row_of[source]].copy()
+        two_points = geo.heights is not None and not np.isnan(geo.node_z[source])
+        head_union = np.zeros_like(out) if two_points else None
+        feet_union = np.zeros_like(out) if two_points else None
         full_targets = None
         for key, occ in zip(keys, occluders):
             entry = self.rows.pop(key, None)
             if entry is None and not eligible[key]:
-                blocked = self.blocked(geo, source, targets, [occ], None)
-                selected = targets[blocked]
-                np.bitwise_and.at(out, selected // 8, ~(128 >> (selected % 8)).astype(np.uint8))
+                head, feet = self._blocked_points(geo, source, targets, [occ], None)
+                if two_points:
+                    for hits, union in ((head, head_union), (feet, feet_union)):
+                        selected = targets[hits]
+                        np.bitwise_or.at(union, selected // 8, (128 >> (selected % 8)).astype(np.uint8))
+                else:
+                    selected = targets[head]
+                    np.bitwise_and.at(out, selected // 8, ~(128 >> (selected % 8)).astype(np.uint8))
                 continue
             if entry is None:
                 from app.control import features as cf, heights as hc
@@ -190,6 +223,7 @@ class SightCache:
                 a = (*geo.centres[source], cf._eye_body(geo, source, hc.EYE_M))
                 # Use the *base* row for each door, never the previous door's answer.
                 blocked = np.zeros(geo.n, bool)
+                feet_blocked = np.zeros(geo.n, bool) if two_points else None
                 sparse = self.entries.pop(key, None)
                 missing = full_targets
                 if sparse is not None:
@@ -197,13 +231,22 @@ class SightCache:
                     byte = full_targets // 8
                     bit = (1 << (full_targets % 8)).astype(np.uint8)
                     blocked[full_targets] = (previous[byte] & bit) != 0
+                    if two_points:
+                        feet_blocked[full_targets] = (sparse[3][byte] & bit) != 0
                     missing = full_targets[(known[byte] & bit) == 0]
                     self.bytes -= sparse[2]
                 if len(missing):
-                    blocked[missing] = cf.blocked_lines([occ], a, self.targets[missing], sampling_steps=steps)
+                    head, feet = self._point_blocks(geo, occ, a, self.targets[missing], steps)
+                    blocked[missing] = head
+                    if two_points:
+                        feet_blocked[missing] = feet
                 packed = np.packbits(blocked)
                 packed.setflags(write=False)
                 entry = (packed, packed.nbytes + 1024, bool(getattr(occ, 'cache_resting', True)))
+                if two_points:
+                    feet_packed = np.packbits(feet_blocked)
+                    feet_packed.setflags(write=False)
+                    entry = (packed, entry[1] + feet_packed.nbytes, entry[2], feet_packed)
                 self.row_bytes += entry[1]
                 self.moving_row_bytes += entry[1] if not entry[2] else 0
                 self.row_builds += 1
@@ -211,7 +254,7 @@ class SightCache:
             else:
                 self.row_hits += 1
                 if not entry[2] and bool(getattr(occ, 'cache_resting', True)):
-                    entry = entry[0], entry[1], True
+                    entry = entry[:2] + (True,) + entry[3:]
                     self.moving_row_bytes -= entry[1]
                     self.moving_rows.pop(key, None)
                     self.rows_dirty = True
@@ -222,7 +265,18 @@ class SightCache:
             else:
                 self.resting_rows.pop(key, None)
                 self.resting_rows[key] = None
-            out &= ~entry[0]
+            if two_points:
+                head_union |= entry[0]
+                feet_union |= entry[3]
+            else:
+                out &= ~entry[0]
+        if two_points:
+            out &= ~(head_union & feet_union)
+            byte, bit = targets // 8, (128 >> (targets % 8)).astype(np.uint8)
+            head_hit, feet_hit = (head_union[byte] & bit) != 0, (feet_union[byte] & bit) != 0
+            lost = self._other_point_lost(geo, source, targets, head_hit, feet_hit)
+            if lost.any():
+                np.bitwise_and.at(out, byte[lost], ~bit[lost])
         while (self.row_bytes > MAX_ROW_BYTES or self.moving_row_bytes > MAX_MOVING_ROW_BYTES) and self.rows:
             # Resting rows can borrow unused moving space, but rotations need
             # their own working set too. Reserve a quarter of the total budget
@@ -301,7 +355,10 @@ class SightCache:
                 if (type(keys) is not list or data['keys'].dtype != np.uint8 or rows.dtype != np.uint8
                         or rows.shape != (len(keys), (geo.n + 7) // 8)):
                     return
-                for encoded, row in zip(keys, rows):
+                feet_rows = data['feet_rows'] if self.height_rows else None
+                if feet_rows is not None and (feet_rows.dtype != np.uint8 or feet_rows.shape != rows.shape):
+                    return
+                for i, (encoded, row) in enumerate(zip(keys, rows)):
                     digest, lo, hi, all_height, source, steps = encoded
                     if not (len(digest) == 64 and type(source) is int and 0 <= source < geo.n
                             and type(steps) is int and 1 <= steps <= 1450 and type(all_height) is bool):
@@ -312,9 +369,14 @@ class SightCache:
                     row = row.copy()
                     row.setflags(write=False)
                     size = row.nbytes + 1024
+                    feet = None
+                    if self.height_rows and not np.isnan(geo.node_z[source]):
+                        feet = feet_rows[i].copy()
+                        feet.setflags(write=False)
+                        size += feet.nbytes
                     if self.row_bytes + size > MAX_ROW_BYTES:
                         break
-                    self.rows[key] = (row, size, True)
+                    self.rows[key] = (row, size, True) if feet is None else (row, size, True, feet)
                     self.resting_rows[key] = None
                     self.row_bytes += size
         except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
@@ -328,16 +390,21 @@ class SightCache:
         """Best-effort atomic resting-row snapshot. Corrupt/missing caches rebuild."""
         if self.row_path is None or not self.rows_dirty:
             return
-        selected = [(key, entry[0]) for key, entry in self.rows.items() if entry[2]]
+        selected = [(key, entry) for key, entry in self.rows.items() if entry[2]]
         keys = [(key[0].hex(), float(key[1]).hex(), float(key[2]).hex(), key[3], key[4], key[5])
                 for key, _ in selected]
         temporary = self.row_path.with_suffix(f'.{os.getpid()}.tmp')
         try:
             self.row_path.parent.mkdir(parents=True, exist_ok=True)
             with temporary.open('wb') as stream:
-                np.savez_compressed(stream, keys=np.frombuffer(json.dumps(keys).encode(), np.uint8),
-                                    rows=np.stack([row for _, row in selected]) if selected else
-                                         np.empty((0, (len(self.targets) + 7) // 8), np.uint8))
+                arrays = dict(keys=np.frombuffer(json.dumps(keys).encode(), np.uint8),
+                              rows=np.stack([entry[0] for _, entry in selected]) if selected else
+                                   np.empty((0, (len(self.targets) + 7) // 8), np.uint8))
+                if self.height_rows:
+                    arrays['feet_rows'] = (np.stack([entry[3] if len(entry) > 3 else np.zeros_like(entry[0])
+                                                    for _, entry in selected]) if selected else
+                                           np.empty_like(arrays['rows']))
+                np.savez_compressed(stream, **arrays)
             os.replace(temporary, self.row_path)
             self.rows_dirty = False
         except OSError:
@@ -382,9 +449,47 @@ class SightCache:
         return clear
 
     def blocked(self, geo, source, targets, occluders, record):
+        """A target is blocked only when every complete point line is blocked."""
+        head, feet = self._blocked_points(geo, source, targets, occluders, record)
+        if feet is None:
+            return head
+        return (head & feet) | self._other_point_lost(geo, source, targets, head, feet)
+
+    def _other_point_lost(self, geo, source, targets, head, feet):
+        """Per target: a door blocks one sight point and fixed geometry the other (the stored row keeps one bool per
+        pair, so it can't say). Each line is asked once per source; a door's band never changes the answer."""
+        from app.control import features as cf, heights as hc
+
+        lost = np.zeros(len(targets), bool)
+        one = np.flatnonzero(head != feet)
+        if not len(one):
+            return lost
+        a = (*geo.centres[source].astype(float), cf._eye_body(geo, source, hc.EYE_M))
+        see_over = ()
+        if geo.is_top[source]:
+            from app.control.stance import vantage
+
+            see_over = vantage(geo, int(geo.top_piece[np.searchsorted(geo.top_nodes, source)]),
+                               float(geo.node_z[source]))
+        for i in one:
+            target = int(targets[i])
+            use_feet = bool(head[i])
+            key = (int(source), target, use_feet)
+            clear = self.permanent_lines.get(key)
+            if clear is None:
+                x, y, z = self.targets[target]
+                point = (float(x), float(y), float(z) + (hc.FEET_M - hc.HEAD_M if use_feet else 0.0))
+                clear = cf.permanent_line_clear(geo, a, point, target, see_over=see_over)
+                if len(self.permanent_lines) >= MAX_PERMANENT_LINES:
+                    self.permanent_lines.pop(next(iter(self.permanent_lines)))
+                self.permanent_lines[key] = clear
+            lost[i] = not clear
+        return lost
+
+    def _blocked_points(self, geo, source, targets, occluders, record):
         from app.control import features as cf, heights as hc
         if not len(targets):
-            return np.zeros(0, bool)
+            return np.zeros(0, bool), None
         a = (*geo.centres[source], cf._eye_body(geo, source, hc.EYE_M))
         b = self.targets[targets]
         # Preserve the diagnostic for every logical test, including memo hits.
@@ -393,20 +498,27 @@ class SightCache:
             if flat.any():
                 record['flat_occluder_tests'] = record.get('flat_occluder_tests', 0) + int(flat.sum())
         result = np.zeros(len(targets), bool)
+        two_points = geo.heights is not None and not np.isnan(a[2])
+        feet_result = np.zeros(len(targets), bool) if two_points else None
         occluders = [occ for occ in occluders if occ.source_area is None or occ.source_area.affects(geo, source)]
         if not occluders:
-            return result
+            return result, feet_result
         steps = int(np.ceil(np.hypot(b[:, 0]-a[0], b[:, 1]-a[1]).max())) + 1
         for occ in occluders:
             # Direct/caller-owned mutable masks must always use the uncached path.
             if occ.mask.flags.writeable or occ.bounds_px is None or occ.mask_digest is None:
-                result |= cf.blocked_lines([occ], a, b, sampling_steps=steps)
+                head, feet = self._point_blocks(geo, occ, a, b, steps)
+                result |= head
+                if two_points:
+                    feet_result |= feet
                 continue
             key = (occ.mask_digest, occ.bottom, occ.top, occ.all_height, int(source), steps)
             entry = self.entries.pop(key, None)
             if entry is None:
                 size = (geo.n + 7) // 8
                 entry = (np.zeros(size, np.uint8), np.zeros(size, np.uint8), 2*size + 1024)
+                if two_points:
+                    entry = (entry[0], entry[1], 3*size + 1024, np.zeros(size, np.uint8))
                 self.bytes += entry[2]
             known, blocked = entry[:2]
             byte, bit = targets // 8, (1 << (targets % 8)).astype(np.uint8)
@@ -414,15 +526,19 @@ class SightCache:
             self.hits += int((~missing).sum())
             self.misses += int(missing.sum())
             if missing.any():
-                hits = cf.blocked_lines([occ], a, b[missing], sampling_steps=steps)
+                hits, feet_hits = self._point_blocks(geo, occ, a, b[missing], steps)
                 np.bitwise_or.at(known, byte[missing], bit[missing])
                 np.bitwise_or.at(blocked, byte[missing][hits], bit[missing][hits])
+                if two_points:
+                    np.bitwise_or.at(entry[3], byte[missing][feet_hits], bit[missing][feet_hits])
             result |= (blocked[byte] & bit) != 0
+            if two_points:
+                feet_result |= (entry[3][byte] & bit) != 0
             self.entries[key] = entry
             while self.bytes > self.limit and self.entries:
                 _, removed = self.entries.popitem(last=False)
                 self.bytes -= removed[2]
-        return result
+        return result, feet_result
 
 
 def cache_for(geo):

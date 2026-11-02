@@ -30,8 +30,8 @@ def infos(util, deaths=None, veto=None):
     b = blob(players(), t_end=10.0, util=util, deaths=deaths)
     if veto is not None:
         next(p for p in b["players"] if p["slot"] == veto)["agent"] = "Veto"
-        b["util"].append({"k": "ability", "t": 1.0, "t1": 8.0, "by": veto, "kind": "GameObject", "code": "Pine",
-                          "name": "X_Evolution", "u": 0, "v": 0})
+        b["util"].append({"k": "buff", "t": 1.0, "t1": 8.0, "by": veto, "target": veto, "code": "Pine",
+                          "name": "X_Evolution"})      # Evolution's buff row on himself (CONDENSE 23)
     return [(i.slot, i.kind, i.reason) for i in ce.RoundInputs(b, open_hall()).infos]
 
 

@@ -1790,6 +1790,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
         blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
         join_causes(blob["util"], joins)
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
+        blob["crouch"] = {str(slot): spans for slot, spans in extras.rounds.get(n, {}).get("crouch", {}).items()}
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
         attach_orb_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("orb_tries", []), spike_counts)

@@ -481,6 +481,59 @@ def test_it_is_off_by_default_without_a_worker_and_in_demo_mode(monkeypatch):
     assert not remote.enabled()
 
 
+def test_live_snapshot_is_frozen_and_detached_after_submit(factory, linked, monkeypatch):
+    from dataclasses import FrozenInstanceError
+    state = remote.State()
+    monkeypatch.setattr(remote, "_collect", lambda *args: None)
+    def reparse(*args):
+        state.held = frozenset({linked.id})
+        return state.held
+    monkeypatch.setattr(remote, "_reparse", reparse)
+    monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: True)
+    def heights(*args):
+        state.heights.out_of_tries = frozenset({"Ascent"})
+        return set()
+    monkeypatch.setattr(remote.replay_heights_remote, "step", heights)
+    def submit(*args):
+        state.tries[remote.task_key(linked.id, 1, "plain")] = (remote.MAX_TRIES, 0)
+        state.tries[remote.full_key(linked.id, 2, "full", "gp")] = (remote.MAX_TRIES, 0)
+        state.tries[remote.gaps_key(linked.id, 3, "gaps", "gp")] = (remote.MAX_TRIES, 0)
+        state.tries[remote.task_key(linked.id, 4, "retry")] = (remote.MAX_TRIES - 1, 0)
+        state.in_flight["job"] = remote.InFlight("job", linked.id, 5, "fp", "Ascent", 50, gaps_only=True)
+    monkeypatch.setattr(remote, "_submit", submit)
+    remote.cycle(factory, FakeWorker(), state, now=100)
+    live = remote.LIVE
+    assert live.at == 100 and live.held == (linked.id,) and live.heights_out_of_tries == ("Ascent",)
+    assert set(live.given_up) == {(linked.id, 1, "control", "plain"), (linked.id, 2, "control", "full"),
+                                  (linked.id, 3, "gaps", "gaps")}
+    assert live.in_flight == ((linked.id, 5, 50, "gaps"),)
+    state.tries.clear()
+    state.in_flight["job"].sent_at = 999
+    state.held = frozenset()
+    state.heights.out_of_tries = frozenset()
+    assert len(live.given_up) == 3 and live.in_flight[0][2] == 50
+    assert live.held == (linked.id,) and live.heights_out_of_tries == ("Ascent",)
+    with pytest.raises(FrozenInstanceError):
+        live.at = 999
+
+
+def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):
+    from types import SimpleNamespace
+    sentinel = object()
+    monkeypatch.setattr(remote, "LIVE", sentinel)
+    class Lock:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+        def execute(self, *args):
+            return SimpleNamespace(scalar=lambda: False)
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    assert remote.cycle(Lock, None, remote.State(), now=200)["locked_out"] == 1
+    assert remote.LIVE is sentinel
+
+
 def test_the_client_maps_the_workers_answers():
     import io
     import urllib.error

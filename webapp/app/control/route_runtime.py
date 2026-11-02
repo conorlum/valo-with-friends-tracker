@@ -12,6 +12,12 @@ CONSUMER = 'quiet_rope_v1'
 MAPS = frozenset({'Split', 'Summit', 'Abyss'})
 
 
+def _tops(geo):
+    """The learnt-top node mask, or no tops for a geometry built before them (or a test's bare namespace)."""
+    tops = getattr(geo, 'is_top', None)
+    return np.False_ if tops is None else tops
+
+
 def landing_node(geo, cell, landing, *, xy=None):
     from app.replays.map_feature_state import known
     if geo.heights is None:
@@ -151,7 +157,7 @@ def local_rope_cuts(geo, base, arcs):
         local = np.linalg.norm(geo.centres - center, axis=1) <= radius
         key = (low, high)
         if key not in sides:
-            measured = np.isfinite(geo.node_z) & getattr(geo, 'walk_n', True)
+            measured = np.isfinite(geo.node_z) & getattr(geo, 'walk_n', True) & ~_tops(geo)
             upper = measured & (geo.node_z >= (low + high) / 2)
             below = measured & ~upper
             to_high = dijkstra(graph, indices=np.flatnonzero(upper), min_only=True, directed=False)
@@ -293,10 +299,11 @@ def walking_exit_problems(geo, base, arcs, cuts, mf=None):
     src, targets = base.in_from[valid], dst[valid]
     graph = csr_matrix((np.ones(len(src)), (src, targets)), shape=(geo.n, geo.n))
     _, labels = connected_components(graph, directed=True, connection='strong')
-    sizes = np.bincount(labels[geo.walk_n], minlength=geo.n)
+    ground = geo.walk_n & ~_tops(geo)
+    sizes = np.bincount(labels[ground], minlength=geo.n)
     if not sizes.any():
         return []
-    anchor = int(np.flatnonzero((labels == int(np.argmax(sizes))) & geo.walk_n)[0])
+    anchor = int(np.flatnonzero((labels == int(np.argmax(sizes))) & ground)[0])
     keep = np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)])
     trimmed = csr_matrix((np.ones(int(keep.sum())), (src[keep], targets[keep])), shape=(geo.n, geo.n))
     def reachable(g, seed=anchor):

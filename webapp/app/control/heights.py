@@ -6,7 +6,8 @@ scripts/build_control_heights.py (app/control/height_build.py) and committed lik
 one stays flat 2D, exactly as before.
 
 **The reference height.** Every height is a player's position z, not their feet: a floor's height is the z
-of a player standing on it. An eye is position-z + EYE_M, a body is position-z + BODY_M, and the ground
+of a player standing on it. Eye and head are position-z + 1.1 m (feet + 2.0 m); the second sight point
+is position-z - 0.7 m (feet + 0.2 m). Either target point can be seen. The ground
 under a floor (what blocks a sight line) is position-z - STAND_M.
 
 **The asset** (all heights in whole decimetres above `origin_z`, the map's lowest floor in world dm):
@@ -46,8 +47,9 @@ MAX_FLOORS = 3
 # data). STAND_APEX_S, PLATFORMS, PLATFORM_R_M and NODE_SNAP_M are not in the spec: they fill gaps it left.
 
 # --- sight (part 4)
-EYE_M = 0.7                # eye above the position (about 1.6 m above the feet)
-BODY_M = 0.3               # the body point a viewer has to see (about 1.2 m above the feet)
+EYE_M = 1.05               # eye: feet + 1.95 m
+HEAD_M = 1.1               # head sight point: feet + 2.0 m
+FEET_M = -0.7              # lower sight point: feet + 0.2 m
 STAND_M = 0.9              # the position above the feet: the ground under a floor is this far below it
 DEVICE_EYE_M = 0.0         # a camera's or turret's eye above its own z
 LEDGE_M = 0.1              # ground is lowered this much as an obstacle, so a flat floor doesn't hide itself
@@ -68,7 +70,7 @@ FILL_MIN_NEIGHBOURS = 2
 FILL_TOL_M = 0.5
 CONNECT_S = 1.0            # two stands this close in time on neighbouring cells are a walk between them
 CONNECT_MIN_ROUNDS = 2
-STEP_UP_M = 0.7            # neighbouring floors this close connect both ways; a bigger step needs to be seen
+STEP_UP_M = 1.0            # a step anyone jumps up silently (the Range); floors this close connect both ways
 PLATFORM_R_M = 6.0         # stands this close to a live temporary platform are dropped
 # `<code>_<name>` of what players can stand on for a while (the viewer's ability catalog, replay.js)
 PLATFORMS = ("Thorne_E_Wall_Fortifying", "Thorne_E_Wall_Segment_Fortifying")
@@ -112,6 +114,20 @@ TRIP_REACH_M = 10.0
 # --- the kill-line check
 KILL_SAMPLE_S = 0.25       # killer and victim each need a position with z this close to the kill
 
+# --- box tops (app/control/stance.py and box_tops.py import these, so the rules hash covers them)
+BOX_SETTLE_S = 0.5
+# Replay z uses 0.1 m steps; 112 of 275 measured box stands move 0.2 m, none more (review, 2026-10-28).
+BOX_STEADY_DZ_M = 0.25
+# Summit and Ascent learnt tops are at least 1.0 m above their ring floor (probes/review_step.py).
+BOX_STEP_M = 0.5
+BOX_RING_PX = 16           # the floor round a box: floors within this of its outline, off every cover piece
+TOP_REACH_M = 0.75        # a box's real top reaches about 0.75 m past its drawn outline (the Range)
+VIEW_REACH_M = 1.1   # seeing over boxes from a top: feet within 1.1 m of the box's drawn outline (owner, 2026-10-30, "for now")
+TOP_TOL_M = 0.3           # standing z is within 0.3 m of a learnt top (159 of 162 measured stands within 0.25 m)
+CROUCH_DROP_M = 0.2       # a crouch lowers the replay z by 0.2 m: 501 of 601 measured dips at exactly 0.2 m
+CROUCH_LAG_S = 0.21      # The body follows the crouch key by about 0.21 s, down and up
+CROUCH_NEAR_S = 2.5      # Key activity this near a stand means this player's key is recorded
+
 
 class HeightError(ValueError):
     pass
@@ -146,6 +162,7 @@ class HeightAsset:
     fine_unresolved: np.ndarray | None = None
     fine_kind: np.ndarray | None = None
     fine_edges: np.ndarray | None = None  # spatial cell IDs: parent, or 16384 + child ID
+    box_tops: np.ndarray | None = None    # K x 3 int32: px x, px y, z dm above origin_z; a learnt cover-piece top
 
     def __post_init__(self) -> None:
         self.edges = np.asarray(self.edges, np.int32).reshape(-1, 5)
@@ -160,6 +177,8 @@ class HeightAsset:
     @property
     def digest(self) -> str:
         """12 hex over everything the engine reads, in a fixed order (not the file's bytes)."""
+        if self.__dict__.get('digest_pinned'):      # a cover-filtered copy (adaptive.attach) keeps its source's
+            return self.__dict__['digest_pinned']
         h = hashlib.sha256()
         h.update(json.dumps({"v": self.meta.get('version', HEIGHT_VERSION), "origin_z": self.origin_z, "units": self.meta.get("units", "dm"),
                              "stand_m": self.meta.get("stand_m", STAND_M)}, sort_keys=True).encode("ascii"))
@@ -170,6 +189,8 @@ class HeightAsset:
             for name, dtype in (('fine_cells', '<i4'), ('fine_floors', '<i2'), ('fine_spread', '<i2'),
                                 ('fine_supported', 'u1'), ('fine_unresolved', 'u1'), ('fine_kind', 'i1'), ('fine_edges', '<i4')):
                 h.update(name.encode() + b'\0' + np.ascontiguousarray(getattr(self, name), dtype=dtype).tobytes())
+        if self.box_tops is not None and len(self.box_tops):      # only when there are some: no-cover assets keep their digest
+            h.update(b'box_tops\0' + np.ascontiguousarray(self.box_tops, dtype='<i4').tobytes())
         return h.hexdigest()[:12]
 
     def floor_count(self) -> np.ndarray:
@@ -184,6 +205,8 @@ def save_asset(path: Path, asset: HeightAsset) -> None:
         meta['refinement'] = asset.refinement
         extra = {name: getattr(asset, name) for name in ('fine_cells', 'fine_floors', 'fine_spread',
             'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}
+    if asset.box_tops is not None and len(asset.box_tops):
+        extra['box_tops'] = np.asarray(asset.box_tops).astype("<i4").reshape(-1, 3)
     np.savez_compressed(path, floors=asset.floors.astype("<i2"), spread=asset.spread.astype("<i2"),
                         supported=asset.supported.astype(bool), unresolved=asset.unresolved.astype(bool),
                         edges=asset.edges.astype("<i4").reshape(-1, 5), kind=asset.kind.astype("i1"),
@@ -203,6 +226,8 @@ def load_asset(path: Path) -> HeightAsset:
             validate_arrays(z, meta['refinement'])
             extra = {'refinement': meta['refinement'], **{name: z[name].copy() for name in ('fine_cells',
                 'fine_floors', 'fine_spread', 'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}}
+        if 'box_tops' in z.files:
+            extra['box_tops'] = z['box_tops'].astype(np.int32).reshape(-1, 3)
         return HeightAsset(z["floors"].astype(np.int16), z["spread"].astype(np.int16), z["supported"].astype(bool),
                            z["unresolved"].astype(bool), z["edges"].astype(np.int32).reshape(-1, 5), meta,
                            z["kind"].astype(np.int8), **extra)

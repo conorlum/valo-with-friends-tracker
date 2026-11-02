@@ -22,6 +22,7 @@ from pathlib import Path
 
 from app.critutil import abilities, constants
 from app.services import util_model, util_values
+from app.services.replay_gaps import Freshness  # re-export the shared lightweight rule
 
 PAGE_VERSION = 2
 EXAMPLES_KEPT = 5
@@ -147,54 +148,6 @@ def _values_row(db) -> tuple[str, dict] | None:
     if row is None or row.version != util_values.VERSION or not row.data:
         return None
     return row.key, row.data
-
-
-class Freshness:
-    """Which stored util rounds are current, by Critical Moments' rule (replay_moments.load_moments_payload): the
-    gap run's revision, and its fingerprint against the round's now (the link and its deaths, so a relink or a
-    clock correction; the geometry and heights; the chokes; the hearing table). Built once per request: each map's
-    geometry and each replay's side groups are read once."""
-
-    def __init__(self, db):
-        from app.services import replay_gaps
-
-        self.db, self.hearing = db, replay_gaps.hearing_hash()
-        self.maps: dict[str, tuple] = {}
-        self.groups: dict[int, dict] = {}
-
-    def preload(self, replay_ids) -> None:
-        """Every one of these replays' side groups in one query (replay_control.side_groups, one replay each)."""
-        from app.models.replay import ReplayPlayer
-
-        wanted = [rid for rid in set(replay_ids) if rid not in self.groups]
-        if not wanted:
-            return
-        for rid in wanted:
-            self.groups[rid] = {}
-        for rid, slot, group in self.db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.side_group
-                                              ).filter(ReplayPlayer.replay_id.in_(wanted)):
-            if group:
-                self.groups[rid][slot] = group
-
-    def expected(self, replay, n: int) -> str | None:
-        from app.replays import choke_assets
-        from app.services import replay_control, replay_gaps
-
-        if replay.map_name not in self.maps:
-            self.maps[replay.map_name] = (replay_control.resolve_current_geometry(self.db, replay.map_name),
-                                          choke_assets.asset_hash(replay.map_name))
-        context, chokes = self.maps[replay.map_name]
-        if replay.id not in self.groups:
-            self.groups[replay.id] = replay_control.side_groups(self.db, replay)
-        control = replay_control.round_fingerprint(replay, self.groups[replay.id], n, context=context)
-        if control is None:
-            return None
-        return replay_gaps.gap_fingerprint(control, replay.map_name, chokes=chokes, hearing=self.hearing)
-
-    def current(self, replay, n: int, revision: int, fingerprint: str) -> bool:
-        from app.services import replay_gaps
-
-        return revision == replay_gaps.GAPS_REVISION and fingerprint == self.expected(replay, n)
 
 
 def current_rows(db, replay_ids=None, *, with_data: bool = True) -> list[tuple]:
@@ -869,8 +822,10 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
             or key != corpus_key(db, current_rows(db, with_data=False), model):
         if wait:
             ensure_values(db)
-            model = util_model.load(db)
             corpus = (_values_row(db) or (None, {}))[1]
+            model = util_model.load(db)     # the rebuild may have refit it: score with the build's (branch review B14)
+            if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
+                model = util_model.ensure(db)
             weights = util_values.weights_for(corpus.get("fit"), (ctx or {}).get("match_id"))
             updating = False
         else:

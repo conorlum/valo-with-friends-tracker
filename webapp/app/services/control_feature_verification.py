@@ -58,7 +58,8 @@ def verify_stored_round(db, row):
         base = json.loads(artifact.inputs)['base']
         from app.replays.map_feature_sources import descriptor_digest
         if any(descriptor_digest(base[kind]) != geometry.get(kind) for kind in ('sight', 'walk')) or \
-                base.get('barrier_sha') != geometry.get('barrier'):
+                base.get('barrier_sha') != geometry.get('barrier') or \
+                base.get('cover_sha') != geometry.get('cover'):
             raise ValueError('recorded permanent masks do not match archive')
         if base['scale'] != geometry.get('scale') or base['specials'] != geometry.get('specials'):
             raise ValueError('recorded permanent context does not match provenance')

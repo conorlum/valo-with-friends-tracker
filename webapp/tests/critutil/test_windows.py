@@ -210,6 +210,23 @@ def test_life_runs_to_seen_end_or_falls_back():
     assert segs(cast(10.0, typ="ult"), ent("life", None)) == []
 
 
+def test_an_arc_rose_popped_twice_has_a_window_for_each_pop():
+    # Branch review B6, 370 round 1's rose: pops at 17.04 and 38.76, an enemy blinded after each (1.629 s, 1.353 s).
+    c = cast(15.46, pop=17.04, hits=[[17.04, 18.67, True], [38.76, 40.11, True]])
+    c["rose"] = {"pops": [17.04, 38.76], "ended": "popped", "gone": None, "seen": True}
+    assert segs(c, ent("flash", 2.0)) == [[15.46, 18.67], [38.76, 40.11]]
+    one = cast(15.46, pop=17.04, hits=[[17.04, 18.67, True]])
+    one["rose"] = {"pops": [17.04], "ended": "popped", "gone": None, "seen": True}
+    assert segs(one, ent("flash", 2.0)) == [[15.46, 18.67]], "one pop: as before"
+
+
+def test_life_that_ran_to_the_rounds_end_is_up_to_decided_not_the_fallback():
+    # Branch review B3: a Pit up until the round ended has no seen_end (that is kept for an early end), but it did
+    # not go missing: it is up to t_decided, not start + D + g.
+    r = w(cast(2.0, typ="ult", landed=2.0, to_end=True), ent("life", 8))
+    assert r == {"segments": [[2.0, TD]], "rule": "life", "fallback": False}
+
+
 def test_heal_row_runs_to_death_or_decided():
     assert w({"t": 10.0, "t1": 12.0, "target": 1, "death": 20.0}, None) == {
         "segments": [[10.0, 20.0]], "rule": "heal", "fallback": False}

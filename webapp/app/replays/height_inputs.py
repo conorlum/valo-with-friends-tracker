@@ -79,7 +79,10 @@ def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json:
         return None
     if not isinstance(entry, dict) or not entry.get("sight_sha") or not entry.get("walk_sha"):
         return None
-    return {"sight": entry["sight_sha"], "walk": entry["walk_sha"], "scale": scale}
+    out = {"sight": entry["sight_sha"], "walk": entry["walk_sha"], "scale": scale}
+    if entry.get("cover_sha"):          # only a map with cover pieces: the others' manifests stay as they were
+        out["cover"] = entry["cover_sha"]
+    return out
 
 
 def refinement_history(map_name, value=None):
@@ -115,7 +118,8 @@ def manifest(map_name: str, replays: list, geometry: dict, must_block: str | Non
     """`replays` = [[match uuid, recipe, source sha256, round count], ...], in any order."""
     return {"v": MANIFEST_VERSION, "map": map_name, "height_version": cf.HEIGHT_VERSION,
             "height_rules": cf.HEIGHT_RULES_REVISION, "min_condense_revision": MIN_CONDENSE_REVISION,
-            "geometry": {"sight": geometry.get("sight"), "walk": geometry.get("walk"), "scale": geometry.get("scale")},
+            "geometry": {"sight": geometry.get("sight"), "walk": geometry.get("walk"), "scale": geometry.get("scale"),
+                         **({"cover": geometry["cover"]} if geometry.get("cover") else {})},
             "must_block": must_block,
             "refinement_history": refinement_history(map_name, history),
             "replays": sorted([str(u).lower(), str(recipe), str(source), int(count)]

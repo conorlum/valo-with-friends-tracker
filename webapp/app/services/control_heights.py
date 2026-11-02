@@ -136,6 +136,61 @@ def asset_bytes(db, map_name: str, digest: str) -> bytes | None:
     return None if row is None else bytes(row[0])
 
 
+def asset_bytes_of_row(db, row_id: int) -> bytes | None:
+    """One build's asset. A digest can't name a build: it covers what the engine reads, not the asset's meta."""
+    row = db.query(ControlHeight.asset).filter(ControlHeight.id == row_id).first()
+    return None if row is None else bytes(row[0])
+
+
+_BOX_CONFLICTS: dict[int, list] = {}     # build row id -> its conflict records; a row's asset never changes
+
+
+def _asset_meta(data: bytes) -> dict:
+    """The JSON in an asset's `meta` member, read without numpy (the web app's control views stay light,
+    tests/replays/test_control_isolation.py): the member is a 1-D uint8 .npy inside the .npz zip, so its bytes
+    after the .npy header are the JSON."""
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        raw = archive.read("meta.npy")
+    width = 2 if raw[6] == 1 else 4
+    start = 8 + width + int.from_bytes(raw[8:8 + width], "little")
+    if "'|u1'" not in raw[8 + width:start].decode("latin1"):
+        raise ValueError("the meta member is not uint8")
+    return json.loads(raw[start:].decode("utf-8"))
+
+
+def _box_conflict_records(db, row) -> list[dict]:
+    """Cached asset metadata for the corpus errors reader."""
+    if row.id not in _BOX_CONFLICTS:
+        data = asset_bytes_of_row(db, row.id)
+        found = (_asset_meta(data).get("box_conflicts") or []) if data else []
+        _BOX_CONFLICTS[row.id] = [r for r in found if isinstance(r, dict)]
+    return _BOX_CONFLICTS[row.id]
+
+
+def all_box_conflicts(db) -> list[tuple]:
+    """(map, rules, built_at, record) for every active asset's conflicts, across all matches.
+
+    Best effort: a bad asset leaves other maps available. Deep copies out.
+    """
+    import copy
+
+    out = []
+    try:
+        rows_ = active_rows(db)
+    except Exception:
+        log.warning("box conflicts unavailable", exc_info=True)
+        return out
+    for map_name, row in rows_.items():
+        try:
+            out.extend((map_name, copy.deepcopy(row.rules), row.built_at, copy.deepcopy(record))
+                       for record in _box_conflict_records(db, row))
+        except Exception:
+            log.warning("box conflicts unavailable for %s", map_name, exc_info=True)
+    return out
+
+
 def verify_asset(data: bytes, map_name: str, timeout_s: float = 120.0, *,
                  asset_dir: Path | None = None, must_block: Path | None = None) -> dict:
     """What the bytes are, by app/control/height_verify.py in a child process: its description, or {"error"}."""

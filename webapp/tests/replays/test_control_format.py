@@ -74,7 +74,21 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 19 (2026-10-19): BLIND_STATUSES, `nearsighted` status rows (Harbor's Reckoning) read as nearsight.
           19: "328288d9f5e9537f",
           # 20 (2026-10-23): fight swing, the summary's team fights (app/control/fight_swing.py, digested from 20).
-          20: "d50d4e280c7967b4"}
+          20: "d50d4e280c7967b4",
+          # 21 (2026-10-27): box tops: stance on a learnt box top, vantage over lower topped pieces; the box constants
+          # moved into app/control/heights.py (BOX_*), so the digest covers them. 21 is unreleased: re-pinned in place
+          # when the climb rule (BOX_RISE_M, BOX_APPROACH_S) became the step rule (was "e1abefa65afe68f9"), and
+          # again for the 0.75 m reach and the crouch window (TOP_REACH_M, TOP_TOL_M, CROUCH_DROP_M; was
+          # "15245745abf5994f"), and again for the box climb (2026-10-29: the 2.0 m eye and head/feet sight
+          # points, the 1 m step STEP_UP_M, box-top nodes; was "5e8858df6e0999c4"), and again for the 1.1 m view
+          # reach (VIEW_REACH_M, 2026-10-30; was "6a62ad6a009229f9"),
+          # and again for the over stance (stance.OVER, engine.OVER_SEEN; was "35ef13cb014b5946").
+          # re-pinned in place for EYE_M 1.05 (was "7cd7ad7dc50b5450")
+          21: "8c91e53977c08c1a",
+          # R9/W7a: JUMP_SIGHT enables airborne plate casts; the moving counter is lowercase.
+          # Re-pinned in place for the crouch key (was "f07e02b01cd7d18a"), and for the jump-peek limit
+          # (was "06e87d971e6cbc11").
+          22: "712c484f6a0ae747"}
 
 
 def _constants_digest() -> str:
@@ -107,6 +121,53 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
     assert PINNED.get(cf.CONTROL_REVISION) == digest, (
         f"the engine's or geometry's constants changed (digest {digest}): bump CONTROL_REVISION in "
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
+
+
+def _without_the_jump_peek_limit(monkeypatch):
+    for name in ("JUMP_PEEK_MAX_M", "JUMP_PEEK_TOL_M", "TWO_HEIGHT_BOX_M"):
+        monkeypatch.delattr(cg, name)
+
+
+def test_without_the_jump_peek_limit_the_revision_22_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
+    assert _constants_digest() == "06e87d971e6cbc11"
+
+
+def test_without_over_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    from app.control import stance
+
+    _without_the_jump_peek_limit(monkeypatch)
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    monkeypatch.setattr(stance, "OVER", False)
+    monkeypatch.delattr(ce, "OVER_SEEN")
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
+    assert _constants_digest() == "35ef13cb014b5946"
+
+
+def test_with_the_previous_eye_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    monkeypatch.setattr(hc, "EYE_M", 1.1)
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
+    assert _constants_digest() == "7cd7ad7dc50b5450"
+
+
+def test_without_the_jump_switch_the_revision_21_constants_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    monkeypatch.delattr(ce, "JUMP_SIGHT")
+    assert _constants_digest() == PINNED[21]
+
+
+def test_without_the_crouch_key_constants_the_revision_22_digest_is_unchanged(monkeypatch):
+    _without_the_jump_peek_limit(monkeypatch)
+    monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
+    monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
+    assert _constants_digest() == "f07e02b01cd7d18a"
 
 
 def test_the_formats_agree_with_the_engine():

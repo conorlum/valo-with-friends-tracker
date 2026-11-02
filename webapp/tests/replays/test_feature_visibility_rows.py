@@ -47,6 +47,112 @@ def test_complete_rows_promote_and_keep_batch_spacing(monkeypatch, height_bands)
         assert memo.row_hits == len(blockers)
 
 
+@pytest.mark.parametrize('band, seen', [((0.0, 1.1), False), ((5.0, 6.0), True)])
+def test_terrain_on_one_sight_point_and_a_door_on_the_other_hide_the_player(band, seen):
+    """low_overhang: the plate blocks the eye-height line and leaves the feet line; a door low enough to block the
+    feet line leaves nothing, a door above both changes nothing. Every route to the answer agrees."""
+    from app.control import engine as ce, geometry as cg, heights as hc
+    from tests.replays.test_control_sight import low_overhang
+
+    geo = low_overhang()
+    source = int(geo.node_of[geo.cell_of_px(196, 204), 0])
+    target = int(geo.node_of[geo.cell_of_px(268, 204), 0])
+    mask = np.zeros((1024, 1024), bool)
+    mask[192:216, 256:264] = True
+    door = cf._bounded_occluder('door', mask, *band)
+    a = (*geo.centres[source].astype(float), hc.EYE_M)
+    b = geo.centres[target].astype(float)
+    z = float(geo.node_z[target])
+    assert cf.los_with(geo, a, (*b, z + hc.FEET_M), [], [door]) is seen
+    assert not cf.los_with(geo, a, (*b, z + hc.HEAD_M), [], [door])
+    assert bool(cf.cast_with(geo, a[0], a[1], np.array([0.0]), [], [door], eye_z=hc.EYE_M, own=source)[target]) is seen
+    memo = fv.SightCache(geo)
+    assert bool(memo.blocked(geo, source, np.array([target]), [door], None)[0]) is not seen
+    assert bool(ce.seen_from(geo, np.array([source]), [door])[target]) is seen
+    full = np.flatnonzero(np.unpackbits(geo.rows[geo.row_of[source]])[:geo.n])
+    packed = None
+    for _ in range(1000):
+        packed = memo.clear_row(geo, source, full, [door])
+        if packed is not None:
+            break
+    assert bool(np.unpackbits(packed)[target]) is seen
+
+
+def test_head_and_feet_rows_combine_across_doors_and_reuse_intersections(monkeypatch):
+    from app.control import heights as hc
+    from tests.replays.control_toys import toy_heights
+
+    geo = toy_heights('DoorSightPoints', [(192, 192, 288, 216)])
+    source, target = [geo.cell_of_px(x, 204) for x in (196, 268)]
+    targets = np.flatnonzero(np.unpackbits(geo.rows[geo.row_of[source]])[:geo.n])
+    mask = np.zeros((1024, 1024), bool)
+    mask[192:216, 256:264] = True
+    blockers = [cf._bounded_occluder('head', mask.copy(), .4, 1.5),
+                cf._bounded_occluder('feet', mask.copy(), -1., .4)]
+    a = (*geo.centres[source], geo.node_z[source] + hc.EYE_M)
+    heads = np.column_stack((geo.centres[targets], geo.node_z[targets] + hc.HEAD_M))
+    feet = np.column_stack((geo.centres[targets], geo.node_z[targets] + hc.FEET_M))
+    steps = int(np.ceil(np.linalg.norm(geo.centres[targets] - geo.centres[source], axis=1).max())) + 1
+    head_blocked = np.zeros(len(targets), bool)
+    feet_blocked = np.zeros(len(targets), bool)
+    memo = fv.SightCache(geo)
+    at = np.flatnonzero(targets == target).item()
+    for occ in blockers:
+        head = cf.blocked_lines([occ], a, heads, sampling_steps=steps)
+        foot = cf.blocked_lines([occ], a, feet, sampling_steps=steps)
+        expected = head & foot
+        assert not expected[at], 'either door alone leaves one point clear'
+        assert np.array_equal(cf._blocked_sight_points(geo, [occ], a, heads, sampling_steps=steps), expected)
+        assert np.array_equal(memo.blocked(geo, source, targets, [occ], None), expected)
+        head_blocked |= head
+        feet_blocked |= foot
+    expected = head_blocked & feet_blocked
+    assert expected[at], 'the head and feet must each clear every door'
+    assert np.array_equal(memo.blocked(geo, source, targets, blockers, None), expected)
+    assert memo.clear_row(geo, source, targets, blockers) is None
+    assert memo.clear_row(geo, source, targets, blockers) is None
+
+    def fail(*args, **kwargs):
+        pytest.fail('cached point rows must avoid new ray intersections')
+
+    with monkeypatch.context() as m:
+        m.setattr(cf, 'blocked_lines', fail)
+        assert np.array_equal(memo.blocked(geo, source, targets, blockers, None), expected)
+        packed = memo.clear_row(geo, source, targets, blockers)
+        assert packed is not None
+        assert np.array_equal(np.unpackbits(packed)[targets].astype(bool), ~expected)
+        assert memo.row_builds == len(blockers)
+        assert np.array_equal(memo.clear_row(geo, source, targets, blockers), packed)
+    assert memo.row_hits == len(blockers)
+
+
+@pytest.mark.parametrize('height_map', [False, True])
+def test_a_source_without_an_eye_keeps_single_point_keys_and_byte_accounting(height_map):
+    from tests.replays.control_toys import toy_geometry, toy_heights
+
+    geo = copy.copy(toy_heights('DoorNoEye', [(192, 192, 288, 216)]) if height_map else
+                    toy_geometry('DoorFlatRows', [(192, 192, 288, 216)]))
+    source = geo.cell_of_px(196, 204)
+    if height_map:
+        geo.node_z = geo.node_z.copy()
+        geo.node_z[source] = np.nan
+    targets = np.flatnonzero(np.unpackbits(geo.rows[geo.row_of[source]])[:geo.n])
+    occ = panel(256)
+    memo = fv.SightCache(geo)
+    expected = memo.blocked(geo, source, targets, [occ], None)
+    size = (geo.n + 7) // 8
+    steps = int(np.ceil(np.linalg.norm(geo.centres[targets] - geo.centres[source], axis=1).max())) + 1
+    key = (occ.mask_digest, occ.bottom, occ.top, occ.all_height, int(source), steps)
+    assert list(memo.entries) == [key]
+    assert len(memo.entries[key]) == 3
+    assert memo.bytes == 2 * size + 1024
+    for _ in range(3):
+        packed = memo.clear_row(geo, source, targets, [occ])
+    assert packed is not None and len(memo.rows[key]) == 3
+    assert memo.row_bytes == size + 1024
+    assert np.array_equal(np.unpackbits(packed)[targets].astype(bool), ~expected)
+
+
 def test_exact_union_reuse_keys_dynamic_inputs_and_returns_independent_results():
     geo = copy.copy(open_hall())
     source, _ = context(geo)
@@ -92,8 +198,9 @@ def test_row_and_union_memory_limits(monkeypatch):
     assert len(memo.rows) < 10 and len(memo.unions) < 10
 
 
-def test_only_resting_rows_persist_and_corruption_rebuilds(tmp_path):
-    geo = copy.copy(open_hall())
+@pytest.mark.parametrize('height_bands', [False, True])
+def test_only_resting_rows_persist_and_corruption_rebuilds(tmp_path, height_bands):
+    geo = copy.copy(bridge() if height_bands else open_hall())
     source, targets = context(geo)
     memo = fv.SightCache(geo)
     memo.row_path = tmp_path / 'rows.npz'
@@ -108,6 +215,9 @@ def test_only_resting_rows_persist_and_corruption_rebuilds(tmp_path):
     warm._load_rows(geo)
     assert len(warm.rows) == 1 and warm.row_bytes > 0
     assert not next(iter(warm.rows.values()))[0].flags.writeable
+    if height_bands:
+        assert len(next(iter(warm.rows.values()))) == 4
+        assert not next(iter(warm.rows.values()))[3].flags.writeable
     assert np.array_equal(warm.clear_row(geo, source, targets, [resting]),
                           memo.clear_row(geo, source, targets, [resting]))
     memo.row_path.write_bytes(b'broken cache')

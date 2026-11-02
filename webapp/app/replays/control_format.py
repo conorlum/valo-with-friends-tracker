@@ -46,7 +46,7 @@ import struct
 import time
 from pathlib import Path
 
-CONTROL_REVISION = 20    # 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
+CONTROL_REVISION = 22    # 22: airborne holders cast against learnt box plates (2026-10-31); 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
@@ -56,7 +56,7 @@ HEIGHT_VERSION = 3            # explicit 4-pixel refinement; archived v2 assets 
 # The rules a build follows. Bump it for ANY change to how rounds become heights (a constant in
 # app/control/heights.py, the code of height_build.py or height_motion.py): every map's rebuild is then due.
 # tests/replays/test_height_inputs.py pins it to the constants' hash, as CONTROL_REVISION is pinned.
-HEIGHT_RULES_REVISION = 5      # 5: physical sight checks also accept tracks without team membership
+HEIGHT_RULES_REVISION = 6      # 6: the build learns box tops (steady stands players got up to) into `box_tops` (2026-10-27); 5: physical sight checks also accept tracks without team membership
 HEIGHT_SUPPORTED_MIN = 0.60   # the bar: share of walkable cells with a supported floor
 KILL_LINE_BAR = 0.02          # the kill-line check: at most this share of real kill lines blocked
 

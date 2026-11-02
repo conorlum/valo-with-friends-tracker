@@ -5,7 +5,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
-  ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"]}` (`possessed` and
+  ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"], ["area"]}` (`area`,
+  on Viper's Pit, is `[[[u, v], ...], ...]`: the ground it covers, one hull per fragment, revision 23; `possessed` and
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
   point's fourth value are heights in decimetres of world z, each left out when the export gave none:
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
@@ -24,7 +25,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
   lifetime, so it is its own kind and not an `ability`.
 - `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
-  object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`).
+  object (Miks' Harmonize, revision 22), one row per player it buffed, the caster's own included (`find_buffs`);
+  Veto's Evolution (`X_Evolution`, revision 23) is one on himself, to his death or the round's end.
 - `{"k": "equip", "t", "by", "code", "name"}`: a player switching to their ult's equippable (revision 22,
   `Raw.ult_equips`), once per switch.
 
@@ -179,6 +181,61 @@ def _seconds(t_ms: int, start: int) -> float:
     return round((t_ms - start) / 1000.0, 3)
 
 
+def crouch_spans(rows: list[tuple[int, int, bool]], pawn_slot: dict[int, int],
+                 windows: list[tuple[int, int, int]],
+                 pawn_changes: dict[int, list[tuple[int, int]]] | None = None,
+                 ) -> dict[int, dict[int, list[list[float]]]]:
+    """CrouchHeld transitions per pawn, clipped to each playback window in round seconds.
+
+    Repeated True rows leave the span open; False closes it. Unknown pawns are ignored. State
+    carries across windows, with gaps omitted, and an unclosed span lasts to each round's end.
+    A pawn's spans end at the spawn of the slot's next pawn (`pawn_changes`, slot -> [(spawn ms,
+    pawn)]): a player who dies holding the key records no False, and the next pawn can't close it.
+    Spans touching or overlapping on the same slot merge (including successive character pawns).
+    """
+    if not windows:
+        return {}
+    by_pawn: dict[int, list[tuple[int, bool]]] = defaultdict(list)
+    for t_ms, pawn, held in rows:
+        if pawn in pawn_slot:
+            by_pawn[pawn].append((t_ms, held))
+    replaced_at: dict[int, int] = {}
+    for spawns in (pawn_changes or {}).values():
+        ordered = sorted(spawns)
+        for (_, pawn), (next_spawn, _) in zip(ordered, ordered[1:]):
+            replaced_at[pawn] = next_spawn
+    clipped: dict[int, dict[int, list[list[float]]]] = {}
+    for pawn, changes in by_pawn.items():
+        opened = None
+        intervals = []
+        for t_ms, held in sorted(changes, key=lambda change: change[0]):
+            if held:
+                if opened is None:
+                    opened = t_ms
+            elif opened is not None:
+                intervals.append((opened, t_ms))
+                opened = None
+        if opened is not None:
+            intervals.append((opened, windows[-1][2]))
+        last = replaced_at.get(pawn, windows[-1][2])
+        for lo, hi in intervals:
+            for n, (start, _, end) in enumerate(windows, 1):
+                t0, t1 = max(lo, start), min(hi, end, last)
+                if t0 < t1:
+                    clipped.setdefault(n, {}).setdefault(pawn_slot[pawn], []).append(
+                        [_seconds(t0, start), _seconds(t1, start)])
+    for slots in clipped.values():
+        for slot, spans in slots.items():
+            merged = []
+            for lo, hi in sorted(spans):
+                if merged and lo <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], hi)
+                else:
+                    merged.append([lo, hi])
+            slots[slot] = merged
+    return clipped
+
+
 def _dm(z: float) -> int:
     """World z (cm) as the blob stores a height: whole decimetres, no map offset."""
     return int(round(z / 10.0))
@@ -258,6 +315,9 @@ class Raw:
     # The `FXC.Distance` of a one-shot an ability object played on itself: a ZERO/point pulse's suppress
     # radius in world units (1500 on every knife of the first KAY/O export). guid -> the first one seen.
     object_ranges: dict[int, float] = field(default_factory=dict)
+    # The ground an area ability covers (Viper's Pit), from its GroundVolumeComponent's fragments: guid ->
+    # {fragment id: [(x, y), ...]}, a convex hull each (about 2 m squares), as the last update left them.
+    footprints: dict[int, dict[int, list[tuple[float, float]]]] = field(default_factory=lambda: defaultdict(dict))
     # A projectile's flight: its replicated movement, which the export gives in metres (stored here in world
     # units, x100; W2's unit audit). guid -> [(ms, x, y, z | None)], from its latest spawn.
     flights: dict[int, list[tuple[int, float, float, float | None]]] = field(default_factory=lambda: defaultdict(list))
@@ -277,6 +337,8 @@ class Raw:
     # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
     # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
+    # Every raw CrouchHeld transition, including unknown pawns for the diagnostic count.
+    crouch: list[tuple[int, int, bool]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -291,7 +353,8 @@ _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
-                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"')
+                           f'"{RPC_FORCE}"', '"NewCurrentEquippable"', '"CrouchHeld"',
+                           '"FragmentDelta"')   # every ground delta, a delete-only one too (branch review B19)
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -381,6 +444,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.origins.pop(guid, None)
                 raw.flights.pop(guid, None)
                 raw.typed_walls.pop(guid, None)
+                raw.footprints.pop(guid, None)      # a reused GUID's ground starts empty (branch review B20)
                 equip_now.pop(guid, None)
                 waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
                 for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:
@@ -528,6 +592,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
                     continue
+                if "CrouchHeld" in payload:
+                    raw.crouch.append((t_ms, guid, bool(payload["CrouchHeld"])))
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
                 held_now = payload.get("NewCurrentEquippable")
@@ -546,6 +612,16 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         raw.flights[guid].append((t_ms, float(where["x"]) * REPLICATED_SCALE,
                                                   float(where["y"]) * REPLICATED_SCALE,
                                                   None if z is None else float(z) * REPLICATED_SCALE))
+                delta = payload.get("FragmentDelta")
+                if isinstance(delta, dict) and guid in actors:
+                    shape = raw.footprints[guid]
+                    for update in delta.get("Updates") or ():
+                        hull = [(float(p["Point"]["x"]), float(p["Point"]["y"])) for p in update.get("ConvexHullPoints") or ()
+                                if isinstance(p, dict) and isinstance(p.get("Point"), dict)]
+                        if hull:
+                            shape[int(update.get("ReplicationID", len(shape)))] = hull
+                    for gone in delta.get("DeletedIds") or ():
+                        shape.pop(gone, None)
                 if guid in walls and isinstance(payload.get("WallActivated"), bool):
                     raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
                 actor_list = payload.get("Actors")
@@ -954,6 +1030,9 @@ STATUS_OBJECTS = (
     (re.compile(r"^Breach_(E_SweetSpotFissure|X_Shockwave)$"), "concussed"),
     (re.compile(r"^Rift_Q_FlashBurst$"), "concussed"),
     (re.compile(r"^Smonk_Q_DecayExplosion$"), "decayed"),
+    # Viper's Pit: an enemy inside it gets an effect naming the Pit (and a debuff naming Viper beside it, for the same
+    # span), from stepping in to leaving or the cloud falling (trap-jobs D13: 386 Cypher 5.0 s, Iso 1.3 s; 346 Skye).
+    (re.compile(r"^Pandemic_X_Circular$"), "decayed"),
     (re.compile(r"^(Deadeye_E_Slow_Large|Thorne_4_SlowField_Production)$"), "slowed"),
     (re.compile(r"^Sprinter_Q_ElectricSphere$"), "concussed"),    # Neon's Relay Bolt (caster-named)
     (re.compile(r"^Cable_Q_SoundSensor_Fissure$"), "concussed"),  # Deadlock's Sonic Sensor (caster-named)
@@ -997,17 +1076,29 @@ STATUS_KNOWN_MS = {"suppressed": 8000}
 # the stop comes later (one 11.0 s Harmonize in 47a5f123). Code -> the stored name.
 BUFF_SELF = {"Iris": "Q_Harmonize"}
 BUFF_TEAM_MS = 150
+# Buffs that last until removed (`FXC.Buff.Duration` -1) on the caster's own character, context naming it (trap-jobs
+# D10, CONDENSE 23): Veto's Evolution, after its 1 s windup, to his death or the round's end. 4 of 4 uses in
+# 6e52839b and 47a5f123 stop in the ms he dies; it is his only such effect. Code -> the stored name.
+BUFF_SELF_UNTIL_REMOVED = {"Pine": "X_Evolution"}
 
 
 def find_buffs(effects: list[_Effect], players: PlayerTable, code_of_agent: dict[str, str],
                teams: dict[int, str | None] | None = None) -> list[dict]:
     """[{t_ms, t1_ms | None, by, target, code, name}]: one per buffed player, the caster's own first."""
+    out = []
+    for e in effects:
+        slot = players.pawn_slot.get(e.actor)
+        if e.oneshot or e.buff != -1 or slot is None or e.actor not in e.context:
+            continue
+        code = code_of_agent.get(players.agents[slot])
+        if code in BUFF_SELF_UNTIL_REMOVED:
+            out.append({"t_ms": e.t_ms, "t1_ms": e.stop_ms, "by": slot, "target": slot, "code": code,
+                        "name": BUFF_SELF_UNTIL_REMOVED[code]})
     candidates = [e for e in effects if not e.oneshot and e.buff is not None and e.buff > 0
                   and players.pawn_slot.get(e.actor) is not None]
     by_container: dict = defaultdict(list)
     for e in candidates:
         by_container[e.container].append(e)
-    out = []
     for e in candidates:
         slot = players.pawn_slot[e.actor]
         code = code_of_agent.get(players.agents[slot])
@@ -1767,6 +1858,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     out = Extras()
     counts: Counter[str] = Counter()
+    crouch = crouch_spans(raw.crouch, players.pawn_slot, windows, players.pawn_changes)
+    for n, slots in crouch.items():
+        out.rounds.setdefault(n, {"abilities": [], "shots": []})["crouch"] = slots
+    counts["crouch_rows"] = len(raw.crouch)
+    counts["crouch_unknown_pawn"] = sum(pawn not in players.pawn_slot for _, pawn, _ in raw.crouch)
+    counts["crouch_spans"] = sum(len(spans) for slots in crouch.values() for spans in slots.values())
     for equip in raw.equips:
         equip.code, equip.name = normalize_archetype(equip.code, equip.name, agents_by_code)
     resolve_equippables(raw.equips, players, agent_code, counts)
@@ -1879,18 +1976,23 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
         # doesn't use utility up: a trip, a Vyse flash or a Killjoy turret stays until it's destroyed.
         gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
-        # Leer's lethal hit lands in the very ms it closes (D10: for this name only, never widened).
-        same_ms_ok = actor.name == LEER_NAME
-        if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms
-                     or (same_ms_ok and min(gone) <= actor.closed_ms)):
+        # A lethal hit usually lands in the very ms the object closes (Leer, a shot alarmbot, turret or camera),
+        # so a hit at the close counts (trap-jobs D4, CONDENSE 23; Leer alone had it before).
+        if gone and (actor.closed_ms is None or min(gone) <= actor.closed_ms):
             entry["gone"] = max(0.0, _seconds(min(min(gone), end), start))
             counts["abilities_gone_early"] += 1
-            counts["leer_gone"] += same_ms_ok
+            counts["leer_gone"] += actor.name == LEER_NAME
         elif (actor.name == DIZZY_NAME and actor.closed_ms is not None
               and actor.closed_ms - actor.t_ms < DIZZY_EARLY_MS and actor.closed_ms <= end
               and _dizzy_shot_down(actor.closed_ms, spawners_at, shots_at)):
             entry["gone"] = max(0.0, _seconds(actor.closed_ms, start))
             counts["dizzy_gone"] += 1
+        if raw.footprints.get(actor.guid):
+            # The ground it covers, one map-px hull per fragment (Viper's Pit: 215-236 m2 on 3 casts, edges 11.6-12.8 m
+            # from its centre: not a circle; trap-jobs D13).
+            entry["area"] = [[list(game_map.to_uv(x, y)) for x, y in hull]
+                             for _, hull in sorted(raw.footprints[actor.guid].items())]
+            counts["ability_areas"] += 1
         if actor.name == "4_SmokeGrenade" and actor.kind == "Projectile":
             poison_emitters.append((entry, actor, slot, start, end))   # linked to its zones once all owners are known
         if actor.kind == "Bomb":

@@ -100,7 +100,8 @@ def test_an_enemy_above_their_floor_is_spotted_at_their_own_height():
     assert 5 not in on_ground.sees[0] and on_ground.direct == {}
     raised = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)})
     assert raised.holders[5].cell == on_ground.holders[5].cell and not raised.holders[0].body[raised.holders[5].cell]
-    assert 5 in raised.sees[0] and raised.direct == {(0, 5): True}, "seen, and in the active cone"
+    assert 5 in raised.sees[0] and raised.direct[(0, 5)] is True, "seen, and in the active cone"
+    assert 0 in raised.sees[5] and (5, 0) in raised.direct, "a pair touching the air: the same lines the other way"
     away = tick(geo, {0: still("A", x, Y, 180, 4.0), 5: still("B", out, Y, 180, 2.4)})
     assert 5 not in away.sees[0], "not behind the viewer"
     flashed = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)},
@@ -157,7 +158,7 @@ def test_the_unknown_stays_on_its_floor():
 
 def drop_ledge(height: float, how: int):
     """West of x 256 is `height` m up; the ledge can be left at y 204 only, by a one-way drop of kind `how`."""
-    return toy_heights(f"Ledge{height}-{how}", [HALL], ground=[((96, 96, 256, 296), height)],
+    return toy_heights(f"Ledge{height}-{how}-step{hc.STEP_UP_M}", [HALL], ground=[((96, 96, 256, 296), height)],
                        links=[((252, Y, 0), (260, Y, 0), True, how)])
 
 
@@ -172,9 +173,12 @@ def unknown_below(geo, from_top: bool = True) -> np.ndarray:
 
 
 @pytest.mark.slow
-def test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up():
+def test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up(monkeypatch):
     # docs/superpowers/specs/2026-10-05-height-slopes-design.md, part 5
-    for geo in (drop_ledge(4.0, hc.EDGE_SLIDE), drop_ledge(1.0, hc.EDGE_FALL)):
+    slide = drop_ledge(4.0, hc.EDGE_SLIDE)
+    # A 1 m ledge is a step since height rules 6 (STEP_UP_M 1.0): the old 0.7 m step keeps it a low fall.
+    monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
+    for geo in (slide, drop_ledge(1.0, hc.EDGE_FALL)):
         assert (node(geo, 252), node(geo, 260), True) in topology.of(geo).links
         assert unknown_below(geo)[node(geo, 300)], "from the top it reaches the low ground"
         up = unknown_below(geo, from_top=False)

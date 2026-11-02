@@ -49,8 +49,11 @@ _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
 
 
-def compute(db) -> dict:
-    """Every stored round under one state: "done" or the key of its first stuck step."""
+def round_states(db) -> dict:
+    """Every stored round's first stuck step, with the replay rows and recipe used to judge it.
+
+    Shared with the errors reader so its failures follow the dispatcher's freshness rules too.
+    """
     recipe = uploads.site_recipe()
     replays = {r.id: r for r in db.query(Replay)}
     rounds = [(rid, n) for rid, n in db.query(ReplayRound.replay_id, ReplayRound.round_number)]
@@ -95,6 +98,14 @@ def compute(db) -> dict:
         return "done"
 
     states = {key: state(key) for key in rounds}
+    return {"states": states, "replays": replays, "recipe": recipe,
+            "fingerprints": {key: planned.fingerprint for key, planned in every.items()}}
+
+
+def compute(db) -> dict:
+    """Every stored round under one state: "done" or the key of its first stuck step."""
+    collected = round_states(db)
+    states, replays, recipe = collected["states"], collected["replays"], collected["recipe"]
     order = {key: i for i, (key, _, _) in enumerate(STEPS)}
     matches: dict[str, dict] = {}
     for (replay_id, _), found in states.items():
@@ -105,7 +116,7 @@ def compute(db) -> dict:
         elif row["first"] is None or order[found] < order[row["first"]]:
             row["first"] = found
     counts = Counter(states.values())
-    total = len(rounds)
+    total = len(states)
     done = counts.pop("done", 0)
     steps = [{"key": key, "label": label, "automatic": automatic, "rounds": counts[key]}
              for key, label, automatic in STEPS if counts.get(key)]

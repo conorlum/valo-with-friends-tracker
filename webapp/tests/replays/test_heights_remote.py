@@ -37,6 +37,19 @@ from app.services import replay_heights_remote as hr  # noqa: E402
 
 GRID = 128
 
+
+def test_out_of_tries_tracks_only_current_due_manifests(monkeypatch):
+    due = hr.Due("Ascent", {"map": "Ascent", "synthetic": "manifest"}, [], "synthetic")
+    state = hr.HeightState()
+    state.tries[hi.key(due.manifest)] = (hr.MAX_TRIES, 0)
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[due]))
+    monkeypatch.setattr(hr, "_retire_spent_evidence", lambda *args: None)
+    assert hr.step(None, None, None, state, 100, {}) == set()
+    assert state.out_of_tries == frozenset({"Ascent"})
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan())
+    hr.step(None, None, None, state, 200, {})
+    assert state.out_of_tries == frozenset()
+
 TEST_CHECK_BYTES = b'{"lines": []}'
 TEST_CHECK_SHA = __import__("hashlib").sha256(TEST_CHECK_BYTES).hexdigest()[:12]
 

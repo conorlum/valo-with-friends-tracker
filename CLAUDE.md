@@ -189,7 +189,7 @@ See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-aud
 
 **Which tests a change needs:** `python scripts/test_catalog.py plan --git` (or `plan <paths>`) names the suites
 from `tests/suites.toml` that guard the changed files, with each lane's estimated time and command; `run --git`
-runs them and reports each suite against its estimate; `list` describes all 24 suites. A new test file or app
+runs them and reports each suite against its estimate; `list` describes all 25 suites. A new test file or app
 module goes into `tests/suites.toml` (`check`, run by `tests/test_test_catalog.py`, fails otherwise).
 
 | Lane | Arguments after `-m pytest` |

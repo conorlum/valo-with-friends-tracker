@@ -36,13 +36,8 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 from app.control import geometry as cg  # noqa: E402
 
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
-RISK1_BAR = 0.02
-
-
-def kill_line_result(sight: np.ndarray, lines: list) -> dict:
-    blocked = sum(cg.line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in lines)
-    share = blocked / len(lines)
-    return {"qualifying": len(lines), "blocked": blocked, "share": round(share, 4), "passes": share <= RISK1_BAR}
+RISK1_BAR = cg._RISK1_BAR
+kill_line_result = cg.kill_line_result     # one rule for the build and the tests (lines on cover aren't judged)
 
 
 def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> dict:
@@ -66,7 +61,7 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
            "walkable_cells": int(geo.walk.sum()), "cell_m": round(geo.cell_m, 3),
            "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
            "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
-           "kill_lines": kill_line_result(m.sight, lines) if lines else None}
+           "kill_lines": kill_line_result(m.sight, lines, m.cover) if lines else None}
     # The buy-phase barriers (their own mask; neither sight nor walk): only when painted.
     barrier_path = asset_dir / f"{name}.barrier.png"
     if entry.get("barrier_paint"):
@@ -75,6 +70,14 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
         row["barrier_sha"] = hashlib.sha256(np.packbits(barrier).tobytes()).hexdigest()[:12]
     elif barrier_path.is_file():
         barrier_path.unlink()
+    # The boxes a player can stand on and see over (cover that blocks sight only because of its tag): only when any.
+    cover_path = asset_dir / f"{name}.cover.png"
+    over = cg.see_over_cover(rgba, entry)
+    if over.any():
+        cg.write_mask_png(cover_path, over)
+        row["cover_sha"] = hashlib.sha256(np.packbits(over).tobytes()).hexdigest()[:12]
+    elif cover_path.is_file():
+        cover_path.unlink()
     # The Stage 6 paints, only when a map has any (so earlier entries stay as they were).
     paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint", "bullet_paint")
               if entry.get(key)]

@@ -1,0 +1,25 @@
+{
+  "box_hall_empty": {
+    "data": "45aef631c9820a72",
+    "summary": "a15e2634372efcc1"
+  },
+  "geometry_inputs": {
+    "fingerprint": "6a2ce4ec3dad1043",
+    "inputs": {
+      "barrier": "06d022399053",
+      "scale": 8.1e-05,
+      "sight": "8342f6714685",
+      "specials": [],
+      "walk": "42d1d3f29a3c"
+    },
+    "map": "Abyss"
+  },
+  "heights_ledge": {
+    "data": "55f314aba8bcb7c8",
+    "summary": "52e3a1df0b8b7323"
+  },
+  "open": {
+    "data": "860b06914cdab51a",
+    "summary": "8e05b64cd65b3871"
+  }
+}

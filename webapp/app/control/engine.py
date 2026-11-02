@@ -95,6 +95,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from scipy import ndimage
@@ -105,6 +106,8 @@ from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
+from app.control import stance
+from app.control.stance import Stance, stance_at
 from app.control.routes import RouteLog
 from app.replays import choke_assets
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
@@ -116,6 +119,9 @@ SHOT_WINDOW_S = 0.25
 SECTION_S = 10.0
 
 FOV_HALF = 51.5
+OVER_SEEN = True  # Enemies see a player over a box by the exact line, like on_box
+JUMP_SIGHT = True  # Airborne fans and pairs use learnt box plates (R2/R3).
+_plate_calls = 0
 RUN_MPS, WALK_MPS = 5.0, 1.5
 # "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
 # seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
@@ -357,6 +363,8 @@ class RoundInputs:
         self._segment: dict[int, np.ndarray] = {}   # slot -> each sample's track segment index
         self.tracks = {}
         self.heights: dict[int, np.ndarray] = {}     # slot -> position-z per sample, metres above the map's origin
+        # slot -> raw position-z per sample in metres (no origin subtracted), on every map; NaN without z
+        self.track_z: dict[int, np.ndarray] = {}
         origin = geo.heights.origin_z if geo.heights is not None else 0
         for s, segs in (blob.get("tracks") or {}).items():
             parts = [(g["t0"] + np.arange(len(g["u"])) / self.hz, _decode(g["u"]), _decode(g["v"]),
@@ -364,6 +372,9 @@ class RoundInputs:
             self.tracks[int(s)] = tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
             self._segment[int(s)] = np.concatenate([np.full(len(g["u"]), i) for i, g in enumerate(segs)]) if segs \
                 else np.zeros(0, int)
+            if segs:
+                self.track_z[int(s)] = np.concatenate([
+                    _decode(g["z"]) / 10.0 if "z" in g else np.full(len(g["u"]), np.nan) for g in segs])
             if geo.heights is not None and segs:
                 # NaN where a segment was stored without z (before revision 11, or the parser gave none)
                 self.heights[int(s)] = np.concatenate([
@@ -414,6 +425,8 @@ class RoundInputs:
                 self.missing["approximate heights (a player's track has no z: lowest floor used)"] += 1
             if geo.height_unknown:
                 self.missing["height asset built on another walk mask (flat 2D in the cells it lacks)"] += 1
+            if geo.height_tops_ignored:
+                self.missing["learnt box tops ignored without refinement"] += 1
 
     # --- lives
 
@@ -761,7 +774,7 @@ class RoundInputs:
                 start = np.zeros(geo.n, bool)
                 start[node] = True
                 steps = int(math.ceil(AREA_TRIPS[key] / geo.cell_m)) + 1
-                walked = topology.of(geo).dilate(start, eight=True, iterations=steps, within=geo.walk_n)
+                walked = topology.of(geo).dilate(start, eight=True, iterations=steps, within=geo.walk_n & ~geo.is_top)
                 self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & seen & walked)))
         elif key in DRONES and e.get("path"):
             half, rng = DRONES[key]
@@ -1145,6 +1158,8 @@ class Holder:
     mode: str
     memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
     blind: bool = False      # flashed now (P07): alive, in place and seen, with no personal control
+    stance: Stance | None = None   # W12: standing on / beside a cover piece (nothing sets it yet)
+    air: bool = False
 
 
 # Zero personal control while blinded (P07; the design's section 2, the plan's amendment "Blinded control"). A
@@ -1191,6 +1206,132 @@ class Fill:
 
     def safe(self, walk: np.ndarray) -> np.ndarray:
         return walk & ~self.seen & ~self.free
+
+
+def _on_box(h) -> bool:
+    """A holder standing on a cover piece (seen by the physical line, W14); beside one is held at the anchor."""
+    return h.stance is not None and h.stance.kind == "on_box"
+
+
+def _seen_over(h) -> bool:
+    return _on_box(h) or (OVER_SEEN and h.stance is not None and h.stance.kind == "over")
+
+
+def _airborne_at(geo, rnd, s: int, t: float, cell: int, st: Stance | None) -> bool:
+    """R2: feet above the anchor floor; unresolved ground uses the nearby piece's ring floor."""
+    if not JUMP_SIGHT or geo.heights is None or (st is not None and st.kind == "on_box"):
+        return False
+    z = rnd.height(s, t)
+    if z is None:
+        return False
+    floor = _floor_at(geo, rnd, s, t, cell, st)
+    if floor is None:
+        return False
+    return bool(z - floor > hc.STAND_TOL_M)
+
+
+def _floor_at(geo, rnd, s: int, t: float, cell: int, st: Stance | None) -> float | None:
+    """The floor slot s stands or jumps from (position-z): the anchor's; on unresolved ground, the nearby piece's ring
+    floor; None when neither is known. The jump-peek limit is measured from it (`geometry.plate_z`)."""
+    floor = float(geo.node_z[cell])
+    if not math.isnan(floor):
+        return floor
+    piece = int(st.piece) if st is not None and st.piece else 0
+    p = rnd.pos(s, t)
+    if p is None:
+        return None
+    ix, iy = int(p[0]), int(p[1])
+    if (not piece and geo.cover_px is not None
+            and 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]):
+        piece = int(geo.cover_px[iy, ix])
+        if not piece and geo.box_view_reach is not None:
+            piece = int(geo.box_view_reach[iy, ix, 0])
+    if not piece or piece not in geo.box_ground:
+        return None
+    return float(geo.box_ground[piece])
+
+
+def _eye_at(geo, rnd, s: int, t: float, node: int) -> float | None:
+    """Slot s's eye height: their own z + EYE_M, the floor they stand on without z, None (2D) on a
+    flat map or an unresolved cell."""
+    if geo.heights is None:
+        return None
+    z = rnd.height(s, t)
+    if z is None:
+        z = geo.node_z[node]
+    return None if np.isnan(z) else float(z) + hc.EYE_M
+
+
+def _plate_line(geo, rnd, t: float, smokes, e, h, target_z: float, record: dict | None) -> bool:
+    """One plate line from e's eye to h's point at target_z (head or feet); skip only its ends (R3/R4).
+    `e` and `h` need slot, cell, x, y and stance."""
+    global _plate_calls
+    ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+    pieces = []
+    for end in (e, h):
+        piece = int(end.stance.piece) if end.stance is not None else 0
+        if end.stance is None and geo.cover_px is not None:
+            ix, iy = int(end.x), int(end.y)
+            if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1]:
+                piece = int(geo.cover_px[iy, ix])
+        pieces.append(piece)
+    _plate_calls += 1
+    return los(geo, (ex, ey, _eye_at(geo, rnd, e.slot, t, e.cell)), (h.x, h.y, target_z), smokes,
+               record=record, plates=True, skip=tuple(pieces), floor=_floor_at(geo, rnd, e.slot, t, e.cell, e.stance))
+
+
+def _air_pair_sight(rnd, viewer: int, target: int, t: float, smokes) -> bool | None:
+    """For sight queries outside a Tick (fights): the two lines of a pair touching the air, as `Tick._air_seen`.
+    None when it isn't one (neither end airborne, or no eye height): the caller's own rule applies."""
+    geo = rnd.geo
+    if not JUMP_SIGHT or geo.heights is None:
+        return None
+    ends = []
+    for s in (viewer, target):
+        p = rnd.pos(s, t)
+        if p is None:
+            return None
+        st = stance.boxed_stance(rnd, s, t)
+        cell = st.anchor if st is not None and st.anchor is not None else rnd.node(s, t, p[0], p[1])
+        ends.append(SimpleNamespace(slot=s, cell=cell, x=p[0], y=p[1], stance=st, air=_airborne_at(geo, rnd, s, t, cell, st)))
+    e, h = ends
+    if not (e.air or h.air) or _eye_at(geo, rnd, viewer, t, e.cell) is None:
+        return None
+    z = rnd.height(target, t)
+    if z is None or np.isnan(z):
+        z = geo.node_z[h.cell]
+    if np.isnan(z):
+        return False
+    return (_plate_line(geo, rnd, t, smokes, e, h, float(z) + hc.HEAD_M, None)
+            or _plate_line(geo, rnd, t, smokes, e, h, float(z) + hc.FEET_M, None))
+
+
+def _air_pair_clear(rnd, a: int, b: int, t: float, smokes) -> bool | None:
+    """A sight line between a and b either way, for callers that ask whether a line exists (smoke cover, a kill
+    through smoke) rather than who sees whom: for a pair touching the air, either way's two lines (`_air_pair_sight`).
+    None when the pair isn't one: the caller's 2D line applies (branch review 2)."""
+    one = _air_pair_sight(rnd, a, b, t, smokes)
+    if one:
+        return True
+    other = _air_pair_sight(rnd, b, a, t, smokes)
+    if one is None and other is None:
+        return None
+    return bool(other)
+
+
+def _smoke_key(smokes: list) -> tuple:
+    """A hashable of a tick's smokes by content (circles as they are, a Wall by its segments, a bounded
+    occluder by its owner, band and mask), for the on-box presence memo."""
+    out = []
+    for sm in smokes:
+        if isinstance(sm, Wall):
+            out.append(("wall", sm.segs.tobytes()))
+        elif hasattr(sm, "mask"):
+            out.append(("occ", sm.owner, sm.bottom, sm.top, sm.all_height,
+                        sm.mask_digest if sm.mask_digest is not None else hash(sm.mask.tobytes())))
+        else:
+            out.append(tuple(sm))
+    return tuple(out)
 
 
 def sector(geo: Geometry, x: float, y: float, yaw: float, half: float) -> np.ndarray:
@@ -1368,6 +1509,7 @@ class Tick:
     """The inputs of one tick, and `compose` (the state) with or without a removed player."""
 
     def __init__(self, rnd: RoundInputs, t: float, timings: dict | None = None):
+        global _plate_calls
         geo = self.geo = rnd.geo
         self.topo = topology.of(geo)
         self.rnd, self.t = rnd, t
@@ -1376,12 +1518,14 @@ class Tick:
         timings = timings if timings is not None else defaultdict(float)
         started = time.perf_counter()
         self.holders: dict[int, Holder] = {}
+        every: dict[int, tuple] = {}   # the same for every viewer (flat maps too), for in-box targets
         looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
             if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
+        reach = (geo.box_view_reach if stance.OVER else geo.box_reach) if geo.cover_px is not None else None
         for s in sorted(rnd.team):
             if not rnd.alive(s, t):
                 continue
@@ -1390,38 +1534,72 @@ class Tick:
                 continue
             x, y, yaw = p
             cell = rnd.node(s, t, x, y)
+            st = None
+            if geo.cover_px is not None:   # W13: only a player inside a cover piece asks for a stance
+                ix, iy = int(x), int(y)
+                if 0 <= iy < geo.cover_px.shape[0] and 0 <= ix < geo.cover_px.shape[1] and (
+                        geo.cover_px[iy, ix] or (reach is not None and reach[iy, ix, 0])):
+                    st = stance_at(rnd, s, t)
+            ex, ey = x, y
+            see_over = ()
+            if st is not None:
+                ex, ey = st.eye_px
+                see_over = st.see_over
+                if st.anchor is not None:
+                    cell = st.anchor
+            air = self._airborne(s, t, cell, st)
             mode = rnd.movement(s, t, p)
             if s in using:
                 raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
+            elif air:
+                raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
+                           eye_z=self._eye(s, t, cell),
+                           own=st.own if st is not None and st.own is not None else cell,
+                           record=self.fallbacks, see_over=(), plates=True, floor=_floor_at(geo, rnd, s, t, cell, st))
+                _plate_calls += 1
             else:
-                raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
-                           eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks)
+                raw = cast(geo, ex, ey, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
+                           eye_z=self._eye(s, t, cell),
+                           own=st.own if st is not None and st.own is not None else cell,
+                           record=self.fallbacks, see_over=see_over)
             body = raw.copy()
             blind = _during(rnd.flashed[s], t)
             if blind:
                 body[:] = False
             elif _during(rnd.nearsight[s], t):
                 r = NEARSIGHT_RADIUS_M / geo.m_per_px
-                body &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) < r * r
+                body &= ((geo.centres[:, 0] - ex) ** 2 + (geo.centres[:, 1] - ey) ** 2) < r * r
             if _during(rnd.downgraded[s], t):
                 active = np.zeros(geo.n, bool)
             else:
-                active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
+                active = body & sector(geo, ex, ey, yaw, CONE_HALF[mode])
             passive = body & ~active
             if not blind:
-                passive |= self._presence(x, y, cell) & ~active
+                if st is None:
+                    passive |= self._presence(x, y, cell) & ~active
+                else:
+                    passive |= self._presence(x, y, cell, st, s, t) & ~active
             watch = self._watch(s, t, blind)
             enemy = "B" if rnd.team[s] == "A" else "A"
             flagged = _during(rnd.contest_status[s], t) or _during(rnd.hit_contest[s], t) or any(
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
             self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode,
-                                     blind=blind)
-            if geo.heights is not None and s not in using:
-                looks[s] = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
-                            None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
+                                     blind=blind, stance=st, air=air)
+            if s not in using:
+                look = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
+                        None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
+                every[s] = look
+                if geo.heights is not None:
+                    looks[s] = look
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
+        self._head_clear: set[tuple[int, int]] = set()
+        self._feet_only: set[tuple[int, int]] | None = None
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
+        if any(_seen_over(h) for h in self.holders.values()):   # on-box and over targets by the physical line
+            self.direct.update(self._boxed(every))
+        if JUMP_SIGHT and any(h.air for h in self.holders.values()):
+            self.direct.update(self._air_viewers(every))
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
@@ -1434,7 +1612,8 @@ class Tick:
             self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
-                              if h.team != e.team and (e.body[h.cell] or (e.slot, h.slot) in self.direct)}
+                              if h.team != e.team and ((e.slot, h.slot) in self.direct if self._by_lines_only(e, h)
+                                                       else (e.body[h.cell] or (e.slot, h.slot) in self.direct))}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
         # side -> flat cells an unknown enemy could be in: extra sources of that side's free space
@@ -1456,22 +1635,32 @@ class Tick:
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
 
+    def _airborne(self, s: int, t: float, cell: int, st: Stance | None) -> bool:
+        """R2: feet above the anchor floor; unresolved ground uses the nearby piece's ring floor."""
+        return _airborne_at(self.geo, self.rnd, s, t, cell, st)
+
     def _eye(self, s: int, t: float, node: int) -> float | None:
         """Slot s's eye height: their own z + EYE_M, the floor they stand on without z, None (2D) on a
         flat map or an unresolved cell."""
-        if self.geo.heights is None:
-            return None
-        z = self.rnd.height(s, t)
-        if z is None:
-            z = self.geo.node_z[node]
-        return None if np.isnan(z) else float(z) + hc.EYE_M
+        return _eye_at(self.geo, self.rnd, s, t, node)
+
+    def _air_pair(self, e: Holder, h: Holder) -> bool:
+        """A pair touching the air, judged by the two lines: either end airborne, and e's eye has a height."""
+        return (h.air or e.air) and self._eye(e.slot, self.t, e.cell) is not None
+
+    def _by_lines_only(self, e: Holder, h: Holder) -> bool:
+        """Is h judged only by exact lines, never by e's view of the floor under them? True on a box, and for a pair
+        touching the air: the floor spot says nothing about a body above it, and a fan from the air reaching some of
+        h's cell says nothing about h's head or feet."""
+        return _on_box(h) or self._air_pair(e, h)
 
     def _direct(self, looks: dict) -> dict[tuple[int, int], bool]:
         """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
         tests a body standing on each floor, which is right for ground and for anyone standing on it; an
-        enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by the one exact line
-        from the viewer's eye to their real body, under the same limits as the view: the field of view,
-        a flash, nearsight, smokes and walls. It only ever adds a sighting."""
+        enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by exact lines
+        from the viewer's eye to their head or feet (plate lines for an airborne target, whose floor spot no
+        longer counts: `_by_lines_only`), under the same limits as the view: the field of view,
+        a flash, nearsight, smokes and walls."""
         geo, rnd, t = self.geo, self.rnd, self.t
         out = {}
         for s, (yaw, eye, flashed, nearsighted, cone) in looks.items():
@@ -1481,21 +1670,178 @@ class Tick:
             for h in self.holders.values():
                 z = rnd.height(h.slot, t) if h.team != e.team else None
                 floor = geo.node_z[h.cell]
-                if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
+                if h.team == e.team or _seen_over(h):
+                    continue    # on-box and over targets are `_boxed`'s
+                air = JUMP_SIGHT and h.air
+                if not air and (e.body[h.cell] or z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M):
                     continue
-                dx, dy = h.x - e.x, h.y - e.y
+                ex, ey = e.stance.eye_px if air and e.stance is not None else (e.x, e.y)
+                dx, dy = h.x - ex, h.y - ey
                 off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
                 if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
                     continue
-                if los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.BODY_M), self.smokes, record=self.fallbacks):
+                if air:
+                    if self._air_seen(e, h):
+                        out[(s, h.slot)] = cone is not None and off <= cone
+                    continue
+                head_clear = los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.HEAD_M), self.smokes, record=self.fallbacks)
+                if head_clear:
+                    self._head_clear.add((s, h.slot))
+                if (head_clear
+                        or los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.FEET_M), self.smokes, record=self.fallbacks)):
                     out[(s, h.slot)] = cone is not None and off <= cone
         return out
 
-    def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
+    def _air_line(self, e: Holder, h: Holder, *, target_z: float, record: bool = True) -> bool:
+        """One plate line from e's eye to h's point at target_z (head or feet); skip only its ends (R3/R4)."""
+        return _plate_line(self.geo, self.rnd, self.t, self.smokes, e, h, target_z, self.fallbacks if record else None)
+
+    def _air_seen(self, e: Holder, h: Holder) -> bool:
+        """A pair touching the air: a clear plate line from e's eye to h's head (feet + 2 m) or to h's feet, at h's real
+        height (the owner's rule)."""
+        z = self.rnd.height(h.slot, self.t)
+        if z is None or np.isnan(z):
+            z = self.geo.node_z[h.cell]
+        if np.isnan(z):
+            return False
+        return (self._air_line(e, h, target_z=float(z) + hc.HEAD_M)
+                or self._air_line(e, h, target_z=float(z) + hc.FEET_M))
+
+    def _air_viewers(self, every: dict) -> dict[tuple[int, int], bool]:
+        """Airborne viewers of grounded, non-box targets, by the two exact lines whatever the fan reached (R2/R4)."""
+        out = {}
+        if not JUMP_SIGHT:
+            return out
+        for s, (yaw, eye, flashed, nearsighted, cone) in every.items():
+            e = self.holders[s]
+            if not e.air or flashed:
+                continue
+            ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+            for h in self.holders.values():
+                if h.team == e.team or h.air or _seen_over(h) or (s, h.slot) in self.direct:
+                    continue
+                dx, dy = h.x - ex, h.y - ey
+                off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
+                if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * self.geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if self._air_seen(e, h):
+                    out[(s, h.slot)] = cone is not None and off <= cone
+        return out
+
+    def _boxed(self, every: dict) -> dict[tuple[int, int], bool]:
+        """Enemies on or over a box, seen by a clear head or feet line from the viewer's eye to the target's pixel,
+        or plate lines to the same two points when either end is airborne;
+        over their stance pieces (a target beside a box is held at its anchor cell and seen there, by the
+        ground rule): not flashed, inside the field of view, inside the
+        nearsight bubble if nearsighted, and the line clear of walls and smokes. Value: inside the active cone."""
+        geo, rnd, t = self.geo, self.rnd, self.t
+        out = {}
+        for s, (yaw, eye, flashed, nearsighted, cone) in every.items():
+            if flashed:
+                continue
+            e = self.holders[s]
+            ex, ey = e.stance.eye_px if e.stance is not None else (e.x, e.y)
+            e_piece = e.stance.see_over if e.stance is not None else ()
+            for h in self.holders.values():
+                if h.team == e.team or not _seen_over(h):
+                    continue
+                hx, hy = h.x, h.y
+                dx, dy = hx - ex, hy - ey
+                off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
+                if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if JUMP_SIGHT and (e.air or h.air):
+                    if self._air_seen(e, h):
+                        out[(s, h.slot)] = cone is not None and off <= cone
+                    continue
+                z = rnd.height(h.slot, t) if geo.heights is not None else None
+                tz = None if z is None or np.isnan(z) else float(z) + hc.HEAD_M
+                ez = eye if tz is not None else None
+                if ez is None:
+                    tz = None
+                head_clear = los(geo, (ex, ey, ez), (hx, hy, tz), self.smokes, record=self.fallbacks,
+                                 see_over=(e_piece, h.stance.see_over))
+                if head_clear:
+                    self._head_clear.add((s, h.slot))
+                if (head_clear
+                        or (tz is not None and los(geo, (ex, ey, ez), (hx, hy, float(z) + hc.FEET_M),
+                                                   self.smokes, record=self.fallbacks,
+                                                   see_over=(e_piece, h.stance.see_over)))):
+                    out[(s, h.slot)] = cone is not None and off <= cone
+        return out
+
+    def feet_only(self) -> set[tuple[int, int]]:
+        """Seen enemies whose head line is blocked but feet line is clear; lazy metadata, never changing sees."""
+        if self._feet_only is not None:
+            return self._feet_only
+        out: set[tuple[int, int]] = set()
+        geo, rnd, t = self.geo, self.rnd, self.t
+        if geo.heights is not None:
+            for viewer, targets in self.sees.items():
+                e = self.holders[viewer]
+                for target in targets:
+                    pair = (viewer, target)
+                    h = self.holders[target]
+                    if JUMP_SIGHT and (e.air or h.air):
+                        eye = self._eye(viewer, t, e.cell)
+                        z = rnd.height(target, t)
+                        if z is None:
+                            z = geo.node_z[h.cell]
+                        if eye is None or np.isnan(eye) or z is None or np.isnan(z):
+                            continue
+                        # The same eye and feet lines as the sighting, with the same plates and own pieces,
+                        # without recording unresolved rays.
+                        if (not self._air_line(e, h, target_z=z + hc.HEAD_M, record=False)
+                                and self._air_line(e, h, target_z=z + hc.FEET_M, record=False)):
+                            out.add(pair)
+                        continue
+                    if pair in self.direct:
+                        if pair not in self._head_clear:
+                            out.add(pair)
+                        continue
+                    eye = self._eye(viewer, t, e.cell)
+                    z = rnd.height(target, t)
+                    if z is None:
+                        z = geo.node_z[h.cell]
+                    if eye is None or np.isnan(eye) or z is None or np.isnan(z):
+                        continue    # unresolved height: the fan's 2D answer is not a feet-only sighting
+                    start = (e.x, e.y, eye)
+                    # no record: these lines are metadata, so they never add to the tick's unresolved-terrain count
+                    if (not los(geo, start, (h.x, h.y, z + hc.HEAD_M), self.smokes)
+                            and los(geo, start, (h.x, h.y, z + hc.FEET_M), self.smokes)):
+                        out.add(pair)
+        self._feet_only = out
+        return out
+
+    def _presence(self, x: float, y: float, cell: int, st: Stance | None = None, s: int = 0,
+                  t: float = 0.0) -> np.ndarray:
         """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
         (8-connected) and in their line of sight (smoke-aware, all round them): anything that blocks
-        sight stops the bubble (the user's call, 2026-10-01)."""
+        sight stops the bubble (the user's call, 2026-10-01).
+        With a stance (W13): on a box the sight part is one 360 degree cast from the box pixel over the
+        piece, memoised per (piece, cell, point, eye height, smoke key) on the round; the circle is centred
+        on `st.px`.
+        Beside a box it is today's, from the anchor cell."""
         geo = self.geo
+        if st is not None:
+            x, y = st.px
+        if st is not None and st.kind == "on_box":
+            start = np.zeros(geo.n, bool)
+            start[cell] = True
+            steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
+            reach = self.topo.dilate(start, eight=True, iterations=steps, within=geo.walk_n)
+            r = PRESENCE_M / geo.m_per_px
+            near = reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
+            memo = self.rnd.__dict__.setdefault("_presence_memo", {})
+            eye = self._eye(s, t, cell)
+            # the cast's own inputs: never shared between two points or two eye heights on one piece
+            key = (st.see_over, cell, x, y, None if eye is None else round(eye, 3), _smoke_key(self.smokes))
+            if key not in memo:
+                sight = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), self.smokes,
+                             eye_z=eye, own=cell, record=self.fallbacks, see_over=st.see_over)
+                sight[cell] = True
+                memo[key] = sight
+            return near & memo[key]
         start = np.zeros(geo.n, bool)
         start[cell] = True
         steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
@@ -2102,7 +2448,8 @@ class Knowledge:
         kt.holders = holders
         # only enemies the team sees can contest its players
         kt.sees = {x.slot: {h.slot for h in holders.values()
-                            if h.team != x.team and (x.body[h.cell] or (x.slot, h.slot) in tick.direct)}
+                            if h.team != x.team and ((x.slot, h.slot) in tick.direct if tick._by_lines_only(x, h)
+                                                     else (x.body[h.cell] or (x.slot, h.slot) in tick.direct))}
                    for x in holders.values()}
         kt._dist = {}
         kt._back, kt._safe = {}, {}    # backfill again, against what the team knew
@@ -2324,13 +2671,15 @@ class Unknown:
                 self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(n, bool)
-            spots = np.zeros(n, bool)
+            watched = np.zeros(n, bool)
+            viewers = []
             shut = pinched.copy()
             solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
                     live |= live_mask(h)
-                    spots |= h.active | h.watch
+                    watched |= h.watch
+                    viewers.append(h)
                 else:
                     shut[h.cell] = False                       # one standing in a pinch is in it
             room = walk & ~live & ~shut
@@ -2341,11 +2690,15 @@ class Unknown:
                 free = np.where(room & ~self._room[side], t, free)   # freed since the last tick: from now
             self.free_since[side], self._room[side] = free, room
             cells = np.zeros(n, bool)
-            # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
+            # in a watcher's view or an active one; or seen at their own height in an active cone (Tick._direct). A
+            # pair touching the air counts only by its two lines, which are in `direct`, never by the view of a cell.
             in_cone = {target for (viewer, target), active in getattr(tick, "direct", {}).items()
                        if active and viewer in tick.holders and tick.holders[viewer].team == side}
+            air_pair = getattr(tick, "_air_pair", lambda e, h: False)
             spotted = {s for s in enemies if tick.holders.get(s) is not None
-                       and (spots[tick.holders[s].cell] or s in in_cone)}
+                       and (watched[tick.holders[s].cell] or s in in_cone
+                            or any(v.active[tick.holders[s].cell] and not air_pair(v, tick.holders[s])
+                                   for v in viewers))}
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
                 before = np.full(n, np.inf) if reached is None else reached.copy()
@@ -2659,9 +3012,10 @@ class Unknown:
         if self.geo.adaptive:
             geo = self.geo
             layered = (geo.space_nodes >= 0).sum(1) > 1
-            stacked = set(lab[geo.walk_n & layered[geo.node_space]].tolist())
+            ground = geo.walk_n & ~geo.is_top
+            stacked = set(lab[ground & layered[geo.node_space]].tolist())
             spatial_lab = np.zeros(len(geo.space_walk), np.int32)
-            spatial_lab[geo.node_space[geo.walk_n & (lab > 0)]] = lab[geo.walk_n & (lab > 0)]
+            spatial_lab[geo.node_space[ground & (lab > 0)]] = lab[ground & (lab > 0)]
             fine = spatial_lab[geo.space_grid]
             for j in np.flatnonzero(size > DROP_PIECE_CELLS):
                 if j == 0 or j in stacked:
@@ -2989,6 +3343,7 @@ class RoundControl:
     reasons: dict | None = None
     map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
     fights: list | None = None         # the round's team fights and what each side lost (app/control/fight_swing.py)
+    feet_only: list | None = None      # [frame index, viewer slot, target slot]: head blocked, feet clear
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -3075,7 +3430,20 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     frame_of = {round(float(t), 6): i for i, t in enumerate(times)}
     a_weights = np.maximum(np.append(analytic[1:], rnd.t_end) - analytic, 0.0)
     walk_flat = geo.walk.ravel()             # the stored result is per walkable cell
+    top_nodes = getattr(geo, 'top_nodes', None)
+    if top_nodes is not None and len(top_nodes):
+        walk_flat = walk_flat.copy()
+        walk_flat[geo.node_cell[top_nodes]] = True
     walk_cells = np.flatnonzero(walk_flat)
+    if geo.adaptive:
+        top_leaf_mask = np.zeros(len(geo.space_walk), bool)
+        if top_nodes is not None and len(top_nodes):
+            top_leaf_mask[geo.top_leaf] = True
+        grid = geo.space_grid
+        selected = (geo.space_walk | top_leaf_mask)[grid]
+        section_spaces = grid[selected]
+        parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
+        section_columns = np.searchsorted(walk_cells, parent[selected])
     n_walk, n_ticks = len(walk_cells), len(times)
     cell_m2 = geo.cell_m ** 2
     states = np.zeros((n_ticks, n_walk), np.uint8)
@@ -3099,6 +3467,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
     reasons: dict[str, list] = {"A": [], "B": []}
+    feet_only: list = []
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
@@ -3117,6 +3486,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
             reasons[side] += runner.unknown.reasons[side]
         if n is None:
             timings["analytic_only_ticks"] += 1
+        else:
+            feet_only.extend([n, viewer, target] for viewer, target in sorted(tick.feet_only()))
         if tick.fallbacks.get("unresolved_rays"):
             # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
             # "reported where the user will see it"; preview_control_live.py warns on it)
@@ -3202,11 +3573,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                     if geo.adaptive:
                         # Pictures keep their parent projection; section totals retain each leaf's area.
                         code = space_codes(geo, state)
-                        grid = geo.space_grid
-                        selected = geo.space_walk[grid]
-                        parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
-                        columns = np.searchsorted(walk_cells, parent[selected])
-                        np.add.at(sec.totals, (code[grid[selected]], columns), overlap / 4)
+                        np.add.at(sec.totals, (code[section_spaces], section_columns), overlap / 4)
                     else:
                         np.add.at(sec.totals, (cells_now, cols), overlap)
     missing = dict(rnd.missing)
@@ -3234,7 +3601,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
-                                        for side, kn in know.items()} or None, fights=fights)
+                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,

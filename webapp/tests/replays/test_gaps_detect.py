@@ -549,13 +549,15 @@ def test_a_within_cell_corner_position_changes_what_is_exposed():
 
 
 def test_a_raised_player_sees_over_the_ledge():
+    from app.control.heights import EYE_M
     from tests.replays.test_control_floors import ledge, node
 
     geo = ledge()
-    x = 256 - 2 / 0.14
+    # 4 m back: with the head sight point (feet + 2.0 m) a viewer 2 m back already sees over a 4 m ledge.
+    x = 256 - 4 / 0.14
     target, own = node(geo, 268), node(geo, x)
     found = []
-    for eye in (4.0 + 0.7, 4.0 + 2.4 + 0.7):          # standing on the ledge; boosted 2.4 m above it
+    for eye in (4.0 + EYE_M, 4.0 + 2.4 + EYE_M):      # standing on the ledge; boosted 2.4 m above it
         d = _Drive(geo)
         e = d.entry(target, 0.0)
         d.tick(0.0, [_pv(geo, 0, "A", x, 204, 180, eye_z=eye, node=own)], {5: {target: e}})

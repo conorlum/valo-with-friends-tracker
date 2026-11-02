@@ -56,8 +56,8 @@ def test_a_teammate_reveal_or_a_dead_target_locates_nothing():
 def test_a_reveal_on_an_ulting_veto_locates_nothing_but_a_trip_still_does():
     geo = open_hall()
     b = blob(walker(), t_end=10.0, util=[reveal(3.0, 5), reveal(4.0, 5, name="4_TripWire", t1=5.0),
-                                         {"k": "ability", "t": 2.0, "t1": 6.0, "by": 5, "kind": "GameObject",
-                                          "code": "Pine", "name": "X_Evolution", "u": 0, "v": 0}])
+                                         {"k": "buff", "t": 2.0, "t1": 6.0, "by": 5, "target": 5,
+                                          "code": "Pine", "name": "X_Evolution"}])      # CONDENSE 23's buff row
     next(p for p in b["players"] if p["slot"] == 5)["agent"] = "Veto"
     rnd = ce.RoundInputs(b, geo)
     assert rnd.evolution == {5: [(2.0, 6.0)]}

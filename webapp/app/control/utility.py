@@ -94,20 +94,20 @@ CAPABILITIES = {
     "reveal": False,      # recon, Haunt, darts' and drones' tags, Neural Theft, Fade's and Gekko's utility
     "status": False,      # concuss, slow, tether, decay: what utility puts on a player
 }
-# No local replay has a Veto, so Evolution's own archetype has never been seen. Any of Veto's
-# (`Pine`) ult-slot objects is read as Evolution being active for its life. The plan's evidence task: confirm the
-# name and its life on a replay with an ulting Veto.
+# Evolution has no object: it is a `buff` row (`Pine` / `X_Evolution`, CONDENSE 23) on Veto himself, from the end
+# of its windup to his death or the round's end (trap-jobs D10: 4 uses in 6e52839b and 47a5f123). Blobs before 23
+# have no such row, so they show no Evolution, as before.
 EVOLUTION = re.compile(r"^Pine_X_")
 VETO = "Veto"
 
 
 def evolution_spans(blob: dict) -> dict[int, list[tuple[float, float]]]:
-    """slot -> [(from, to)] round seconds while that player was in Evolution: an ult-slot ability row of a Veto
-    (EVOLUTION), owned by them, from its start to its end. Nothing for anyone else."""
+    """slot -> [(from, to)] round seconds while that player was in Evolution: an ult-slot buff row of a Veto
+    (EVOLUTION) on himself, from its start to its end. Nothing for anyone else."""
     vetos = {p["slot"] for p in blob.get("players") or [] if p.get("agent") == VETO}
     out: dict[int, list[tuple[float, float]]] = {}
     for e in blob.get("util") or []:
-        if e.get("k") != "ability" or e.get("by") not in vetos:
+        if e.get("k") != "buff" or e.get("by") not in vetos or e.get("target", e.get("by")) != e.get("by"):
             continue
         if not EVOLUTION.match(f"{e.get('code')}_{e.get('name')}"):
             continue
@@ -303,23 +303,45 @@ LEER_EYE = "Vampire_4_NearsightAOE_Source"
 LEER_LOOK_STEP_S = 0.25      # how often, while the eye is up, each enemy's view of it is tested
 
 
-def _sees_point(rnd, viewer: int, t: float, x: float, y: float) -> bool:
+def _sees_point(rnd, viewer: int, t: float, x: float, y: float, target: int | None = None) -> bool:
     """Whether `viewer`, alive at t, has (x, y) px in their field of view with a clear 2D line to it (walls and the
-    smokes up then; a flash or nearsight on them blinds it)."""
+    smokes up then; a flash or nearsight on them blinds it). A viewer on a box sees from their stance's eye over
+    that piece; `target` (a player slot whose position is the point), when boxed, is seen at its eye over its piece.
+    Without a boxed target, a point on a top node's leaf sees over that piece too. This remains a 2D query, heights
+    being the engine's, except for a `target` when either end is airborne: then the engine's own two pair lines."""
     from app.control import engine as ce
+    from app.control import stance as st_mod
 
     if not rnd.alive(viewer, t) or any(a <= t < b for a, b in rnd.flashed.get(viewer, [])):
         return False
     p = rnd.pos(viewer, t)
     if p is None:
         return False
-    off = abs((math.degrees(math.atan2(y - p[1], x - p[0])) - p[2] + 180) % 360 - 180)
+    vs = st_mod.boxed_stance(rnd, viewer, t)
+    ex, ey = (p[0], p[1]) if vs is None else vs.eye_px
+    sv = () if vs is None else vs.see_over
+    st = ()
+    ts = None
+    if target is not None:
+        ts = st_mod.boxed_stance(rnd, target, t)
+        if ts is not None:
+            x, y = ts.eye_px
+            st = ts.see_over
+    if ts is None and len(rnd.geo.top_nodes):
+        tops = np.flatnonzero(rnd.geo.top_leaf == rnd.geo.space_at_px(x, y))
+        if len(tops):
+            st = (int(rnd.geo.top_piece[tops[0]]),)
+    off = abs((math.degrees(math.atan2(y - ey, x - ex)) - p[2] + 180) % 360 - 180)
     if off > ce.FOV_HALF:
         return False
     if any(a <= t < b for a, b in rnd.nearsight.get(viewer, [])) and \
-            math.hypot(x - p[0], y - p[1]) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
+            math.hypot(x - ex, y - ey) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
         return False
-    return ce.los(rnd.geo, (p[0], p[1], None), (x, y, None), rnd.smokes_at(t))
+    if target is not None:
+        seen = ce._air_pair_sight(rnd, viewer, target, t, rnd.smokes_at(t))
+        if seen is not None:
+            return seen
+    return ce.los(rnd.geo, (ex, ey, None), (x, y, None), rnd.smokes_at(t), see_over=(sv, st))
 
 
 def read_leers(rnd) -> list[Info]:
@@ -390,7 +412,7 @@ def heard(rnd, side: str, t: float, x: float, y: float, range_m: float) -> bool:
 def outside_hearing(rnd, side: str, t: float, range_m: float) -> np.ndarray:
     """The walkable nodes no listening player of `side` hears from at t: everywhere they could have gone unheard."""
     geo = rnd.geo
-    out = geo.walk_n.copy()
+    out = geo.walk_n & ~geo.is_top
     r = range_m / geo.m_per_px
     for s, team in rnd.team.items():
         if team != side or not listens(rnd, s, t):
@@ -519,9 +541,9 @@ def ordered(infos) -> list[Info]:
 def footprint(info: Info, geo) -> np.ndarray:
     """The Info's nodes: its own mask, else the walkable nodes within radius_m of (x, y) px, through walls."""
     if info.mask is not None:
-        return info.mask.astype(bool) & geo.walk_n
+        return info.mask.astype(bool) & geo.walk_n & ~geo.is_top
     if info.x is None or info.y is None or info.radius_m is None:
         return np.zeros(geo.n, bool)
     r = info.radius_m / geo.m_per_px
     near = (geo.centres[:, 0] - info.x) ** 2 + (geo.centres[:, 1] - info.y) ** 2 <= r * r
-    return near & geo.walk_n
+    return near & geo.walk_n & ~geo.is_top

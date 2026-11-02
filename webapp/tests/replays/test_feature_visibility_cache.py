@@ -17,14 +17,14 @@ def bridge():
 
 
 def reference(geo, src, smokes, occluders, skip=None, record=None):
-    """Pre-optimization algorithm; independent of the new cache/source hints."""
+    """Pre-optimization algorithm with head/feet targets; independent of cache/source hints."""
     from app.control import engine
     static = engine.seen_from(geo, src, smokes, skip)
     src = src[geo.row_of[src] >= 0]
     targets = np.flatnonzero(static & ~skip) if skip is not None else np.flatnonzero(static)
     out = static.copy()
     out[targets] = False
-    z = np.array([cf._eye_body(geo, int(t), hc.BODY_M) for t in targets])
+    z = np.array([cf._eye_body(geo, int(t), hc.HEAD_M) for t in targets])
     b = np.column_stack((geo.centres[targets].astype(float), z))
     rows = np.unpackbits(geo.rows[geo.row_of[src]], axis=1)[:, :geo.n][:, targets].astype(bool)
     for i, s in enumerate(src.tolist()):
@@ -33,7 +33,15 @@ def reference(geo, src, smokes, occluders, skip=None, record=None):
             cand[cand] &= ~engine.smoke_blocks(geo.centres[[s]], geo.centres[targets[cand]], smoke)[0]
         if cand.any():
             x, y = geo.centres[s]
-            clear = ~cf.blocked_lines(occluders, (float(x), float(y), cf._eye_body(geo, s, hc.EYE_M)), b[cand], record)
+            a = (float(x), float(y), cf._eye_body(geo, s, hc.EYE_M))
+            heads = b[cand]
+            hit = cf.blocked_lines(occluders, a, heads, record)
+            if geo.heights is not None and not np.isnan(a[2]) and hit.any():
+                feet = heads[hit].copy()
+                feet[:, 2] += hc.FEET_M - hc.HEAD_M
+                steps = int(np.ceil(np.hypot(heads[:, 0]-a[0], heads[:, 1]-a[1]).max())) + 1
+                hit[hit] = cf.blocked_lines(occluders, a, feet, sampling_steps=steps)
+            clear = ~hit
             out[targets[cand][clear]] = True
     return out
 
@@ -226,8 +234,9 @@ def test_height_bands_and_changed_poses_do_not_share_cached_answers():
     high = replace(low, bottom=3.1, top=5.6)
     memo = cache_for(geo)
     for occ in [low, high, low]:
-        expected = cf.blocked_lines([occ], (*geo.centres[s], cf._eye_body(geo,s,hc.EYE_M)),
-                     np.array([[*geo.centres[t],cf._eye_body(geo,t,hc.BODY_M)]]))
+        a = (*geo.centres[s], cf._eye_body(geo,s,hc.EYE_M))
+        expected = (cf.blocked_lines([occ], a, np.array([[*geo.centres[t],cf._eye_body(geo,t,hc.HEAD_M)]]))
+                    & cf.blocked_lines([occ], a, np.array([[*geo.centres[t],cf._eye_body(geo,t,hc.FEET_M)]])))
         assert np.array_equal(memo.blocked(geo,s,np.array([t]),[occ],{}),expected)
     away = cf._bounded_occluder('door', np.zeros((1024,1024),bool), -.9, 2.3)
     assert not memo.blocked(geo,s,np.array([t]),[away],{}).item()

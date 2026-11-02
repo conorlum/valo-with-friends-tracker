@@ -69,6 +69,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -256,6 +257,32 @@ class InFlight:
     inputs: object = None
 
 
+@dataclass(frozen=True)
+class Live:
+    """Detached facts from the dispatcher, safe for request readers to retain."""
+    at: float
+    given_up: tuple[tuple[int, int, str, str], ...]
+    held: tuple[int, ...]
+    heights_out_of_tries: tuple[str, ...]
+    in_flight: tuple[tuple[int, int, float, str], ...]
+
+
+LIVE: Live | None = None
+
+
+def _snapshot(state, at: float) -> Live:
+    given_up = []
+    for key, (count, _) in state.tries.items():
+        if count >= MAX_TRIES:
+            rid, n, fp, *suffix = key.split(":")
+            kind = "gaps" if suffix and re.fullmatch(r"go\d+", suffix[0]) else "control"
+            given_up.append((int(rid), int(n), kind, fp))
+    return Live(at, tuple(sorted(given_up)), tuple(sorted(state.held)),
+                tuple(sorted(state.heights.out_of_tries)),
+                tuple(sorted((f.replay_id, f.round_number, f.sent_at, "gaps" if f.gaps_only else "control")
+                             for f in state.in_flight.values())))
+
+
 def _height_state():
     from app.services.replay_heights_remote import HeightState
 
@@ -381,7 +408,7 @@ def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
     mine = replay_control.geometry_inputs(map_name, heights)
     used = result.get("geometry") or {}
     return mine is not None and all(used.get(k) == mine.get(k)
-                                    for k in ("sight", "walk", "barrier", "specials", "scale", "height", "features"))
+                                    for k in ("sight", "walk", "barrier", "cover", "specials", "scale", "height", "features"))
 
 
 def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
@@ -686,6 +713,7 @@ def _reparse(session_factory, worker, state: State, now: float, counts: dict) ->
 def cycle(session_factory, client, state: State, now: float | None = None, worker=None) -> dict:
     """One pass: collect, the automatic re-parse queue's pass (with `worker`, the upload client), then
     submit. Returns what it did, by kind."""
+    global LIVE
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
@@ -725,6 +753,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
         finally:
             session.rollback()
             session.close()
+        LIVE = _snapshot(state, now)
         return counts
     finally:
         lock.rollback()

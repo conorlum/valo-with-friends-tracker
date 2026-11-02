@@ -18,6 +18,7 @@ def tagged(db, linked, monkeypatch):
     index, tags, maps = copy.deepcopy(index), copy.deepcopy(tags), copy.deepcopy(maps)
     tags[linked.map_name] = source_case()
     maps[linked.map_name]['xMultiplier'] = 7e-5
+    index[linked.map_name].pop('cover_sha', None)   # the toy base below has no cover: keep the index's the same
     monkeypatch.setattr(fi, 'CONSUMER_VERSIONS', {'test': 1})
     monkeypatch.setattr(sources, 'base_snapshot', lambda *args: base_case())
     monkeypatch.setattr(rc, '_current_snapshot', lambda: (index, tags, maps, json.dumps({'maps': tags}).encode()))

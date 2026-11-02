@@ -215,7 +215,7 @@ tests = [
   "tests/replays/test_replay_phases.py", "tests/replays/test_replay_streaming.py",
   "tests/replays/test_replay_teleports.py", "tests/replays/test_replay_util.py", "tests/replays/test_replay_walls.py",
   "tests/replays/test_player_state*.py", "tests/replays/test_status_intervals.py",
-  "tests/replays/test_utility_fixtures.py", "tests/replays/test_ingest_replay.py",
+  "tests/replays/test_utility_fixtures.py", "tests/replays/test_ingest_replay.py", "tests/replays/test_replay_crouch.py",
 ]
 guards = [
   "app/replays/__init__.py", "app/replays/condense.py", "app/replays/contract.py", "app/replays/format.py",
@@ -278,6 +278,8 @@ tests = [
   "tests/replays/test_control_height_job.py", "tests/replays/test_height_*.py", "tests/replays/test_heights_remote.py",
   "tests/replays/test_compare_height_builds.py", "tests/replays/test_rope_*.py", "tests/replays/test_terrain_audit.py",
   "tests/replays/test_topology_frontier.py", "tests/replays/test_adaptive_ground.py", "tests/replays/test_quiet_*.py",
+  "tests/replays/test_adaptive_cover.py", "tests/replays/test_cover_identity.py", "tests/replays/test_cover_pieces.py",
+  "tests/replays/test_track_z.py",
 ]
 guards = [
   "app/control/geometry.py", "app/control/heights.py", "app/control/height_*.py", "app/control/adaptive.py",
@@ -288,6 +290,18 @@ guards = [
   "tests/replays/conftest.py",
 ]
 
+[control-boxes]
+about = "Standing on, crouching behind and jumping beside boxes: learnt box tops, stances and their vantage, top nodes, plate sight for a pair touching the air, feet-only sightings."
+tests = [
+  "tests/replays/test_box_hall.py", "tests/replays/test_box_tops*.py", "tests/replays/test_stance*.py",
+  "tests/replays/test_top_nodes.py", "tests/replays/test_jump_sight.py", "tests/replays/test_plate_sight.py",
+  "tests/replays/test_control_feet_only.py",
+]
+guards = [
+  "app/control/box_tops.py", "app/control/stance.py", "app/control/engine.py", "app/control/geometry.py",
+  "app/control/adaptive.py", "app/control/heights.py", "tests/replays/control_toys.py", "tests/replays/conftest.py",
+]
+
 [control-store-web]
 about = "Map control outside the engine: committed assets and barriers, storage and freshness, the worker dispatcher, views, viewer, tagger, reference bytes."
 tests = [
@@ -296,13 +310,14 @@ tests = [
   "tests/replays/test_control_tagger.py", "tests/replays/test_control_pinned_inputs.py",
   "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
   "tests/replays/test_preview_control_live.py", "tests/replays/test_freshness_memos.py",
+  "tests/replays/test_replay_errors*.py", "tests/replays/test_box_conflicts_page.py",
 ]
 guards = [
   "app/services/replay_control.py", "app/services/replay_control_store.py", "app/services/replay_control_remote.py",
   "app/services/replay_control_views.py", "app/static/js/replay_control.js", "app/static/data/control/**",
   "app/templates/stats/_map_control_table.html", "scripts/build_control_geometry.py", "scripts/place_control_barriers.py",
   "scripts/compute_control.py", "scripts/control_tagger*", "scripts/preview_control_live.py",
-  "scripts/control_reference.py", "app/services/mask_accel.py",
+  "scripts/control_reference.py", "app/services/mask_accel.py", "app/services/replay_errors.py",
 ]
 
 [map-features]

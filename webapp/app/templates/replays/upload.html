@@ -66,6 +66,12 @@
       counted once, at the first step it is stuck on. <span data-progress-judged></span></p>
   </div>
 </details>
+<details class="card replay-errors" data-errors>
+  <summary>Show replay errors</summary>
+  <p class="page-meta" role="status" data-errors-status>Open to check stored replay errors.</p>
+  <button type="button" data-errors-copy disabled>Copy prompt</button>
+  <div data-errors-body hidden></div>
+</details>
 <script>
   // The "Show Replay Info" panel: fetches when opened, then every minute while it stays open.
   (function () {
@@ -113,6 +119,111 @@
     panel.addEventListener("toggle", function () {
       clearTimeout(timer); timer = null;
       if (panel.open) poll();
+    });
+  })();
+</script>
+<script>
+  // The errors card loads once on first opening; reload the page to refresh its evidence.
+  (function () {
+    var panel = document.querySelector("[data-errors]"), loaded = false;
+    var status = panel.querySelector("[data-errors-status]"), body = panel.querySelector("[data-errors-body]");
+    var allCopy = panel.querySelector("[data-errors-copy]"), fallback = null;
+
+    function element(parent, tag, text, cls) {
+      var node = document.createElement(tag);
+      if (text !== undefined && text !== null) node.textContent = text;
+      if (cls) node.className = cls;
+      parent.appendChild(node);
+      return node;
+    }
+    function manualCopy(text) {
+      if (!fallback) {
+        fallback = document.createElement("textarea");
+        fallback.className = "replay-errors-prompt";
+        fallback.readOnly = true;
+        fallback.rows = 8;
+        fallback.setAttribute("aria-label", "Replay errors prompt to copy");
+        panel.appendChild(fallback);
+      }
+      fallback.value = text;
+      fallback.focus(); fallback.select();
+      status.textContent = "Prompt selected below: press Ctrl+C to copy.";
+    }
+    function copy(button, kind) {
+      button.disabled = true;
+      var url = "/replays/upload/errors/prompt.txt" + (kind ? "?kind=" + encodeURIComponent(kind) : "");
+      fetch(url, {headers: {Accept: "text/plain"}, cache: "no-store"})
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+        .then(function (text) {
+          function copied() {
+            if (fallback) { fallback.remove(); fallback = null; }
+            button.textContent = "Copied";
+            status.textContent = "Prompt copied. Reload the page to refresh the errors.";
+            setTimeout(function () { button.textContent = "Copy prompt"; }, 2000);
+          }
+          if (!navigator.clipboard || !navigator.clipboard.writeText) { manualCopy(text); return; }
+          return navigator.clipboard.writeText(text).then(copied, function () { manualCopy(text); });
+        })
+        .catch(function (e) { status.textContent = "Could not load the prompt (" + e.message + "). Try Copy prompt again."; })
+        .then(function () { button.disabled = false; });
+    }
+    function render(result) {
+      var empty = [];
+      result.kinds.forEach(function (kind) {
+        if (!kind.count) {
+          // A check still running or unavailable isn't "nothing": it says so.
+          if (kind.note) element(body, "p", kind.label + ": " + kind.note, "page-meta");
+          else empty.push(kind.label);
+          return;
+        }
+        var section = element(body, "section");
+        element(section, "h3", kind.label + " (" + kind.count + ")");
+        if (kind.note) element(section, "p", kind.note, "page-meta");
+        var button = element(section, "button", "Copy prompt"); button.type = "button";
+        button.addEventListener("click", function () { copy(button, kind.key); });
+        element(section, "p", "Showing " + kind.rows.length + " of " + kind.count + " (first 50 per kind).", "page-meta");
+        var maps = Object.create(null);
+        kind.rows.forEach(function (row) {
+          var map = row.map || "No map";
+          if (!maps[map]) maps[map] = [];
+          maps[map].push(row);
+        });
+        Object.keys(maps).sort().forEach(function (map) {
+          element(section, "h4", map);
+          var wrap = element(section, "div", null, "replay-errors-table");
+          var table = element(wrap, "table", null, "compact-table");
+          var head = element(element(table, "thead"), "tr");
+          ["Round", "Time", "Agent", "Figures", "Error", "Replay"].forEach(function (label) { element(head, "th", label); });
+          var rows = element(table, "tbody");
+          maps[map].forEach(function (row) {
+            var tr = element(rows, "tr");
+            element(tr, "td", row.round == null ? "–" : row.round);
+            element(tr, "td", row.t == null ? "–" : row.t + " s");
+            element(tr, "td", row.agent || "–");
+            var figures = Object.keys(row.figures).map(function (key) {
+              var value = row.figures[key];
+              return key + ": " + (typeof value === "object" ? JSON.stringify(value) : String(value));
+            }).join("; ");
+            element(tr, "td", figures || "–");
+            element(tr, "td", row.error || "–");
+            element(element(tr, "td"), "a", "open").href = row.link;
+          });
+        });
+      });
+      if (empty.length) element(body, "p", "Nothing in: " + empty.join(", ") + ".", "page-meta");
+      body.hidden = false;
+      allCopy.disabled = false;
+      status.textContent = "Checked " + new Date(result.checked_at).toLocaleString() + ". Reload the page to refresh.";
+    }
+    allCopy.addEventListener("click", function () { copy(allCopy); });
+    panel.addEventListener("toggle", function () {
+      if (!panel.open || loaded) return;
+      loaded = true;
+      status.textContent = "Checking stored replay errors…";
+      fetch("/replays/upload/errors.json", {headers: {Accept: "application/json"}, cache: "no-store"})
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(render)
+        .catch(function (e) { status.textContent = "Could not check replay errors (" + e.message + "). Reload the page to try again."; });
     });
   })();
 </script>

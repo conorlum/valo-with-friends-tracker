@@ -67,6 +67,9 @@ def diagnose_features(geo, source_snapshot, previous=None, *, consumers=None):
             'barrier_sha': geo.barrier_sha,
             'scale': geo.uv_per_unit / 10000, 'specials': geo.specials,
             'legacy': {key: fa.pack_mask(mask.astype('uint8').tobytes(), mask.shape) for key, mask in legacy.items()}}
+    if geo.cover_px is not None:                 # only a map with cover
+        base['cover'] = fa.pack_mask((geo.cover_px > 0).astype('uint8').tobytes(), geo.cover_px.shape)
+        base['cover_sha'] = geo.cover_sha
     inp = fi.identify_features(geo.name, geo.height_sha, source_snapshot, base, consumers=versions)
     artifact = compiler.compile_artifact(geo, inp, '0' * 40) if inp is not None else None
     return {'status': 'ok', 'map': geo.name, 'schema': schema.SCHEMA_VERSION, 'compiler': fi.FEATURE_COMPILER_VERSION,

@@ -68,7 +68,9 @@ Known legacy floor selectors, including ground-relative bounds.floor, are exclud
 - Occluder bounds are ground-relative (`ref: ground`, using median physical ground, node z - `STAND_M`, of automatically selected floors under its cells), world (`ref: world`, converted through the exact height asset's `origin_z`), `all_height`, or unresolved; all resolved forms still require gimmick placement to pass the one-floor rule. The band is [bottom, top).
 - One rule for every consumer (`features.blocked_lines`): the eye-to-target line is sampled every pixel
   (ends excluded) and is blocked inside an occluder's mask at a height inside its band; a straight-up line is
-  blocked when its z span meets the band. Eye = node z + `EYE_M`; target body = node z + `BODY_M`. A node
+  blocked when its z span meets the band. Eye = node z + `EYE_M` (feet + 2.0 m); target head = node z +
+  `HEAD_M` (feet + 2.0 m), target feet point = node z + `FEET_M` (feet + 0.2 m). Either clear line sees the
+  node; test the head first and feet only if the head is blocked. A node
   with no height is tested in 2D (and counted).
 - Base visibility stays the maximally open map; occluders only remove sight (`cast_with`, `los_with`,
   `seen_from_with`). A flat map has no heights: resolved bounds block in 2D there.
@@ -107,8 +109,15 @@ names each). **None is switched to features in this build.**
 | `control/engine:RoundInputs._molly_nodes` | topo.dilate | `walk_only` (added 2026-10-09, replay-player-state run: a molly's footprint, the walk inside its circle) |
 | `control/engine:RoundInputs._trip_end` | topo.around | `walk_only` |
 | `control/engine:Tick.__init__` | cast | `bounded_sight` |
+| `control/engine:Tick._boxed` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: one physical line from the viewer's eye to an enemy standing on a box, over the pieces both stand on) |
+| `control/geometry:_see_tops` | los | `bounded_sight` (added 2026-10-29, box-climb run: exact head and feet lines to top nodes in the sight fan, over the viewer's and target's pieces, clearing the target piece's surface outside its own leaf) |
+| `control/geometry:_top_views` | height fan | `bounded_sight` (added 2026-10-29, box-climb run: smoke-free top vantage rows used to prefilter exact sight lines and supply top visibility rows) |
 | `control/engine:Tick._backfill_shares` | topo.dilate | `walk_only` |
 | `control/engine:Tick._direct` | los | `bounded_sight` |
+| `control/engine:Tick._air_line` | los | `bounded_sight` (one eye-to-eye plate line for a pair with an airborne end, skipping only the end pieces) |
+| `control/engine:Tick._air_viewers` | via _air_line | `bounded_sight` (airborne viewers add exact lines to grounded targets missed by their ground view, under the same sight limits) |
+| `control/engine:_plate_line` | los | `bounded_sight` (added 2026-11-01, review B12: the module form of `Tick._air_line`, shared with the unknown and fight sight so every consumer of a pair touching the air uses the same eye-to-eye plate line) |
+| `control/engine:Tick.feet_only` | los | `bounded_sight` (added 2026-10-29, box-climb run: the head and feet lines of a sighting the fan already made, to store which ones the feet alone saw; never changes `sees`) |
 | `control/engine:Tick._flood` | topo.label | `transport_reachability` |
 | `control/engine:Tick._links` | special_links, topo.links | `transport_reachability` (arcs replace the all-floor specials for features) |
 | `control/engine:Tick._pocket` | topo.label | `walk_only` |
@@ -135,8 +144,9 @@ names each). **None is switched to features in this build.**
 | `control/feature_diagnostics:diagnose_features` | specials | `base`: diagnostics only, exact admitted/archived permanent context, no runtime effects |
 | `control/feature_runtime:prepare_geometry` | specials, archived base domain | `base`: reconcile verified per-map masks without mutating the cached permanent map or changing node identities |
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
+| `control/stance:_anchor.clear` | los | `bounded_sight` (added 2026-10-26, standing-on-a-box run: a clear line from a candidate anchor cell to the player's pixel beside a box) |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
-| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
+| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye; extended 2026-10-29, box-climb run: a plain point on a top node's leaf sees over its piece in 2D; heights are the engine's) |
 | `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |
 | `control/utility:read_skye_flashes` | cast | `bounded_sight` (added 2026-10-05: what an empty Skye flash rules out) |
 | `gaps/detect:GapDetector._sight` | cast | `bounded_sight` |

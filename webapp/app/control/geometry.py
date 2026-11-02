@@ -202,6 +202,27 @@ def tag_shapes(rgba: np.ndarray, entry: dict) -> dict[str, np.ndarray]:
 class MapMasks:
     sight: np.ndarray   # PX x PX, True blocks sight
     walk: np.ndarray    # PX x PX, True is walkable
+    cover: np.ndarray | None = None   # PX x PX, the cover boxes (tags and paint), as they block sight
+
+
+# Risk 1 (docs/replay-map-control-plan.md): a map's geometry is usable when at most this share of its judged kill
+# lines crosses a sight wall. A line with either end on a cover box isn't judged: the flat test can't tell a
+# player standing on top of a box from one behind it (2026-10-26: 5 of Summit's 9 blocked lines).
+_RISK1_BAR = 0.02   # a build-time bar, not an engine constant: kept out of the control digest
+
+
+def kill_line_result(sight: np.ndarray, lines: list, cover: np.ndarray | None = None) -> dict:
+    """The Risk 1 result of a map's kill lines ([killer x, y, victim x, y] px) against its sight mask."""
+    def on_cover(x, y):
+        return cover is not None and bool(cover[min(PX - 1, max(0, int(y))), min(PX - 1, max(0, int(x)))])
+
+    judged = [ln for ln in lines if not (on_cover(ln[0], ln[1]) or on_cover(ln[2], ln[3]))]
+    blocked = sum(line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in judged)
+    if not judged:      # no judged line is no evidence: neither passes nor fails, as in the tagger (branch review B21)
+        return {"qualifying": 0, "on_cover": len(lines), "blocked": 0, "share": None, "passes": None}
+    share = blocked / len(judged)
+    return {"qualifying": len(judged), "on_cover": len(lines) - len(judged), "blocked": blocked,
+            "share": round(share, 4), "passes": share <= _RISK1_BAR}
 
 
 def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
@@ -216,7 +237,9 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
     shapes = tag_shapes(rgba, entry)
     # What each Stage 6 paint means; no map has one yet, so no stored round changes.
-    cover = shapes["cover"]
+    # A cover tag is the box inside its drawn outline: the outline's own line pixels are the box's edge on the
+    # minimap, about a pixel past the real box, and shots fired right past a box clip them (2026-10-26, Summit).
+    cover = shapes["cover"] & ~base["line"]
     if entry.get("cover_paint"):
         cover = cover | unpack_paint(entry["cover_paint"])
     sight = ~base["opaque"] | cover
@@ -227,7 +250,21 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     walk = base["opaque"] & ~cover
     if entry.get("cant_walk_paint"):
         walk &= ~unpack_paint(entry["cant_walk_paint"])
-    return MapMasks(sight, walk)
+    return MapMasks(sight, walk, cover)
+
+
+def see_over_cover(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
+    """The pixels that block sight only because of a cover tag or paint (`cover & ~wall_without_cover`): a
+    cover outline drawn over a real wall never erases that wall. These are the boxes a player can stand on
+    and see over; masks()'s sight and walk are unchanged by it."""
+    entry = entry or {}
+    m = masks(rgba, entry)
+    base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
+    see_across = tag_shapes(rgba, entry)["seeacross"].copy()
+    if entry.get("see_across_paint"):
+        see_across |= unpack_paint(entry["see_across_paint"])
+    wall_without_cover = ~base["opaque"] & ~see_across
+    return m.cover & ~wall_without_cover
 
 
 def bullet_mask(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
@@ -274,12 +311,52 @@ class Geometry:
     visibility_s: float = 0.0
     barrier: np.ndarray | None = None     # GRID x GRID: the buy-phase barrier lines (barrier paint), if painted
     barrier_sha: str | None = None        # index.json's `barrier_sha` for it
+    cover_sha: str | None = None          # index.json's `cover_sha`: the see-over cover mask, if the map has any
+    cover_px: np.ndarray | None = None    # PX x PX int16: 4-connected pieces of that mask, 1.., 0 = none
+    height_cover_dropped: int = 0         # box-top cells adaptive.attach dropped: fine floors + 8 px cells cut from edges
+
+    def see_over_mask(self, label: int) -> np.ndarray:
+        """The pixels of one cover piece (all False for label 0 or when the map has no cover)."""
+        if self.cover_px is None or label == 0:
+            return np.zeros((PX, PX), bool)
+        return self.cover_px == label
+
+    @property
+    def box_tops(self):
+        """{cover piece id: learnt top heights, m} read from the current heights and cover (box_tops.piece_tops)."""
+        from app.control import box_tops
+        return box_tops.piece_tops(self)
+
+    @property
+    def box_ground(self):
+        """{cover piece id: ring floor, m} from the current height asset's coarse floors and cover."""
+        from app.control import box_tops
+        return box_tops.piece_ground(self)
+
+    @property
+    def box_reach(self):
+        """PX x PX x 3 int16: topped pieces within reach of each pixel, nearest first; None without any."""
+        from app.control import box_tops
+        return box_tops.piece_reach(self)
+
+    @property
+    def box_view_reach(self):
+        """PX x PX x 3 int16: topped pieces within view reach of each pixel, nearest first; None without any."""
+        from app.control import box_tops
+        return box_tops.piece_reach(self, hc.VIEW_REACH_M, metric=True)
+
     # --- nodes (one per cell on a flat map; `attach_heights` adds the upper floors)
     n: int = GRID * GRID                  # node count: every array the engine keeps per place has this length
     node_cell: np.ndarray = None          # node -> flat cell
     node_z: np.ndarray = None             # node -> position-z in metres above the map's lowest floor; NaN if unknown
     node_of: np.ndarray = None            # GRID*GRID x MAX_FLOORS: a cell's nodes, lowest first, -1 for none
     walk_n: np.ndarray = None             # node -> walkable
+    is_top: np.ndarray = None             # node -> learnt box top, separate from ground lookup tables
+    top_nodes: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    top_view: np.ndarray | None = None   # top_nodes x n: each top's smoke-free height fan, built lazily
+    top_piece: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    top_leaf: np.ndarray = field(default_factory=lambda: np.empty(0, np.int32))
+    height_tops_ignored: int = 0          # learnt rows ignored by coarse attachment; reported in round missing notes
     unresolved: np.ndarray = None         # flat cell -> walkable with no known height (flat 2D sight and walking)
     heights: object = None                # the map's HeightAsset, or None on a flat map
     height_sha: str | None = None
@@ -394,6 +471,7 @@ def geometry_from_masks(name: str, sight: np.ndarray, walk_px: np.ndarray, scale
     geo.centres = np.stack([xs * CELL + CELL / 2, ys * CELL + CELL / 2], 1).astype(np.float32)
     geo.node_cell = np.arange(GRID * GRID, dtype=np.int32)
     geo.walk_n = geo.walk.ravel().copy()
+    geo.is_top = np.zeros(geo.n, bool)
     geo.node_area = np.ones(geo.n, float)
     return geo
 
@@ -430,11 +508,19 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     geo.height_unknown = int((geo.unresolved & ~asset.unresolved.ravel()).sum())
     geo.centres = geo.centres[geo.node_cell]
     geo.heights, geo.height_sha = asset, asset.digest
+    geo.height_cover_dropped = 0
     geo.rows = geo.row_of = None
     geo.node_area = np.ones(geo.n, float)
+    geo.is_top = np.zeros(geo.n, bool)
+    geo.top_nodes = np.empty(0, np.int32)
+    geo.top_view = None
+    geo.top_piece = np.empty(0, np.int32)
+    geo.top_leaf = np.empty(0, np.int32)
+    geo.height_tops_ignored = 0
     if asset.refinement is not None and len(asset.fine_cells):
         from app.control.adaptive import attach
         return attach(geo, asset)
+    geo.height_tops_ignored = len(asset.box_tops) if asset.box_tops is not None else 0
     return geo
 
 
@@ -479,6 +565,9 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    cover = _read_cover(name, asset_dir, row)
+    if cover is not None:
+        attach_cover(geo, cover[0], cover[1])
     if load_features and row.get("features_sha"):
         raise GeometryError(f'{name}: legacy feature pointer requires archive conversion')
     if height_mode == 'flat':
@@ -493,6 +582,39 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         if asset.digest != wanted:
             raise GeometryError(f"{name}.height.npz is {asset.digest}, index.json says {wanted}; rebuild the heights")
         attach_heights(geo, asset)
+    return geo
+
+
+def _read_cover(name: str, asset_dir: Path, row: dict):
+    """(cover mask, its sha) from `<name>.cover.png`, checked against index.json's row; None without the file."""
+    cover_path = asset_dir / f"{name}.cover.png"
+    if not cover_path.is_file():
+        return None
+    cover_px = read_mask_png(cover_path)
+    cover_sha = hashlib.sha256(np.packbits(cover_px).tobytes()).hexdigest()[:12]
+    if row.get("cover_sha") != cover_sha:
+        raise GeometryError(f"{name}.cover.png is {cover_sha}, index.json says {row.get('cover_sha')}; "
+                            f"rebuild the geometry")
+    return cover_px, cover_sha
+
+
+def load_cover_labels(name: str, asset_dir: Path = ASSET_DIR) -> np.ndarray | None:
+    """The map's cover pieces as `attach_cover` labels (PX x PX int16, 0 = none); None without a cover.png."""
+    index_path = asset_dir / "index.json"
+    row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    cover = _read_cover(name, asset_dir, row)
+    if cover is None:
+        return None
+    return ndimage.label(np.asarray(cover[0], bool))[0].astype(np.int16)
+
+
+def attach_cover(geo: Geometry, mask: np.ndarray | None, sha: str | None) -> Geometry:
+    """Sets the see-over cover pieces on `geo` (4-connected labels, int16); a None mask leaves them None."""
+    if mask is None:
+        return geo
+    labels, _ = ndimage.label(np.asarray(mask, bool))      # default structure is 4-connected
+    geo.cover_px = labels.astype(np.int16)
+    geo.cover_sha = sha
     return geo
 
 
@@ -593,9 +715,117 @@ SLAB_SLOTS = 6     # blocked slope intervals kept per ray; more are merged into 
 SLOPE_EPS = 1e-9   # a blocked interval's ends count as blocked
 
 
+def see_over_labels(x) -> tuple[int, ...]:
+    """One sorted tuple of the distinct non-zero cover labels in `x`: an int, a pair of ints, a tuple of ints, a pair
+    of tuples, or any nesting of them (0 and () = none). The single entry point for every `see_over` argument."""
+    if isinstance(x, (tuple, list, set, frozenset)):
+        return tuple(sorted({l for part in x for l in see_over_labels(part)}))
+    return (int(x),) if x else ()
+
+
+def sight_without(geo: Geometry, *labels) -> np.ndarray:
+    """`geo.sight` with the see-over pixels of the given cover pieces cleared (they don't block). Labels (ints or
+    tuples, `see_over_labels`) of 0, or a map with no cover, give `geo.sight` itself. Cached on the geometry per
+    sorted label tuple."""
+    wanted = see_over_labels(labels)
+    if not wanted or geo.cover_px is None:
+        return geo.sight
+    cache = geo.__dict__.setdefault("_sight_without", {})
+    view = cache.get(wanted)
+    if view is None or view[0] is not geo.sight:
+        cleared = geo.sight.copy()
+        for label in wanted:
+            cleared &= ~geo.see_over_mask(label)
+        view = cache[wanted] = (geo.sight, cleared)
+    return view[1]
+
+
+# The owner's rule (2026-11-01): a box more than 2 m above its floor is too high to jump-peek over, so it counts as a
+# 2-height box, as a box with no height data does. The tolerance is the 0.2 m a stand's z moves (BOX_STEADY_DZ_M); Summit's
+# learnt tops go from 2.0 m straight to 2.4 m. Read when sight runs, not by the height build, so not in the rules hash.
+JUMP_PEEK_MAX_M = 2.0
+JUMP_PEEK_TOL_M = 0.2
+TWO_HEIGHT_BOX_M = 4.0
+
+
+def plate_surface(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sight without learnt boxes, their nearest-row surfaces (m), and int32 cover labels.
+
+    Each topped pixel takes its piece's nearest learnt (x px, y px, z dm) row, preferring the lower
+    top on ties. Surface is position-z minus STAND_M, NaN elsewhere; a top too high to jump-peek over
+    is raised to TWO_HEIGHT_BOX_M above the piece's floor. box_tops returns a fresh proxy, so retain
+    and compare the stable heights, cover and sight objects, never their ids.
+    """
+    cached = geo.__dict__.get('_plate_surface')
+    if cached is not None and cached[0] is geo.heights and cached[1] is geo.cover_px and cached[2] is geo.sight:
+        return cached[3]
+    topped = tuple(geo.box_tops)
+    # sight_without retains its old, sight-only cache contract. A cover replacement must also
+    # refresh this particular cleared mask, without changing the default sight path.
+    geo.__dict__.get('_sight_without', {}).pop(topped, None)
+    sight = sight_without(geo, topped)
+    surface = np.full((PX, PX), np.nan, np.float32)
+    learnt = np.full((PX, PX), np.nan, np.float32)    # the nearest learnt row's surface, never raised
+    raised = np.full((PX, PX), np.nan, np.float32)    # the same as a 2-height box
+    below = np.full((PX, PX), -np.inf, np.float32)    # a viewer floor under this counts it as 2-height
+    piece = np.zeros((PX, PX), np.int32) if geo.cover_px is None else geo.cover_px.astype(np.int32)
+    if topped:
+        rows = np.asarray(geo.heights.box_tops, np.int64).reshape(-1, 3)
+        labels = piece[np.clip(rows[:, 1], 0, PX - 1), np.clip(rows[:, 0], 0, PX - 1)]
+        ground = geo.box_ground
+        for p in topped:
+            floor = ground.get(p)
+            got = rows[labels == p]
+            got = got[np.lexsort((got[:, 0], got[:, 1], got[:, 2]))]
+            ys, xs = np.nonzero(piece == p)
+            distance = np.full(len(xs), np.iinfo(np.int64).max, np.int64)
+            z = np.empty(len(xs), np.float32)
+            z_learnt, z_raised, z_below = (np.empty(len(xs), np.float32) for _ in range(3))
+            for rx, ry, rz in got:
+                d = (xs - rx) ** 2 + (ys - ry) ** 2
+                nearer = d < distance  # sorted rows make equal distances prefer the lower top
+                distance[nearer] = d[nearer]
+                top = float(rz) / 10
+                base = top if floor is None else float(floor)  # no floor: as high as a box can be read
+                high = max(top, base + TWO_HEIGHT_BOX_M)
+                limit = np.inf if floor is None else top - (JUMP_PEEK_MAX_M + JUMP_PEEK_TOL_M) - 1e-9
+                z[nearer] = (high if base < limit else top) - hc.STAND_M
+                z_learnt[nearer] = top - hc.STAND_M
+                z_raised[nearer] = high - hc.STAND_M
+                z_below[nearer] = limit
+            surface[ys, xs] = z
+            learnt[ys, xs], raised[ys, xs], below[ys, xs] = z_learnt, z_raised, z_below
+    result = (sight, surface, piece)
+    geo.__dict__['_plate_peek'] = (learnt, raised, below)
+    geo.__dict__['_plate_surface'] = (geo.heights, geo.cover_px, geo.sight, result)
+    return result
+
+
+def plate_z(geo: Geometry, py, px, floor: float | None = None):
+    """The plate surface at pixel(s) (py, px) for a viewer whose floor (position-z, as node_z) is `floor`. The owner's rule
+    (2026-11-02): the 2 m jump-peek limit is measured from the floor the viewer jumps from, so a box counts as 2-height when
+    its learnt top is over JUMP_PEEK_MAX_M (+ tolerance) above that floor. No floor known: from the box's own floor, as
+    `plate_surface`'s surface. A box with no floor of its own is 2-height for every viewer."""
+    surface = plate_surface(geo)[1]
+    if floor is None or not math.isfinite(floor):
+        return surface[py, px]
+    learnt, raised, below = geo.__dict__['_plate_peek']
+    return np.where(floor < below[py, px], raised[py, px], learnt[py, px])
+
+
+def _viewer_floor(geo: Geometry, node: int | None) -> float | None:
+    if node is None or geo.heights is None:
+        return None
+    z = float(geo.node_z[node])
+    return z if math.isfinite(z) else None
+
+
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye_z: float | None = None,
-         own: int | None = None, record: dict | None = None) -> np.ndarray:
-    """The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
+         own: int | None = None, record: dict | None = None, see_over=(), plates=False,
+         floor: float | None = None) -> np.ndarray:
+    """see_over: cover labels the eye sees over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block (`sight_without`).
+
+    The nodes (flat GRID*GRID cells on a flat map) seen from (x, y) px along the given rays. Walls
     stop a ray once it has crossed more than the corner tolerance; a hollow smoke stops it at its edge
     (from inside or out), a solid one as soon as it is inside; a utility `Wall` where it crosses it.
     `smokes` are (x, y, radius px, solid) or `Wall`s.
@@ -604,25 +834,36 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (see the module docstring) and `own` is the viewer's own node, the only one of its cell it sees
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
-    (a dict) counts those rays under "unresolved_rays"."""
+    (a dict) counts those rays under "unresolved_rays". With `plates=True`, learnt boxes raise the
+    height horizon at their nearest learnt surface instead of acting as unlimited sight walls."""
+    see_over = see_over_labels(see_over)
     if geo.movement_only:
         eye_z = None
     from app.control.features import BoundedOccluder, cast_with
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
         return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
-                         occluders, eye_z=eye_z, own=own, record=record)
+                         occluders, eye_z=eye_z, own=own, record=record, see_over=see_over, plates=plates,
+                         floor=floor)
     if geo.heights is not None:
         if eye_z is None:
             if geo.adaptive:
-                return _cast_flat(geo, x, y, angles_deg, smokes)
-            return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes))
-        return _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record)
-    return _cast_flat(geo, x, y, angles_deg, smokes)
+                return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
+            return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes, see_over))
+        seen = _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, plates=plates,
+                             floor=floor)
+        if len(geo.top_nodes):
+            if own is None:
+                own = geo.node_at_px(x, y, float(eye_z) - hc.EYE_M)
+            _see_tops(geo, x, y, angles_deg, smokes, float(eye_z), own, record, see_over, seen, plates=plates,
+                      floor=floor)
+        return seen
+    return _cast_flat(geo, x, y, angles_deg, smokes, see_over)
 
 
-def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list) -> np.ndarray:
-    """`cast` on cells, in 2D: the whole of it on a flat map."""
+def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, see_over=()) -> np.ndarray:
+    """`cast` on cells, in 2D: the whole of it on a flat map. see_over: as in `cast`."""
+    see_over = see_over_labels(see_over)
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     seen = np.zeros(geo.n if geo.adaptive else GRID * GRID, bool)
@@ -634,6 +875,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
             reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
+    sight = sight_without(geo, see_over) if see_over else geo.sight
     for step in range(0, RAY_MAX_PX, RAY_STEP_PX):
         px = x + dx * step
         py = y + dy * step
@@ -641,7 +883,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
         pxc = np.clip(px, 0, PX - 1).astype(np.int32)
         pyc = np.clip(py, 0, PX - 1).astype(np.int32)
         if step > 3:
-            hits += geo.sight[pyc, pxc]
+            hits += sight[pyc, pxc]
             live &= hits <= geo.tol_hits
         for (sx, sy, r, solid), inside0 in zip(smokes, started_in):
             inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
@@ -657,8 +899,8 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
-                  own: int | None, record: dict | None) -> np.ndarray:
-    """`cast` on nodes, with the height test. The own-cell and target-cell plate rule below is not the
+                  own: int | None, record: dict | None, see_over=(), plates=False, floor: float | None = None) -> np.ndarray:
+    """`cast` on nodes, with the height test (see_over: as in `cast`). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
     viewer's own cell and the cell being tested don't count), and blocked slope intervals, one per upper
@@ -667,6 +909,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     before leaving the cell (so nobody sees through their own floor or ceiling), and a plate of the cell
     being tested blocks from the cell's near edge up to the point tested (so a body on a slab is seen
     from below only over its edge). In the viewer's own cell only the viewer's own node is seen."""
+    see_over = see_over_labels(see_over)
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     rays = len(a)
@@ -679,9 +922,16 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
+    sight = sight_without(geo, see_over) if see_over else geo.sight
+    if plates:
+        plate_sight, _, piece = plate_surface(geo)
+        sight = sight & plate_sight if see_over else plate_sight
+        own_piece = piece[int(np.clip(y, 0, PX - 1)), int(np.clip(x, 0, PX - 1))]
     src = geo.space_at_px(x, y)
     own = geo.node_at_px(x, y, eye - hc.EYE_M) if own is None else own
     seen[own] = True
+    if plates and floor is None:
+        floor = _viewer_floor(geo, own)
     node_of, node_z, unresolved = (geo.space_nodes if geo.adaptive else geo.node_of), geo.node_z, (geo.space_unresolved if geo.adaptive else geo.unresolved)
     ground = (node_z[np.maximum(node_of[:, 0], 0)] if geo.adaptive else node_z[: GRID * GRID]) - hc.STAND_M - hc.LEDGE_M
     if geo.adaptive:
@@ -693,7 +943,8 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
         upper -= 1
     # Per-cast snapshots respect caller-owned, mutable terrain arrays while moving
     # fixed arithmetic out of the sampling loop. Preserve subtraction order.
-    body_from_eye = node_z + hc.BODY_M - eye
+    head_from_eye = node_z + hc.HEAD_M - eye
+    feet_from_eye = node_z + hc.FEET_M - eye
     plate_from_eye = node_z - hc.STAND_M - eye
     ground_from_eye = ground - eye
     hor = np.full(rays, -np.inf)
@@ -714,7 +965,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             pxc = np.clip(px, 0, PX - 1).astype(np.int32)
             pyc = np.clip(py, 0, PX - 1).astype(np.int32)
             if step > 3:
-                hits += geo.sight[pyc, pxc]
+                hits += sight[pyc, pxc]
                 live &= hits <= geo.tol_hits
             for (sx, sy, r, solid), inside0 in zip(smokes, started_in):
                 inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
@@ -759,25 +1010,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             d = step * geo.m_per_px
             in_src = cell == src
             away = live & ~in_src
-            if away.any():
-                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
-                for k in range(upper + 1):
-                    node = node_of[cell, k]
-                    there = away & (node >= 0)
-                    if not there.any():
-                        continue
-                    safe_node = np.maximum(node, 0)
-                    z = node_z[safe_node]
-                    slope = body_from_eye[safe_node, None] / d
-                    ok = slope[:, 0] >= hor
-                    if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
-                        ok &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
-                            & ~((slope >= pend_lo - SLOPE_EPS) & (slope <= pend_hi + SLOPE_EPS)).any(1)
-                    # no known height (off the walk mask, or unresolved): the 2D answer
-                    ok |= flat | np.isnan(z)
-                    seen[node[there & ok]] = True
-                # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
+            # Include the current cell's plates before testing its target points.
             for k in range(upper):
                 node = node_of[cell, k + 1]
                 has = live & (node >= 0)
@@ -800,31 +1033,144 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     near = plate / max(d - step_m, step_m / 2)
                     pend_lo[:, k] = np.where(else_, np.minimum(pend_lo[:, k], np.minimum(near, far)), pend_lo[:, k])
                     pend_hi[:, k] = np.where(else_, np.maximum(pend_hi[:, k], np.maximum(near, far)), pend_hi[:, k])
+            if away.any():
+                slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
+                for k in range(upper + 1):
+                    node = node_of[cell, k]
+                    there = away & (node >= 0)
+                    if not there.any():
+                        continue
+                    safe_node = np.maximum(node, 0)
+                    z = node_z[safe_node]
+                    head_slope = head_from_eye[safe_node, None] / d
+                    feet_slope = feet_from_eye[safe_node, None] / d
+                    head_ok = head_slope[:, 0] >= hor
+                    feet_ok = feet_slope[:, 0] >= hor
+                    if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
+                        head_ok &= ~((head_slope >= lo - SLOPE_EPS) & (head_slope <= hi + SLOPE_EPS)).any(1) \
+                            & ~((head_slope >= pend_lo - SLOPE_EPS) & (head_slope <= pend_hi + SLOPE_EPS)).any(1)
+                        feet_ok &= ~((feet_slope >= lo - SLOPE_EPS) & (feet_slope <= hi + SLOPE_EPS)).any(1) \
+                            & ~((feet_slope >= pend_lo - SLOPE_EPS) & (feet_slope <= pend_hi + SLOPE_EPS)).any(1)
+                    ok = head_ok | feet_ok
+                    # no known height (off the walk mask, or unresolved): the 2D answer
+                    ok |= flat | np.isnan(z)
+                    seen[node[there & ok]] = True
+                # this cell's ground raises the horizon for what is beyond it
+                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
+                if plates:
+                    on_piece = away & (piece[pyc, pxc] != own_piece)
+                    np.fmax(hor, np.where(on_piece, (plate_z(geo, pyc, pxc, floor) - eye) / d, np.nan), out=hor)
     return seen
 
 
-def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None) -> bool:
-    """Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
+def _top_views(geo: Geometry) -> np.ndarray:
+    """Each top's own 360-degree view over its stance's pieces, without the top pass (no recursion)."""
+    if geo.top_view is None:
+        from app.control.stance import vantage
+
+        angles = np.arange(0, 360, RAY_STEP_DEG)
+        views = np.zeros((len(geo.top_nodes), geo.n), bool)
+        for i, (t, piece) in enumerate(zip(geo.top_nodes, geo.top_piece)):
+            x, y = geo.centres[t]
+            z = float(geo.node_z[t])
+            views[i] = _cast_heights(geo, float(x), float(y), angles, [], z + hc.EYE_M,
+                                      int(t), None, vantage(geo, int(piece), z))
+        geo.top_view = views
+    return geo.top_view
+
+
+def _over_own_top(geo: Geometry, a: tuple, b: tuple, t: int, piece: int) -> bool:
+    """The line clears the target piece's surface before entering the target top's own leaf."""
+    ax, ay, az = a
+    bx, by, bz = b
+    length = math.hypot(bx - ax, by - ay)
+    if length < 1e-9:
+        return True
+    fraction = np.arange(0, int(length) + 1, RAY_STEP_PX, dtype=float) / length
+    px = np.clip(ax + (bx - ax) * fraction, 0, PX - 1).astype(np.int32)
+    py = np.clip(ay + (by - ay) * fraction, 0, PX - 1).astype(np.int32)
+    x0, y0, x1, y1 = geo.node_bbox[t]
+    in_leaf = (px >= x0) & (px < x1) & (py >= y0) & (py < y1)
+    crossing = (geo.cover_px[py, px] == piece) & ~in_leaf
+    surface = geo.node_z[t] - hc.STAND_M - hc.LEDGE_M - 1e-9
+    return bool(np.all(az + (bz - az) * fraction[crossing] >= surface))
+
+
+def _see_tops(geo: Geometry, x: float, y: float, angles_deg, smokes: list, eye: float,
+              own: int, record: dict | None, see_over, seen: np.ndarray, plates=False,
+              floor: float | None = None) -> None:
+    """Add tops in the ray fan by exact head/feet lines; a reverse top view cheaply rejects ground pairs."""
+    angles = np.asarray(angles_deg, float)
+    if not len(angles):
+        return
+    offsets = geo.centres[geo.top_nodes].astype(float) - (x, y)
+    bearings = np.degrees(np.arctan2(offsets[:, 1], offsets[:, 0]))
+    off = np.abs((bearings[:, None] - angles[None, :] + 180) % 360 - 180)
+    candidates = np.flatnonzero((geo.top_nodes != own)
+                               & (np.hypot(offsets[:, 0], offsets[:, 1]) <= RAY_MAX_PX)
+                               & (off <= RAY_STEP_DEG / 2 + 1e-9).any(axis=1))
+    if not len(candidates):
+        return
+    if not plates and not geo.is_top[own]:
+        candidates = candidates[_top_views(geo)[candidates, own]]
+    if plates:
+        own_piece = int(plate_surface(geo)[2][int(np.clip(y, 0, PX - 1)), int(np.clip(x, 0, PX - 1))])
+    for i in candidates:
+        t = int(geo.top_nodes[i])
+        tx, ty = map(float, geo.centres[t])
+        z = float(geo.node_z[t])
+        piece = int(geo.top_piece[i])
+        over = (see_over, (piece,))
+        a = (x, y, eye)
+        for offset in (hc.HEAD_M, hc.FEET_M):
+            b = (tx, ty, z + offset)
+            if plates:
+                clear = los(geo, a, b, smokes, record, see_over=over, plates=True, skip=(piece, own_piece),
+                            floor=floor if floor is not None else _viewer_floor(geo, own))
+            else:
+                clear = los(geo, a, b, smokes, record, see_over=over) and _over_own_top(geo, a, b, t, piece)
+            if clear:
+                seen[t] = True
+                break
+
+
+def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | None = None,
+        see_over=((), ()), plates=False, skip=(), floor: float | None = None) -> bool:
+    """see_over: cover labels the ends see over: int, tuple or pair of them (`see_over_labels`); their see-over pixels do not block.
+    floor: with `plates`, the viewer's floor (position-z) the jump-peek limit is measured from (`plate_z`); default the
+    floor under the eye at `a`.
+
+    Is the line from the eye at `a` to the point `b` clear? Both are (x px, y px, position-z m) with
     z already at the eye's and the target point's own heights (None for a 2D check, and on a flat map).
     The same rules as `cast`, for one exact line: the 2D walls with the corner tolerance, smokes and wall
     abilities; the ground of every cell between the two ends' cells; and every upper floor on the way,
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
-    rays `cast` happens to shoot, so the two check each other."""
+    rays `cast` happens to shoot, so the two check each other. `plates=True` replaces learnt box walls
+    with surfaces that block samples below them; `skip` exempts those cover piece labels from surfaces."""
+    see_over = see_over_labels(see_over)
     if geo.movement_only:
         a, b = (*a[:2], None), (*b[:2], None)
     from app.control.features import BoundedOccluder, los_with
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
-        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record)
+        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record,
+                        see_over=see_over, plates=plates, skip=skip, floor=floor)
     (ax, ay, az), (bx, by, bz) = a, b
+    if plates and floor is None and geo.heights is not None and az is not None:
+        floor = _viewer_floor(geo, geo.node_at_px(ax, ay, az - hc.EYE_M))
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
         # straight up or down: only the cell's own plates can be in the way
         cell = geo.space_at_px(ax, ay)
         if geo.heights is None or az is None or bz is None or geo.unresolved_at_px(ax, ay):
             return True
-        return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) < 0
+        if plates:
+            piece = plate_surface(geo)[2]
+            px, py = int(np.clip(ax, 0, PX - 1)), int(np.clip(ay, 0, PX - 1))
+            if piece[py, px] not in skip and min(az, bz) < float(plate_z(geo, py, px, floor)):
+                return False
+        return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) <= 0
                        for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:])
     ux, uy = (bx - ax) / length, (by - ay) / length
     circles = [s for s in smokes if not isinstance(s, Wall)]
@@ -838,17 +1184,29 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     slope = (bz - az) / total if heights else 0.0
     step_m = RAY_STEP_PX * geo.m_per_px
     hits, flat = 0, False
-    spans: list[list] = []                       # [cell, first d, last d] in order along the line
+    sight = sight_without(geo, see_over) if see_over else geo.sight
+    if plates:
+        plate_sight, surface, piece = plate_surface(geo)
+        sight = sight & plate_sight if see_over else plate_sight
+        if floor is not None and math.isfinite(floor):   # `plate_z` for this viewer, read per sample below
+            learnt, raised, below = geo.__dict__['_plate_peek']
+            surface = None
+    spans: list[list] = []                    # [cell, first d, last d] in order along the line
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step
         pxc, pyc = int(min(max(px, 0), PX - 1)), int(min(max(py, 0), PX - 1))
         if step > 3:
-            hits += bool(geo.sight[pyc, pxc])
+            hits += bool(sight[pyc, pxc])
             if hits > geo.tol_hits:
                 return False
         for (sx, sy, r, solid), inside0 in zip(circles, started_in):
             inside = (px - sx) ** 2 + (py - sy) ** 2 < r * r
             if (inside if solid and step > 0 else inside != inside0):
+                return False
+        if plates and heights and piece[pyc, pxc] not in skip:
+            top = surface[pyc, pxc] if surface is not None else (
+                raised[pyc, pxc] if floor < below[pyc, pxc] else learnt[pyc, pxc])
+            if az + slope * step * geo.m_per_px < top:
                 return False
         if not heights or flat:
             continue
@@ -880,11 +1238,19 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             t0, t1 = first / geo.m_per_px, last / geo.m_per_px     # a clipped sample off the map's edge
         d0 = 0.0 if cell == src else t0 * geo.m_per_px
         d1 = total if cell == dst else t1 * geo.m_per_px
-        h0, h1 = az + slope * d0, az + slope * d1
         for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:]:
             if node >= 0:
                 plate = geo.node_z[node] - hc.STAND_M
-                if (h0 - plate) * (h1 - plate) < 0:
+                # Use the fan's inclusive slope interval and tolerance. Testing
+                # height products misses crossings at shared cell edges when
+                # rounding puts both heights just below the plate.
+                delta = plate - az
+                if d0 == 0 and delta == 0:
+                    return False
+                near = delta / d0 if d0 > 0 else math.copysign(math.inf, delta)
+                far = delta / d1 if d1 > 0 else near
+                lo, hi = sorted((near, far))
+                if lo - SLOPE_EPS <= slope <= hi + SLOPE_EPS:
                     return False
     return True
 
@@ -897,10 +1263,19 @@ def cache_key(geo: Geometry) -> str:
     digest.update(np.packbits(geo.sight).tobytes())
     digest.update(np.packbits(geo.walk_px).tobytes())
     if geo.heights is not None:      # a flat map's key is what it always was
+        top_digest = hashlib.sha256()
+        if len(geo.top_nodes):
+            for values, dtype in ((geo.top_nodes, '<i4'), (geo.top_piece, '<i4'),
+                                  (geo.node_z[geo.top_nodes], '<f8')):
+                top_digest.update(np.asarray(values, dtype=dtype).tobytes())
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
+                                  **({'top_nodes': top_digest.hexdigest(), 'top_sight': 2}
+                                     if len(geo.top_nodes) else {}),
                                   **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
-                                  "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
+                                  **({'cover_dropped': geo.height_cover_dropped}
+                                     if geo.height_cover_dropped > 0 else {}),
+                                  "eye": hc.EYE_M, "head": hc.HEAD_M, "feet": hc.FEET_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
                                  sort_keys=True).encode("ascii"))
     return digest.hexdigest()
@@ -915,7 +1290,16 @@ def build_visibility(geo: Geometry) -> tuple[np.ndarray, np.ndarray]:
     angles = np.arange(0, 360, RAY_STEP_DEG)
     for i, c in enumerate(nodes):
         x, y = geo.centres[c]
-        if geo.heights is None or np.isnan(geo.node_z[c]):
+        if len(geo.top_nodes) and geo.is_top[c]:
+            from app.control.stance import vantage
+
+            k = np.searchsorted(geo.top_nodes, c)
+            row = _top_views(geo)[k].copy()     # the ground-only views stay the top pass's reverse filter
+            z = float(geo.node_z[c])
+            _see_tops(geo, float(x), float(y), angles, [], z + hc.EYE_M, int(c), None,
+                      vantage(geo, int(geo.top_piece[k]), z), row)
+            rows[i] = np.packbits(row)
+        elif geo.heights is None or np.isnan(geo.node_z[c]):
             rows[i] = np.packbits(cast(geo, float(x), float(y), angles, []))
         else:
             rows[i] = np.packbits(cast(geo, float(x), float(y), angles, [], eye_z=geo.node_z[c] + hc.EYE_M, own=int(c)))

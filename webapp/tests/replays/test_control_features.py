@@ -26,14 +26,26 @@ from tests.replays.control_toys import HALL, open_hall, toy_geometry, toy_height
 GRID = cg.GRID
 
 
-def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded(monkeypatch):
-    from app.replays import control_format
-    # Keep the independent revision-9 baseline. The publication updates only
-    # Ascent's reviewed Catwalk mask identities; other maps retain their snapshot.
-    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 9)
+def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
+    # W7a/R9: regenerate the legacy inputs for CONTROL 22 as the fixture helper directs.
     recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
     assert recorded["maps"], "the snapshot should cover the committed maps"
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]
+
+
+def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch):
+    from app.control import engine
+    from app.replays import control_format
+
+    monkeypatch.setattr(engine, "JUMP_SIGHT", False)
+    # The preceding fixture deliberately pinned revision 9, rather than the then-current 21.
+    monkeypatch.setattr(control_format, "CONTROL_REVISION", 9)
+    assert {name: row["fingerprint"] for name, row in map_feature_legacy.snapshot()["maps"].items()} == {
+        "Abyss": "710180a264b68904", "Ascent": "002a6552b213cdd3", "Bind": "8746931ce5e1a5a7",
+        "Breeze": "df86bef00d2d287d", "Corrode": "7e20e46000047436", "Fracture": "68c12c250f89f0bf",
+        "Haven": "73e3b3a896602d75", "Icebox": "cedf82afcf5485df", "Lotus": "f29785edc9d08bff",
+        "Pearl": "78c9dcecac6432fa", "Split": "2d673942e43ee607", "Summit": "acf73736dffcd02c",
+        "Sunset": "6c79b654ccf4284f"}
 
 
 # ---- W17: freshness inputs and cache keys
@@ -426,9 +438,10 @@ def views(geo, viewer, target, occluders):
 
     vx, vy = (float(c) for c in geo.centres[viewer])
     tx, ty = (float(c) for c in geo.centres[target])
-    eye, body = geo.node_z[viewer] + hc.EYE_M, geo.node_z[target] + hc.BODY_M
+    eye = geo.node_z[viewer] + hc.EYE_M
     cast = cf.cast_with(geo, vx, vy, np.arange(0, 360, cg.RAY_STEP_DEG), [], occluders, eye_z=eye, own=viewer)[target]
-    los = cf.los_with(geo, (vx, vy, eye), (tx, ty, body), [], occluders)
+    los = any(cf.los_with(geo, (vx, vy, eye), (tx, ty, geo.node_z[target] + offset), [], occluders)
+              for offset in (hc.HEAD_M, hc.FEET_M))
     seen = cf.seen_from_with(geo, np.array([viewer]), [], occluders)[target]
     return bool(cast), bool(los), bool(seen)
 

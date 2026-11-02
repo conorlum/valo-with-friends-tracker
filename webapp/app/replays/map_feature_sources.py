@@ -119,7 +119,9 @@ def _read_raws(map_name, folder):
     sight = (folder / f'{map_name}.sight.png').read_bytes()
     walk = (folder / f'{map_name}.walk.png').read_bytes()
     barrier_path = folder / f'{map_name}.barrier.png'
-    return sight, walk, (barrier_path.read_bytes() if barrier_path.is_file() else None)
+    cover_path = folder / f'{map_name}.cover.png'
+    return (sight, walk, (barrier_path.read_bytes() if barrier_path.is_file() else None),
+            cover_path.read_bytes() if cover_path.is_file() else None)
 
 
 def _base_snapshot(map_name, folder, entry, scale):
@@ -140,10 +142,14 @@ def _decode(map_name, raws, entry, scale):
             if len(bits) != 256 * 256 // 8:
                 raise FeatureInputsError('invalid legacy paint size')
             legacy[kind] = _pack(_legacy_large(bits), [1024, 1024])
-    return {'sight': _pack(masks['sight'], [1024, 1024]), 'walk': _pack(masks['walk'], [1024, 1024]),
-            'barrier': None if barrier is None else _pack(barrier, [128, 128]),
-            'barrier_sha': barrier_sha,
-            'scale': scale, 'specials': entry.get('specials') or [], 'legacy': legacy}
+    out = {'sight': _pack(masks['sight'], [1024, 1024]), 'walk': _pack(masks['walk'], [1024, 1024]),
+           'barrier': None if barrier is None else _pack(barrier, [128, 128]),
+           'barrier_sha': barrier_sha,
+           'scale': scale, 'specials': entry.get('specials') or [], 'legacy': legacy}
+    if len(raws) > 3 and raws[3] is not None:                   # only a map with cover: other maps' base is what it was
+        cover = _pack(png_mask(raws[3]), [1024, 1024])
+        out['cover'], out['cover_sha'] = cover, descriptor_digest(cover)
+    return out
 
 
 # The decode cache: keyed on the asset files' bytes (an edited file is decoded afresh), never on paths or times.

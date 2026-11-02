@@ -24,6 +24,7 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
         directory = Path(asset_dir or hi.CONTROL_DIR)
         geo = cg.load_base_geometry(map_name, directory)
         walk = geo.walk
+        box_top_count = 0
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "asset.height.npz"
             path.write_bytes(data)
@@ -82,6 +83,21 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
                         raise ValueError("unknown edge kind")
                     if len(np.unique(edges[:, :4], axis=0)) != len(edges):
                         raise ValueError("duplicate edge endpoints")
+                if "box_tops" in raw.files:
+                    tops = raw["box_tops"]
+                    if tops.dtype != np.dtype("<i4"):
+                        raise ValueError(f"box_tops has dtype {tops.dtype}, not <i4")
+                    if tops.ndim != 2 or tops.shape[1] != 3:
+                        raise ValueError(f"box_tops has shape {tops.shape}, not K x 3")
+                    if len(tops):
+                        if ((tops[:, :2] < 0) | (tops[:, :2] >= cg.PX)).any():
+                            raise ValueError("box_tops pixel out of bounds")
+                        if (tops[:, 2] < 0).any():
+                            raise ValueError("box_tops height below the asset's origin")
+                        cover = cg.load_cover_labels(map_name, directory)
+                        if cover is None or (cover[tops[:, 1], tops[:, 0]] == 0).any():
+                            raise ValueError("box_tops pixel is not on a cover piece")
+                    box_top_count = int(len(tops))
             asset = hc.load_asset(path)  # version check, after validation without lossy casts/reshapes
         count = asset.floor_count().ravel()
         share, reasons = hb.readiness(asset.supported.ravel(), asset.unresolved.ravel(), count, int(walk.sum()))
@@ -101,7 +117,8 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
         return {"digest": asset.digest, "version": int(asset.meta["version"]), "map": map_name,
                 "walkable_cells": int(walk.sum()), "supported_cells": int(asset.supported.sum()),
                 "floor_cells": int((count > 0).sum()), "supported": round(share, 4),
-                "ready": not reasons, "not_ready": reasons, "must_block": must, **additional}
+                "ready": not reasons, "not_ready": reasons, "must_block": must, **additional,
+                **({"box_tops": box_top_count} if box_top_count else {})}
     except Exception as error:  # noqa: BLE001 - unreadable asset, map or check set: trust nothing
         return {"error": f"{type(error).__name__}: {error}"[:300]}
 

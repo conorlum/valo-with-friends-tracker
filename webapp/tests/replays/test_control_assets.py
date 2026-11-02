@@ -26,6 +26,28 @@ def blocked_share(sight: np.ndarray, lines: list) -> float:
     return sum(cg.line_blocked(sight, (ax, ay), (bx, by)) for ax, ay, bx, by in lines) / len(lines)
 
 
+def test_a_kill_line_with_an_end_on_a_cover_box_is_not_judged():
+    # 2026-10-26: a player standing on top of a box shoots over it; the flat test can't tell them from one behind it.
+    sight = np.zeros((cg.PX, cg.PX), bool)
+    sight[100:110, 100:110] = True                       # a box, also cover
+    lines = [[90, 105, 120, 105],                        # through the box, both ends on the ground: blocked
+             [105, 105, 130, 105],                       # from on top of it: not judged
+             [10, 10, 50, 10]]                           # clear
+    assert cg.kill_line_result(sight, lines)["blocked"] == 2
+    got = cg.kill_line_result(sight, lines, cover=sight)
+    assert (got["qualifying"], got["on_cover"], got["blocked"]) == (2, 1, 1)
+
+
+def test_a_cover_tag_is_the_box_inside_its_drawn_outline():
+    # Summit's tagged boxes: the minimap's outline pixels stay sight-open; only what they enclose is cover.
+    m = cg.masks(rgba("Summit"), TAGS["Summit"])
+    shapes = cg.tag_shapes(rgba("Summit"), TAGS["Summit"])["cover"]
+    p = {**cg.DETECTOR_DEFAULTS, **(TAGS["Summit"].get("params") or {})}
+    outline = cg._base_masks(rgba("Summit"), p["glyph_saturation"], p["line_lum"])["line"]
+    assert (shapes & outline).any() and not (m.cover & outline).any()
+    assert (m.cover == (shapes & ~outline)).all()
+
+
 @pytest.mark.parametrize("name", MAPS)
 def test_committed_masks_match_a_fresh_build(name):
     fresh = cg.masks(rgba(name), TAGS.get(name, {}))
@@ -33,10 +55,79 @@ def test_committed_masks_match_a_fresh_build(name):
     assert (cg.read_mask_png(cg.ASSET_DIR / f"{name}.walk.png") == fresh.walk).all()
 
 
+# Ascent's whole cover mask has 15 pieces; taking out the pixels that overlap a real wall splits two of them.
+COVER_PIECES = {"Summit": 28, "Ascent": 17, "Sunset": 1}
+
+
+def _paint_cells(*cells):
+    grid = np.zeros((cg.PAINT_GRID, cg.PAINT_GRID), bool)
+    for r, c in cells:
+        grid[r, c] = True
+    return cg.pack_paint(grid)
+
+
+@pytest.mark.parametrize("name", MAPS)
+def test_cover_is_its_own_asset_and_sight_is_wall_plus_cover(name):
+    path = cg.ASSET_DIR / f"{name}.cover.png"
+    fresh = cg.see_over_cover(rgba(name), TAGS.get(name, {}))
+    m = cg.masks(rgba(name), TAGS.get(name, {}))
+    geo = cg.load_geometry(name, height_mode="flat")
+    row = INDEX["maps"][name]
+    if not fresh.any():
+        assert not path.exists() and "cover_sha" not in row
+        assert geo.cover_px is None and geo.cover_sha is None
+        return
+    png = cg.read_mask_png(path)
+    assert (png == fresh).all()
+    entry = TAGS.get(name, {})
+    base = cg._base_masks(rgba(name), cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
+    see_across = cg.tag_shapes(rgba(name), entry)["seeacross"].copy()
+    if entry.get("see_across_paint"):
+        see_across |= cg.unpack_paint(entry["see_across_paint"])
+    wall_without_cover = ~base["opaque"] & ~see_across
+    assert (m.sight == (wall_without_cover | png)).all()
+    assert row["cover_sha"] == geo.cover_sha
+    assert (geo.cover_px > 0).sum() == png.sum() and (geo.cover_px[~png] == 0).all()
+    assert geo.cover_px.dtype == np.int16
+
+
+@pytest.mark.parametrize("name,pieces", sorted(COVER_PIECES.items()))
+def test_cover_piece_counts(name, pieces):
+    assert cg.load_geometry(name, height_mode="flat").cover_px.max() == pieces
+
+
+def test_cover_pieces_are_four_connected():
+    mask = np.zeros((cg.PX, cg.PX), bool)
+    mask[10, 10] = mask[11, 11] = True                    # touch at a corner only
+    geo = cg.attach_cover(cg.load_geometry("Ascent", height_mode="flat"), mask, "x")
+    assert geo.cover_px.max() == 2
+    assert not geo.see_over_mask(0).any()
+    assert geo.see_over_mask(1).sum() == 1 and not (geo.see_over_mask(1) & geo.see_over_mask(2)).any()
+    mask[10, 11] = True                                   # now joined
+    assert cg.attach_cover(geo, mask, "x").cover_px.max() == 1
+
+
+def test_attach_cover_with_no_mask_leaves_none():
+    geo = cg.attach_cover(cg.load_geometry("Bind", height_mode="flat"), None, None)
+    assert geo.cover_px is None and geo.cover_sha is None
+
+
+def test_a_cover_outline_over_a_wall_pixel_is_not_see_over_cover():
+    # all transparent = all wall; a cover paint over it adds no see-over pixels.
+    wall = np.zeros((cg.PX, cg.PX, 4), np.uint8)
+    paint = {"cover_paint": _paint_cells((0, 0))}
+    assert not cg.see_over_cover(wall, paint).any()
+    assert cg.masks(wall, paint).cover[:4, :4].all()      # the cover mask itself is unchanged
+    floor = wall.copy()
+    floor[:8, :8] = (60, 60, 60, 255)                     # open ground in the corner
+    got = cg.see_over_cover(floor, paint)
+    assert got[:4, :4].all() and got.sum() == 16
+
+
 @pytest.mark.parametrize("name", sorted(LINES))
 def test_kill_lines_pass_risk1(name):
-    geo = cg.load_geometry(name)
-    assert blocked_share(geo.sight, LINES[name]) <= 0.02
+    m = cg.masks(rgba(name), TAGS.get(name, {}))
+    assert cg.kill_line_result(cg.load_geometry(name).sight, LINES[name], m.cover)["passes"]
 
 
 def test_abyss_passes_only_with_its_see_across_tags():

@@ -39,3 +39,24 @@ def test_what_is_not_harmonize():
     assert [b["target"] for b in find_buffs(bassquake, p, CODES, TEAMS)] == [1]
     late = [eff(84180, MIKS, (MIKS,), 92180), eff(85000, SOVA, (MIKS,), 93000)]                  # not together
     assert [b["target"] for b in find_buffs(late, p, CODES, TEAMS)] == [1]
+
+
+VETO = 1003
+
+
+def veto_players():
+    agents = ["Phoenix", "Miks", "Sova", "Veto"] + ["Phoenix"] * 6
+    return PlayerTable(subjects=[None] * 10, agents=agents, pawn_slot={1000 + s: s for s in range(10)},
+                       other_slot={}, pawn_changes={}, gone_ms={})
+
+
+def test_evolution_is_vetos_until_removed_buff_on_himself():
+    # 6e52839b round 9: the buff (container 7399, Buff.Duration -1, context his own pawn) starts 1 s after its
+    # windup and stops in the ms he dies.
+    codes = {**CODES, "Veto": "Pine"}
+    got = find_buffs([eff(889180, VETO, (VETO,), 893937, buff=-1.0, container=7399)], veto_players(), codes, TEAMS)
+    assert got == [{"t_ms": 889180, "t1_ms": 893937, "by": 3, "target": 3, "code": "Pine", "name": "X_Evolution"}]
+    p = veto_players()
+    assert find_buffs([eff(889180, VETO, (1004,), 893937, buff=-1.0)], p, codes, TEAMS) == []     # not his own
+    assert find_buffs([eff(889180, VETO, (VETO,), 893937, buff=4.0)], p, codes, TEAMS) == []      # timed
+    assert find_buffs([eff(889180, SOVA, (SOVA,), 893937, buff=-1.0)], p, codes, TEAMS) == []     # not Veto

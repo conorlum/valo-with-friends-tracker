@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 2                 # the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 7                 # 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -25,6 +25,15 @@ GRACE_S = 1.0               # a kill this long after an effect ends still counts
 ZONE_DAMAGE_LOOKBACK_S = 3.0  # a victim damaged by a zone this recently before dying
 TRIGGER_WINDOW_S = 4.0      # a device's trigger: kills this long after it
 NEAR_TRIGGER_M = 15.0       # ... on enemies within this of the device
+TRADEMARK_PIECE_LEAD_S = (1.8, 2.2)   # a fired Trademark's dart or slow starts this long before the trap row closes
+#                             (replays 330/332/370: 1.93-2.004 s) ...
+TRADEMARK_FIRE_LEAD_S = 0.9           # ... and the trap fired this long before the dart's throw
+ALARMBOT_YAW_WINDOW_S = 1.5           # a fired Alarmbot's yaws gain an entry this soon before its row closes (0.71-1.24 s)
+# Arc Rose (trap-jobs D12): set off only by Vyse popping it, seen as its flash row's `pop` or its blinds; blinds more
+# than this far apart are another pop of the same rose (370 round 1: 17.04 and 38.76 s). Its `fx` is its stealth
+# arming (~6.7 s after placing) or its reveal at Vyse's death, never a pop.
+ARC_ROSE = ("Vyse", "Arc Rose")
+ROSE_REPOP_S = 1.0
 FOLLOW_S = 1.5              # a teammate's damage or aimed shot this soon after an effect starts follows it up
 
 # --- sight blocking (smokes and walls)
@@ -85,6 +94,7 @@ AGENT_KEYS = {
     "Skye": {"C": ("Regrowth", "heal"), "Q": ("Trailblazer", "status"), "E": ("Guiding Light", "blind")},
     "Sova": {"C": ("Owl Drone", "info"), "Q": ("Shock Bolt", "damaging"), "E": ("Recon Bolt", "info")},
     "Tejo": {"C": ("Stealth Drone", "info"), "Q": ("Special Delivery", "status"), "E": ("Guided Salvo", "damaging")},
+    "Veto": {"C": ("Crosscut", "teleport"), "Q": ("Chokehold", "device"), "E": ("Interceptor", "device")},
     "Viper": {"C": ("Snake Bite", "damaging"), "Q": ("Poison Cloud", "smoke"), "E": ("Toxic Screen", "smoke")},
     "Vyse": {"C": ("Razorvine", "device"), "Q": ("Shear", "other"), "E": ("Arc Rose", "blind")},
     "Waylay": {"C": ("Saturate", "status"), "Q": ("Lightspeed", "dash"), "E": ("Refract", "teleport")},

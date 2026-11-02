@@ -2,8 +2,8 @@
 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, "The ray test"; Testing, "Sight").
 
 Heights here are position-z in metres (heights.py): a floor at z is a player standing with their position
-at z, their feet STAND_M below it, their eye EYE_M above it and their body point BODY_M above it. So the
-spec's "eye 1.6 m above the feet" is z + 0.7, and "a body 1.2 m above the floor" is z + 0.3.
+at z, their feet STAND_M below it, and their eye 1.05 m and head 1.1 m above it (eye at feet + 1.95 m).
+The lower sight point is z - 0.7 m (feet + 0.2 m); either target line may be clear.
 The toys are Ascent's scale: 0.14 m a pixel, 1.12 m a cell."""
 
 import numpy as np
@@ -27,8 +27,8 @@ def eye(z_m: float) -> float:
     return z_m + hc.EYE_M
 
 
-def body(z_m: float) -> float:
-    return z_m + hc.BODY_M
+def head(z_m: float) -> float:
+    return z_m + hc.HEAD_M
 
 
 def ledge():
@@ -40,15 +40,15 @@ def ledge():
 
 
 def test_down_from_a_ledge_the_ground_just_below_is_hidden_and_the_far_ground_is_seen():
-    # Eye 5.6 m above the lower ground (upper floor 4 m + 1.6 m), the ledge 2 m in front of the viewer:
-    # a body 1.2 m above the lower floor is hidden at 3 m and seen at 10 m.
+    # Eye 6.0 m above the lower ground (upper floor 4 m + 2.0 m), the ledge 2 m in front of the viewer:
+    # a head 2.0 m above the lower floor is hidden at 3 m and seen at 10 m.
     geo = ledge()
     x = 256 - 2 * M
     seen = cg.cast(geo, x, Y, EAST + FAN, [], eye_z=eye(4.0))
     near, far = node(geo, x + 3 * M), node(geo, x + 10 * M)
     assert not seen[near] and seen[far]
-    assert not cg.los(geo, (x, Y, eye(4.0)), (x + 3 * M, Y, body(0.0)))
-    assert cg.los(geo, (x, Y, eye(4.0)), (x + 10 * M, Y, body(0.0)))
+    assert not cg.los(geo, (x, Y, eye(4.0)), (x + 3 * M, Y, head(0.0)))
+    assert cg.los(geo, (x, Y, eye(4.0)), (x + 10 * M, Y, head(0.0)))
     assert seen[node(geo, x - 30)] is np.False_, "nothing behind a 6-degree fan"
     assert seen[node(geo, 250)], "the upper floor up to the edge"
     flat2d = cg.cast(geo, x, Y, EAST + FAN, [])
@@ -56,16 +56,16 @@ def test_down_from_a_ledge_the_ground_just_below_is_hidden_and_the_far_ground_is
     assert not (seen & ~flat2d).any()
 
 
-def test_up_at_a_ledge_a_body_at_the_edge_is_seen_and_one_far_back_is_hidden():
-    # Eye 1.6 m up on the lower floor, the ledge face 5 m away, the upper floor 4 m up: a body on the
+def test_up_at_a_ledge_a_head_at_the_edge_is_seen_and_one_far_back_is_hidden():
+    # Eye 2.0 m up on the lower floor, the ledge face 5 m away, the upper floor 4 m up: a head on the
     # upper floor 1 m past the edge is seen, one 15 m past it is hidden.
     geo = ledge()
     x = 256 + 5 * M
     seen = cg.cast(geo, x, Y, WEST + FAN, [], eye_z=eye(0.0))
     at_edge, far_back = node(geo, 256 - 1 * M), node(geo, 256 - 15 * M)
     assert seen[at_edge] and not seen[far_back]
-    assert cg.los(geo, (x, Y, eye(0.0)), (256 - 1 * M, Y, body(4.0)))
-    assert not cg.los(geo, (x, Y, eye(0.0)), (256 - 15 * M, Y, body(4.0)))
+    assert cg.los(geo, (x, Y, eye(0.0)), (256 - 1 * M, Y, head(4.0)))
+    assert not cg.los(geo, (x, Y, eye(0.0)), (256 - 15 * M, Y, head(4.0)))
     assert seen[node(geo, 270)], "the lower floor between them"
 
 
@@ -114,6 +114,62 @@ def bridge():
     return toy_heights("Bridge", [HALL], ground=[((96, 96, 240, 296), 4.0)], upper=[((240, 96, 288, 296), 4.0)])
 
 
+def low_overhang():
+    """A plate at 1.7 m over a raised target floor: only the feet line fits underneath."""
+    return toy_heights("LowOverhang", [(192, 192, 288, 216)],
+                       ground=[((248, 192, 288, 216), 1.5)], upper=[((216, 192, 288, 216), 2.6)])
+
+
+@pytest.mark.parametrize("case", ["feet_only", "head_only", "both_hidden"])
+def test_head_or_feet_sight_points(case):
+    if case == "feet_only":
+        geo, sx, tx, sz, tz = low_overhang(), 196, 268, 0.0, 1.5
+        expected = (False, True)
+    else:
+        # From above a ledge, the lip hides the feet before it hides the head.
+        geo, sx, sz, tz = ledge(), 256 - 2 * M, 4.0, 0.0
+        tx = sx + (5 if case == "head_only" else 3) * M
+        expected = (case == "head_only", False)
+    a = (sx, Y, eye(sz))
+    lines = tuple(cg.los(geo, a, (tx, Y, tz + offset)) for offset in (1.1, -0.7))
+    assert lines == expected
+    target = node(geo, tx)
+    for angles in (EAST, EAST + FAN):
+        seen = cg.cast(geo, sx, Y, angles, [], eye_z=eye(sz))
+        assert bool(seen[target]) == any(expected)
+    assert (hc.EYE_M, hc.HEAD_M, hc.FEET_M) == (1.05, 1.1, -0.7)
+
+
+def test_kill_line_accepts_a_target_visible_only_at_the_feet():
+    from app.control import height_build as hb
+    from tests.replays.control_toys import height_blob, standing
+
+    geo = low_overhang()
+    blob = height_blob({0: standing(196, Y, 0.0), 5: standing(268, Y, 1.5, "B")}, t_end=2.0)
+    blob["kills"] = [{"i": 0, "t": 1.0, "killer": 0, "victim": 5}]
+    result = hb.kill_line_check([("toy", 1, blob)], geo)
+    assert (result["qualifying"], result["blocked"], result["passes"]) == (1, 0, True)
+
+
+@pytest.mark.parametrize("bands, expected", [([(0.4, 1.5)], True), ([(-1.0, 0.4)], True),
+                                             ([(-1.0, 1.5)], False),
+                                             ([(0.4, 1.5), (-1.0, 0.4)], False)])
+def test_bounded_features_allow_one_complete_head_or_feet_line(bands, expected):
+    from app.control import features as cf
+
+    geo = toy_heights("SightPointsPanel", [(192, 192, 288, 216)])
+    mask = np.zeros((1024, 1024), bool)
+    mask[192:216, 256:264] = True
+    occluders = [cf._bounded_occluder(str(i), mask.copy(), bottom, top)
+                 for i, (bottom, top) in enumerate(bands)]
+    src, dst = node(geo, 196), node(geo, 268)
+    for _ in range(4):       # exercise sparse checks and promoted row/union caches
+        cast = cf.cast_with(geo, 196, Y, EAST + FAN, [], occluders, eye_z=eye(0.0), own=src)
+        seen = cf.seen_from_with(geo, np.array([src]), [], occluders)
+        assert bool(cast[dst]) == expected
+        assert bool(seen[dst]) == expected
+
+
 def test_the_bridge_has_two_floors_and_the_node_ids_keep_the_cells():
     geo = bridge()
     cells = geo.heights.floor_count().ravel()
@@ -140,9 +196,9 @@ def test_the_tunnel_and_the_bridge_see_along_their_own_level_and_not_each_other(
     assert not any(top[node(geo, x, floor=0)] for x in range(244, 288, 8)), "not into the tunnel"
     assert top[node(geo, 400)], "but the ground beyond the bridge's end, over its edge"
     for x in range(244, 288, 8):
-        assert not cg.los(geo, (260, Y, eye(0.0)), (x + 0.5, Y, body(4.0))), x
-        assert not cg.los(geo, (260, Y, eye(4.0)), (x + 0.5, Y, body(0.0))), x
-    assert cg.los(geo, (260, Y, eye(0.0)), (350, Y, body(0.0))) and cg.los(geo, (260, Y, eye(4.0)), (200, Y, body(4.0)))
+        assert not cg.los(geo, (260, Y, eye(0.0)), (x + 0.5, Y, head(4.0))), x
+        assert not cg.los(geo, (260, Y, eye(4.0)), (x + 0.5, Y, head(0.0))), x
+    assert cg.los(geo, (260, Y, eye(0.0)), (350, Y, head(0.0))) and cg.los(geo, (260, Y, eye(4.0)), (200, Y, head(4.0)))
 
 
 def test_a_slab_blocks_a_line_only_inside_its_own_cells_and_the_same_both_ways():
@@ -163,7 +219,7 @@ def test_straight_up_or_down_a_slab_is_in_the_way():
 def test_from_outside_the_bridge_hides_what_is_on_it_past_its_edge_and_shows_the_tunnel():
     geo = bridge()
     seen = cg.cast(geo, 330, Y, WEST + FAN, [], eye_z=eye(0.0))
-    assert seen[node(geo, 284, floor=1)], "a body at the bridge's edge, seen from below"
+    assert seen[node(geo, 284, floor=1)], "a head at the bridge's edge, seen from below"
     assert not seen[node(geo, 244, floor=1)], "one further back on it is behind the deck"
     assert all(seen[node(geo, x, floor=0)] for x in range(244, 288, 8)), "the tunnel, all the way in"
     assert not seen[node(geo, 200)], "the plateau behind the tunnel's end wall is hidden by its own face"
@@ -188,8 +244,8 @@ def test_a_ray_into_an_unresolved_cell_gives_the_2d_answer_and_is_recorded():
     cg.cast(ledge(), x, Y, EAST + FAN, [], eye_z=eye(4.0), record=clean)
     assert clean == {}
     record = {}
-    assert cg.los(geo, (x, Y, eye(4.0)), (280, Y, body(0.0)), record=record) and record["unresolved_rays"] == 1
-    assert not cg.los(geo, (x, Y, eye(4.0)), (260, Y, body(0.0)))
+    assert cg.los(geo, (x, Y, eye(4.0)), (280, Y, head(0.0)), record=record) and record["unresolved_rays"] == 1
+    assert not cg.los(geo, (x, Y, eye(4.0)), (260, Y, head(0.0)))
 
 
 # ---------------------------------------------------------------- cast and los check each other
@@ -198,7 +254,7 @@ def test_a_ray_into_an_unresolved_cell_gives_the_2d_answer_and_is_recorded():
 @pytest.mark.parametrize("make", [ledge, ramp, bridge])
 def test_what_a_single_line_sees_the_rays_see_too(make):
     # `los` is one exact line; `cast` is a fan of rays over cells. Wherever the line from a standing eye to
-    # a body at a cell's centre is clear, the 360-degree rays from that eye must see the cell's node.
+    # a head or feet point at a cell's centre is clear, the 360-degree rays from that eye must see the cell's node.
     geo = make()
     rng = np.random.default_rng(7)
     walkable = np.flatnonzero(geo.walk_n)
@@ -210,7 +266,9 @@ def test_what_a_single_line_sees_the_rays_see_too(make):
             if geo.node_cell[dst] == geo.node_cell[src]:
                 continue
             tx, ty = geo.centres[dst]
-            if cg.los(geo, (float(sx), float(sy), eye(geo.node_z[src])), (float(tx), float(ty), body(geo.node_z[dst]))):
+            a = (float(sx), float(sy), eye(geo.node_z[src]))
+            if any(cg.los(geo, a, (float(tx), float(ty), float(geo.node_z[dst]) + offset))
+                   for offset in (hc.HEAD_M, hc.FEET_M)):
                 assert seen[dst], (make.__name__, int(src), int(dst))
 
 

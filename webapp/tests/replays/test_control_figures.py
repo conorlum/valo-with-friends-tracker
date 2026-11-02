@@ -90,7 +90,10 @@ def test_the_revisions_of_this_release():
 
     # Condense 21 adds damage causes and heals; control reads damage runs by `src`, which is unchanged (a run with two
     # causes is now two runs), and its rows are fingerprinted on the recipe, so they recompute without a control bump.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (22, 20)
+    # Condense 23 adds Evolution buff rows, which control reads (utility.evolution_spans); same recipe rule.
+    # R9/W7a: airborne plate casts invalidate previously stored control.
+    # R7/R9: raw crouch spans bump condense only; readers of legacy blobs remain compatible.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (24, 22)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
 
 

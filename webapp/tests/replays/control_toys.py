@@ -18,7 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app.control.geometry import PX, geometry_from_masks, visibility
+from app.control import heights as hc
+from app.control.geometry import GRID, PX, geometry_from_masks, visibility
 
 TOY_SCALE = 7e-5          # Ascent's: 0.14 m per pixel, 1.12 m cells
 HZ = 16
@@ -82,6 +83,132 @@ def two_rooms(specials=None):
     return toy_geometry("Rooms", [(96, 96, 176, 176), (304, 96, 384, 176)], specials=specials)
 
 
+# A 3 x 3-cell cover box mid-hall (cells 31-33 x rows 23-25): blocks sight, can't be walked, and is one cover piece.
+BOX_PX = (248, 184, 272, 208)
+BOX_TOY_RISE_M = 1.0      # how high a player standing on the toy box is above the ground (ground z = 0.0 m)
+# One walkable ring cell touching the box on each side (flat cell index, row * GRID + col).
+BOX_RING = {"N": 22 * GRID + 32, "S": 26 * GRID + 32, "E": 24 * GRID + 34, "W": 24 * GRID + 30}
+# For each side, an open-floor cell behind the box as seen from the ring cell on the OPPOSITE side
+# (witness "S" is south of the box, hidden from ring cell "N").
+BOX_WITNESS = {"N": 19 * GRID + 32, "S": 29 * GRID + 32, "E": 24 * GRID + 37, "W": 24 * GRID + 27}
+
+
+def box_hall():
+    """The open hall with a cover box in the middle: sight has it, walk lacks it, and it is attached as the
+    map's one cover piece (before the visibility build)."""
+    key = ("BoxHall", HALL, BOX_PX, (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    box = rect_mask([BOX_PX])
+    geo = geometry_from_masks("BoxHall", ~floor | box, floor & ~box, TOY_SCALE, None)
+    sha = hashlib.sha256(np.packbits(box).tobytes()).hexdigest()[:12]
+    attach_cover(geo, box, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+# Three separate cover boxes in a row (A, B at the ends, C between them but south of the y 186 line).
+THREE_BOXES = {"A": (144, 184, 168, 208), "B": (240, 184, 264, 208), "C": (192, 196, 216, 220)}
+
+
+def three_boxes():
+    """The open hall with three separate cover boxes (THREE_BOXES), attached as three pieces."""
+    key = ("ThreeBoxes", HALL, tuple(THREE_BOXES.values()), (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    boxes = rect_mask(list(THREE_BOXES.values()))
+    geo = geometry_from_masks("ThreeBoxes", ~floor | boxes, floor & ~boxes, TOY_SCALE, None)
+    sha = hashlib.sha256(np.packbits(boxes).tobytes()).hexdigest()[:12]
+    attach_cover(geo, boxes, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+# A real wall strip (x 248-256, y 96-190) that an over-drawn cover outline (WALL_PIECE_PX) overlaps for y 184-190.
+WALL_STRIP_PX = (248, 96, 256, 190)
+WALL_PIECE_PX = (232, 184, 272, 208)
+
+
+def wall_piece_hall():
+    """The open hall with a real wall strip and one cover piece drawn over the strip's southern end."""
+    key = ("WallPieceHall", HALL, WALL_STRIP_PX, WALL_PIECE_PX, (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control.geometry import attach_cover
+
+    floor = rect_mask([HALL])
+    wall = rect_mask([WALL_STRIP_PX])
+    piece = rect_mask([WALL_PIECE_PX])
+    geo = geometry_from_masks("WallPieceHall", ~floor | wall | piece, floor & ~wall & ~piece, TOY_SCALE, None)
+    see_over = piece & ~wall        # as the committed <Map>.cover.png: the drawn piece minus the real wall (D1)
+    sha = hashlib.sha256(np.packbits(see_over).tobytes()).hexdigest()[:12]
+    attach_cover(geo, see_over, sha)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+def box_top_rows(rect, rise_m: float = BOX_TOY_RISE_M, fine: int = 4) -> list:
+    """The height asset's `box_tops` rows for one box: one (px x, px y, z dm above origin_z) per fine 4 px cell
+    inside `rect`, as the build writes them (a real one: [351, 310, 40])."""
+    x0, y0, x1, y1 = rect
+    z = int(round(rise_m * 10))
+    return [(x, y, z) for y in range(y0 + fine // 2, y1, fine) for x in range(x0 + fine // 2, x1, fine)]
+
+
+def tops_hall(name: str, boxes, walls=(), rises=None):
+    """The open hall with cover boxes (`boxes` = px rects, attached as pieces) and a flat height asset: every
+    walkable cell one floor at 0 m (origin_z TOY_Z0, as `z_track` writes z), plus `box_tops` rows, one set per box
+    from `rises` (m above the ground; an entry None = that box gets no rows; rises None = a heights asset with no learnt tops at all). `walls` = px rects of real
+    wall. The tops variants of box_hall / three_boxes: same masks, then heights, then visibility."""
+    key = ("TopsHall", name, HALL, tuple(boxes), tuple(walls), None if rises is None else tuple(rises),
+           (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
+    if key in _CACHE:
+        return _CACHE[key]
+    from app.control import height_build as hb
+    from app.control.geometry import attach_cover, attach_heights
+
+    floor = rect_mask([HALL])
+    box = rect_mask(list(boxes))
+    wall = rect_mask(list(walls)) if walls else np.zeros_like(box)
+    geo = geometry_from_masks(name, ~floor | box | wall, floor & ~box & ~wall, TOY_SCALE, None)
+    attach_cover(geo, box, hashlib.sha256(np.packbits(box).tobytes()).hexdigest()[:12])
+    floors = -np.ones((GRID, GRID, hc.MAX_FLOORS), np.int16)
+    floors[geo.walk, 0] = 0
+    edges = hb.connect({int(c): [0] for c in np.flatnonzero(geo.walk.ravel())}, {}, geo)
+    rows = [r for rect, rise in zip(boxes, rises or ()) if rise is not None for r in box_top_rows(rect, rise)]
+    asset = hc.HeightAsset(floors, np.zeros_like(floors), geo.walk.copy(), np.zeros_like(geo.walk),
+                           np.asarray(edges, np.int32).reshape(-1, 5), {"origin_z": TOY_Z0},
+                           box_tops=np.array(rows, np.int32).reshape(-1, 3) if rises is not None else None)
+    attach_heights(geo, asset)
+    visibility(geo, _DIR)
+    _CACHE[key] = geo
+    return geo
+
+
+def box_hall_tops(rise_m: float = BOX_TOY_RISE_M):
+    """box_hall with a height asset that has learnt the box's top at `rise_m` (geo.box_tops == {1: (rise_m,)})."""
+    return tops_hall("BoxHallTops", [BOX_PX], rises=[rise_m])
+
+
+def box_hall_no_tops():
+    """box_hall with a height asset that has learnt no tops (box_tops empty, box_reach None)."""
+    return tops_hall("BoxHallNoTops", [BOX_PX], rises=None)
+
+
+def three_boxes_tops():
+    """three_boxes with every box's top learnt at BOX_TOY_RISE_M."""
+    return tops_hall("ThreeBoxesTops", list(THREE_BOXES.values()), rises=[BOX_TOY_RISE_M] * 3)
+
+
 def rect_mask(rects) -> np.ndarray:
     mask = np.zeros((PX, PX), bool)
     for x0, y0, x1, y1 in rects:
@@ -92,7 +219,7 @@ def rect_mask(rects) -> np.ndarray:
 def toy_geometry(name: str, floors, walls=(), cache_dir=None, specials=None, scale: float = TOY_SCALE):
     """A geometry whose sight blocks everywhere but the floors, minus the walls; visibility built
     (or loaded) under `cache_dir`."""
-    key = (name, tuple(floors), tuple(walls), repr(specials))
+    key = (name, tuple(floors), tuple(walls), repr(specials), (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
     if key in _CACHE:
         return _CACHE[key]
     floor = rect_mask(floors)
@@ -260,6 +387,26 @@ def standing(x: float, y: float, z_m: float, side: str = "A", yaw: int = 0):
     return side, [(0.0, x, y, yaw, z_m)]
 
 
+def on_box_track(x: float, y: float, rise_m: float = BOX_TOY_RISE_M, side: str = "A", yaw: int = 0,
+                 t_end: float = 10.0):
+    """A player steady on top of a box: still at (x, y), at the ground's z + `rise_m` the whole round."""
+    return side, [(0.0, x, y, yaw, rise_m), (t_end, x, y, yaw, rise_m)]
+
+
+def hugging_track(x: float, y: float, side: str = "A", yaw: int = 0, t_end: float = 10.0):
+    """A player steady at ground z (0 m) against a box: still at (x, y)."""
+    return side, [(0.0, x, y, yaw, 0.0), (t_end, x, y, yaw, 0.0)]
+
+
+def jump_track(x0: float, x1: float, y: float, peak_m: float, t_jump: float, side: str = "A", yaw: int = 0,
+               air_s: float = 1.0, t_end: float = 10.0):
+    """A player on the ground at x0 who jumps at `t_jump` and crosses to x1 in `air_s`: z rises to `peak_m` at
+    the middle (over the box, if it is between) and falls back to the ground at x1."""
+    xm, tm = (x0 + x1) / 2, t_jump + air_s / 2
+    return side, [(0.0, x0, y, yaw, 0.0), (t_jump, x0, y, yaw, 0.0), (tm, xm, y, yaw, peak_m),
+                  (t_jump + air_s, x1, y, yaw, 0.0), (t_end, x1, y, yaw, 0.0)]
+
+
 def height_rounds(make, matches: int = 2, rounds: int = 3, t_end: float = 10.0) -> list:
     """[(match id, round number, blob)] for the height build: `make(match index, round number)` gives
     each round's players ({slot: (side, points)}) or a whole blob."""
@@ -320,10 +467,10 @@ def toy_heights(name: str, floors, *, ground=(), upper=(), unresolved=(), links=
     import copy
 
     from app.control import height_build as hb
-    from app.control import heights as hc
     from app.control.geometry import CELL, GRID, attach_heights
 
-    key = ("heights", name, tuple(floors), tuple(walls), repr((ground, upper, unresolved, links, specials, slope)))
+    key = ("heights", name, tuple(floors), tuple(walls), repr((ground, upper, unresolved, links, specials, slope)),
+           (hc.EYE_M, hc.HEAD_M, hc.FEET_M))
     if key in _CACHE:
         return _CACHE[key]
     flat = toy_geometry(name + "-flat", floors, walls, cache_dir, specials)
