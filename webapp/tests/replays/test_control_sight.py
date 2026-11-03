@@ -225,6 +225,55 @@ def test_from_outside_the_bridge_hides_what_is_on_it_past_its_edge_and_shows_the
     assert not seen[node(geo, 200)], "the plateau behind the tunnel's end wall is hidden by its own face"
 
 
+def _tunnel_and_deck(geo):
+    cells = [(x, y) for x in range(244, 288, 8) for y in range(100, 296, 8)]
+    return [node(geo, x, y) for x, y in cells], [node(geo, x, y, floor=1) for x, y in cells]
+
+
+@pytest.mark.parametrize("x", [200, 220, 226, 234, 238])
+def test_from_the_plateau_the_floor_carries_on_over_the_tunnel_and_hides_it(x):
+    # Ascent's walkway over a cave (the owner's report, 2026-11-02): the plateau runs on as the bridge's deck, so
+    # from the plateau nothing under the deck is seen, by the rays or by an exact line, while the deck itself is.
+    geo = bridge()
+    tunnel, deck = _tunnel_and_deck(geo)
+    seen = cg.cast(geo, x + 0.5, Y + 0.5, np.arange(0, 360, cg.RAY_STEP_DEG), [], eye_z=eye(4.0))
+    assert not any(seen[n] for n in tunnel)
+    assert all(seen[n] for n in deck)
+    for n in tunnel:
+        tx, ty = (float(v) for v in geo.centres[n])
+        for offset in (hc.HEAD_M, hc.FEET_M):
+            assert not cg.los(geo, (x + 0.5, Y + 0.5, eye(4.0)), (tx, ty, offset)), (x, n, offset)
+
+
+def test_under_the_lowest_floor_rule_the_plateau_saw_into_the_tunnel(monkeypatch):
+    # The fixture shows the defect: with every cell's ground its lowest floor, a line that dipped LEDGE_M below the
+    # plateau at the seam went on under the deck.
+    geo = bridge()
+    tunnel, _ = _tunnel_and_deck(geo)
+    monkeypatch.setattr(cg, "_ground_floor", lambda zs, on: np.atleast_2d(zs)[:, 0])
+    seen = cg.cast(geo, 220.5, Y + 0.5, np.arange(0, 360, cg.RAY_STEP_DEG), [], eye_z=eye(4.0))
+    assert sum(bool(seen[n]) for n in tunnel) > 10
+
+
+def test_across_a_real_drop_the_tunnel_under_a_deck_is_still_seen():
+    # The plateau ends at x 200 over a gap at 0 m; the deck starts at x 240. A line that left the plateau over the
+    # drop travels over the gap's floor, so it may see under the deck from the side.
+    geo = toy_heights("GapBridge", [HALL], ground=[((96, 96, 200, 296), 4.0)], upper=[((240, 96, 288, 296), 4.0)])
+    tunnel, deck = _tunnel_and_deck(geo)
+    seen = cg.cast(geo, 190.5, Y + 0.5, np.arange(0, 360, cg.RAY_STEP_DEG), [], eye_z=eye(4.0))
+    assert any(seen[n] for n in tunnel)
+    assert cg.los(geo, (190.5, Y + 0.5, eye(4.0)), (244.5, Y + 0.5, head(0.0)))
+
+
+def test_the_ground_floor_is_the_one_the_line_travels_on_else_the_lowest():
+    zs = np.array([[0.0, 4.0], [0.0, 4.0], [0.0, 4.0], [0.0, np.nan], [np.nan, np.nan]])
+    on = np.array([4.0, 4.0 - hc.STEP_UP_M, 2.0, 4.0, 0.0])
+    got = cg._ground_floor(zs, on)
+    assert got[:3].tolist() == [4.0, 4.0, 0.0]
+    assert got[3] == 0.0 and np.isnan(got[4])
+    assert cg._ground_floor(np.array([[0.0, 4.0]]), np.array([np.nan]))[0] == 0.0, "no floor yet: the lowest"
+
+
 # ---------------------------------------------------------------- unresolved terrain
 
 

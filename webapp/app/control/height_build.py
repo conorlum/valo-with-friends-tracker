@@ -725,11 +725,18 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
     if cover_px is not None:
         from app.control import box_tops
         asset = result.asset
-        ground = {p: g + asset.origin_z for p, g in box_tops.ground_of(
-            cover_px, asset.floors, fine_cells=asset.fine_cells, fine_floors=asset.fine_floors).items()}
+        floors = box_tops.piece_floors(cover_px, asset.floors, fine_cells=asset.fine_cells,
+                                       fine_floors=asset.fine_floors, walk_px=geo.walk_px)
+        ground = {p: g + asset.origin_z for p, g in floors.ground.items()}
+
+        def beside(piece, px):
+            got = floors.floor_at(piece, px)
+            return None if got is None else got + asset.origin_z
+
         covered_geo = copy.copy(geo)
         covered_geo.cover_px = cover_px
-        tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset))
+        tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset),
+                                                        beside)
         tops[:, 2] -= asset.origin_z
         tops = tops[tops[:, 2] >= 0]
         asset.box_tops = tops if len(tops) else None

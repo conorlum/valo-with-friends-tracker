@@ -28,8 +28,9 @@ from tests.replays.control_toys import z_dm  # noqa: E402
 
 # recorded on the code before this item, for the toy builds below (no cover given)
 NO_COVER_BUILD_DIGEST = "b48acdae2528"
-# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 6 (was "3dcbe2c75de289ad" at 5); the build digest is unchanged
-NO_COVER_MANIFEST_DIGEST = "be548d2a5bc53e15"
+# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 7 (was "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
+# the build digest is unchanged
+NO_COVER_MANIFEST_DIGEST = "31495d88d6e6e4f5"
 
 PIECE = (slice(150, 170), slice(300, 320))        # rows (y), columns (x) of the one cover piece
 
@@ -140,11 +141,11 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
     judge = bt.judge
     seen = []
 
-    def after_refine(stands, ground, leaf_floor):
+    def after_refine(stands, ground, leaf_floor, beside=None):
         # The connected child is in the new world frame and is visible to the judge.
         assert z_dm(-1) in leaf_floor((292, 160))
         seen.append(True)
-        return judge(stands, ground, leaf_floor)
+        return judge(stands, ground, leaf_floor, beside)
 
     monkeypatch.setattr(bt, 'judge', after_refine)
     sample = hb.build(rounds(), GEO, cover_px=cover(), refinement_history=previous)

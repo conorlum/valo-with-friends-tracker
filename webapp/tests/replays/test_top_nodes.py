@@ -27,7 +27,8 @@ def topped(rows=((202, 202, 12),), *, cover=True, name='Split'):
 
 
 def old_key(geo):
-    """The pre-W8a height cache recipe, frozen for maps without top nodes."""
+    """The pre-W8a height cache recipe, frozen for maps without top nodes (with the ground rule, which keys every
+    map with heights)."""
     digest = hashlib.sha256()
     digest.update(json.dumps(dict(v=cg.GEOMETRY_VERSION, px=cg.PX, grid=cg.GRID,
         ray_step_deg=cg.RAY_STEP_DEG, ray_step_px=cg.RAY_STEP_PX,
@@ -36,7 +37,7 @@ def old_key(geo):
     digest.update(np.packbits(geo.walk_px).tobytes())
     digest.update(json.dumps(dict(height=geo.height_sha, eye=hc.EYE_M, head=hc.HEAD_M,
         feet=hc.FEET_M, stand=hc.STAND_M, ledge=hc.LEDGE_M, snap=hc.NODE_SNAP_M,
-        slabs=cg.SLAB_SLOTS), sort_keys=True).encode('ascii'))
+        slabs=cg.SLAB_SLOTS, ground_rule=cg.GROUND_RULE), sort_keys=True).encode('ascii'))
     return digest.hexdigest()
 
 

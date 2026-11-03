@@ -88,7 +88,10 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # R9/W7a: JUMP_SIGHT enables airborne plate casts; the moving counter is lowercase.
           # Re-pinned in place for the crouch key (was "f07e02b01cd7d18a"), and for the jump-peek limit
           # (was "06e87d971e6cbc11").
-          22: "712c484f6a0ae747"}
+          22: "712c484f6a0ae747",
+          # 23 (2026-11-02): a sight line's ground follows the floor it travels over (geometry.GROUND_RULE 2), and a
+          # box's floor is learnt side by side (box_tops, not digested).
+          23: "49528e8ce780fc80"}
 
 
 def _constants_digest() -> str:
@@ -123,7 +126,17 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
 
 
+def _without_the_ground_rule(monkeypatch):
+    monkeypatch.delattr(cg, "GROUND_RULE")
+
+
+def test_without_the_ground_rule_the_revision_22_digest_is_unchanged(monkeypatch):
+    _without_the_ground_rule(monkeypatch)
+    assert _constants_digest() == PINNED[22]
+
+
 def _without_the_jump_peek_limit(monkeypatch):
+    _without_the_ground_rule(monkeypatch)              # every older digest predates revision 23's constant
     for name in ("JUMP_PEEK_MAX_M", "JUMP_PEEK_TOL_M", "TWO_HEIGHT_BOX_M"):
         monkeypatch.delattr(cg, name)
 
