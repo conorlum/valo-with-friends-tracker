@@ -235,6 +235,8 @@ def test_replay_html_wires_moments_only_with_control():
     html = render_replay(control={"cover_reviewed": True})
     assert "/static/js/moments.js" in html and "loadMoments" in html and "/moments.json" in html
     assert "momentsViewerSlot: 3" in html
+    # both tabs load once the first round is showing, not when they are first clicked
+    assert "window.viewerReady.then(preload, preload)" in html and "preloadTabs()" in html
     html = render_replay(control=None)
     assert "moments.js" not in html and "loadMoments" not in html and "momentsViewerSlot" not in html
 

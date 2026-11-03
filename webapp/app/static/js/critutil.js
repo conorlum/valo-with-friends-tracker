@@ -76,6 +76,15 @@
     return p && p.name ? p.name : "slot " + slot;
   }
 
+  // A player in the picker: a Riot ID without its tag, an opponent as "Enemy Cypher".
+  function pickerName(players, slot) {
+    var name = nameOf(players, slot);
+    if (/^the enemy /i.test(name)) return "Enemy " + name.slice("the enemy ".length);
+    if (/^an enemy$/i.test(name)) return "Enemy";
+    var cut = name.indexOf("#");
+    return cut > 0 ? name.slice(0, cut) : name;
+  }
+
   function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
 
   // What the cast did, in plain measurements.
@@ -197,7 +206,7 @@
     var select = el("select", "replay-moments-picker");
     select.setAttribute("aria-label", "Player");
     keysOf(players).sort(function (a, b) { return a - b; }).forEach(function (s) {
-      var o = el("option", "", nameOf(players, s));
+      var o = el("option", "", pickerName(players, s));
       o.value = s;
       if (Number(s) === slot) o.selected = true;
       select.appendChild(o);
@@ -244,7 +253,7 @@
   }
 
   var api = { KINDS: KINDS, defaultSlot: defaultSlot, castsFor: castsFor, unusedFor: unusedFor, groupsFor: groupsFor,
-              facts: facts, rowText: rowText, unusedText: unusedText, notes: notes, signed: signed, clock: clock,
+              facts: facts, rowText: rowText, pickerName: pickerName, unusedText: unusedText, notes: notes, signed: signed, clock: clock,
               render: render };
   global.ReplayCritUtil = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -1903,7 +1903,14 @@
     if (name === "critutil") this.loadCritUtil();
   };
 
-  // Critical Util: fetched the first time the tab opens, like Critical Moments.
+  // Critical Moments and Critical Util, fetched and drawn into their hidden panels once the first round is on
+  // screen, so either tab is ready when it is opened. A failed fetch is asked again when its tab opens.
+  ReplayViewer.prototype.preloadTabs = function () {
+    this.loadMoments();
+    this.loadCritUtil();
+  };
+
+  // Critical Util: fetched by preloadTabs, or the first time the tab opens.
   ReplayViewer.prototype.loadCritUtil = function () {
     var self = this;
     var panel = this.root.querySelector("[data-replay-critutil]");
@@ -1920,7 +1927,8 @@
     }
   };
 
-  // Critical Moments: fetched the first time the tab opens; a failed fetch is asked again next time.
+  // Critical Moments: fetched by preloadTabs, or the first time the tab opens; a failed fetch is asked again
+  // next time.
   ReplayViewer.prototype.loadMoments = function () {
     var self = this;
     var panel = this.root.querySelector("[data-replay-moments]");

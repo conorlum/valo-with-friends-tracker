@@ -125,6 +125,20 @@ console.log(JSON.stringify([u.rowText(rows[0], payload.players), u.signed(-1.5),
     assert out[3] == ["blind"]
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_player_picker_drops_tags_and_says_enemy():
+    moments = JS.parent / "moments.js"
+    script = f"""
+const players = {{"0": {{name: "Me#NA1"}}, "1": {{name: "NoTag"}}, "5": {{name: "the enemy Cypher"}},
+  "6": {{name: "an enemy"}}}};
+const out = [require({json.dumps(str(JS))}), require({json.dumps(str(moments))})].map(
+  u => ["0", "1", "5", "6", "9"].map(s => u.pickerName(players, s)));
+console.log(JSON.stringify(out));
+"""
+    out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
+    assert out[0] == out[1] == ["Me", "NoTag", "Enemy Cypher", "Enemy", "slot 9"]
+
+
 def _node(expr, rows):
     script = f"""
 const u = require({json.dumps(str(JS))});

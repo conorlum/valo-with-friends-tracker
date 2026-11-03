@@ -46,9 +46,9 @@
         },
         loadControlPlayers: function () { return json("/replays/" + match.uuid + "/control/players.json"); },
         loadHeatmap: function (view) { return json("/replays/" + match.uuid + "/control/heatmap.json?view=" + view); },
-        // Critical Moments: the player's fights by tag, fetched when the tab first opens.
+        // Critical Moments: the player's fights by tag, fetched once the first round is showing.
         loadMoments: function () { return json("/replays/" + match.uuid + "/moments.json"); },
-        // Critical Util: each player's casts and their value, fetched when the tab first opens.
+        // Critical Util: each player's casts and their value, fetched once the first round is showing.
         loadCritUtil: function () { return json("/replays/" + match.uuid + "/util.json"); },
         momentsViewerSlot: {{ viewer_slot | tojson }}{% endif %}{% if gaps %},
         // Timing gaps: a 200 says ok, stale, failed or not_computed itself; any other answer has no layer.
@@ -66,6 +66,9 @@
         window.viewer.seek({{ start_t }});
         return round;
       }){% endif %};
+      // Once the replay is showing, load the Critical Moments and Critical Util tabs in the background.
+      var preload = function () { window.viewer.preloadTabs(); };
+      window.viewerReady.then(preload, preload);
     });
   })();
 </script>
