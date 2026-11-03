@@ -4,7 +4,7 @@ teach; the others match learnt tops or become conflicts. Build evidence uses wor
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import math
 from types import MappingProxyType
 
@@ -17,6 +17,7 @@ from app.control.heights import (BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX
 
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6
+BOX_HALO_PX = 3             # piece_floors: the unwalkable margin round an outline that still joins it to its floor
 
 
 @dataclass(frozen=True)
@@ -148,13 +149,60 @@ def top_stands(blob: dict, cover_px: np.ndarray, round_index: int = 0, *, m_per_
     return out
 
 
-def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None) -> dict[int, int]:
-    """{cover piece id: the floor it stands on} in `floors`' units: the most common of the lowest floors of the
-    cells round it (a tie takes the lower). Not the lowest: a piece at a ledge's edge has a drop on one side
-    (Ascent's piece 17: floor at 2.0 m round most of it, 0.0 m on one side, and players at 2.0 m on its outline).
-    `floors` is the coarse grid's floors, (GRID*GRID, levels) or (GRID, GRID, levels), -1 for none; round a piece =
-    coarse cells holding a pixel within BOX_RING_PX of its outline that is on no cover piece. A piece with no floor
-    round it is left out."""
+SIDES = ("n", "e", "s", "w")
+
+
+def _sides(dx: np.ndarray, dy: np.ndarray) -> np.ndarray:
+    """The side of a piece a pixel is on, from its offset (px) to the piece's nearest pixel: 0 n, 1 e, 2 s, 3 w.
+    The larger component wins; a diagonal tie goes to east or west."""
+    return np.where(np.abs(dx) >= np.abs(dy), np.where(dx > 0, 1, 3), np.where(dy > 0, 2, 0))
+
+
+def _most_common(values) -> int:
+    values, counts = np.unique(np.asarray(values, np.int64), return_counts=True)   # sorted: a tie takes the lower
+    return int(values[np.argmax(counts)])
+
+
+@dataclass(frozen=True)
+class PieceFloors:
+    """The floor round each cover piece, in the floors' units, learnt side by side (the owner's rule, 2026-11-02:
+    some boxes have no one floor all round them, so the floor is sampled on each side the piece has one).
+    `sides[piece]` = {side: the most common of the lowest floors of the ring cells on that side}; `ground[piece]`
+    = the most common of those side floors (each side one vote, a tie takes the lower), so a small lower area along
+    one long face no longer outvotes the floor the piece stands on. A piece with no floor round it is left out."""
+    ground: dict
+    sides: dict
+    _near: dict = field(default_factory=dict, repr=False, compare=False)   # piece -> (y0, x0, nearest y, nearest x)
+
+    def side_at(self, piece: int, px) -> str | None:
+        """The side of `piece` the pixel (x, y) is on, None inside it or beyond its ring's crop."""
+        if piece not in self._near:
+            return None
+        y0, x0, ny, nx = self._near[piece]
+        x, y = int(px[0]) - x0, int(px[1]) - y0
+        if not (0 <= y < ny.shape[0] and 0 <= x < ny.shape[1]):
+            return None
+        dx, dy = x - int(nx[y, x]), y - int(ny[y, x])
+        if dx == 0 and dy == 0:
+            return None
+        return SIDES[int(_sides(np.array(dx), np.array(dy)))]
+
+    def floor_at(self, piece: int, px) -> int | None:
+        """The floor beside `piece` at the pixel: its side's floor, else the piece's ground; None without either."""
+        side = self.side_at(piece, px)
+        got = self.sides.get(piece, {})
+        return got[side] if side in got else self.ground.get(piece)
+
+
+def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None,
+                 walk_px=None) -> PieceFloors:
+    """Each cover piece's floors (`PieceFloors`). `floors` is the coarse grid's floors, (GRID*GRID, levels) or
+    (GRID, GRID, levels), -1 for none; with `fine_cells`, those coarse footprints are replaced by their 4 px leaves'
+    floors. Round a piece = the cells holding a pixel within BOX_RING_PX of its outline that is on no cover piece; a
+    ring pixel's side is the direction from the piece's nearest pixel to it. With `walk_px`, only walkable ring pixels
+    joined to the piece by walkable pixels inside the ring count: floor across a wall beside the piece is not its
+    floor (Summit's piece 20, whose north face is a wall with a lower area behind it). A cell is read once per side,
+    by the lowest of its floors."""
     from scipy import ndimage
 
     cover = np.asarray(cover_px)
@@ -164,24 +212,50 @@ def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine
     if fine_cells is not None and len(fine_cells):
         leaf = np.repeat(np.repeat(flat.reshape(GRID, GRID, -1), 2, axis=0), 2, axis=1)
         leaf.reshape(-1, leaf.shape[-1])[fine_cells] = fine_floors
-    out: dict[int, int] = {}
+        leaf = leaf.reshape(-1, leaf.shape[-1])
+    ground, sides, near = {}, {}, {}
+    big = np.iinfo(np.int32).max
     for piece, box in enumerate(ndimage.find_objects(cover.astype(np.int32)), start=1):
         if box is None:
             continue
         ys, xs = box
         y0, x0 = max(ys.start - BOX_RING_PX, 0), max(xs.start - BOX_RING_PX, 0)
         crop = cover[y0:min(ys.stop + BOX_RING_PX, PX), x0:min(xs.stop + BOX_RING_PX, PX)]
-        ring = (ndimage.distance_transform_edt(crop != piece) <= BOX_RING_PX + EPS) & (crop == 0)
+        dist, (ny, nx) = ndimage.distance_transform_edt(crop != piece, return_indices=True)
+        near[piece] = (y0, x0, ny, nx)
+        ring = (dist <= BOX_RING_PX + EPS) & (crop == 0)
+        if walk_px is not None:
+            walk = np.asarray(walk_px)[y0:y0 + crop.shape[0], x0:x0 + crop.shape[1]]
+            # the outline's own few pixels are often off the walk mask; a wall is thicker than that
+            open_ = (ring & walk) | (dist <= BOX_HALO_PX + EPS)
+            labels, _ = ndimage.label(open_, structure=np.ones((3, 3)))
+            joined = np.unique(labels[crop == piece])
+            ring &= walk & np.isin(labels, joined[joined > 0])
         ry, rx = np.nonzero(ring)
-        got = (flat[np.unique((ry + y0) // CELL * GRID + (rx + x0) // CELL)] if leaf is None else
-               leaf.reshape(-1, leaf.shape[-1])[np.unique((ry + y0) // FINE * (PX // FINE)
-                                                          + (rx + x0) // FINE)]).astype(np.int32)
-        lowest = np.where(got >= 0, got, np.iinfo(np.int32).max).min(axis=1)
-        lowest = lowest[lowest < np.iinfo(np.int32).max]
-        if lowest.size:
-            values, counts = np.unique(lowest, return_counts=True)       # sorted: argmax takes the lower on a tie
-            out[piece] = int(values[np.argmax(counts)])
-    return out
+        side = _sides(rx - nx[ry, rx], ry - ny[ry, rx])
+        cells = ((ry + y0) // CELL * GRID + (rx + x0) // CELL if leaf is None else
+                 (ry + y0) // FINE * (PX // FINE) + (rx + x0) // FINE)
+        table = flat if leaf is None else leaf
+        found = {}
+        for k, name in enumerate(SIDES):
+            got = table[np.unique(cells[side == k])].astype(np.int32)
+            lowest = np.where(got >= 0, got, big).min(axis=1) if len(got) else np.empty(0, np.int32)
+            lowest = lowest[lowest < big]
+            if lowest.size:
+                found[name] = _most_common(lowest)
+        if found:
+            sides[piece] = found
+            ground[piece] = _most_common(list(found.values()))
+    return PieceFloors(ground, sides, near)
+
+
+def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None,
+              walk_px=None) -> dict[int, int]:
+    """{cover piece id: the floor it stands on} in `floors`' units: `piece_floors`' ground, the most common of its
+    sides' floors. Not the lowest: a piece at a ledge's edge has a drop on one side (Ascent's piece 17: floor at
+    2.0 m round most of it, 0.0 m on one side, and players at 2.0 m on its outline), and not the most common cell:
+    a small lower area along one long face (Summit's piece 20) would outvote the side it stands on."""
+    return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).ground
 
 
 def on_a_step(stands: list[TopStand], ground: dict[int, int]) -> list[TopStand]:
@@ -244,14 +318,24 @@ def _fold_crouches(stands):
     return folded
 
 
-def judge(stands, ground, leaf_floor):
+def judge(stands, ground, leaf_floor, beside=None):
     """(world-dm top rows, [(stand, piece, top world dm)], conflict records, fate counts).
-    `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf."""
+    `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf. `beside(piece, px)`, when
+    given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`): a stand outside
+    a piece is a step above that, not above the piece's ground, since a piece's sides can stand on different floors
+    (Summit's piece 20: 2.0 m on one face, 3.0 m on the others, players at 3.0 m against it)."""
     counts = dict(teach=0, assign=0, conflict=0, ground=0, platform=0, blackout=0)
     teaching, pending = defaultdict(list), []
+
+    def floor_for(s, p):
+        if beside is None or s.inside == p:
+            return ground[p]
+        got = beside(p, s.px)
+        return ground[p] if got is None else got
+
     for s in stands:
         cands = tuple(sorted(p for p in s.candidates
-                             if p in ground and s.z_dm - ground[p] >= BOX_STEP_M * 10 - EPS))
+                             if p in ground and s.z_dm - floor_for(s, p) >= BOX_STEP_M * 10 - EPS))
         if not cands or (not s.inside and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
                                              for z in leaf_floor(s.px))):
             counts['ground'] += 1
@@ -353,7 +437,7 @@ def piece_ground(geo):
         return MappingProxyType(_ground_cache[key])
     ground = {piece: z / 10.0 for piece, z in ground_of(
         geo.cover_px, geo.heights.floors, fine_cells=getattr(geo.heights, "fine_cells", None),
-        fine_floors=getattr(geo.heights, "fine_floors", None)).items()}
+        fine_floors=getattr(geo.heights, "fine_floors", None), walk_px=getattr(geo, "walk_px", None)).items()}
     if key is not None:
         _remember(_ground_cache, key, ground)
     return MappingProxyType(ground)

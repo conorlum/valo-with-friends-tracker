@@ -231,6 +231,56 @@ def test_a_piece_with_no_floor_round_it_is_left_out():
     assert 1 not in g and g[2] == 20
 
 
+def one_box():
+    c = np.zeros((PX, PX), np.int16)
+    c[100:140, 100:140] = 1
+    return c
+
+
+# Summit's piece 20 (the owner's rule, 2026-11-02): a box with no one floor all round it. A small lower area runs
+# along its long west face; it stands on the floor of its other sides.
+LOWER_WEST = {**{(92, y): 20 for y in (100, 108, 116, 124, 132)}, (148, 120): 30, (120, 92): 30}
+
+
+def test_each_side_of_a_piece_learns_its_own_floor_and_each_side_has_one_vote():
+    pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
+    assert pf.sides[1] == {"n": 30, "e": 30, "w": 20}
+    assert pf.ground[1] == 30, "five lower cells on one face are one side's vote, not five"
+    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 30}
+
+
+def test_the_floor_beside_a_piece_is_its_sides():
+    pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
+    assert [pf.side_at(1, px) for px in ((120, 96), (144, 120), (120, 145), (95, 120), (120, 120))] == \
+        ["n", "e", "s", "w", None]
+    assert pf.floor_at(1, (95, 120)) == 20 and pf.floor_at(1, (144, 120)) == 30
+    assert pf.floor_at(1, (120, 145)) == 30, "a side with no floor of its own takes the piece's ground"
+    assert pf.floor_at(2, (95, 120)) is None
+
+
+def test_a_stand_beside_a_box_is_judged_against_the_floor_on_its_side():
+    pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
+    east = stand(z=30, inside=0, px=(145, 120))
+    west = stand(z=30, inside=0, px=(95, 120))
+    # without sides, both are a step above the piece's ground and, with no top learnt, conflicts
+    assert bt.judge([east, west], {1: 20}, lambda px: ())[3]["conflict"] == 2
+    _, _, conflicts, counts = bt.judge([east, west], {1: 20}, lambda px: (), pf.floor_at)
+    assert (counts["ground"], counts["conflict"]) == (1, 1)
+    assert conflicts[0]["px"] == [95, 120], "on the lower side 3.0 m is still a step up"
+
+
+def test_floor_across_a_wall_beside_a_piece_is_not_its_floor():
+    walk = np.ones((PX, PX), bool)
+    walk[86:96, 90:150] = False               # a wall along the north face, 4 px off it; the halo is 3 px
+    f = floors_at({(120, 84): 10, (92, 120): 30, (148, 120): 30})
+    assert bt.piece_floors(one_box(), f).sides[1]["n"] == 10
+    walled = bt.piece_floors(one_box(), f, walk_px=walk)
+    assert "n" not in walled.sides[1] and walled.ground[1] == 30
+    edge = np.ones((PX, PX), bool)
+    edge[97:143, 97:143] = False              # the outline's 3 px margin is off the walk mask: still its floor
+    assert bt.piece_floors(one_box(), floors_at({(92, 120): 30}), walk_px=edge).sides[1] == {"w": 30}
+
+
 # W6: judging is in world dm; diagnostic records are in world metres.
 def stand(z=40, inside=1, candidates=(1,), px=(120, 120), **kw):
     return bt.TopStand(0, 4, 0, 17.448, 26.856, inside, z, px,
