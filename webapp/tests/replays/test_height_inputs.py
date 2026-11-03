@@ -18,10 +18,11 @@ REPLAYS = [["m2", "p.c11.f1.a1", "b" * 64, 20], ["m1", "p.c11.f1.a1", "a" * 64, 
 # constant, or the build's code? Bump HEIGHT_RULES_REVISION in app/replays/control_format.py and pin it here.
 PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72ed40ed76a5", 5: "72ed40ed76a5",
                 # re-pinned in place for EYE_M 1.05 (was "0eb4ba581603")
-                6: "93c941558c40"}    # 6 unreleased: re-pinned in place for reach and crouch stance (was
+                6: "93c941558c40",    # 6 unreleased: re-pinned in place for reach and crouch stance (was
                                       # "bb8b0358a9c8", then "52136ab282f4"), for the head and feet sight points
                                       # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
                                       # (was "ef8175ac1844"), then for the crouch key
+                7: "93c941558c40"}    # 7 (2026-11-02): the build's code only (box floors side by side)
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),

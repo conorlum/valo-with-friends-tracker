@@ -58,6 +58,8 @@ from app.control import heights as hc
 from app.replays import format as fmt
 
 GEOMETRY_VERSION = 1
+# In a map with heights' visibility cache key. 2: a line's ground follows the floor it travels over (_ground_floor).
+GROUND_RULE = 2
 PX = 1024
 GRID = 128
 CELL = PX // GRID
@@ -898,11 +900,31 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
     return seen
 
 
+def _ground_floor(zs: np.ndarray, on_floor: np.ndarray) -> np.ndarray:
+    """The floor (position-z) that is a line's ground in a cell, per line: the cell's floor within STEP_UP_M of the
+    floor the line has been travelling over (`on_floor`), else its first (lowest) floor, as before. `zs` is
+    (lines, floors), NaN for none; floors of one cell are FLOOR_SEP_M apart, so at most one is that close.
+
+    A floor carries on over a lower one: where a walkway runs on over a cave (Ascent: 9.1 m over 6.0 m), its lowest
+    floor was the cave's, so a line from the walkway that had dipped the LEDGE_M allowance below its floor at the seam
+    went on under the walkway's slab and saw into the cave (the owner's report, 2026-11-02). A line that left the
+    walkway over a real drop has a lower floor by then, and still sees under the slab from the side."""
+    zs = np.atleast_2d(zs)
+    on = np.atleast_1d(on_floor).astype(float)
+    with np.errstate(invalid="ignore"):
+        gap = np.abs(zs - on[:, None])
+    gap[~np.isfinite(gap)] = np.inf
+    k = np.argmin(gap, axis=1)
+    rows = np.arange(len(k))
+    return np.where(gap[rows, k] <= hc.STEP_UP_M, zs[rows, k], zs[:, 0])
+
+
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
                   own: int | None, record: dict | None, see_over=(), plates=False, floor: float | None = None) -> np.ndarray:
     """`cast` on nodes, with the height test (see_over: as in `cast`). The own-cell and target-cell plate rule below is not the
     spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
-    ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
+    ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M, or the floor the
+    ray has been travelling over when the cell has it too, `_ground_floor`; the
     viewer's own cell and the cell being tested don't count), and blocked slope intervals, one per upper
     floor passed: the slopes at which a line is at the plate's height (position-z - STAND_M) somewhere
     inside the plate's cell. A plate of the viewer's own cell blocks every line that reaches its height
@@ -947,6 +969,9 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     feet_from_eye = node_z + hc.FEET_M - eye
     plate_from_eye = node_z - hc.STAND_M - eye
     ground_from_eye = ground - eye
+    ground_cols = node_of[:, : upper + 1]
+    # The floor each ray is travelling over (position-z), for `_ground_floor`: the viewer's, to start with.
+    on_floor = np.full(rays, float(node_z[own]) if own is not None and own >= 0 else np.nan)
     hor = np.full(rays, -np.inf)
     flat = np.zeros(rays, bool)                    # the ray met an unresolved cell: 2D from there on
     lo = np.full((rays, SLAB_SLOTS), np.inf)       # blocked slope intervals [lo, hi]; empty ones never match
@@ -979,6 +1004,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                 dx, dy, hits, reach = dx[live], dy[live], hits[live], reach[live]
                 hor, flat, lo, hi = hor[live], flat[live], lo[live], hi[live]
                 used, pend_lo, pend_hi, cur = used[live], pend_lo[live], pend_hi[live], cur[live]
+                on_floor = on_floor[live]
                 live = np.ones(len(cur), bool)
                 index = np.arange(len(cur))
             cell = geo.space_grid[pyc // 4, pxc // 4] if geo.adaptive else (pyc // CELL) * GRID + pxc // CELL
@@ -1035,6 +1061,16 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     pend_hi[:, k] = np.where(else_, np.maximum(pend_hi[:, k], np.maximum(near, far)), pend_hi[:, k])
             if away.any():
                 slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
+                if upper:
+                    zs = node_z[np.maximum(ground_cols[cell], 0)]
+                    zs[ground_cols[cell] < 0] = np.nan
+                    chosen = _ground_floor(zs, on_floor)
+                    chosen_ground = (chosen - hc.STAND_M - hc.LEDGE_M - eye) / d
+                    # A ray carried on along an upper floor is over it here already: a body under it in this very
+                    # cell is hidden too (the line went below the floor before the cell, e.g. in the viewer's own
+                    # cell, which never counts). A body on that floor is not: its feet are above its ground.
+                    carried = away & (chosen > zs[:, 0])
+                    np.fmax(hor, np.where(carried, chosen_ground, np.nan), out=hor)
                 for k in range(upper + 1):
                     node = node_of[cell, k]
                     there = away & (node >= 0)
@@ -1055,8 +1091,13 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     # no known height (off the walk mask, or unresolved): the 2D answer
                     ok |= flat | np.isnan(z)
                     seen[node[there & ok]] = True
-                # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
+                # this cell's ground raises the horizon for what is beyond it: its lowest floor's, or the floor the
+                # ray has been travelling over when the cell holds it too (`_ground_floor`)
+                if upper:
+                    np.fmax(hor, np.where(away, chosen_ground, np.nan), out=hor)
+                    on_floor = np.where(away & np.isfinite(chosen), chosen, on_floor)
+                else:
+                    np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
                 if plates:
                     on_piece = away & (piece[pyc, pxc] != own_piece)
                     np.fmax(hor, np.where(on_piece, (plate_z(geo, pyc, pxc, floor) - eye) / d, np.nan), out=hor)
@@ -1192,6 +1233,13 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             learnt, raised, below = geo.__dict__['_plate_peek']
             surface = None
     spans: list[list] = []                    # [cell, first d, last d] in order along the line
+    columns = geo.space_nodes if geo.adaptive else geo.node_of
+    on_floor = math.nan                       # the floor the line is travelling over, as `cast`'s `_ground_floor`
+    chosen, chosen_cell = math.nan, None
+    if heights:
+        own = geo.node_at_px(ax, ay, az - hc.EYE_M)
+        if own is not None and own >= 0:
+            on_floor = float(geo.node_z[own])
     for step in range(0, int(length) + 1, RAY_STEP_PX):
         px, py = ax + ux * step, ay + uy * step
         pxc, pyc = int(min(max(px, 0), PX - 1)), int(min(max(py, 0), PX - 1))
@@ -1220,11 +1268,18 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
                 continue
             spans.append([cell, d, d])
         spans[-1][2] = d
-        if cell not in (src, dst) and d > 0:
-            ground_node = geo.space_nodes[cell, 0] if geo.adaptive else cell
-            ground = geo.node_z[max(int(ground_node), 0)] - hc.STAND_M - hc.LEDGE_M if ground_node >= 0 else math.nan
-            if not math.isnan(ground) and (ground - az) / d > slope:
-                return False
+        if cell != src:
+            if chosen_cell != cell:            # a cell's floor for this line is fixed once the line is in it
+                zs = np.array([geo.node_z[int(n)] if n >= 0 else np.nan for n in columns[cell]], float)
+                chosen, chosen_cell = float(_ground_floor(zs, on_floor)[0]), cell
+            # the target's own cell counts only when the line carried on along an upper floor there (`cast`'s
+            # `carried`): a target under it is hidden, one on it is not (its feet are above its ground)
+            if d > 0 and (cell != dst or (math.isfinite(zs[0]) and chosen > zs[0])):
+                ground = chosen - hc.STAND_M - hc.LEDGE_M
+                if not math.isnan(ground) and (ground - az) / d > slope:
+                    return False
+            if math.isfinite(chosen):
+                on_floor = chosen
     for cell, first, last in spans:
         # where the line is inside the plate's own cell, exactly: the same both ways along the line, and
         # never past the cell's edge (a sample step of padding once blocked a crossing beside a slab)
@@ -1276,7 +1331,8 @@ def cache_key(geo: Geometry) -> str:
                                   **({'cover_dropped': geo.height_cover_dropped}
                                      if geo.height_cover_dropped > 0 else {}),
                                   "eye": hc.EYE_M, "head": hc.HEAD_M, "feet": hc.FEET_M, "stand": hc.STAND_M,
-                                  "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
+                                  "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS,
+                                  "ground_rule": GROUND_RULE},
                                  sort_keys=True).encode("ascii"))
     return digest.hexdigest()
 

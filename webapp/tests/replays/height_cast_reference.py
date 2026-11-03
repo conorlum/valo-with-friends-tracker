@@ -5,7 +5,7 @@ current cell's plates are included before testing either target point. This
 remains an independent oracle for the optimized march.
 """
 from app.control.geometry import *
-from app.control.geometry import hc
+from app.control.geometry import hc, _ground_floor
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
                   own: int | None, record: dict | None) -> np.ndarray:
@@ -38,6 +38,8 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     if geo.adaptive:
         ground[node_of[:, 0] < 0] = np.nan
     upper = hc.MAX_FLOORS - 1 if geo.n > GRID * GRID else 0      # no plate work on a map with none
+    # GROUND_RULE 2 (2026-11-02): a ray's ground is the floor it travels over where the cell has it (_ground_floor)
+    on_floor = np.full(rays, float(node_z[own]) if own is not None and own >= 0 else np.nan)
     hor = np.full(rays, -np.inf)
     flat = np.zeros(rays, bool)                    # the ray met an unresolved cell: 2D from there on
     lo = np.full((rays, SLAB_SLOTS), np.inf)       # blocked slope intervals [lo, hi]; empty ones never match
@@ -117,6 +119,12 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     pend_hi[:, k] = np.where(else_, np.maximum(pend_hi[:, k], np.maximum(near, far)), pend_hi[:, k])
             if away.any():
                 slabs = bool(upper) and (bool(used.any()) or bool((pend_hi >= pend_lo).any()))
+                if upper:
+                    cols = node_of[cell, : upper + 1]
+                    zs = np.where(cols >= 0, node_z[np.maximum(cols, 0)], np.nan)
+                    chosen = np.array([_ground_floor(zs[i:i + 1], on_floor[i:i + 1])[0] for i in range(len(live))])
+                    chosen_ground = (chosen - hc.STAND_M - hc.LEDGE_M - eye) / d
+                    np.fmax(hor, np.where(away & (chosen > zs[:, 0]), chosen_ground, np.nan), out=hor)
                 for k in range(upper + 1):
                     node = node_of[cell, k]
                     there = away & (node >= 0)
@@ -135,5 +143,9 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     ok |= flat | np.isnan(z)
                     seen[node[there & ok]] = True
                 # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
+                if upper:
+                    np.fmax(hor, np.where(away, chosen_ground, np.nan), out=hor)
+                    on_floor = np.where(away & np.isfinite(chosen), chosen, on_floor)
+                else:
+                    np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
     return seen
