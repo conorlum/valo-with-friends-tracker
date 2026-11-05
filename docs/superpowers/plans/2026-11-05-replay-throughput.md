@@ -17,8 +17,8 @@ steps.
 
 **Revision 2 (2026-11-05):** rewritten after two independent reviews of revision 1 (both pasted into the planning
 session; their findings are folded in below, tagged F1-F9 and S1-S8/N1-N11 where cited). Owner decisions: build everything in one PR (warm builds included, behind their
-switch); the height-build limit comes from the longest measured build (3x it, plus 3 h); the feature-row overwrite
-question is **open** (see "Open decision" at the end) and no task touches it until it's decided.
+switch); the height-build limit comes from the longest measured build (3x it, plus 3 h); feature rows keep today's
+last-write-wins (see "Decided: feature-row overwrites" at the end).
 
 ## Why (the evidence this plan rests on)
 
@@ -49,7 +49,7 @@ question is **open** (see "Open decision" at the end) and no task touches it unt
 | 2 | A wrong "warm" releases 30+ rounds that each build the cache | Warm identity includes height mode; a key is ready only by the exact file its warm build named, while that file is on disk; **one probe round** must report `cache` before the rest go; each round **leases** the exact file until it settles, and a round whose file vanished is requeued and the key re-warmed, never run cold (Task 4) |
 | 3 | The cache budget makes maps evict each other | `/health` shows bytes per map, budget evictions and per-map prunes; the reserve is a setting; the runbook checks the archive's free space before raising it (Tasks 1, 6, 7) |
 | 4 | The worker or site becomes the bottleneck | `/health` shows, per kind, runs waiting for Render, runs started, and the oldest of each; the ramp goes in steps with stop rules (Tasks 2, 7) |
-| 5 | Parallel rounds overwrite each other's feature rows | **Open decision** (end of plan). Costs time only: `test_feature_visibility_cache.py::test_cached_visibility_matches_original_*` proves cached rows give the uncached answers |
+| 5 | Parallel rounds overwrite each other's feature rows | Accepted (owner): last write wins; kept rows still reach every later round. Task 1 logs rows reused vs built. Costs time only: `test_feature_visibility_cache.py::test_cached_visibility_matches_original_*` proves cached rows give the uncached answers |
 | 6 | Long limits hide hung runs | Finite limits; the height limit is set from measured builds; `/health` shows the oldest started run per kind (Tasks 2, 5) |
 | 7 | The services deploy separately | Warm builds behind `REPLAY_WARM_BUILDS` (off by default, `sync: false`); `started` is best effort both ways; new limit settings that an old worker ignores (Tasks 2, 4, 5) |
 | 8 | Test drift | Scheduling only: no revision bump; each task runs `scripts/test_catalog.py plan --git` (every task) |
@@ -161,6 +161,14 @@ def test_the_visibility_cache_name_is_one_the_worker_takes_for_that_map(toy):
     assert control_cache.valid(name, toy.name) and control_cache.visibility_name(name)
 
 
+def test_the_feature_row_line_reports_reuse_only_when_a_row_cache_exists(toy):
+    from types import SimpleNamespace
+
+    assert task._rows_line(toy) is None                       # no feature rows on this map: no line
+    toy._feature_sight_cache = SimpleNamespace(row_hits=30, row_builds=10)
+    assert task._rows_line(toy) == "Open: feature rows 30 reused, 10 built"
+
+
 def test_phase_lines_go_to_stderr_only_when_asked(monkeypatch, capsys):
     task._phase("quiet")
     assert capsys.readouterr().err == ""
@@ -238,7 +246,7 @@ def test_a_childs_stderr_reaches_the_runs_own_log(tmp_path, monkeypatch, capfd):
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_task.py tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
-Expected: the nine new tests FAIL (missing result keys, `visibility_name`, `_phase`, `usage`, `KEPT_PRUNED`,
+Expected: the ten new tests FAIL (missing result keys, `visibility_name`, `_phase`, `_rows_line`, `usage`, `KEPT_PRUNED`,
 `cache` in `/health`, and the child's stderr captured instead of passed through).
 
 - [ ] **Step 3: Implement**
@@ -277,9 +285,22 @@ In `_load`, wrap the existing `geometry.visibility(geo)` call (inside its `try:`
         _phase(f"{name}: visibility {geo.visibility_source} in {geo.visibility_s:.1f} s")
 ```
 
+Below `_phase`, add:
+
+```python
+def _rows_line(geo) -> str | None:
+    """How many feature-row answers this round reused from the map's shared rows file and how many it worked out
+    itself, or None on a map that has none (it never creates the row cache just to report it)."""
+    cache = getattr(geo, "_feature_sight_cache", None)
+    if cache is None:
+        return None
+    return f"{geo.name}: feature rows {cache.row_hits} reused, {cache.row_builds} built"
+```
+
 In `compute_task`: add `geo = None` as the first line of the second `try:` block (before `options = ...`). After
 `rc = engine.compute_round(blob, geo, link, observer=guard)` add
-`_phase(f"{task['map']}: round computed at {time.time() - started:.1f} s")`, and after the `result["gaps"] = ...`
+`_phase(f"{task['map']}: round computed at {time.time() - started:.1f} s")` and
+`rows = _rows_line(geo)` / `if rows: _phase(rows)`, and after the `result["gaps"] = ...`
 line inside `if job:` add `_phase(f"{task['map']}: gaps done at {time.time() - started:.1f} s")`. Replace the
 function's last two lines with:
 
@@ -1708,12 +1729,12 @@ Read the worker's `/health` from its Render shell:
 6. **Done** when a recompute holds 30+ open control runs from the end of warm-up to the start of its last match's
    tail, and the dashboard shows no runs cancelled by a limit.
 
-## Open decision (owner)
+## Decided: feature-row overwrites (risk 5)
 
-**Feature-row overwrites (risk 5).** Not in any task until decided. Options on the table: keep today's
-last-write-wins (costs rebuild time only); replace a larger file only if the incoming one is larger or the stored one
-is over ~6 h old; or a validated merge in the numpy child. The phase lines (Task 1) can show how long rounds spend on
-rows, if timing lines are added around feature-row loading too.
+Keep today's last-write-wins (owner, 2026-11-05). Rows are per map and shared by every later replay of it; a burst of
+parallel rounds keeps only the last posted copy's new rows, but what is kept carries to every upcoming round, and
+the answers are identical either way. Task 1's `feature rows N reused, M built` line shows the cost if it ever
+matters.
 
 ## Out of scope (named so they aren't lost)
 
