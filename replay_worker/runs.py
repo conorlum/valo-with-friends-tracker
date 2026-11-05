@@ -144,6 +144,11 @@ class Run:
     result: dict | None = None
     ended_seen: float | None = None
     done: threading.Event = field(default_factory=threading.Event)
+    opened: float = 0.0             # when the worker opened it
+    timeout_s: float = 0.0          # its limit, given again from each start (Runs.started)
+    extend_on_start: bool = False   # False for a run opened with an explicit deadline (a parse): it never moves
+    started_at: float | None = None  # the latest attempt's start, as the run reported it
+    timing_out: bool = False        # wait() has claimed the timeout: a late start is refused
 
 
 class Runs:
@@ -159,8 +164,11 @@ class Runs:
     def open(self, kind: str, job_id: str, files: dict, timeout_s: float, *, token: str | None = None,
              render_id: str | None = None, deadline: float | None = None) -> Run:
         folder = self.root / job_id
+        now = self.clock()
+        explicit = deadline is not None
         run = Run(job_id, kind, token or secrets.token_hex(16), {k: Path(v) for k, v in files.items()}, folder,
-                  deadline if deadline is not None else self.clock() + timeout_s, render_id)
+                  deadline if explicit else now + timeout_s, render_id, opened=now, timeout_s=timeout_s,
+                  extend_on_start=not explicit)
         with self.lock:
             if job_id in self.open_runs:
                 raise ValueError(f"a run for job {job_id} is already open")
@@ -197,10 +205,15 @@ class Runs:
             on_started(run.render_id)
 
     def wait(self, run: Run) -> dict:
-        """Blocks until the run settles or its deadline passes (then it is cancelled), closes it, and returns
-        its answer."""
+        """Blocks until the run settles or its deadline passes, closes it, and returns its answer. The timeout is
+        claimed under the lock, so a start that lands first moves the deadline and one that lands after is refused;
+        Render is told to cancel outside the lock."""
         while not run.done.wait(timeout=0.2):
-            if self.clock() >= run.deadline:
+            with self.lock:
+                expired = not run.done.is_set() and not run.timing_out and self.clock() >= run.deadline
+                if expired:
+                    run.timing_out = True
+            if expired:
                 if run.render_id:
                     try:
                         self.api.cancel(run.render_id)
@@ -218,6 +231,23 @@ class Runs:
         if run is None or run.done.is_set() or not secrets.compare_digest(run.token.encode("ascii"), offered):
             return None
         return run
+
+    def started(self, job_id: str, token: str | None) -> bool:
+        """An attempt of the run says it has begun its work. Each attempt gets a full limit from now, but never past
+        twice the limit from opening (Render gives a retry a fresh limit; the site's backstop allows twice ours). A
+        run opened with an explicit deadline (a parse) never moves. False when no open run takes the token, or wait()
+        has already claimed its timeout."""
+        run = self.accepts(job_id, token)
+        if run is None:
+            return False
+        with self.lock:
+            if run.done.is_set() or run.timing_out:
+                return False
+            now = self.clock()
+            run.started_at = now
+            if run.extend_on_start:
+                run.deadline = min(max(run.deadline, now + run.timeout_s), run.opened + 2 * run.timeout_s)
+        return True
 
     def file(self, job_id: str, name: str, token: str | None) -> Path | None:
         run = self.accepts(job_id, token)
@@ -293,10 +323,21 @@ class Runs:
         shutil.rmtree(run.folder, ignore_errors=True)
 
     def status(self) -> dict:
+        now = self.clock()
         with self.lock:
-            open_count = len(self.open_runs)
-        return {"open": open_count, "starts_per_min": self.pacer.per_min, "last_reconcile": self.last_reconcile,
-                "last_error": self.last_error}
+            open_runs = list(self.open_runs.values())
+        by_kind: dict[str, dict] = {}
+        for run in open_runs:
+            entry = by_kind.setdefault(run.kind, {"open": 0, "waiting": 0, "oldest_wait_s": 0.0,
+                                                  "oldest_run_s": 0.0})
+            entry["open"] += 1
+            if run.started_at is None:            # Render hasn't started it (or an old task image never says)
+                entry["waiting"] += 1
+                entry["oldest_wait_s"] = max(entry["oldest_wait_s"], round(now - run.opened, 1))
+            else:
+                entry["oldest_run_s"] = max(entry["oldest_run_s"], round(now - run.started_at, 1))
+        return {"open": len(open_runs), "by_kind": by_kind, "starts_per_min": self.pacer.per_min,
+                "last_reconcile": self.last_reconcile, "last_error": self.last_error}
 
     def _settle(self, run: Run, result: dict) -> bool:
         with self.lock:

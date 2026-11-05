@@ -57,6 +57,9 @@ class FakeLink:
         self.order.append("result")
         self.result = result
 
+    def post_started(self):
+        self.order.append("started")
+
 
 @pytest.fixture
 def stub(tmp_path, monkeypatch):
@@ -78,7 +81,7 @@ def test_control_task_mirrors_caches_runs_the_child_and_posts_new_caches_first(s
                    "files": ["Ascent.0123456789abcdef.npz", "heights/Ascent.d1.height.npz"]}, link)
     assert link.result["status"] == "ok"
     assert link.result["had"] == ["Ascent.0123456789abcdef.npz", "heights/Ascent.d1.height.npz"]
-    assert link.order == [f"cache/Ascent.{'c' * 16}.npz", "result"]
+    assert link.order == ["started", f"cache/Ascent.{'c' * 16}.npz", "result"]
     assert link.posted[f"cache/Ascent.{'c' * 16}.npz"] == b"built"
 
 
@@ -87,7 +90,48 @@ def test_control_task_posts_a_cache_rewritten_in_place(stub):
     link = FakeLink({"task": json.dumps(round_task(learn=True)).encode(), rows: b"rows"})
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [rows]}, link)
     route = "cache/" + rows.replace("/", "%2F")
-    assert link.order == [route, "result"] and link.posted[route] == b"rows+more"
+    assert link.order == ["started", route, "result"] and link.posted[route] == b"rows+more"
+
+
+def post_started_to(base, job, token):
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(f"{base}/runs/{job}/started", data=b"", method="POST",
+                                     headers={"X-Run-Token": token, "Content-Length": "0"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_started_route_moves_the_deadline_and_refuses_a_wrong_token(remote, monkeypatch):
+    control, _, _, base = remote
+    table = control.runs
+    now = [1000.0]
+    monkeypatch.setattr(table, "clock", lambda: now[0])
+    run = table.open("control", "manual", {}, timeout_s=50)
+    assert post_started_to(base, "manual", "wrong") == 409 and run.deadline == 1050.0
+    now[0] = 1010.0
+    assert post_started_to(base, "manual", run.token) == 200 and run.deadline == 1060.0
+    table.close(run)
+
+
+def test_an_older_worker_without_the_route_answers_404_and_the_task_carries_on(tmp_path):
+    from fake_render import closed_port
+
+    settings = server.Settings(temp_root=tmp_path / "tmp")
+    httpd = server.make_server(server.Worker(settings, on_parse=None), runs_table=None)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        assert post_started_to(base, "j", "t") == 404
+        tasks.WorkerLink(base, "j", "t", timeout_s=5).post_started()                       # 404: no raise
+        tasks.WorkerLink(f"http://127.0.0.1:{closed_port()}", "j", "t", timeout_s=1).post_started()   # refused
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def test_control_task_skips_a_cache_file_it_cannot_fetch(stub):

@@ -75,6 +75,17 @@ class WorkerLink:
         with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
             response.read()
 
+    def post_started(self) -> None:
+        """Tells the worker this attempt has begun, so its limit counts from now, not from when it was queued. Best
+        effort: an older worker answers 404 and a run must carry on either way."""
+        request = urllib.request.Request(self._url("started"), data=b"", method="POST",
+                                         headers={"X-Run-Token": self.token, "Content-Length": "0"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                response.read()
+        except OSError:
+            pass
+
 
 def link_for(args: dict) -> WorkerLink:
     return WorkerLink(os.environ["REPLAY_WORKER_URL"], args["job_id"], args["token"])
@@ -159,6 +170,7 @@ def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name
 
 
 def control(args: dict, link: WorkerLink) -> None:
+    link.post_started()
     work = Path(tempfile.mkdtemp(prefix="control-"))
     try:
         cache = work / "cache"
@@ -239,6 +251,7 @@ def parse(args: dict, link: WorkerLink) -> None:
 
 def heights(args: dict, link: WorkerLink) -> None:
     """One map's height build: today's height_job child on the build's rounds, unpacked from the worker's spool."""
+    link.post_started()
     from replay_worker import control_cache
 
     work = Path(tempfile.mkdtemp(prefix="heights-"))

@@ -34,6 +34,7 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     GET  /runs/{job}/input/{name}   (header X-Run-Token) a Workflow run's input file, streamed; 404 otherwise.
     POST /runs/{job}/result         (header X-Run-Token) the run's JSON answer: 200 taken, 409 refused (wrong
                                     token, unknown or already settled run), 413, 400.
+    POST /runs/{job}/started        (header X-Run-Token) an attempt has begun: its limit counts from now. 200; 409.
     POST /runs/ping                 starts a ping run and waits for it: {"ok", "answer", "seconds"}.
 These exist only when RENDER_API_KEY and REPLAY_WORKFLOW_SLUG are set (replay_worker/runs.py).
 
@@ -2008,8 +2009,13 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             finally:
                 incoming.unlink(missing_ok=True)
 
+        def _run_started(self):
+            parts = self.path.split("/")          # ["", "runs", job, "started"]
+            ok = len(parts) == 4 and runs_table.started(parts[2], self.headers.get("X-Run-Token"))
+            return self._send(HTTPStatus.OK if ok else HTTPStatus.CONFLICT, {"ok": ok})
+
         def _run_result(self):
-            parts = self.path.split("/")          # ["", "runs", job, "result"]
+            parts =self.path.split("/")          # ["", "runs", job, "result"]
             token = self.headers.get("X-Run-Token")
             run = runs_table.accepts(parts[2], token) if len(parts) == 4 else None
             if run is None:
@@ -2121,6 +2127,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                     return self._run_cache()
                 if self.path.endswith("/result"):
                     return self._run_result()
+                if self.path.endswith("/started"):
+                    return self._run_started()
             if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
                 return self._height_build()
             if self.path == "/heights":

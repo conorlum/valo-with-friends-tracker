@@ -35,6 +35,9 @@ class FakeLink:
     def __init__(self, files):
         self.files, self.result = files, None
 
+    def post_started(self):
+        pass
+
     def fetch(self, name, dest):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         Path(dest).write_bytes(self.files[name])

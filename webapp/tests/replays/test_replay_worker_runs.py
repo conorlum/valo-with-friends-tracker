@@ -236,6 +236,51 @@ def test_deadline_cancels_and_settles_timeout(render, tmp_path):
     assert answer["error_kind"] == "timeout" and render.cancelled == ["trn-1"]
 
 
+def test_each_start_gives_a_full_limit_up_to_twice_the_limit_from_opening(render, tmp_path):
+    now = [100.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    run = table.open("control", "j1", {}, timeout_s=50)
+    assert run.deadline == 150.0
+    now[0] = 140.0                                   # 40 s in Render's queue
+    assert table.started("j1", run.token)
+    assert run.deadline == 190.0 and run.started_at == 140.0
+    now[0] = 170.0                                   # Render retried: a second attempt starts
+    assert table.started("j1", run.token)
+    assert run.deadline == 200.0                     # min(170 + 50, 100 + 2 x 50)
+
+
+def test_started_never_moves_an_explicit_deadline(render, tmp_path):
+    now = [100.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    run = table.open("parse", "j2", {}, 0, deadline=130.0)
+    now[0] = 120.0
+    assert table.started("j2", run.token)
+    assert run.deadline == 130.0 and run.started_at == 120.0
+
+
+def test_started_refuses_a_wrong_token_an_unknown_job_or_a_claimed_timeout(render, tmp_path):
+    table = make_runs(render, tmp_path)
+    run = table.open("control", "j3", {}, timeout_s=50)
+    assert not table.started("j3", "nope")
+    assert not table.started("nobody", "nope")
+    run.timing_out = True                            # wait() has claimed the timeout
+    assert not table.started("j3", run.token)
+
+
+def test_status_counts_waiting_and_started_runs_by_kind(render, tmp_path):
+    now = [100.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    a = table.open("control", "c1", {}, timeout_s=600)
+    table.open("control", "c2", {}, timeout_s=600)
+    table.open("heights", "h1", {}, timeout_s=600)
+    now[0] = 130.0
+    table.started("c1", a.token)
+    now[0] = 145.0
+    assert table.status()["by_kind"] == {
+        "control": {"open": 2, "waiting": 1, "oldest_wait_s": 45.0, "oldest_run_s": 15.0},
+        "heights": {"open": 1, "waiting": 1, "oldest_wait_s": 45.0, "oldest_run_s": 0.0}}
+
+
 def test_reconcile_settles_a_run_that_ended_without_a_result_after_grace(render, tmp_path):
     render.finish = False                         # statuses change only when this test says so
     now = [1000.0]
