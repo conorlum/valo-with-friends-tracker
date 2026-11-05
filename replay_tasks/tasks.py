@@ -187,6 +187,27 @@ def control(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def warm(args: dict, link: WorkerLink) -> None:
+    """One warm identity's visibility cache: the warm child alone, then the cache posted before the answer naming it
+    (the worker counts the identity ready only once that file is on its disk)."""
+    link.post_started()
+    work = Path(tempfile.mkdtemp(prefix="warm-"))
+    try:
+        cache = work / "cache"
+        cache.mkdir()
+        _fetch_inputs(link, args.get("files", []), cache)
+        before = _cache_files(cache)
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        answer = _run_child("REPLAY_WARM_CMD", [sys.executable, "-m", "replay_worker.warm_job"], stdin, cache,
+                            what="warm child")
+        unsent = _post_caches(link, cache, before, args["map"])
+        if unsent:
+            answer = {**answer, "cache_unsent": unsent}
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _sha256(path: Path) -> str:
     import hashlib
 
@@ -278,4 +299,4 @@ def heights(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights}
+TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}

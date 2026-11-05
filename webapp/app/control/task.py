@@ -415,6 +415,31 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
             "util": {"status": "failed", "data": None, "error": run["error"]}}
 
 
+def _load_options(task: dict) -> dict:
+    """`_load`'s options for a task: exactly the geometry a round of it is computed with."""
+    options = {'exact': task['features']} if task.get('features') else {}
+    if task.get('height_mode'):
+        options['height_mode'] = task['height_mode']
+    return options
+
+
+def warm_task(task: dict) -> dict:
+    """A warm build (replay_worker/warm_job.py): loads the map's geometry exactly as `compute_task` would for a
+    round of this task, building its visibility cache when this machine lacks it, and names the cache file. The
+    replay worker counts the task's warm identity as ready while that file is on its disk."""
+    started = time.time()
+    try:
+        from app.control import geometry
+
+        geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))
+        result = {"status": "ok", "visibility": geometry.visibility_name(geo),
+                  "visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s}
+    except Exception as error:  # noqa: BLE001 - the worker retries, then falls back to a warming round
+        result = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
+    result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    return result
+
+
 def compute_task(task: dict) -> dict:
     started = time.time()
     try:
@@ -429,10 +454,7 @@ def compute_task(task: dict) -> dict:
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
         geo = None
-        options = {'exact': task['features']} if task.get('features') else {}
-        if task.get('height_mode'):
-            options['height_mode'] = task['height_mode']
-        geo = _load(task["map"], task.get("heights"), task.get("height"), **options)
+        geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))
         if task.get("features"):           # the generation the dispatcher planned with (map features)
             from app.control import geometry
             load_task_features(task, geo, geometry.cache_dir() / 'features')

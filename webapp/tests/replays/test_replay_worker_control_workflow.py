@@ -38,6 +38,22 @@ else:
 """
 
 
+WARM_STUB = """
+import json, os, sys, pathlib
+task = json.loads(sys.stdin.buffer.read())
+if task["map"] == "Broken":
+    print(json.dumps({"status": "failed", "error_kind": "infra", "error": "no geometry", "key": task["key"]}))
+    sys.exit(0)
+cache = pathlib.Path(os.environ["CONTROL_CACHE_DIR"])
+name = f"{task['map']}.{(task.get('height_mode') or 'e')[0] * 16}.npz"
+source = "cache" if (cache / name).is_file() else "built"
+if source == "built":
+    (cache / name).write_bytes(b"vis")
+print(json.dumps({"status": "ok", "visibility": name, "visibility_source": source, "visibility_s": 0.1,
+                  "seconds": 0.2, "key": task["key"]}))
+"""
+
+
 class FakeLink:
     def __init__(self, files: dict[str, bytes]):
         self.files, self.posted, self.result, self.order = files, {}, None, []
@@ -70,7 +86,39 @@ def stub(tmp_path, monkeypatch):
     return path
 
 
-def round_task(key="k1", map_name="Ascent", **link):
+@pytest.fixture
+def warm_stub(tmp_path, monkeypatch):
+    path = tmp_path / "warm_stub.py"
+    path.write_text(WARM_STUB, encoding="utf-8")
+    monkeypatch.setenv("REPLAY_WARM_CMD", json.dumps([sys.executable, str(path)]))
+    return path
+
+
+def test_warm_task_posts_the_new_cache_then_the_answer_naming_it(warm_stub):
+    link = FakeLink({"task": json.dumps({"key": "warm:Ascent", "map": "Ascent"}).encode()})
+    tasks.warm({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
+    name = f"Ascent.{'e' * 16}.npz"
+    assert link.order == ["started", f"cache/{name}", "result"]
+    assert link.result["visibility"] == name and link.result["visibility_source"] == "built"
+
+
+def test_warm_task_with_the_cache_already_there_posts_only_the_answer(warm_stub):
+    name = f"Ascent.{'e' * 16}.npz"
+    link = FakeLink({"task": json.dumps({"key": "w", "map": "Ascent"}).encode(), name: b"vis"})
+    tasks.warm({"job_id": "j", "token": "t", "map": "Ascent", "files": [name]}, link)
+    assert link.order == ["started", "result"] and link.result["visibility_source"] == "cache"
+
+
+def test_the_warm_task_is_registered_with_render():
+    import ast
+
+    tree = ast.parse((REPO / "replay_tasks" / "main.py").read_text(encoding="utf-8"))
+    names = {kw.value.value for node in ast.walk(tree) if isinstance(node, ast.Call)
+             for kw in node.keywords if kw.arg == "name"}
+    assert "warm" in names and "warm" in tasks.TASKS
+
+
+def round_task(key="k1",map_name="Ascent", **link):
     return {"key": key, "map": map_name, "blob": "", "link": {"sides": {}, "db_deaths": [], **link}}
 
 

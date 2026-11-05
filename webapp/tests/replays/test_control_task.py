@@ -111,6 +111,30 @@ def test_the_feature_row_line_reports_reuse_only_when_a_row_cache_exists(toy, mo
     assert task._rows_line(toy) == "Open: feature rows 30 reused, 10 built"
 
 
+def test_a_warm_build_names_the_cache_file_its_rounds_will_read(toy, monkeypatch):
+    from app.control import geometry
+
+    monkeypatch.setattr(toy, "visibility_source", "built")
+    monkeypatch.setattr(toy, "visibility_s", 1.5)
+    result = task.warm_task({"key": "warm:Open", "map": toy.name})
+    assert result["status"] == "ok" and result["key"] == "warm:Open"
+    assert result["visibility"] == geometry.visibility_name(toy)
+    assert result["visibility_source"] == "built" and result["visibility_s"] == 1.5
+
+
+def test_a_warm_build_for_a_map_with_no_geometry_is_an_infra_failure():
+    result = task.warm_task({"key": "w", "map": "NoSuchMap"})
+    assert result["status"] == "failed" and result["error_kind"] == "infra"
+    assert "GeometryError" in result["error"]
+
+
+def test_a_warm_build_loads_with_the_rounds_own_height_mode(monkeypatch):
+    seen = []
+    monkeypatch.setattr(task, "_load", lambda *a, **k: seen.append(k) or (_ for _ in ()).throw(RuntimeError("x")))
+    task.warm_task({"key": "w", "map": "Ascent", "height_mode": "flat", "features": "f" * 64})
+    assert seen == [{"height_mode": "flat", "exact": "f" * 64}]
+
+
 def test_phase_lines_go_to_stderr_only_when_asked(monkeypatch, capsys):
     task._phase("quiet")
     assert capsys.readouterr().err == ""
