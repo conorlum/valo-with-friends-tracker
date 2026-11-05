@@ -77,13 +77,13 @@ last-write-wins (see "Decided: feature-row overwrites" at the end).
   under `replay_worker/` is already guarded by `"../replay_worker/**"`.
 - Commit messages: write them to a scratch file and `git commit -F <file>` (no heredocs), ending with the
   `Co-Authored-By` line the session gives.
-- Workflow time limits (Task 5 pins their order in a test). `H` is the height limit from Task 0.
+- Workflow time limits (Task 5 pins their order in a test). The height limit is 3 h (Task 0).
 
   | What | Worker setting (Workflow runs only) | Render task `timeout_seconds` | Site backstop (Workflow only) |
   |---|---|---|---|
   | control round (warming or not) | `REPLAY_CONTROL_RUN_TIMEOUT_S` 7200 | 7500 | `STALE_RUN_S` 15000 (> 2 x 7200) |
   | warm build | `REPLAY_WARM_BUILD_TIMEOUT_S` 21600 | 21900 | none: the site never sees warm builds |
-  | height build | `REPLAY_HEIGHT_RUN_TIMEOUT_S` = `H` | `H` + 300 (at most 86400) | `STALE_BUILD_RUN_S` = 2 x `H` + 600 |
+  | height build | `REPLAY_HEIGHT_RUN_TIMEOUT_S` 10800 | 11100 | `STALE_BUILD_RUN_S` 22200 (> 2 x 10800) |
 
   A run's deadline never passes `opened + 2 x limit` (Task 2), which is why each site backstop exceeds twice the
   limit: the worst case is a queue wait plus a full attempt, or two attempts.
@@ -94,15 +94,15 @@ last-write-wins (see "Decided: feature-row overwrites" at the end).
 
 **Files:** none.
 
-- [ ] **Step 1: Owner reads the replay-tasks workflow's completed `heights` runs** in the Render dashboard (Runs,
-  filter on task `heights`) and gives the longest duration `L`, in seconds. If there are fewer than 3 completed
-  height runs, use `L = 3600` (today's limit, which none is known to have hit).
-- [ ] **Step 2: Compute `H`** = `3 x L + 10800`, rounded up to a whole hour, at most `86100` (Render's 24 h less
-  300 s). Example: `L = 2400` gives `3 x 2400 + 10800 = 18000`, so `H = 18000` (5 h). Record `L` and `H` in the PR
-  description. Task 5 uses `H`.
-- [ ] **Step 3: Owner opens one cancelled `control` run's log** and says whether it shows any line at all. A run
-  with no log line never started (it was cancelled in Render's queue). Record the answer in the PR description: it
-  is context for the runbook, not a gate.
+- [x] **Step 1: The longest height build.** Owner, 2026-11-05: the longest of the last ~200 completed `heights`
+  runs took about 2 minutes. Owner's choice: a 3 h limit (`REPLAY_HEIGHT_RUN_TIMEOUT_S` 10800), far above it.
+- [x] **Step 2: A cancelled control run's log.** Owner, 2026-11-05: it shows no log lines at all.
+- [ ] **Step 3: Did the cancelled runs ever start?** No log suggests the run never started: it may have waited in
+  Render's queue for its whole 30 minutes (or the dashboard keeps no log for a cancelled run). Read the
+  timestamps of recent cancelled `control` runs (the runbook's shell command, with `replay-tasks/control`) and
+  record, for each, whether it has a start time and how long after creation. **Gate:** if cancelled runs never
+  started, the diagnosis in "Why" is wrong (runs were queued at Render, not building caches), and this plan is
+  revisited before any task is built.
 
 ---
 
@@ -1418,7 +1418,7 @@ Expected: all PASS. `test_replay_worker_control.py` (local mode) passes unchange
 
 **Files:**
 - Modify: `replay_worker/server.py` (`Settings`, `from_env`, docstring env list, `_run`'s timeout block)
-- Modify: `replay_tasks/main.py` (`control` 1800 -> 7500, `heights` 3600 -> `H` + 300)
+- Modify: `replay_tasks/main.py` (`control` 1800 -> 7500, `heights` 3600 -> 11100)
 - Modify: `render.yaml` (worker env: three Workflow limits)
 - Modify: `webapp/app/services/replay_control_remote.py` (new `STALE_RUN_S`; `_collect`)
 - Modify: `webapp/app/services/replay_heights_remote.py` (new `STALE_BUILD_RUN_S`; `Build.stale_s`; `step`;
@@ -1426,10 +1426,10 @@ Expected: all PASS. `test_replay_worker_control.py` (local mode) passes unchange
 - Test: `webapp/tests/replays/test_control_remote.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Consumes: `H` (Task 0); `Runs.started` (Task 2).
+- Consumes: `Runs.started` (Task 2).
 - Produces: `Settings.control_run_timeout_s` (env `REPLAY_CONTROL_RUN_TIMEOUT_S`, default 1800.0),
   `Settings.height_run_timeout_s` (env `REPLAY_HEIGHT_RUN_TIMEOUT_S`, default 3600.0): used only for runs on
-  Workflows. `replay_control_remote.STALE_RUN_S = 15000`; `replay_heights_remote.STALE_BUILD_RUN_S = 2 * H + 600`;
+  Workflows. `replay_control_remote.STALE_RUN_S = 15000`; `replay_heights_remote.STALE_BUILD_RUN_S = 22200`;
   `Build.stale_s: float`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1529,8 +1529,7 @@ Expected: the three tests FAIL (missing env values in `render.yaml`, missing set
             timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
 ```
 
-`replay_tasks/main.py`: `name="control", timeout_seconds=7500`; `name="heights", timeout_seconds=<H + 300>` (the
-number, at most 86400). Docstring: "Each limit sits 300 s above the worker's Workflow limit (`render.yaml`);
+`replay_tasks/main.py`: `name="control", timeout_seconds=7500`; `name="heights", timeout_seconds=11100`. Docstring: "Each limit sits 300 s above the worker's Workflow limit (`render.yaml`);
 tests/replays/test_control_remote.py pins the order."
 
 `render.yaml`, worker `envVars`, after `REPLAY_CONTROL_QUEUE`:
@@ -1539,16 +1538,14 @@ tests/replays/test_control_remote.py pins the order."
       # Workflow time limits (docs/superpowers/plans/2026-11-05-replay-throughput.md). Only runs on Workflows use
       # them: local children keep REPLAY_CONTROL_TIMEOUT_S / REPLAY_HEIGHT_TIMEOUT_S (their image defaults, 1800 and
       # 3600). Render's own task limits (replay_tasks/main.py) are 300 s above; tests/replays/test_control_remote.py
-      # pins the order. The height limit is 3x the longest measured build plus 3 h (Task 0).
+      # pins the order. Height builds took at most ~2 min over ~200 runs (2026-11-05); 3 h is the owner's margin.
       - key: REPLAY_CONTROL_RUN_TIMEOUT_S
         value: "7200"
       - key: REPLAY_WARM_BUILD_TIMEOUT_S
         value: "21600"
       - key: REPLAY_HEIGHT_RUN_TIMEOUT_S
-        value: "<H>"
+        value: "10800"
 ```
-
-(`<H>` is Task 0's number, written as digits.)
 
 `webapp/app/services/replay_control_remote.py`: under `STALE_JOB_S = 1800`, add
 
@@ -1563,7 +1560,7 @@ and in `_collect` change `elif now - f.running_since > STALE_JOB_S:` to
 `webapp/app/services/replay_heights_remote.py`: under `STALE_BUILD_S = 7200`, add
 
 ```python
-STALE_BUILD_RUN_S = <2 x H + 600>   # the same backstop for a build on Workflows: > 2 x REPLAY_HEIGHT_RUN_TIMEOUT_S
+STALE_BUILD_RUN_S = 22200   # the same backstop for a build on Workflows: > 2 x REPLAY_HEIGHT_RUN_TIMEOUT_S
 ```
 
 Add `stale_s: float = STALE_BUILD_S` as the last field of `Build`. In `step`, where `Build(...)` is constructed (after
@@ -1683,7 +1680,7 @@ Expected: all PASS.
     `REPLAY_WARM_BUILDS`; Workflow limits are separate from local's; read `webapp/RENDER_DEPLOY.md`).
   - The spec: D6 gains "With REPLAY_WARM_BUILDS on, a cold identity is warmed by its own `warm` run, confirmed by one
     probe round, then every round runs at once (2026-11-05 throughput plan)". D8 gains "Workflow runs: control
-    7200 s, warm 21600 s, heights `H` s, each counted from its attempt's start; local keeps 1800 / 3600 (2026-11-05
+    7200 s, warm 21600 s, heights 10800 s, each counted from its attempt's start; local keeps 1800 / 3600 (2026-11-05
     throughput plan)".
 
 - [ ] **Step 2: Run every suite the branch touches.**
@@ -1692,7 +1689,7 @@ Expected: all PASS.
   `app/control/task.py` and `geometry.py` changed). Compare failures against the known baseline in memory
   (`project_test_suite_stale_neon_env`): new failures only.
 
-- [ ] **Step 3: Commit the docs, push the branch, open the PR.** Never merge. The PR body holds `L` and `H`, Task 0
+- [ ] **Step 3: Commit the docs, push the branch, open the PR.** Never merge. The PR body holds Task 0's findings, Task 0
   step 3's answer, the risk table with each mitigation's commit, and the runbook. Give the owner the link.
 
 #### Rollout runbook (owner; each step moves on once its checks pass, no waiting days)
