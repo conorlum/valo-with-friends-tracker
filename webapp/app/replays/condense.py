@@ -936,6 +936,16 @@ class DamageRun:
     cause: dict | None = None    # revision 21: the ability that did it (causes.py), None for a gun
 
 
+def equippable_used_guid(value) -> int | None:
+    """A damage notify's `EquippableUsed` as a GUID. Export schema 8 wrote the equippable (`{"NetGuid": N, ...}`);
+    schema 9 writes an object reference, which the loader reads as the bare N (`contract.loads_row`)."""
+    if isinstance(value, dict):
+        return value.get("NetGuid")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
 def read_damage(export: Export, players: PlayerTable, archetypes: Archetypes | None = None,
                 agents_by_code: dict[str, str] | None = None) -> tuple[list[DamageRun], dict]:
     """Every damage notify on a player's own character, as runs (DamageRun), and counts.
@@ -969,8 +979,7 @@ def read_damage(export: Export, players: PlayerTable, archetypes: Archetypes | N
         cause = None
         if archetypes is not None:
             cause = cause_of(archetypes, agents_by_code or {}, row.time_ms, payload.get("DamageCauser"),
-                             (payload.get("EquippableUsed") or {}).get("NetGuid")
-                             if isinstance(payload.get("EquippableUsed"), dict) else None)
+                             equippable_used_guid(payload.get("EquippableUsed")))
             counts[f"damage_hits_cause_{cause['from'] if cause else 'none'}_{'gun' if point else 'ability'}"] += 1
         hits.append((row.time_ms, by, target, "gun" if point else "ability", payload.get("IsWallPenetration") is True,
                      cause_key(cause), cause))

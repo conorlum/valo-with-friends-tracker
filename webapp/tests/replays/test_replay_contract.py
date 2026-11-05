@@ -22,7 +22,7 @@ def _manifest(**extra):
 
 def test_the_committed_pin_matches_the_parser_commit():
     assert PIN.commit == PIN_COMMIT
-    assert PIN.schema_version == 8
+    assert PIN.schema_version == 9
     assert BUILD in PIN.supported_builds
 
 
@@ -164,3 +164,28 @@ def test_current_recipe_is_the_string_the_condenser_stamps(tmp_path):
     assert contract.current_recipe(PIN, fmt.STATIC_DIR) == fmt.recipe(PIN.commit, fmt.assets_revision())
     other = contract.ParserPin("f" * 40, PIN.schema_version, PIN.supported_builds, PIN.patches)
     assert contract.current_recipe(other) != contract.current_recipe(), "another parser commit, another recipe"
+
+
+def test_schema_9_object_references_load_as_bare_guids():
+    row = {"type": "export_group_received", "time_ms": 5,
+           "payload": {"PlayerState": {"net_guid": 42, "path": "/Game/X.Y"},
+                       "Slots": [{"net_guid": 7, "path": None}, 3],
+                       "Pos": {"x": 1, "y": 2, "z": 3}},
+           "equippable": {"net_guid": 9, "name": "Vandal", "category": "rifle", "class_path": None}}
+    want = {"type": "export_group_received", "time_ms": 5,
+            "payload": {"PlayerState": 42, "Slots": [7, 3], "Pos": {"x": 1, "y": 2, "z": 3}},
+            "equippable": {"net_guid": 9, "name": "Vandal", "category": "rifle", "class_path": None}}
+    line = json.dumps(row)
+    assert contract.loads_row(line) == want
+    assert contract.loads_row(line.encode("utf-8")) == want
+    assert contract.loads_row('{"type": "x", "payload": {"PlayerState": 42}}') == {"type": "x",
+                                                                                   "payload": {"PlayerState": 42}}
+
+
+def test_equippable_used_reads_either_schema():
+    from app.replays.condense import equippable_used_guid
+
+    assert equippable_used_guid({"NetGuid": 12, "Name": "Knife"}) == 12   # schema 8: the equippable
+    assert equippable_used_guid(12) == 12                                # schema 9: a reference, unwrapped
+    assert equippable_used_guid(None) is None
+    assert equippable_used_guid(True) is None

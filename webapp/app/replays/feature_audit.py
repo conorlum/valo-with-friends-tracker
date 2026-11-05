@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 import re
 
-from app.replays.contract import check_manifest, classify_diagnostics, load_pin, sha256_file, ContractError
+from app.replays.contract import check_manifest, classify_diagnostics, load_pin, loads_row, sha256_file, ContractError
 
 FORMAT = "map-feature-replay-audit"
 VERSION = 1
@@ -158,7 +158,7 @@ def inventory(export_dir: Path, *, tags=None, map_name=None, source: Path | None
                 break
             digest.update(line); byte_count += len(line); total += 1
             try:
-                row = json.loads(line, parse_constant=_reject_constant)
+                row = loads_row(line, parse_constant=_reject_constant)
                 if not isinstance(row, dict) or not isinstance(row.get("type"), str):
                     raise ValueError("row must be an object with a type")
                 time = row.get("time_ms")

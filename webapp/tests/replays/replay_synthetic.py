@@ -25,18 +25,20 @@ import struct
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-PIN_COMMIT = "e86ec408f2b89ea7ddca88ffae03113781d7c482"
+PIN_COMMIT = "04dcbd92806cbb3005323ec987e4fa7c95ab6a1f"
 BUILD = "++Ares-Core+release-13.06"
 
 
 def fixture_pin(directory: Path):
-    """The current pin with the commit that made a committed real fixture (its manifest's `parser_version`).
-    Those fixtures test the condenser on real rows, which a parser bump doesn't change; regenerate them
-    (scripts/make_replay_fixture.py) from the source `.vrf` to retire this."""
+    """The current pin with the commit and export schema that made a committed real fixture (its manifest's
+    `parser_version` and `schema_version`). Those fixtures test the condenser on real rows; schema 9 only rewrote
+    object references, which the loader reads as schema 8's bare GUIDs (test_schema_9_references_condense_the_same).
+    Regenerate them (scripts/make_replay_fixture.py) from the source `.vrf` to retire this."""
     from app.replays.contract import load_pin
 
-    version = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["parser_version"]
-    return replace(load_pin(), commit=version.rsplit("+", 1)[1])
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    return replace(load_pin(), commit=manifest["parser_version"].rsplit("+", 1)[1],
+                   schema_version=int(manifest["schema_version"]))
 MATCH_UUID = "00000000-0000-4000-8000-00000000abcd"
 AGENT_CODES = ["Wushu", "Sarge", "Thorne", "Hunter", "Grenadier", "Vampire", "Wraith", "Clay", "Gumshoe", "Rift"]
 AGENT_NAMES = ["Jett", "Brimstone", "Sage", "Sova", "KAY/O", "Reyna", "Omen", "Raze", "Cypher", "Astra"]
@@ -385,7 +387,7 @@ class SyntheticMatch:
 
     def manifest(self) -> dict:
         manifest = {
-            "schema_version": 8, "source_file": f"{MATCH_UUID}.vrf",
+            "schema_version": 9, "source_file": f"{MATCH_UUID}.vrf",
             "source_sha256": hashlib.sha256(self.vrf_bytes).hexdigest(), "source_size_bytes": len(self.vrf_bytes),
             "replay_build": BUILD, "replay_version": "13.6.0", "replay_changelist": 1, "duration_ms": 1,
             "parse_profile": "default", "parser_assembly": "Replay.Valorant",

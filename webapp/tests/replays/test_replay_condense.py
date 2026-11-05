@@ -1,6 +1,7 @@
 """The condenser on synthetic exports: rounds, players, sides, tracks, alive intervals, kills."""
 
 import json
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -37,7 +38,7 @@ def test_happy_path(tmp_path):
     assert out.match_uuid == MATCH_UUID
     assert out.map_name == "Ascent" and out.hz == 16 and out.round_count == 3
     assert out.game_branch == "++Ares-Core+release-13.06"
-    assert out.recipe.startswith(f"e86ec408f2b8.c{fmt.CONDENSE_REVISION}.f1.a")
+    assert out.recipe.startswith(f"04dcbd92806c.c{fmt.CONDENSE_REVISION}.f1.a")
     assert [p["agent"] for p in out.players] == AGENT_NAMES
     assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
     assert [p["subject"] for p in out.players] == [subject(i) for i in range(10)]
@@ -735,6 +736,57 @@ def test_the_real_competitive_fixture_condenses_with_decoded_game_state():
     assert out.report["match_spawn_check"]["ok"] and out.report["sides"]["resolved"]
     assert out.link_inputs["eligibility"]["eligible"] is True
     assert [len(out.rounds[n]["kills"]) for n in (1, 2)] == [9, 6]
+
+
+def _as_schema_9(directory: Path, out: Path) -> int:
+    """A copy of a schema-8 export with every integer under a row's `payload` written as schema 9 writes an object
+    reference (`{"net_guid": N, "path": ...}`), and the manifest at schema 9. Returns how many were rewritten.
+    Wrapping integers that are not references too makes the test stricter: the loader must give every one back."""
+    wrapped = 0
+
+    def wrap(value):
+        nonlocal wrapped
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            wrapped += 1
+            return {"net_guid": value, "path": f"/Game/Fake/Object{value}"}
+        if isinstance(value, dict):
+            return {key: wrap(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [wrap(item) for item in value]
+        return value
+
+    out.mkdir(parents=True)
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    manifest["schema_version"] = 9
+    (out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    shutil.copyfile(directory / "movement.ndjson", out / "movement.ndjson")
+    with (directory / "events.ndjson").open(encoding="utf-8") as source, \
+            (out / "events.ndjson").open("w", encoding="utf-8") as target:
+        for line in source:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if "payload" in row:
+                row["payload"] = wrap(row["payload"])
+            target.write(json.dumps(row) + "\n")
+    return wrapped
+
+
+@pytest.mark.parametrize("fixture", [REAL_FIXTURE, COMPETITIVE_FIXTURE], ids=["swiftplay", "competitive"])
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "in_memory"])
+def test_schema_9_references_condense_the_same(tmp_path, fixture, streaming):
+    # Parser 04dcbd9 (export schema 9) writes decoded object references as {net_guid, path}; the loader reads them
+    # as the bare GUIDs schema 8 wrote, so a replay condenses exactly as it did.
+    schema_9 = tmp_path / "schema9"
+    assert _as_schema_9(fixture, schema_9) > 40
+    before = cd.condense_export_dir(fixture, source_sha256=None, pin=fixture_pin(fixture), streaming=streaming)
+    after = cd.condense_export_dir(schema_9, source_sha256=None, pin=fixture_pin(schema_9), streaming=streaming)
+    assert after.encoded_rounds() == before.encoded_rounds()
+    assert after.players == before.players
+    assert json.dumps(after.link_inputs, sort_keys=True) == json.dumps(before.link_inputs, sort_keys=True)
+    assert json.dumps(after.report, sort_keys=True) == json.dumps(before.report, sort_keys=True)
 
 
 # ------------------------------------------------------------ player state (P03, CONDENSE 15)
