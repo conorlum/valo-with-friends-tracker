@@ -20,6 +20,64 @@ session; their findings are folded in below, tagged F1-F9 and S1-S8/N1-N11 where
 switch); the height-build limit comes from the longest measured build (3x it, plus 3 h); feature rows keep today's
 last-write-wins (see "Decided: feature-row overwrites" at the end).
 
+## Amendment A1 (2026-11-05): warm builds are ON from the merge
+
+The owner's standing rule (`judgment.md`, Preferences): a new feature switch for the friends site goes into
+`render.yaml` **set on from the merge**, and the code rides out the deploy gap by itself without spending tries.
+This amendment **wins over every task and runbook line below that says otherwise**:
+
+1. **Task 4, `render.yaml`:** the worker's `REPLAY_WARM_BUILDS` entry is `value: "true"` (not `sync: false`), with
+   the comment: "Warm builds (docs/superpowers/plans/2026-11-05-replay-throughput.md): a cold map's visibility cache
+   is built as its own run, confirmed by one probe round, then the rest run at once. On from the merge; to switch it
+   off, set "false" here by PR (a dashboard change is reset by a Blueprint sync)." `Settings` keeps its default off
+   (tests and local runs), so only the deployed worker turns it on.
+2. **Task 4, a ninth rule: a refused start spends no try.** In the deploy gap the worker can come up before the
+   replay-tasks workflow has registered `warm`, so Render refuses the start (`runs.Runs.start` settles it as `infra`,
+   error text beginning `the run could not start`). Such a warm build does **not** count toward `WARM_BUILD_TRIES`:
+   the identity's rounds keep waiting, and a new warm build is asked after `WARM_START_RETRY_S = 60`. Code:
+   - beside `WARM_BUILD_TRIES`: `WARM_START_RETRY_S = 60   # after Render refused a warm build's start (a deploy gap)`
+   - `ControlRunner.__init__`, with the other warm state:
+     `self.warm_retry_at: dict[str, float] = {}  # no warm build for this identity before this time (start refused)`
+   - `_next`, in the warm-builds branch, just before `if self.warm_failures.get(job.warm_id, 0) < WARM_BUILD_TRIES:`:
+     `if self.warm_retry_at.get(job.warm_id, 0.0) > time.time(): continue        # rule 9: its start was refused`
+   - settlement, in the warm build's `else:` (not ok) branch, replacing the failure count:
+     ```python
+                    elif (error or "").startswith("the run could not start"):
+                        # Rule 9: Render refused the start (a deploy gap, before the workflow knows `warm`): no try
+                        # is spent; the identity's rounds wait and a warm build is asked again after a minute.
+                        self.warm_retry_at[job.warm_id] = time.time() + WARM_START_RETRY_S
+                    else:
+                        self.warm_failures[job.warm_id] = self.warm_failures.get(job.warm_id, 0) + 1
+                        _log(f"warm build {job.warm_id} failed: {error or 'its cache is not on this disk'}")
+     ```
+     (the `if status == "done" and name …:` test above it stays first, so this is `if … / elif … / else`).
+   - `counts()["warm_builds"]` gains `"start_refused": sorted(i for i, t in self.warm_retry_at.items() if t > time.time())`.
+   - Test, in `test_replay_worker_control_workflow.py` beside the other `warm_remote` tests:
+     ```python
+     def test_a_refused_warm_start_spends_no_try_and_is_asked_again(warm_remote, monkeypatch):
+         control, render, _, _ = warm_remote
+         monkeypatch.setattr(server, "WARM_START_RETRY_S", 0.5)
+         real, refused = control.runs.api.start, []
+
+         def flaky(slug, args):                    # the workflow hasn't registered `warm` yet: Render answers 404
+             if slug.endswith("/warm") and len(refused) < 3:
+                 refused.append(slug)
+                 raise runs.RenderError("POST /task-runs: HTTP 404")
+             return real(slug, args)
+
+         monkeypatch.setattr(control.runs.api, "start", flaky)
+         job = control.submit(round_task("a"))
+         assert wait_done(control, [job])[0].status == "done"
+         assert len(refused) == 3 and control.counts()["warm_builds"]["failures"] == {}
+         assert warm_starts(render) == 1                # Render saw only the start it accepted
+     ```
+3. **Risk 7:** warm builds are on from the merge; a start refused in the deploy gap spends no try (rule 9).
+4. **Task 7 docs and the runbook:** the switch is on from the merge in `render.yaml`; turning it off is a PR setting
+   it to `"false"`. Runbook step 2 becomes "Run a control recompute and read three control run logs: their
+   `visibility … in N s` line against the round's total time, and record it in the PR thread". Step 3 becomes
+   "Check warm builds within an hour of the merge: …" with the same checks and stop rule, where "switch it off"
+   means a PR setting `REPLAY_WARM_BUILDS` to `"false"`.
+
 ## Why (the evidence this plan rests on)
 
 - Every cancelled run in the Render dashboard ended at 29:59 (owner, 2026-11-04). The worker cancels a run itself
