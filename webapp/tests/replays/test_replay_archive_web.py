@@ -7,6 +7,7 @@ import io
 import sys
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,57 @@ def test_a_stored_upload_is_acked_and_its_file_archived(db, tmp_path, stub):  # 
         entry = worker.archive.entries()[0]
         assert entry["replay_id"] == upload.replay_id and entry["played_at"] is None  # unlinked: no date yet
         assert "kept_existing" not in routes._status_body(db, upload)
+    finally:
+        httpd.shutdown()
+
+
+def test_a_legacy_stored_row_with_no_store_outcome_still_gets_acked(engine, db, tmp_path, stub):  # noqa: F811
+    """A row stored before `store_outcome`/`replay_id` were tracked (2026-09-28 and earlier) must not be stuck
+    with a null ack forever. Through the real background sync job (`replay_archive_sync.cycle`), not by calling
+    `ack_body`/`send_ack` directly: the sync job's own selection query must reach this row too, or the recovery
+    in `ack_body` is dead code that nothing ever calls in production."""
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        upload = collect(db, client, vrf_bytes())
+        assert upload.store_outcome == "stored"  # the normal shape, before we strip it below
+        upload.store_outcome, upload.replay_id, upload.archive_ack = None, None, None
+        # Outside the normal resend window: this is the legacy shape's actual age, not a fresh miss.
+        upload.finished_at = upload.finished_at - sync.RESEND_WITHIN - timedelta(days=1)
+        db.commit()
+        counts = sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())
+        assert counts["acks_sent"] == 1
+        db.expire_all()
+        assert db.get(ReplayUpload, upload.id).archive_ack == "archived"
+    finally:
+        httpd.shutdown()
+
+
+def test_a_legacy_row_whose_replay_cannot_be_found_gets_a_terminal_ack_not_an_endless_retry(engine, db, tmp_path, stub):  # noqa: F811
+    """No matching source_sha256 (its replay was deleted, or replaced by another upload's file) must settle as
+    "failed", the same terminal state as the existing "replay is gone" rule -- not keep asking every sync cycle
+    forever with no way to ever answer. The worker refuses a second, different ack for a job it already
+    answered (archive.py's ack identity check), so the file must stay un-acked first -- a lossy client for the
+    first ack, like test_the_sync_resends_a_lost_ack -- or the worker's 409 refusal would satisfy a weaker
+    "archive_ack is not None" assertion without the intended "failed" outcome ever actually being applied."""
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        lossy = uploads.WorkerClient(base)
+        monkeypatch_ack = lambda *_: (_ for _ in ()).throw(uploads.WorkerError("lost"))
+        lossy.ack = monkeypatch_ack
+        upload = collect(db, lossy, vrf_bytes())
+        assert upload.archive_ack is None and (disk / "pending" / f"{upload.worker_job_id}.vrf").exists()
+        upload.store_outcome, upload.replay_id = None, None
+        upload.source_sha256 = "0" * 64  # matches no Replay row
+        upload.finished_at = upload.finished_at - sync.RESEND_WITHIN - timedelta(days=1)
+        db.commit()
+        counts = sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())
+        assert counts["acks_sent"] == 1
+        db.expire_all()
+        assert db.get(ReplayUpload, upload.id).archive_ack == "deleted"
+        assert not (disk / "pending" / f"{upload.id}.vrf").exists()
+        # Settled: a second cycle has nothing left to ask about.
+        assert sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())["acks_sent"] == 0
     finally:
         httpd.shutdown()
 

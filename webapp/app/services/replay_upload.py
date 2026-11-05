@@ -664,9 +664,17 @@ def ack_body(db, upload: ReplayUpload, match_uuid: str | None = None) -> dict | 
     from app.models.replay import Replay
 
     outcome = upload.store_outcome
+    replay = db.get(Replay, upload.replay_id) if upload.replay_id is not None else None
+    if not outcome and upload.status == "stored":
+        # A row stored before `store_outcome`/`replay_id` were tracked (2026-09-28 and earlier): recover its
+        # outcome from the replay its own file became. When no replay matches (a null sha, one deleted, or one
+        # replaced by another file's sha), this is terminal, the same as the "replay is gone" rule just below --
+        # not a retry target for the sync job forever, which would otherwise ask every cycle with no answer.
+        replay = (db.query(Replay).filter(Replay.source_sha256 == upload.source_sha256).order_by(Replay.id).first()
+                 if upload.source_sha256 is not None else None)
+        outcome = "stored" if replay is not None else "failed"
     if not outcome or not upload.worker_job_id:
         return None
-    replay = db.get(Replay, upload.replay_id) if upload.replay_id is not None else None
     if outcome in ("stored", "replaced", "unchanged") and replay is None:
         outcome = "failed"  # the replay is gone (deleted on request): the worker drops the file
     body = {"match_uuid": (replay.match_uuid if replay is not None else match_uuid) or "", "sha256": None,

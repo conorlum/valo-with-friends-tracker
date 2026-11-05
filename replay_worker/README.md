@@ -24,11 +24,16 @@ web-service side are Stage 3's PR.
 After `parse failed`, `detail` holds the parser's last few lines of output (stack frames left out, at most 300
 characters), when it wrote any; the output itself is deleted with the job.
 
-## Unsupported game versions (held uploads)
+## Held uploads: an unsupported game version, or the parser's own refusal
 
-Every Valorant patch changes how replay data is scrambled, and the pinned parser reads only the builds listed in
-`supported_replay_builds` (`webapp/replay_parser.json`). The game build is in the first few KB of the
-file (`app/replays/header.py`, `game_build`), so the worker reads it before any parse:
+Two different situations hold a file on disk instead of parsing it, archive on only (archive off, both fail at
+once instead). `game_build` may be unknown in either; `parser_pin` (upload-kind jobs only) is what actually
+tells them apart.
+
+**An unsupported game version.** Every Valorant patch changes how replay data is scrambled, and the pinned
+parser reads only the builds listed in `supported_replay_builds` (`webapp/replay_parser.json`). The game build
+is in the first few KB of the file (`app/replays/header.py`, `game_build`), so the worker reads it before any
+parse:
 
 - **Supported, or no build found**: parsed as always.
 - **Unsupported, archive on**: the job is `held`. The file stays in its job folder, the job's `error` says which
@@ -40,10 +45,20 @@ file (`app/replays/header.py`, `game_build`), so the worker reads it before any 
   there each is an ordinary upload: the web app's poll stores it and acks it into the archive.
 - **Never supported**: a job held for 60 days (`HELD_TTL_S`) fails and its file is deleted.
 
-`/health`'s `archive` block gains `held`, `held_bytes` and `held_builds`. The web app shows a held upload as
-"waiting for a parser update", never times it out and doesn't count it in a session's batch
-(`webapp/app/services/replay_upload.py`, `HELD`). Tests: `webapp/tests/replays/test_replay_worker_held.py` and
-`test_replay_upload_held.py`.
+**The parser refuses a build it's already pinned to support.** An undocumented sub-version gap: the build is in
+`supported_replay_builds`, so the pre-flight check above lets it through, and the parser itself then fails with
+a line saying so (`UNSUPPORTED_PATCH_SIGNATURE` in `replay_worker/server.py`). This is held the same way, under
+the cap, but it releases on a different signal: the next deploy whose recipe (`job.parser_pin`, the worker's
+own `self.recipe` at hold time) differs from the one it was held under -- not a `supported_replay_builds`
+match, which is already true for these and would otherwise release (and re-crash) it immediately. Reparse jobs
+never take this path (only uploads do): a held reparse would look "pending" to the automatic reparse queue
+forever and block every other automatic retry behind it, so a reparse the parser refuses just fails, as
+before, for the next attempt to retry under the current recipe.
+
+`/health`'s `archive` block gains `held`, `held_bytes` and `held_builds` (the last excludes jobs with no known
+build). The web app shows a held upload as "waiting for a parser update", never times it out and doesn't count
+it in a session's batch (`webapp/app/services/replay_upload.py`, `HELD`). Tests:
+`webapp/tests/replays/test_replay_worker_held.py` and `test_replay_upload_held.py`.
 
 ## Behaviour
 
