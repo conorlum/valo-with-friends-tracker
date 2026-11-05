@@ -31,10 +31,14 @@ if task["link"].get("learn"):              # feature rows learned: the same file
     rows = cache / "feature-rows" / f"{task['map']}.{'d' * 64}.npz"
     rows.write_bytes(rows.read_bytes() + b"+more")
 mode = task["link"].get("mode", "ok")
+source = task["link"].get("source") or ("cache" if any(n.count(".") == 2 and "/" not in n for n in had) else "built")
 if mode == "engine":
-    print(json.dumps({"status": "failed", "error_kind": "engine", "error": "no side"}))
+    print(json.dumps({"status": "failed", "error_kind": "engine", "error": "no side", "visibility_source": source}))
+elif mode == "infra":
+    print(json.dumps({"status": "failed", "error_kind": "infra", "error": "machine went away"}))
 else:
-    print(json.dumps({"status": "ok", "data": "ZA==", "summary": "cw==", "key": task["key"], "had": had}))
+    print(json.dumps({"status": "ok", "data": "ZA==", "summary": "cw==", "key": task["key"], "had": had,
+                      "visibility_source": source}))
 """
 
 
@@ -191,7 +195,7 @@ def test_control_task_skips_a_cache_file_it_cannot_fetch(stub):
 def test_control_task_passes_an_engine_failure_through(stub):
     link = FakeLink({"task": json.dumps(round_task(mode="engine")).encode()})
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
-    assert link.result == {"status": "failed", "error_kind": "engine", "error": "no side"}
+    assert link.result == {"status": "failed", "error_kind": "engine", "error": "no side", "visibility_source": "built"}
 
 
 def test_control_task_reports_a_child_that_prints_nothing_as_infra(tmp_path, monkeypatch):
@@ -241,6 +245,190 @@ def wait_done(control, jobs, timeout=60):
             return [control.get(j.id) for j in jobs]
         time.sleep(0.05)
     raise AssertionError("rounds didn't finish")
+
+
+@pytest.fixture
+def warm_remote(tmp_path, stub, warm_stub):
+    """`remote` with warm builds on (REPLAY_WARM_BUILDS)."""
+    render = FakeRender()
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               control_runner="workflow", control_runs=40, workflow_slug="replay-tasks",
+                               render_api_key="k", render_api_base=render.url, warm_builds=True)
+    table = server.make_runs(settings)
+    control = server.ControlRunner(settings, runs_table=table)
+    worker = server.Worker(settings, on_parse=None)
+    httpd = server.make_server(worker, control=control, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
+    try:
+        yield control, render, settings, base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
+
+
+def warm_starts(render):
+    return [s["task"] for s in render.started].count("replay-tasks/warm")
+
+
+def warm_and_confirm(control):
+    """One warm build, then one probe round that reads its cache: the identity is confirmed."""
+    wait_done(control, [control.submit(round_task("probe"))])
+
+
+def test_a_cold_map_gets_one_warm_build_one_probe_then_every_round_at_once(warm_remote):
+    control, render, _, _ = warm_remote
+    jobs = [control.submit(round_task(f"r{i}", mode="sleep:1.5")) for i in range(6)]
+    done = wait_done(control, jobs)
+    assert all(j.status == "done" for j in done)
+    assert warm_starts(render) == 1 and render.started[0]["task"] == "replay-tasks/warm"
+    assert all(f"Ascent.{'e' * 16}.npz" in j.result["had"] for j in done)
+    state = control.counts()["warm_builds"]
+    assert state["misses"] == 0 and state["confirmed"] == [jobs[0].warm_id]
+
+
+def test_after_confirmation_rounds_run_side_by_side(warm_remote):
+    control, _, _, _ = warm_remote
+    warm_and_confirm(control)
+    jobs = [control.submit(round_task(f"s{i}", mode="sleep:1.5")) for i in range(6)]
+    wait_running(control, 6)
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+
+
+def test_a_probe_that_built_the_cache_holds_the_rest_and_warms_again(warm_remote):
+    control, render, _, _ = warm_remote
+    probe = control.submit(round_task("p", source="built", mode="sleep:0.5"))
+    rest = [control.submit(round_task(f"q{i}")) for i in range(3)]
+    wait_done(control, [probe])
+    assert control.counts()["warm_builds"]["misses"] == 1
+    assert all(j.status == "done" for j in wait_done(control, rest))
+    assert warm_starts(render) == 2
+
+
+def test_two_height_modes_are_two_identities_with_two_files(warm_remote):
+    control, render, _, _ = warm_remote
+    a = control.submit(round_task("a"))
+    b = control.submit({**round_task("b"), "height_mode": "flat"})
+    wait_done(control, [a, b])
+    assert a.warm_id != b.warm_id and warm_starts(render) == 2
+    assert f"Ascent.{'f' * 16}.npz" in b.result["had"]
+
+
+def test_a_new_height_digest_gets_its_own_warm_build(warm_remote):
+    control, render, _, _ = warm_remote
+    warm_and_confirm(control)
+    wait_done(control, [control.submit({**round_task("b"), "height": "d2"})])
+    assert warm_starts(render) == 2
+
+
+def test_a_warm_build_that_keeps_failing_falls_back_to_one_warming_round(warm_remote):
+    control, render, _, _ = warm_remote
+    job = control.submit(round_task("x", map_name="Broken", build=True))
+    assert wait_done(control, [job])[0].status == "done"
+    assert warm_starts(render) == server.WARM_BUILD_TRIES
+    assert control.counts()["warm_builds"]["failures"] == {job.warm_id: server.WARM_BUILD_TRIES}
+
+
+def test_a_round_whose_file_left_the_disk_waits_for_a_new_warm_build_never_runs_cold(warm_remote):
+    control, render, settings, _ = warm_remote
+    warm_and_confirm(control)
+    (settings.control_cache_dir / f"Ascent.{'e' * 16}.npz").unlink()
+    job = control.submit(round_task("b"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert warm_starts(render) == 2
+    assert f"Ascent.{'e' * 16}.npz" in job.result["had"]      # it ran with the cache, not cold
+
+
+def test_a_round_whose_lease_fails_is_requeued_uncounted_and_runs_after_a_new_warm_build(warm_remote, monkeypatch):
+    from replay_worker import control_cache
+
+    control, render, _, _ = warm_remote
+    warm_and_confirm(control)
+    real, calls = control_cache.lease, []
+
+    def flaky(cache_dir, name):                    # the file vanishes between scheduling and the run's lease
+        calls.append(name)
+        return False if len(calls) == 1 else real(cache_dir, name)
+
+    monkeypatch.setattr(control_cache, "lease", flaky)
+    job = control.submit(round_task("b"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert len(calls) == 2 and warm_starts(render) == 2
+    assert f"Ascent.{'e' * 16}.npz" in job.result["had"]
+
+
+def test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed(warm_remote):
+    control, render, _, _ = warm_remote
+    warm_and_confirm(control)
+    assert wait_done(control, [control.submit(round_task("b", mode="infra"))])[0].error_kind == "infra"
+    wait_done(control, [control.submit(round_task("c"))])
+    assert warm_starts(render) == 1
+
+
+def test_health_lists_only_identities_whose_file_is_on_disk(warm_remote):
+    control, _, settings, _ = warm_remote
+    warm_and_confirm(control)
+    assert control.counts()["warm_builds"]["ready"]
+    (settings.control_cache_dir / f"Ascent.{'e' * 16}.npz").unlink()
+    assert control.counts()["warm_builds"]["ready"] == []
+    assert control.counts()["warm_builds"]["recent_seconds"] == [0.2]
+
+
+def test_warm_builds_off_keeps_todays_rule_and_reports_nothing(remote):
+    control, render, _, _ = remote
+    wait_done(control, [control.submit(round_task("a", build=True))])
+    assert warm_starts(render) == 0 and "warm_builds" not in control.counts()
+
+
+def test_settings_read_the_warm_build_switch_and_limit():
+    on = server.Settings.from_env({"REPLAY_WARM_BUILDS": "true", "REPLAY_WARM_BUILD_TIMEOUT_S": "600"})
+    assert on.warm_builds and on.warm_build_timeout_s == 600.0
+    assert not server.Settings.from_env({}).warm_builds
+
+
+def test_a_refused_warm_start_spends_no_try_and_is_asked_again(warm_remote, monkeypatch):
+    control, render, _, _ = warm_remote
+    monkeypatch.setattr(server, "WARM_START_RETRY_S", 0.5)
+    real, refused = control.runs.api.start, []
+
+    def flaky(slug, args):                    # the workflow hasn't registered `warm` yet: Render answers 404
+        if slug.endswith("/warm") and len(refused) < 3:
+            refused.append(slug)
+            raise runs.RenderError("POST /task-runs: HTTP 404")
+        return real(slug, args)
+
+    monkeypatch.setattr(control.runs.api, "start", flaky)
+    job = control.submit(round_task("a"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert len(refused) == 3 and control.counts()["warm_builds"]["failures"] == {}
+    assert warm_starts(render) == 1                # Render saw only the start it accepted
+
+
+def test_refused_warm_starts_are_free_only_for_so_long(warm_remote, monkeypatch):
+    control, _, _, _ = warm_remote
+    monkeypatch.setattr(server, "WARM_START_REFUSED_MAX_S", 0.5)
+    monkeypatch.setattr(server, "WARM_START_RETRY_S", 0.2)
+    real = control.runs.api.start
+
+    def refusing(slug, args):
+        if slug.endswith("/warm"):
+            raise runs.RenderError("POST /task-runs: HTTP 404")
+        return real(slug, args)
+
+    monkeypatch.setattr(control.runs.api, "start", refusing)
+    job = control.submit(round_task("a"))
+    assert wait_done(control, [job])[0].status == "done"          # the fallback's warming round
+    assert control.counts()["warm_builds"]["failures"][job.warm_id] == server.WARM_BUILD_TRIES
+
+
+def test_a_warm_build_and_its_rounds_that_keep_disagreeing_end_in_the_fallback(warm_remote):
+    control, render, _, _ = warm_remote
+    jobs = [control.submit(round_task(f"m{i}", source="built")) for i in range(3)]
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    assert warm_starts(render) == server.WARM_BUILD_TRIES
+    assert control.counts()["warm_builds"]["missed"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
 
 
 def test_rounds_run_as_workflow_runs_and_a_built_cache_lands_on_disk(remote):

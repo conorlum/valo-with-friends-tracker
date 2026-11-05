@@ -22,6 +22,25 @@ _NAME = re.compile(r"^(?P<folder>feature-rows/)?(?P<map>[A-Za-z]+)\.(?P<key>[0-9
 _LOCK = threading.Lock()          # every install and prune; reads (inputs) need none: files are replaced atomically
 EVICTIONS = 0                     # files `store` dropped for room since this process started (/health)
 KEPT_PRUNED = 0                   # older generations `store` dropped past KEPT since this process started (/health)
+_LEASES: dict[str, int] = {}      # relative name -> open runs that must read it: never pruned or evicted meanwhile
+
+
+def lease(cache_dir: Path, name: str) -> bool:
+    """Holds `name` (relative to the cache) on disk for a run that must read it. False when it is already gone."""
+    with _LOCK:
+        if not (Path(cache_dir) / name).is_file():
+            return False
+        _LEASES[name] = _LEASES.get(name, 0) + 1
+        return True
+
+
+def unlease(name: str) -> None:
+    with _LOCK:
+        left = _LEASES.get(name, 0) - 1
+        if left > 0:
+            _LEASES[name] = left
+        else:
+            _LEASES.pop(name, None)
 
 
 def _tree_bytes(cache_dir: Path) -> int:
@@ -85,7 +104,7 @@ def _evictable(cache_dir: Path, keep: Path) -> list[Path]:
         maps = {m["map"] for p in folder.glob("*.npz") if (m := _NAME.fullmatch(p.name))}
         for map_name in maps:
             for rank, path in enumerate(_newest(folder, map_name)):
-                if path != keep:
+                if path != keep and path.relative_to(cache_dir).as_posix() not in _LEASES:
                     try:
                         (older if rank else newest).append((path.stat().st_mtime, path))
                     except OSError:
@@ -124,6 +143,8 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(src, target)
             for old in _newest(target.parent, map_name)[KEPT:]:
+                if old.relative_to(cache_dir).as_posix() in _LEASES:
+                    continue                  # a running round reads it: it goes on a later store
                 old.unlink(missing_ok=True)
                 KEPT_PRUNED += 1
             return True

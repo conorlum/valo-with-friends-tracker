@@ -121,6 +121,11 @@ services:
         sync: false
       - key: REPLAY_HEIGHTS_RUNNER
         sync: false
+      # Warm builds (docs/superpowers/plans/2026-11-05-replay-throughput.md): a cold map's visibility cache
+      # is built as its own run, confirmed by one probe round, then the rest run at once. On from the merge; to switch
+      # it off, set "false" here by PR (a dashboard change is reset by a Blueprint sync).
+      - key: REPLAY_WARM_BUILDS
+        value: "true"
       - key: REPLAY_CONTROL_RUNS
         value: "40"
       - key: REPLAY_CONTROL_QUEUE
