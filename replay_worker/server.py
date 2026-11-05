@@ -1269,7 +1269,6 @@ CONTROL_FINISHED_KEPT = 200
 WARM_BUILD_TRIES = 2     # failed warm builds of one identity before its rounds fall back to one warming round
 WARM_SECONDS_KEPT = 20   # recent warm-build durations /health shows
 WARM_START_RETRY_S = 60  # after Render refused a warm build's start (a deploy gap)
-# PROVISIONAL(D1): owner to approve the 1800 s bound on free refused starts
 WARM_START_REFUSED_MAX_S = 1800   # refused starts past this long count as failures (rule 4's fallback)
 HEIGHTS_KEPT = 3                 # pushed height assets kept per map (the newest); a missing one is pushed again
 MAP_NAME = re.compile(r"^[A-Za-z0-9]{1,64}$")
