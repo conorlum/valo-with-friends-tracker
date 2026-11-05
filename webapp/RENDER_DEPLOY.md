@@ -362,3 +362,89 @@ ends it, as "parse timed out".
 4. Tune with `HEIGHTS_MAX_BUILDS` (site); keep the worker's `REPLAY_HEIGHT_BUILDS_MAX` at least as large, and raise
    `REPLAY_HEIGHT_SPOOL_BYTES` if the worker answers "the spool is full".
 5. Roll back: `REPLAY_HEIGHTS_RUNNER=local`.
+
+### Warm builds, time limits and the concurrency ramp
+
+**What they are.** A map's first control round normally runs alone to build the map's visibility cache (the
+"warming" round), and the map's other rounds wait for it. A *warm build* is that build run as its own `warm` task on
+the replay-tasks workflow. It builds the cache file on the worker's disk and does no round. A *probe round* is one
+round of that identity run next, to confirm the cache works (`visibility_source` is `cache`, not `built`). Once one
+probe round confirms the file, every other round of the identity runs at once. A *lease* is a hold on a cache file
+while a round uses it: a leased file is never evicted or pruned.
+
+**The switch.** `REPLAY_WARM_BUILDS` on the worker in `render.yaml`, `value: "true"`, on from the merge. To switch it
+off, set `"false"` there by PR. A dashboard change is reset by a Blueprint sync. The code default is off, so tests and
+local runs never warm. If Render refuses a warm build's start (for example the worker came up before the workflow
+registered `warm`), no try is spent: the identity's rounds wait and a new warm build is asked after
+`WARM_START_RETRY_S` (60 s). Refusals older than `WARM_START_REFUSED_MAX_S` (1800 s) count as failures. An identity
+with `WARM_BUILD_TRIES` (2) failures, misses or vanished files falls back to today's way: one warming round, then the
+rest.
+
+**Time limits.** Each limit counts from its attempt's start. Render's own task limit is 300 s above the worker's.
+
+| What | Worker setting (Workflow runs only) | Render task `timeout_seconds` | Site backstop (Workflow only) | Local, unchanged |
+|---|---|---|---|---|
+| control round (warming or not) | `REPLAY_CONTROL_RUN_TIMEOUT_S` 7200 | 7500 | `STALE_RUN_S` 15000 | 1800 s; site `STALE_JOB_S` 1800 |
+| warm build | `REPLAY_WARM_BUILD_TIMEOUT_S` 21600 | 21900 | none: the site never sees warm builds | none |
+| height build | `REPLAY_HEIGHT_RUN_TIMEOUT_S` 10800 | 11100 | `STALE_BUILD_RUN_S` 22200 | 3600 s; site `STALE_BUILD_S` 7200 |
+
+Each site backstop is more than twice its limit: the worst case is a queue wait plus a full attempt, or two attempts.
+
+**What `/health` shows.**
+
+- `control.warm_builds` (only while warm builds are on): `ready` (identities whose cache file is on the disk),
+  `confirmed` (a probe round passed), `building` (a warm build is open), `failures` and `missed` (per identity; a
+  failed warm build, and a round that built the cache anyway), `vanished` (per identity; a warm build's cache file
+  left the disk before a round leased it), `start_refused` (identities whose warm-build start Render refused),
+  `misses` (rounds that built a cache a warm build should have supplied) and `recent_seconds` (recent warm-build times).
+- `control.cache`: `bytes` (the cache's size on the disk), `maps` (bytes per map), `evictions` and `kept_pruned`
+  (both counted since the worker last started), and `reserve` (the budget, `REPLAY_CONTROL_CACHE_RESERVE_BYTES`,
+  2147483648 in `render.yaml`, taken out of the archive's).
+- `workflow`: `open` runs, `by_kind` (per task kind: `open`, `waiting` (Render has not started it), `oldest_wait_s`,
+  `oldest_run_s`) and `starts_per_min`.
+
+**Phase lines.** A Workflow control run's log has lines `control phase: <message>` on stderr, for example
+`control phase: <map>: visibility start`, `control phase: <map>: visibility <cache or built> in N s`,
+`control phase: <map>: round computed at N s` and `control phase: <map>: gaps done at N s`. They show where a run's
+time went even when it is killed before it answers.
+
+#### Rollout runbook (owner; each step moves on once its checks pass, no waiting days)
+
+Read the worker's `/health` from its Render shell:
+`python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/health').read().decode())"`
+
+1. **Merge while control is quiet** (owner): no recompute running and `control.warm_builds` absent or its
+   `building` empty. A worker restart in the middle of a warm build does not cancel that run on Render: it keeps
+   running to its limit while the restarted worker starts a new one. Merge only when `control.warm_builds.building`
+   is empty. Every merge restarts the single-instance worker and drops its open control runs (risk 9), and the worker
+   and the replay-tasks workflow come up separately (risk 10).
+   - Check: the replay-tasks workflow lists a `warm` task and has deployed this commit; `/health` shows
+     `control.cache` and `workflow.by_kind`. Control run logs show `control phase:` lines.
+2. **Run a control recompute and read three control run logs:** their `visibility … in N s` line against the
+   round's total time, and record it in the PR thread. If the visibility build is a small share and rounds still
+   run long, bring the logs back: the bottleneck is the round, not the cache.
+3. **Check warm builds within an hour of the merge** (`REPLAY_WARM_BUILDS` is `"true"` in `render.yaml` from the merge).
+   - Check: identities move through `building` → `ready` → `confirmed`; `misses` stays 0;
+     `failures` is empty or under 2 per identity; `recent_seconds` shows warm-build times well under 21600;
+     `workflow.by_kind.control.open` climbs past 2 once an identity is confirmed.
+   - Also read `vanished` (a warm build's cache file that left the disk before a round leased it; it counts toward
+     the 2-try fallback like `failures` and `missed`) and `start_refused` (identities whose warm-build start Render
+     refused, for example before the workflow registered `warm`; free for 30 minutes per identity, then counted as
+     failures).
+   - Stop and switch it off (a PR setting `REPLAY_WARM_BUILDS` to `"false"`) if `misses` grows, or an identity
+     reaches 2 failures on a map that worked before. A worker restart clears the failure counts.
+4. **Check the cache budget.** `control.cache.bytes` against `control.cache.reserve`, and `evictions` and
+   `kept_pruned`, both counted since the worker last started.
+   - If either counter grows during a recompute, or `bytes` passes 60 % of `reserve`: confirm in `/health`
+     `archive` that the archive has that much free, then raise `REPLAY_CONTROL_CACHE_RESERVE_BYTES` by PR.
+5. **Read the concurrency** during a recompute with a backlog (rounds still to send):
+   - Render starts about 16 `flex` runs a minute on Hobby (32 CPU a minute on Pro), so `workflow.by_kind.control.waiting`
+     above 0 for the first few minutes is normal. Persistent `waiting` means Render's compute limit is queueing runs.
+   - Two matches allow about 40 rounds (`CONTROL_MAX_RUNS` 40, about 20 rounds a match), so 30+ is reachable with
+     `CONTROL_MAX_MATCHES` at 2. Raise it to 3, by PR, only if `control.open` stays under 30 while a backlog waits
+     and `waiting` is 0.
+   - Also check: `workflow.by_kind.control.oldest_run_s` stays under 7200; the site's `map control dispatch:` log
+     shows `busy` and `unreachable` at 0; `evictions` stays flat.
+6. **Done** when a recompute holds 30+ open control runs from the end of warm-up to the start of its last match's
+   tail, and the dashboard shows no runs cancelled by a limit. A worker restart re-probes every identity: each one
+   runs a single round before the rest start (accepted cost).
