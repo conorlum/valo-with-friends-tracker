@@ -77,7 +77,7 @@ from pathlib import Path
 
 from app.replays import format as fmt
 from app.replays.condense import MapInfo, PlayerTable
-from app.replays.contract import RPC_ORB_PICKUP
+from app.replays.contract import RPC_ORB_PICKUP, loads_row
 from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
 
 # `Gameobject_` (lower-case o) is how KAY/O's ZERO/point pulse is spelled; it is read as GameObject.
@@ -434,7 +434,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
         for line in handle:
             if not any(needle in line for needle in _RAW_NEEDLES):
                 continue
-            data = json.loads(line)
+            data = loads_row(line)
             kind = data.get("type")
             t_ms = int(data.get("time_ms", 0))
             guid = int(data.get("actor_net_guid") or 0)

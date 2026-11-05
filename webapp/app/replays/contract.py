@@ -229,13 +229,32 @@ class Row:
     data: dict
 
 
+def _unwrap_reference(obj: dict) -> Any:
+    """Export schema 9 writes a decoded object reference as `{"net_guid": N, "path": "..."}` where schema 8 wrote
+    the bare N. Every reader here wants the GUID, so it becomes N again and the rows read as schema 8's did. No
+    other object in an export has exactly these two keys (a shot's `equippable` also has a name and a category)."""
+    if len(obj) == 2 and "net_guid" in obj and "path" in obj:
+        return obj["net_guid"]
+    return obj
+
+
+def loads_row(line: str | bytes, **kwargs) -> Any:
+    """One export row, parsed, with schema 9's object references as bare GUIDs (`_unwrap_reference`).
+
+    Only a line that mentions `"net_guid"` pays for the object hook."""
+    needle = b'"net_guid"' if isinstance(line, bytes) else '"net_guid"'
+    if needle in line:
+        return json.loads(line, object_hook=_unwrap_reference, **kwargs)
+    return json.loads(line, **kwargs)
+
+
 def read_ndjson(path: Path) -> list[Row]:
     rows = []
     with path.open("r", encoding="utf-8") as handle:
         for index, line in enumerate(handle):
             if not line.strip():
                 continue
-            data = json.loads(line)
+            data = loads_row(line)
             rows.append(Row(index, int(data.get("time_ms", 0)), data))
     # Contract order: time_ms, then file order (sorted() is stable).
     return sorted(rows, key=lambda row: row.time_ms)
@@ -349,7 +368,7 @@ class MovementStream:
         with self.path.open("r", encoding="utf-8") as handle:
             for index, line in enumerate(handle):
                 if line.strip():
-                    data = json.loads(line)
+                    data = loads_row(line)
                     yield Row(index, int(data.get("time_ms", 0)), data)
 
 
@@ -372,7 +391,7 @@ def load_export_streaming(export_dir: Path) -> Export:
                 # The time of every row still counts for end_ms: read just that field.
                 end_ms = max(end_ms, _time_of(line))
                 continue
-            data = json.loads(line)
+            data = loads_row(line)
             time_ms = int(data.get("time_ms", 0))
             end_ms = max(end_ms, time_ms)
             if keep_event(data):
