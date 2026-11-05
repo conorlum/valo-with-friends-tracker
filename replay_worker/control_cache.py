@@ -99,7 +99,7 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
     cache must never refuse every new one, or a map whose cache changed never warms again. False, with `src` deleted,
     only when nothing left to drop makes room."""
     global EVICTIONS, KEPT_PRUNED
-    target =Path(cache_dir) / name
+    target = Path(cache_dir) / name
     map_name = _NAME.fullmatch(name)["map"]
     try:
         with _LOCK:
