@@ -782,3 +782,33 @@ def test_a_workflow_round_is_opened_with_the_workflow_limit(remote, monkeypatch)
                         seen.append((kind, timeout_s)) or real(kind, job_id, files, timeout_s, **k))
     wait_done(control, [control.submit(round_task("t", build=True))])
     assert seen == [("control", 1234.0)]
+
+
+def test_the_cache_reserve_setting_reaches_the_store_and_health(tmp_path, stub):
+    import urllib.request
+
+    render = FakeRender()
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               control_runner="workflow", control_runs=4, workflow_slug="replay-tasks",
+                               render_api_key="k", render_api_base=render.url, control_cache_reserve=3)
+    table = server.make_runs(settings)
+    control = server.ControlRunner(settings, runs_table=table)
+    httpd = server.make_server(server.Worker(settings, on_parse=None), control=control, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
+    try:
+        job = control.submit(round_task("big", build=True))     # writes b"built": 5 bytes, past a 3-byte reserve
+        wait_done(control, [job])
+        assert not (settings.control_cache_dir / f"Ascent.{'c' * 16}.npz").exists()
+        with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+            assert json.loads(response.read())["control"]["cache"]["reserve"] == 3
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
+
+
+def test_the_cache_reserve_is_read_from_the_environment():
+    assert server.Settings.from_env({"REPLAY_CONTROL_CACHE_RESERVE_BYTES": "12345"}).control_cache_reserve == 12345
+    assert server.Settings.from_env({}).control_cache_reserve == server.control_cache.RESERVE

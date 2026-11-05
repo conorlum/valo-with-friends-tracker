@@ -144,6 +144,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
     CONTROL_CACHE_DIR        the control children's cache; pushed height assets go in its `heights` folder
                              (default webapp/.control_cache)
+    REPLAY_CONTROL_CACHE_RESERVE_BYTES  bytes the Workflow control cache may hold (default 2 GiB);
+                             the archive leaves them free.
     REPLAY_HEIGHT_CMD        JSON list: the height-build child (default this Python, -m replay_worker.height_job)
     REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
@@ -270,6 +272,7 @@ class Settings:
     # Where control children keep their caches (CONTROL_CACHE_DIR, as app/control/geometry.py reads it); pushed
     # height assets live in its `heights` folder.
     control_cache_dir: Path = field(default_factory=lambda: WEBAPP / ".control_cache")
+    control_cache_reserve: int = control_cache.RESERVE   # bytes the cache may hold (REPLAY_CONTROL_CACHE_RESERVE_BYTES)
     # Height builds (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): one more kind of control
     # child, run alone and ahead of control rounds. Their rounds are spooled under `temp_root`.
     height_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.height_job"])
@@ -326,6 +329,8 @@ class Settings:
         settings.control_run_timeout_s = float(env.get("REPLAY_CONTROL_RUN_TIMEOUT_S", settings.control_run_timeout_s))
         settings.height_run_timeout_s = float(env.get("REPLAY_HEIGHT_RUN_TIMEOUT_S", settings.height_run_timeout_s))
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
+        settings.control_cache_reserve = int(env.get("REPLAY_CONTROL_CACHE_RESERVE_BYTES",
+                                                     settings.control_cache_reserve))
         if env.get("CONTROL_CACHE_DIR"):
             settings.control_cache_dir = Path(env["CONTROL_CACHE_DIR"])
         if env.get("REPLAY_HEIGHT_CMD"):
@@ -2167,7 +2172,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 if remaining:
                     return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
                 # A file arriving as its run settles is still kept: caches are named by their content's identity.
-                if not control_cache.store(control.settings.control_cache_dir, name, incoming):
+                if not control_cache.store(control.settings.control_cache_dir, name, incoming,
+                                           reserve=control.settings.control_cache_reserve):
                     return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": "the cache is at its reserve"})
                 return self._send(HTTPStatus.OK, {"stored": name})
             finally:
@@ -2242,7 +2248,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                                    **(control.counts() if control else {})}
                 if control is not None:
                     body["control"]["cache"] = {**control_cache.usage(control.settings.control_cache_dir),
-                                                "reserve": control_cache.RESERVE}
+                                                "reserve": control.settings.control_cache_reserve}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
                 # "A height build may start now" (app/services/replay_heights_remote.py). A Workflow build runs on
@@ -2535,7 +2541,7 @@ def main() -> None:
     # The cache's room is reserved before the Worker opens the archive and recovers its jobs.
     if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
             settings.archive_dir.resolve()):
-        settings.archive_extra_reserve += control_cache.RESERVE
+        settings.archive_extra_reserve += settings.control_cache_reserve
     if settings.archive_dir is not None and settings.height_spool_dir is not None and \
             settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
         settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)

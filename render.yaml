@@ -152,6 +152,11 @@ services:
       # budget (server.py keep_local_sizing).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache
+      # The control cache's budget on the disk (bytes), taken out of the archive's. /health control.cache shows its
+      # bytes per map, evictions and per-map prunes. Before raising it, check /health archive has the room
+      # (docs/superpowers/plans/2026-11-05-replay-throughput.md).
+      - key: REPLAY_CONTROL_CACHE_RESERVE_BYTES
+        value: "2147483648"
       - key: REPLAY_HEIGHT_BUILDS_MAX
         value: "4"
       - key: REPLAY_HEIGHT_SPOOL_BYTES
