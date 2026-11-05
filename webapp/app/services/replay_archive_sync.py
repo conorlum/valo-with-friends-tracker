@@ -23,6 +23,8 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import and_, or_
+
 from app.config import settings
 from app.models.replay import ReplayDeletion, ReplayUpload
 from app.services import replay_upload as uploads
@@ -63,9 +65,12 @@ def cycle(session_factory, client: uploads.WorkerClient, state: State, now: date
             state.synced_boot_id = archive["boot_id"]
             counts["tombstones_pushed"] = len(listed)
         unanswered = (session.query(ReplayUpload)
-                      .filter(ReplayUpload.archive_ack.is_(None), ReplayUpload.store_outcome.isnot(None),
-                              ReplayUpload.worker_job_id.isnot(None),
-                              ReplayUpload.finished_at >= now - RESEND_WITHIN)
+                      .filter(ReplayUpload.archive_ack.is_(None), ReplayUpload.worker_job_id.isnot(None), or_(
+                          and_(ReplayUpload.store_outcome.isnot(None),
+                               ReplayUpload.finished_at >= now - RESEND_WITHIN),
+                          # A row stored before `store_outcome` was tracked (2026-09-28 and earlier): outside
+                          # the resend window by now, but still worth one recovery attempt (replay_upload.ack_body).
+                          and_(ReplayUpload.store_outcome.is_(None), ReplayUpload.status == "stored")))
                       .order_by(ReplayUpload.finished_at).all())
         for upload in unanswered:
             if uploads.send_ack(session, upload, client) is None:

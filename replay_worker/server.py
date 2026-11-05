@@ -7,10 +7,14 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /jobs        body: the .vrf bytes. 202 {"id", "status": "queued" (or "held"/"failed", below)}; 400 not a replay,
                       411 no length, 413 over the size cap, 503 the queue is full.
     GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "held" | "done" | "failed", "error"?, "result"?,
-                      "detail"? (the parser's last lines when a parse failed), "game_build"? (held uploads)}
-                      "held": recorded on a game build the pinned parser doesn't support (read from the file's
-                      header before any parse). Archive on only; parsed under the same id once an image whose
-                      parser supports the build starts. Archive off, or over HELD_MAX_BYTES, it fails at once.
+                      "detail"? (the parser's last lines when a parse failed), "game_build"? (held uploads, may
+                      be unknown even when held)}
+                      "held": two reasons, told apart by `detail`/the error text, not by `game_build` alone --
+                      a game build the pinned parser doesn't list (read from the file's header before any
+                      parse; parsed once an image whose parser supports the build starts), or a build the pin
+                      file already lists where the parser refuses the file anyway (parsed again once a deploy
+                      changes this worker's recipe -- see UNSUPPORTED_PATCH_SIGNATURE). Both: archive on only;
+                      archive off, or over HELD_MAX_BYTES, fails at once instead.
     GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
                        "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
@@ -196,14 +200,20 @@ except ImportError:  # pragma: no cover
     from parse_job import (REASON_PARSE, REASON_TIMEOUT, ParseFailed, kill_tree,  # type: ignore  # noqa: E402
                            limit_memory as _limit_memory, parse_file, parser_detail)
 
-# An upload recorded on a game build the pinned parser doesn't list (replay_parser.json) is never parsed: with the
-# archive on it is held on the disk as status "held" under the same job id, and parsed once an image whose parser
-# supports the build starts (a held job runs only when no upload or reparse waits). With the archive off it fails
-# at once. Held files count against the archive's budget and are capped here.
+# Two situations hold a file on disk under the same job id instead of parsing it, both only with the archive on
+# (with it off, both fail at once instead): an upload recorded on a game build the pinned parser doesn't list
+# (replay_parser.json), parsed once an image whose parser supports the build starts; or a build the pin file
+# already lists, where the parser itself refuses the file anyway (see UNSUPPORTED_PATCH_SIGNATURE below), held
+# until a deploy with a different recipe. A held job runs only when no upload or reparse waits. Held files count
+# against the archive's budget and are capped here.
 HELD_MAX_BYTES = 10 * 1024 ** 3
 HELD_TTL_S = 60 * 86400
 DEPLOY_WAIT_S = 60      # before a new parse run after a deploy refusal, within the job's deadline (spec D11)
 INFRA_WAIT_S = 30       # before a new parse run after a run that failed for want of a machine, within the deadline
+# A build the pin file already lists as supported, but the parser itself refuses once actually run on it (an
+# undocumented sub-version gap): the parser's own last line says so. Held like an unlisted build (above), but
+# released on the next deploy with a different recipe, never on a supported-builds match (it's already "supported").
+UNSUPPORTED_PATCH_SIGNATURE = "may not be supported yet"
 
 
 def _version(build: str) -> str:
@@ -214,6 +224,11 @@ def _version(build: str) -> str:
 def held_reason(build: str) -> str:
     return (f"recorded on game version {_version(build)}, which the replay parser doesn't support yet: the file is "
             f"kept and will be parsed when the parser is updated")
+
+
+def parser_refused_reason(detail: str) -> str:
+    return (f"the replay parser refused this file ({detail}): it is kept and will be retried after the parser "
+            "is next updated")
 
 
 @dataclass
@@ -378,8 +393,11 @@ class Job:
     match_uuid: str | None = None   # known once parsed (a reparse knows it from the start)
     map: str | None = None
     attempt_id: str | None = None   # a reparse the automatic queue asked for (its receipt names this job)
-    game_build: str | None = None   # set only for an upload from a build the parser doesn't support (held)
+    game_build: str | None = None   # set while held (either kind: an unsupported build, or one the parser
+                                     # refused anyway -- `parser_pin` tells the two apart, not this alone)
     detail: str | None = None       # the parser's own last lines when a parse failed
+    parser_pin: str | None = None   # set only when held after the parser itself refused a pinned build (below):
+                                     # this deploy's recipe, so a later deploy with a different one releases it
     released: bool = False          # a held job taken straight to the parse thread, not from a queue (not saved)
     run_id: str | None = None
     run_token: str | None = None
@@ -486,7 +504,7 @@ class Worker:
         with self.lock:
             held = [j.game_build for j in self.jobs.values() if j.status == "held"]
         return {**self.archive.status(), "held": len(held), "held_bytes": self.held_bytes(),
-                "held_builds": sorted(set(held))}
+                "held_builds": sorted({b for b in held if b})}  # a parser-refused hold may have no known build
 
     def held_bytes(self) -> int:
         with self.lock:
@@ -537,6 +555,11 @@ class Worker:
                 if job.game_build is not None:
                     self._hold(job)
                 else:
+                    # Registered before it is queued: a parse thread can dequeue and start on it the instant
+                    # `put_nowait` returns, and a parser-refusal hold's budget check (self.jobs.values()) must
+                    # already see it by then, not after.
+                    with self.lock:
+                        self.jobs[job.id] = job
                     self._save(job)
                     self.queue.put_nowait(job)
         except BaseException:
@@ -546,7 +569,8 @@ class Worker:
             with self.lock:
                 self.jobs[job.id] = job
             return job
-        self._admitted(job)
+        self._parse_coming()
+        self.wake.set()
         return job
 
     def submit(self, body: bytes) -> Job:
@@ -572,8 +596,16 @@ class Worker:
     def _hold(self, job: Job) -> None:
         """Keeps an upload the parser can't read yet (archive on, under the cap), else fails it without a parse."""
         version = _version(job.game_build)
-        if self.archive is not None and self.held_bytes() + job.size <= HELD_MAX_BYTES:
-            job.status, job.error = "held", held_reason(job.game_build)
+        held = False
+        if self.archive is not None:
+            # Shares this budget check-and-reserve with a parser-refusal hold (below): both decide and (for this
+            # one) become visible to that sum together, under one lock, so neither overcounts the other's room.
+            with self.lock:
+                held_bytes = sum(j.size for j in self.jobs.values() if j.status == "held")
+                if held_bytes + job.size <= HELD_MAX_BYTES:
+                    job.status, job.error, held = "held", held_reason(job.game_build), True
+                    self.jobs[job.id] = job
+        if held:
             _log(f"job {job.id} held: {job.game_build} is not supported by the pinned parser")
         else:
             job.status, job.finished = "failed", time.time()
@@ -833,7 +865,7 @@ class Worker:
     # -------------------------------------------------------------- the job
 
     def _next(self) -> Job:
-        """Uploads first, then reparses, then a held upload the parser now supports. With the archive off,
+        """Uploads first, then reparses, then the oldest held upload ready for another try. With the archive off,
         exactly the old blocking get."""
         if self.archive is None:
             job = self.queue.get()
@@ -866,18 +898,25 @@ class Worker:
             self.wake.clear()
 
     def _release_held(self) -> Job | None:
-        """The oldest held upload whose build this parser supports, now queued; None when there is none. Held
-        jobs never sit in a queue, so however many there are, new uploads are never turned away for them."""
+        """The oldest held upload ready for another try, now queued; None when there is none. Held jobs never sit
+        in a queue, so however many there are, new uploads are never turned away for them. Two kinds release on
+        different signals: a build the pin file didn't list yet releases once it's added to the supported-builds
+        list; a build the pin file already listed, where the parser itself refused the file (`parser_pin` set),
+        releases once this deploy's recipe differs from the one it was held under -- whatever changed may have
+        fixed it, and there is no narrower signal than "the parser changed"."""
         with self.lock:
-            ready = sorted((j for j in self.jobs.values()
-                            if j.status == "held" and j.game_build in (self.supported_builds or ())),
+            ready = sorted((j for j in self.jobs.values() if j.status == "held" and (
+                            (j.parser_pin is None and j.game_build in (self.supported_builds or ()))
+                            or (j.parser_pin is not None and self.recipe is not None and j.parser_pin != self.recipe))),
                            key=lambda j: j.created)
             if not ready:
                 return None
             job = ready[0]
-            job.status, job.error, job.released = "queued", None, True
+            was_parser_refused, job.status, job.error, job.released = job.parser_pin is not None, "queued", None, True
         self._save(job)
-        _log(f"job {job.id} released: the parser now supports {job.game_build}")
+        reason = "the parser changed since it refused this file" if was_parser_refused \
+            else f"the parser now supports {job.game_build}"
+        _log(f"job {job.id} released: {reason}")
         return job
 
     def _run(self) -> None:
@@ -895,20 +934,67 @@ class Worker:
                 result, status, error = self._process(job), "done", None
             except _JobFailed as failed:
                 error = failed.reason
+                # Upload only (a held reparse would look "pending" to the automatic queue forever, blocking
+                # it -- a reparse just fails and the next sweep tries again); the worker's own recipe must be
+                # known (else this collides with the unlisted-build release signal, see _release_held); and the
+                # detail must be an exact parser line, not any message that happens to contain the phrase.
+                if (error == REASON_PARSE and job.kind == "upload" and self.recipe is not None
+                        and job.detail and UNSUPPORTED_PATCH_SIGNATURE in job.detail.rsplit(" | ", 1)[-1]
+                        and self.archive is not None):
+                    try:
+                        build = game_build(job.folder / "upload.vrf")
+                    except OSError:
+                        build = None
+                    refused_text = parser_refused_reason(job.detail)
+                    # One lock, one write: every field a reader could see -- status, game_build, parser_pin,
+                    # error, and the run fields a held job doesn't carry -- together, so nobody (in particular
+                    # _release_held or a status poll, both on other threads) can ever see "held" with any of
+                    # the rest still blank or stale.
+                    held_now = False
+                    with self.lock:   # _hold (intake) and held_bytes() share this same budget under this lock
+                        held_bytes = sum(j.size for j in self.jobs.values() if j.status == "held")
+                        if held_bytes + job.size <= HELD_MAX_BYTES:
+                            job.status, job.game_build, job.parser_pin = "held", build, self.recipe
+                            job.error, job.finished = refused_text, None
+                            job.run_id = job.run_token = job.run_deadline = None
+                            held_now = True
+                    if held_now:
+                        status, error = "held", refused_text
+                        self._save(job)
+                        _log(f"job {job.id} held: the parser refused it ({job.detail})")
             except ContractError as refused:
                 error = f"not condensable: {refused.reason}"
             except Exception:  # noqa: BLE001 - one bad file must not stop the worker
                 traceback.print_exc()
             finally:
-                if self.archive is None:
-                    # The temp folder goes first: a job reads as finished only once it's gone.
-                    shutil.rmtree(job.folder, ignore_errors=True)
+                if status == "held":
+                    # The file stays, same as a build the pin file never listed (above). The status write
+                    # itself already happened under the lock, above; here, only finish the rest of the held
+                    # state the same way, and only if this job is still "held" -- a concurrent _sweep (60-day
+                    # TTL) could have claimed and expired it in between, and must not be resurrected to "held"
+                    # over an already-deleted file.
+                    with self.lock:
+                        resurrect = job.status == "held"
+                        if resurrect:
+                            job.error, job.result, job.finished = error, result, None
+                            job.run_id = job.run_token = job.run_deadline = None
+                    if resurrect:
+                        self._save(job)
+                    # else: the claimant (_sweep) owns this job's state and its own save from here.
                 else:
-                    self._settle(job, status, result)
-                job.run_id = job.run_token = job.run_deadline = None
-                job.result, job.error, job.finished = result, error, time.time()
-                job.status = status
-                self._save(job)
+                    if self.archive is None:
+                        # The temp folder goes first: a job reads as finished only once it's gone.
+                        shutil.rmtree(job.folder, ignore_errors=True)
+                    else:
+                        self._settle(job, status, result)
+                    job.run_id = job.run_token = job.run_deadline = None
+                    job.result, job.error, job.finished = result, error, time.time()
+                    job.status = status
+                    if status == "done":
+                        # A released parser-refusal hold that now succeeds shouldn't still read as carrying
+                        # that old refusal (a fresh failure's own detail is set above and must survive this).
+                        job.detail = job.parser_pin = None
+                    self._save(job)
                 self._forget_old()
                 if not job.released:
                     (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
@@ -1047,7 +1133,7 @@ class Worker:
                   "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
         if job.attempt_id:
             record["attempt_id"] = job.attempt_id
-        for key in ("game_build", "detail", "run_id", "run_token", "run_deadline"):
+        for key in ("game_build", "detail", "parser_pin", "run_id", "run_token", "run_deadline"):
             if getattr(job, key):
                 record[key] = getattr(job, key)
         try:
@@ -1082,7 +1168,7 @@ class Worker:
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
                       kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
                       attempt_id=record.get("attempt_id"), game_build=record.get("game_build"),
-                      detail=record.get("detail"), run_id=record.get("run_id"),
+                      detail=record.get("detail"), parser_pin=record.get("parser_pin"), run_id=record.get("run_id"),
                       run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
             if job.status == "expiring":
@@ -1092,9 +1178,11 @@ class Worker:
                     job.status, job.finished = "failed", time.time()
                     job.error = "the kept file is gone from the worker: please upload it again"
                     self._save(job)
-            elif job.game_build and job.status in ("queued", "parsing"):
+            elif (job.game_build or job.parser_pin) and job.status in ("queued", "parsing"):
                 # A held job released just before the restart: held again, released by _next when its turn comes.
-                job.status, job.error = "held", held_reason(job.game_build)
+                job.status = "held"
+                job.error = (held_reason(job.game_build) if job.parser_pin is None
+                             else parser_refused_reason(job.detail or "the parser refused this file"))
                 self._save(job)
             elif job.status in ("queued", "parsing"):
                 if (folder / "upload.vrf").exists():
@@ -1114,7 +1202,7 @@ class Worker:
         with self.lock:
             held = sum(j.status == "held" for j in self.jobs.values())
         _log(f"archive on: recovered {len(records)} job(s); {len(self.recovered)} "
-             f"queued again, {held} held for an unsupported game build")
+             f"queued again, {held} held (an unsupported game build, or the parser's own refusal)")
         self._sweep()
 
     def _sweep(self) -> None:
@@ -1130,8 +1218,10 @@ class Worker:
                 self._save(job)
                 (job.folder / "upload.vrf").unlink(missing_ok=True)
                 job.status, job.finished = "failed", time.time()
-                job.error = (f"recorded on game version {_version(job.game_build)}: the replay parser still didn't "
-                             f"support it after {HELD_TTL_S // 86400} days, so the kept file was deleted")
+                build_text = f"recorded on game version {_version(job.game_build)}" if job.game_build else \
+                    "the parser refused this file"
+                job.error = (f"{build_text}: it still wasn't parseable after {HELD_TTL_S // 86400} days, so the "
+                             "kept file was deleted")
                 self._save(job)
                 _log(f"job {job.id} was held for {HELD_TTL_S // 86400} days; its file is deleted")
             cutoff = time.time() - archive_store.UNCOLLECTED_TTL_S

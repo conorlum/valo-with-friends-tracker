@@ -41,6 +41,9 @@ if mode == "fail-loud":
     print("Replay.Models.Errors.InvalidReplayInfoException: no payload transform for this branch")
     print("   at Replay.Valorant.ValorantReplayReader.Read(Stream stream)")
     sys.exit(1)
+if mode == "fail-unsupported-patch":
+    print("this patch may not be supported yet")
+    sys.exit(1)
 data = open(vrf, "rb").read()
 match = SyntheticMatch(shape="swiftplay", vrf_bytes=data)
 if mode == "wrong-hash":
