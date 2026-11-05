@@ -102,6 +102,11 @@ MAX_MATCHES = settings.control_max_matches   # replays those rounds may come fro
 # idle for up to 30 minutes.
 LOCAL_IN_FLIGHT = 8
 STALE_JOB_S = 1800
+STALE_RUN_S = 15000     # the same backstop while control runs on Workflows: > 2 x REPLAY_CONTROL_RUN_TIMEOUT_S
+
+
+def _job_stale_s(remote_control: bool) -> float:
+    return STALE_RUN_S if remote_control else STALE_JOB_S
 MAX_TRIES = 3
 BACKOFF_S = 300
 PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
@@ -430,9 +435,10 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
         if status == "running":
             if f.running_since is None:
                 f.running_since = now
-            elif now - f.running_since > STALE_JOB_S:
+            elif now - f.running_since > _job_stale_s(state.remote_control):
                 del state.in_flight[key]
-                log.warning("map control %s ran over %ss on the worker; asked again", key, STALE_JOB_S)
+                log.warning("map control %s ran over %ss on the worker; asked again", key,
+                            _job_stale_s(state.remote_control))
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue

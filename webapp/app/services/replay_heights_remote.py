@@ -65,6 +65,7 @@ BATCHES_PER_CYCLE = 8
 COLLECT_STALE_S = 1800           # a build whose rounds aren't all sent this long after it was opened
 QUEUED_STALE_S = 900             # a build queued this long on a worker that says it is idle
 STALE_BUILD_S = 7200             # a build seen running this long
+STALE_BUILD_RUN_S = 22200   # the same backstop for a build on Workflows: > 2 x REPLAY_HEIGHT_RUN_TIMEOUT_S
 RESENDS_MAX = 2                  # times a build may be sent again from the first round (a forgotten build, lost rounds)
 MAX_TRIES = 3
 BACKOFF_S = 300
@@ -113,6 +114,7 @@ class Build:
     resends: int = 0                      # 404s and missing-round resends share one bounded allowance
     queued_since: float | None = None
     running_since: float | None = None
+    stale_s: float = STALE_BUILD_S
 
 
 @dataclass
@@ -391,7 +393,7 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if status == "running":
             build.queued_since = None
             build.running_since = now if build.running_since is None else build.running_since
-            if now - build.running_since > STALE_BUILD_S:
+            if now - build.running_since > build.stale_s:
                 raise BuildFailed("it ran too long")
             return False
         if status == "done":
@@ -497,7 +499,8 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     for d in ready[:room]:
         rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
         build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,
-                      previous=actives.get(d.map_name))
+                      previous=actives.get(d.map_name),
+                      stale_s=STALE_BUILD_RUN_S if runners.get("heights") == "workflow" else STALE_BUILD_S)
         hstate.builds[build.key] = build
         log.info("heights: %s rebuild (%s), %d rounds", d.map_name, d.why, len(rounds))
         _try_build(session_factory, session, client, hstate, build, due, now, counts, held)

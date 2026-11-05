@@ -136,6 +136,9 @@ Configuration (environment, all optional):
                              warm build (replay_tasks warm) before its rounds, then one probe round, then the rest at
                              once (default off; a restart clears failed-build counts);
     REPLAY_WARM_BUILD_TIMEOUT_S  a warm build's limit (default 21600; Render's task limit is 300 s above it);
+    REPLAY_CONTROL_RUN_TIMEOUT_S / REPLAY_HEIGHT_RUN_TIMEOUT_S  a round's / height build's limit on Workflows
+                             (defaults 1800 / 3600); local children keep REPLAY_CONTROL_TIMEOUT_S,
+                             REPLAY_CONTROL_WARM_TIMEOUT_S, REPLAY_HEIGHT_TIMEOUT_S;
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (1800) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
@@ -258,6 +261,10 @@ class Settings:
     control_warm_timeout_s: float = 1800.0
     warm_builds: bool = False               # REPLAY_WARM_BUILDS: a cold identity's visibility cache as its own run
     warm_build_timeout_s: float = 21600.0   # REPLAY_WARM_BUILD_TIMEOUT_S
+    control_run_timeout_s: float = 1800.0   # a control round on Workflows (REPLAY_CONTROL_RUN_TIMEOUT_S); local
+                                            # children keep control_timeout_s / control_warm_timeout_s
+    height_run_timeout_s: float = 3600.0    # a height build on Workflows (REPLAY_HEIGHT_RUN_TIMEOUT_S); local keeps
+                                            # height_timeout_s
     control_memory_mb: int = 2048
     control_max_bytes: int = 4 * 1024 * 1024
     # Where control children keep their caches (CONTROL_CACHE_DIR, as app/control/geometry.py reads it); pushed
@@ -316,6 +323,8 @@ class Settings:
                                                         settings.control_warm_timeout_s))
         settings.warm_builds = env.get("REPLAY_WARM_BUILDS", "").strip().lower() in ("1", "true")
         settings.warm_build_timeout_s = float(env.get("REPLAY_WARM_BUILD_TIMEOUT_S", settings.warm_build_timeout_s))
+        settings.control_run_timeout_s = float(env.get("REPLAY_CONTROL_RUN_TIMEOUT_S", settings.control_run_timeout_s))
+        settings.height_run_timeout_s = float(env.get("REPLAY_HEIGHT_RUN_TIMEOUT_S", settings.height_run_timeout_s))
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
         if env.get("CONTROL_CACHE_DIR"):
             settings.control_cache_dir = Path(env["CONTROL_CACHE_DIR"])
@@ -1614,8 +1623,15 @@ class ControlRunner:
         settings = self.settings
         build = job.kind == "heights"
         what = "height build" if build else "warm build" if job.kind == "warm" else "control"
-        timeout = settings.height_timeout_s if build else settings.warm_build_timeout_s if job.kind == "warm" \
-            else settings.control_warm_timeout_s if warming else settings.control_timeout_s
+        remote = self.remote(job)
+        if job.kind == "warm":
+            timeout = settings.warm_build_timeout_s
+        elif build:
+            timeout = settings.height_run_timeout_s if remote else settings.height_timeout_s
+        elif remote:
+            timeout = settings.control_run_timeout_s       # warming or not: one Workflow limit
+        else:
+            timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env ={**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
         env["CONTROL_CACHE_DIR"] = str(settings.control_cache_dir)     # keep_local_sizing may have moved it

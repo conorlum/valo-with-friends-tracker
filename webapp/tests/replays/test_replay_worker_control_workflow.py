@@ -765,3 +765,20 @@ def test_a_run_that_fails_to_start_is_not_left_open(remote, monkeypatch):
     job = control.submit(round_task("s0"))
     assert wait_done(control, [job])[0].status == "failed"
     assert control.runs.open_runs == {}
+
+
+def test_workflow_limits_apply_to_runs_and_local_limits_to_children():
+    s = server.Settings.from_env({"REPLAY_CONTROL_RUN_TIMEOUT_S": "7200", "REPLAY_HEIGHT_RUN_TIMEOUT_S": "18000"})
+    assert (s.control_run_timeout_s, s.height_run_timeout_s) == (7200.0, 18000.0)
+    assert (s.control_timeout_s, s.control_warm_timeout_s, s.height_timeout_s) == (1800.0, 1800.0, 3600.0)
+
+
+def test_a_workflow_round_is_opened_with_the_workflow_limit(remote, monkeypatch):
+    control, _, settings, _ = remote
+    monkeypatch.setattr(settings, "control_run_timeout_s", 1234.0)
+    seen = []
+    real = control.runs.open
+    monkeypatch.setattr(control.runs, "open", lambda kind, job_id, files, timeout_s, **k:
+                        seen.append((kind, timeout_s)) or real(kind, job_id, files, timeout_s, **k))
+    wait_done(control, [control.submit(round_task("t", build=True))])
+    assert seen == [("control", 1234.0)]

@@ -1122,3 +1122,42 @@ def test_room_for(monkeypatch):
     assert not remote.room_for(state, 8)
     assert remote.room_for(remote.State(in_flight=dict(state.in_flight)), 8)     # local: no match limit
     assert remote.in_flight_cap(state) == 40 and remote.in_flight_cap(remote.State()) == remote.LOCAL_IN_FLIGHT
+
+
+def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays():
+    """Render's task limit sits above the worker's Workflow limit, within Render's 24 h; the site waits out twice the
+    worker's (a run's deadline never passes opening + 2 x its limit). Local mode keeps today's numbers."""
+    import ast
+    import re
+
+    from app.services import replay_heights_remote as heights
+
+    root = Path(remote.__file__).resolve().parents[3]
+    yaml_text = (root / "render.yaml").read_text(encoding="utf-8")
+
+    def env_text(name):
+        return re.search(rf"- key: {name}\n\s+value: \"([^\"]+)\"", yaml_text).group(1)
+
+    def env(name):
+        return float(env_text(name))
+
+    render = {}
+    for node in ast.walk(ast.parse((root / "replay_tasks" / "main.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "task":
+            kw = {k.arg: k.value for k in node.keywords}
+            render[kw["name"].value] = kw["timeout_seconds"].value
+    assert all(30 <= v <= 86400 for v in render.values())
+    assert render["control"] >= env("REPLAY_CONTROL_RUN_TIMEOUT_S") + 300
+    assert render["warm"] >= env("REPLAY_WARM_BUILD_TIMEOUT_S") + 300
+    assert render["heights"] >= env("REPLAY_HEIGHT_RUN_TIMEOUT_S") + 300
+    assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
+    assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
+    # Local mode: untouched.
+    assert remote.STALE_JOB_S == 1800 and heights.STALE_BUILD_S == 7200
+    assert "REPLAY_CONTROL_TIMEOUT_S" not in yaml_text and "REPLAY_HEIGHT_TIMEOUT_S" not in yaml_text
+    assert env_text("REPLAY_WARM_BUILDS") == "true"
+
+
+def test_the_stale_backstop_depends_on_where_control_runs():
+    assert remote._job_stale_s(True) == remote.STALE_RUN_S
+    assert remote._job_stale_s(False) == remote.STALE_JOB_S

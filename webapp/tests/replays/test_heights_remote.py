@@ -960,3 +960,46 @@ def test_a_build_the_worker_refused_for_a_while_is_judged_from_when_it_was_accep
     refuse[0] = False
     counts = rig.cycle(factory, step_s=10)
     assert counts["heights_failed"] == 0 and rig.state.heights.builds
+
+
+class _RunningClient:
+    def build(self, job_id):
+        return {"status": "running"}
+
+
+def _running_build(**extra):
+    build = hr.Build("Ascent", "k", {}, [], opened_at=0.0, job_id="j", **extra)
+    build.running_since = 0.0
+    return build
+
+
+def test_a_workflow_build_is_not_stale_at_the_local_limit_but_a_local_one_is():
+    over_local = hr.STALE_BUILD_S + 1
+    workflow = _running_build(stale_s=hr.STALE_BUILD_RUN_S)
+    assert hr._advance(None, None, _RunningClient(), workflow, over_local, {}) is False
+    local = _running_build()
+    assert local.stale_s == hr.STALE_BUILD_S
+    with pytest.raises(hr.BuildFailed, match="ran too long"):
+        hr._advance(None, None, _RunningClient(), local, over_local, {})
+    with pytest.raises(hr.BuildFailed, match="ran too long"):
+        hr._advance(None, None, _RunningClient(), _running_build(stale_s=hr.STALE_BUILD_RUN_S),
+                    hr.STALE_BUILD_RUN_S + 1, {})
+
+
+@pytest.mark.parametrize("runner", ["workflow", "local"])
+def test_step_opens_a_build_with_the_backstop_of_its_runner(monkeypatch, runner):
+    expected = hr.STALE_BUILD_RUN_S if runner == "workflow" else hr.STALE_BUILD_S
+    due = hr.Due("Ascent", {"map": "Ascent", "synthetic": "manifest"}, [], "synthetic")
+
+    class Client:
+        def health(self):
+            return {"runners": {"heights": runner}}
+
+    seen = []
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[due]))
+    monkeypatch.setattr(hr, "_other_deploy", lambda answer: False)
+    monkeypatch.setattr(hr, "_idle", lambda *a, **k: True)
+    monkeypatch.setattr(hr.control_heights, "active_digests", lambda session: {})
+    monkeypatch.setattr(hr, "_try_build", lambda sf, s, c, hstate, build, *a: seen.append(build.stale_s))
+    hr.step(None, None, Client(), hr.HeightState(), 1.0, {})
+    assert seen == [expected]
