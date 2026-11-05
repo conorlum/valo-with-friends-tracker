@@ -78,6 +78,60 @@ This amendment **wins over every task and runbook line below that says otherwise
    "Check warm builds within an hour of the merge: …" with the same checks and stop rule, where "switch it off"
    means a PR setting `REPLAY_WARM_BUILDS` to `"false"`.
 
+## Amendment A2 (2026-11-05): the P4 review's fixes
+
+An independent review of revision 2 + A1 against the code at `97842af9` found no stale anchors and no conflict with
+the settled decisions, two done-checks that contradict the plan's own code, and two unbounded loops. These win over
+the tasks and A1 where they differ.
+
+1. **Test commands' path.** `../../../../webapp/.venv313/...` fits a worktree under `.claude/worktrees/<name>`. From
+   a worktree under `.worktrees/<name>`, run them as `../../../webapp/.venv313/Scripts/python.exe` (or the absolute
+   main-checkout path).
+2. **Task 4, an existing assertion moves with the STUB.** `tests/replays/test_replay_worker_control_workflow.py`
+   `test_control_task_passes_an_engine_failure_through` asserts the exact result dict; the changed STUB adds
+   `visibility_source`. It becomes
+   `assert link.result == {"status": "failed", "error_kind": "engine", "error": "no side", "visibility_source": "built"}`.
+3. **Task 4, rule 9 is bounded** (A1's rule 9 had no end: a `warm` task that never registers, or a bad key, held
+   every cold identity's rounds for good). Beside `WARM_START_RETRY_S`:
+   `WARM_START_REFUSED_MAX_S = 1800   # refused starts past this long count as failures (rule 4's fallback)`.
+   `ControlRunner.__init__`: `self.warm_refused_since: dict[str, float] = {}`. In A1's refused branch:
+   `since = self.warm_refused_since.setdefault(job.warm_id, time.time())`; if `time.time() - since >
+   WARM_START_REFUSED_MAX_S`, fall through to the failure count (`warm_failures += 1`, logged) instead of setting
+   `warm_retry_at`. A warm build whose start Render accepted (any settled result other than a refused start) pops
+   `warm_refused_since`. Test beside A1's: `WARM_START_REFUSED_MAX_S = 0.5`, `WARM_START_RETRY_S = 0.2`, every
+   `/warm` start raises `RenderError("POST /task-runs: HTTP 404")`; the round still finishes `done` (the fallback's
+   warming round) and `counts()["warm_builds"]["failures"][job.warm_id] == WARM_BUILD_TRIES`.
+4. **Task 4, misses lead to the fallback too** (rule 7 had no end: a warm build and a round that keep disagreeing
+   cycled forever). `ControlRunner.__init__`: `self.warm_missed: dict[str, int] = {}`. Rule 7's miss branch adds
+   `self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1`. A warm build's success pops
+   `warm_failures` but never `warm_missed`. `_next`'s fallback test becomes
+   `if self.warm_failures.get(job.warm_id, 0) + self.warm_missed.get(job.warm_id, 0) < WARM_BUILD_TRIES:`.
+   `counts()["warm_builds"]` gains `"missed": dict(self.warm_missed)`. Test: a round task whose every round reports
+   `visibility_source: "built"` still finishes `done`, with `warm_starts(render) == server.WARM_BUILD_TRIES`.
+5. **Task 4, the KEPT-prune lease skip gets its own test.** In
+   `test_a_leased_file_survives_both_kept_pruning_and_eviction` eviction removes `b` first, so the KEPT prune
+   never runs. Add `test_a_leased_file_survives_kept_pruning_without_reserve_pressure`: lease `a` among a/b/c (with
+   `KEPT` monkeypatched to 2 if needed so pruning applies), `store` `d` with the default reserve, then `a` exists and
+   the prune counter rose by the number of unleased files it removed (removing the KEPT-loop skip fails it).
+6. **Task 4, the image's smoke import** (`replay_worker/Dockerfile:49`) adds `replay_worker.warm_job` (Task 3's module),
+   so a broken import fails the build, not every warm build.
+7. **Task 5, the render.yaml comment names no timeout key.** Its first two lines read: "Workflow time limits (…plan
+   path…). Only runs on Workflows use them: local children keep their image defaults (1800 s control, 3600 s
+   heights)." So the test's `"REPLAY_CONTROL_TIMEOUT_S" not in yaml_text` holds. The test also asserts the worker's
+   `REPLAY_WARM_BUILDS` entry is `value: "true"` (A1).
+8. **Task 5, the backstops' choice is tested, not only the constants.** `replay_control_remote.py` gains
+   `def _job_stale_s(remote_control: bool) -> float: return STALE_RUN_S if remote_control else STALE_JOB_S`, and
+   `_collect` (limit and warning) calls it. An offline test pins `_job_stale_s(True) == STALE_RUN_S` and
+   `_job_stale_s(False) == STALE_JOB_S`. Heights: a test that a `Build(..., stale_s=STALE_BUILD_RUN_S)` running
+   7201 s is not failed by `_advance` and one with the default `stale_s` is, plus one that `step` builds with
+   `STALE_BUILD_RUN_S` when the heights runner is `workflow` (offline where the existing tests allow; a case that
+   needs PostgreSQL goes in that lane and is named in the PR as not run locally).
+9. **Task 7.** Step 1's switch line is "the switch `REPLAY_WARM_BUILDS` (in `render.yaml`, `value: "true"`, on from
+   the merge; off is a PR setting `"false"`)". Step 2 compares against the base's own failures, recorded when the
+   branch was made (at `97842af9`: `tests/replays/test_control_features.py::test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded`),
+   not a memory file. The runbook's steps 2-3 are written in place per A1 item 4, and step 6 adds: "A worker
+   restart re-probes every identity: each one runs a single round before the rest start (accepted cost)."
+
 ## Why (the evidence this plan rests on)
 
 - Every cancelled run in the Render dashboard ended at 29:59 (owner, 2026-11-04). The worker cancels a run itself
@@ -1593,8 +1647,8 @@ tests/replays/test_control_remote.py pins the order."
 
 ```yaml
       # Workflow time limits (docs/superpowers/plans/2026-11-05-replay-throughput.md). Only runs on Workflows use
-      # them: local children keep REPLAY_CONTROL_TIMEOUT_S / REPLAY_HEIGHT_TIMEOUT_S (their image defaults, 1800 and
-      # 3600). Render's own task limits (replay_tasks/main.py) are 300 s above; tests/replays/test_control_remote.py
+      # them: local children keep their image defaults (1800 s control, 3600 s heights).
+      # Render's own task limits (replay_tasks/main.py) are 300 s above; tests/replays/test_control_remote.py
       # pins the order. Height builds took at most ~2 min over ~200 runs (2026-11-05); 3 h is the owner's margin.
       - key: REPLAY_CONTROL_RUN_TIMEOUT_S
         value: "7200"
@@ -1730,7 +1784,7 @@ Expected: all PASS.
 
 - [ ] **Step 1: Write the docs.**
   - `webapp/RENDER_DEPLOY.md`: what a warm build, a probe round and a lease are; the switch `REPLAY_WARM_BUILDS`
-    (dashboard, `sync: false`, off by default); the Workflow limits table from Global Constraints, with local's
+    (in `render.yaml`, `value: "true"`, on from the merge; off is a PR setting `"false"`); the Workflow limits table from Global Constraints, with local's
     unchanged; what `/health` shows (`control.cache`, `control.warm_builds`, `workflow.by_kind`); the phase lines in
     run logs (`control phase: …`); and the runbook below, verbatim.
   - `CLAUDE.md` and `AGENTS.md`, beside the replay notes: three sentences (warm builds exist and are behind
@@ -1759,15 +1813,15 @@ Read the worker's `/health` from its Render shell:
    the worker and the replay-tasks workflow come up separately (risk 10).
    - Check: the replay-tasks workflow lists a `warm` task and has deployed this commit; `/health` shows
      `control.cache` and `workflow.by_kind`. Control run logs show `control phase:` lines.
-2. **Run a control recompute with warm builds still off.** Read three control run logs: their `visibility … in N s`
-   line against the round's total time. Record it in the PR. If the visibility build is a small share and rounds
-   still run long, stop here and bring the logs back before step 3: the bottleneck is the round, not the cache.
-3. **Flip `REPLAY_WARM_BUILDS=true`** on replay-worker in the dashboard. The worker restarts.
-   - Check within an hour: identities move through `building` → `ready` → `confirmed`; `misses` stays 0;
+2. **Run a control recompute and read three control run logs:** their `visibility … in N s` line against the
+   round's total time, and record it in the PR thread. If the visibility build is a small share and rounds still
+   run long, bring the logs back: the bottleneck is the round, not the cache.
+3. **Check warm builds within an hour of the merge** (`REPLAY_WARM_BUILDS` is `"true"` in `render.yaml` from the merge).
+   - Check: identities move through `building` → `ready` → `confirmed`; `misses` stays 0;
      `failures` is empty or under 2 per identity; `recent_seconds` shows warm-build times well under 21600;
      `workflow.by_kind.control.open` climbs past 2 once an identity is confirmed.
-   - Stop and switch it off if `misses` grows, or an identity reaches 2 failures on a map that worked before. A
-     worker restart clears the failure counts.
+   - Stop and switch it off (a PR setting `REPLAY_WARM_BUILDS` to `"false"`) if `misses` grows, or an identity
+     reaches 2 failures on a map that worked before. A worker restart clears the failure counts.
 4. **Check the cache budget.** `control.cache.bytes` against `control.cache.reserve`, and `evictions` and
    `kept_pruned`, both counted since the worker last started.
    - If either counter grows during a recompute, or `bytes` passes 60 % of `reserve`: confirm in `/health`
@@ -1781,7 +1835,8 @@ Read the worker's `/health` from its Render shell:
    - Also check: `workflow.by_kind.control.oldest_run_s` stays under 7200; the site's `map control dispatch:` log
      shows `busy` and `unreachable` at 0; `evictions` stays flat.
 6. **Done** when a recompute holds 30+ open control runs from the end of warm-up to the start of its last match's
-   tail, and the dashboard shows no runs cancelled by a limit.
+   tail, and the dashboard shows no runs cancelled by a limit. A worker restart re-probes every identity: each one
+   runs a single round before the rest start (accepted cost).
 
 ## Decided: feature-row overwrites (risk 5)
 
