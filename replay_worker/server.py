@@ -1405,7 +1405,7 @@ class ControlRunner:
         self.warm_jobs: dict[str, str] = {}      # its warm build, queued or running, by job id
         self.warm_failures: dict[str, int] = {}  # failed warm builds (WARM_BUILD_TRIES: fall back)
         self.warm_missed: dict[str, int] = {}    # rounds that had to build a cache the identity was warm for
-        # PROVISIONAL(D3): vanished files count toward the fallback
+        # Vanished files count toward the fallback (D3), and each one is logged and listed on the site's errors
         self.warm_vanished: dict[str, int] = {}  # its file left the disk after its warm build named it; a successful build never clears it
         self.warm_retry_at: dict[str, float] = {}  # no warm build for this identity before this time (start refused)
         self.warm_refused_since: dict[str, float] = {}   # when its start was first refused, until one is accepted
@@ -1590,6 +1590,8 @@ class ControlRunner:
                     return job, False
                 if job.warm_id in self.warm_names:   # named, but the file is gone (pruned or evicted)
                     self.warm_vanished[job.warm_id] = self.warm_vanished.get(job.warm_id, 0) + 1
+                    _log(f"warm identity {job.warm_id} vanished: its cache file left the disk before a round "
+                         f"leased it ({self.warm_vanished[job.warm_id]} so far)")
                     self.warm_names.pop(job.warm_id)
                     self.warm_confirmed.discard(job.warm_id)
                 if self.warm_retry_at.get(job.warm_id, 0.0) > time.time():
@@ -1710,6 +1712,8 @@ class ControlRunner:
                 # identity warmed again. It never runs cold (risk 2).
                 if self.warm_names.get(job.warm_id) == job.released_name:
                     self.warm_vanished[job.warm_id] = self.warm_vanished.get(job.warm_id, 0) + 1
+                    _log(f"warm identity {job.warm_id} vanished: its cache file left the disk before a round "
+                         f"leased it ({self.warm_vanished[job.warm_id]} so far)")
                     self.warm_names.pop(job.warm_id, None)
                     self.warm_confirmed.discard(job.warm_id)
                 if self.warm_probe.get(job.warm_id) == job.id:

@@ -270,6 +270,7 @@ class Live:
     held: tuple[int, ...]
     heights_out_of_tries: tuple[str, ...]
     in_flight: tuple[tuple[int, int, float, str], ...]
+    warm_vanished: tuple[tuple[str, int], ...] = ()   # (warm identity, times its cache file left the disk unused)
 
 
 LIVE: Live | None = None
@@ -285,7 +286,21 @@ def _snapshot(state, at: float) -> Live:
     return Live(at, tuple(sorted(given_up)), tuple(sorted(state.held)),
                 tuple(sorted(state.heights.out_of_tries)),
                 tuple(sorted((f.replay_id, f.round_number, f.sent_at, "gaps" if f.gaps_only else "control")
-                             for f in state.in_flight.values())))
+                             for f in state.in_flight.values())),
+                tuple(sorted(state.warm_vanished.items())))
+
+
+def warm_vanished(health) -> dict[str, int] | None:
+    """The worker's `control.warm_builds.vanished` counts above zero (D3: a warm build's cache file the worker's
+    cache cleanup deleted before a round leased it). None when there is no health to read: keep the last."""
+    control = health.get("control") if isinstance(health, dict) else None
+    if not isinstance(control, dict):
+        return None
+    warm = control.get("warm_builds")
+    vanished = warm.get("vanished") if isinstance(warm, dict) else None
+    if not isinstance(vanished, dict):
+        return {}
+    return {str(k): v for k, v in vanished.items() if isinstance(v, int) and not isinstance(v, bool) and v > 0}
 
 
 def _height_state():
@@ -306,6 +321,7 @@ class State:
     feature_retry_after: dict = field(default_factory=dict)
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
     capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
+    warm_vanished: dict = field(default_factory=dict)   # the worker's last /health warm_builds.vanished (> 0)
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -679,6 +695,13 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
+    vanished = warm_vanished(health)
+    if vanished is not None:
+        for identity, count in vanished.items():
+            if count > state.warm_vanished.get(identity, 0):
+                log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
+                          "it is listed in the replay upload page's errors", identity, count)
+        state.warm_vanished = vanished
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,

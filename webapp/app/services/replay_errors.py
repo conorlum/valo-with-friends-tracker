@@ -33,6 +33,7 @@ KINDS = (
     ("util_failed", "Critical Util failed"),
     ("heights_rejected", "Height builds rejected"),
     ("heights_out_of_tries", "Height rebuilds out of tries"),
+    ("warm_vanished", "Warm cache files deleted before use"),
     ("given_up", "Rounds given up on"),
     ("held", "Replays held for a re-parse"),
     ("upload_failed", "Uploads failed"),
@@ -247,7 +248,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
     collected = replay_progress.round_states(db)
     states, replays = collected["states"], collected["replays"]
     if live is None:
-        for key in ("heights_out_of_tries", "given_up", "held"):
+        for key in ("heights_out_of_tries", "warm_vanished", "given_up", "held"):
             notes[key] = "not known in this process (no dispatcher here)"
     else:
         from app.services.replay_control_remote import MAX_TRIES
@@ -255,6 +256,17 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         for map_name in live.heights_out_of_tries:
             rows["heights_out_of_tries"].append(_row(
                 map_name=map_name, figures={"map": map_name}, reproduce=_height_command(map_name)))
+        for identity, count in live.warm_vanished:
+            # D3: counted toward the identity's warm-build fallback; this row is the alarm that it happened.
+            rows["warm_vanished"].append(_row(
+                map_name=identity.split(":", 1)[0], figures={"identity": identity, "times": count},
+                error=(f"a warm build's visibility cache file left the replay worker's disk {count} time(s) before "
+                       "a round leased it (the worker's cache cleanup: 3 newest files per map, or the cache "
+                       "budget). Each loss counts toward this identity's fallback to one warming round. Fixes to "
+                       "weigh: lease the file from the warm build until its rounds are done, or keep more files "
+                       "per map (replay_worker/server.py _next and control_cache). Evidence: the worker's /health "
+                       "(control.warm_builds.vanished; control.cache maps, evictions, kept_pruned, reserve) and its "
+                       "log lines 'warm identity ... vanished'.")))
         older = 0
         for rid, n, work, fp in live.given_up:
             if (states.get((rid, n)) not in {f"{work}_missing", f"{work}_stale"}

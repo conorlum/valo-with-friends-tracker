@@ -395,7 +395,9 @@ Each site backstop is more than twice its limit: the worst case is a queue wait 
 - `control.warm_builds` (only while warm builds are on): `ready` (identities whose cache file is on the disk),
   `confirmed` (a probe round passed), `building` (a warm build is open), `failures` and `missed` (per identity; a
   failed warm build, and a round that built the cache anyway), `vanished` (per identity; a warm build's cache file
-  left the disk before a round leased it), `start_refused` (identities whose warm-build start Render refused),
+  left the disk before a round leased it; the worker logs `warm identity ... vanished`, and the site logs an error and
+  lists the identity under "Warm cache files deleted before use" in the replay upload page's errors and their
+  prompt), `start_refused` (identities whose warm-build start Render refused),
   `misses` (rounds that built a cache a warm build should have supplied) and `recent_seconds` (recent warm-build times).
 - `control.cache`: `bytes` (the cache's size on the disk), `maps` (bytes per map), `evictions` and `kept_pruned`
   (both counted since the worker last started), and `reserve` (the budget, `REPLAY_CONTROL_CACHE_RESERVE_BYTES`,

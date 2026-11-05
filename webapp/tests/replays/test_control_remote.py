@@ -5,6 +5,7 @@ import base64
 from dataclasses import replace
 import gzip
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,7 @@ class FakeWorker:
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
         self.features = features
         self.runners = None             # {"control": "workflow"}: the worker's control is on Workflows
+        self.warm_builds = None         # the worker's control.warm_builds block (REPLAY_WARM_BUILDS on)
 
     def health(self):
         self.health_reads += 1
@@ -67,6 +69,8 @@ class FakeWorker:
             control["gaps_protocol"] = self.gaps
         if self.features is not None:
             control['features'] = self.features
+        if self.warm_builds is not None:
+            control["warm_builds"] = self.warm_builds
         return {"ok": True, "queued": 0, "control": control,
                 **({"runners": self.runners} if self.runners is not None else {})}
 
@@ -515,6 +519,26 @@ def test_live_snapshot_is_frozen_and_detached_after_submit(factory, linked, monk
     assert live.held == (linked.id,) and live.heights_out_of_tries == ("Ascent",)
     with pytest.raises(FrozenInstanceError):
         live.at = 999
+
+
+def test_the_workers_vanished_warm_files_reach_the_live_snapshot_loudly(factory, linked, caplog):
+    # D3: each new loss is logged as an error and listed on the replay errors page (through LIVE).
+    worker, state = FakeWorker(), remote.State()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1, "Bind:h:|": 0, "Lotus:h:|": True}}
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        remote.cycle(factory, worker, state, now=100)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+    assert sum("Ascent:h:|" in r.getMessage() for r in caplog.records) == 1
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        remote.cycle(factory, worker, state, now=200)            # same count: listed, not logged again
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),) and not caplog.records
+    worker.health_error = remote.Unreachable("down")
+    remote.cycle(factory, worker, state, now=300)                # no health this pass: the last count stays
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+    worker.health_error, worker.warm_builds = None, None         # warm builds off (or a restarted worker)
+    remote.cycle(factory, worker, state, now=400)
+    assert remote.LIVE.warm_vanished == ()
 
 
 def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):
