@@ -1392,6 +1392,8 @@ class ControlRunner:
         self.warm_jobs: dict[str, str] = {}      # its warm build, queued or running, by job id
         self.warm_failures: dict[str, int] = {}  # failed warm builds (WARM_BUILD_TRIES: fall back)
         self.warm_missed: dict[str, int] = {}    # rounds that had to build a cache the identity was warm for
+        # PROVISIONAL(D3): vanished files count toward the fallback
+        self.warm_vanished: dict[str, int] = {}  # its file left the disk after its warm build named it; a successful build never clears it
         self.warm_retry_at: dict[str, float] = {}  # no warm build for this identity before this time (start refused)
         self.warm_refused_since: dict[str, float] = {}   # when its start was first refused, until one is accepted
         self.warm_misses = 0                     # rounds released to a name that still had to build the cache
@@ -1451,7 +1453,7 @@ class ControlRunner:
             existing = self.jobs.get(self.by_key.get(key, ""))
             if existing is not None and existing.status in ("queued", "running", "done"):
                 return existing
-            if len(self.pending) >= self.settings.control_queue:
+            if sum(1 for j in self.pending if self.jobs[j].kind != "warm") >= self.settings.control_queue:
                 raise queue.Full
             job = ControlJob(uuid.uuid4().hex, key, str(task["map"]), json.dumps(task).encode("utf-8"),
                              warm_key=f"{task['map']}:{task.get('height') or ''}" +
@@ -1491,7 +1493,7 @@ class ControlRunner:
 
     def counts(self) -> dict:
         with self.lock:
-            body = {"queued": len(self.pending), "running": len(self.running), "warm": sorted(self.warm),
+            body = {"queued": sum(1 for j in self.pending if self.jobs[j].kind != "warm"), "running": len(self.running), "warm": sorted(self.warm),
                     "preempted": self.preempted_total}
             if self.uses_warm_builds():
                 now = time.time()
@@ -1500,6 +1502,7 @@ class ControlRunner:
                                        "building": sorted(self.warm_jobs),
                                        "failures": dict(sorted(self.warm_failures.items())),
                                        "missed": dict(self.warm_missed),
+                                       "vanished": dict(self.warm_vanished),
                                        "start_refused": sorted(i for i, t in self.warm_retry_at.items() if t > now),
                                        "misses": self.warm_misses, "recent_seconds": list(self.warm_seconds)}
             return body
@@ -1572,9 +1575,14 @@ class ControlRunner:
                         self.warm_probe[job.warm_id] = job.id
                     job.released_name = self.warm_names[job.warm_id]
                     return job, False
+                if job.warm_id in self.warm_names:   # named, but the file is gone (pruned or evicted)
+                    self.warm_vanished[job.warm_id] = self.warm_vanished.get(job.warm_id, 0) + 1
+                    self.warm_names.pop(job.warm_id)
+                    self.warm_confirmed.discard(job.warm_id)
                 if self.warm_retry_at.get(job.warm_id, 0.0) > time.time():
                     continue                         # rule 9: its start was refused
-                if self.warm_failures.get(job.warm_id, 0) + self.warm_missed.get(job.warm_id, 0) < WARM_BUILD_TRIES:
+                if (self.warm_failures.get(job.warm_id, 0) + self.warm_missed.get(job.warm_id, 0)
+                        + self.warm_vanished.get(job.warm_id, 0)) < WARM_BUILD_TRIES:
                     self._ask_warm(job)              # the round waits for its identity's one warm build
                     continue
                 # Warm builds keep failing for this identity: today's rule below, one round warms the map alone.
@@ -1681,6 +1689,7 @@ class ControlRunner:
                 # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
                 # identity warmed again. It never runs cold (risk 2).
                 if self.warm_names.get(job.warm_id) == job.released_name:
+                    self.warm_vanished[job.warm_id] = self.warm_vanished.get(job.warm_id, 0) + 1
                     self.warm_names.pop(job.warm_id, None)
                     self.warm_confirmed.discard(job.warm_id)
                 if self.warm_probe.get(job.warm_id) == job.id:

@@ -239,7 +239,7 @@ def test_a_leased_file_survives_kept_pruning_without_reserve_pressure(tmp_path, 
         src = tmp_path / ".incoming" / "n.npz"
         src.write_bytes(b"y" * 10)
         before = control_cache.KEPT_PRUNED
-        assert control_cache.store(tmp_path, f"Ascent.{'d' * 16}.npz", src)      # the default reserve: no eviction
+        assert control_cache.store(tmp_path, f"Ascent.{'d' * 16}.npz", src, reserve=1 << 40)      # a reserve far above the folder: no eviction
         assert (tmp_path / leased).exists()
         assert not (tmp_path / f"Ascent.{'b' * 16}.npz").exists()               # the unleased one past KEPT went
         assert control_cache.KEPT_PRUNED == before + 1

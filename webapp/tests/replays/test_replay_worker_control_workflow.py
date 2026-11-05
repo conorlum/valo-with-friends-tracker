@@ -2,6 +2,7 @@
 ControlRunner end to end through a fake Render. The child is a stub command, as in test_replay_worker_control."""
 
 import json
+import queue
 import sys
 import threading
 import time
@@ -339,6 +340,41 @@ def test_a_round_whose_file_left_the_disk_waits_for_a_new_warm_build_never_runs_
     assert wait_done(control, [job])[0].status == "done"
     assert warm_starts(render) == 2
     assert f"Ascent.{'e' * 16}.npz" in job.result["had"]      # it ran with the cache, not cold
+
+
+def test_an_identity_whose_file_leaves_the_disk_after_every_warm_build_ends_in_the_fallback(warm_remote):
+    control, render, settings, _ = warm_remote
+    inner = render.runner
+
+    def runner_then_lose_the_file(kind, args):       # the file is pruned after each warm build settles
+        out = inner(kind, args)
+        if kind == "warm":
+            for path in settings.control_cache_dir.glob("*.npz"):
+                path.unlink()
+        return out
+
+    render.runner = runner_then_lose_the_file
+    jobs = [control.submit(round_task(f"v{i}")) for i in range(3)]
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    assert warm_starts(render) == server.WARM_BUILD_TRIES
+    assert control.counts()["warm_builds"]["vanished"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
+
+
+def test_warm_builds_take_no_queue_slot_of_the_sites(tmp_path, monkeypatch):
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               control_runner="workflow", control_queue=2, warm_builds=True,
+                               workflow_slug="replay-tasks", render_api_key="k")
+    control = server.ControlRunner(settings, runs_table=server.make_runs(settings))
+    monkeypatch.setattr(control, "wake", threading.Event())
+    control.submit(round_task("q1"))
+    warm = server.ControlJob("w1", "warm-key", "Ascent", b"{}", kind="warm")
+    with control.lock:
+        control.jobs[warm.id] = warm
+        control.pending.append(warm.id)
+    assert control.counts()["queued"] == 1
+    control.submit(round_task("q2"))                       # 1 round + 1 warm build pending: not full
+    with pytest.raises(queue.Full):
+        control.submit(round_task("q3"))
 
 
 def test_a_round_whose_lease_fails_is_requeued_uncounted_and_runs_after_a_new_warm_build(warm_remote, monkeypatch):
