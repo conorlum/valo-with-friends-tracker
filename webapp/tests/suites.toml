@@ -245,7 +245,7 @@ guards = [
 [replay-worker]
 about = "The replay worker service: upload queue, .vrf archive, parse, control and height jobs, and Render Workflow runs."
 tests = ["tests/replays/test_replay_worker*.py", "tests/replays/test_replay_archive.py"]
-guards = ["../replay_worker/**"]
+guards = ["../replay_worker/**", "../replay_tasks/**"]
 
 # ---------------------------------------------------------------------------------------------------- Map control
 

@@ -91,17 +91,19 @@ WEBAPP = REPO / "webapp"
 def _child_env(cache: Path) -> dict:
     from replay_worker.server import CHILD_THREADS
 
-    env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache)}
+    env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache),
+           "CONTROL_PHASE_LOG": "1"}
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(REPO), env.get("PYTHONPATH")) if p)
     return env
 
 
 def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path, what: str = "control child") -> dict:
-    """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer."""
+    """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer.
+    The child's stderr goes straight to this run's log, live."""
     from replay_worker.server import _child_setup
 
     command = json.loads(os.environ[command_env]) if os.environ.get(command_env) else default
-    kwargs = {"input": stdin, "capture_output": True, "env": _child_env(cache), "cwd": str(REPO)}
+    kwargs = {"input": stdin, "stdout": subprocess.PIPE, "env": _child_env(cache), "cwd": str(REPO)}
     if os.name != "nt":
         kwargs["preexec_fn"] = _child_setup(int(os.environ.get("REPLAY_CONTROL_MEMORY_MB", "2048")))
     done = subprocess.run(command, **kwargs)

@@ -131,6 +131,43 @@ def test_archive_budget_leaves_the_cache_reserve(tmp_path):
     assert before - a.budget() == control_cache.RESERVE
 
 
+def test_usage_counts_bytes_per_map_and_the_counters(tmp_path):
+    (tmp_path / "feature-rows").mkdir()
+    (tmp_path / f"Ascent.{'a' * 16}.npz").write_bytes(b"x" * 10)
+    (tmp_path / "feature-rows" / f"Ascent.{'d' * 64}.npz").write_bytes(b"y" * 5)
+    (tmp_path / f"Haven.{'b' * 16}.npz").write_bytes(b"z" * 7)
+    found = control_cache.usage(tmp_path)
+    assert found["maps"] == {"Ascent": 15, "Haven": 7} and found["bytes"] == 22
+    assert found["evictions"] == control_cache.EVICTIONS and found["kept_pruned"] == control_cache.KEPT_PRUNED
+
+
+def test_a_store_that_drops_files_for_room_counts_evictions(tmp_path):
+    old = tmp_path / f"Ascent.{'a' * 16}.npz"
+    old.write_bytes(b"x" * 60)
+    (tmp_path / ".incoming").mkdir()
+    src = tmp_path / ".incoming" / "n.npz"
+    src.write_bytes(b"y" * 60)
+    before = control_cache.EVICTIONS
+    assert control_cache.store(tmp_path, f"Haven.{'b' * 16}.npz", src, reserve=100)
+    assert not old.exists() and control_cache.EVICTIONS == before + 1
+
+
+def test_a_store_past_kept_counts_the_prune(tmp_path):
+    import os
+    import time
+
+    for i, key in enumerate("abc"):
+        path = tmp_path / f"Ascent.{key * 16}.npz"
+        path.write_bytes(b"x")
+        os.utime(path, (time.time() - 100 + i, time.time() - 100 + i))
+    (tmp_path / ".incoming").mkdir()
+    src = tmp_path / ".incoming" / "n.npz"
+    src.write_bytes(b"y")
+    before = control_cache.KEPT_PRUNED
+    assert control_cache.store(tmp_path, f"Ascent.{'d' * 16}.npz", src)
+    assert not (tmp_path / f"Ascent.{'a' * 16}.npz").exists() and control_cache.KEPT_PRUNED == before + 1
+
+
 import io  # noqa: E402
 import tarfile  # noqa: E402
 

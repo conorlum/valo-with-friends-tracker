@@ -2070,6 +2070,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
                                    "features": feature_artifacts.protocol_identity(),
                                    **(control.counts() if control else {})}
+                if control is not None:
+                    body["control"]["cache"] = {**control_cache.usage(control.settings.control_cache_dir),
+                                                "reserve": control_cache.RESERVE}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
                 # "A height build may start now" (app/services/replay_heights_remote.py). A Workflow build runs on

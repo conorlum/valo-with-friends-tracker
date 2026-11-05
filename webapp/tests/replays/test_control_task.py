@@ -10,6 +10,7 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[2]))
 
 from control_toys import blob, open_hall  # noqa: E402
 
@@ -71,6 +72,51 @@ def test_a_map_the_machine_has_no_geometry_for_is_an_infra_failure(toy):
     result = task.compute_task(t)
     assert result["status"] == "failed" and result["error_kind"] == "infra"
     assert "GeometryError" in result["error"]
+
+
+def test_a_round_says_where_its_visibility_cache_came_from(toy, monkeypatch):
+    monkeypatch.setattr(toy, "visibility_source", "cache")
+    monkeypatch.setattr(toy, "visibility_s", 0.25)
+    t, _ = make_task(toy)
+    result = task.compute_task(t)
+    assert result["status"] == "ok"
+    assert result["visibility_source"] == "cache" and result["visibility_s"] == 0.25
+
+
+def test_a_round_the_engine_refuses_still_says_where_its_cache_came_from(toy, monkeypatch):
+    monkeypatch.setattr(toy, "visibility_source", "built")
+    players = {0: (None, [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 380, 250, 180)])}
+    t, _ = make_task(toy, sides={}, players=players)     # as test_a_round_the_engine_refuses_is_the_rounds_own_failure
+    result = task.compute_task(t)
+    assert result["status"] == "failed" and result["error_kind"] == "engine"
+    assert result["visibility_source"] == "built"
+
+
+def test_the_visibility_cache_name_is_one_the_worker_takes_for_that_map(toy):
+    import re
+
+    from app.control import geometry
+    from replay_worker import control_cache
+
+    name = geometry.visibility_name(toy)
+    assert re.fullmatch(rf"{toy.name}\.[0-9a-f]{{16}}\.npz", name)
+    assert control_cache.valid(name, toy.name) and control_cache.visibility_name(name)
+
+
+def test_the_feature_row_line_reports_reuse_only_when_a_row_cache_exists(toy, monkeypatch):
+    from types import SimpleNamespace
+
+    assert task._rows_line(toy) is None                       # no feature rows on this map: no line
+    monkeypatch.setattr(toy, "_feature_sight_cache", SimpleNamespace(row_hits=30, row_builds=10), raising=False)
+    assert task._rows_line(toy) == "Open: feature rows 30 reused, 10 built"
+
+
+def test_phase_lines_go_to_stderr_only_when_asked(monkeypatch, capsys):
+    task._phase("quiet")
+    assert capsys.readouterr().err == ""
+    monkeypatch.setenv("CONTROL_PHASE_LOG", "1")
+    task._phase("Ascent: visibility start")
+    assert capsys.readouterr().err == "control phase: Ascent: visibility start\n"
 
 
 from app.control import geometry as cg  # noqa: E402

@@ -169,6 +169,29 @@ def test_engine_failure_settles_engine(remote):
     assert wait_done(control, [job])[0].error_kind == "engine"
 
 
+def test_health_shows_the_control_cache(remote):
+    import urllib.request
+
+    control, _, _, base = remote
+    warm_up(control)
+    with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+        body = json.loads(response.read())
+    assert body["control"]["cache"]["maps"] == {"Ascent": len(b"built")}
+    assert body["control"]["cache"]["reserve"] > 0
+
+
+def test_a_childs_stderr_reaches_the_runs_own_log(tmp_path, monkeypatch, capfd):
+    say = tmp_path / "say.py"
+    say.write_text("import json, os, sys\n"
+                   "sys.stderr.write('control phase: ' + os.environ.get('CONTROL_PHASE_LOG', '-') + '\\n')\n"
+                   "print(json.dumps({'status': 'ok'}))\n", encoding="utf-8")
+    monkeypatch.setenv("REPLAY_CONTROL_CMD", json.dumps([sys.executable, str(say)]))
+    monkeypatch.setenv("REPLAY_CONTROL_MEMORY_MB", "0")
+    answer = tasks._run_child("REPLAY_CONTROL_CMD", [], b"{}", tmp_path)
+    assert answer == {"status": "ok"}
+    assert "control phase: 1" in capfd.readouterr().err
+
+
 def warm_up(control):
     """A first round that builds Ascent's visibility cache, so later rounds run side by side."""
     wait_done(control, [control.submit(round_task("warm", build=True))])

@@ -20,6 +20,8 @@ KEPT = 3
 RESERVE = 2 * 1024 ** 3
 _NAME = re.compile(r"^(?P<folder>feature-rows/)?(?P<map>[A-Za-z]+)\.(?P<key>[0-9a-f]{16}|[0-9a-f]{64})\.npz$")
 _LOCK = threading.Lock()          # every install and prune; reads (inputs) need none: files are replaced atomically
+EVICTIONS = 0                     # files `store` dropped for room since this process started (/health)
+KEPT_PRUNED = 0                   # older generations `store` dropped past KEPT since this process started (/health)
 
 
 def _tree_bytes(cache_dir: Path) -> int:
@@ -96,7 +98,8 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
     to KEPT. A folder that would grow past `reserve` drops caches (`_evictable`'s order) until the file fits: a full
     cache must never refuse every new one, or a map whose cache changed never warms again. False, with `src` deleted,
     only when nothing left to drop makes room."""
-    target = Path(cache_dir) / name
+    global EVICTIONS, KEPT_PRUNED
+    target =Path(cache_dir) / name
     map_name = _NAME.fullmatch(name)["map"]
     try:
         with _LOCK:
@@ -115,12 +118,14 @@ def store(cache_dir: Path, name: str, src: Path, reserve: int = RESERVE) -> bool
                     victims.append(path)
                 if freed < over:
                     return False             # even an empty cache wouldn't hold it: drop nothing
+                EVICTIONS += len(victims)
                 for path in victims:
                     path.unlink(missing_ok=True)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(src, target)
             for old in _newest(target.parent, map_name)[KEPT:]:
                 old.unlink(missing_ok=True)
+                KEPT_PRUNED += 1
             return True
     finally:
         Path(src).unlink(missing_ok=True)
@@ -135,6 +140,23 @@ def visibility_name(name: str) -> bool:
 def has_visibility(cache_dir: Path, map_name: str) -> bool:
     """The map's visibility cache is here: a round of it won't have to build one (what "warm" means, D6)."""
     return bool(_newest(Path(cache_dir), map_name))
+
+
+def usage(cache_dir: Path) -> dict:
+    """What /health shows of the cache: every byte under it (incoming files too), each map's visibility and
+    feature-row bytes, and the files `store` dropped since this process started."""
+    per_map: dict[str, int] = {}
+    for folder in (Path(cache_dir), Path(cache_dir) / "feature-rows"):
+        for path in folder.glob("*.npz"):
+            match = _NAME.fullmatch(path.name)
+            if not match:
+                continue
+            try:
+                per_map[match["map"]] = per_map.get(match["map"], 0) + path.stat().st_size
+            except OSError:
+                pass                  # pruned meanwhile
+    return {"bytes": _tree_bytes(cache_dir), "maps": dict(sorted(per_map.items())), "evictions": EVICTIONS,
+            "kept_pruned": KEPT_PRUNED}
 
 
 def clear_incoming(cache_dir: Path) -> None:

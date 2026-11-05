@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import os
 import sys
 import time
 import traceback
@@ -142,6 +143,23 @@ def height_file(name: str, digest: str) -> Path:
     return path
 
 
+def _phase(message: str) -> None:
+    """One progress line on stderr, only when CONTROL_PHASE_LOG is set (replay_tasks sets it for Workflow runs):
+    the run's log then shows where its time went even when the run is killed before it answers."""
+    if os.environ.get("CONTROL_PHASE_LOG"):
+        sys.stderr.write(f"control phase: {message}\n")
+        sys.stderr.flush()
+
+
+def _rows_line(geo) -> str | None:
+    """How many feature-row answers this round reused from the map's shared rows file and how many it worked out
+    itself, or None on a map that has none (it never creates the row cache just to report it)."""
+    cache = getattr(geo, "_feature_sight_cache", None)
+    if cache is None:
+        return None
+    return f"{geo.name}: feature rows {cache.row_hits} reused, {cache.row_builds} built"
+
+
 def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
     from app.control import geometry
 
@@ -155,6 +173,7 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
         if height_mode != 'legacy_default':
             options['height_mode'] = height_mode
         geo = geometry.load_geometry(name, heights=Path(heights) if heights else None, **options)
+        _phase(f"{name}: visibility start")
         try:
             geometry.visibility(geo)
         except Exception:
@@ -165,6 +184,7 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
                 except OSError:
                     pass
             raise
+        _phase(f"{name}: visibility {geo.visibility_source} in {geo.visibility_s:.1f} s")
         _GEOMETRY[key] = geo
     return _GEOMETRY[key]
 
@@ -408,6 +428,7 @@ def compute_task(task: dict) -> dict:
         return {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}",
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
+        geo = None
         options = {'exact': task['features']} if task.get('features') else {}
         if task.get('height_mode'):
             options['height_mode'] = task['height_mode']
@@ -441,12 +462,17 @@ def compute_task(task: dict) -> dict:
                     guard = _CacheGuard(None)
                     guard._fail(error)
             rc = engine.compute_round(blob, geo, link, observer=guard)
+            _phase(f"{task['map']}: round computed at {time.time() - started:.1f} s")
+            rows = _rows_line(geo)
+            if rows:
+                _phase(rows)
             summary_options = {'provenance': provenance} if provenance is not None else {}
             result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob, **summary_options),
                       "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
             if job:
                 guard.close(rc.missing_inputs)
                 result["gaps"] = _gaps(geo, blob, link, job, guard=guard)
+                _phase(f"{task['map']}: gaps done at {time.time() - started:.1f} s")
     except FeatureArtifactError as error:
         result = feature_failure(error)
     except engine_errors as error:
@@ -458,4 +484,8 @@ def compute_task(task: dict) -> dict:
         result = {"status": "failed", "error_kind": kind,
                   "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}
     result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    if geo is not None and getattr(geo, "visibility_source", None):
+        # Whether this round found the map's visibility cache or had to build it: the replay worker's warm builds
+        # read it (a round that built it means its key wasn't really warm).
+        result.update({"visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s})
     return result
