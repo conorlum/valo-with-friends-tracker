@@ -5,112 +5,132 @@
 **Goal:** Keep 30+ map-control Workflow runs busy when control needs recomputing, and stop losing work to
 30-minute cancellations.
 
-**Architecture:** A map's visibility cache becomes its own Workflow task, a *warm build*: one per warm key, with a
-long time limit, saving the cache to the worker's disk. After that, every round of the key runs at once. The time
-limits come off the 30-minute floor and count from when a run actually starts. Each run reports whether it found
-the cache or built it, so a wrong "warm" heals itself. `/health` shows enough to ramp concurrency in measured
+**Architecture:** Workflow runs get long limits (local mode keeps today's), counted from when a run actually starts,
+with a timeout and a "started" report settled atomically. A map's visibility cache becomes its own Workflow task, a
+*warm build*: one per warm identity (map, heights, features, height mode). Once a probe round confirms it read the
+cache, every round of that identity runs at once, each holding a lease on the exact cache file. Each run logs its
+phases as it goes and reports where its cache came from, and `/health` shows enough to ramp concurrency in measured
 steps.
 
-**Tech Stack:** Python 3.13 stdlib (`replay_worker/`, `replay_tasks/`), numpy (the control child), FastAPI site
+**Tech Stack:** Python 3.13 stdlib (`replay_worker/`, `replay_tasks/`), numpy (control children), FastAPI site
 (`webapp/app/services/`), Render Workflows (`render==1.0.1` SDK), pytest.
+
+**Revision 2 (2026-11-05):** rewritten after two independent reviews of revision 1 (both pasted into the planning
+session; their findings are folded in below, tagged F1-F9 and S1-S8/N1-N11 where cited). Owner decisions: build everything in one PR (warm builds included, behind their
+switch); the height-build limit comes from the longest measured build (3x it, plus 3 h); the feature-row overwrite
+question is **open** (see "Open decision" at the end) and no task touches it until it's decided.
 
 ## Why (the evidence this plan rests on)
 
-- Every cancelled run in the Render dashboard ended at 29:59. The worker cancels a run itself when its deadline
-  passes (`replay_worker/runs.py` `Runs.wait`), and a control round's deadline is 30 minutes from when the worker
-  *opens* it, queue time included (`Settings.control_timeout_s`, `replay_tasks/main.py` `timeout_seconds=1800`,
-  site `STALE_JOB_S = 1800`).
-- A map counts as cold until one of its rounds finishes **and** its visibility cache reaches the worker's disk. A
-  cold map runs one round at a time (`ControlRunner._next`). A run posts its caches only after its round finishes
-  (`replay_tasks/tasks.py` `control`), so a round killed at 29:59 throws away the cache it built. The map stays
-  cold, the next round starts again from nothing, and so on: one run in progress, cancelled at 29:59, over and
-  over.
-- The worker's warm list lives only in memory, so every worker deploy makes every map cold.
-- Render's own cap is not the limit: at least 20 concurrent runs per workspace (Hobby), 50 on Pro
-  (https://render.com/docs/workflows-limits). A task's `timeout_seconds` may be 30 s to 24 h
+- Every cancelled run in the Render dashboard ended at 29:59 (owner, 2026-11-04). The worker cancels a run itself
+  when its deadline passes (`replay_worker/runs.py` `Runs.wait`), and a remote round's deadline is 30 minutes from
+  when the worker *opens* it, queue time included (`Settings.control_timeout_s` / `control_warm_timeout_s` = 1800,
+  `replay_tasks/main.py` `timeout_seconds=1800`, site `STALE_JOB_S = 1800`).
+- A map is cold until one of its rounds finishes and its visibility cache reaches the worker's disk. A cold map runs
+  one round at a time (`ControlRunner._next`, `busy_maps` / `warming_maps`). A run posts its caches only after the
+  child exits (`replay_tasks/tasks.py` `control`), so a round killed at 29:59 loses the cache it built, its `infra`
+  result discards the map's warmth (`server.py` `_run` settlement), and the next round starts from nothing. The
+  site retries a round at most 3 times, 300 s apart, then gives it up until it restarts (`MAX_TRIES`, `BACKOFF_S`),
+  so a cold map can end up with nothing in progress at all.
+- The worker's warm list is in memory only, so every worker deploy makes every map cold.
+- Not yet proven: that the 29:59 runs were spending their time on the visibility build rather than on the round
+  itself. Task 1's phase log answers it from the next cancelled or slow run's log.
+- Render limits compute, not run count (https://render.com/docs/workflows-limits, read 2026-11-05): new runs may
+  start with up to 16 CPU per minute in total on Hobby (32 on Pro), and runs over that wait in Render's queue. A
+  `flex` run uses up to 1 CPU (render-workflows spec D7), so about 16 runs can start per minute on Hobby. A task's
+  `timeout_seconds` may be 30 s to 24 h, per execution attempt, and each retry gets a fresh one
   (https://render.com/docs/workflows-defining).
 
-## Risks this plan mitigates (owner-approved, 2026-11-05)
+## Risks and their mitigations
 
 | # | Risk | Mitigation (task) |
 |---|------|-------------------|
-| 1 | The 29:59 cancellations aren't cache builds | Task 0 gate; Task 1 makes every run report where its cache came from |
-| 2 | An old-heights cache makes a map look warm, releasing 30+ rounds that each build the cache | A key is warm only by the **exact file name** its warm build reported, while that file is on disk; a round that still had to build drops the key (Task 4) |
-| 3 | The 2 GB cache budget makes maps evict each other at higher concurrency | `/health` shows the bytes per map and an eviction count; the reserve is configurable (Tasks 1, 6); the ramp stops on any eviction (Task 7) |
-| 4 | The worker or site becomes the bottleneck | `/health` shows open runs by kind and the oldest one's age; the ramp goes in steps with stop criteria (Tasks 1, 7) |
-| 5 | Parallel rounds overwrite each other's feature-row caches | A smaller feature-row file never replaces a larger one (Task 6). Correctness is already guarded: `test_feature_visibility_cache.py::test_cached_visibility_matches_original_*` proves cached rows give the uncached answers |
-| 6 | Long limits hide hung runs | The limits are finite (2 h a round, 6 h a warm build, 23 h a height build); Render's own limit sits above each; `/health` shows the oldest open run per kind (Tasks 1, 5) |
-| 7 | Three services must agree during the rollout | Warm builds sit behind `REPLAY_WARM_BUILDS` (off by default, `sync: false`); the `started` post is best effort both ways (Tasks 2, 4, 7) |
-| 8 | Test drift | The control output is unchanged (scheduling only), so no revision bump; each task runs `scripts/test_catalog.py plan` for its files (every task) |
+| 1 | The cause isn't the visibility build | Phase lines in every run's live log; rounds report `visibility_source` (Task 1); the runbook reads them before relying on warm builds (Task 7) |
+| 2 | A wrong "warm" releases 30+ rounds that each build the cache | Warm identity includes height mode; a key is ready only by the exact file its warm build named, while that file is on disk; **one probe round** must report `cache` before the rest go; each round **leases** the exact file until it settles, and a round whose file vanished is requeued and the key re-warmed, never run cold (Task 4) |
+| 3 | The cache budget makes maps evict each other | `/health` shows bytes per map, budget evictions and per-map prunes; the reserve is a setting; the runbook checks the archive's free space before raising it (Tasks 1, 6, 7) |
+| 4 | The worker or site becomes the bottleneck | `/health` shows, per kind, runs waiting for Render, runs started, and the oldest of each; the ramp goes in steps with stop rules (Tasks 2, 7) |
+| 5 | Parallel rounds overwrite each other's feature rows | **Open decision** (end of plan). Costs time only: `test_feature_visibility_cache.py::test_cached_visibility_matches_original_*` proves cached rows give the uncached answers |
+| 6 | Long limits hide hung runs | Finite limits; the height limit is set from measured builds; `/health` shows the oldest started run per kind (Tasks 2, 5) |
+| 7 | The services deploy separately | Warm builds behind `REPLAY_WARM_BUILDS` (off by default, `sync: false`); `started` is best effort both ways; new limit settings that an old worker ignores (Tasks 2, 4, 5) |
+| 8 | Test drift | Scheduling only: no revision bump; each task runs `scripts/test_catalog.py plan --git` (every task) |
+| 9 | A worker deploy (every merge restarts the single-instance worker) now loses up to 2 h of a round or 6 h of a warm build, and Render keeps running the orphan | Runbook: merge only while no warm build is building and control is quiet (Task 7). Saving warm-build tokens across restarts is out of scope |
+| 10 | New worker + old task image: Render's old 1800 s limit ends a round and retries it once | The same runbook rule: merge while control is quiet, then check both images are up before a recompute (Task 7) |
+| 11 | Local mode drifts under the new limits | Workflow-only limit settings and site backstops; a test pins local's 1800 / 3600 / 1800 / 7200 (Task 5) |
 
 ## Global Constraints
 
-- Repo is PUBLIC: no credentials, no secrets, no dashboard values beyond what `render.yaml` already holds.
+- Repo is PUBLIC: no credentials, no secrets, no run tokens, no dashboard values beyond what `render.yaml` holds.
 - `replay_worker/server.py`, `replay_worker/runs.py`, `replay_worker/control_cache.py` and `replay_tasks/tasks.py`
   stay **standard library only**. Only `replay_worker/control_job.py`, `replay_worker/warm_job.py` and `app.control`
   may import numpy, and only inside the child (`tests/replays/test_control_isolation.py`).
 - Never change what a control round computes: no change to `app/control/engine.py`, `CONTROL_REVISION`,
-  `GEOMETRY_VERSION` or `cache_key`. This is scheduling only.
-- Local mode (`REPLAY_CONTROL_RUNNER=local`) keeps today's behaviour exactly. Warm builds apply only when
-  `control_runner == "workflow"`, a run table exists, and `REPLAY_WARM_BUILDS` is on.
+  `GEOMETRY_VERSION` or `cache_key`.
+- **Local mode keeps today's behaviour exactly**, including its limits: `REPLAY_CONTROL_TIMEOUT_S`,
+  `REPLAY_CONTROL_WARM_TIMEOUT_S`, `REPLAY_HEIGHT_TIMEOUT_S`, site `STALE_JOB_S = 1800` and `STALE_BUILD_S = 7200`
+  are untouched. Warm builds apply only when `control_runner == "workflow"`, a run table exists, and
+  `REPLAY_WARM_BUILDS` is on.
 - Never merge. The furthest this goes is an open PR whose link goes to the owner.
-- Tests run from `webapp/` with the main checkout's interpreter (worktrees have no venv):
-  `../../../../webapp/.venv313/Scripts/python.exe -m pytest <files> -n 0 -q` from
-  `<worktree>/webapp`. Before each commit, `python scripts/test_catalog.py plan --git` names any other suites the
-  changed files need; run them too.
-- New tests go into the existing test files named in each task (the catalog `tests/suites.toml` already lists them).
-  A new file under `replay_worker/` is already guarded by `"../replay_worker/**"`.
-- Time limits, in one place (Task 5 pins their order in a test):
+- Tests run from `<worktree>/webapp` with the main checkout's interpreter (worktrees have no venv):
+  `../../../../webapp/.venv313/Scripts/python.exe -m pytest <files> -n 0 -q`. Before each commit,
+  `python scripts/test_catalog.py plan --git` names other suites the changed files need; run them too.
+- New tests go into the existing test files named in each task (`tests/suites.toml` already lists them). A new file
+  under `replay_worker/` is already guarded by `"../replay_worker/**"`.
+- Commit messages: write them to a scratch file and `git commit -F <file>` (no heredocs), ending with the
+  `Co-Authored-By` line the session gives.
+- Workflow time limits (Task 5 pins their order in a test). `H` is the height limit from Task 0.
 
-  | What | Worker (`render.yaml` env) | Render task `timeout_seconds` | Site backstop |
+  | What | Worker setting (Workflow runs only) | Render task `timeout_seconds` | Site backstop (Workflow only) |
   |---|---|---|---|
-  | control round | `REPLAY_CONTROL_TIMEOUT_S` 7200 | 7500 | `STALE_JOB_S` 15000 (> 2 x 7200) |
-  | warming round (fallback only) | `REPLAY_CONTROL_WARM_TIMEOUT_S` 7200 | (control's) 7500 | (as control) |
+  | control round (warming or not) | `REPLAY_CONTROL_RUN_TIMEOUT_S` 7200 | 7500 | `STALE_RUN_S` 15000 (> 2 x 7200) |
   | warm build | `REPLAY_WARM_BUILD_TIMEOUT_S` 21600 | 21900 | none: the site never sees warm builds |
-  | height build | `REPLAY_HEIGHT_TIMEOUT_S` 82800 | 86400 (Render's maximum) | `STALE_BUILD_S` 166200 (> 2 x 82800) |
+  | height build | `REPLAY_HEIGHT_RUN_TIMEOUT_S` = `H` | `H` + 300 (at most 86400) | `STALE_BUILD_RUN_S` = 2 x `H` + 600 |
 
-  The site backstop is twice the worker's limit because a run's limit restarts when it starts (Task 2): the worst
-  case is a full limit queued, then a full limit working.
+  A run's deadline never passes `opened + 2 x limit` (Task 2), which is why each site backstop exceeds twice the
+  limit: the worst case is a queue wait plus a full attempt, or two attempts.
 
 ---
 
-### Task 0: Confirm the cause (gate, owner + implementer, no code)
+### Task 0: Measure the height builds (owner, no code)
 
 **Files:** none.
 
-- [ ] **Step 1: Owner reads three cancelled `control` runs in the Render dashboard** (replay-tasks workflow, Runs).
-  For each, copy the run's input: its `map` and its `files` list. Never copy its `token`.
-- [ ] **Step 2: Classify.** A visibility cache is a name matching `^<Map>\.[0-9a-f]{16}\.npz$` (no folder prefix).
-  - No such name in `files` on all three: the run had no cache and was building it. **Proceed.**
-  - A cache name present on any of them: that run had the cache and was still slow. **Stop** and report to the
-    owner: the bottleneck is elsewhere and this plan's Task 4 would not help it. Tasks 1, 2 and 5 still apply on
-    their own.
-- [ ] **Step 3: Record the result** (maps, and whether `files` held a cache) in the PR description.
+- [ ] **Step 1: Owner reads the replay-tasks workflow's completed `heights` runs** in the Render dashboard (Runs,
+  filter on task `heights`) and gives the longest duration `L`, in seconds. If there are fewer than 3 completed
+  height runs, use `L = 3600` (today's limit, which none is known to have hit).
+- [ ] **Step 2: Compute `H`** = `3 x L + 10800`, rounded up to a whole hour, at most `86100` (Render's 24 h less
+  300 s). Example: `L = 2400` gives `3 x 2400 + 10800 = 18000`, so `H = 18000` (5 h). Record `L` and `H` in the PR
+  description. Task 5 uses `H`.
+- [ ] **Step 3: Owner opens one cancelled `control` run's log** and says whether it shows any line at all. A run
+  with no log line never started (it was cancelled in Render's queue). Record the answer in the PR description: it
+  is context for the runbook, not a gate.
 
 ---
 
-### Task 1: Every run says where its cache came from; `/health` shows the cache and the open runs
+### Task 1: Runs log their phases live and report where their cache came from; `/health` shows the cache
 
 **Files:**
 - Modify: `webapp/app/control/geometry.py` (`visibility`, new `visibility_name`)
-- Modify: `webapp/app/control/task.py` (`compute_task`)
-- Modify: `replay_worker/control_cache.py` (`store`, new `EVICTIONS`, new `usage`)
-- Modify: `replay_worker/runs.py` (`Run`, `Runs.open`, `Runs.status`)
+- Modify: `webapp/app/control/task.py` (new `_phase`; `_load`; `compute_task`)
+- Modify: `replay_tasks/tasks.py` (`_child_env`, `_run_child`)
+- Modify: `replay_worker/control_cache.py` (`store`, new `EVICTIONS`, `KEPT_PRUNED`, `usage`)
 - Modify: `replay_worker/server.py` (`/health` body)
 - Test: `webapp/tests/replays/test_control_task.py`, `webapp/tests/replays/test_replay_worker_control_cache.py`,
-  `webapp/tests/replays/test_replay_worker_runs.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`
+  `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Produces: `geometry.visibility_name(geo) -> str` (`"<Map>.<16 hex>.npz"`); `compute_task` result keys
-  `"visibility_source"` (`"cache"` | `"built"`) and `"visibility_s"` (float) whenever the geometry loaded;
-  `control_cache.EVICTIONS: int`; `control_cache.usage(cache_dir: Path) -> {"bytes": int, "maps": {map: int},
-  "evictions": int}`; `Run.opened: float`; `Runs.status()["by_kind"] -> {kind: {"open": int, "oldest_s": float}}`;
-  `/health` `control.cache` = `usage(...)` plus `"reserve"` (Task 6 adds the reserve; this task writes
-  `control_cache.RESERVE`).
+- Produces: `geometry.visibility_name(geo) -> str` (`"<Map>.<16 hex>.npz"`); `task._phase(message: str) -> None`
+  (writes `control phase: <message>` to stderr only when env `CONTROL_PHASE_LOG` is set); `compute_task` result keys
+  `"visibility_source"` (`"cache"` | `"built"`) and `"visibility_s"` (float) whenever the geometry loaded, on success
+  and on a round's own (`engine`) failure; `tasks._child_env` sets `CONTROL_PHASE_LOG=1`; `tasks._run_child` passes
+  the child's stderr straight through to the run's own stderr (Render's log), reading only stdout;
+  `control_cache.EVICTIONS: int`, `control_cache.KEPT_PRUNED: int`; `control_cache.usage(cache_dir) -> {"bytes",
+  "maps": {map: bytes}, "evictions", "kept_pruned"}`; `/health` `control.cache` = `usage(...)` + `"reserve"`.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `webapp/tests/replays/test_control_task.py`, after `test_a_map_the_machine_has_no_geometry_for_is_an_infra_failure`:
+`webapp/tests/replays/test_control_task.py`: the file puts only `HERE` on `sys.path`; add
+`sys.path.insert(0, str(HERE.parents[2]))` (the repo root, for `replay_worker`) on the line after it. Then, after
+`test_a_map_the_machine_has_no_geometry_for_is_an_infra_failure`:
 
 ```python
 def test_a_round_says_where_its_visibility_cache_came_from(toy):
@@ -119,6 +139,15 @@ def test_a_round_says_where_its_visibility_cache_came_from(toy):
     result = task.compute_task(t)
     assert result["status"] == "ok"
     assert result["visibility_source"] == "cache" and result["visibility_s"] == 0.25
+
+
+def test_a_round_the_engine_refuses_still_says_where_its_cache_came_from(toy):
+    toy.visibility_source = "built"
+    players = {0: (None, [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 380, 250, 180)])}
+    t, _ = make_task(toy, sides={}, players=players)     # as test_a_round_the_engine_refuses_is_the_rounds_own_failure
+    result = task.compute_task(t)
+    assert result["status"] == "failed" and result["error_kind"] == "engine"
+    assert result["visibility_source"] == "built"
 
 
 def test_the_visibility_cache_name_is_one_the_worker_takes_for_that_map(toy):
@@ -130,72 +159,87 @@ def test_the_visibility_cache_name_is_one_the_worker_takes_for_that_map(toy):
     name = geometry.visibility_name(toy)
     assert re.fullmatch(rf"{toy.name}\.[0-9a-f]{{16}}\.npz", name)
     assert control_cache.valid(name, toy.name) and control_cache.visibility_name(name)
+
+
+def test_phase_lines_go_to_stderr_only_when_asked(monkeypatch, capsys):
+    task._phase("quiet")
+    assert capsys.readouterr().err == ""
+    monkeypatch.setenv("CONTROL_PHASE_LOG", "1")
+    task._phase("Ascent: visibility start")
+    assert capsys.readouterr().err == "control phase: Ascent: visibility start\n"
 ```
 
-The file puts only `HERE` on `sys.path`; `replay_worker` lives at the repo root, so add
-`sys.path.insert(0, str(HERE.parents[2]))` on the line after the existing `sys.path.insert(0, str(HERE))`.
-
-In `webapp/tests/replays/test_replay_worker_control_cache.py`:
+`webapp/tests/replays/test_replay_worker_control_cache.py`:
 
 ```python
-def test_usage_counts_bytes_per_map_and_evictions(tmp_path):
+def test_usage_counts_bytes_per_map_and_the_counters(tmp_path):
     (tmp_path / "feature-rows").mkdir()
     (tmp_path / f"Ascent.{'a' * 16}.npz").write_bytes(b"x" * 10)
     (tmp_path / "feature-rows" / f"Ascent.{'d' * 64}.npz").write_bytes(b"y" * 5)
     (tmp_path / f"Haven.{'b' * 16}.npz").write_bytes(b"z" * 7)
-    before = control_cache.EVICTIONS
     found = control_cache.usage(tmp_path)
-    assert found["maps"] == {"Ascent": 15, "Haven": 7}
-    assert found["bytes"] == 22 and found["evictions"] == before
+    assert found["maps"] == {"Ascent": 15, "Haven": 7} and found["bytes"] == 22
+    assert found["evictions"] == control_cache.EVICTIONS and found["kept_pruned"] == control_cache.KEPT_PRUNED
 
 
-def test_a_store_that_drops_files_counts_them(tmp_path):
+def test_a_store_that_drops_files_for_room_counts_evictions(tmp_path):
     old = tmp_path / f"Ascent.{'a' * 16}.npz"
     old.write_bytes(b"x" * 60)
-    incoming = tmp_path / ".incoming"
-    incoming.mkdir()
-    src = incoming / "n.npz"
+    (tmp_path / ".incoming").mkdir()
+    src = tmp_path / ".incoming" / "n.npz"
     src.write_bytes(b"y" * 60)
     before = control_cache.EVICTIONS
     assert control_cache.store(tmp_path, f"Haven.{'b' * 16}.npz", src, reserve=100)
     assert not old.exists() and control_cache.EVICTIONS == before + 1
+
+
+def test_a_store_past_kept_counts_the_prune(tmp_path):
+    import os
+    import time
+
+    for i, key in enumerate("abc"):
+        path = tmp_path / f"Ascent.{key * 16}.npz"
+        path.write_bytes(b"x")
+        os.utime(path, (time.time() - 100 + i, time.time() - 100 + i))
+    (tmp_path / ".incoming").mkdir()
+    src = tmp_path / ".incoming" / "n.npz"
+    src.write_bytes(b"y")
+    before = control_cache.KEPT_PRUNED
+    assert control_cache.store(tmp_path, f"Ascent.{'d' * 16}.npz", src)
+    assert not (tmp_path / f"Ascent.{'a' * 16}.npz").exists() and control_cache.KEPT_PRUNED == before + 1
 ```
 
-In `webapp/tests/replays/test_replay_worker_runs.py`, after `test_status_counts_open_runs`:
+`webapp/tests/replays/test_replay_worker_control_workflow.py`, after `test_engine_failure_settles_engine`:
 
 ```python
-def test_status_counts_open_runs_by_kind_with_the_oldest_age(render, tmp_path):
-    now = [100.0]
-    table = make_runs(render, tmp_path, clock=lambda: now[0])
-    table.open("control", "c1", {}, timeout_s=60)
-    now[0] = 130.0
-    table.open("control", "c2", {}, timeout_s=60)
-    table.open("heights", "h1", {}, timeout_s=60)
-    now[0] = 145.0
-    by_kind = table.status()["by_kind"]
-    assert by_kind == {"control": {"open": 2, "oldest_s": 45.0}, "heights": {"open": 1, "oldest_s": 15.0}}
-```
-
-In `webapp/tests/replays/test_replay_worker_control_workflow.py`, after `test_engine_failure_settles_engine`:
-
-```python
-def test_health_shows_the_control_cache_and_open_runs_by_kind(remote):
+def test_health_shows_the_control_cache(remote):
     import urllib.request
 
-    control, _, settings, base = remote
+    control, _, _, base = remote
     warm_up(control)
     with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
         body = json.loads(response.read())
     assert body["control"]["cache"]["maps"] == {"Ascent": len(b"built")}
     assert body["control"]["cache"]["reserve"] > 0
-    assert body["workflow"]["by_kind"] == {}           # nothing open once the round settled
+
+
+def test_a_childs_stderr_reaches_the_runs_own_log(tmp_path, monkeypatch, capfd):
+    say = tmp_path / "say.py"
+    say.write_text("import json, os, sys\n"
+                   "sys.stderr.write('control phase: ' + os.environ.get('CONTROL_PHASE_LOG', '-') + '\\n')\n"
+                   "print(json.dumps({'status': 'ok'}))\n", encoding="utf-8")
+    monkeypatch.setenv("REPLAY_CONTROL_CMD", json.dumps([sys.executable, str(say)]))
+    monkeypatch.setenv("REPLAY_CONTROL_MEMORY_MB", "0")
+    answer = tasks._run_child("REPLAY_CONTROL_CMD", [], b"{}", tmp_path)
+    assert answer == {"status": "ok"}
+    assert "control phase: 1" in capfd.readouterr().err
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_task.py tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_runs.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
-Expected: the six new tests FAIL (`KeyError: 'visibility_source'`, `AttributeError: ... 'visibility_name'`,
-`'usage'`, `'EVICTIONS'`, `KeyError: 'by_kind'`, `KeyError: 'cache'`).
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_task.py tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
+Expected: the nine new tests FAIL (missing result keys, `visibility_name`, `_phase`, `usage`, `KEPT_PRUNED`,
+`cache` in `/health`, and the child's stderr captured instead of passed through).
 
 - [ ] **Step 3: Implement**
 
@@ -208,47 +252,81 @@ def visibility_name(geo: Geometry) -> str:
     return f"{geo.name}.{cache_key(geo)[:16]}.npz"
 ```
 
-and in `visibility`, replace `path = directory / f"{geo.name}.{cache_key(geo)[:16]}.npz"` with
+and in `visibility` replace `path = directory / f"{geo.name}.{cache_key(geo)[:16]}.npz"` with
 `path = directory / visibility_name(geo)`.
 
-`webapp/app/control/task.py`, `compute_task`: add `geo = None` as the first line inside the second `try:` (before
-`options = ...`), and replace the last two lines
+`webapp/app/control/task.py`: add `import os` to the imports, then above `def _load(`:
 
 ```python
-    result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
-    return result
+def _phase(message: str) -> None:
+    """One progress line on stderr, only when CONTROL_PHASE_LOG is set (replay_tasks sets it for Workflow runs):
+    the run's log then shows where its time went even when the run is killed before it answers."""
+    if os.environ.get("CONTROL_PHASE_LOG"):
+        sys.stderr.write(f"control phase: {message}\n")
+        sys.stderr.flush()
 ```
 
-with
+In `_load`, wrap the existing `geometry.visibility(geo)` call (inside its `try:`):
+
+```python
+        _phase(f"{name}: visibility start")
+        try:
+            geometry.visibility(geo)
+        except Exception:
+            ...                                     # unchanged
+        _phase(f"{name}: visibility {geo.visibility_source} in {geo.visibility_s:.1f} s")
+```
+
+In `compute_task`: add `geo = None` as the first line of the second `try:` block (before `options = ...`). After
+`rc = engine.compute_round(blob, geo, link, observer=guard)` add
+`_phase(f"{task['map']}: round computed at {time.time() - started:.1f} s")`, and after the `result["gaps"] = ...`
+line inside `if job:` add `_phase(f"{task['map']}: gaps done at {time.time() - started:.1f} s")`. Replace the
+function's last two lines with:
 
 ```python
     result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
     if geo is not None and getattr(geo, "visibility_source", None):
         # Whether this round found the map's visibility cache or had to build it: the replay worker's warm builds
-        # read it (a round that built it means the key wasn't really warm).
+        # read it (a round that built it means its key wasn't really warm).
         result.update({"visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s})
     return result
 ```
 
-`replay_worker/control_cache.py`: under `_LOCK = ...` add
+`replay_tasks/tasks.py`:
+- `_child_env`: `env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache), "CONTROL_PHASE_LOG": "1"}`
+- `_run_child`: replace `"capture_output": True` in `kwargs` with `"stdout": subprocess.PIPE` (stderr is then
+  inherited: the child's lines reach Render's log as they are written). Nothing reads `done.stderr`. Add to its
+  docstring: "The child's stderr goes straight to this run's log, live."
+
+`replay_worker/control_cache.py`, under `_LOCK = ...`:
 
 ```python
-EVICTIONS = 0                     # files `store` dropped to make room since this process started (/health)
+EVICTIONS = 0                     # files `store` dropped for room since this process started (/health)
+KEPT_PRUNED = 0                   # older generations `store` dropped past KEPT since this process started (/health)
 ```
 
-In `store`, make `global EVICTIONS` the first line of the body (after the docstring), and inside `if over > 0:`,
-just before `for path in victims:`, add:
+In `store`, make `global EVICTIONS, KEPT_PRUNED` the first line of the body (after the docstring). Inside
+`if over > 0:`, just before `for path in victims:`, add `EVICTIONS += len(victims)`. Replace the KEPT prune loop
 
 ```python
-                EVICTIONS += len(victims)
+            for old in _newest(target.parent, map_name)[KEPT:]:
+                old.unlink(missing_ok=True)
 ```
 
-Then add after `has_visibility`:
+with
+
+```python
+            for old in _newest(target.parent, map_name)[KEPT:]:
+                old.unlink(missing_ok=True)
+                KEPT_PRUNED += 1
+```
+
+After `has_visibility`, add:
 
 ```python
 def usage(cache_dir: Path) -> dict:
-    """What /health shows of the cache: every byte under it, the bytes of each map's visibility and feature-row
-    caches, and how many files `store` has dropped to make room since this process started."""
+    """What /health shows of the cache: every byte under it (incoming files too), each map's visibility and
+    feature-row bytes, and the files `store` dropped since this process started."""
     per_map: dict[str, int] = {}
     for folder in (Path(cache_dir), Path(cache_dir) / "feature-rows"):
         for path in folder.glob("*.npz"):
@@ -259,42 +337,11 @@ def usage(cache_dir: Path) -> dict:
                 per_map[match["map"]] = per_map.get(match["map"], 0) + path.stat().st_size
             except OSError:
                 pass                  # pruned meanwhile
-    return {"bytes": _tree_bytes(cache_dir), "maps": dict(sorted(per_map.items())), "evictions": EVICTIONS}
+    return {"bytes": _tree_bytes(cache_dir), "maps": dict(sorted(per_map.items())), "evictions": EVICTIONS,
+            "kept_pruned": KEPT_PRUNED}
 ```
 
-(`_NAME`'s `map` group already matches both folders: the `folder` group is optional.)
-
-`replay_worker/runs.py`: add a field to `Run` after `done`:
-
-```python
-    opened: float = 0.0             # when the worker opened it (Runs.status: the oldest open run per kind)
-```
-
-In `Runs.open`, build the run with `opened=self.clock()`:
-
-```python
-        now = self.clock()
-        run = Run(job_id, kind, token or secrets.token_hex(16), {k: Path(v) for k, v in files.items()}, folder,
-                  deadline if deadline is not None else now + timeout_s, render_id, opened=now)
-```
-
-Replace `Runs.status` with:
-
-```python
-    def status(self) -> dict:
-        now = self.clock()
-        with self.lock:
-            open_runs = list(self.open_runs.values())
-        by_kind: dict[str, dict] = {}
-        for run in open_runs:
-            entry = by_kind.setdefault(run.kind, {"open": 0, "oldest_s": 0.0})
-            entry["open"] += 1
-            entry["oldest_s"] = max(entry["oldest_s"], round(now - run.opened, 1))
-        return {"open": len(open_runs), "by_kind": by_kind, "starts_per_min": self.pacer.per_min,
-                "last_reconcile": self.last_reconcile, "last_error": self.last_error}
-```
-
-`replay_worker/server.py`, in the `/health` handler, after the `body["control"] = {...}` statement:
+`replay_worker/server.py`, `/health` handler, after the `body["control"] = {...}` statement:
 
 ```python
                 if control is not None:
@@ -304,53 +351,58 @@ Replace `Runs.status` with:
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: the Step 2 command. Expected: all PASS (including every test that passed before).
+Run: the Step 2 command. Expected: all PASS, old and new.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add webapp/app/control/geometry.py webapp/app/control/task.py replay_worker/control_cache.py replay_worker/runs.py replay_worker/server.py webapp/tests/replays/test_control_task.py webapp/tests/replays/test_replay_worker_control_cache.py webapp/tests/replays/test_replay_worker_runs.py webapp/tests/replays/test_replay_worker_control_workflow.py
-git commit -F <message file>     # "Replay runs report where their cache came from; /health shows the cache and open runs"
-```
+- [ ] **Step 5: Commit** (`git add` the files listed above; message: "Replay runs log their phases live and report
+  where their cache came from; /health shows the cache")
 
 ---
 
-### Task 2: A run's time limit counts from when it starts, not from when the worker queued it
+### Task 2: A run's limit counts from when it starts; a timeout and a start can't cross
 
 **Files:**
-- Modify: `replay_worker/runs.py` (`Run`, `Runs.open`, new `Runs.started`)
-- Modify: `replay_worker/server.py` (`do_POST`: new route `POST /runs/{job}/started`; module docstring route list)
-- Modify: `replay_tasks/tasks.py` (`WorkerLink.post_started`; call it first in `control` and `heights`)
+- Modify: `replay_worker/runs.py` (`Run`, `Runs.open`, `Runs.wait`, new `Runs.started`, `Runs.status`)
+- Modify: `replay_worker/server.py` (route `POST /runs/{job}/started`; module docstring route list)
+- Modify: `replay_tasks/tasks.py` (`WorkerLink.post_started`; first statement of `control` and `heights`)
 - Test: `webapp/tests/replays/test_replay_worker_runs.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`,
   `webapp/tests/replays/test_replay_worker_heights_workflow.py` (its `FakeLink` only)
 
 **Interfaces:**
-- Consumes: `Run.opened` (Task 1).
-- Produces: `Run.timeout_s: float`, `Run.extend_on_start: bool`, `Run.started_at: float | None`;
-  `Runs.started(job_id: str, token: str | None) -> bool`; route `POST /runs/{job}/started` (header `X-Run-Token`,
-  empty body) answering 200 `{"ok": true}` or 409; `WorkerLink.post_started() -> None` (never raises an `OSError`).
+- Produces: `Run.opened`, `Run.timeout_s`, `Run.extend_on_start`, `Run.started_at`, `Run.timing_out`;
+  `Runs.started(job_id, token) -> bool`; route `POST /runs/{job}/started` (header `X-Run-Token`, empty body): 200
+  `{"ok": true}` or 409 `{"ok": false}`; `WorkerLink.post_started() -> None` (never raises an `OSError`);
+  `Runs.status()["by_kind"] -> {kind: {"open", "waiting", "oldest_wait_s", "oldest_run_s"}}`.
 
-Rule: a run opened **without** an explicit `deadline` (control, warm, heights, ping) gets `deadline = opened +
-timeout_s` as today; when it posts `started`, the deadline becomes `max(deadline, started_at + timeout_s)`, once.
-A run opened **with** a `deadline` (parse: its job's one deadline, saved for restarts) never moves. An older task
-image that never posts `started` keeps today's deadline; an older worker 404s the post and the task carries on.
+Rules:
+1. A run opened **without** an explicit `deadline` (control, warm, heights, ping) starts with
+   `deadline = opened + timeout_s`, as today.
+2. Each `started` post (one per Render attempt) sets `started_at = now` and
+   `deadline = min(max(deadline, now + timeout_s), opened + 2 * timeout_s)`. So a retried attempt gets a full limit
+   unless the run has already used up twice its limit.
+3. A run opened **with** a `deadline` (parse: its job's one deadline, saved for restarts) records `started_at` but its
+   deadline never moves.
+4. `wait` claims a timeout under the run table's lock (`timing_out = True`) before it cancels. A `started` post that
+   arrives after the claim is refused (409), and one that arrives before it moves the deadline, so the claim
+   re-reads the new deadline and doesn't fire.
+5. An older task image never posts `started`, so rule 1's deadline holds. An older worker answers the post with a
+   404, which `post_started` swallows.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `webapp/tests/replays/test_replay_worker_runs.py`, after `test_deadline_cancels_and_settles_timeout`:
+`webapp/tests/replays/test_replay_worker_runs.py`, after `test_deadline_cancels_and_settles_timeout`:
 
 ```python
-def test_started_gives_a_run_its_whole_limit_from_that_moment(render, tmp_path):
+def test_each_start_gives_a_full_limit_up_to_twice_the_limit_from_opening(render, tmp_path):
     now = [100.0]
     table = make_runs(render, tmp_path, clock=lambda: now[0])
     run = table.open("control", "j1", {}, timeout_s=50)
     assert run.deadline == 150.0
-    now[0] = 140.0                                   # it waited 40 s in Render's queue
+    now[0] = 140.0                                   # 40 s in Render's queue
     assert table.started("j1", run.token)
     assert run.deadline == 190.0 and run.started_at == 140.0
-    now[0] = 160.0
-    assert table.started("j1", run.token)            # a second post never moves it again
-    assert run.deadline == 190.0
+    now[0] = 170.0                                   # Render retried: a second attempt starts
+    assert table.started("j1", run.token)
+    assert run.deadline == 200.0                     # min(170 + 50, 100 + 2 x 50)
 
 
 def test_started_never_moves_an_explicit_deadline(render, tmp_path):
@@ -359,79 +411,104 @@ def test_started_never_moves_an_explicit_deadline(render, tmp_path):
     run = table.open("parse", "j2", {}, 0, deadline=130.0)
     now[0] = 120.0
     assert table.started("j2", run.token)
-    assert run.deadline == 130.0
+    assert run.deadline == 130.0 and run.started_at == 120.0
 
 
-def test_started_refuses_a_wrong_token_or_an_unknown_job(render, tmp_path):
+def test_started_refuses_a_wrong_token_an_unknown_job_or_a_claimed_timeout(render, tmp_path):
     table = make_runs(render, tmp_path)
-    table.open("control", "j3", {}, timeout_s=50)
+    run = table.open("control", "j3", {}, timeout_s=50)
     assert not table.started("j3", "nope")
     assert not table.started("nobody", "nope")
+    run.timing_out = True                            # wait() has claimed the timeout
+    assert not table.started("j3", run.token)
+
+
+def test_status_counts_waiting_and_started_runs_by_kind(render, tmp_path):
+    now = [100.0]
+    table = make_runs(render, tmp_path, clock=lambda: now[0])
+    a = table.open("control", "c1", {}, timeout_s=600)
+    table.open("control", "c2", {}, timeout_s=600)
+    table.open("heights", "h1", {}, timeout_s=600)
+    now[0] = 130.0
+    table.started("c1", a.token)
+    now[0] = 145.0
+    assert table.status()["by_kind"] == {
+        "control": {"open": 2, "waiting": 1, "oldest_wait_s": 45.0, "oldest_run_s": 15.0},
+        "heights": {"open": 1, "waiting": 1, "oldest_wait_s": 45.0, "oldest_run_s": 0.0}}
 ```
 
-In `webapp/tests/replays/test_replay_worker_control_workflow.py`:
-1. Add to `FakeLink`:
+`webapp/tests/replays/test_replay_worker_control_workflow.py`:
+1. Add to `FakeLink`: `def post_started(self): self.order.append("started")`.
+2. The two existing `link.order` assertions now begin with `"started"`: in
+   `test_control_task_mirrors_caches_runs_the_child_and_posts_new_caches_first`,
+   `["started", f"cache/Ascent.{'c' * 16}.npz", "result"]`; in `test_control_task_posts_a_cache_rewritten_in_place`,
+   `["started", route, "result"]`.
+3. Add:
 
 ```python
-    def post_started(self):
-        self.order.append("started")
-```
-
-2. The two existing `link.order` assertions (in `test_control_task_mirrors_caches_runs_the_child_and_posts_new_caches_first`
-   and `test_control_task_posts_a_cache_rewritten_in_place`) now begin with `"started"`:
-   `["started", f"cache/Ascent.{'c' * 16}.npz", "result"]` and `["started", route, "result"]`.
-3. Add after `test_health_shows_the_control_cache_and_open_runs_by_kind`:
-
-```python
-def test_started_route_moves_the_deadline_and_refuses_a_wrong_token(remote):
+def post_started_to(base, job, token):
     import urllib.error
     import urllib.request
 
+    request = urllib.request.Request(f"{base}/runs/{job}/started", data=b"", method="POST",
+                                     headers={"X-Run-Token": token, "Content-Length": "0"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_started_route_moves_the_deadline_and_refuses_a_wrong_token(remote):
     control, _, _, base = remote
     table = control.runs
+    now = [1000.0]
+    table.clock = lambda: now[0]
     run = table.open("control", "manual", {}, timeout_s=50)
-    before = run.deadline
-
-    def post(token):
-        request = urllib.request.Request(f"{base}/runs/manual/started", data=b"", method="POST",
-                                         headers={"X-Run-Token": token, "Content-Length": "0"})
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return response.status
-        except urllib.error.HTTPError as error:
-            return error.code
-
-    assert post("wrong") == 409 and run.deadline == before
-    time.sleep(0.05)
-    assert post(run.token) == 200 and run.deadline > before
+    assert post_started_to(base, "manual", "wrong") == 409 and run.deadline == 1050.0
+    now[0] = 1010.0
+    assert post_started_to(base, "manual", run.token) == 200 and run.deadline == 1060.0
     table.close(run)
 
 
-def test_a_task_carries_on_when_the_worker_does_not_know_the_started_route():
-    link = tasks.WorkerLink("http://127.0.0.1:9", "j", "t", timeout_s=1)    # nothing listens on port 9
-    link.post_started()                                                      # must not raise
+def test_an_older_worker_without_the_route_answers_404_and_the_task_carries_on(tmp_path):
+    from fake_render import closed_port
+
+    settings = server.Settings(temp_root=tmp_path / "tmp")
+    httpd = server.make_server(server.Worker(settings, on_parse=None), runs_table=None)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        assert post_started_to(base, "j", "t") == 404
+        tasks.WorkerLink(base, "j", "t", timeout_s=5).post_started()                       # 404: no raise
+        tasks.WorkerLink(f"http://127.0.0.1:{closed_port()}", "j", "t", timeout_s=1).post_started()   # refused
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 ```
 
-In `webapp/tests/replays/test_replay_worker_heights_workflow.py`, add the same `post_started` method to its
-`FakeLink` (that file asserts no `.order`).
+`webapp/tests/replays/test_replay_worker_heights_workflow.py`: its `FakeLink` has no `order` list. Add a no-op:
+`def post_started(self): pass`.
 
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_runs.py tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_heights_workflow.py -n 0 -q`
-Expected: the new tests FAIL (`AttributeError: 'Runs' object has no attribute 'started'`, 404 instead of 409,
-`AttributeError: 'WorkerLink' object has no attribute 'post_started'`); the changed `order` assertions FAIL.
+Expected: the six new tests FAIL (`started`, `by_kind`, 404 instead of 409, `post_started`), and the two edited
+`order` assertions FAIL. The heights tests still pass (`tasks.heights` doesn't call `post_started` yet).
 
 - [ ] **Step 3: Implement**
 
-`replay_worker/runs.py`, `Run` gets three more fields after `opened`:
+`replay_worker/runs.py`, `Run`: after `done`, add
 
 ```python
-    timeout_s: float = 0.0          # its limit, counted again from `started` (Runs.started)
+    opened: float = 0.0             # when the worker opened it
+    timeout_s: float = 0.0          # its limit, given again from each start (Runs.started)
     extend_on_start: bool = False   # False for a run opened with an explicit deadline (a parse): it never moves
-    started_at: float | None = None
+    started_at: float | None = None  # the latest attempt's start, as the run reported it
+    timing_out: bool = False        # wait() has claimed the timeout: a late start is refused
 ```
 
-`Runs.open` passes them:
+`Runs.open` (replace the `run = Run(...)` statement):
 
 ```python
         now = self.clock()
@@ -445,49 +522,86 @@ New method after `accepts`:
 
 ```python
     def started(self, job_id: str, token: str | None) -> bool:
-        """The run says it has begun its work. A run's limit counts from here, once: the time it waited in
-        Render's queue must not eat its working time. A run opened with an explicit deadline (a parse, whose one
-        deadline is saved for restarts) never moves. False when no open run takes this token."""
+        """An attempt of the run says it has begun its work. Each attempt gets a full limit from now, but never past
+        twice the limit from opening (Render gives a retry a fresh limit; the site's backstop allows twice ours). A
+        run opened with an explicit deadline (a parse) never moves. False when no open run takes the token, or wait()
+        has already claimed its timeout."""
         run = self.accepts(job_id, token)
         if run is None:
             return False
         with self.lock:
-            if run.extend_on_start and run.started_at is None:
-                run.started_at = self.clock()
-                run.deadline = max(run.deadline, run.started_at + run.timeout_s)
+            if run.done.is_set() or run.timing_out:
+                return False
+            now = self.clock()
+            run.started_at = now
+            if run.extend_on_start:
+                run.deadline = min(max(run.deadline, now + run.timeout_s), run.opened + 2 * run.timeout_s)
         return True
 ```
 
-(`wait` already re-reads `run.deadline` on every 0.2 s pass, so a moved deadline takes effect at once.)
+`Runs.wait` (replace the method):
 
-`replay_worker/server.py`: in the module docstring's route list, after the `POST /runs/{job}/result` entry add
-
+```python
+    def wait(self, run: Run) -> dict:
+        """Blocks until the run settles or its deadline passes, closes it, and returns its answer. The timeout is
+        claimed under the lock, so a start that lands first moves the deadline and one that lands after is refused;
+        Render is told to cancel outside the lock."""
+        while not run.done.wait(timeout=0.2):
+            with self.lock:
+                expired = not run.done.is_set() and not run.timing_out and self.clock() >= run.deadline
+                if expired:
+                    run.timing_out = True
+            if expired:
+                if run.render_id:
+                    try:
+                        self.api.cancel(run.render_id)
+                    except RenderError:
+                        pass
+                self._settle(run, failure("timeout", "the run timed out"))
+        self.close(run)
+        return run.result
 ```
-    POST /runs/{job}/started        (header X-Run-Token) the run has begun: its limit counts from now. 200; 409.
+
+`Runs.status` (replace the method):
+
+```python
+    def status(self) -> dict:
+        now = self.clock()
+        with self.lock:
+            open_runs = list(self.open_runs.values())
+        by_kind: dict[str, dict] = {}
+        for run in open_runs:
+            entry = by_kind.setdefault(run.kind, {"open": 0, "waiting": 0, "oldest_wait_s": 0.0,
+                                                  "oldest_run_s": 0.0})
+            entry["open"] += 1
+            if run.started_at is None:            # Render hasn't started it (or an old task image never says)
+                entry["waiting"] += 1
+                entry["oldest_wait_s"] = max(entry["oldest_wait_s"], round(now - run.opened, 1))
+            else:
+                entry["oldest_run_s"] = max(entry["oldest_run_s"], round(now - run.started_at, 1))
+        return {"open": len(open_runs), "by_kind": by_kind, "starts_per_min": self.pacer.per_min,
+                "last_reconcile": self.last_reconcile, "last_error": self.last_error}
 ```
 
-In `make_handler`, add a method beside `_run_result`:
+`replay_worker/server.py`: in the module docstring's route list, after `POST /runs/{job}/result`, add
+`POST /runs/{job}/started  (header X-Run-Token) an attempt has begun: its limit counts from now. 200; 409.`
+In `make_handler`, beside `_run_result`:
 
 ```python
         def _run_started(self):
             parts = self.path.split("/")          # ["", "runs", job, "started"]
-            token = self.headers.get("X-Run-Token")
-            ok = len(parts) == 4 and runs_table.started(parts[2], token)
+            ok = len(parts) == 4 and runs_table.started(parts[2], self.headers.get("X-Run-Token"))
             return self._send(HTTPStatus.OK if ok else HTTPStatus.CONFLICT, {"ok": ok})
 ```
 
-and in `do_POST`, inside `if runs_table is not None and self.path.startswith("/runs/"):`, after the `/result` line:
+and in `do_POST`, inside the `/runs/` block after the `/result` line:
+`if self.path.endswith("/started"): return self._run_started()`.
 
-```python
-                if self.path.endswith("/started"):
-                    return self._run_started()
-```
-
-`replay_tasks/tasks.py`, in `WorkerLink` after `post_result`:
+`replay_tasks/tasks.py`, `WorkerLink`, after `post_result`:
 
 ```python
     def post_started(self) -> None:
-        """Tells the worker the run has begun, so its limit counts from now (not from when it was queued). Best
+        """Tells the worker this attempt has begun, so its limit counts from now, not from when it was queued. Best
         effort: an older worker answers 404 and a run must carry on either way."""
         request = urllib.request.Request(self._url("started"), data=b"", method="POST",
                                          headers={"X-Run-Token": self.token, "Content-Length": "0"})
@@ -498,19 +612,12 @@ and in `do_POST`, inside `if runs_table is not None and self.path.startswith("/r
             pass
 ```
 
-and make `link.post_started()` the first statement of `control(args, link)` and of `heights(args, link)` (before
-`work = ...`). Not `parse`: its deadline is explicit and never moves.
+Make `link.post_started()` the first statement of `control(args, link)` and of `heights(args, link)`. Not `parse`:
+its deadline is explicit, and its `started_at` isn't needed.
 
-- [ ] **Step 4: Run them to see them pass**
+- [ ] **Step 4: Run them to see them pass** (the Step 2 command). Expected: all PASS.
 
-Run: the Step 2 command. Expected: all PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add replay_worker/runs.py replay_worker/server.py replay_tasks/tasks.py webapp/tests/replays/test_replay_worker_runs.py webapp/tests/replays/test_replay_worker_control_workflow.py webapp/tests/replays/test_replay_worker_heights_workflow.py
-git commit -F <message file>     # "A Workflow run's limit counts from when it starts"
-```
+- [ ] **Step 5: Commit** (message: "A Workflow run's limit counts from when each attempt starts")
 
 ---
 
@@ -519,31 +626,28 @@ git commit -F <message file>     # "A Workflow run's limit counts from when it s
 **Files:**
 - Modify: `webapp/app/control/task.py` (new `_load_options`, new `warm_task`; `compute_task` uses `_load_options`)
 - Create: `replay_worker/warm_job.py`
-- Modify: `replay_tasks/tasks.py` (new `warm`; `TASKS`)
-- Modify: `replay_tasks/main.py` (register `warm`)
+- Modify: `replay_tasks/tasks.py` (new `warm`; `TASKS`), `replay_tasks/main.py` (register `warm`)
 - Test: `webapp/tests/replays/test_control_task.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Consumes: `geometry.visibility_name` (Task 1), `WorkerLink.post_started` (Task 2).
-- Produces: `task.warm_task(task: dict) -> dict`, answering `{"status": "ok", "visibility": "<Map>.<16 hex>.npz",
-  "visibility_source": "cache" | "built", "visibility_s": float, "key", "seconds", "peak"}` or
-  `{"status": "failed", "error_kind": "infra", "error", "key", "seconds", "peak"}`. Its input is a control task with
-  `blob`, `link`, `gaps` and `gaps_only` removed (`map`, `height`, `heights`, `features`, `height_mode`, `inputs`,
-  `geometry` kept). `replay_worker/warm_job.py`: stdin task JSON, stdout answer JSON. `tasks.warm(args, link)`;
-  `tasks.TASKS["warm"]`; Render task `replay-tasks/warm`; env override `REPLAY_WARM_CMD` (JSON argv, as
-  `REPLAY_CONTROL_CMD`).
+- Consumes: `geometry.visibility_name`, `task._phase` (Task 1); `WorkerLink.post_started` (Task 2).
+- Produces: `task.warm_task(task) -> dict`: `{"status": "ok", "visibility": "<Map>.<16 hex>.npz",
+  "visibility_source", "visibility_s", "key", "seconds", "peak"}` or `{"status": "failed", "error_kind": "infra",
+  "error", "key", "seconds", "peak"}`. Its input is a control task without `blob`, `link`, `gaps` and `gaps_only`.
+  `replay_worker/warm_job.py`: stdin task JSON, stdout answer JSON. `tasks.warm(args, link)`; `tasks.TASKS["warm"]`;
+  Render task `replay-tasks/warm` (limit 21900 s); env override `REPLAY_WARM_CMD` (JSON argv).
 
 - [ ] **Step 1: Write the failing tests**
 
-In `webapp/tests/replays/test_control_task.py`, after the Task 1 tests:
+`webapp/tests/replays/test_control_task.py`:
 
 ```python
 def test_a_warm_build_names_the_cache_file_its_rounds_will_read(toy):
     from app.control import geometry
 
     toy.visibility_source, toy.visibility_s = "built", 1.5
-    result = task.warm_task({"key": "warm:Open::", "map": toy.name})
-    assert result["status"] == "ok" and result["key"] == "warm:Open::"
+    result = task.warm_task({"key": "warm:Open", "map": toy.name})
+    assert result["status"] == "ok" and result["key"] == "warm:Open"
     assert result["visibility"] == geometry.visibility_name(toy)
     assert result["visibility_source"] == "built" and result["visibility_s"] == 1.5
 
@@ -552,9 +656,16 @@ def test_a_warm_build_for_a_map_with_no_geometry_is_an_infra_failure():
     result = task.warm_task({"key": "w", "map": "NoSuchMap"})
     assert result["status"] == "failed" and result["error_kind"] == "infra"
     assert "GeometryError" in result["error"]
+
+
+def test_a_warm_build_loads_with_the_rounds_own_height_mode(monkeypatch):
+    seen = []
+    monkeypatch.setattr(task, "_load", lambda *a, **k: seen.append(k) or (_ for _ in ()).throw(RuntimeError("x")))
+    task.warm_task({"key": "w", "map": "Ascent", "height_mode": "flat", "features": "f" * 64})
+    assert seen == [{"height_mode": "flat", "exact": "f" * 64}]
 ```
 
-In `webapp/tests/replays/test_replay_worker_control_workflow.py`, below `STUB` add:
+`webapp/tests/replays/test_replay_worker_control_workflow.py`, below `STUB`:
 
 ```python
 WARM_STUB = """
@@ -564,11 +675,12 @@ if task["map"] == "Broken":
     print(json.dumps({"status": "failed", "error_kind": "infra", "error": "no geometry", "key": task["key"]}))
     sys.exit(0)
 cache = pathlib.Path(os.environ["CONTROL_CACHE_DIR"])
-name = f"{task['map']}.{'e' * 16}.npz"
+name = f"{task['map']}.{(task.get('height_mode') or 'e')[0] * 16}.npz"
 source = "cache" if (cache / name).is_file() else "built"
 if source == "built":
     (cache / name).write_bytes(b"vis")
-print(json.dumps({"status": "ok", "visibility": name, "visibility_source": source, "key": task["key"]}))
+print(json.dumps({"status": "ok", "visibility": name, "visibility_source": source, "visibility_s": 0.1,
+                  "seconds": 0.2, "key": task["key"]}))
 """
 
 
@@ -581,15 +693,14 @@ def warm_stub(tmp_path, monkeypatch):
 
 
 def test_warm_task_posts_the_new_cache_then_the_answer_naming_it(warm_stub):
-    link = FakeLink({"task": json.dumps({"key": "warm:Ascent::", "map": "Ascent"}).encode()})
+    link = FakeLink({"task": json.dumps({"key": "warm:Ascent", "map": "Ascent"}).encode()})
     tasks.warm({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
     name = f"Ascent.{'e' * 16}.npz"
     assert link.order == ["started", f"cache/{name}", "result"]
-    assert link.result["status"] == "ok" and link.result["visibility"] == name
-    assert link.result["visibility_source"] == "built"
+    assert link.result["visibility"] == name and link.result["visibility_source"] == "built"
 
 
-def test_warm_task_with_the_cache_already_there_posts_nothing_but_the_answer(warm_stub):
+def test_warm_task_with_the_cache_already_there_posts_only_the_answer(warm_stub):
     name = f"Ascent.{'e' * 16}.npz"
     link = FakeLink({"task": json.dumps({"key": "w", "map": "Ascent"}).encode(), name: b"vis"})
     tasks.warm({"job_id": "j", "token": "t", "map": "Ascent", "files": [name]}, link)
@@ -605,10 +716,13 @@ def test_the_warm_task_is_registered_with_render():
     assert "warm" in names and "warm" in tasks.TASKS
 ```
 
+(The stub names a `flat` task's file `Ascent.ffff….npz` and any other `Ascent.eeee….npz`, so Task 4 can test that
+two height modes need two files.)
+
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_task.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
-Expected: the five new tests FAIL (`AttributeError: ... 'warm_task'`, `... 'warm'`, `assert 'warm' in names`).
+Expected: the six new tests FAIL (`warm_task`, `tasks.warm`, `'warm' in names`).
 
 - [ ] **Step 3: Implement**
 
@@ -626,7 +740,7 @@ def _load_options(task: dict) -> dict:
 def warm_task(task: dict) -> dict:
     """A warm build (replay_worker/warm_job.py): loads the map's geometry exactly as `compute_task` would for a
     round of this task, building its visibility cache when this machine lacks it, and names the cache file. The
-    replay worker counts the task's warm key as warm while that file is on its disk."""
+    replay worker counts the task's warm identity as ready while that file is on its disk."""
     started = time.time()
     try:
         from app.control import geometry
@@ -640,27 +754,15 @@ def warm_task(task: dict) -> dict:
     return result
 ```
 
-and in `compute_task` replace
-
-```python
-        options = {'exact': task['features']} if task.get('features') else {}
-        if task.get('height_mode'):
-            options['height_mode'] = task['height_mode']
-        geo = _load(task["map"], task.get("heights"), task.get("height"), **options)
-```
-
-with
-
-```python
-        geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))
-```
+and in `compute_task` replace the three `options` lines and the `_load` call with
+`geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))`.
 
 Create `replay_worker/warm_job.py`:
 
 ```python
-"""A map's visibility cache, built (or found) by itself before any round of its warm key runs: the replay worker's
-warm build (docs/superpowers/plans/2026-11-05-replay-throughput.md). Same task JSON as control_job, same control
-venv interpreter; the server never imports this module.
+"""A map's visibility cache, built (or found) by itself before any round of its warm identity runs: the replay
+worker's warm build (docs/superpowers/plans/2026-11-05-replay-throughput.md). Same task JSON as control_job, same
+control venv interpreter; the server never imports this module.
 
     <control venv python> -m replay_worker.warm_job  < task.json  > result.json
 """
@@ -698,8 +800,8 @@ if __name__ == "__main__":
 
 ```python
 def warm(args: dict, link: WorkerLink) -> None:
-    """One warm key's visibility cache: the warm child alone, then the cache posted before the answer naming it
-    (the worker counts the key warm only once that file is on its disk)."""
+    """One warm identity's visibility cache: the warm child alone, then the cache posted before the answer naming it
+    (the worker counts the identity ready only once that file is on its disk)."""
     link.post_started()
     work = Path(tempfile.mkdtemp(prefix="warm-"))
     try:
@@ -718,7 +820,7 @@ def warm(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 ```
 
-and `TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}`.
+`TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}`.
 
 `replay_tasks/main.py`, after the `control` task block (above the "Later steps add" comment):
 
@@ -729,65 +831,108 @@ def warm(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 ```
 
-Also extend the module docstring's second paragraph: "warm (a map's visibility cache by itself) runs on `flex` with
-a 6 h 5 min limit, above the worker's 6 h (`REPLAY_WARM_BUILD_TIMEOUT_S`)."
+Add to the docstring: "warm (a map's visibility cache by itself) runs on `flex`, its limit 300 s above the
+worker's `REPLAY_WARM_BUILD_TIMEOUT_S`."
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: the Step 2 command, then `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_isolation.py -n 0 -q`
-Expected: all PASS (the isolation test proves the server still imports no numpy).
+Run: the Step 2 command, then `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_isolation.py -n 0 -q`.
+Expected: all PASS.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add webapp/app/control/task.py replay_worker/warm_job.py replay_tasks/tasks.py replay_tasks/main.py webapp/tests/replays/test_control_task.py webapp/tests/replays/test_replay_worker_control_workflow.py
-git commit -F <message file>     # "The warm build: a map's visibility cache as its own Workflow task"
-```
+- [ ] **Step 5: Commit** (message: "The warm build: a map's visibility cache as its own Workflow task")
 
 ---
 
-### Task 4: The worker schedules warm builds; a key is warm by its exact cache file
+### Task 4: The worker schedules warm builds, probes, and leases the exact cache file
 
 **Files:**
-- Modify: `replay_worker/server.py` (`Settings`, `Settings.from_env`, module docstring env list, `WARM_BUILD_TRIES`,
-  `ControlRunner`: `__init__`, `remote`, `counts`, new `uses_warm_builds` / `_ready` / `_ask_warm`, `_next`, `_run`;
-  `_run_cache` route accepts `warm` runs)
+- Modify: `replay_worker/control_cache.py` (new `_LEASES`, `lease`, `unlease`; `_evictable` and the KEPT prune skip
+  leased files)
+- Modify: `replay_worker/server.py` (`Settings`, `from_env`, docstring env list, `WARM_BUILD_TRIES`,
+  `WARM_SECONDS_KEPT`; `ControlJob` new fields; `ControlRunner` `__init__`, `submit`, `remote`, `counts`, new
+  `uses_warm_builds` / `_ready` / `_ask_warm`, `_next`, `_run`, `_run_remote`; `_run_cache` accepts `warm` runs)
 - Modify: `render.yaml` (worker: `REPLAY_WARM_BUILDS`, `sync: false`)
-- Test: `webapp/tests/replays/test_replay_worker_control_workflow.py`
+- Test: `webapp/tests/replays/test_replay_worker_control_cache.py`,
+  `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Consumes: `tasks.warm` / Render task `warm` (Task 3); round results' `visibility_source` (Task 1).
-- Produces: `Settings.warm_builds: bool` (env `REPLAY_WARM_BUILDS`, `"1"` or `"true"`, default off);
+- Consumes: `tasks.warm` (Task 3); results' `visibility_source` and `seconds` (Tasks 1, 3).
+- Produces: `control_cache.lease(cache_dir, name) -> bool`, `control_cache.unlease(name) -> None`;
+  `Settings.warm_builds: bool` (env `REPLAY_WARM_BUILDS`: `"1"`/`"true"`, default off);
   `Settings.warm_build_timeout_s: float` (env `REPLAY_WARM_BUILD_TIMEOUT_S`, default 21600.0);
-  `server.WARM_BUILD_TRIES = 2`; `ControlJob.kind` may be `"warm"`; `ControlRunner.counts()["warm_builds"]` (only
-  while warm builds are on) = `{"ready": [warm keys], "building": [warm keys], "failures": {warm key: n},
-  "misses": int}`.
+  `server.WARM_BUILD_TRIES = 2`; `ControlJob.warm_id: str`, `ControlJob.released_name: str | None`;
+  `ControlJob.kind` may be `"warm"`; `ControlRunner.counts()["warm_builds"]` (only while on) =
+  `{"ready": [ids], "confirmed": [ids], "building": [ids], "failures": {id: n}, "misses": int,
+  "recent_seconds": [float]}`.
 
-Rules (only while `uses_warm_builds()`; local mode and switch-off keep today's code path untouched):
-1. A control round may start, beside any number of rounds of its map, when its warm key is **ready**: the key has a
-   recorded cache name **and** that file is on this disk (`_ready`). No per-map one-at-a-time rule.
-2. A round whose key isn't ready waits, and its key gets **one** warm build (`_ask_warm`), queued ahead of every
-   round. A warm build counts against `control_runs` like any run.
-3. A warm build that answers ok, names a valid cache of its map that isn't in `cache_unsent`, and whose file is on
-   disk records `warm_names[key] = name`. Otherwise the key's failure count goes up.
-4. After `WARM_BUILD_TRIES` failed warm builds for a key, its rounds fall back to today's rule (one round warms
-   the map alone, through the `self.warm` set), so a broken map still surfaces its real error.
-5. A round on a ready key that reports `visibility_source == "built"` is a **miss**: count it and forget the key's
-   name, so the remaining rounds wait for a new warm build instead of each building the cache (risk 2).
-6. A round's machine failure or time-out does **not** make its key cold. Only rules 5 and "the file left the disk"
-   (rule 1) do.
+Rules (only while `uses_warm_builds()`; local mode and the switch-off path keep today's code):
+1. **Identity.** `warm_id` = today's `warm_key` + `|` + the task's `height_mode` (empty when absent). Two height
+   modes on one map and digest are two identities (review F3/S3). The local path keeps using `warm_key`.
+2. **Ready.** An identity is ready while `warm_names[id]` is set **and** that file is on this disk.
+3. **Warm build.** A round whose identity isn't ready waits, and the identity gets one warm build, queued ahead of
+   every round. It counts against `control_runs`. An ok answer naming a valid cache of its map, not in
+   `cache_unsent`, with the file on disk, sets `warm_names[id]`, clears its failures and drops any old confirmation.
+   Anything else increments its failures.
+4. **Fallback.** After `WARM_BUILD_TRIES` failed warm builds, the identity's rounds fall back to today's rule (one
+   round warms the map alone, through `self.warm`). A worker restart clears the count.
+5. **Probe.** A ready identity that isn't confirmed releases **one** round (the probe) and holds the rest. A probe that
+   reports `visibility_source == "cache"` confirms the identity, and every round then goes at once. A probe that
+   reports `"built"` is a miss (rule 7). A probe with no `visibility_source` (a machine failure) frees the probe slot,
+   so the next round probes.
+6. **Lease.** A released round carries the exact name (`released_name`). `_run_remote` leases that file for the
+   run's whole life and adds it to the run's inputs by name. If the lease fails because the file is gone, the round
+   is put back at the front of the queue uncounted, the name is forgotten, and the identity is warmed again: it never
+   runs cold.
+7. **Miss.** A round that reports `"built"` while `warm_names[id]` is still the name it was released under forgets
+   that name and its confirmation, and counts one miss. A late round from an older name changes nothing.
+8. **Machine failures don't cool anything.** A round's machine failure or timeout leaves `warm_names` and
+   `confirmed` alone.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `webapp/tests/replays/test_replay_worker_control_workflow.py`:
+`webapp/tests/replays/test_replay_worker_control_cache.py`:
 
-1. In `STUB`, make the round report where its cache came from and add an `infra` mode. Replace the `if mode ==
-   "engine":` … `else:` block at the end with:
+```python
+def test_a_leased_file_survives_both_kept_pruning_and_eviction(tmp_path):
+    import os
+    import time
+
+    leased = f"Ascent.{'a' * 16}.npz"
+    for i, key in enumerate("abc"):
+        path = tmp_path / f"Ascent.{key * 16}.npz"
+        path.write_bytes(b"x" * 10)
+        os.utime(path, (time.time() - 100 + i, time.time() - 100 + i))
+    assert control_cache.lease(tmp_path, leased)
+    try:
+        (tmp_path / ".incoming").mkdir()
+        src = tmp_path / ".incoming" / "n.npz"
+        src.write_bytes(b"y" * 10)
+        assert control_cache.store(tmp_path, f"Ascent.{'d' * 16}.npz", src, reserve=35)
+        assert (tmp_path / leased).exists()            # the oldest, yet neither pruned nor evicted
+    finally:
+        control_cache.unlease(leased)
+
+
+def test_lease_refuses_a_file_that_is_gone_and_unlease_balances(tmp_path):
+    assert not control_cache.lease(tmp_path, f"Ascent.{'a' * 16}.npz")
+    (tmp_path / f"Ascent.{'b' * 16}.npz").write_bytes(b"x")
+    assert control_cache.lease(tmp_path, f"Ascent.{'b' * 16}.npz")
+    assert control_cache.lease(tmp_path, f"Ascent.{'b' * 16}.npz")
+    control_cache.unlease(f"Ascent.{'b' * 16}.npz")
+    assert f"Ascent.{'b' * 16}.npz" in control_cache._LEASES
+    control_cache.unlease(f"Ascent.{'b' * 16}.npz")
+    assert f"Ascent.{'b' * 16}.npz" not in control_cache._LEASES
+```
+
+`webapp/tests/replays/test_replay_worker_control_workflow.py`:
+
+1. In `STUB`, report where the cache came from and add an `infra` mode. Replace the final `if mode == "engine":` …
+   `else:` block with:
 
 ```python
 source = task["link"].get("source") or ("cache" if any(n.count(".") == 2 and "/" not in n for n in had) else "built")
 if mode == "engine":
-    print(json.dumps({"status": "failed", "error_kind": "engine", "error": "no side"}))
+    print(json.dumps({"status": "failed", "error_kind": "engine", "error": "no side", "visibility_source": source}))
 elif mode == "infra":
     print(json.dumps({"status": "failed", "error_kind": "infra", "error": "machine went away"}))
 else:
@@ -795,7 +940,7 @@ else:
                       "visibility_source": source}))
 ```
 
-2. Add a fixture beside `remote`:
+2. A fixture and helpers:
 
 ```python
 @pytest.fixture
@@ -822,25 +967,57 @@ def warm_remote(tmp_path, stub, warm_stub):
 
 def warm_starts(render):
     return [s["task"] for s in render.started].count("replay-tasks/warm")
+
+
+def warm_and_confirm(control):
+    """One warm build, then one probe round that reads its cache: the identity is confirmed."""
+    wait_done(control, [control.submit(round_task("probe"))])
 ```
 
 3. The tests:
 
 ```python
-def test_a_cold_map_gets_one_warm_build_then_its_rounds_run_side_by_side(warm_remote):
+def test_a_cold_map_gets_one_warm_build_one_probe_then_every_round_at_once(warm_remote):
     control, render, _, _ = warm_remote
     jobs = [control.submit(round_task(f"r{i}", mode="sleep:1.5")) for i in range(6)]
-    wait_running(control, 6)
     done = wait_done(control, jobs)
     assert all(j.status == "done" for j in done)
     assert warm_starts(render) == 1 and render.started[0]["task"] == "replay-tasks/warm"
     assert all(f"Ascent.{'e' * 16}.npz" in j.result["had"] for j in done)
-    assert control.counts()["warm_builds"]["misses"] == 0
+    state = control.counts()["warm_builds"]
+    assert state["misses"] == 0 and state["confirmed"] == [jobs[0].warm_id]
+
+
+def test_after_confirmation_rounds_run_side_by_side(warm_remote):
+    control, _, _, _ = warm_remote
+    warm_and_confirm(control)
+    jobs = [control.submit(round_task(f"s{i}", mode="sleep:1.5")) for i in range(6)]
+    wait_running(control, 6)
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+
+
+def test_a_probe_that_built_the_cache_holds_the_rest_and_warms_again(warm_remote):
+    control, render, _, _ = warm_remote
+    probe = control.submit(round_task("p", source="built", mode="sleep:0.5"))
+    rest = [control.submit(round_task(f"q{i}")) for i in range(3)]
+    wait_done(control, [probe])
+    assert control.counts()["warm_builds"]["misses"] == 1
+    assert all(j.status == "done" for j in wait_done(control, rest))
+    assert warm_starts(render) == 2
+
+
+def test_two_height_modes_are_two_identities_with_two_files(warm_remote):
+    control, render, _, _ = warm_remote
+    a = control.submit(round_task("a"))
+    b = control.submit({**round_task("b"), "height_mode": "flat"})
+    wait_done(control, [a, b])
+    assert a.warm_id != b.warm_id and warm_starts(render) == 2
+    assert f"Ascent.{'f' * 16}.npz" in b.result["had"]
 
 
 def test_a_new_height_digest_gets_its_own_warm_build(warm_remote):
     control, render, _, _ = warm_remote
-    wait_done(control, [control.submit(round_task("a"))])
+    warm_and_confirm(control)
     wait_done(control, [control.submit({**round_task("b"), "height": "d2"})])
     assert warm_starts(render) == 2
 
@@ -850,32 +1027,52 @@ def test_a_warm_build_that_keeps_failing_falls_back_to_one_warming_round(warm_re
     job = control.submit(round_task("x", map_name="Broken", build=True))
     assert wait_done(control, [job])[0].status == "done"
     assert warm_starts(render) == server.WARM_BUILD_TRIES
-    assert control.counts()["warm_builds"]["failures"] == {job.warm_key: server.WARM_BUILD_TRIES}
+    assert control.counts()["warm_builds"]["failures"] == {job.warm_id: server.WARM_BUILD_TRIES}
 
 
-def test_a_round_that_still_built_the_cache_sends_its_key_back_for_a_warm_build(warm_remote):
-    control, render, _, _ = warm_remote
-    wait_done(control, [control.submit(round_task("a"))])
-    wait_done(control, [control.submit(round_task("b", source="built"))])
-    assert control.counts()["warm_builds"]["misses"] == 1
-    wait_done(control, [control.submit(round_task("c"))])
-    assert warm_starts(render) == 2
-
-
-def test_a_key_whose_cache_left_the_disk_is_warmed_again(warm_remote):
+def test_a_round_whose_file_left_the_disk_waits_for_a_new_warm_build_never_runs_cold(warm_remote):
     control, render, settings, _ = warm_remote
-    wait_done(control, [control.submit(round_task("a"))])
+    warm_and_confirm(control)
     (settings.control_cache_dir / f"Ascent.{'e' * 16}.npz").unlink()
-    wait_done(control, [control.submit(round_task("b"))])
+    job = control.submit(round_task("b"))
+    assert wait_done(control, [job])[0].status == "done"
     assert warm_starts(render) == 2
+    assert f"Ascent.{'e' * 16}.npz" in job.result["had"]      # it ran with the cache, not cold
 
 
-def test_a_round_that_fails_for_the_machine_leaves_its_key_warm(warm_remote):
+def test_a_round_whose_lease_fails_is_requeued_uncounted_and_runs_after_a_new_warm_build(warm_remote, monkeypatch):
+    from replay_worker import control_cache
+
     control, render, _, _ = warm_remote
-    wait_done(control, [control.submit(round_task("a"))])
+    warm_and_confirm(control)
+    real, calls = control_cache.lease, []
+
+    def flaky(cache_dir, name):                    # the file vanishes between scheduling and the run's lease
+        calls.append(name)
+        return False if len(calls) == 1 else real(cache_dir, name)
+
+    monkeypatch.setattr(control_cache, "lease", flaky)
+    job = control.submit(round_task("b"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert len(calls) == 2 and warm_starts(render) == 2
+    assert f"Ascent.{'e' * 16}.npz" in job.result["had"]
+
+
+def test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed(warm_remote):
+    control, render, _, _ = warm_remote
+    warm_and_confirm(control)
     assert wait_done(control, [control.submit(round_task("b", mode="infra"))])[0].error_kind == "infra"
     wait_done(control, [control.submit(round_task("c"))])
     assert warm_starts(render) == 1
+
+
+def test_health_lists_only_identities_whose_file_is_on_disk(warm_remote):
+    control, _, settings, _ = warm_remote
+    warm_and_confirm(control)
+    assert control.counts()["warm_builds"]["ready"]
+    (settings.control_cache_dir / f"Ascent.{'e' * 16}.npz").unlink()
+    assert control.counts()["warm_builds"]["ready"] == []
+    assert control.counts()["warm_builds"]["recent_seconds"] == [0.2]
 
 
 def test_warm_builds_off_keeps_todays_rule_and_reports_nothing(remote):
@@ -890,93 +1087,143 @@ def test_settings_read_the_warm_build_switch_and_limit():
     assert not server.Settings.from_env({}).warm_builds
 ```
 
-(`Settings.from_env(cls, env=os.environ)` takes a mapping, so a plain dict works.)
-
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
-Expected: the eight new tests FAIL (`TypeError: ... unexpected keyword argument 'warm_builds'` and friends). The
-existing tests still PASS with the changed `STUB` (none of them reads `visibility_source`).
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
+Expected: the two lease tests and the settings test FAIL; the ten `warm_remote` tests ERROR in fixture setup
+(`unexpected keyword argument 'warm_builds'`). `test_warm_builds_off_keeps_todays_rule_and_reports_nothing` already
+passes: it pins today's behaviour. Existing tests still pass with the changed `STUB`.
 
 - [ ] **Step 3: Implement**
 
-`replay_worker/server.py`:
-
-a. `Settings`, after `control_warm_timeout_s`:
+**a. `replay_worker/control_cache.py`.** Under the counters:
 
 ```python
-    warm_builds: bool = False               # REPLAY_WARM_BUILDS: a map's visibility cache as its own run (workflow)
-    warm_build_timeout_s: float = 21600.0
+_LEASES: dict[str, int] = {}      # relative name -> open runs that must read it: never pruned or evicted meanwhile
+
+
+def lease(cache_dir: Path, name: str) -> bool:
+    """Holds `name` (relative to the cache) on disk for a run that must read it. False when it is already gone."""
+    with _LOCK:
+        if not (Path(cache_dir) / name).is_file():
+            return False
+        _LEASES[name] = _LEASES.get(name, 0) + 1
+        return True
+
+
+def unlease(name: str) -> None:
+    with _LOCK:
+        left = _LEASES.get(name, 0) - 1
+        if left > 0:
+            _LEASES[name] = left
+        else:
+            _LEASES.pop(name, None)
 ```
 
-b. `Settings.from_env`, after the `control_warm_timeout_s` lines:
+In `_evictable`, skip leased files: change `if path != keep:` to
+`if path != keep and path.relative_to(cache_dir).as_posix() not in _LEASES:`. In `store`'s KEPT prune loop, skip
+them too:
+
+```python
+            for old in _newest(target.parent, map_name)[KEPT:]:
+                if old.relative_to(cache_dir).as_posix() in _LEASES:
+                    continue                  # a running round reads it: it goes on a later store
+                old.unlink(missing_ok=True)
+                KEPT_PRUNED += 1
+```
+
+(`store` already holds `_LOCK` around both, so a lease and a prune can't interleave.)
+
+**b. `replay_worker/server.py`.**
+
+`Settings`, after `control_warm_timeout_s`:
+
+```python
+    warm_builds: bool = False               # REPLAY_WARM_BUILDS: a cold identity's visibility cache as its own run
+    warm_build_timeout_s: float = 21600.0   # REPLAY_WARM_BUILD_TIMEOUT_S
+```
+
+`from_env`, after the `control_warm_timeout_s` lines:
 
 ```python
         settings.warm_builds = env.get("REPLAY_WARM_BUILDS", "").strip().lower() in ("1", "true")
         settings.warm_build_timeout_s = float(env.get("REPLAY_WARM_BUILD_TIMEOUT_S", settings.warm_build_timeout_s))
 ```
 
-c. Module docstring env list, after `REPLAY_CONTROL_RUNS`:
+Docstring env list, after `REPLAY_CONTROL_RUNS`:
 
 ```
-    REPLAY_WARM_BUILDS       "true": with REPLAY_CONTROL_RUNNER=workflow, a cold warm key's visibility cache is one
-                             warm build (replay_tasks warm) before its rounds run, all at once (default off);
+    REPLAY_WARM_BUILDS       "true": with REPLAY_CONTROL_RUNNER=workflow, a cold identity's visibility cache is one
+                             warm build (replay_tasks warm) before its rounds, then one probe round, then the rest at
+                             once (default off; a restart clears failed-build counts);
     REPLAY_WARM_BUILD_TIMEOUT_S  a warm build's limit (default 21600; Render's task limit is 300 s above it);
 ```
 
-d. Beside `CONTROL_FINISHED_KEPT = 200`:
+Beside `CONTROL_FINISHED_KEPT = 200`:
 
 ```python
-WARM_BUILD_TRIES = 2     # failed warm builds of one key before its rounds fall back to one warming round
+WARM_BUILD_TRIES = 2     # failed warm builds of one identity before its rounds fall back to one warming round
+WARM_SECONDS_KEPT = 20   # recent warm-build durations /health shows
 ```
 
-e. `ControlRunner.__init__`, after `self.warm: set[str] = set()`:
+`ControlJob`: after `kind`, add
 
 ```python
-        # Warm builds (REPLAY_WARM_BUILDS): a key is ready while the cache file its warm build named is on disk.
-        self.warm_names: dict[str, str] = {}     # warm key -> its visibility cache's file name
-        self.warm_jobs: dict[str, str] = {}      # warm key -> its warm build's job id, queued or running
-        self.warm_failures: dict[str, int] = {}  # warm key -> failed warm builds (WARM_BUILD_TRIES: fall back)
-        self.warm_misses = 0                     # rounds on a ready key that still had to build the cache
+    warm_id: str = ""            # warm_key plus height mode: what warm builds track (REPLAY_WARM_BUILDS only)
+    released_name: str | None = None   # the exact cache file this round was released to read (warm builds)
 ```
 
-f. `ControlRunner.remote`: add as the first line after `if self.runs is None: return False`:
+and change `kind`'s comment to `# or "heights" (a height build) or "warm" (a warm build)`.
+
+`ControlRunner.submit`: after the `ControlJob(...)` construction, add
+`job.warm_id = f"{job.warm_key}|{task.get('height_mode') or ''}"`.
+
+`ControlRunner.__init__`, after `self.warm: set[str] = set()`:
 
 ```python
-        if job.kind == "warm":
-            return True                          # a warm build only ever runs on Workflows
+        # Warm builds (REPLAY_WARM_BUILDS), by warm_id.
+        self.warm_names: dict[str, str] = {}     # the cache file its warm build named
+        self.warm_confirmed: set[str] = set()    # a probe round read that file
+        self.warm_probe: dict[str, str] = {}     # the probe round running now, by job id
+        self.warm_jobs: dict[str, str] = {}      # its warm build, queued or running, by job id
+        self.warm_failures: dict[str, int] = {}  # failed warm builds (WARM_BUILD_TRIES: fall back)
+        self.warm_misses = 0                     # rounds released to a name that still had to build the cache
+        self.warm_seconds: list[float] = []      # the last WARM_SECONDS_KEPT warm builds' durations
 ```
 
-g. New methods after `remote`:
+`ControlRunner.remote`, first line after `if self.runs is None: return False`:
+`if job.kind == "warm": return True                  # a warm build only ever runs on Workflows`
+
+New methods after `remote`:
 
 ```python
     def uses_warm_builds(self) -> bool:
         return self.settings.warm_builds and self.settings.control_runner == "workflow" and self.runs is not None
 
     def _ready(self, job: "ControlJob") -> bool:
-        """The round's warm key has a cache name from its warm build, and that file is on this disk (under the
-        lock). The name is the exact geometry's, so a cache from other heights never counts (risk 2)."""
-        name = self.warm_names.get(job.warm_key)
+        """The round's identity has a cache name from its warm build, and that file is on this disk (under the lock).
+        The name is the exact geometry's, so a cache from other heights or another height mode never counts."""
+        name = self.warm_names.get(job.warm_id)
         return name is not None and (self.settings.control_cache_dir / name).is_file()
 
     def _ask_warm(self, job: "ControlJob") -> None:
-        """One warm build per warm key, ahead of every round (under the lock). Its task is the round's own less
-        what only a round needs, so it loads exactly the geometry the round will."""
-        if job.warm_key in self.warm_jobs:
+        """One warm build per identity, ahead of every round (under the lock). Its task is the round's own less what
+        only a round needs, so it loads exactly the geometry the round will."""
+        if job.warm_id in self.warm_jobs:
             return
         task = json.loads(job.task)
         for name in ("blob", "link", "gaps", "gaps_only"):
             task.pop(name, None)
-        task["key"] = f"warm:{job.warm_key}"
+        task["key"] = f"warm:{job.warm_id}"
         warm = ControlJob(uuid.uuid4().hex, task["key"], job.map, json.dumps(task).encode("utf-8"),
-                          warm_key=job.warm_key, kind="warm")
+                          warm_key=job.warm_key, kind="warm", warm_id=job.warm_id)
         self.jobs[warm.id] = warm
-        self.warm_jobs[job.warm_key] = warm.id
+        self.warm_jobs[job.warm_id] = warm.id
         self.pending.insert(0, warm.id)
         self.wake.set()
 ```
 
-h. `counts`:
+`counts` (replace):
 
 ```python
     def counts(self) -> dict:
@@ -984,31 +1231,37 @@ h. `counts`:
             body = {"queued": len(self.pending), "running": len(self.running), "warm": sorted(self.warm),
                     "preempted": self.preempted_total}
             if self.uses_warm_builds():
-                body["warm_builds"] = {"ready": sorted(self.warm_names), "building": sorted(self.warm_jobs),
+                ready = [i for i, n in self.warm_names.items() if (self.settings.control_cache_dir / n).is_file()]
+                body["warm_builds"] = {"ready": sorted(ready), "confirmed": sorted(self.warm_confirmed),
+                                       "building": sorted(self.warm_jobs),
                                        "failures": dict(sorted(self.warm_failures.items())),
-                                       "misses": self.warm_misses}
+                                       "misses": self.warm_misses, "recent_seconds": list(self.warm_seconds)}
             return body
 ```
 
-i. `_next`: change the final loop's header to iterate over a copy (`_ask_warm` inserts into `self.pending`) and add
-the warm-build branch before today's warm checks:
+`_next`: iterate over a copy and add the warm branches before today's warm checks (the loop's tail becomes):
 
 ```python
-        for job_id in list(self.pending):
+        for job_id in list(self.pending):            # _ask_warm inserts into self.pending
             job = self.jobs[job_id]
             if job.kind == "heights":
                 continue
             if local_build and not self.remote(job):
                 continue                             # a local build runs alone among the local children
             if job.kind == "warm":
-                return job, False                    # its own run: neither waits for a map nor holds one
+                return job, False                    # its own run: it neither waits for a map nor holds one
             if self.uses_warm_builds():
                 if self._ready(job):
-                    return job, False                # its cache is on disk: beside any number of its map's rounds
-                if self.warm_failures.get(job.warm_key, 0) < WARM_BUILD_TRIES:
-                    self._ask_warm(job)              # the round waits for its key's one warm build
+                    if job.warm_id not in self.warm_confirmed:
+                        if job.warm_id in self.warm_probe:
+                            continue                 # one probe at a time; the rest wait for its answer (risk 2)
+                        self.warm_probe[job.warm_id] = job.id
+                    job.released_name = self.warm_names[job.warm_id]
+                    return job, False
+                if self.warm_failures.get(job.warm_id, 0) < WARM_BUILD_TRIES:
+                    self._ask_warm(job)              # the round waits for its identity's one warm build
                     continue
-                # Warm builds keep failing for this key: today's rule below, one round warms the map alone.
+                # Warm builds keep failing for this identity: today's rule below, one round warms the map alone.
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1018,7 +1271,10 @@ the warm-build branch before today's warm checks:
         return None
 ```
 
-j. `_run`: the timeout line becomes
+`_run`:
+- Add `answer: dict = {}` beside `status, error, kind, result = "failed", None, "infra", None`, so settlement can
+  read a failed round's `visibility_source`. The two existing `answer = ...` assignments stay.
+- The timeout and label lines become:
 
 ```python
         timeout = settings.height_timeout_s if build else settings.warm_build_timeout_s if job.kind == "warm" \
@@ -1026,90 +1282,147 @@ j. `_run`: the timeout line becomes
         what = "height build" if build else "warm build" if job.kind == "warm" else "control"
 ```
 
-(replace the existing `what = ...` line). In the settlement `else:` branch (not preempted), after
-`job.task = b""`, insert:
+  (Task 5 replaces this block again with the Workflow-only limits.)
+- Settlement, under the lock. Today it reads `if job.id in self.preempted: … else: …`. Add a branch between them,
+  for a round whose leased file was gone (rule 6):
+
+```python
+            elif kind == "rewarm":
+                # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
+                # identity warmed again. It never runs cold (risk 2).
+                if self.warm_names.get(job.warm_id) == job.released_name:
+                    self.warm_names.pop(job.warm_id, None)
+                    self.warm_confirmed.discard(job.warm_id)
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                self.pending.insert(0, job.id)
+```
+
+  In the `else:` branch, after `job.task = b""`, insert:
 
 ```python
                 if job.kind == "warm":
-                    self.warm_jobs.pop(job.warm_key, None)
+                    self.warm_jobs.pop(job.warm_id, None)
                     name = (result or {}).get("visibility")
                     if status == "done" and name and control_cache.valid(name, job.map) and name not in unsent \
                             and (self.settings.control_cache_dir / name).is_file():
-                        self.warm_names[job.warm_key] = name
-                        self.warm_failures.pop(job.warm_key, None)
+                        if self.warm_names.get(job.warm_id) != name:
+                            self.warm_confirmed.discard(job.warm_id)
+                        self.warm_names[job.warm_id] = name
+                        self.warm_failures.pop(job.warm_id, None)
                     else:
-                        self.warm_failures[job.warm_key] = self.warm_failures.get(job.warm_key, 0) + 1
-                        _log(f"warm build {job.warm_key} failed: {error or 'its cache is not on this disk'}")
+                        self.warm_failures[job.warm_id] = self.warm_failures.get(job.warm_id, 0) + 1
+                        _log(f"warm build {job.warm_id} failed: {error or 'its cache is not on this disk'}")
+                    if isinstance(answer.get("seconds"), (int, float)):
+                        self.warm_seconds = (self.warm_seconds + [round(float(answer["seconds"]), 1)])[-WARM_SECONDS_KEPT:]
                     del self.jobs[job.id]            # nobody asks after a warm build by id
-                elif job.kind == "control" and self.uses_warm_builds() \
-                        and (result or {}).get("visibility_source") == "built" and job.warm_key in self.warm_names:
-                    # A miss: the name said warm, yet this round built the cache. Forget it so the rounds still
-                    # waiting get one new warm build instead of each building the cache (risk 2).
-                    self.warm_misses += 1
-                    self.warm_names.pop(job.warm_key, None)
-                    _log(f"warm key {job.warm_key} missed: a round had to build its cache")
+                elif job.kind == "control" and self.uses_warm_builds() and job.released_name:
+                    source = answer.get("visibility_source")
+                    current = self.warm_names.get(job.warm_id) == job.released_name
+                    if self.warm_probe.get(job.warm_id) == job.id:
+                        self.warm_probe.pop(job.warm_id, None)     # whatever happened, the probe slot is free
+                    if source == "built" and current:
+                        self.warm_misses += 1                      # rule 7
+                        self.warm_names.pop(job.warm_id, None)
+                        self.warm_confirmed.discard(job.warm_id)
+                        _log(f"warm identity {job.warm_id} missed: a round had to build its cache")
+                    elif source == "cache" and current:
+                        self.warm_confirmed.add(job.warm_id)       # rule 5
 ```
 
-and leave today's `if job.kind == "control":` warm-set block after it unchanged (it only matters on the fallback
-path). Rule 6 holds because nothing above touches `warm_names` on a round's failure. The finished-job pruning that
-follows filters on `j.kind == "control"`, so the deleted warm job never reaches it. (`_log` is the module's own
-logger, defined above `ControlJob`.) Update `ControlJob.kind`'s comment to `# or "heights" (a height build) or
-"warm" (a warm build)`.
+  Leave today's `if job.kind == "control":` warm-set block after it unchanged (it serves the fallback path). Rule 8
+  holds because a machine failure has no `visibility_source`, so nothing above touches the warm state. The
+  finished-job pruning that follows filters on `j.kind == "control"`, so the deleted warm job never reaches it.
+  (`_log` is the module's logger, defined above `ControlJob`.)
 
-k. `_run_cache` route: both `run.kind not in ("control", "heights")` checks become
+`_run_remote`: lease the exact file for a released round. Replace the `else:` branch that fills `files` and the
+`run = self.runs.open(...)` / `try` block with:
+
+```python
+            else:
+                files.update(control_cache.inputs(self.settings.control_cache_dir, task))
+            leased = None
+            if job.kind == "control" and job.released_name:
+                if not control_cache.lease(self.settings.control_cache_dir, job.released_name):
+                    return {"status": "failed", "error_kind": "rewarm", "key": task.get("key"),
+                            "error": f"{job.released_name} left the disk before the run could read it"}
+                leased = job.released_name
+                files[leased] = self.settings.control_cache_dir / leased   # by name, whatever `inputs` chose
+            try:
+                run = self.runs.open(job.kind, job.id, files, timeout)
+                try:
+                    self.runs.start(run, {"map": job.map,
+                                          "files": sorted(n for n in files if n not in ("task", "rounds"))})
+                    answer = self.runs.wait(run)
+                except BaseException:
+                    self.runs.close(run)          # wait closes it itself; a failure before that must not leak it
+                    raise
+            finally:
+                if leased:
+                    control_cache.unlease(leased)
+```
+
+The existing time-out relabel at the end of `_run_remote` becomes:
+
+```python
+        if answer.get("error_kind") == "timeout":
+            what = "height build" if job.kind == "heights" else "warm build" if job.kind == "warm" else "control"
+            answer = {**answer, "error_kind": "infra", "error": f"{what} timed out after {timeout:g} s"}
+```
+
+`_run_cache` route: both `run.kind not in ("control", "heights")` checks become
 `run.kind not in ("control", "heights", "warm")`.
 
-`render.yaml`, worker `envVars`, after `REPLAY_HEIGHTS_RUNNER`:
+**c. `render.yaml`**, worker `envVars`, after `REPLAY_HEIGHTS_RUNNER`:
 
 ```yaml
       # Warm builds (docs/superpowers/plans/2026-11-05-replay-throughput.md): "true" builds a cold map's visibility
-      # cache as its own run before any of its rounds, which then run all at once. The owner's switch, set in the
-      # dashboard: `sync: false`, so a Blueprint sync never resets it. Unset, off (today's one-warming-round rule).
+      # cache as its own run, confirms it with one probe round, then runs the rest at once. The owner's switch, set in
+      # the dashboard: `sync: false`, so a Blueprint sync never resets it. Unset, off (today's rule).
       - key: REPLAY_WARM_BUILDS
         sync: false
 ```
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_control.py tests/replays/test_replay_worker_runs.py -n 0 -q`
-Expected: all PASS. `test_replay_worker_control.py` (local mode) must pass unchanged: rules apply only in workflow
-mode with the switch on.
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_control.py tests/replays/test_replay_worker_runs.py -n 0 -q`
+Expected: all PASS. `test_replay_worker_control.py` (local mode) passes unchanged.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add replay_worker/server.py render.yaml webapp/tests/replays/test_replay_worker_control_workflow.py
-git commit -F <message file>     # "Warm builds: a cold key gets one; its rounds then run at once"
-```
+- [ ] **Step 5: Commit** (message: "Warm builds: one per identity, a probe round, then every round at once on a leased file")
 
 ---
 
-### Task 5: Time limits off the 30-minute floor, in a pinned order
+### Task 5: Workflow time limits, separate from local's, in a pinned order
 
 **Files:**
-- Modify: `replay_tasks/main.py` (`control` 1800 -> 7500, `heights` 3600 -> 86400; `warm` is 21900 from Task 3)
-- Modify: `render.yaml` (worker env: four limits)
-- Modify: `webapp/app/services/replay_control_remote.py` (`STALE_JOB_S` 1800 -> 15000)
-- Modify: `webapp/app/services/replay_heights_remote.py` (`STALE_BUILD_S` 7200 -> 166200)
-- Test: `webapp/tests/replays/test_control_remote.py`
+- Modify: `replay_worker/server.py` (`Settings`, `from_env`, docstring env list, `_run`'s timeout block)
+- Modify: `replay_tasks/main.py` (`control` 1800 -> 7500, `heights` 3600 -> `H` + 300)
+- Modify: `render.yaml` (worker env: three Workflow limits)
+- Modify: `webapp/app/services/replay_control_remote.py` (new `STALE_RUN_S`; `_collect`)
+- Modify: `webapp/app/services/replay_heights_remote.py` (new `STALE_BUILD_RUN_S`; `Build.stale_s`; `step`;
+  `_advance`)
+- Test: `webapp/tests/replays/test_control_remote.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Consumes: the Global Constraints' limits table; `Runs.started` (Task 2) is why the site waits out twice the
-  worker's limit.
-- Produces: nothing new for later tasks.
+- Consumes: `H` (Task 0); `Runs.started` (Task 2).
+- Produces: `Settings.control_run_timeout_s` (env `REPLAY_CONTROL_RUN_TIMEOUT_S`, default 1800.0),
+  `Settings.height_run_timeout_s` (env `REPLAY_HEIGHT_RUN_TIMEOUT_S`, default 3600.0): used only for runs on
+  Workflows. `replay_control_remote.STALE_RUN_S = 15000`; `replay_heights_remote.STALE_BUILD_RUN_S = 2 * H + 600`;
+  `Build.stale_s: float`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-At the end of `webapp/tests/replays/test_control_remote.py`:
+`webapp/tests/replays/test_control_remote.py`, at the end:
 
 ```python
-def test_every_time_limit_outlasts_the_one_inside_it():
-    """Render's task limit sits above the worker's (the worker decides, and says why), within Render's 24 h
-    ceiling; the site waits out twice the worker's (a run's limit restarts when it starts: queued, then working)."""
+def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays():
+    """Render's task limit sits above the worker's Workflow limit, within Render's 24 h; the site waits out twice the
+    worker's (a run's deadline never passes opening + 2 x its limit). Local mode keeps today's numbers."""
     import ast
     import re
 
-    from app.services import replay_heights_remote
+    from app.services import replay_heights_remote as heights
 
     root = Path(remote.__file__).resolve().parents[3]
     yaml_text = (root / "render.yaml").read_text(encoding="utf-8")
@@ -1123,175 +1436,213 @@ def test_every_time_limit_outlasts_the_one_inside_it():
             kw = {k.arg: k.value for k in node.keywords}
             render[kw["name"].value] = kw["timeout_seconds"].value
     assert all(30 <= v <= 86400 for v in render.values())
-    assert render["control"] >= env("REPLAY_CONTROL_TIMEOUT_S") + 300
-    assert render["control"] >= env("REPLAY_CONTROL_WARM_TIMEOUT_S") + 300
+    assert render["control"] >= env("REPLAY_CONTROL_RUN_TIMEOUT_S") + 300
     assert render["warm"] >= env("REPLAY_WARM_BUILD_TIMEOUT_S") + 300
-    assert render["heights"] >= env("REPLAY_HEIGHT_TIMEOUT_S") + 300
-    assert remote.STALE_JOB_S > 2 * env("REPLAY_CONTROL_TIMEOUT_S")
-    assert replay_heights_remote.STALE_BUILD_S > 2 * env("REPLAY_HEIGHT_TIMEOUT_S")
+    assert render["heights"] >= env("REPLAY_HEIGHT_RUN_TIMEOUT_S") + 300
+    assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
+    assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
+    # Local mode: untouched.
+    assert remote.STALE_JOB_S == 1800 and heights.STALE_BUILD_S == 7200
+    assert "REPLAY_CONTROL_TIMEOUT_S" not in yaml_text and "REPLAY_HEIGHT_TIMEOUT_S" not in yaml_text
 ```
 
-(`remote` is the file's alias for `app.services.replay_control_remote`, and the file already imports `Path`.)
+`webapp/tests/replays/test_replay_worker_control_workflow.py`:
 
-- [ ] **Step 2: Run it to see it fail**
+```python
+def test_workflow_limits_apply_to_runs_and_local_limits_to_children():
+    s = server.Settings.from_env({"REPLAY_CONTROL_RUN_TIMEOUT_S": "7200", "REPLAY_HEIGHT_RUN_TIMEOUT_S": "18000"})
+    assert (s.control_run_timeout_s, s.height_run_timeout_s) == (7200.0, 18000.0)
+    assert (s.control_timeout_s, s.control_warm_timeout_s, s.height_timeout_s) == (1800.0, 1800.0, 3600.0)
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_remote.py -n 0 -q -k outlasts`
-Expected: FAIL (`AttributeError: 'NoneType' object has no attribute 'group'`: the env values aren't in `render.yaml`
-yet).
+
+def test_a_workflow_round_is_opened_with_the_workflow_limit(remote, monkeypatch):
+    control, _, settings, _ = remote
+    settings.control_run_timeout_s = 1234.0
+    seen = []
+    real = control.runs.open
+    monkeypatch.setattr(control.runs, "open", lambda kind, job_id, files, timeout_s, **k:
+                        seen.append((kind, timeout_s)) or real(kind, job_id, files, timeout_s, **k))
+    wait_done(control, [control.submit(round_task("t", build=True))])
+    assert seen == [("control", 1234.0)]
+```
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_remote.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q -k "limit"`
+Expected: the three tests FAIL (missing env values in `render.yaml`, missing settings, a warming round opened with
+`control_warm_timeout_s`).
 
 - [ ] **Step 3: Implement**
+
+`replay_worker/server.py`:
+- `Settings`, after `warm_build_timeout_s`:
+
+```python
+    control_run_timeout_s: float = 1800.0   # a control round on Workflows (REPLAY_CONTROL_RUN_TIMEOUT_S); local
+                                            # children keep control_timeout_s / control_warm_timeout_s
+    height_run_timeout_s: float = 3600.0    # a height build on Workflows (REPLAY_HEIGHT_RUN_TIMEOUT_S); local keeps
+                                            # height_timeout_s
+```
+
+- `from_env`:
+
+```python
+        settings.control_run_timeout_s = float(env.get("REPLAY_CONTROL_RUN_TIMEOUT_S", settings.control_run_timeout_s))
+        settings.height_run_timeout_s = float(env.get("REPLAY_HEIGHT_RUN_TIMEOUT_S", settings.height_run_timeout_s))
+```
+
+- Docstring env list: `REPLAY_CONTROL_RUN_TIMEOUT_S / REPLAY_HEIGHT_RUN_TIMEOUT_S  a round's / height build's limit
+  on Workflows (defaults 1800 / 3600); local children keep REPLAY_CONTROL_TIMEOUT_S, REPLAY_CONTROL_WARM_TIMEOUT_S,
+  REPLAY_HEIGHT_TIMEOUT_S;`
+- `_run`: replace Task 4's `timeout = ...` statement with:
+
+```python
+        remote = self.remote(job)
+        if job.kind == "warm":
+            timeout = settings.warm_build_timeout_s
+        elif build:
+            timeout = settings.height_run_timeout_s if remote else settings.height_timeout_s
+        elif remote:
+            timeout = settings.control_run_timeout_s       # warming or not: one Workflow limit
+        else:
+            timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
+```
+
+`replay_tasks/main.py`: `name="control", timeout_seconds=7500`; `name="heights", timeout_seconds=<H + 300>` (the
+number, at most 86400). Docstring: "Each limit sits 300 s above the worker's Workflow limit (`render.yaml`);
+tests/replays/test_control_remote.py pins the order."
 
 `render.yaml`, worker `envVars`, after `REPLAY_CONTROL_QUEUE`:
 
 ```yaml
-      # Time limits (docs/superpowers/plans/2026-11-05-replay-throughput.md). A round that needs longer than its
-      # limit is cancelled and retried from nothing, so each sits well above the slowest real run; Render's own task
-      # limit (replay_tasks/main.py) is 300 s above each, and tests/replays/test_control_remote.py pins the order.
-      - key: REPLAY_CONTROL_TIMEOUT_S
-        value: "7200"
-      - key: REPLAY_CONTROL_WARM_TIMEOUT_S
+      # Workflow time limits (docs/superpowers/plans/2026-11-05-replay-throughput.md). Only runs on Workflows use
+      # them: local children keep REPLAY_CONTROL_TIMEOUT_S / REPLAY_HEIGHT_TIMEOUT_S (their image defaults, 1800 and
+      # 3600). Render's own task limits (replay_tasks/main.py) are 300 s above; tests/replays/test_control_remote.py
+      # pins the order. The height limit is 3x the longest measured build plus 3 h (Task 0).
+      - key: REPLAY_CONTROL_RUN_TIMEOUT_S
         value: "7200"
       - key: REPLAY_WARM_BUILD_TIMEOUT_S
         value: "21600"
-      - key: REPLAY_HEIGHT_TIMEOUT_S
-        value: "82800"
+      - key: REPLAY_HEIGHT_RUN_TIMEOUT_S
+        value: "<H>"
 ```
 
-`replay_tasks/main.py`: `name="control", timeout_seconds=7500` and `name="heights", timeout_seconds=86400`; in the
-docstring, note the limits sit 300 s above the worker's (`render.yaml`), 24 h being Render's maximum.
+(`<H>` is Task 0's number, written as digits.)
 
-`webapp/app/services/replay_control_remote.py`:
+`webapp/app/services/replay_control_remote.py`: under `STALE_JOB_S = 1800`, add
 
 ```python
-STALE_JOB_S = 15000     # > 2 x the worker's round limit (render.yaml REPLAY_CONTROL_TIMEOUT_S): a backstop only
+STALE_RUN_S = 15000     # the same backstop while control runs on Workflows: > 2 x REPLAY_CONTROL_RUN_TIMEOUT_S
 ```
 
-`webapp/app/services/replay_heights_remote.py`:
+and in `_collect` change `elif now - f.running_since > STALE_JOB_S:` to
+`elif now - f.running_since > (STALE_RUN_S if state.remote_control else STALE_JOB_S):` and the warning's
+`STALE_JOB_S` argument to the same expression.
+
+`webapp/app/services/replay_heights_remote.py`: under `STALE_BUILD_S = 7200`, add
 
 ```python
-STALE_BUILD_S = 166200           # a build seen running this long: > 2 x the worker's REPLAY_HEIGHT_TIMEOUT_S
+STALE_BUILD_RUN_S = <2 x H + 600>   # the same backstop for a build on Workflows: > 2 x REPLAY_HEIGHT_RUN_TIMEOUT_S
 ```
+
+Add `stale_s: float = STALE_BUILD_S` as the last field of `Build`. In `step`, where `Build(...)` is constructed (after
+`runners` is read), pass
+`stale_s=STALE_BUILD_RUN_S if runners.get("heights") == "workflow" else STALE_BUILD_S`. In `_advance`, change
+`if now - build.running_since > STALE_BUILD_S:` to `if now - build.running_since > build.stale_s:`.
 
 - [ ] **Step 4: Run the suites that read these constants**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_remote.py tests/replays/test_heights_remote.py -n 0 -q`
-Expected: all PASS. Those tests use the constants by name (`remote.STALE_JOB_S + 1` and multiples), so they follow
-the new values. If one hard-codes 1800 or 7200, change it to the constant, never the other way round.
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_control_remote.py tests/replays/test_heights_remote.py tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_control.py -n 0 -q`
+Expected: all PASS. Existing stale tests use the local constants by name, and their state is local
+(`remote_control` False, builds made with the default `stale_s`).
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add replay_tasks/main.py render.yaml webapp/app/services/replay_control_remote.py webapp/app/services/replay_heights_remote.py webapp/tests/replays/test_control_remote.py
-git commit -F <message file>     # "Replay time limits: 2 h a round, 6 h a warm build, 23 h a height build"
-```
+- [ ] **Step 5: Commit** (message: "Workflow time limits: 2 h a round, 6 h a warm build, measured for heights; local keeps today's")
 
 ---
 
-### Task 6: The cache budget is configurable, and feature rows never shrink
+### Task 6: The cache budget is a setting
 
 **Files:**
-- Modify: `replay_worker/control_cache.py` (`store`)
 - Modify: `replay_worker/server.py` (`Settings.control_cache_reserve`, `from_env`, docstring env list, `_run_cache`,
   `main`'s `archive_extra_reserve`, `/health` `control.cache.reserve`)
 - Modify: `render.yaml` (worker: `REPLAY_CONTROL_CACHE_RESERVE_BYTES`)
-- Test: `webapp/tests/replays/test_replay_worker_control_cache.py`, `webapp/tests/replays/test_replay_worker_control_workflow.py`
+- Test: `webapp/tests/replays/test_replay_worker_control_workflow.py`
 
 **Interfaces:**
-- Consumes: `control_cache.usage`, `/health` `control.cache` (Task 1).
+- Consumes: `/health` `control.cache` (Task 1).
 - Produces: `Settings.control_cache_reserve: int` (env `REPLAY_CONTROL_CACHE_RESERVE_BYTES`, default
-  `control_cache.RESERVE`); `/health` `control.cache.reserve` = that setting.
+  `control_cache.RESERVE`).
 
 - [ ] **Step 1: Write the failing tests**
 
-In `webapp/tests/replays/test_replay_worker_control_cache.py`:
-
 ```python
-def test_a_smaller_feature_row_file_never_replaces_a_larger_one(tmp_path):
-    name = f"feature-rows/Ascent.{'d' * 64}.npz"
-    (tmp_path / "feature-rows").mkdir()
-    (tmp_path / name).write_bytes(b"x" * 100)
-    incoming = tmp_path / ".incoming"
-    incoming.mkdir()
-    src = incoming / "a.npz"
-    src.write_bytes(b"y" * 10)                      # a run that started from fewer rows
-    assert control_cache.store(tmp_path, name, src)
-    assert (tmp_path / name).read_bytes() == b"x" * 100 and not src.exists()
-    src.write_bytes(b"z" * 200)                     # a run that learned more
-    assert control_cache.store(tmp_path, name, src)
-    assert (tmp_path / name).read_bytes() == b"z" * 200
+def test_the_cache_reserve_setting_reaches_the_store_and_health(tmp_path, stub):
+    import urllib.request
+
+    render = FakeRender()
+    settings = server.Settings(temp_root=tmp_path / "tmp", control_cache_dir=tmp_path / "cache",
+                               control_runner="workflow", control_runs=4, workflow_slug="replay-tasks",
+                               render_api_key="k", render_api_base=render.url, control_cache_reserve=3)
+    table = server.make_runs(settings)
+    control = server.ControlRunner(settings, runs_table=table)
+    httpd = server.make_server(server.Worker(settings, on_parse=None), control=control, runs_table=table)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    render.runner = lambda kind, args: tasks.TASKS[kind](args, tasks.WorkerLink(base, args["job_id"], args["token"]))
+    try:
+        job = control.submit(round_task("big", build=True))     # writes b"built": 5 bytes, past a 3-byte reserve
+        wait_done(control, [job])
+        assert not (settings.control_cache_dir / f"Ascent.{'c' * 16}.npz").exists()
+        with urllib.request.urlopen(f"{base}/health", timeout=10) as response:
+            assert json.loads(response.read())["control"]["cache"]["reserve"] == 3
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        render.close()
 
 
-def test_a_smaller_visibility_file_still_replaces_one_of_the_same_name(tmp_path):
-    name = f"Ascent.{'a' * 16}.npz"
-    (tmp_path / name).write_bytes(b"x" * 100)
-    incoming = tmp_path / ".incoming"
-    incoming.mkdir()
-    src = incoming / "a.npz"
-    src.write_bytes(b"y" * 10)
-    assert control_cache.store(tmp_path, name, src)
-    assert (tmp_path / name).read_bytes() == b"y" * 10      # only feature rows grow-only: they're rewritten in place
-```
-
-In `webapp/tests/replays/test_replay_worker_control_workflow.py`:
-
-```python
-def test_the_cache_reserve_is_a_setting_the_store_and_health_use(tmp_path, monkeypatch):
-    settings = server.Settings.from_env({"REPLAY_CONTROL_CACHE_RESERVE_BYTES": "12345"})
-    assert settings.control_cache_reserve == 12345
+def test_the_cache_reserve_is_read_from_the_environment():
+    assert server.Settings.from_env({"REPLAY_CONTROL_CACHE_RESERVE_BYTES": "12345"}).control_cache_reserve == 12345
     assert server.Settings.from_env({}).control_cache_reserve == server.control_cache.RESERVE
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py -n 0 -q`
-Expected: `test_a_smaller_feature_row_file_never_replaces_a_larger_one` FAILS (the file is replaced) and the
-settings test FAILS (`AttributeError`). The visibility test passes already: it pins what must not change.
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_workflow.py -n 0 -q -k reserve`
+Expected: both FAIL (`unexpected keyword argument 'control_cache_reserve'`, `AttributeError`).
 
 - [ ] **Step 3: Implement**
 
-`replay_worker/control_cache.py`, `store`: right after `with _LOCK:`, before `replaced = ...`:
-
-```python
-            if _NAME.fullmatch(name)["folder"] and target.is_file() and \
-                    Path(src).stat().st_size < target.stat().st_size:
-                # Feature rows are rewritten in place by every round that learns some, and parallel rounds post
-                # their own copies: one that started from fewer rows must not undo another's. Rows only cache
-                # answers (test_feature_visibility_cache), so dropping these costs time, never correctness.
-                return True
-```
-
-(`finally` already deletes `src`; returning True keeps the run from listing the file as unsent.)
-
 `replay_worker/server.py`:
-- `Settings`, after `control_cache_dir`: `control_cache_reserve: int = control_cache.RESERVE   # bytes the cache may hold (REPLAY_CONTROL_CACHE_RESERVE_BYTES)`
-  (`control_cache` is imported near the top of `server.py`, above `Settings`).
-- `from_env`: `settings.control_cache_reserve = int(env.get("REPLAY_CONTROL_CACHE_RESERVE_BYTES", settings.control_cache_reserve))`
-- Docstring env list: `REPLAY_CONTROL_CACHE_RESERVE_BYTES  bytes the Workflow control cache may hold (default 2 GiB); the archive leaves it free.`
-- `_run_cache`: `control_cache.store(control.settings.control_cache_dir, name, incoming, reserve=control.settings.control_cache_reserve)`
-- `main`: `settings.archive_extra_reserve += control_cache.RESERVE` becomes `... += settings.control_cache_reserve`
+- `Settings`, after `control_cache_dir`:
+  `control_cache_reserve: int = control_cache.RESERVE   # bytes the cache may hold (REPLAY_CONTROL_CACHE_RESERVE_BYTES)`
+  (`control_cache` is imported near the top of the module, above `Settings`).
+- `from_env`:
+  `settings.control_cache_reserve = int(env.get("REPLAY_CONTROL_CACHE_RESERVE_BYTES", settings.control_cache_reserve))`
+- Docstring env list: `REPLAY_CONTROL_CACHE_RESERVE_BYTES  bytes the Workflow control cache may hold (default 2 GiB);
+  the archive leaves them free.`
+- `_run_cache`: `control_cache.store(control.settings.control_cache_dir, name, incoming,
+  reserve=control.settings.control_cache_reserve)`
+- `main`: `settings.archive_extra_reserve += control_cache.RESERVE` becomes
+  `settings.archive_extra_reserve += settings.control_cache_reserve`
 - `/health` (Task 1's line): `"reserve": control.settings.control_cache_reserve`
 
 `render.yaml`, worker `envVars`, after `CONTROL_CACHE_DIR`:
 
 ```yaml
       # The control cache's budget on the disk (bytes), taken out of the archive's. /health control.cache shows its
-      # bytes per map and evictions: raise this if evictions climb (docs/superpowers/plans/2026-11-05-replay-throughput.md).
+      # bytes per map, evictions and per-map prunes. Before raising it, check /health archive has the room
+      # (docs/superpowers/plans/2026-11-05-replay-throughput.md).
       - key: REPLAY_CONTROL_CACHE_RESERVE_BYTES
         value: "2147483648"
 ```
 
 - [ ] **Step 4: Run them to see them pass**
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_archive.py -n 0 -q`
-Expected: all PASS (`test_a_feature_row_cache_rewritten_in_place_reaches_the_worker_through_the_route` still
-passes: its rewrite only grows the file).
+Run: `../../../../webapp/.venv313/Scripts/python.exe -m pytest tests/replays/test_replay_worker_control_workflow.py tests/replays/test_replay_worker_control_cache.py tests/replays/test_replay_worker_archive.py -n 0 -q`
+Expected: all PASS.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add replay_worker/control_cache.py replay_worker/server.py render.yaml webapp/tests/replays/test_replay_worker_control_cache.py webapp/tests/replays/test_replay_worker_control_workflow.py
-git commit -F <message file>     # "Control cache: configurable reserve; feature rows never shrink"
-```
+- [ ] **Step 5: Commit** (message: "Control cache: the reserve is a setting")
 
 ---
 
@@ -1299,58 +1650,74 @@ git commit -F <message file>     # "Control cache: configurable reserve; feature
 
 **Files:**
 - Modify: `webapp/RENDER_DEPLOY.md` (new section "Warm builds, time limits and the concurrency ramp")
-- Modify: `CLAUDE.md` (one paragraph under "Critical Util" or beside the replay notes: what warm builds are and
-  where the switch is)
+- Modify: `CLAUDE.md` and `AGENTS.md` (they mirror each other: the same short paragraph in both)
+- Modify: `docs/superpowers/specs/2026-10-14-render-workflows-design.md` (decisions D6 and D8)
 
-- [ ] **Step 1: Write the docs.** In `webapp/RENDER_DEPLOY.md`, the section holds: what a warm build is; the
-  switch `REPLAY_WARM_BUILDS` (dashboard, `sync: false`, off by default); the limits table from Global
-  Constraints; what `/health` now shows (`control.cache`, `control.warm_builds`, `workflow.by_kind`); and the
-  runbook below, verbatim. In `CLAUDE.md`, three sentences: warm builds exist, the switch, the doc to read.
+- [ ] **Step 1: Write the docs.**
+  - `webapp/RENDER_DEPLOY.md`: what a warm build, a probe round and a lease are; the switch `REPLAY_WARM_BUILDS`
+    (dashboard, `sync: false`, off by default); the Workflow limits table from Global Constraints, with local's
+    unchanged; what `/health` shows (`control.cache`, `control.warm_builds`, `workflow.by_kind`); the phase lines in
+    run logs (`control phase: …`); and the runbook below, verbatim.
+  - `CLAUDE.md` and `AGENTS.md`, beside the replay notes: three sentences (warm builds exist and are behind
+    `REPLAY_WARM_BUILDS`; Workflow limits are separate from local's; read `webapp/RENDER_DEPLOY.md`).
+  - The spec: D6 gains "With REPLAY_WARM_BUILDS on, a cold identity is warmed by its own `warm` run, confirmed by one
+    probe round, then every round runs at once (2026-11-05 throughput plan)". D8 gains "Workflow runs: control
+    7200 s, warm 21600 s, heights `H` s, each counted from its attempt's start; local keeps 1800 / 3600 (2026-11-05
+    throughput plan)".
 
-- [ ] **Step 2: Run every suite the branch touches**
+- [ ] **Step 2: Run every suite the branch touches.**
+  Run `../../../../webapp/.venv313/Scripts/python.exe scripts/test_catalog.py plan --git` and the commands it
+  prints: the offline lane, plus the slow lane (CLAUDE.md requires it for changes to control, and
+  `app/control/task.py` and `geometry.py` changed). Compare failures against the known baseline in memory
+  (`project_test_suite_stale_neon_env`): new failures only.
 
-Run: `../../../../webapp/.venv313/Scripts/python.exe scripts/test_catalog.py plan --git`, then the commands it
-prints (offline lane at least; the slow lane too, because `app/control/task.py` and `geometry.py` changed, per
-CLAUDE.md "Run the slow lane before merging changes to control"). Compare failures against the known baseline in
-memory (`project_test_suite_stale_neon_env`), not against zero: new failures only.
-
-- [ ] **Step 3: Commit the docs, push the branch, open the PR** (never merge). The PR body holds Task 0's result,
-  the risk table above with each mitigation's commit, and the runbook. Give the owner the link.
+- [ ] **Step 3: Commit the docs, push the branch, open the PR.** Never merge. The PR body holds `L` and `H`, Task 0
+  step 3's answer, the risk table with each mitigation's commit, and the runbook. Give the owner the link.
 
 #### Rollout runbook (owner; each step moves on once its checks pass, no waiting days)
 
 Read the worker's `/health` from its Render shell:
 `python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/health').read().decode())"`
 
-1. **Merge** (owner). The site, the worker and the replay-tasks workflow deploy. Warm builds stay off.
-   - Check: the replay-tasks workflow lists a `warm` task. `/health` shows `control.cache` and `workflow.by_kind`.
-     Control runs that start now carry the new limits (the dashboard shows runs past 30:00 instead of cancelled at
-     29:59).
-2. **Note your workspace plan's run cap** (Workspace settings or https://render.com/docs/workflows-limits: 20 on
-   Hobby, 50 on Pro). `CONTROL_MAX_RUNS` is 40: past the cap, runs wait in Render's queue (no longer at a cost,
-   since the limit starts when a run starts).
-3. **Flip `REPLAY_WARM_BUILDS=true`** on replay-worker (dashboard). The worker restarts.
-   - Check within an hour: `control.warm_builds.building` lists keys, then they move to `ready`; `misses` is 0;
-     `failures` is empty or under 2 per key; `workflow.by_kind.control.open` climbs past 2 while a key is ready.
-   - Stop and switch it off if `misses` grows (keys going wrong: risk 2), or a key reaches 2 failures on a map that
-     worked before.
-4. **Check the cache budget.** `control.cache.bytes` against `control.cache.reserve`, and `control.cache.evictions`.
-   - If `evictions` > 0 or bytes > 60 % of reserve: raise `REPLAY_CONTROL_CACHE_RESERVE_BYTES` in `render.yaml` by
-     PR (the archive gives up the same bytes) before step 5.
-5. **Ramp the matches in flight** by PR, one value per PR: `CONTROL_MAX_MATCHES` 2 -> 4, then 4 -> 6.
-   - Check after each: `workflow.by_kind.control.open` reaches about 20 rounds per two matches; the site's
-     `map control dispatch:` log shows `busy` and `unreachable` at 0; `workflow.by_kind.control.oldest_s` stays
-     under the round limit (7200); `control.cache.evictions` stays 0.
-   - Stop at the step before any check fails, and bring the numbers back here.
-6. **Done** when a control recompute holds 30+ open control runs for its whole run, and the dashboard shows no
-   runs cancelled by the limit.
+1. **Merge while control is quiet** (owner): no recompute running and `control.warm_builds` absent or its
+   `building` empty. Every merge restarts the single-instance worker and drops its open control runs (risk 9), and
+   the worker and the replay-tasks workflow come up separately (risk 10).
+   - Check: the replay-tasks workflow lists a `warm` task and has deployed this commit; `/health` shows
+     `control.cache` and `workflow.by_kind`. Control run logs show `control phase:` lines.
+2. **Run a control recompute with warm builds still off.** Read three control run logs: their `visibility … in N s`
+   line against the round's total time. Record it in the PR. If the visibility build is a small share and rounds
+   still run long, stop here and bring the logs back before step 3: the bottleneck is the round, not the cache.
+3. **Flip `REPLAY_WARM_BUILDS=true`** on replay-worker in the dashboard. The worker restarts.
+   - Check within an hour: identities move through `building` → `ready` → `confirmed`; `misses` stays 0;
+     `failures` is empty or under 2 per identity; `recent_seconds` shows warm-build times well under 21600;
+     `workflow.by_kind.control.open` climbs past 2 once an identity is confirmed.
+   - Stop and switch it off if `misses` grows, or an identity reaches 2 failures on a map that worked before. A
+     worker restart clears the failure counts.
+4. **Check the cache budget.** `control.cache.bytes` against `control.cache.reserve`, and `evictions` and
+   `kept_pruned`, both counted since the worker last started.
+   - If either counter grows during a recompute, or `bytes` passes 60 % of `reserve`: confirm in `/health`
+     `archive` that the archive has that much free, then raise `REPLAY_CONTROL_CACHE_RESERVE_BYTES` by PR.
+5. **Read the concurrency** during a recompute with a backlog (rounds still to send):
+   - Render starts about 16 `flex` runs a minute on Hobby (32 CPU a minute on Pro), so `workflow.by_kind.control.waiting`
+     above 0 for the first few minutes is normal. Persistent `waiting` means Render's compute limit is queueing runs.
+   - Two matches allow about 40 rounds (`CONTROL_MAX_RUNS` 40, about 20 rounds a match), so 30+ is reachable with
+     `CONTROL_MAX_MATCHES` at 2. Raise it to 3, by PR, only if `control.open` stays under 30 while a backlog waits
+     and `waiting` is 0.
+   - Also check: `workflow.by_kind.control.oldest_run_s` stays under 7200; the site's `map control dispatch:` log
+     shows `busy` and `unreachable` at 0; `evictions` stays flat.
+6. **Done** when a recompute holds 30+ open control runs from the end of warm-up to the start of its last match's
+   tail, and the dashboard shows no runs cancelled by a limit.
+
+## Open decision (owner)
+
+**Feature-row overwrites (risk 5).** Not in any task until decided. Options on the table: keep today's
+last-write-wins (costs rebuild time only); replace a larger file only if the incoming one is larger or the stored one
+is over ~6 h old; or a validated merge in the numpy child. The phase lines (Task 1) can show how long rounds spend on
+rows, if timing lines are added around feature-row loading too.
 
 ## Out of scope (named so they aren't lost)
 
-- Letting gaps-only work fill free slots while control work is still queued (`replay_control_remote._submit` sends
-  gaps only when no control is sendable). A site change with its own ordering questions; worth doing after the ramp
-  shows whether slots sit idle.
-- A progress heartbeat that fails a run that stops progressing. The finite limits plus `/health`'s oldest-run age
-  cover risk 6 for now; Render's reconcile already settles a dead machine within about 3 minutes.
-- Persisting warm keys across worker restarts. After a deploy, each key's warm build finds its cache on disk and
-  answers in seconds, so the gain is small.
+- Letting gaps-only work fill free slots while control work is still queued (`replay_control_remote._submit`).
+- Saving open warm-build and round tokens across worker restarts (parse's D9 pattern), so a deploy doesn't lose them.
+- Persisting warm identities across restarts: after a deploy, each identity's warm build finds its cache on disk and
+  answers in seconds, then one probe confirms it.
