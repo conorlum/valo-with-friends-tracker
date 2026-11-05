@@ -97,12 +97,11 @@ last-write-wins (see "Decided: feature-row overwrites" at the end).
 - [x] **Step 1: The longest height build.** Owner, 2026-11-05: the longest of the last ~200 completed `heights`
   runs took about 2 minutes. Owner's choice: a 3 h limit (`REPLAY_HEIGHT_RUN_TIMEOUT_S` 10800), far above it.
 - [x] **Step 2: A cancelled control run's log.** Owner, 2026-11-05: it shows no log lines at all.
-- [ ] **Step 3: Did the cancelled runs ever start?** No log suggests the run never started: it may have waited in
-  Render's queue for its whole 30 minutes (or the dashboard keeps no log for a cancelled run). Read the
-  timestamps of recent cancelled `control` runs (the runbook's shell command, with `replay-tasks/control`) and
-  record, for each, whether it has a start time and how long after creation. **Gate:** if cancelled runs never
-  started, the diagnosis in "Why" is wrong (runs were queued at Render, not building caches), and this plan is
-  revisited before any task is built.
+- [x] **Step 3: Did the cancelled runs ever start?** Yes (owner, 2026-11-05, Render dashboard): a cancelled control
+  run was queued for 9 ms, then its one attempt ran 30 min (Nov 4 11:35:06 PM to Nov 5 12:05:06 AM) until the
+  worker cancelled it. Render isn't holding runs back; the run was working. Its empty log is expected today:
+  `tasks._run_child` captures the child's stderr and discards it, and the task itself writes nothing. Task 1's
+  phase lines fix that and show whether the 30 min went into the visibility build or the round. **Gate passed.**
 
 ---
 
