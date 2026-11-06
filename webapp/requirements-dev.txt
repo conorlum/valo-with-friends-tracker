@@ -1,0 +1,4 @@
+# Test-only tools, on top of the app's requirements. Install into a test venv (or CI), never into .venv313:
+# ingestion refuses to score in an environment with any package the scoring manifest wasn't frozen with.
+-r requirements.txt
+pytest-xdist==3.6.1

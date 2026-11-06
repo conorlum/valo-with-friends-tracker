@@ -53,13 +53,15 @@ tests = [
   "tests/test_backfill_impact_candidate.py", "tests/test_compare_*.py", "tests/test_export_configuration_sources.py",
   "tests/test_impact_artifact_export.py", "tests/test_report_rc3_measurements.py", "tests/test_solve_impact_weights.py",
   "tests/test_recompute_impact_script.py", "tests/test_with_demo_db.py", "tests/test_with_friends_db.py",
+  "tests/test_scoring_constraints.py",
 ]
 guards = [
   "app/scoring/impact_manifest.py", "app/scoring/impact_runtime.py", "app/scoring/impact_config.py",
   "app/scoring/write_gate.py", "scripts/release_*.py", "scripts/swap_*.py", "scripts/freeze_*.py",
   "scripts/backfill_*.py", "scripts/compare_*.py", "scripts/export_*.py", "scripts/install_release_write_gate.py",
   "scripts/report_rc3*.py", "scripts/solve_impact_weights.py", "scripts/recompute_impact.py",
-  "scripts/with_demo_db.py", "scripts/with_friends_db.py",
+  "scripts/with_demo_db.py", "scripts/with_friends_db.py", "scripts/scoring_constraints.py",
+  "constraints-scoring.txt", "requirements*.txt",
 ]
 
 [kill-order-eval]

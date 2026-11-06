@@ -65,7 +65,9 @@ A `.venv` with `requirements.txt` installed already exists in `webapp/` (include
 
 ### Running the tests
 
-Run from `webapp/` with `./.venv313/Scripts/python.exe -m pytest`. The default excludes `slow`,
+Run from `webapp/` with `./.venv313-test/Scripts/python.exe -m pytest`, a test venv built from `requirements-dev.txt`.
+Never install test tools into `.venv313`: ingestion requires it to match the frozen scoring packages exactly, so
+build it with `pip install -r requirements.txt -c constraints-scoring.txt`. The default excludes `slow`,
 `browser`, and optional `corpus` measurements; xdist uses a third of the cores and reserves the last four.
 See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-audit implementation map.
 
