@@ -23,6 +23,60 @@ Conventions for every item:
 - Never edit `app/models/match.py`, `round.py`, `kill_event.py`. `site_health.py` imports only the standard library,
   SQLAlchemy, `app.config`, `app.db` and its own model (it is on the isolation list: no engine, detector, numpy).
 
+## P4 review amendments (IMPL-REVIEW.md, 23 findings; these win over the item text below)
+
+- **A1 (blocker 1) Card test fixture tables.** `tests/replays/test_control_store.py:36` `CONTROL_TABLES` gains the
+  tables `collect` starts reading, in the item that starts reading them: W7a `SiteEvent`, `SiteEventResolution`;
+  W10 `UtilModel`; W11 `ImpactScore`, `MapPoolPatchNotes` (plus what they need to create: `Match`/`Round` if
+  foreign keys require them). Every item that touches `replay_errors.collect` runs the whole of
+  `tests/replays/test_replay_errors*.py`.
+- **A2 (blocker 2) No hidden default database.** `record`, `resolve`, `resolve_prefix`, `flush` and
+  `apply_resolved` take `session_factory` (required); each call site passes the one in scope (`run_forever`/`cycle`'s
+  factory, `SessionLocal` in `util_rebuild.main` and the lifespan). W5 adds an autouse fixture in
+  `tests/conftest.py` beside `_no_background_util_build` (`:91-108`) that resets the queue, counters, `_open` and
+  the loop registry before each test.
+- **A3 (blocker 3) Startup never fails.** `apply_resolved` catches everything and logs; inserts use ON CONFLICT DO
+  NOTHING (dialect-aware). `tests/test_app_lifespan.py:13-34`'s non-demo test patches `site_health.apply_resolved`
+  and `site_health.start`; a new test gives `apply_resolved` a raising factory and the lifespan still yields.
+- **A4** `KINDS` stays pairs; add `GROUPS = {kind: group}` and a test that every KINDS key has a group.
+- **A5** W10's parent reads `code = _child.poll()` (fakes have only `poll()`); "non-zero and not 3 (negative = a
+  signal)"; the test uses -9.
+- **A6** W10's stale rule is the **oldest** current util row newer than the build (the plan text said newest). The
+  `corpus_key` compare moves to W11, with a test.
+- **A7** pg_locks predicate for the bigint `LOCK_KEY`: `locktype = 'advisory' AND classid = (key >> 32) AND objid =
+  (key & 4294967295) AND objsubid = 1`; `tests/test_site_health_pg.py` holds `pg_advisory_lock(LOCK_KEY)` on a
+  second connection and the check reports "running".
+- **A8** W8: the handler is an importable function (`site_health_web.page_error_handler`, registered in
+  `app/main.py`); tests mount it on a fresh FastAPI app (never add routes to `main.app`) with
+  `TestClient(..., raise_server_exceptions=False)` (Starlette re-raises after the handler). The DB-down test: the
+  site_health factory fails the test if called; assert one queued entry and the 500.
+- **A9** W9: `run_forever` unregisters its loop in a `finally`.
+- **A10** W14: the middleware lives at `app/services/site_health_web.py` (with A8's handler; covered by the
+  `[site-health]` guards). It is always added and passes through per request in demo mode; the test switches
+  `settings.demo_mode` and asserts nothing counted. `GET /replays/upload` is a page (R5's "uploads" are the upload
+  POST/JSON routes) — tier 1.
+- **A11** W7 splits: **W7a** service (GROUPS, `_event_row`, collect/compute, `_rest_query`, prompt,
+  `test_replay_errors.py`); **W7b** template and JS (rename, update `test_replay_errors_web.py:114`, group headings,
+  event table) plus a browser journey in `tests/browser/` that opens the card with one stored site_events row.
+- **A12** W12 splits: **W12a** `player_view_cache.py` + `routers/players.py`; **W12b** `site_stats.py`,
+  `viewer_site_stats_cache.py`, `site_stats_cache.py`, `account_groups.py`. The 368-404 validator gets one count
+  where its caller turns False into a miss. `site_health.CACHE_FALLBACK_KEYS` lists the keys; a grep test checks
+  every `count("cache_fallback", …)` key is in it.
+- **A13** W13: `resolve_prefix(kind, prefix)` from `_open`; resolve only on outcome STORED with status "ok"
+  (`store_round` also stores failed rows, `:520`); `resolve` also drops that key's queued and counted entries.
+  Refusals use `count()` (batched), not `record`.
+- **A14** W6: `check_resolved(entries, KNOWN_KINDS)` factored out and tested to reject an unknown kind; W15 adds a
+  test that `replay_errors.KINDS` keys == `site_health.KNOWN_KINDS`.
+- **A15** Isolation list entries are paths: `WEBAPP / "app" / "services" / "site_health.py"` and
+  `site_health_checks.py`.
+- **A16** `count()` takes an optional `merge(old_context, item)`; W14 uses it to keep the slowest.
+- **A17** The card is at `upload.html:69`; W4's revision id is `"0031"`; both models go in `__all__`.
+- **A18** Stopping the flush thread joins it with a 5 s timeout after its last flush.
+- **A19** `archive_sync:worker` records only after 3 consecutive failing cycles (worker deploys make single
+  failures normal), `PROVISIONAL(D1)`.
+- **A20** `test_site_health_pg.py` uses the `tests/support/postgres` fixtures.
+- **A21** Wrap-up: CLAUDE.md's "all 25 suites" becomes 26.
+
 ## W4: table and migration
 
 - New `app/models/site_events.py`: `SiteEvent` (`site_events`: `kind` String(32), `key` String(300), PK (kind, key);
@@ -157,7 +211,7 @@ Conventions for every item:
 - `request()` (`:47`): before starting another child, read the previous child's `returncode`; non-zero and not 3 →
   `enqueue("util_build_failed", "build", ..., {exit_code, pid, ran_s})` (keep the start time beside `_child`).
 - `util_build_stale` (checked, in `app/services/site_health_checks.py`, new): reads `util_model` key/version/
-  computed_at for "values" (columns only, never `data`), the newest `computed_at` of current util rows newer than the
+  computed_at for "values" (columns only, never `data`), the oldest `computed_at` of current util rows newer than the
   build, and `pg_locks` for `LOCK_KEY` (skip on non-PostgreSQL); stale and over 3 h (`PROVISIONAL(D1)`) with no lock
   held → one row. The `corpus_key` compare (`replay_util.corpus_key`, lazy import) runs in the card's background
   verifier (W11's pass), not in `compute`.
@@ -237,4 +291,4 @@ Conventions for every item:
 
 ## Checkpoints
 
-Full suite (by the loop, `checkpoint.py request`) after W6, W9, W12, and `final` at wrap-up.
+Full suite (by the loop, `checkpoint.py request`) after W6, W9, W12b, and `final` at wrap-up. Item order: W4, W5, W6, W7a, W7b, W8, W9, W10, W11, W12a, W12b, W13, W14, W15.
