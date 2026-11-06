@@ -698,6 +698,14 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     return held_features or any(not room_for(state, p.replay_id) for _, p in todo)
 
 
+def _raise_backstops(state: State) -> None:
+    """A health read that shows Workflows raises every round in flight to the Workflow backstop, queued ones too
+    (R5-B4): a later failed read lowers remote_control, never a round's stale_s."""
+    if state.remote_control:
+        for f in state.in_flight.values():
+            f.stale_s = max(f.stale_s, STALE_RUN_S)
+
+
 def _note_warm_vanished(state: State, health, now: float) -> None:
     """D3's alarm: each new loss the worker's /health reports is logged as an error; LIVE then lists it."""
     state.alarms_read_at = now
@@ -735,6 +743,7 @@ def _poll_alarms(client, state: State, now: float) -> None:
         state.alarms_read_at = now
         return
     state.remote_control = remote_control(health)
+    _raise_backstops(state)
     state.capable = supports_gaps(health)
     _note_warm_vanished(state, health, now)
 
@@ -756,6 +765,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
+    _raise_backstops(state)
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
     _note_warm_vanished(state, health, now)

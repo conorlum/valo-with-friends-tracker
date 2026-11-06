@@ -388,7 +388,10 @@ round is a probe again) and a miss is counted, so a download that keeps failing 
 Confirmation runs in cycles: each withdrawal (a failed download, a miss, a lost file) starts a new one, and only the
 new cycle's probe confirms again and clears the counts. A round released in an older cycle neither confirms nor
 counts a second miss when it answers late, so one outage across a batch of parallel rounds costs one try. A running
-warm build holds no map: another identity's warming round of the same map doesn't wait for it.
+warm build holds no map: another identity's warming round of the same map doesn't wait for it. A run names the
+visibility file it read (`visibility`) and any cache file it couldn't read (`unreadable`): only a probe that read its
+leased file confirms, a probe that read another file or couldn't read its file is a miss, and the worker deletes its
+own copy of an unreadable file so the next warm build rebuilds it.
 
 **Time limits.** Each limit counts from its attempt's start. Render's own task limit is 300 s above the worker's.
 

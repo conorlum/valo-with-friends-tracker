@@ -160,6 +160,9 @@ def _rows_line(geo) -> str | None:
     return f"{geo.name}: feature rows {cache.row_hits} reused, {cache.row_builds} built"
 
 
+UNREADABLE: list[str] = []      # visibility cache files this process removed because they wouldn't load
+
+
 def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
     from app.control import geometry
 
@@ -177,10 +180,13 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
         try:
             geometry.visibility(geo)
         except Exception:
-            # A cache file that won't load is removed, so the next try rebuilds it.
+            # A cache file that won't load is removed, so the next try rebuilds it. Its names are reported
+            # (`unreadable` in the answer): a Workflow run's copy is only a download, and the replay worker must
+            # drop its own copy too, or every later run downloads the same broken file (R5-B3).
             for path in Path(geometry.cache_dir()).glob(f"{name}.*.npz"):
                 try:
                     path.unlink()
+                    UNREADABLE.append(path.name)
                 except OSError:
                     pass
             raise
@@ -428,6 +434,7 @@ def warm_task(task: dict) -> dict:
     round of this task, building its visibility cache when this machine lacks it, and names the cache file. The
     replay worker counts the task's warm identity as ready while that file is on its disk."""
     started = time.time()
+    UNREADABLE.clear()
     try:
         from app.control import geometry
 
@@ -437,11 +444,14 @@ def warm_task(task: dict) -> dict:
     except Exception as error:  # noqa: BLE001 - the worker retries, then falls back to a warming round
         result = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
     result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    if UNREADABLE:
+        result["unreadable"] = sorted(set(UNREADABLE))
     return result
 
 
 def compute_task(task: dict) -> dict:
     started = time.time()
+    UNREADABLE.clear()      # this task's own, in a process that runs several (the local command)
     try:
         from app.control import engine
         from app.control.encode import encode_data, encode_summary
@@ -506,8 +516,16 @@ def compute_task(task: dict) -> dict:
         result = {"status": "failed", "error_kind": kind,
                   "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}
     result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    if UNREADABLE:
+        result["unreadable"] = sorted(set(UNREADABLE))
     if geo is not None and getattr(geo, "visibility_source", None):
         # Whether this round found the map's visibility cache or had to build it: the replay worker's warm builds
         # read it (a round that built it means its key wasn't really warm).
         result.update({"visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s})
+        try:
+            from app.control import geometry
+
+            result["visibility"] = geometry.visibility_name(geo)   # the file it read or built (R5-B5)
+        except Exception:  # noqa: BLE001 - only a report: the worker falls back to the lease's name
+            pass
     return result

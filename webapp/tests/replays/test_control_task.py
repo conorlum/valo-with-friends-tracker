@@ -177,3 +177,21 @@ def test_a_failure_to_find_the_heights_is_the_machines_not_the_rounds(tmp_path, 
     out = control_task.compute_task({"key": "k", "map": "Ascent", "height": "f" * 12, "blob": b"", "link":
                                      {"sides": {}, "db_deaths": []}})
     assert out["status"] == "failed" and out["error_kind"] == "infra" and "not on this machine" in out["error"]
+
+
+def test_a_cache_that_wont_load_is_removed_and_named_in_the_answer(tmp_path, monkeypatch):
+    # R5-B3: the replay worker drops its own copy of a named file, so later runs stop downloading it broken.
+    from app.control import geometry
+
+    broken = tmp_path / "Ascent.0123456789abcdef.npz"
+    broken.write_bytes(b"not a zip")
+    monkeypatch.setattr(geometry, "cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(geometry, "load_geometry", lambda name, **kw: type("G", (), {"name": name})())
+
+    def unreadable(geo):
+        raise ValueError("bad zip")
+    monkeypatch.setattr(geometry, "visibility", unreadable)
+    monkeypatch.setattr(task, "_GEOMETRY", {})
+    result = task.warm_task({"key": "w", "map": "Ascent"})
+    assert result["status"] == "failed" and result["unreadable"] == [broken.name] and not broken.exists()
+    task.UNREADABLE.clear()

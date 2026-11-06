@@ -39,7 +39,7 @@ elif mode == "infra":
     print(json.dumps({"status": "failed", "error_kind": "infra", "error": "machine went away"}))
 else:
     print(json.dumps({"status": "ok", "data": "ZA==", "summary": "cw==", "key": task["key"], "had": had,
-                      "visibility_source": source}))
+                      "visibility_source": source, **({"visibility": task["link"]["read"]} if task["link"].get("read") else {})}))
 """
 
 
@@ -508,24 +508,38 @@ def test_a_late_success_from_before_a_withdrawal_does_not_reopen_parallel_rounds
     # R4 (second review B1): only the new cycle's probe confirms again.
     control, render, _, base = warm_remote
     warm_and_confirm(control)
-    inner, failed, seen = render.runner, set(), []
+    inner, failed, seen, attempts = render.runner, set(), [], []
+    b_running = threading.Event()
+    jobs = {}
 
-    def a_fails_once(kind, args):
+    def b_done():
+        end = time.time() + 10
+        while time.time() < end and control.get(jobs["b"].id).status != "done":
+            time.sleep(0.01)
+        return control.get(jobs["b"].id).status == "done"
+
+    def runner(kind, args):
         job = control.jobs.get(args["job_id"])
+        if kind == "control" and job.key == "b":
+            b_running.set()
         if kind == "control" and args.get("visibility") and job.key == "a" and job.id not in failed:
+            assert b_running.wait(10), "b was never released in a's cycle"
             failed.add(job.id)
-            return hand_back(base, args)
+            return hand_back(base, args)                    # withdraws: b is now from an older cycle
         return inner(kind, args)
 
-    def check_at_the_new_probe(job):
-        if job.key == "a" and job.id in failed:            # a settling: its failed attempt, then its new probe
-            seen.append(job.warm_id in control.warm_confirmed)
-    render.runner = a_fails_once
-    control._before_settle = check_at_the_new_probe
-    a = control.submit(round_task("a", mode="sleep:2"))
-    b = control.submit(round_task("b", mode="sleep:0.5"))  # released with a, answers "cache" during a's new probe
+    def settle(job):
+        if job.key == "a":
+            attempts.append(1)
+            if len(attempts) == 2:                          # a's new probe: hold it until b's late answer is in
+                assert b_done(), "b never settled"
+                seen.append((job.warm_id in control.warm_confirmed, dict(control.warm_missed)))
+    render.runner = runner
+    control._before_settle = settle
+    a = jobs["a"] = control.submit(round_task("a"))
+    b = jobs["b"] = control.submit(round_task("b", mode="sleep:0.5"))  # answers "cache" after a's withdrawal
     assert all(j.status == "done" for j in wait_done(control, [a, b]))
-    assert seen == [True, False]      # its first attempt (before its own withdrawal), then the new probe
+    assert seen == [(False, {a.warm_id: 1})]         # at a's new probe: b neither confirmed nor cleared the miss
     assert control.counts()["warm_builds"]["confirmed"] == [a.warm_id]
 
 
@@ -708,6 +722,56 @@ def test_a_late_built_answer_from_an_older_cycle_spends_no_try(warm_remote):
     assert all(j.status == "done" for j in wait_done(control, [a, b]))
     state = control.counts()["warm_builds"]
     assert state["confirmed"] == [a.warm_id] and state["missed"] == {}    # a's new probe confirmed; no fallback
+
+
+def test_a_leased_file_no_run_can_read_is_removed_and_built_again(warm_remote):
+    # R5-B3: an unreadable file is a miss, and the worker drops its copy, so the next warm build rebuilds it.
+    control, render, settings, base = warm_remote
+    name = f"Ascent.{'e' * 16}.npz"
+    inner, done = render.runner, []
+
+    def unreadable_once(kind, args):
+        if kind == "control" and args.get("visibility") and not done:
+            done.append(1)
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "ValueError: bad zip",
+                                     "unreadable": [args["visibility"]]})
+        return inner(kind, args)
+
+    render.runner = unreadable_once
+    first = control.submit(round_task("u"))
+    assert wait_done(control, [first])[0].status == "failed"
+    assert not (settings.control_cache_dir / name).exists()
+    assert control.counts()["warm_builds"]["missed"] == {first.warm_id: 1}
+    again = control.submit(round_task("u2"))
+    assert wait_done(control, [again])[0].status == "done"
+    assert warm_starts(render) == 2 and (settings.control_cache_dir / name).exists()
+
+
+def test_a_probe_that_read_another_file_does_not_confirm_the_leased_one(warm_remote):
+    # R5-B5: confirmation needs the leased file itself read, by the run's own report.
+    control, _, _, _ = warm_remote
+    probe = control.submit(round_task("p", source="cache", read=f"Ascent.{'f' * 16}.npz"))
+    wait_done(control, [probe])
+    state = control.counts()["warm_builds"]
+    assert state["confirmed"] == [] and state["missed"] == {probe.warm_id: 1}
+
+
+def test_a_fallback_round_that_reads_the_tracked_file_marks_it_read(warm_remote):
+    # R5-B5: no lease, but the run's report names the identity's file: its later eviction is not a D3 loss.
+    control, render, settings, base = warm_remote
+    name = f"Ascent.{'e' * 16}.npz"
+    inner = render.runner
+    render.runner = lambda kind, args: (hand_back(base, args) if kind == "control" and args.get("visibility")
+                                        else inner(kind, args))
+    job = control.submit(round_task("f", read=name))       # downloads keep failing: it ends in the fallback
+    assert wait_done(control, [job])[0].status == "done"
+    assert job.warm_id in control.warm_read
+    (settings.control_cache_dir / name).unlink()
+    render.runner = inner
+    later = control.submit(round_task("g"))
+    wait_done(control, [later])
+    assert control.counts()["warm_builds"]["vanished"] == {}
 
 
 def test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed(warm_remote):

@@ -597,6 +597,27 @@ def test_a_round_sent_during_a_failed_health_read_gets_the_workflow_limit_once_h
     assert counts["timed_out"] == 0 and not state.tries
 
 
+def test_a_queued_round_is_raised_by_a_workflow_health_read_before_it_runs(factory, db, linked, monkeypatch):
+    # R5-B4: health recovers while the round is still queued, then fails again before it starts running.
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)
+    phase = {"status": "queued"}
+    worker, state = FakeWorker(answer=lambda task: {"status": phase["status"]}), remote.State()
+    worker.runners = {"control": "workflow"}
+    worker.health_error = remote.Unreachable("blip")
+    remote.cycle(factory, worker, state, now=0)                     # sent with the local backstop
+    worker.health_error = None
+    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)   # health back, the round still queued
+    assert all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
+    worker.health_error = remote.Unreachable("blip again")
+    state.last_planned = None
+    remote.cycle(factory, worker, state, now=2 + remote.ALARM_POLL_S)
+    assert not state.remote_control
+    phase["status"] = "running"
+    remote.cycle(factory, worker, state, now=3 + remote.ALARM_POLL_S)   # first seen running
+    counts = remote.cycle(factory, worker, state, now=4 + remote.ALARM_POLL_S + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
+
+
 def test_a_worker_restart_keeps_the_earlier_losses_on_the_errors_page(factory, linked):
     # R4: every merge restarts the worker; its losses stay listed (summed), not emptied by the new process.
     worker, state = FakeWorker(), remote.State()

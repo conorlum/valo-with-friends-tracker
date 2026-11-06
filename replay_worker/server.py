@@ -1797,6 +1797,16 @@ class ControlRunner:
                 job.error_code = error_code
                 job.finished = time.time()
                 job.task = b""
+                # R5-B3: cache files the run couldn't read. Its copy was a download; drop this disk's copy too, so
+                # the next warm build (or warming round) builds it instead of every run downloading it broken.
+                unreadable = [n for n in (answer.get("unreadable") or [])
+                              if isinstance(n, str) and control_cache.valid(n, job.map)]
+                for name in unreadable:
+                    try:
+                        (self.settings.control_cache_dir / name).unlink(missing_ok=True)
+                        _log(f"cache {name}: a run couldn't read it; removed so it is built again")
+                    except OSError:
+                        pass                                 # leased and open elsewhere: the next settlement tries
                 if job.kind == "warm":
                     self.warm_jobs.pop(job.warm_id, None)
                     name = (result or {}).get("visibility")
@@ -1831,14 +1841,21 @@ class ControlRunner:
                     probe = self.warm_probe.get(job.warm_id) == job.id
                     if probe:
                         self.warm_probe.pop(job.warm_id, None)     # whatever happened, the probe slot is free
-                    if source == "built" and current and this_cycle:   # R5-B2: an older cycle's answer spends nothing
+                    # The file the run says it read (R5-B5); an older task image doesn't say: the lease's name.
+                    read = answer.get("visibility") or job.released_name
+                    # A round that had to build the cache, couldn't read the one it was given, or read another
+                    # file for its geometry: the leased file didn't do its job, one miss. R5-B2: an older cycle's
+                    # answer spends nothing.
+                    wrong = source == "built" or job.released_name in unreadable or (
+                        source == "cache" and read != job.released_name)
+                    if wrong and current and this_cycle:
                         self.warm_misses += 1                      # rule 7
                         self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1
                         self.warm_names.pop(job.warm_id, None)     # later answers no longer match: counted once
                         self.warm_read.discard(job.warm_id)
                         self._withdraw(job.warm_id)
                         _log(f"warm identity {job.warm_id} missed: a round had to build its cache")
-                    elif source == "cache" and current:
+                    elif source == "cache" and current and not wrong:
                         self.warm_read.add(job.warm_id)            # read: its eviction from now on isn't D3's
                         if probe and this_cycle:
                             # Rule 5, from this cycle's probe only: a round released before a withdrawal can't
@@ -1846,6 +1863,11 @@ class ControlRunner:
                             self.warm_confirmed.add(job.warm_id)
                             for counts in (self.warm_failures, self.warm_missed, self.warm_vanished):
                                 counts.pop(job.warm_id, None)      # it works: earlier trouble is behind it
+                elif (job.kind == "control" and self.uses_warm_builds() and answer.get("visibility_source") == "cache"
+                        and answer.get("visibility") and answer.get("visibility") == self.warm_names.get(job.warm_id)):
+                    # A fallback round with no lease read the identity's tracked file: read, so its eviction from
+                    # now on is ordinary cleanup, not a D3 loss (R5-B5).
+                    self.warm_read.add(job.warm_id)
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
                 if job.kind == "control":
