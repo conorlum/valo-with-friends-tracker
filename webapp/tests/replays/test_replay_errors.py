@@ -25,6 +25,7 @@ from app.config import settings
 from app.models import Player
 from app.models.replay import (ControlHeight, Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayRoundGapRun,
                                ReplayRoundMoments, ReplayRoundUtil, ReplayUpload)
+from app.models.site_events import SiteEvent
 from app.services import control_heights as ch, replay_progress as progress
 from app.services.replay_progress import uploads, cf, replay_control, replay_gaps, STEPS, _LABELS
 from app.services.replay_util import Freshness
@@ -74,6 +75,143 @@ def one(errors, db, key):
     assert row["reproduce"] and isinstance(row["figures"], dict)
     assert row["link"].startswith("https://valowithfriendstracker.onrender.com/replays/")
     return row
+
+
+@pytest.fixture
+def event_kind(errors, monkeypatch):
+    monkeypatch.setattr(errors, "KINDS", errors.KINDS + (("test_event", "Test events"),))
+    monkeypatch.setattr(errors, "GROUPS", {**errors.GROUPS, "test_event": "Pages"})
+    monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event"}))
+    return errors
+
+
+@pytest.fixture
+def stored_events(event_kind, db):
+    db.add_all([
+        SiteEvent(kind="test_event", key="GET /players/{player_id}",
+                  error="Traceback (most recent call last):\n  ...\nValueError: synthetic",
+                  context={"path": "/players/12", "status": 500}, count=3,
+                  first_seen=STAMP - timedelta(hours=5), last_seen=STAMP - timedelta(minutes=2)),
+        SiteEvent(kind="test_event", key="older", error="synthetic older", context=None, count=1,
+                  first_seen=STAMP - timedelta(days=1), last_seen=STAMP - timedelta(hours=1)),
+        SiteEvent(kind="unknown", key="ignored", error="unknown synthetic", context={}, count=1,
+                  first_seen=STAMP, last_seen=STAMP),
+    ])
+    db.commit()
+    return event_kind
+
+
+def test_kind_groups_are_complete(errors):
+    assert errors.GROUP_ORDER == ("Pages", "Background work", "Data", "Replays")
+    assert set(dict(errors.KINDS)) <= errors.GROUPS.keys()
+    assert set(errors.GROUPS.values()) <= set(errors.GROUP_ORDER)
+    assert errors.EVENT_KINDS <= set(dict(errors.KINDS))
+
+
+def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
+    errors = stored_events
+    queries = []
+    def record(conn, cursor, statement, parameters, context, many):
+        if "site_events" in statement.lower():
+            queries.append(statement.lower())
+    event.listen(db.get_bind(), "before_cursor_execute", record)
+    try:
+        body = errors.compute(db)
+    finally:
+        event.remove(db.get_bind(), "before_cursor_execute", record)
+    entry = body["kinds"][0]
+    assert (entry["key"], entry["group"], entry["shape"], entry["count"]) == (
+        "test_event", "Pages", "event", 2)
+    assert [row["key"] for row in entry["rows"]] == ["GET /players/{player_id}", "older"]
+    newest, older = entry["rows"]
+    assert set(newest) == {"kind", "key", "count", "first_seen", "last_seen", "error", "context",
+                           "link", "reproduce"}
+    assert newest["count"] == 3
+    assert newest["first_seen"] == (STAMP - timedelta(hours=5)).isoformat()
+    assert newest["last_seen"] == (STAMP - timedelta(minutes=2)).isoformat()
+    assert newest["context"] == {"path": "/players/12", "status": 500}
+    assert newest["link"] == f"{errors.SITE}/replays/upload"
+    assert newest["reproduce"] == errors._inventory_command()
+    assert older["context"] == {}
+    assert [entry["key"] for entry in body["kinds"][1:]] == KEYS
+    assert all(entry["shape"] == "replay" and entry["group"] == "Replays" for entry in body["kinds"][1:])
+    assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
+    assert len(queries) == 1 and queries[0].startswith("select ")
+    selected = queries[0].replace('"', "")      # SQLite quotes the reserved word key
+    assert all(f"site_events.{column}" in selected for column in (
+        "kind", "key", "count", "first_seen", "last_seen", "error", "context"))
+
+
+def test_event_row_copies_nested_context_and_accepts_overrides(errors):
+    context = {"nested": {"items": ["synthetic"]}}
+    row = errors._event_row(kind="test_event", key="synthetic", count=1, first_seen=STAMP,
+                            last_seen=STAMP, error="synthetic", context=context,
+                            link="/synthetic", reproduce="synthetic command")
+    context["nested"]["items"].append("changed")
+    assert row["context"] == {"nested": {"items": ["synthetic"]}}
+    assert row["link"] == "/synthetic" and row["reproduce"] == "synthetic command"
+
+
+def test_event_prompt_and_remaining_query_share_budget(stored_events, db):
+    errors = stored_events
+    db.add_all([SiteEvent(kind="test_event", key=f"rest-{i:03}", count=1, error="synthetic",
+                          context={}, first_seen=STAMP, last_seen=STAMP - timedelta(days=2))
+                for i in reversed(range(199))])
+    db.commit()
+    body = errors.compute(db, limit=None)
+    text = errors.prompt(body)
+    assert text.startswith("Investigate site health problems that need a human.\n")
+    for line in ("kind: test_event", "key: GET /players/{player_id}", "count: 3",
+                 f"first_seen: {(STAMP - timedelta(hours=5)).isoformat()}",
+                 f"last_seen: {(STAMP - timedelta(minutes=2)).isoformat()}",
+                 'context: {"path": "/players/12", "status": 500}',
+                 "error: Traceback (most recent call last):\n  ...\nValueError: synthetic",
+                 f"link: {errors.SITE}/replays/upload", f"reproduce: {errors._inventory_command()}"):
+        assert line in text
+    assert text.count("\nkind: test_event") == 200
+    assert "1 more. List the rest read-only:" in text
+    assert ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+            "WHERE kind = 'test_event' AND key IN ('rest-198') ORDER BY last_seen DESC;") in text
+    assert "\nmap:" not in text and "\nrevision:" not in text
+    assert errors.prompt(body, "test_event") == text
+
+
+def test_event_rest_query_quotes_values(event_kind):
+    assert event_kind._rest_query("test_event", [{"key": "synthetic's key"}]) == (
+        "SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+        "WHERE kind = 'test_event' AND key IN ('synthetic''s key') ORDER BY last_seen DESC;")
+
+
+def test_demo_event_kind_never_reads_db_even_with_warm_cache(stored_events, db, monkeypatch):
+    errors = stored_events
+    errors.cached(db, now=100)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    class NoDB:
+        def execute(self, *args):
+            pytest.fail("demo execute")
+        def query(self, *args):
+            pytest.fail("demo query")
+    for body in (errors.compute(NoDB()), errors.cached(NoDB(), now=101)):
+        assert body["kinds"][0]["key"] == "test_event"
+        assert len(body["kinds"]) == len(errors.KINDS)
+        assert all(entry["count"] == 0 and entry["rows"] == [] for entry in body["kinds"])
+
+
+def test_missing_event_table_keeps_replay_evidence(event_kind, db, monkeypatch, caplog):
+    upload(db, status="failed", error="synthetic replay failure")
+    SiteEvent.__table__.drop(db.get_bind())
+    rollbacks = []
+    original = db.rollback
+    def rollback():
+        rollbacks.append(True)
+        original()
+    monkeypatch.setattr(db, "rollback", rollback)
+    body = event_kind.compute(db)
+    assert body["kinds"][0]["count"] == 0
+    entry = next(entry for entry in body["kinds"] if entry["key"] == "upload_failed")
+    assert entry["count"] == 1 and entry["rows"][0]["error"] == "synthetic replay failure"
+    assert rollbacks == [True]
+    assert any(record.levelname == "WARNING" and "site_events" in record.message for record in caplog.records)
 
 
 def upload(db, i=1, **kwargs):

@@ -15,7 +15,10 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from sqlalchemy import select
+
 from app.config import settings
+from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
 from app.models.replay import (ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                ReplayRoundUtil, ReplayUpload)
@@ -45,6 +48,9 @@ KINDS = (
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
 )
+GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
+GROUPS = {key: "Replays" for key, _ in KINDS}   # later items add their kinds with their group
+EVENT_KINDS = frozenset()                      # kinds whose rows come from site_events
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -91,6 +97,13 @@ def _row(*, replay=None, map_name=None, match=None, n=None, t=None, agent=None, 
     return {"map": map_name, "match": match, "round": n, "t": t, "agent": agent,
             "figures": copy.deepcopy(figures) if figures is not None else {}, "link": link,
             "error": error, "revision": revision, "reproduce": reproduce or _inventory_command()}
+
+
+def _event_row(*, kind, key, count, first_seen, last_seen, error, context, link=None, reproduce=None) -> dict:
+    return {"kind": kind, "key": key, "count": count, "first_seen": _iso(first_seen),
+            "last_seen": _iso(last_seen), "error": error,
+            "context": copy.deepcopy(context) if context is not None else {},
+            "link": link or f"{SITE}/replays/upload", "reproduce": reproduce or _inventory_command()}
 
 
 def _round_command(replay, n) -> str:
@@ -415,8 +428,26 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
     notes["feature_failed"] = (f"checking {done} of {total}" if running else
                                f"{verified} verified, {unavailable} unavailable or unsupported" if started else
                                "not checked yet")
-    for values in rows.values():
-        values.sort(key=_sort_key)
+    try:
+        stored = db.execute(select(SiteEvent.kind, SiteEvent.key, SiteEvent.count, SiteEvent.first_seen,
+                                   SiteEvent.last_seen, SiteEvent.error, SiteEvent.context)).all()
+    except Exception:
+        log.warning("site_events could not be read; showing replay evidence only", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the site_events read failed", exc_info=True)
+        stored = []
+    for kind, key, count, first_seen, last_seen, error, context in stored:
+        if kind in EVENT_KINDS and kind in rows:
+            rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
+                                         last_seen=last_seen, error=error, context=context))
+    for key, values in rows.items():
+        if key not in EVENT_KINDS:
+            values.sort(key=_sort_key)
+    for key in EVENT_KINDS & rows.keys():
+        rows[key].sort(key=lambda row: row["key"])
+        rows[key].sort(key=lambda row: row["last_seen"] or "", reverse=True)
     return rows
 
 
@@ -425,10 +456,12 @@ def compute(db, live=None, *, limit=SHOW) -> dict:
     stale = Counter()
     notes = {}
     rows = collect(db, live=live, stale=stale, notes=notes)
-    return {"kinds": [{"key": key, "label": label, "count": len(rows[key]),
+    ordered = sorted(KINDS, key=lambda pair: GROUP_ORDER.index(GROUPS[pair[0]]))
+    return {"kinds": [{"key": key, "label": label, "group": GROUPS[key],
+                       "shape": "event" if key in EVENT_KINDS else "replay", "count": len(rows[key]),
                        "note": (f"{stale[key]} failed rows from older rules: the worker will retry them"
                                 if stale[key] else notes.get(key)), "rows": rows[key][:limit]}
-                      for key, label in KINDS],
+                      for key, label in ordered],
             "checked_at": _iso(now())}
 
 
@@ -459,6 +492,10 @@ def _sql_string(value):
 
 def _rest_query(key, rows):
     """Select exactly the remaining stored identities, with only diagnostic columns."""
+    if key in EVENT_KINDS:
+        keys = ", ".join(_sql_string(r["key"]) for r in rows)
+        return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+                f"WHERE kind = {_sql_string(key)} AND key IN ({keys}) ORDER BY last_seen DESC;")
     models = {"control_failed": ReplayRoundControl, "gaps_failed": ReplayRoundGapRun,
               "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
     if key in models:
@@ -497,7 +534,7 @@ def prompt(result, kind=None) -> str:
     chosen = [by_key[key] for key, _ in KINDS if key in by_key and (kind is None or kind == key)]
     if kind is not None and not any(entry["rows"] for entry in chosen):
         return f"{dict(KINDS)[kind]}: nothing to fix."
-    lines = ["Investigate replay errors that need a human.",
+    lines = ["Investigate site health problems that need a human.",
              "Repo: conorlum/valo-with-friends-tracker on GitHub; code is under webapp/.",
              "Investigate read-only: read the code, and access the DB only from webapp/ through",
              "scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only",
@@ -511,6 +548,13 @@ def prompt(result, kind=None) -> str:
         shown = entry["rows"][:remaining]
         for row in shown:
             lines.append("")
+            if entry.get("shape") == "event":
+                lines.extend([f"kind: {row['kind']}", f"key: {row['key']}", f"count: {row['count']}",
+                              f"first_seen: {row['first_seen']}", f"last_seen: {row['last_seen']}",
+                              f"error: {row['error']}",
+                              f"context: {json.dumps(row['context'], ensure_ascii=False, sort_keys=True)}",
+                              f"link: {row['link']}", f"reproduce: {row['reproduce']}"])
+                continue
             for field in ("map", "match", "round", "t", "agent"):
                 lines.append(f"{field}: {row[field]}")
             for name, value in row["figures"].items():
