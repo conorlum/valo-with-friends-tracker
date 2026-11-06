@@ -26,7 +26,7 @@ from app.models.site_events import SiteEvent, SiteEventResolution
 
 logger = logging.getLogger(__name__)
 
-FLUSH_S = 60  # PROVISIONAL(D1): flush interval
+FLUSH_S = 60  # Flush interval
 ERROR_MAX = 2000
 QUEUE_MAX = 1000
 KEEP_DAYS = 30
@@ -338,8 +338,8 @@ def loops():
         return copy.deepcopy(_loops)
 
 
-QUIET_FACTOR = 3  # PROVISIONAL(D1): a loop is quiet after this many of its cycles ...
-QUIET_SLACK_S = 120  # PROVISIONAL(D1): ... plus this many seconds
+QUIET_FACTOR = 3  # A loop is quiet after this many of its cycles ...
+QUIET_SLACK_S = 120  # ... plus this many seconds
 
 
 def quiet_loops(now=None):
@@ -392,7 +392,7 @@ KNOWN_KINDS = frozenset({
     "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held", "store_failed", "ack_missing",
     "stuck", "unlinked", "needs_a_person", "feature_failed",
 })
-GRACE_S = 600  # PROVISIONAL(D1): grace after the first start that has an entry
+GRACE_S = 600  # Grace after the first start that has an entry
 RESOLVED_FILE = Path(__file__).resolve().parents[1] / "data" / "site_health_resolved.json"
 
 

@@ -24,7 +24,7 @@ SITE_URL = "https://valowithfriendstracker.onrender.com"
 UNSCORED_AFTER_S = 3600   # a match gets an hour to be scored before it counts
 UNSCORED_CAP = 200        # the card shows 50 per kind anyway
 
-UTIL_STALE_S = 3 * 3600  # PROVISIONAL(D1): how old the oldest unbuilt util row may be before the build is out of date
+UTIL_STALE_S = 3 * 3600  # How old the oldest unbuilt util row may be before the build is out of date
 
 
 def _aware(moment):

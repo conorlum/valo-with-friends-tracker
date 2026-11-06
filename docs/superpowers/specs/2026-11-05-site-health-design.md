@@ -75,13 +75,15 @@ Primary key `(kind, key)`. A repeat updates the row: `count + 1`, new `error`/`c
 
 - **Automatic**: the same job succeeding for the same key calls `site_health.resolve(kind, key)`, which deletes
   the row. A recompute aimed at the errors therefore clears them as it fixes them. Each kind below says what
-  counts as success. A kind with no success signal is cleared only by the PR that fixes it.
+  counts as success. A kind with no success signal is cleared only by the PR that fixes it. (Owner, 2026-11-06,
+  D1: a PR naming the fixed errors is the manual way to remove them; a later success of the same thing clearing
+  them on its own is welcome on top of that.)
 - **By PR, never from the site** (owner's decision, 2026-11-05): there is no Clear button and no clear endpoint.
   The PR that fixes a problem adds an entry to the committed file `app/data/site_health_resolved.json`:
   `{"kind": ..., "key": ... or null for the whole kind, "fixed_by": "<PR or note>"}`. **Each entry is applied
   once** (P2 finding 1: every merge redeploys, so re-applying at every start would wipe later recurrences): the
   first process that starts with an entry stores it in `site_event_resolutions` (entry hash, `cutoff`, `applied`)
-  with `cutoff` = that process's start time plus a 10 min grace, `PROVISIONAL(D1)`. Render starts the new process
+  with `cutoff` = that process's start time plus a 10 min grace. Render starts the new process
   before it stops the old one, so the old code can still record for a few minutes; the grace clears those too. The
   flush thread (and each later start) deletes the entry's matching rows with `last_seen < cutoff` once the clock
   passes `cutoff`, then marks it applied; later starts skip applied entries. A recurrence after the cutoff stays.
@@ -115,7 +117,7 @@ route doesn't prove the bug is fixed for other inputs).
 - The parent, in `request()`, checks the previous child's exit code before starting another, and enqueues a record
   for any non-zero code other than 3 (killed for memory, for example). Context: exit code, pid, how long it ran.
 - `util_build_stale`: the stored build is out of date, the oldest current util row newer than the build is over
-  3 h old (`PROVISIONAL(D1)`; there is no stored "stale since"), and no build holds the build's advisory lock
+  3 h old (there is no stored "stale since"), and no build holds the build's advisory lock
   (`pg_locks`, since `running()` knows only this process's child). `site_health` never imports `replay_util` at
   module level (it pulls in numpy, which the isolation tests forbid); the check reads key and timestamp columns only,
   and the `corpus_key` compare runs in the card's background verifier, not in the 55 s computation.
@@ -131,7 +133,7 @@ past "held_back N; 0 in flight" case).
 - Each loop is registered when `start()` starts it (the start time is its first beat) and calls
   `site_health.beat(name, phase)` at the start and end of every pass: an in-memory timestamp, no DB write.
 - `loop_quiet` (checked, in-memory): a registered loop that hasn't finished a pass in 3x its cycle plus 2 min
-  (`PROVISIONAL(D1)`: pass lengths aren't logged today). Cycles: control dispatch 20 s, archive sync 300 s, match
+  (pass lengths aren't logged today). Cycles: control dispatch 20 s, archive sync 300 s, match
   states 60 s, map pool daily (allowed 26 h). Shown with "last finished a pass at …" and, when one is under way,
   "in a pass since …". It disappears when the loop beats again.
 - `loop_failed` (recorded): the `except` in each `run_forever` records with key = loop name, context = traceback

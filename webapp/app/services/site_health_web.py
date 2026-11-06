@@ -13,7 +13,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.services import site_health
 
-TRACEBACK_LINES = 15  # PROVISIONAL(D1)
+TRACEBACK_LINES = 15  # traceback lines kept per crash
 SLOW_PAGE_S = 5.0
 _clock = time.perf_counter
 log = logging.getLogger(__name__)

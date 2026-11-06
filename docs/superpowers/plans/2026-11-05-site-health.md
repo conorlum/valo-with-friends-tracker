@@ -73,7 +73,7 @@ Conventions for every item:
 - **A17** The card is at `upload.html:69`; W4's revision id is `"0031"`; both models go in `__all__`.
 - **A18** Stopping the flush thread joins it with a 5 s timeout after its last flush.
 - **A19** `archive_sync:worker` records only after 3 consecutive failing cycles (worker deploys make single
-  failures normal), `PROVISIONAL(D1)`.
+  failures normal).
 - **A20** `test_site_health_pg.py` uses the `tests/support/postgres` fixtures.
 - **A21** Wrap-up: CLAUDE.md's "all 25 suites" becomes 26.
 
@@ -111,7 +111,7 @@ Conventions for every item:
   newest 500 keys. Failure: logged, counters kept for the next flush.
 - `beat(name, phase)` / `register(name, cycle_s, allowed_s=None)` / `loops()`: in-memory only.
 - `start(session_factory) -> threading.Event | None`: daemon thread `site-health-flush`, every 60 s
-  (`PROVISIONAL(D1)` constant `FLUSH_S`); returns None in demo mode; on stop it flushes once more.
+  (constant `FLUSH_S`); returns None in demo mode; on stop it flushes once more.
 - Tests (new `tests/test_site_health.py`, sqlite like `tests/replays/test_control_store.py`'s `db` fixture):
   upsert counts 1 → 2 with new error/last_seen; scrub of a postgres URL, `password=x&token=y`, `key=abc`; error cut
   to 2,000; record with a factory whose session raises → returns, logs, no raise; enqueue never opens a session
@@ -130,7 +130,7 @@ Conventions for every item:
 
 - New `app/data/site_health_resolved.json` = `[]`.
 - `site_health.apply_resolved(session_factory, started_at, entries=None)`: for each entry not in
-  `site_event_resolutions`, insert it with `cutoff = started_at + GRACE_S` (600, `PROVISIONAL(D1)`); then for every
+  `site_event_resolutions`, insert it with `cutoff = started_at + GRACE_S` (600); then for every
   stored entry with `applied_at` NULL and `cutoff <= now`, delete matching `site_events` rows (`kind`, and `key` unless
   null) with `last_seen < cutoff`, set `applied_at`. Called at startup and from each flush. Unknown kinds are skipped
   with a warning.
@@ -173,7 +173,7 @@ Conventions for every item:
 ## W8: pages that crash (`page_error`)
 
 - `app/main.py`: `@app.exception_handler(Exception)` as a plain `def`: key `f"{method} {scope['route'].path}"` (no route
-  → `"{method} (unrouted)"`), context {type, 15 traceback lines (`TRACEBACK_LINES`, `PROVISIONAL(D1)`), path without
+  → `"{method} (unrouted)"`), context {type, 15 traceback lines (`TRACEBACK_LINES`), path without
   query, logged_in from `request.session`}; `site_health.enqueue("page_error", ...)`; returns
   `PlainTextResponse("Internal Server Error", 500)` (what ServerErrorMiddleware sends today). Demo: no enqueue.
 - `KINDS` gains `page_error` ("Pages").
@@ -194,7 +194,7 @@ Conventions for every item:
   `archive_sync:worker` (`replay_archive_sync.py:81-83`; a cycle with no worker error), `map_pool:check`
   (`map_pool_refresh.py:151-154` per page, `:171-173` whole check; resolved when the check's errors count is 0).
 - `site_health.quiet_loops(now)`: registered loops whose last "end" beat (or registration) is older than 3x cycle +
-  120 s (`PROVISIONAL(D1)`); map pool allowed 26 h. `replay_errors.collect` adds them as `loop_quiet` rows
+  120 s; map pool allowed 26 h. `replay_errors.collect` adds them as `loop_quiet` rows
   ("Background work") with "last finished a pass at …" and "in a pass since …".
 - Tests (new `tests/test_site_health_loops.py`): for each loop, a pass that raises records `loop_failed:<name>`, the
   next clean pass resolves it; an inner failure records its key and a pass where that step fails again keeps it
@@ -212,7 +212,7 @@ Conventions for every item:
   `enqueue("util_build_failed", "build", ..., {exit_code, pid, ran_s})` (keep the start time beside `_child`).
 - `util_build_stale` (checked, in `app/services/site_health_checks.py`, new): reads `util_model` key/version/
   computed_at for "values" (columns only, never `data`), the oldest `computed_at` of current util rows newer than the
-  build, and `pg_locks` for `LOCK_KEY` (skip on non-PostgreSQL); stale and over 3 h (`PROVISIONAL(D1)`) with no lock
+  build, and `pg_locks` for `LOCK_KEY` (skip on non-PostgreSQL); stale and over 3 h with no lock
   held → one row. The `corpus_key` compare (`replay_util.corpus_key`, lazy import) runs in the card's background
   verifier (W11's pass), not in `compute`.
 - Tests (extend `tests/critutil/test_util_rebuild.py`; follow `:18`, `:44`): a failing build records and returns 3;

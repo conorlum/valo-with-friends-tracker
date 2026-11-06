@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 CYCLE_S = 300
 LOOP_NAME = "archive-sync"
 WORKER_KEY = "archive_sync:worker"
-WORKER_FAILS_BEFORE_RECORD = 3  # PROVISIONAL(D1)
+WORKER_FAILS_BEFORE_RECORD = 3  # failing cycles in a row before a worker error is recorded
 RESEND_WITHIN = timedelta(days=2)  # the worker's PENDING_TTL_S: after it, nothing is held to ack
 
 

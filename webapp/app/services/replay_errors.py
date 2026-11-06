@@ -71,7 +71,7 @@ EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet",
                          "unscored_match", "kill_impact_missing", "map_pool_note"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events
-KILL_IMPACT_RECHECK_S = 600  # PROVISIONAL(D1): how often the background pass compares stored per-kill fingerprints
+KILL_IMPACT_RECHECK_S = 600  # How often the background pass compares stored per-kill fingerprints
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
