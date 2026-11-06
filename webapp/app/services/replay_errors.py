@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
-from app.models.replay import (ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
+from app.models.replay import (Replay, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                ReplayRoundUtil, ReplayUpload)
 from app.services import control_heights, replay_progress, site_health
 from app.services.replay_gaps import Freshness
@@ -52,13 +52,20 @@ KINDS = (
     ("loop_quiet", "Background loops gone quiet"),
     ("util_build_failed", "Critical Util build failed"),
     ("util_build_stale", "Critical Util build out of date"),
+    ("unscored_match", "Matches with no Impact scores"),
+    ("kill_impact_missing", "Replays missing per-kill Impact"),
+    ("map_pool_note", "Map-pool patch notes not read"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
 GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages",
           "loop_failed": "Background work", "loop_quiet": "Background work",
-          "util_build_failed": "Background work", "util_build_stale": "Background work"}   # later items add their kinds
-EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale"})
-LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale"})   # read when the card is computed; the rest come from site_events
+          "util_build_failed": "Background work", "util_build_stale": "Background work",
+          "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data"}   # later items add their kinds
+EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+                         "unscored_match", "kill_impact_missing", "map_pool_note"})
+LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
+# read when the card is computed; the rest come from site_events
+KILL_IMPACT_RECHECK_S = 600  # PROVISIONAL(D1): how often the background pass compares stored per-kill fingerprints
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -68,7 +75,11 @@ _verification_started = False
 _verification_pending = False   # the last compute saw a current artifact with no result
 _verification_running = False
 _verification_progress = (0, 0)
-_digests: dict = {}     # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
+_kill_impact_results: dict = {}     # replay id -> item dict, for linked replays whose stored fingerprint is stale
+_kill_impact_checked_at: datetime | None = None
+_util_values_current: bool | None = None   # the last pass's answer, None = never or failed
+_util_checked_at: datetime | None = None
+_digests: dict = {}    # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
 
 
 def now() -> datetime:
@@ -78,6 +89,16 @@ def now() -> datetime:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+LIVE_NOTE = "live: checked when the card is computed"
+
+
+def _parse_iso(value) -> datetime | None:
+    try:
+        return _utc(datetime.fromisoformat(value)) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -199,6 +220,63 @@ def _verification_changed():
         _cached = None
 
 
+def _verify_kill_impact(db) -> dict:
+    """Linked replays on a scored match whose stored per-kill split was made from other Impact rows than the
+    match has now: {replay id: item dict}."""
+    from app.replays.db import impact_fingerprint
+    from app.services import site_health_checks
+
+    found = db.execute(select(Replay.id, Replay.match_id, Replay.map_name, Replay.match_uuid, Replay.linked_at,
+                              Replay.created_at, Replay.kill_impact)
+                       .where(Replay.link_status == "linked", Replay.match_id.is_not(None),
+                              Replay.kill_impact.is_not(None), site_health_checks._scored(Replay.match_id))
+                       .order_by(Replay.id)).all()
+    mismatched = {}
+    for rid, match_id, map_name, match_uuid, linked_at, created_at, split in found:
+        stored = split.get("fingerprint") if isinstance(split, dict) else None
+        if stored == impact_fingerprint(db, match_id):
+            continue
+        mismatched[rid] = {
+            "key": str(rid), "first_seen": linked_at or created_at,
+            "error": "stored per-kill Impact fingerprint no longer matches the match's Impact rows",
+            "context": {"match_id": match_id, "map_name": map_name},
+            "reproduce": f"python scripts/link_replays.py --uuid {match_uuid} --refresh-impact"}
+    return mismatched
+
+
+def _verify_data(db):
+    """The data checks that are too slow to run when the card is computed. Each keeps its previous result when it
+    fails."""
+    global _kill_impact_results, _kill_impact_checked_at, _util_values_current, _util_checked_at
+    try:
+        results = _verify_kill_impact(db)
+        with _verification_lock:
+            _kill_impact_results = results
+            _kill_impact_checked_at = now()
+        _verification_changed()
+    except Exception:
+        log.exception("the per-kill Impact fingerprint check could not finish")
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the per-kill Impact check failed", exc_info=True)
+    try:
+        from app.services import replay_util   # pulls numpy: only the background pass imports it
+
+        current = bool(replay_util.values_current(db))
+        with _verification_lock:
+            _util_values_current, _util_checked_at = current, now()
+        _verification_changed()
+    except Exception:
+        log.exception("the Critical Util build comparison could not finish")
+        with _verification_lock:
+            _util_values_current = None
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the util comparison failed", exc_info=True)
+
+
 def _verify_features(session_factory=None, verifier=None):
     """Background body, injectable for offline tests. One session and one verifier call at a time."""
     global _verification_started, _verification_running, _verification_progress
@@ -233,6 +311,7 @@ def _verify_features(session_factory=None, verifier=None):
                     done += 1
                     _verification_progress = (done, len(representatives))
                 _verification_changed()
+            _verify_data(db)
     except Exception:
         log.exception("replay error feature verification could not finish")
     finally:
@@ -249,7 +328,11 @@ def _start_verification():
     if settings.demo_mode:
         return
     with _verification_lock:
-        if _verification_running or (_verification_started and not _verification_pending):
+        if _verification_running:
+            return
+        checked = _kill_impact_checked_at
+        recheck = checked is None or (now() - _utc(checked)).total_seconds() > KILL_IMPACT_RECHECK_S
+        if _verification_started and not _verification_pending and not recheck:
             return
         _verification_started = _verification_running = True
         _verification_pending = False
@@ -461,11 +544,40 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             rows["loop_quiet"].append(_event_row(
                 kind="loop_quiet", key=item["name"], count=1, first_seen=since, last_seen=moment, error=error,
                 context={"limit_s": item["limit_s"]}, reproduce="live: read in this process, not stored"))
-    if "util_build_stale" in rows:
-        from app.services import site_health_checks
+    from app.services import site_health_checks
 
-        moment = now()
+    moment = now()
+    if "unscored_match" in rows:
+        for item in site_health_checks.unscored_matches(db, moment):
+            rows["unscored_match"].append(_event_row(
+                kind="unscored_match", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
+                error=item["error"], context=item["context"], link=item.get("link"),
+                reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "kill_impact_missing" in rows:
+        items = {item["key"]: item for item in site_health_checks.kill_impact_null(db)}
+        with _verification_lock:
+            mismatched = dict(_kill_impact_results)
+        for item in mismatched.values():
+            items.setdefault(item["key"], item)
+        for item in items.values():
+            rows["kill_impact_missing"].append(_event_row(
+                kind="kill_impact_missing", key=item["key"], count=1, first_seen=item["first_seen"],
+                last_seen=moment, error=item["error"], context=item["context"], link=item.get("link"),
+                reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "map_pool_note" in rows:
+        for item in site_health_checks.map_pool_notes(db):
+            rows["map_pool_note"].append(_event_row(
+                kind="map_pool_note", key=item["key"], count=item["context"].get("miss_count") or 1,
+                first_seen=item["first_seen"], last_seen=moment, error=item["error"], context=item["context"],
+                link=item.get("link"), reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "util_build_stale" in rows:
+        with _verification_lock:
+            util_current, util_checked = _util_values_current, _util_checked_at
         for item in site_health_checks.util_build_stale(db, moment):
+            if util_current is True and util_checked is not None:
+                newer = _parse_iso(item["context"].get("oldest_newer_row"))
+                if newer is not None and _utc(util_checked) > newer:
+                    continue   # a pass after the newer rows found the build current: they were already covered
             rows["util_build_stale"].append(_event_row(
                 kind="util_build_stale", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
                 error=item["error"], context=item["context"],

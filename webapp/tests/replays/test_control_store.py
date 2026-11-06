@@ -12,6 +12,14 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb(type_, compiler, **kw): return "JSON"
+
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[0]))
@@ -26,6 +34,8 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil,
                                 ControlFeatureArtifact, UtilModel)  # noqa: E402
+from app.models.impact_score import ImpactScore  # noqa: E402
+from app.models.map_pool import MapPoolPatchNotes  # noqa: E402
 from app.models.site_events import SiteEvent, SiteEventResolution  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
@@ -35,7 +45,8 @@ from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
 CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
-                                  ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, UtilModel.__table__]
+                                  ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, UtilModel.__table__,
+                                  ImpactScore.__table__, MapPoolPatchNotes.__table__]
 
 
 def feature_free_source(monkeypatch):

@@ -31,7 +31,7 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+KEYS = ["page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -52,6 +52,10 @@ def errors(db, monkeypatch):
     monkeypatch.setattr(module, "_verification_pending", False, raising=False)
     monkeypatch.setattr(module, "_verification_progress", (0, 0), raising=False)
     monkeypatch.setattr(module, "_digests", {}, raising=False)
+    monkeypatch.setattr(module, "_kill_impact_results", {}, raising=False)
+    monkeypatch.setattr(module, "_kill_impact_checked_at", None, raising=False)
+    monkeypatch.setattr(module, "_util_values_current", None, raising=False)
+    monkeypatch.setattr(module, "_util_checked_at", None, raising=False)
     monkeypatch.setattr(module, "_real_start_verification", getattr(module, "_start_verification", None), raising=False)
     # Ordinary inventory tests never start a real verifier/child.
     monkeypatch.setattr(module, "_start_verification", lambda: None, raising=False)
@@ -85,7 +89,8 @@ def event_kind(errors, monkeypatch):
     monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items() if k != "page_error"},
                                            "test_event": "Pages"})
     monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event", "loop_failed", "loop_quiet", "util_build_failed",
-                                                          "util_build_stale"}))
+                                                          "util_build_stale", "unscored_match", "kill_impact_missing",
+                                                          "map_pool_note"}))
     return errors
 
 
@@ -233,13 +238,17 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert newest["reproduce"] == errors._inventory_command()
     assert older["context"] == {}
     assert [entry["key"] for entry in body["kinds"][1:]] == KEYS[1:]
+    data = ("unscored_", "kill_impact_", "map_pool_")
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
-               for entry in body["kinds"][1:] if not entry["key"].startswith(("loop_", "util_build_")))
+               for entry in body["kinds"][1:] if not entry["key"].startswith(("loop_", "util_build_") + data))
     assert all(entry["shape"] == "event" and entry["group"] == "Background work"
                for entry in body["kinds"][1:] if entry["key"].startswith(("loop_", "util_build_")))
+    assert all(entry["shape"] == "event" and entry["group"] == "Data"
+               for entry in body["kinds"][1:] if entry["key"].startswith(data))
     assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
-    assert len(queries) == 1 and queries[0].startswith("select ")
-    selected = queries[0].replace('"', "")      # SQLite quotes the reserved word key
+    event_queries = [q for q in queries if "site_events" in q]
+    assert len(event_queries) == 1 and event_queries[0].startswith("select ")
+    selected = event_queries[0].replace('"', "")      # SQLite quotes the reserved word key
     assert all(f"site_events.{column}" in selected for column in (
         "kind", "key", "count", "first_seen", "last_seen", "error", "context"))
 
@@ -634,7 +643,8 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
                if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error",
-                          "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale"}), \
+                          "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match",
+                          "kill_impact_missing", "map_pool_note"}), \
         "stored kinds"
     for key, rows in collected.items():
         for row in rows:
@@ -860,6 +870,123 @@ def test_artifacts_arriving_after_the_first_pass_get_a_new_pass(errors, db, fact
     assert kind(errors, db, "feature_failed")["note"] == "2 verified, 1 unavailable or unsupported"
     start_and_wait()
     assert len(spawned) == 1, "all checked again: no third pass"
+
+
+def _score(db, replay):
+    from app.models.impact_score import ImpactScore
+    from app.models.round import Round
+
+    rnd = db.query(Round).filter_by(match_id=replay.match_id).first()
+    if rnd is None:
+        rnd = Round(match_id=replay.match_id, round_number=1)
+        db.add(rnd)
+        db.flush()
+    db.add(ImpactScore(round_id=rnd.id, match_player_id=1, kill_impact=0, death_impact=0, impact=0))
+    db.commit()
+
+
+def _stub_util_compare(monkeypatch, value=True):
+    from app.services import replay_util
+
+    monkeypatch.setattr(replay_util, "values_current", lambda session: value)
+
+
+def test_a_stale_kill_impact_fingerprint_shows_after_a_pass_and_goes_when_it_matches(
+        errors, db, factory, linked, monkeypatch):
+    from app.replays import db as replay_db
+
+    _score(db, linked)
+    linked.kill_impact = {"fingerprint": "old"}
+    db.commit()
+    current = {"v": "new"}
+    monkeypatch.setattr(replay_db, "impact_fingerprint", lambda session, match_id: current["v"])
+    _stub_util_compare(monkeypatch)
+    verify = lambda session, row: None  # noqa: E731
+    assert kind(errors, db, "kill_impact_missing")["rows"] == []
+    errors._verify_features(factory, verify)
+    [row] = kind(errors, db, "kill_impact_missing")["rows"]
+    assert row["key"] == str(linked.id) and "fingerprint" in row["error"]
+    current["v"] = "old"
+    errors._verify_features(factory, verify)
+    assert kind(errors, db, "kill_impact_missing")["rows"] == []
+
+
+def test_a_null_replay_that_also_mismatches_is_listed_once(errors, db, linked, monkeypatch):
+    _score(db, linked)
+    monkeypatch.setattr(errors, "_kill_impact_results", {linked.id: {
+        "key": str(linked.id), "first_seen": STAMP, "error": "stale", "context": {}, "reproduce": "x"}})
+    found = kind(errors, db, "kill_impact_missing")
+    assert [row["key"] for row in found["rows"]] == [str(linked.id)]
+
+
+def test_start_verification_also_runs_when_the_kill_impact_check_is_old(errors, monkeypatch):
+    monkeypatch.setattr(errors, "_start_verification", errors._real_start_verification)
+    spawned = []
+    monkeypatch.setattr(errors, "_verify_features", lambda: spawned.append(1))
+    monkeypatch.setattr(errors, "_verification_started", True)
+    monkeypatch.setattr(errors, "_verification_pending", False)
+
+    def start():
+        monkeypatch.setattr(errors, "_verification_running", False)
+        errors._real_start_verification()
+        for worker in threading.enumerate():
+            if worker.name == "replay-error-features":
+                worker.join(10)
+
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", STAMP - timedelta(seconds=errors.KILL_IMPACT_RECHECK_S - 60))
+    start()
+    assert spawned == []
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", STAMP - timedelta(seconds=errors.KILL_IMPACT_RECHECK_S + 60))
+    start()
+    assert spawned == [1]
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", None)
+    start()
+    assert spawned == [1, 1]
+
+
+@pytest.mark.parametrize("current, checked, dropped", [
+    (True, STAMP, True), (False, STAMP, False), (True, STAMP - timedelta(hours=10), False), (None, None, False)])
+def test_the_util_stale_row_is_dropped_only_when_a_later_pass_found_the_build_current(
+        errors, db, monkeypatch, current, checked, dropped):
+    _stale_util(db)    # the oldest newer row is STAMP - 8 h
+    monkeypatch.setattr(errors, "_util_values_current", current)
+    monkeypatch.setattr(errors, "_util_checked_at", checked)
+    assert (kind(errors, db, "util_build_stale")["count"] == 0) is dropped
+
+
+def test_the_background_pass_stores_the_util_compare(errors, db, factory, monkeypatch):
+    _stub_util_compare(monkeypatch, True)
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._util_values_current is True and errors._util_checked_at == STAMP
+
+
+def test_the_card_lists_the_checked_kinds_under_data_and_demo_lists_none(errors, db, linked, monkeypatch):
+    from app.models.map_pool import MapPoolPatchNotes
+    from app.models.match import Match, MatchSource
+
+    _score(db, linked)
+    db.add(Match(external_id="unscored-1", source=MatchSource.SCRAPED, map_name="Ascent",
+                 created_at=STAMP - timedelta(hours=2)))
+    db.add(MapPoolPatchNotes(url="https://example.test/n", patch="11.01", published_at=STAMP, first_seen_at=STAMP,
+                             miss_count=2, last_error="no map section"))
+    db.commit()
+    body = errors.compute(db)
+    for key in ("unscored_match", "kill_impact_missing", "map_pool_note"):
+        found = next(k for k in body["kinds"] if k["key"] == key)
+        assert (found["group"], found["count"]) == ("Data", 1), key
+        assert found["rows"][0]["reproduce"]
+    note = next(k for k in body["kinds"] if k["key"] == "map_pool_note")["rows"][0]
+    assert note["count"] == 2 and note["link"] == "https://example.test/n"
+    monkeypatch.setattr(settings, "demo_mode", True)
+
+    class NoDB:
+        def __getattr__(self, name):
+            pytest.fail(f"demo used the database: {name}")
+
+    errors._cached = None
+    body = errors.compute(NoDB())
+    for key in ("unscored_match", "kill_impact_missing", "map_pool_note"):
+        assert next(k for k in body["kinds"] if k["key"] == key)["rows"] == []
 
 
 def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(errors, db, linked):
