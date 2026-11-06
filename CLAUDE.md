@@ -171,6 +171,19 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach
   brief's `util_facts` are logged with ids the checker trusts (`app/coach/runner.py`).
 
+### Site health
+
+The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`GROUPS`) lists the replay kinds plus
+stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
+(`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
+loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost; and checked
+kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). Recording never
+fails or blocks its caller; hot paths `count()` in memory and a thread flushes. Never in demo mode. A later success
+of the same job resolves a row; otherwise only a PR clears it, by an entry in `app/data/site_health_resolved.json`
+applied once at startup. The site has no route that writes or clears rows; `scripts/site_health.py` only lists.
+A new recorded kind goes in `site_health.KNOWN_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
+Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
+
 ### Running the webapp locally
 
 ```
@@ -192,7 +205,7 @@ See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-aud
 
 **Which tests a change needs:** `python scripts/test_catalog.py plan --git` (or `plan <paths>`) names the suites
 from `tests/suites.toml` that guard the changed files, with each lane's estimated time and command; `run --git`
-runs them and reports each suite against its estimate; `list` describes all 25 suites. A new test file or app
+runs them and reports each suite against its estimate; `list` describes all 26 suites. A new test file or app
 module goes into `tests/suites.toml` (`check`, run by `tests/test_test_catalog.py`, fails otherwise).
 
 | Lane | Arguments after `-m pytest` |
