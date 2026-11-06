@@ -80,6 +80,30 @@ def test_profile_filter_career_fragment_and_keyboard_navigation(browser_page, wi
     assert len(ids) == len(set(ids)), 'fragment insertion created duplicate IDs'
 
 
+def test_site_health_card_shows_group_heading_and_event_row(browser_page, monkeypatch):
+    from app.config import settings
+    from app.routers import replays as routes
+    from app.services import replay_errors
+    page, base, _ = browser_page
+    monkeypatch.setattr(settings, 'replay_upload_code', 'test-code')
+    monkeypatch.setattr(settings, 'replay_worker_url', 'http://127.0.0.1:9')
+    monkeypatch.setattr(routes.uploads, 'batch_limit', lambda worker: 5)
+    event = {'key': 'test_event', 'label': 'Test events', 'group': 'Pages', 'shape': 'event', 'count': 3, 'note': None,
+             'rows': [{'kind': 'test_event', 'key': 'GET /browser-probe', 'count': 3,
+                       'first_seen': '2026-11-01T10:00:00+00:00', 'last_seen': '2026-11-02T10:00:00+00:00',
+                       'error': 'probe failure', 'context': {}, 'link': None, 'reproduce': None}]}
+    empty = [{'key': key, 'label': label, 'group': 'Replays', 'shape': 'replay', 'count': 0, 'note': None, 'rows': []}
+             for key, label in replay_errors.KINDS]
+    monkeypatch.setattr(replay_errors, 'cached', lambda db: {'checked_at': '2026-11-02T12:00:00+00:00',
+                                                            'kinds': [event] + empty})
+    page.goto(base+'/replays/upload')
+    page.locator('input[name=code]').fill('test-code')
+    with page.expect_navigation(): page.locator('input[name=code]').press('Enter')
+    page.locator('[data-errors] summary').click()
+    expect(page.locator('[data-errors-body]').get_by_role('heading', name='Pages')).to_be_visible()
+    expect(page.locator('[data-errors-body]').get_by_text('GET /browser-probe')).to_be_visible()
+
+
 def marker_pixels(page, seconds):
     # SyntheticMatch's slot 0 starts at (-1700, 500) and walks +40 x/s.
     # Ascent maps world y to u and world x to v. These expectations come from

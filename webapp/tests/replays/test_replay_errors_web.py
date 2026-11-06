@@ -37,7 +37,7 @@ def result():
            "error": "No single box explains this height", "revision": {"height_rules": 1},
            "reproduce": "Read the stored height metadata"}
     return {"checked_at": "2026-10-30T12:00:00+00:00",
-            "kinds": [{"key": key, "label": label, "count": 51, "note": "Stored evidence",
+            "kinds": [{"key": key, "label": label, "group": "Replays", "shape": "replay", "count": 51, "note": "Stored evidence",
                        "rows": [copy.deepcopy(row) for _ in range(51)]} for key, label in replay_errors.KINDS]}
 
 
@@ -111,7 +111,7 @@ def test_upload_card_is_closed_below_progress_and_requires_the_code(monkeypatch)
     monkeypatch.setattr(replay_errors, "cached", cached)
     page = routes.upload_form(request({"replay_upload_ok": True}), Mock()).body.decode()
     assert '<details class="card replay-errors" data-errors>' in page
-    assert "<summary>Show replay errors</summary>" in page
+    assert "<summary>Show site health</summary>" in page
     assert page.index("data-progress") < page.index("data-errors")
     assert "data-errors" not in routes.upload_form(request(), Mock()).body.decode()
     cached.assert_not_called()
@@ -192,9 +192,10 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   panel.open = false; panel.events.toggle(); panel.open = true; panel.events.toggle(); await settle();
   assert.equal(requests.length, 1); assert.equal(requests[0].url, "/replays/upload/errors.json");
   assert.equal(body.hidden, false); assert.equal(all.disabled, false);
-  assert.deepEqual(descendants(body, "h4").map(node => node.textContent), ["Ascent", "Summit"]);
+  assert.deepEqual(descendants(body, "h5").map(node => node.textContent), ["Ascent", "Summit"]);
   assert.deepEqual(descendants(body, "tbody").map(node => node.children.length), [2, 1]);
-  assert.equal(descendants(body, "h3")[0].textContent, "Box height conflicts (51)");
+  assert.equal(descendants(body, "h3")[0].textContent, "Replays");
+  assert.equal(descendants(body, "h4")[0].textContent, "Box height conflicts (51)");
   assert.match(body.textContent, /Stored evidence/); assert.match(body.textContent, /Nothing in: Map control failed/);
   // A check still running or unavailable isn't "nothing": it shows its note, and stays out of that list.
   assert.match(body.textContent, /Map features failed to verify: checking 0 of 3/);
@@ -221,3 +222,69 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
                                                                       "clipboard": clipboard}),
                                text=True, capture_output=True, timeout=20)
     assert completed.returncode == 0, completed.stderr
+
+
+def test_errors_dom_shows_group_headings_and_event_tables(result):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is needed for the offline DOM check")
+    page = routes.upload_form(request({"replay_upload_ok": True}), Mock()).body.decode()
+    script = next(script.split("</script>", 1)[0] for script in page.split("<script>")[1:]
+                  if 'document.querySelector("[data-errors]")' in script)
+    shown = replay_errors.page(result)
+    for entry in shown["kinds"]:
+        entry.update(group="Replays", shape="replay")
+    event = {"key": "test_event", "label": "Test events", "group": "Pages", "shape": "event", "count": 7,
+             "note": None, "rows": [{"kind": "test_event", "key": "GET /somewhere", "count": 7,
+                                     "first_seen": "2026-11-01T10:00:00+00:00",
+                                     "last_seen": "2026-11-02T10:00:00+00:00",
+                                     "error": "<b>boom</b>", "context": {}, "link": None, "reproduce": None}]}
+    shown["kinds"].insert(0, event)
+    harness = r'''
+const assert = require("node:assert/strict"), vm = require("node:vm");
+const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+class Element {
+  constructor(tag) { this.tag = tag; this.children = []; this.events = {}; this._text = ""; }
+  appendChild(child) { this.children.push(child); child.parent = this; return child; }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return this._text + this.children.map(child => child.textContent).join(""); }
+  set innerHTML(value) { throw Error("row data must use textContent"); }
+  addEventListener(name, callback) { this.events[name] = callback; }
+  setAttribute(name, value) { this[name] = value; }
+  remove() {}
+}
+function descendants(parent, tag) {
+  return parent.children.flatMap(child => (child.tag === tag ? [child] : []).concat(descendants(child, tag)));
+}
+const panel = new Element("details"), status = new Element("p"), body = new Element("div"), all = new Element("button");
+panel.appendChild(status); panel.appendChild(all); panel.appendChild(body);
+panel.querySelector = selector => ({"[data-errors-status]": status, "[data-errors-body]": body, "[data-errors-copy]": all}[selector]);
+vm.runInNewContext(input.script, {
+  document: {querySelector: () => panel, createElement: tag => new Element(tag)}, navigator: {},
+  setTimeout: () => 0,
+  fetch: () => Promise.resolve({ok: true, json: () => Promise.resolve(input.result)})
+});
+(async function () {
+  panel.open = true; panel.events.toggle();
+  await new Promise(resolve => setImmediate(resolve));
+  const headings = descendants(body, "h3").map(node => node.textContent);
+  const pages = headings.indexOf("Pages"), replays = headings.indexOf("Replays");
+  assert.ok(pages >= 0 && replays > pages, JSON.stringify(headings));
+  assert.equal(headings.filter(h => h === "Pages").length, 1);
+  assert.match(body.textContent, /GET \/somewhere/); assert.match(body.textContent, /<b>boom<\/b>/);
+  const ths = descendants(body, "th").map(node => node.textContent);
+  assert.deepEqual(ths.slice(0, 5), ["Key", "Count", "First seen", "Last seen", "Error"]);
+  const cells = descendants(descendants(body, "tbody")[0], "td").map(node => node.textContent);
+  assert.ok(cells.includes("GET /somewhere") && cells.includes("7"), JSON.stringify(cells));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    completed = subprocess.run([node, "-e", harness], input=json.dumps({"script": script, "result": shown}),
+                               text=True, capture_output=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_error_routes_are_read_only():
+    from app.main import app
+    for route in app.routes:
+        if getattr(route, "path", "").startswith("/replays/upload/errors"):
+            assert not (set(route.methods or ()) & {"POST", "PUT", "PATCH", "DELETE"}), route.path

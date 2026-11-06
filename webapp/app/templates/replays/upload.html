@@ -67,8 +67,8 @@
   </div>
 </details>
 <details class="card replay-errors" data-errors>
-  <summary>Show replay errors</summary>
-  <p class="page-meta" role="status" data-errors-status>Open to check stored replay errors.</p>
+  <summary>Show site health</summary>
+  <p class="page-meta" role="status" data-errors-status>Open to check site health.</p>
   <button type="button" data-errors-copy disabled>Copy prompt</button>
   <div data-errors-body hidden></div>
 </details>
@@ -142,7 +142,7 @@
         fallback.className = "replay-errors-prompt";
         fallback.readOnly = true;
         fallback.rows = 8;
-        fallback.setAttribute("aria-label", "Replay errors prompt to copy");
+        fallback.setAttribute("aria-label", "Site health prompt to copy");
         panel.appendChild(fallback);
       }
       fallback.value = text;
@@ -158,7 +158,7 @@
           function copied() {
             if (fallback) { fallback.remove(); fallback = null; }
             button.textContent = "Copied";
-            status.textContent = "Prompt copied. Reload the page to refresh the errors.";
+            status.textContent = "Prompt copied. Reload the page to refresh site health.";
             setTimeout(function () { button.textContent = "Copy prompt"; }, 2000);
           }
           if (!navigator.clipboard || !navigator.clipboard.writeText) { manualCopy(text); return; }
@@ -168,7 +168,7 @@
         .then(function () { button.disabled = false; });
     }
     function render(result) {
-      var empty = [];
+      var empty = [], group = null;
       result.kinds.forEach(function (kind) {
         if (!kind.count) {
           // A check still running or unavailable isn't "nothing": it says so.
@@ -176,12 +176,29 @@
           else empty.push(kind.label);
           return;
         }
+        if (kind.group && kind.group !== group) { group = kind.group; element(body, "h3", group); }
         var section = element(body, "section");
-        element(section, "h3", kind.label + " (" + kind.count + ")");
+        element(section, "h4", kind.label + " (" + kind.count + ")");
         if (kind.note) element(section, "p", kind.note, "page-meta");
         var button = element(section, "button", "Copy prompt"); button.type = "button";
         button.addEventListener("click", function () { copy(button, kind.key); });
         element(section, "p", "Showing " + kind.rows.length + " of " + kind.count + " (first 50 per kind).", "page-meta");
+        if (kind.shape === "event") {
+          var ewrap = element(section, "div", null, "replay-errors-table");
+          var etable = element(ewrap, "table", null, "compact-table");
+          var ehead = element(element(etable, "thead"), "tr");
+          ["Key", "Count", "First seen", "Last seen", "Error"].forEach(function (label) { element(ehead, "th", label); });
+          var ebody = element(etable, "tbody");
+          kind.rows.forEach(function (row) {
+            var etr = element(ebody, "tr");
+            element(etr, "td", row.key);
+            element(etr, "td", row.count, "num");
+            element(etr, "td", row.first_seen ? new Date(row.first_seen).toLocaleString() : "–");
+            element(etr, "td", row.last_seen ? new Date(row.last_seen).toLocaleString() : "–");
+            element(element(etr, "td"), "pre", row.error || "–");
+          });
+          return;
+        }
         var maps = Object.create(null);
         kind.rows.forEach(function (row) {
           var map = row.map || "No map";
@@ -189,7 +206,7 @@
           maps[map].push(row);
         });
         Object.keys(maps).sort().forEach(function (map) {
-          element(section, "h4", map);
+          element(section, "h5", map);
           var wrap = element(section, "div", null, "replay-errors-table");
           var table = element(wrap, "table", null, "compact-table");
           var head = element(element(table, "thead"), "tr");
@@ -219,11 +236,11 @@
     panel.addEventListener("toggle", function () {
       if (!panel.open || loaded) return;
       loaded = true;
-      status.textContent = "Checking stored replay errors…";
+      status.textContent = "Checking site health…";
       fetch("/replays/upload/errors.json", {headers: {Accept: "application/json"}, cache: "no-store"})
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(render)
-        .catch(function (e) { status.textContent = "Could not check replay errors (" + e.message + "). Reload the page to try again."; });
+        .catch(function (e) { status.textContent = "Could not check site health (" + e.message + "). Reload the page to try again."; });
     });
   })();
 </script>
