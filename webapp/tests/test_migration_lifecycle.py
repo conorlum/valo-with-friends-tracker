@@ -20,7 +20,8 @@ def test_empty_database_upgrade_persists_at_head_and_is_idempotent(scratch_datab
             assert set(conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalars()) == expected_heads
             tables = set(inspect(conn).get_table_names())
             assert {'players', 'impact_scores', 'replays', 'coach_feedback', 'account_group_view_cache',
-                    'map_pool_changes', 'replay_round_moments', 'replay_round_util'} <= tables
+                    'map_pool_changes', 'replay_round_moments', 'replay_round_util',
+                    'site_events', 'site_event_resolutions'} <= tables
             assert 'riot_subject' in {c['name'] for c in inspect(conn).get_columns('players')}
             assert 'scoring_version' in {c['name'] for c in inspect(conn).get_columns('impact_scores')}
             conn.execute(text("INSERT INTO players (display_name, created_at) VALUES ('migration-sentinel', now())"))
@@ -55,6 +56,30 @@ def test_upgrade_downgrade_upgrade_preserves_unfiltered_rows(scratch_database):
             for table in ('player_view_cache', 'account_group_view_cache'):
                 assert conn.execute(text(f'SELECT scope FROM {table}')).scalars().all() == ['recent']
             assert conn.execute(text('SELECT display_name FROM players')).scalar_one() == 'migration-player'
+    finally: engine.dispose()
+
+
+def test_site_events_upgrade_downgrade_upgrade(scratch_database):
+    command(scratch_database, '-m', 'alembic', 'upgrade', '0030')
+    command(scratch_database, '-m', 'alembic', 'upgrade', 'head')
+    engine = create_engine(scratch_database)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO site_events (kind, key, error, context, count, first_seen, last_seen) "
+                              "VALUES ('replay_error', 'k1', 'boom', '{\"a\": 1}', 2, now(), now())"))
+            conn.execute(text("INSERT INTO site_event_resolutions (entry, kind, key, cutoff) "
+                              "VALUES ('abc123', 'replay_error', 'k1', now())"))
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT kind, key, error, count FROM site_events")).one() == ('replay_error', 'k1', 'boom', 2)
+            assert conn.execute(text("SELECT entry, applied_at FROM site_event_resolutions")).one() == ('abc123', None)
+        command(scratch_database, '-m', 'alembic', 'downgrade', '0030')
+        with engine.connect() as conn:
+            tables = set(inspect(conn).get_table_names())
+            assert 'site_events' not in tables and 'site_event_resolutions' not in tables
+        command(scratch_database, '-m', 'alembic', 'upgrade', 'head')
+        with engine.connect() as conn:
+            assert conn.execute(text('SELECT count(*) FROM site_events')).scalar_one() == 0
+            assert conn.execute(text('SELECT count(*) FROM site_event_resolutions')).scalar_one() == 0
     finally: engine.dispose()
 
 

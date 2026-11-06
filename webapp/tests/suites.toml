@@ -169,7 +169,7 @@ tests = [
 guards = [
   "app/__init__.py", "app/main.py", "app/config.py", "app/db.py", "app/maintenance.py", "app/migration_guards.py",
   "app/templates.py", "app/templates/*.html", "app/static/css/**", "app/static/img/**", "app/static/data/*.json",
-  "app/models/__init__.py", "app/routers/__init__.py", "app/services/__init__.py", "app/services/auth.py",
+  "app/models/__init__.py", "app/models/site_events.py", "app/routers/__init__.py", "app/services/__init__.py", "app/services/auth.py",
   "app/services/request_trace.py", "app/routers/auth.py", "alembic/**", "../render.yaml",
   "scripts/load_seed_data.py", "scripts/dump_seed_data.py", "seed_data/**",
 ]
