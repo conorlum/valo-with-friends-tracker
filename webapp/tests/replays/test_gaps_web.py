@@ -23,7 +23,7 @@ from test_replay_store import condensed  # noqa: E402,F401  (fixture)
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models import ImpactScore, RoundPlayerStat  # noqa: E402
+from app.models import RoundPlayerStat  # noqa: E402
 from app.models.replay import Replay, ReplayGap, ReplayRoundGapRun  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -194,7 +194,7 @@ def _jsonb_on_sqlite(type_, compiler, **kw):   # impact_scores.trade_detail, for
 def page_db(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__, ImpactScore.__table__])
+    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__])  # ImpactScore: in CONTROL_TABLES
     session = sessionmaker(bind=engine)()
     yield session
     session.close()
