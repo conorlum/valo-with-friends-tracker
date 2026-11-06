@@ -256,6 +256,8 @@ def _verify_data(db):
         _verification_changed()
     except Exception:
         log.exception("the per-kill Impact fingerprint check could not finish")
+        with _verification_lock:
+            _kill_impact_checked_at = now()   # an attempt counts: a failing check waits its 600 s like a finished one
         try:
             db.rollback()
         except Exception:

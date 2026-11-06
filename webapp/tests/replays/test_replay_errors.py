@@ -911,6 +911,17 @@ def test_a_stale_kill_impact_fingerprint_shows_after_a_pass_and_goes_when_it_mat
     assert kind(errors, db, "kill_impact_missing")["rows"] == []
 
 
+def test_a_failing_kill_impact_check_still_waits_its_recheck_time(errors, db, factory, monkeypatch):
+    def broken(session):
+        raise RuntimeError("no fingerprint today")
+
+    monkeypatch.setattr(errors, "_verify_kill_impact", broken)
+    _stub_util_compare(monkeypatch)
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", None)
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._kill_impact_checked_at is not None, "a failed attempt is stamped, else every card open restarts it"
+
+
 def test_a_null_replay_that_also_mismatches_is_listed_once(errors, db, linked, monkeypatch):
     _score(db, linked)
     monkeypatch.setattr(errors, "_kill_impact_results", {linked.id: {
