@@ -317,6 +317,11 @@ def loop_ok(name, *, session_factory):
     resolve("loop_failed", name, session_factory=session_factory)
 
 
+CACHE_FALLBACK_KEYS = frozenset({
+    "player_view_cache:invalid", "player_view_cache:decode", "player_view_cache:prewarm",
+    "player_page:write_through",
+})
+
 KNOWN_KINDS = frozenset({
     # recorded
     "page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "cache_fallback",
