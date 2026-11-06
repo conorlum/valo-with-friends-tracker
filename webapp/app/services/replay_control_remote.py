@@ -102,12 +102,18 @@ MAX_MATCHES = settings.control_max_matches   # replays those rounds may come fro
 # idle for up to 30 minutes.
 LOCAL_IN_FLIGHT = 8
 STALE_JOB_S = 1800
+STALE_RUN_S = 15000     # the same backstop while control runs on Workflows: > 2 x REPLAY_CONTROL_RUN_TIMEOUT_S
+ALARM_POLL_S = 300      # a pass that sends nothing reads /health for the D3 alarm at most this often
 MAX_TRIES = 3
 BACKOFF_S = 300
 PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
 LOCK_ID = 7_346_120_117          # pg_try_advisory_xact_lock's key for the dispatcher
 TIMEOUT_S = 30
 GAPS_PROTOCOL = 3               # the worker's control.gaps_protocol this deploy can talk to (its /health)
+
+
+def _job_stale_s(remote_control: bool) -> float:
+    return STALE_RUN_S if remote_control else STALE_JOB_S
 
 
 def enabled() -> bool:
@@ -255,6 +261,8 @@ class InFlight:
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
     inputs: object = None
+    stale_s: float = STALE_JOB_S         # its running backstop, fixed at admission from the worker's own `runner`
+                                         # (_admitted_stale_s): no /health read, failed or not, changes it
 
 
 @dataclass(frozen=True)
@@ -265,6 +273,7 @@ class Live:
     held: tuple[int, ...]
     heights_out_of_tries: tuple[str, ...]
     in_flight: tuple[tuple[int, int, float, str], ...]
+    warm_vanished: tuple[tuple[str, int], ...] = ()   # (warm identity, times its cache file left the disk unused)
 
 
 LIVE: Live | None = None
@@ -280,7 +289,29 @@ def _snapshot(state, at: float) -> Live:
     return Live(at, tuple(sorted(given_up)), tuple(sorted(state.held)),
                 tuple(sorted(state.heights.out_of_tries)),
                 tuple(sorted((f.replay_id, f.round_number, f.sent_at, "gaps" if f.gaps_only else "control")
-                             for f in state.in_flight.values())))
+                             for f in state.in_flight.values())),
+                tuple(sorted(state.warm_vanished.items())))
+
+
+def warm_vanished(health) -> dict[str, int] | None:
+    """The worker's `control.warm_builds.vanished` counts above zero (D3: a warm build's cache file the worker's
+    cache cleanup deleted before a round leased it). None when there is no health to read: keep the last."""
+    control = health.get("control") if isinstance(health, dict) else None
+    if not isinstance(control, dict):
+        return None
+    warm = control.get("warm_builds")
+    vanished = warm.get("vanished") if isinstance(warm, dict) else None
+    if not isinstance(vanished, dict):
+        return {}
+    return {str(k): v for k, v in vanished.items() if isinstance(v, int) and not isinstance(v, bool) and v > 0}
+
+
+def warm_boot(health) -> str | None:
+    """The worker process its warm-build counts come from (`control.warm_builds.boot`); they restart at 0 with it."""
+    control = health.get("control") if isinstance(health, dict) else None
+    warm = control.get("warm_builds") if isinstance(control, dict) else None
+    boot = warm.get("boot") if isinstance(warm, dict) else None
+    return boot if isinstance(boot, str) else None
 
 
 def _height_state():
@@ -301,6 +332,11 @@ class State:
     feature_retry_after: dict = field(default_factory=dict)
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
     capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
+    warm_vanished: dict = field(default_factory=dict)   # D3 losses per identity, every worker process this site has seen (LIVE)
+    alarms_read_at: float | None = None                 # when /health was last read for the D3 alarm
+    warm_boot: str | None = None                        # the worker process warm_vanished_boot came from
+    warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
+    warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -428,11 +464,14 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             f.running_since = None       # D8: waiting behind parses is not a failure; only unbroken running counts
             continue
         if status == "running":
+            # f.stale_s is fixed from the worker's own admission answer (its runner). (A round the worker requeued
+            # and restarted between two polls keeps its first running_since: rare, and STALE_RUN_S is above two
+            # full attempts.)
             if f.running_since is None:
                 f.running_since = now
-            elif now - f.running_since > STALE_JOB_S:
+            elif now - f.running_since > f.stale_s:
                 del state.in_flight[key]
-                log.warning("map control %s ran over %ss on the worker; asked again", key, STALE_JOB_S)
+                log.warning("map control %s ran over %ss on the worker; asked again", key, f.stale_s)
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -649,18 +688,73 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
-                                        expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin)
+                                        expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin,
+                                        stale_s=_admitted_stale_s(answer, state))
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
     return held_features or any(not room_for(state, p.replay_id) for _, p in todo)
 
 
+def _admitted_stale_s(answer: dict, state: State) -> float:
+    """A round's running backstop, from where the worker says it runs it (`runner` in its admission answer). Only a
+    worker image from before that field falls back to the last /health read."""
+    runner = answer.get("runner") if isinstance(answer, dict) else None
+    if runner == "workflow":
+        return STALE_RUN_S
+    if runner == "local":
+        return STALE_JOB_S
+    return _job_stale_s(state.remote_control)
+
+
+def _note_warm_vanished(state: State, health, now: float) -> None:
+    """D3's alarm: each new loss the worker's /health reports is logged as an error; LIVE then lists it."""
+    state.alarms_read_at = now
+    vanished = warm_vanished(health)
+    if vanished is None:
+        return
+    boot = warm_boot(health)
+    # Counts compare only within one worker process: after a restart every count above zero is a new loss. The
+    # earlier processes' counts are kept, so a deploy (every merge restarts the worker) doesn't empty the errors
+    # page before anyone saw the row. This process's memory only: a site restart starts the list again.
+    if boot != state.warm_boot:
+        for identity, count in state.warm_vanished_boot.items():
+            state.warm_vanished_earlier[identity] = state.warm_vanished_earlier.get(identity, 0) + count
+        state.warm_vanished_boot = {}
+    for identity, count in vanished.items():
+        if count > state.warm_vanished_boot.get(identity, 0):
+            log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
+                      "it is listed in the replay upload page's errors", identity, count)
+    state.warm_vanished_boot, state.warm_boot = vanished, boot
+    merged = dict(state.warm_vanished_earlier)
+    for identity, count in vanished.items():
+        merged[identity] = merged.get(identity, 0) + count
+    state.warm_vanished = merged
+
+
+def _poll_alarms(client, state: State, now: float) -> None:
+    """A pass that sends nothing still reads /health, at most every ALARM_POLL_S: a full dispatcher must not hide
+    a D3 loss for the hours a warm build can take, nor keep a stale runner reading (a failed read left it local,
+    and the local cap then stops every pass before the read). A failed read here changes nothing."""
+    if state.alarms_read_at is not None and now - state.alarms_read_at < ALARM_POLL_S:
+        return
+    try:
+        health = client.health()
+    except (WorkerGone, WorkerBusy, Unreachable):
+        state.alarms_read_at = now
+        return
+    state.remote_control = remote_control(health)
+    state.capable = supports_gaps(health)
+    _note_warm_vanished(state, health, now)
+
+
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
             held_maps: frozenset = frozenset()) -> None:
     if len(state.in_flight) >= in_flight_cap(state):     # the last health's cap; read afresh below
+        _poll_alarms(client, state, now)
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
+        _poll_alarms(client, state, now)
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
@@ -673,6 +767,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
+    _note_warm_vanished(state, health, now)
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,

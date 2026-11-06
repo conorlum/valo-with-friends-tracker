@@ -20,7 +20,10 @@ from replay_worker import parse_job, server  # noqa: E402
 
 class FakeLink:
     def __init__(self, files):
-        self.files, self.result = files, None
+        self.files, self.result, self.started = files, None, 0
+
+    def post_started(self):
+        self.started += 1
 
     def fetch(self, name, dest):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +84,7 @@ def test_parse_posts_the_result(monkeypatch):
     link = FakeLink({"vrf": b"x"})
     tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
     assert link.result == {"status": "ok", "result": {"match_uuid": "M", "map_name": "Ascent"}, "parse_seconds": 4.2}
+    assert link.started == 1        # B7: /health's by_kind then shows a running parse as running, not waiting
 
 
 def test_parse_logs_the_runs_disk(monkeypatch, capsys):

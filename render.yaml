@@ -121,10 +121,25 @@ services:
         sync: false
       - key: REPLAY_HEIGHTS_RUNNER
         sync: false
+      # Warm builds (docs/superpowers/plans/2026-11-05-replay-throughput.md): a cold map's visibility cache
+      # is built as its own run, confirmed by one probe round, then the rest run at once. On from the merge; to switch
+      # it off, set "false" here by PR (a dashboard change is reset by a Blueprint sync).
+      - key: REPLAY_WARM_BUILDS
+        value: "true"
       - key: REPLAY_CONTROL_RUNS
         value: "40"
       - key: REPLAY_CONTROL_QUEUE
         value: "64"
+      # Workflow time limits (docs/superpowers/plans/2026-11-05-replay-throughput.md). Only runs on Workflows use
+      # them: local children keep their image defaults (1800 s control, 3600 s heights).
+      # Render's own task limits (replay_tasks/main.py) are 300 s above; tests/replays/test_control_remote.py
+      # pins the order. Height builds took at most ~2 min over ~200 runs (2026-11-05); 3 h is the owner's margin.
+      - key: REPLAY_CONTROL_RUN_TIMEOUT_S
+        value: "7200"
+      - key: REPLAY_WARM_BUILD_TIMEOUT_S
+        value: "21600"
+      - key: REPLAY_HEIGHT_RUN_TIMEOUT_S
+        value: "10800"
       - key: REPLAY_PARSE_PARALLEL
         value: "15"
       # Admits 15 waiting/running jobs (spec D15). The archive's parse reserve grows by 10 x the 200 MB cap
@@ -137,6 +152,11 @@ services:
       # budget (server.py keep_local_sizing).
       - key: CONTROL_CACHE_DIR
         value: /var/replay/control_cache
+      # The control cache's budget on the disk (bytes), taken out of the archive's. /health control.cache shows its
+      # bytes per map, evictions and per-map prunes. Before raising it, check /health archive has the room
+      # (docs/superpowers/plans/2026-11-05-replay-throughput.md).
+      - key: REPLAY_CONTROL_CACHE_RESERVE_BYTES
+        value: "2147483648"
       - key: REPLAY_HEIGHT_BUILDS_MAX
         value: "4"
       - key: REPLAY_HEIGHT_SPOOL_BYTES

@@ -1364,13 +1364,19 @@ def build_visibility(geo: Geometry) -> tuple[np.ndarray, np.ndarray]:
     return rows, row_of
 
 
+def visibility_name(geo: Geometry) -> str:
+    """The file name of the map's visibility cache for exactly this geometry: what `visibility` reads and writes,
+    and what a warm build reports to the replay worker (replay_worker/control_cache.py takes the same shape)."""
+    return f"{geo.name}.{cache_key(geo)[:16]}.npz"
+
+
 def visibility(geo: Geometry, directory: Path | None = None) -> Geometry:
     """Loads the map's visibility bitsets from the cache, or builds and caches them. Sets
     `visibility_source` to "cache" or "built"."""
     if geo.rows is not None:
         return geo
     directory = directory or cache_dir()
-    path = directory / f"{geo.name}.{cache_key(geo)[:16]}.npz"
+    path = directory / visibility_name(geo)
     started = time.perf_counter()
     if path.is_file():
         with np.load(path) as z:

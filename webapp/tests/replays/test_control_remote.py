@@ -5,6 +5,7 @@ import base64
 from dataclasses import replace
 import gzip
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,7 @@ class FakeWorker:
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
         self.features = features
         self.runners = None             # {"control": "workflow"}: the worker's control is on Workflows
+        self.warm_builds = None         # the worker's control.warm_builds block (REPLAY_WARM_BUILDS on)
 
     def health(self):
         self.health_reads += 1
@@ -67,6 +69,8 @@ class FakeWorker:
             control["gaps_protocol"] = self.gaps
         if self.features is not None:
             control['features'] = self.features
+        if self.warm_builds is not None:
+            control["warm_builds"] = self.warm_builds
         return {"ok": True, "queued": 0, "control": control,
                 **({"runners": self.runners} if self.runners is not None else {})}
 
@@ -107,7 +111,10 @@ class FakeWorker:
             raise remote.WorkerBusy("503")
         job_id = f"j{len(self.tasks)}"
         self.tasks[job_id] = task
-        return {"id": job_id, "status": "queued"}
+        answer = {"id": job_id, "status": "queued"}
+        if self.runners is not None:              # an older worker image (runners None) names no runner
+            answer["runner"] = self.runners.get("control", "local")
+        return answer
 
     def push_height(self, map_name, digest, asset):
         self.heights.add((map_name, digest))
@@ -515,6 +522,114 @@ def test_live_snapshot_is_frozen_and_detached_after_submit(factory, linked, monk
     assert live.held == (linked.id,) and live.heights_out_of_tries == ("Ascent",)
     with pytest.raises(FrozenInstanceError):
         live.at = 999
+
+
+def test_the_workers_vanished_warm_files_reach_the_live_snapshot_loudly(factory, linked, caplog):
+    # D3: each new loss is logged as an error and listed on the replay errors page (through LIVE).
+    worker, state = FakeWorker(), remote.State()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1, "Bind:h:|": 0, "Lotus:h:|": True}}
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        remote.cycle(factory, worker, state, now=100)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+    assert sum("Ascent:h:|" in r.getMessage() for r in caplog.records) == 1
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        remote.cycle(factory, worker, state, now=200)            # same count: listed, not logged again
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),) and not caplog.records
+    worker.health_error = remote.Unreachable("down")
+    remote.cycle(factory, worker, state, now=300)                # no health this pass: the last count stays
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+    worker.health_error, worker.warm_builds = None, None         # warm builds off (or a restarted worker)
+    remote.cycle(factory, worker, state, now=400)
+    assert remote.LIVE.warm_vanished == ()
+
+
+def test_a_full_dispatcher_still_reads_the_warm_alarm(factory, db, linked, monkeypatch):
+    # B6: at the in-flight cap _submit sends nothing, but a new loss still reaches LIVE within ALARM_POLL_S.
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1)
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"}
+    remote.cycle(factory, worker, state, now=0)
+    assert len(state.in_flight) == 1                       # at the cap from here on
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}}
+    remote.cycle(factory, worker, state, now=1)
+    assert remote.LIVE.warm_vanished == ()                 # read at 0: not again before ALARM_POLL_S
+    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+
+
+def test_a_workflow_round_keeps_its_limit_through_a_failed_health_read(factory, db, linked, monkeypatch):
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)            # never at the cap: every pass reads /health
+    # B4: the backstop is fixed when the round is sent; a blip that flips remote_control can't cut it short.
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"}
+    remote.cycle(factory, worker, state, now=0)
+    assert state.in_flight and all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
+    remote.cycle(factory, worker, state, now=1)            # first seen running
+    worker.health_error = remote.Unreachable("blip")
+    state.last_planned = None                              # plan now, so this pass reads (and fails) /health
+    remote.cycle(factory, worker, state, now=2)
+    assert not state.remote_control
+    worker.health_error = None
+    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
+
+
+def test_a_rounds_backstop_comes_from_the_workers_admission_answer_whatever_health_says(
+        factory, db, linked, monkeypatch):
+    # The worker names the round's runner when it takes it; no /health read before or after changes the backstop
+    # (replaces R1-B4, R3-B3, R4 and R5-B4's health-based patches).
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)
+    phase = {"status": "queued"}
+    worker, state = FakeWorker(answer=lambda task: {"status": phase["status"]}), remote.State()
+    worker.runners = {"control": "workflow"}
+    worker.health_error = remote.Unreachable("blip")
+    remote.cycle(factory, worker, state, now=0)                     # /health failed, the worker took it anyway
+    assert not state.remote_control
+    assert state.in_flight and all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
+    phase["status"] = "running"
+    remote.cycle(factory, worker, state, now=1)                     # first seen running
+    for now in (2, 3 + remote.ALARM_POLL_S):                        # health stays down
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=now)
+    counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
+    counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_RUN_S)
+    assert counts["timed_out"] > 0                                  # its own Workflow limit still holds
+
+
+def test_a_worker_image_without_the_runner_field_gets_the_last_healths_backstop(factory, db, linked):
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()   # runners None
+    remote.cycle(factory, worker, state, now=0)
+    assert state.in_flight and all(f.stale_s == remote.STALE_JOB_S for f in state.in_flight.values())
+    assert remote._admitted_stale_s({"id": "j", "runner": "workflow"}, state) == remote.STALE_RUN_S
+    assert remote._admitted_stale_s({"id": "j", "runner": "local"}, remote.State(remote_control=True)) \
+        == remote.STALE_JOB_S
+
+
+def test_a_worker_restart_keeps_the_earlier_losses_on_the_errors_page(factory, linked):
+    # R4: every merge restarts the worker; its losses stay listed (summed), not emptied by the new process.
+    worker, state = FakeWorker(), remote.State()
+    for now, boot, vanished in ((100, "one", {"Ascent:h:|": 1}), (200, "two", {"Ascent:h:|": 1}),
+                                (300, "three", {})):
+        worker.warm_builds = {"vanished": vanished, "boot": boot}
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=now)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 2),)
+
+
+def test_a_worker_restart_makes_an_equal_count_a_new_loss(factory, linked, caplog):
+    # R3-B5: counts restart at 0 with the worker process; compare them only within one boot.
+    worker, state = FakeWorker(), remote.State()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}, "boot": "one"}
+    remote.cycle(factory, worker, state, now=100)
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}, "boot": "two"}
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=200)
+    assert sum("Ascent:h:|" in r.getMessage() for r in caplog.records) == 1
+    assert state.warm_boot == "two"
 
 
 def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):
@@ -1122,3 +1237,42 @@ def test_room_for(monkeypatch):
     assert not remote.room_for(state, 8)
     assert remote.room_for(remote.State(in_flight=dict(state.in_flight)), 8)     # local: no match limit
     assert remote.in_flight_cap(state) == 40 and remote.in_flight_cap(remote.State()) == remote.LOCAL_IN_FLIGHT
+
+
+def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays():
+    """Render's task limit sits above the worker's Workflow limit, within Render's 24 h; the site waits out twice the
+    worker's (a run's deadline never passes opening + 2 x its limit). Local mode keeps today's numbers."""
+    import ast
+    import re
+
+    from app.services import replay_heights_remote as heights
+
+    root = Path(remote.__file__).resolve().parents[3]
+    yaml_text = (root / "render.yaml").read_text(encoding="utf-8")
+
+    def env_text(name):
+        return re.search(rf"- key: {name}\n\s+value: \"([^\"]+)\"", yaml_text).group(1)
+
+    def env(name):
+        return float(env_text(name))
+
+    render = {}
+    for node in ast.walk(ast.parse((root / "replay_tasks" / "main.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "task":
+            kw = {k.arg: k.value for k in node.keywords}
+            render[kw["name"].value] = kw["timeout_seconds"].value
+    assert all(30 <= v <= 86400 for v in render.values())
+    assert render["control"] >= env("REPLAY_CONTROL_RUN_TIMEOUT_S") + 300
+    assert render["warm"] >= env("REPLAY_WARM_BUILD_TIMEOUT_S") + 300
+    assert render["heights"] >= env("REPLAY_HEIGHT_RUN_TIMEOUT_S") + 300
+    assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
+    assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
+    # Local mode: untouched.
+    assert remote.STALE_JOB_S == 1800 and heights.STALE_BUILD_S == 7200
+    assert "REPLAY_CONTROL_TIMEOUT_S" not in yaml_text and "REPLAY_HEIGHT_TIMEOUT_S" not in yaml_text
+    assert env_text("REPLAY_WARM_BUILDS") == "true"
+
+
+def test_the_stale_backstop_depends_on_where_control_runs():
+    assert remote._job_stale_s(True) == remote.STALE_RUN_S
+    assert remote._job_stale_s(False) == remote.STALE_JOB_S

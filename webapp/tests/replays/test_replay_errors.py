@@ -31,7 +31,7 @@ from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 KEYS = ["box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
-        "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
+        "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
 RECORD = {"match": "0a9ab548-718b-41ee-94ce-db25fd430bf8", "round": 1, "slot": 5,
@@ -333,10 +333,26 @@ def test_live_kinds_match_current_work_and_fingerprint(errors, db, linked, monke
     assert found["heights_out_of_tries"]["rows"][0]["link"].endswith("/upload")
     assert found["stuck"]["count"] == 1
     assert found["stuck"]["rows"][0]["figures"] == {"kind": "gaps", "minutes": 165}
-    for key in ("held", "heights_out_of_tries", "given_up"):
+    for key in ("held", "heights_out_of_tries", "warm_vanished", "given_up"):
         absent = kind(errors, db, key)
         assert absent["count"] == 0
         assert absent["note"] == "not known in this process (no dispatcher here)"
+
+
+def test_a_warm_cache_file_deleted_before_use_is_listed_and_in_the_prompt(errors, db):
+    # D3: the fallback bounds it; this row is the alarm that it happened.
+    from app.services.replay_control_remote import Live
+    live = Live(100, (), (), (), (), warm_vanished=(("Ascent:abc123def456:|stand", 2),))
+    result = errors.compute(db, live)
+    found = next(k for k in result["kinds"] if k["key"] == "warm_vanished")
+    assert found["count"] == 1
+    row = found["rows"][0]
+    assert row["map"] == "Ascent"
+    assert row["figures"] == {"identity": "Ascent:abc123def456:|stand", "times": 2}
+    assert "left the replay worker's disk 2 time(s)" in row["error"]
+    assert "--read-only" in row["reproduce"] and "--expect-database valowithfriendsdb" in row["reproduce"]
+    text = errors.prompt(result, "warm_vanished")
+    assert "Warm cache files deleted before use (1)" in text and "Ascent:abc123def456:|stand" in text
 
 
 def test_cached_uses_dispatcher_snapshot(errors, db, monkeypatch):
@@ -377,7 +393,8 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     collected = errors.collect(db)
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
-               if key not in {"heights_out_of_tries", "given_up", "held", "feature_failed"}), "stored kinds"
+               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed"}), \
+        "stored kinds"
     for key, rows in collected.items():
         for row in rows:
             command = row["reproduce"]

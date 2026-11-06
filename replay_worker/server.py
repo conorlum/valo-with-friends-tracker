@@ -34,6 +34,7 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     GET  /runs/{job}/input/{name}   (header X-Run-Token) a Workflow run's input file, streamed; 404 otherwise.
     POST /runs/{job}/result         (header X-Run-Token) the run's JSON answer: 200 taken, 409 refused (wrong
                                     token, unknown or already settled run), 413, 400.
+    POST /runs/{job}/started        (header X-Run-Token) an attempt has begun: its limit counts from now. 200; 409.
     POST /runs/ping                 starts a ping run and waits for it: {"ok", "answer", "seconds"}.
 These exist only when RENDER_API_KEY and REPLAY_WORKFLOW_SLUG are set (replay_worker/runs.py).
 
@@ -131,11 +132,20 @@ Configuration (environment, all optional):
                              for the host)
     REPLAY_CONTROL_RUNS      runs at once with REPLAY_CONTROL_RUNNER=workflow (default 40);
                              REPLAY_CONTROL_WORKERS is the local pool
+    REPLAY_WARM_BUILDS       "true": with REPLAY_CONTROL_RUNNER=workflow, a cold identity's visibility cache is one
+                             warm build (replay_tasks warm) before its rounds, then one probe round, then the rest at
+                             once (default off; a restart clears failed-build counts);
+    REPLAY_WARM_BUILD_TIMEOUT_S  a warm build's limit (default 21600; Render's task limit is 300 s above it);
+    REPLAY_CONTROL_RUN_TIMEOUT_S / REPLAY_HEIGHT_RUN_TIMEOUT_S  a round's / height build's limit on Workflows
+                             (defaults 1800 / 3600); local children keep REPLAY_CONTROL_TIMEOUT_S,
+                             REPLAY_CONTROL_WARM_TIMEOUT_S, REPLAY_HEIGHT_TIMEOUT_S;
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (1800) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
     CONTROL_CACHE_DIR        the control children's cache; pushed height assets go in its `heights` folder
                              (default webapp/.control_cache)
+    REPLAY_CONTROL_CACHE_RESERVE_BYTES  bytes the Workflow control cache may hold (default 2 GiB);
+                             the archive leaves them free.
     REPLAY_HEIGHT_CMD        JSON list: the height-build child (default this Python, -m replay_worker.height_job)
     REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
@@ -251,11 +261,18 @@ class Settings:
     control_queue: int = 32
     control_timeout_s: float = 1800.0
     control_warm_timeout_s: float = 1800.0
+    warm_builds: bool = False               # REPLAY_WARM_BUILDS: a cold identity's visibility cache as its own run
+    warm_build_timeout_s: float = 21600.0   # REPLAY_WARM_BUILD_TIMEOUT_S
+    control_run_timeout_s: float = 1800.0   # a control round on Workflows (REPLAY_CONTROL_RUN_TIMEOUT_S); local
+                                            # children keep control_timeout_s / control_warm_timeout_s
+    height_run_timeout_s: float = 3600.0    # a height build on Workflows (REPLAY_HEIGHT_RUN_TIMEOUT_S); local keeps
+                                            # height_timeout_s
     control_memory_mb: int = 2048
     control_max_bytes: int = 4 * 1024 * 1024
     # Where control children keep their caches (CONTROL_CACHE_DIR, as app/control/geometry.py reads it); pushed
     # height assets live in its `heights` folder.
     control_cache_dir: Path = field(default_factory=lambda: WEBAPP / ".control_cache")
+    control_cache_reserve: int = control_cache.RESERVE   # bytes the cache may hold (REPLAY_CONTROL_CACHE_RESERVE_BYTES)
     # Height builds (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): one more kind of control
     # child, run alone and ahead of control rounds. Their rounds are spooled under `temp_root`.
     height_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.height_job"])
@@ -307,7 +324,13 @@ class Settings:
         settings.control_timeout_s = float(env.get("REPLAY_CONTROL_TIMEOUT_S", settings.control_timeout_s))
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
                                                         settings.control_warm_timeout_s))
+        settings.warm_builds = env.get("REPLAY_WARM_BUILDS", "").strip().lower() in ("1", "true")
+        settings.warm_build_timeout_s = float(env.get("REPLAY_WARM_BUILD_TIMEOUT_S", settings.warm_build_timeout_s))
+        settings.control_run_timeout_s = float(env.get("REPLAY_CONTROL_RUN_TIMEOUT_S", settings.control_run_timeout_s))
+        settings.height_run_timeout_s = float(env.get("REPLAY_HEIGHT_RUN_TIMEOUT_S", settings.height_run_timeout_s))
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
+        settings.control_cache_reserve = int(env.get("REPLAY_CONTROL_CACHE_RESERVE_BYTES",
+                                                     settings.control_cache_reserve))
         if env.get("CONTROL_CACHE_DIR"):
             settings.control_cache_dir = Path(env["CONTROL_CACHE_DIR"])
         if env.get("REPLAY_HEIGHT_CMD"):
@@ -1243,6 +1266,10 @@ def _log(message: str) -> None:
 # ---------------------------------------------------------------- map control (docs/map-control-worker-plan.md)
 
 CONTROL_FINISHED_KEPT = 200
+WARM_BUILD_TRIES = 2     # failed warm builds of one identity before its rounds fall back to one warming round
+WARM_SECONDS_KEPT = 20   # recent warm-build durations /health shows
+WARM_START_RETRY_S = 60  # after Render refused a warm build's start (a deploy gap)
+WARM_START_REFUSED_MAX_S = 1800   # refused starts past this long count as failures (rule 4's fallback)
 HEIGHTS_KEPT = 3                 # pushed height assets kept per map (the newest); a missing one is pushed again
 MAP_NAME = re.compile(r"^[A-Za-z0-9]{1,64}$")
 HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
@@ -1270,7 +1297,10 @@ class ControlJob:
     created: float = field(default_factory=time.time)
     finished: float | None = None
     warm_key: str = ""           # what "warm" is tracked by: the map and its heights (their visibility cache)
-    kind: str = "control"        # or "heights": a height build (HeightBuilds)
+    kind: str = "control"        # or "heights" (a height build) or "warm" (a warm build)
+    warm_id: str = ""            # warm_key plus height mode: what warm builds track (REPLAY_WARM_BUILDS only)
+    released_name: str | None = None   # the exact cache file this round was released to read (warm builds)
+    warm_epoch: int = 0          # its identity's confirmation number when it was released (only that cycle's answers count)
 
     def public(self) -> dict:
         body = {"id": self.id, "key": self.key, "status": self.status}
@@ -1369,6 +1399,27 @@ class ControlRunner:
         self.pending: list[str] = []
         self.running: dict[str, bool] = {}     # job id -> warming
         self.warm: set[str] = set()
+        # Warm builds (REPLAY_WARM_BUILDS), by warm_id.
+        self.warm_names: dict[str, str] = {}     # the cache file its warm build named
+        self.warm_confirmed: set[str] = set()    # cleared for parallel rounds: this cycle's probe read that file
+        self.warm_read: set[str] = set()         # some round has read the current file (D3: no longer "before use")
+        self.warm_epoch: dict[str, int] = {}     # confirmation cycle: each withdrawal starts a new one; a round's
+                                                 # answer from an older cycle never confirms or counts a miss
+        self.warm_rewarmed: dict[str, int] = {}  # files evicted after use, warmed again (cumulative: cache thrash)
+        self.warm_probe: dict[str, str] = {}     # the probe round running now, by job id
+        self.warm_jobs: dict[str, str] = {}      # its warm build, queued or running, by job id
+        # The fallback's counts (WARM_BUILD_TRIES, added together). A probe round that reads the identity's file
+        # clears all three: they count trouble since the identity last worked, never across a success.
+        self.warm_failures: dict[str, int] = {}  # failed warm builds
+        self.warm_missed: dict[str, int] = {}    # rounds that had to build a cache the identity was warm for
+        self.warm_vanished: dict[str, int] = {}  # its file left the disk before any round read it (D3)
+        self.warm_vanished_seen: dict[str, int] = {}  # the same losses, never cleared: /health's alarm for the site
+        self.warm_ids: set[str] = set()          # identities a fallback round of their own warmed (never a leased one)
+        self.boot = uuid.uuid4().hex             # this process, in /health: the site compares counts within one
+        self.warm_retry_at: dict[str, float] = {}  # no warm build for this identity before this time (start refused)
+        self.warm_refused_since: dict[str, float] = {}   # when its start was first refused, until one is accepted
+        self.warm_misses = 0                     # rounds released to a name that still had to build the cache
+        self.warm_seconds: list[float] = []      # the last WARM_SECONDS_KEPT warm builds' durations
         self.idle = idle or (lambda: True)     # the parse side has nothing running or waiting (D4)
         self.procs: dict[str, subprocess.Popen] = {}
         self.preempted: set[str] = set()       # running jobs a parse has killed; settled as requeued (D4)
@@ -1386,9 +1437,69 @@ class ControlRunner:
         """This job runs as a Workflow run (spec 2026-10-14) rather than a child here."""
         if self.runs is None:
             return False
+        if job.kind == "warm":
+            return True                  # a warm build only ever runs on Workflows
         if job.kind == "heights":
             return self.settings.heights_runner == "workflow"
         return job.kind == "control" and self.settings.control_runner == "workflow"
+
+    def uses_warm_builds(self) -> bool:
+        return self.settings.warm_builds and self.settings.control_runner == "workflow" and self.runs is not None
+
+    def _ready(self, job: ControlJob) -> bool:
+        """The round's identity has a cache name from its warm build, and that file is on this disk (under the lock).
+        The name is the exact geometry's, so a cache from other heights or another height mode never counts."""
+        name = self.warm_names.get(job.warm_id)
+        return name is not None and (self.settings.control_cache_dir / name).is_file()
+
+    def _spent(self, warm_id: str) -> int:
+        """The identity's fallback count: failures, misses and vanished files since it last worked (under the lock)."""
+        return (self.warm_failures.get(warm_id, 0) + self.warm_missed.get(warm_id, 0)
+                + self.warm_vanished.get(warm_id, 0))
+
+    def _withdraw(self, warm_id: str) -> None:
+        """No more parallel rounds on this identity until a new probe reads its file (under the lock): a new
+        confirmation cycle, so answers from rounds released before now neither confirm nor count again, and the
+        fallback's warmth by identity goes too (only a fallback round of its own sets it again)."""
+        self.warm_confirmed.discard(warm_id)
+        self.warm_epoch[warm_id] = self.warm_epoch.get(warm_id, 0) + 1
+        self.warm_ids.discard(warm_id)
+
+    def _note_gone(self, warm_id: str, warm_key: str) -> None:
+        """The identity's named cache file is no longer on this disk (under the lock). Before any round read it,
+        it is a D3 loss: counted toward the fallback and logged loudly. After a round read it, it is ordinary
+        eviction of a used file: the identity just warms again (counted in `rewarmed`, to spot cache thrash).
+        Either way the map's legacy warm flag goes too, so a fallback round warms the map alone rather than every
+        round rebuilding the cache at once."""
+        if warm_id in self.warm_read:
+            self.warm_rewarmed[warm_id] = self.warm_rewarmed.get(warm_id, 0) + 1
+            _log(f"warm identity {warm_id}: its cache file was evicted after use; warming it again "
+                 f"({self.warm_rewarmed[warm_id]} so far)")
+        else:
+            self.warm_vanished[warm_id] = self.warm_vanished.get(warm_id, 0) + 1
+            self.warm_vanished_seen[warm_id] = self.warm_vanished_seen.get(warm_id, 0) + 1
+            _log(f"warm identity {warm_id} vanished: its cache file left the disk before a round leased it "
+                 f"({self.warm_vanished_seen[warm_id]} so far)")
+        self.warm_names.pop(warm_id, None)
+        self.warm_read.discard(warm_id)
+        self._withdraw(warm_id)
+        self.warm.discard(warm_key)
+
+    def _ask_warm(self, job: ControlJob) -> None:
+        """One warm build per identity, ahead of every round (under the lock). Its task is the round's own less what
+        only a round needs, so it loads exactly the geometry the round will."""
+        if job.warm_id in self.warm_jobs:
+            return
+        task = json.loads(job.task)
+        for name in ("blob", "link", "gaps", "gaps_only"):
+            task.pop(name, None)
+        task["key"] = f"warm:{job.warm_id}"
+        warm = ControlJob(uuid.uuid4().hex, task["key"], job.map, json.dumps(task).encode("utf-8"),
+                          warm_key=job.warm_key, kind="warm", warm_id=job.warm_id)
+        self.jobs[warm.id] = warm
+        self.warm_jobs[job.warm_id] = warm.id
+        self.pending.insert(0, warm.id)
+        self.wake.set()
 
     def submit(self, task: dict) -> ControlJob:
         """Raises queue.Full when the queue is full."""
@@ -1397,11 +1508,12 @@ class ControlRunner:
             existing = self.jobs.get(self.by_key.get(key, ""))
             if existing is not None and existing.status in ("queued", "running", "done"):
                 return existing
-            if len(self.pending) >= self.settings.control_queue:
+            if sum(1 for j in self.pending if self.jobs[j].kind != "warm") >= self.settings.control_queue:
                 raise queue.Full
             job = ControlJob(uuid.uuid4().hex, key, str(task["map"]), json.dumps(task).encode("utf-8"),
                              warm_key=f"{task['map']}:{task.get('height') or ''}" +
                              (f":{task['features']}" if task.get('features') else ''))
+            job.warm_id = f"{job.warm_key}|{task.get('height_mode') or ''}"
             self.jobs[job.id] = job
             self.by_key[key] = job.id
             self.pending.append(job.id)
@@ -1436,8 +1548,21 @@ class ControlRunner:
 
     def counts(self) -> dict:
         with self.lock:
-            return {"queued": len(self.pending), "running": len(self.running), "warm": sorted(self.warm),
-                    "preempted": self.preempted_total}
+            body = {"queued": sum(1 for j in self.pending if self.jobs[j].kind != "warm"),
+                    "running": len(self.running), "warm": sorted(self.warm), "preempted": self.preempted_total}
+            if self.uses_warm_builds():
+                now = time.time()
+                ready = [i for i, n in self.warm_names.items() if (self.settings.control_cache_dir / n).is_file()]
+                body["warm_builds"] = {"ready": sorted(ready), "confirmed": sorted(self.warm_confirmed),
+                                       "building": sorted(self.warm_jobs),
+                                       "failures": dict(sorted(self.warm_failures.items())),
+                                       "missed": dict(sorted(self.warm_missed.items())),
+                                       # every loss since this process started (never cleared): the site's alarm
+                                       "vanished": dict(sorted(self.warm_vanished_seen.items())),
+                                       "start_refused": sorted(i for i, t in self.warm_retry_at.items() if t > now),
+                                       "misses": self.warm_misses, "recent_seconds": list(self.warm_seconds),
+                                       "rewarmed": dict(sorted(self.warm_rewarmed.items())), "boot": self.boot}
+            return body
 
     def preempt(self) -> int:
         """A parse is coming: kill every running child but the one started first, so the parse has a CPU and
@@ -1489,14 +1614,51 @@ class ControlRunner:
         held = [j for j in self.running if not (self.jobs[j].kind == "heights" and self.remote(self.jobs[j]))]
         if len(held) >= limit:
             return None
-        busy_maps = {self.jobs[j].map for j in held}
+        # A warm build takes a run slot but holds no map: it writes only its own exact-name file, so another
+        # identity's warming round of the same map need not wait out its hours.
+        busy_maps = {self.jobs[j].map for j in held if self.jobs[j].kind != "warm"}
         warming_maps = {self.jobs[j].map for j in held if self.running[j]}
-        for job_id in self.pending:
+        for job_id in list(self.pending):            # _ask_warm inserts into self.pending
             job = self.jobs[job_id]
             if job.kind == "heights":
                 continue
             if local_build and not self.remote(job):
                 continue                             # a local build runs alone among the local children
+            if job.kind == "warm":
+                return job, False                    # its own run: it neither waits for a map nor holds one
+            if self.uses_warm_builds():
+                # A tracked file that left the disk is noticed whatever the tries say (a D3 loss after the tries
+                # are spent still raises the alarm), once any probe of it has answered.
+                if job.warm_id in self.warm_names and not self._ready(job):
+                    if job.warm_id in self.warm_probe:
+                        continue                     # its probe may have read the file before it went: wait for it
+                    self._note_gone(job.warm_id, job.warm_key)
+                # Every warm path is checked against the spent tries, the leased one too: a file that is on the
+                # disk but that no round can use (a download that keeps failing) must still end in the fallback.
+                if self._spent(job.warm_id) < WARM_BUILD_TRIES:
+                    if self._ready(job):
+                        if job.warm_id not in self.warm_confirmed:
+                            if job.warm_id in self.warm_probe:
+                                continue             # one probe at a time; the rest wait for its answer (risk 2)
+                            self.warm_probe[job.warm_id] = job.id
+                        job.released_name = self.warm_names[job.warm_id]
+                        job.warm_epoch = self.warm_epoch.get(job.warm_id, 0)
+                        return job, False
+                    if self.warm_retry_at.get(job.warm_id, 0.0) > time.time():
+                        continue                     # rule 9: its start was refused
+                    if self._spent(job.warm_id) < WARM_BUILD_TRIES:
+                        self._ask_warm(job)          # the round waits for its identity's one warm build
+                        continue
+                # Warm builds keep failing for this identity: today's rule, one round warms the map alone. Warm
+                # here means this identity's own round warmed it (warm_ids), not the map's shared flag: another
+                # height mode of the same map and heights sets that flag without this identity's file.
+                if job.warm_id in self.warm_ids:
+                    if job.map in warming_maps:
+                        continue
+                    return job, False
+                if job.map not in busy_maps:
+                    return job, True
+                continue
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1524,9 +1686,16 @@ class ControlRunner:
     def _run(self, job: ControlJob, warming: bool) -> None:
         settings = self.settings
         build = job.kind == "heights"
-        what = "height build" if build else "control"
-        timeout = settings.height_timeout_s if build else \
-            settings.control_warm_timeout_s if warming else settings.control_timeout_s
+        what = "height build" if build else "warm build" if job.kind == "warm" else "control"
+        remote = self.remote(job)
+        if job.kind == "warm":
+            timeout = settings.warm_build_timeout_s
+        elif build:
+            timeout = settings.height_run_timeout_s if remote else settings.height_timeout_s
+        elif remote:
+            timeout = settings.control_run_timeout_s       # warming or not: one Workflow limit
+        else:
+            timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env ={**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
         env["CONTROL_CACHE_DIR"] = str(settings.control_cache_dir)     # keep_local_sizing may have moved it
@@ -1535,6 +1704,7 @@ class ControlRunner:
         if os.name != "nt":
             kwargs["preexec_fn"] = _child_setup(settings.control_memory_mb)
         status, error, kind, result = "failed", None, "infra", None
+        answer: dict = {}
         error_code = None
         unsent: list = []           # cache files a run couldn't post, whether its round succeeded or not
         process = None
@@ -1595,11 +1765,119 @@ class ControlRunner:
                 self.preempted_total += 1
                 job.status = "queued"
                 self.pending.insert(0, job.id)
+            elif kind == "rewarm":
+                # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
+                # identity warmed again. It never runs cold (risk 2).
+                # Only this cycle's loss, and only if the file is still missing: a replacement can have been
+                # built under the same name since (R5-B1).
+                if (self.warm_names.get(job.warm_id) == job.released_name
+                        and job.warm_epoch == self.warm_epoch.get(job.warm_id, 0)
+                        and not (self.settings.control_cache_dir / job.released_name).is_file()):
+                    self._note_gone(job.warm_id, job.warm_key)
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                self.pending.insert(0, job.id)
+            elif kind == "cache_input" and job.released_name:
+                # The run couldn't download its leased file (the task tried REQUIRED_FETCH_TRIES times) and never
+                # started its child: back to the front, the identity withdrawn so the next round is one probe
+                # again, and a miss counted, so a download that keeps failing ends in the fallback. One miss per
+                # confirmation cycle: every round released in it may fail on the same outage, which is one event.
+                if (self.warm_names.get(job.warm_id) == job.released_name
+                        and job.warm_epoch == self.warm_epoch.get(job.warm_id, 0)):
+                    self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1
+                    self._withdraw(job.warm_id)
+                    _log(f"warm identity {job.warm_id}: a round couldn't download its cache; counted as a miss")
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                self.pending.insert(0, job.id)
             else:
                 job.status, job.error, job.error_kind, job.result = status, error, kind, result
                 job.error_code = error_code
                 job.finished = time.time()
                 job.task = b""
+                # R5-B3: cache files the run couldn't read. Its copy was a download; drop this disk's copy too, so
+                # the next warm build (or warming round) builds it instead of every run downloading it broken.
+                unreadable = [n for n in (answer.get("unreadable") or [])
+                              if isinstance(n, str) and control_cache.valid(n, job.map)]
+                for name in unreadable:
+                    try:
+                        (self.settings.control_cache_dir / name).unlink(missing_ok=True)
+                        _log(f"cache {name}: a run couldn't read it; removed so it is built again")
+                    except OSError:
+                        pass                                 # leased and open elsewhere: the next settlement tries
+                if job.kind == "warm":
+                    self.warm_jobs.pop(job.warm_id, None)
+                    name = (result or {}).get("visibility")
+                    refused = (error or "").startswith("the run could not start")
+                    if not refused:
+                        self.warm_refused_since.pop(job.warm_id, None)   # Render accepted a start
+                    built = status == "done" and name and control_cache.valid(name, job.map) and name not in unsent
+                    if built and self.warm_names.get(job.warm_id) != name:
+                        self.warm_read.discard(job.warm_id)   # a new file: nobody has read it yet
+                        self._withdraw(job.warm_id)
+                    if built and (self.settings.control_cache_dir / name).is_file():
+                        self.warm_names[job.warm_id] = name   # its counts clear only once a probe reads it
+                    elif built:
+                        # Posted, then cleaned off the disk before this answer settled: a D3 loss, not a failure.
+                        self._note_gone(job.warm_id, job.warm_key)
+                    else:
+                        since = self.warm_refused_since.setdefault(job.warm_id, time.time()) if refused else None
+                        if refused and time.time() - since <= WARM_START_REFUSED_MAX_S:
+                            # Rule 9: Render refused the start (a deploy gap, before the workflow knows `warm`): no
+                            # try is spent; the identity's rounds wait and a warm build is asked again after a minute.
+                            self.warm_retry_at[job.warm_id] = time.time() + WARM_START_RETRY_S
+                        else:
+                            self.warm_failures[job.warm_id] = self.warm_failures.get(job.warm_id, 0) + 1
+                            _log(f"warm build {job.warm_id} failed: {error or 'its cache is not on this disk'}")
+                    if isinstance(answer.get("seconds"), (int, float)):
+                        self.warm_seconds = (self.warm_seconds + [round(float(answer["seconds"]), 1)])[-WARM_SECONDS_KEPT:]
+                    del self.jobs[job.id]            # nobody asks after a warm build by id
+                elif job.kind == "control" and self.uses_warm_builds() and job.released_name:
+                    source = answer.get("visibility_source")
+                    current = self.warm_names.get(job.warm_id) == job.released_name
+                    this_cycle = job.warm_epoch == self.warm_epoch.get(job.warm_id, 0)
+                    probe = self.warm_probe.get(job.warm_id) == job.id
+                    if probe:
+                        self.warm_probe.pop(job.warm_id, None)     # whatever happened, the probe slot is free
+                    # The file the run says it read (R5-B5); an older task image doesn't say: the lease's name.
+                    read = answer.get("visibility") or job.released_name
+                    # A round that had to build the cache, couldn't read the one it was given, or read another
+                    # file for its geometry: the leased file didn't do its job, one miss. R5-B2: an older cycle's
+                    # answer spends nothing.
+                    wrong = source == "built" or job.released_name in unreadable or (
+                        source == "cache" and read != job.released_name)
+                    if wrong and current and this_cycle:
+                        self.warm_misses += 1                      # rule 7
+                        self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1
+                        self.warm_names.pop(job.warm_id, None)     # later answers no longer match: counted once
+                        self.warm_read.discard(job.warm_id)
+                        self._withdraw(job.warm_id)
+                        why = ("built its own cache" if source == "built" else
+                               "couldn't read its cache" if job.released_name in unreadable else
+                               f"read another cache ({read})")
+                        _log(f"warm identity {job.warm_id} missed: a round {why}")
+                    elif source == "cache" and current and not wrong:
+                        self.warm_read.add(job.warm_id)            # read: its eviction from now on isn't D3's
+                        if probe and this_cycle:
+                            # Rule 5, from this cycle's probe only: a round released before a withdrawal can't
+                            # reopen parallel rounds or clear the counts while the new probe is still out.
+                            self.warm_confirmed.add(job.warm_id)
+                            for counts in (self.warm_failures, self.warm_missed, self.warm_vanished):
+                                counts.pop(job.warm_id, None)      # it works: earlier trouble is behind it
+                elif (job.kind == "control" and self.uses_warm_builds() and answer.get("visibility_source") == "cache"
+                        and answer.get("visibility") and answer.get("visibility") == self.warm_names.get(job.warm_id)):
+                    # A fallback round with no lease read the identity's tracked file: read, so its eviction from
+                    # now on is ordinary cleanup, not a D3 loss (R5-B5).
+                    self.warm_read.add(job.warm_id)
+                if self.warm_names.get(job.warm_id) in unreadable:
+                    # The tracked file was unreadable and is now deleted here, reported by a round whose answer
+                    # counted nothing above (a fallback round, or one from an older cycle): stop tracking it, so the
+                    # next pass doesn't take its absence for a D3 loss (state table, event 13).
+                    self.warm_names.pop(job.warm_id, None)
+                    self.warm_read.discard(job.warm_id)
+                    self._withdraw(job.warm_id)
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
                 if job.kind == "control":
@@ -1612,8 +1890,11 @@ class ControlRunner:
                         and not any(control_cache.visibility_name(n) for n in unsent))
                     if (status == "done" or kind == "engine") and cached:
                         self.warm.add(job.warm_key)
+                        if not job.released_name:
+                            self.warm_ids.add(job.warm_id)          # a round of its own warmed it, not a lease
                     else:
                         self.warm.discard(job.warm_key)
+                        self.warm_ids.discard(job.warm_id)
                 finished = sorted((j for j in self.jobs.values() if j.finished and j.kind == "control"),
                                   key=lambda j: j.finished)
                 for old in finished[:-CONTROL_FINISHED_KEPT]:
@@ -1644,14 +1925,27 @@ class ControlRunner:
                                                   {"map": job.map, "height": task.get("previous")}))
             else:
                 files.update(control_cache.inputs(self.settings.control_cache_dir, task))
-            run = self.runs.open(job.kind, job.id, files, timeout)
+            leased = None
+            if job.kind == "control" and job.released_name:
+                if not control_cache.lease(self.settings.control_cache_dir, job.released_name):
+                    return {"status": "failed", "error_kind": "rewarm", "key": task.get("key"),
+                            "error": f"{job.released_name} left the disk before the run could read it"}
+                leased = job.released_name
+                files[leased] = self.settings.control_cache_dir / leased   # by name, whatever `inputs` chose
             try:
-                self.runs.start(run, {"map": job.map,
-                                      "files": sorted(n for n in files if n not in ("task", "rounds"))})
-                answer = self.runs.wait(run)
-            except BaseException:
-                self.runs.close(run)              # wait closes it itself; a failure before that must not leak it
-                raise
+                run = self.runs.open(job.kind, job.id, files, timeout)
+                try:
+                    args = {"map": job.map, "files": sorted(n for n in files if n not in ("task", "rounds"))}
+                    if leased:
+                        args["visibility"] = leased   # the task retries this one fetch before building its own
+                    self.runs.start(run, args)
+                    answer = self.runs.wait(run)
+                except BaseException:
+                    self.runs.close(run)          # wait closes it itself; a failure before that must not leak it
+                    raise
+            finally:
+                if leased:
+                    control_cache.unlease(leased)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
             if job.kind == "heights":
@@ -1660,7 +1954,7 @@ class ControlRunner:
                 except OSError:
                     pass
         if answer.get("error_kind") == "timeout":
-            what = "height build" if job.kind == "heights" else "control"
+            what = "height build" if job.kind == "heights" else "warm build" if job.kind == "warm" else "control"
             answer = {**answer, "error_kind": "infra", "error": f"{what} timed out after {timeout:g} s"}
         return answer
 
@@ -1970,7 +2264,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             name = urllib.parse.unquote(parts[4]) if len(parts) == 5 else ""
             run = runs_table.accepts(parts[2], self.headers.get("X-Run-Token"))
             job = control.get(parts[2]) if control is not None and run is not None else None
-            if run is None or job is None or run.kind not in ("control", "heights") \
+            if run is None or job is None or run.kind not in ("control", "heights", "warm") \
                     or not control_cache.valid(name, job.map):
                 self.close_connection = True
                 # Read a small refused body first (as _run_result does): closing with it unread can reset the
@@ -1981,7 +2275,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                         self.rfile.read(unread)
                 except (ValueError, OSError):
                     pass
-            if run is None or job is None or run.kind not in ("control", "heights"):
+            if run is None or job is None or run.kind not in ("control", "heights", "warm"):
                 return self._send(HTTPStatus.CONFLICT, {"error": "no open control run takes this file"})
             if not control_cache.valid(name, job.map):
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cache file of this map"})
@@ -2002,11 +2296,17 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 if remaining:
                     return self._send(HTTPStatus.BAD_REQUEST, {"error": "file cut short"})
                 # A file arriving as its run settles is still kept: caches are named by their content's identity.
-                if not control_cache.store(control.settings.control_cache_dir, name, incoming):
+                if not control_cache.store(control.settings.control_cache_dir, name, incoming,
+                                           reserve=control.settings.control_cache_reserve):
                     return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": "the cache is at its reserve"})
                 return self._send(HTTPStatus.OK, {"stored": name})
             finally:
                 incoming.unlink(missing_ok=True)
+
+        def _run_started(self):
+            parts = self.path.split("/")          # ["", "runs", job, "started"]
+            ok = len(parts) == 4 and runs_table.started(parts[2], self.headers.get("X-Run-Token"))
+            return self._send(HTTPStatus.OK if ok else HTTPStatus.CONFLICT, {"ok": ok})
 
         def _run_result(self):
             parts = self.path.split("/")          # ["", "runs", job, "result"]
@@ -2070,6 +2370,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
                                    "features": feature_artifacts.protocol_identity(),
                                    **(control.counts() if control else {})}
+                if control is not None:
+                    body["control"]["cache"] = {**control_cache.usage(control.settings.control_cache_dir),
+                                                "reserve": control.settings.control_cache_reserve}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
                 # "A height build may start now" (app/services/replay_heights_remote.py). A Workflow build runs on
@@ -2118,6 +2421,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                     return self._run_cache()
                 if self.path.endswith("/result"):
                     return self._run_result()
+                if self.path.endswith("/started"):
+                    return self._run_started()
             if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
                 return self._height_build()
             if self.path == "/heights":
@@ -2267,7 +2572,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 job = control.submit(task)
             except queue.Full:
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the control queue is full"})
-            return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
+            # Where this round runs, from the worker itself: the site fixes its running backstop from it, never
+            # from a /health read that may have failed around the submission.
+            return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status,
+                                                    "runner": "workflow" if control.remote(job) else "local"})
 
         def _features(self):
             if control is None or not control.enabled:
@@ -2360,7 +2668,7 @@ def main() -> None:
     # The cache's room is reserved before the Worker opens the archive and recovers its jobs.
     if settings.archive_dir is not None and settings.control_cache_dir.resolve().is_relative_to(
             settings.archive_dir.resolve()):
-        settings.archive_extra_reserve += control_cache.RESERVE
+        settings.archive_extra_reserve += settings.control_cache_reserve
     if settings.archive_dir is not None and settings.height_spool_dir is not None and \
             settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
         settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)

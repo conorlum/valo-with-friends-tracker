@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import os
 import sys
 import time
 import traceback
@@ -142,6 +143,26 @@ def height_file(name: str, digest: str) -> Path:
     return path
 
 
+def _phase(message: str) -> None:
+    """One progress line on stderr, only when CONTROL_PHASE_LOG is set (replay_tasks sets it for Workflow runs):
+    the run's log then shows where its time went even when the run is killed before it answers."""
+    if os.environ.get("CONTROL_PHASE_LOG"):
+        sys.stderr.write(f"control phase: {message}\n")
+        sys.stderr.flush()
+
+
+def _rows_line(geo) -> str | None:
+    """How many feature-row answers this round reused from the map's shared rows file and how many it worked out
+    itself, or None on a map that has none (it never creates the row cache just to report it)."""
+    cache = getattr(geo, "_feature_sight_cache", None)
+    if cache is None:
+        return None
+    return f"{geo.name}: feature rows {cache.row_hits} reused, {cache.row_builds} built"
+
+
+UNREADABLE: list[str] = []      # visibility cache files this process removed because they wouldn't load
+
+
 def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
     from app.control import geometry
 
@@ -155,16 +176,21 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
         if height_mode != 'legacy_default':
             options['height_mode'] = height_mode
         geo = geometry.load_geometry(name, heights=Path(heights) if heights else None, **options)
+        _phase(f"{name}: visibility start")
         try:
             geometry.visibility(geo)
         except Exception:
-            # A cache file that won't load is removed, so the next try rebuilds it.
+            # A cache file that won't load is removed, so the next try rebuilds it. Its names are reported
+            # (`unreadable` in the answer): a Workflow run's copy is only a download, and the replay worker must
+            # drop its own copy too, or every later run downloads the same broken file (R5-B3).
             for path in Path(geometry.cache_dir()).glob(f"{name}.*.npz"):
                 try:
                     path.unlink()
+                    UNREADABLE.append(path.name)
                 except OSError:
                     pass
             raise
+        _phase(f"{name}: visibility {geo.visibility_source} in {geo.visibility_s:.1f} s")
         _GEOMETRY[key] = geo
     return _GEOMETRY[key]
 
@@ -395,8 +421,37 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
             "util": {"status": "failed", "data": None, "error": run["error"]}}
 
 
+def _load_options(task: dict) -> dict:
+    """`_load`'s options for a task: exactly the geometry a round of it is computed with."""
+    options = {'exact': task['features']} if task.get('features') else {}
+    if task.get('height_mode'):
+        options['height_mode'] = task['height_mode']
+    return options
+
+
+def warm_task(task: dict) -> dict:
+    """A warm build (replay_worker/warm_job.py): loads the map's geometry exactly as `compute_task` would for a
+    round of this task, building its visibility cache when this machine lacks it, and names the cache file. The
+    replay worker counts the task's warm identity as ready while that file is on its disk."""
+    started = time.time()
+    UNREADABLE.clear()
+    try:
+        from app.control import geometry
+
+        geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))
+        result = {"status": "ok", "visibility": geometry.visibility_name(geo),
+                  "visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s}
+    except Exception as error:  # noqa: BLE001 - the worker retries, then falls back to a warming round
+        result = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
+    result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    if UNREADABLE:
+        result["unreadable"] = sorted(set(UNREADABLE))
+    return result
+
+
 def compute_task(task: dict) -> dict:
     started = time.time()
+    UNREADABLE.clear()      # this task's own, in a process that runs several (the local command)
     try:
         from app.control import engine
         from app.control.encode import encode_data, encode_summary
@@ -408,10 +463,8 @@ def compute_task(task: dict) -> dict:
         return {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}",
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
-        options = {'exact': task['features']} if task.get('features') else {}
-        if task.get('height_mode'):
-            options['height_mode'] = task['height_mode']
-        geo = _load(task["map"], task.get("heights"), task.get("height"), **options)
+        geo = None
+        geo = _load(task["map"], task.get("heights"), task.get("height"), **_load_options(task))
         if task.get("features"):           # the generation the dispatcher planned with (map features)
             from app.control import geometry
             load_task_features(task, geo, geometry.cache_dir() / 'features')
@@ -441,12 +494,17 @@ def compute_task(task: dict) -> dict:
                     guard = _CacheGuard(None)
                     guard._fail(error)
             rc = engine.compute_round(blob, geo, link, observer=guard)
+            _phase(f"{task['map']}: round computed at {time.time() - started:.1f} s")
+            rows = _rows_line(geo)
+            if rows:
+                _phase(rows)
             summary_options = {'provenance': provenance} if provenance is not None else {}
             result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob, **summary_options),
                       "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
             if job:
                 guard.close(rc.missing_inputs)
                 result["gaps"] = _gaps(geo, blob, link, job, guard=guard)
+                _phase(f"{task['map']}: gaps done at {time.time() - started:.1f} s")
     except FeatureArtifactError as error:
         result = feature_failure(error)
     except engine_errors as error:
@@ -458,4 +516,16 @@ def compute_task(task: dict) -> dict:
         result = {"status": "failed", "error_kind": kind,
                   "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}
     result.update({"key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()})
+    if UNREADABLE:
+        result["unreadable"] = sorted(set(UNREADABLE))
+    if geo is not None and getattr(geo, "visibility_source", None):
+        # Whether this round found the map's visibility cache or had to build it: the replay worker's warm builds
+        # read it (a round that built it means its key wasn't really warm).
+        result.update({"visibility_source": geo.visibility_source, "visibility_s": geo.visibility_s})
+        try:
+            from app.control import geometry
+
+            result["visibility"] = geometry.visibility_name(geo)   # the file it read or built (R5-B5)
+        except Exception:  # noqa: BLE001 - only a report: the worker falls back to the lease's name
+            pass
     return result

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -75,6 +76,17 @@ class WorkerLink:
         with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
             response.read()
 
+    def post_started(self) -> None:
+        """Tells the worker this attempt has begun, so its limit counts from now, not from when it was queued. Best
+        effort: an older worker answers 404 and a run must carry on either way."""
+        request = urllib.request.Request(self._url("started"), data=b"", method="POST",
+                                         headers={"X-Run-Token": self.token, "Content-Length": "0"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                response.read()
+        except OSError:
+            pass
+
 
 def link_for(args: dict) -> WorkerLink:
     return WorkerLink(os.environ["REPLAY_WORKER_URL"], args["job_id"], args["token"])
@@ -91,17 +103,19 @@ WEBAPP = REPO / "webapp"
 def _child_env(cache: Path) -> dict:
     from replay_worker.server import CHILD_THREADS
 
-    env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache)}
+    env = {**os.environ, **CHILD_THREADS, "CONTROL_CACHE_DIR": str(cache),
+           "CONTROL_PHASE_LOG": "1"}
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(REPO), env.get("PYTHONPATH")) if p)
     return env
 
 
 def _run_child(command_env: str, default: list[str], stdin: bytes, cache: Path, what: str = "control child") -> dict:
-    """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer."""
+    """Runs a worker child (control_job or height_job) exactly as the worker does, and returns its answer.
+    The child's stderr goes straight to this run's log, live."""
     from replay_worker.server import _child_setup
 
     command = json.loads(os.environ[command_env]) if os.environ.get(command_env) else default
-    kwargs = {"input": stdin, "capture_output": True, "env": _child_env(cache), "cwd": str(REPO)}
+    kwargs = {"input": stdin, "stdout": subprocess.PIPE, "env": _child_env(cache), "cwd": str(REPO)}
     if os.name != "nt":
         kwargs["preexec_fn"] = _child_setup(int(os.environ.get("REPLAY_CONTROL_MEMORY_MB", "2048")))
     done = subprocess.run(command, **kwargs)
@@ -130,14 +144,30 @@ def _cache_files(cache: Path) -> dict[str, str]:
     return out
 
 
-def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path) -> None:
+REQUIRED_FETCH_TRIES = 3        # a leased warm cache file: fetched this many times before the run gives up
+REQUIRED_FETCH_WAIT_S = 2.0     # times the try number, between tries
+
+
+def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path, required: str | None = None) -> str | None:
     """The worker's cached files for this run. One that can't be fetched (pruned since the run was opened) is
-    skipped: the child rebuilds what it needs (spec D6)."""
+    skipped: the child rebuilds what it needs (spec D6). `required` is the warm cache file the worker leased for
+    this round: it can't have been pruned, so a failed fetch is the network's, and it is tried again. Returns the
+    last error when `required` still couldn't be fetched (the run then must not build it: the worker requeues
+    the round), else None."""
+    missing = None
     for name in names:
-        try:
-            link.fetch(name, cache / name)
-        except OSError:
-            (cache / name).unlink(missing_ok=True)
+        tries = REQUIRED_FETCH_TRIES if name == required else 1
+        for attempt in range(1, tries + 1):
+            try:
+                link.fetch(name, cache / name)
+                break
+            except OSError as error:
+                (cache / name).unlink(missing_ok=True)
+                if attempt < tries:
+                    time.sleep(REQUIRED_FETCH_WAIT_S * attempt)
+                elif name == required:
+                    missing = f"the leased cache {name} could not be fetched ({error})"
+    return missing
 
 
 def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> list[str]:
@@ -157,14 +187,42 @@ def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name
 
 
 def control(args: dict, link: WorkerLink) -> None:
+    link.post_started()
     work = Path(tempfile.mkdtemp(prefix="control-"))
+    try:
+        cache = work / "cache"
+        cache.mkdir()
+        missing = _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
+        if missing:
+            # Building it here would be the very rebuild the lease exists to avoid, possibly in every round released
+            # with this one: the worker puts the round back and counts a miss instead.
+            sys.stderr.write(f"control: {missing}; handing the round back\n")
+            link.post_result({"status": "failed", "error_kind": "cache_input", "error": missing})
+            return
+        before = _cache_files(cache)
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
+        unsent = _post_caches(link, cache, before, args["map"])
+        if unsent:
+            answer = {**answer, "cache_unsent": unsent}
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def warm(args: dict, link: WorkerLink) -> None:
+    """One warm identity's visibility cache: the warm child alone, then the cache posted before the answer naming it
+    (the worker counts the identity ready only once that file is on its disk)."""
+    link.post_started()
+    work = Path(tempfile.mkdtemp(prefix="warm-"))
     try:
         cache = work / "cache"
         cache.mkdir()
         _fetch_inputs(link, args.get("files", []), cache)
         before = _cache_files(cache)
         stdin = link.fetch("task", work / "task.json").read_bytes()
-        answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
+        answer = _run_child("REPLAY_WARM_CMD", [sys.executable, "-m", "replay_worker.warm_job"], stdin, cache,
+                            what="warm child")
         unsent = _post_caches(link, cache, before, args["map"])
         if unsent:
             answer = {**answer, "cache_unsent": unsent}
@@ -190,6 +248,7 @@ def _recipe() -> str:
 
 def parse(args: dict, link: WorkerLink) -> None:
     """One upload or re-parse: the same parse and condense the worker runs locally (replay_worker/parse_job.py)."""
+    link.post_started()      # for /health's by_kind only: a parse's deadline is explicit and never moves
     for folder in (str(WEBAPP), str(REPO)):
         if folder not in sys.path:
             sys.path.insert(0, folder)
@@ -237,6 +296,7 @@ def parse(args: dict, link: WorkerLink) -> None:
 
 def heights(args: dict, link: WorkerLink) -> None:
     """One map's height build: today's height_job child on the build's rounds, unpacked from the worker's spool."""
+    link.post_started()
     from replay_worker import control_cache
 
     work = Path(tempfile.mkdtemp(prefix="heights-"))
@@ -263,4 +323,4 @@ def heights(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights}
+TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}

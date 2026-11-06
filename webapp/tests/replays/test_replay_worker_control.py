@@ -305,6 +305,7 @@ def test_the_http_answers(tmp_path, runner):
     assert http(base, "/control", {"key": 1})[0] == 400
     code, body = http(base, "/control", task("h1"))
     assert code == 202 and body["status"] in ("queued", "running")
+    assert body["runner"] == "local"             # the site fixes the round's backstop from this
     wait_all(r, [r.get(body["id"])])
     code, job = http(base, f"/control/{body['id']}")
     assert code == 200 and job["status"] == "done" and job["result"]["summary"] == "cw=="

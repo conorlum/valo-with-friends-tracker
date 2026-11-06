@@ -6,7 +6,11 @@ Not through replay_worker/entrypoint.sh: that drops to the `worker` user, and re
 SDK socket is root's; 2026-10-16). The workflow has no disk to hand over, so it needs no drop.
 
 Every task runs on `flex` (spec D7) with its own timeout and retries (D8, D9), except parse: on `pro`, since a
-parse's export (~65x the file) ran out of disk on `flex` (2026-10-16)."""
+parse's export (~65x the file) ran out of disk on `flex` (2026-10-16).
+
+warm (a map's visibility cache by itself) runs on `flex`, its limit 300 s above the worker's
+`REPLAY_WARM_BUILD_TIMEOUT_S`. Each limit sits 300 s above the worker's Workflow limit (`render.yaml`);
+tests/replays/test_control_remote.py pins the order."""
 
 from render.workflows import Retry, TaskContext, Workflows
 
@@ -22,7 +26,7 @@ def ping(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
-@app.task(name="control", timeout_seconds=1800, retry=Retry(max_retries=1, wait_duration_ms=5000))
+@app.task(name="control", timeout_seconds=7500, retry=Retry(max_retries=1, wait_duration_ms=5000))
 def control(ctx: TaskContext, args: dict) -> dict:
     tasks.control(args, tasks.link_for(args))
     return {"ok": True}
@@ -34,9 +38,15 @@ def parse(ctx: TaskContext, args: dict) -> dict:
     return {"ok": True}
 
 
-@app.task(name="heights", timeout_seconds=3600, retry=NO_RETRY)
+@app.task(name="heights", timeout_seconds=11100, retry=NO_RETRY)
 def heights(ctx: TaskContext, args: dict) -> dict:
     tasks.heights(args, tasks.link_for(args))
+    return {"ok": True}
+
+
+@app.task(name="warm", timeout_seconds=21900, retry=Retry(max_retries=1, wait_duration_ms=5000))
+def warm(ctx: TaskContext, args: dict) -> dict:
+    tasks.warm(args, tasks.link_for(args))
     return {"ok": True}
 
 

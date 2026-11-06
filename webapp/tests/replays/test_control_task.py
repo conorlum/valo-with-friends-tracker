@@ -10,6 +10,7 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[2]))
 
 from control_toys import blob, open_hall  # noqa: E402
 
@@ -73,6 +74,75 @@ def test_a_map_the_machine_has_no_geometry_for_is_an_infra_failure(toy):
     assert "GeometryError" in result["error"]
 
 
+def test_a_round_says_where_its_visibility_cache_came_from(toy, monkeypatch):
+    monkeypatch.setattr(toy, "visibility_source", "cache")
+    monkeypatch.setattr(toy, "visibility_s", 0.25)
+    t, _ = make_task(toy)
+    result = task.compute_task(t)
+    assert result["status"] == "ok"
+    assert result["visibility_source"] == "cache" and result["visibility_s"] == 0.25
+
+
+def test_a_round_the_engine_refuses_still_says_where_its_cache_came_from(toy, monkeypatch):
+    monkeypatch.setattr(toy, "visibility_source", "built")
+    players = {0: (None, [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 380, 250, 180)])}
+    t, _ = make_task(toy, sides={}, players=players)     # as test_a_round_the_engine_refuses_is_the_rounds_own_failure
+    result = task.compute_task(t)
+    assert result["status"] == "failed" and result["error_kind"] == "engine"
+    assert result["visibility_source"] == "built"
+
+
+def test_the_visibility_cache_name_is_one_the_worker_takes_for_that_map(toy):
+    import re
+
+    from app.control import geometry
+    from replay_worker import control_cache
+
+    name = geometry.visibility_name(toy)
+    assert re.fullmatch(rf"{toy.name}\.[0-9a-f]{{16}}\.npz", name)
+    assert control_cache.valid(name, toy.name) and control_cache.visibility_name(name)
+
+
+def test_the_feature_row_line_reports_reuse_only_when_a_row_cache_exists(toy, monkeypatch):
+    from types import SimpleNamespace
+
+    assert task._rows_line(toy) is None                       # no feature rows on this map: no line
+    monkeypatch.setattr(toy, "_feature_sight_cache", SimpleNamespace(row_hits=30, row_builds=10), raising=False)
+    assert task._rows_line(toy) == "Open: feature rows 30 reused, 10 built"
+
+
+def test_a_warm_build_names_the_cache_file_its_rounds_will_read(toy, monkeypatch):
+    from app.control import geometry
+
+    monkeypatch.setattr(toy, "visibility_source", "built")
+    monkeypatch.setattr(toy, "visibility_s", 1.5)
+    result = task.warm_task({"key": "warm:Open", "map": toy.name})
+    assert result["status"] == "ok" and result["key"] == "warm:Open"
+    assert result["visibility"] == geometry.visibility_name(toy)
+    assert result["visibility_source"] == "built" and result["visibility_s"] == 1.5
+
+
+def test_a_warm_build_for_a_map_with_no_geometry_is_an_infra_failure():
+    result = task.warm_task({"key": "w", "map": "NoSuchMap"})
+    assert result["status"] == "failed" and result["error_kind"] == "infra"
+    assert "GeometryError" in result["error"]
+
+
+def test_a_warm_build_loads_with_the_rounds_own_height_mode(monkeypatch):
+    seen = []
+    monkeypatch.setattr(task, "_load", lambda *a, **k: seen.append(k) or (_ for _ in ()).throw(RuntimeError("x")))
+    task.warm_task({"key": "w", "map": "Ascent", "height_mode": "flat", "features": "f" * 64})
+    assert seen == [{"height_mode": "flat", "exact": "f" * 64}]
+
+
+def test_phase_lines_go_to_stderr_only_when_asked(monkeypatch, capsys):
+    task._phase("quiet")
+    assert capsys.readouterr().err == ""
+    monkeypatch.setenv("CONTROL_PHASE_LOG", "1")
+    task._phase("Ascent: visibility start")
+    assert capsys.readouterr().err == "control phase: Ascent: visibility start\n"
+
+
 from app.control import geometry as cg  # noqa: E402
 from app.control import height_build as hb  # noqa: E402
 from app.control import heights as hc  # noqa: E402
@@ -107,3 +177,21 @@ def test_a_failure_to_find_the_heights_is_the_machines_not_the_rounds(tmp_path, 
     out = control_task.compute_task({"key": "k", "map": "Ascent", "height": "f" * 12, "blob": b"", "link":
                                      {"sides": {}, "db_deaths": []}})
     assert out["status"] == "failed" and out["error_kind"] == "infra" and "not on this machine" in out["error"]
+
+
+def test_a_cache_that_wont_load_is_removed_and_named_in_the_answer(tmp_path, monkeypatch):
+    # R5-B3: the replay worker drops its own copy of a named file, so later runs stop downloading it broken.
+    from app.control import geometry
+
+    broken = tmp_path / "Ascent.0123456789abcdef.npz"
+    broken.write_bytes(b"not a zip")
+    monkeypatch.setattr(geometry, "cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(geometry, "load_geometry", lambda name, **kw: type("G", (), {"name": name})())
+
+    def unreadable(geo):
+        raise ValueError("bad zip")
+    monkeypatch.setattr(geometry, "visibility", unreadable)
+    monkeypatch.setattr(task, "_GEOMETRY", {})
+    result = task.warm_task({"key": "w", "map": "Ascent"})
+    assert result["status"] == "failed" and result["unreadable"] == [broken.name] and not broken.exists()
+    task.UNREADABLE.clear()
