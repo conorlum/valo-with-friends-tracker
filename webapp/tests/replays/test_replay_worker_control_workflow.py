@@ -657,13 +657,57 @@ def test_a_round_whose_lease_fails_is_requeued_uncounted_and_runs_after_a_new_wa
 
     def flaky(cache_dir, name):                    # the file vanishes between scheduling and the run's lease
         calls.append(name)
-        return False if len(calls) == 1 else real(cache_dir, name)
+        if len(calls) == 1:
+            (Path(cache_dir) / name).unlink(missing_ok=True)
+            return False
+        return real(cache_dir, name)
 
     monkeypatch.setattr(control_cache, "lease", flaky)
     job = control.submit(round_task("b"))
     assert wait_done(control, [job])[0].status == "done"
     assert len(calls) == 2 and warm_starts(render) == 2
     assert f"Ascent.{'e' * 16}.npz" in job.result["had"]
+
+
+def test_a_failed_lease_while_the_file_is_on_the_disk_counts_nothing(warm_remote, monkeypatch):
+    # R5-B1: a replacement (same name) can be on the disk by the time a failed lease settles: nothing is lost.
+    from replay_worker import control_cache
+
+    control, render, _, _ = warm_remote
+    warm_and_confirm(control)
+    real, calls = control_cache.lease, []
+
+    def flaky(cache_dir, name):
+        calls.append(name)
+        return False if len(calls) == 1 else real(cache_dir, name)
+
+    monkeypatch.setattr(control_cache, "lease", flaky)
+    job = control.submit(round_task("b"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert warm_starts(render) == 1                         # no warm build: the file never went
+    state = control.counts()["warm_builds"]
+    assert state["vanished"] == {} and state["rewarmed"] == {} and state["confirmed"] == [job.warm_id]
+
+
+def test_a_late_built_answer_from_an_older_cycle_spends_no_try(warm_remote):
+    # R5-B2: a: fails its download once (one miss, a new cycle); b, released with a, answers "built" late.
+    control, render, _, base = warm_remote
+    warm_and_confirm(control)
+    inner, failed = render.runner, set()
+
+    def a_fails_once(kind, args):
+        job = control.jobs.get(args["job_id"])
+        if kind == "control" and args.get("visibility") and job.key == "a" and job.id not in failed:
+            failed.add(job.id)
+            return hand_back(base, args)
+        return inner(kind, args)
+
+    render.runner = a_fails_once
+    a = control.submit(round_task("a", mode="sleep:2"))
+    b = control.submit(round_task("b", mode="sleep:0.5", source="built"))
+    assert all(j.status == "done" for j in wait_done(control, [a, b]))
+    state = control.counts()["warm_builds"]
+    assert state["confirmed"] == [a.warm_id] and state["missed"] == {}    # a's new probe confirmed; no fallback
 
 
 def test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed(warm_remote):

@@ -1768,7 +1768,11 @@ class ControlRunner:
             elif kind == "rewarm":
                 # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
                 # identity warmed again. It never runs cold (risk 2).
-                if self.warm_names.get(job.warm_id) == job.released_name:
+                # Only this cycle's loss, and only if the file is still missing: a replacement can have been
+                # built under the same name since (R5-B1).
+                if (self.warm_names.get(job.warm_id) == job.released_name
+                        and job.warm_epoch == self.warm_epoch.get(job.warm_id, 0)
+                        and not (self.settings.control_cache_dir / job.released_name).is_file()):
                     self._note_gone(job.warm_id, job.warm_key)
                 if self.warm_probe.get(job.warm_id) == job.id:
                     self.warm_probe.pop(job.warm_id, None)
@@ -1827,7 +1831,7 @@ class ControlRunner:
                     probe = self.warm_probe.get(job.warm_id) == job.id
                     if probe:
                         self.warm_probe.pop(job.warm_id, None)     # whatever happened, the probe slot is free
-                    if source == "built" and current:
+                    if source == "built" and current and this_cycle:   # R5-B2: an older cycle's answer spends nothing
                         self.warm_misses += 1                      # rule 7
                         self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1
                         self.warm_names.pop(job.warm_id, None)     # later answers no longer match: counted once
