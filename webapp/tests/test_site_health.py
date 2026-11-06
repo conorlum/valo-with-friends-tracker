@@ -12,7 +12,8 @@ from app.db import Base
 from app.models.site_events import SiteEvent
 from app.services import site_health
 
-T0 = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+# Recent, so the 30-day retention in every flush never deletes the rows under test.
+T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
 
 
 def naive(d):
@@ -95,6 +96,7 @@ def test_flush_writes_with_occurrence_time(factory):
     assert r[("k", "q")].count == 1 and naive(r[("k", "q")].last_seen) == naive(T0)
     c = r[("k", "c")]
     assert c.count == 2 and naive(c.last_seen) == naive(T0 + timedelta(minutes=5))
+    assert naive(c.first_seen) == naive(T0)
     assert c.context == [{"i": 1}, {"i": 2}]
     # counters were drained: a second flush adds nothing
     site_health.flush(session_factory=factory)

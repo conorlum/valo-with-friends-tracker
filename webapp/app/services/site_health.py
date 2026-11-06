@@ -122,7 +122,7 @@ def count(kind, key, context_item=None, *, merge=None, at=None):
     with _lock:
         c = _counters.get((kind, key))
         if c is None:
-            c = _counters[(kind, key)] = {"n": 0, "at": when, "items": [], "context": None, "merge": None}
+            c = _counters[(kind, key)] = {"n": 0, "first": when, "at": when, "items": [], "context": None, "merge": None}
         c["n"] += 1
         if when >= c["at"]:
             c["at"] = when
@@ -223,7 +223,7 @@ def flush(*, session_factory):
                         context=_scrub_value(e["context"]), n=1, first=e["at"], last=e["at"])
             for (kind, key), c in counters.items():
                 ctx = _counter_context(c)
-                _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["at"],
+                _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["first"],
                         last=c["at"], set_error=False, set_context=ctx is not None)
             _retain(session)
             session.commit()
@@ -239,6 +239,7 @@ def flush(*, session_factory):
                 else:
                     cur["n"] += c["n"]
                     cur["at"] = max(cur["at"], c["at"])
+                    cur["first"] = min(cur["first"], c["first"])
                     cur["items"] = (c["items"] + cur["items"])[-LAST_ITEMS:]
                     if cur["context"] is None:
                         cur["context"] = c["context"]
