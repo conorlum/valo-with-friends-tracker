@@ -16,6 +16,7 @@ from app.maintenance import maintenance_middleware
 from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
                          site_stats, squad, util_page)
 from app.services.auth import get_current_player
+from app.services.site_health_web import page_error_handler
 from app.templates import templates
 
 # INFO-level timing logs (see app.routers.sessions / app.services.sessions /
@@ -62,6 +63,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)
+# A page that crashes is recorded as a page_error event (in memory only), then gets the usual plain 500.
+app.add_exception_handler(Exception, page_error_handler)
 # Blocks every page but /health while MAINTENANCE_MODE is set, so a rollback can
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)

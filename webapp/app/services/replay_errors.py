@@ -47,10 +47,11 @@ KINDS = (
     ("unlinked", "Replays unlinked"),
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
+    ("page_error", "Pages that crashed"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
-GROUPS = {key: "Replays" for key, _ in KINDS}   # later items add their kinds with their group
-EVENT_KINDS = frozenset()                      # kinds whose rows come from site_events
+GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages"}   # later items add their kinds with their group
+EVENT_KINDS = frozenset({"page_error"})                    # kinds whose rows come from site_events
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None

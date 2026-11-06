@@ -31,7 +31,7 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+KEYS = ["page_error", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -79,8 +79,11 @@ def one(errors, db, key):
 
 @pytest.fixture
 def event_kind(errors, monkeypatch):
-    monkeypatch.setattr(errors, "KINDS", errors.KINDS + (("test_event", "Test events"),))
-    monkeypatch.setattr(errors, "GROUPS", {**errors.GROUPS, "test_event": "Pages"})
+    # test_event stands in for page_error, so these tests see one synthetic event kind.
+    monkeypatch.setattr(errors, "KINDS", tuple(k for k in errors.KINDS if k[0] != "page_error")
+                        + (("test_event", "Test events"),))
+    monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items() if k != "page_error"},
+                                           "test_event": "Pages"})
     monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event"}))
     return errors
 
@@ -108,6 +111,22 @@ def test_kind_groups_are_complete(errors):
     assert errors.EVENT_KINDS <= set(dict(errors.KINDS))
 
 
+def test_page_error_events_are_listed_under_pages(errors, db):
+    db.add(SiteEvent(kind="page_error", key="GET /players/{display_name}", error="ValueError: synthetic",
+                     context={"type": "ValueError", "traceback": "Traceback ...\nValueError: synthetic",
+                              "path": "/players/x", "logged_in": False}, count=2,
+                     first_seen=STAMP - timedelta(hours=2), last_seen=STAMP - timedelta(minutes=1)))
+    db.commit()
+    body = errors.compute(db)
+    found = next(k for k in body["kinds"] if k["key"] == "page_error")
+    assert found["label"] == "Pages that crashed" and found["count"] == 1
+    assert errors.GROUPS["page_error"] == "Pages" and "page_error" in errors.EVENT_KINDS
+    assert (found["group"], found["shape"]) == ("Pages", "event")
+    [row] = found["rows"]
+    assert (row["key"], row["count"], row["error"]) == ("GET /players/{display_name}", 2, "ValueError: synthetic")
+    assert row["context"]["type"] == "ValueError"
+
+
 def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     errors = stored_events
     queries = []
@@ -133,7 +152,7 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert newest["link"] == f"{errors.SITE}/replays/upload"
     assert newest["reproduce"] == errors._inventory_command()
     assert older["context"] == {}
-    assert [entry["key"] for entry in body["kinds"][1:]] == KEYS
+    assert [entry["key"] for entry in body["kinds"][1:]] == KEYS[1:]
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays" for entry in body["kinds"][1:])
     assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
     assert len(queries) == 1 and queries[0].startswith("select ")
@@ -393,8 +412,8 @@ def test_all_rows_kept_sorted_then_first_fifty_shown(errors, db, monkeypatch):
     found = kind(errors, db, "box_conflict")
     assert found["count"] == 53 and found["rows"] == expected[:50]
     full = errors.compute(db, limit=None)
-    assert len(full["kinds"][0]["rows"]) == 53
-    assert len(errors.cached(db)["kinds"][0]["rows"]) == 53
+    assert len(next(k for k in full["kinds"] if k["key"] == "box_conflict")["rows"]) == 53
+    assert len(next(k for k in errors.cached(db)["kinds"] if k["key"] == "box_conflict")["rows"]) == 53
 
 
 def test_demo_never_reads_db_even_with_warm_cache(errors, db, monkeypatch):
@@ -531,7 +550,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     collected = errors.collect(db)
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
-               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed"}), \
+               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error"}), \
         "stored kinds"
     for key, rows in collected.items():
         for row in rows:
@@ -770,7 +789,7 @@ def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(error
                   "owner approves", "--expect-database valowithfriendsdb --read-only", "z: 2.0", '"piece": 15',
                   '"tops": [2.4]', '"dist_m": 0.58', '"dist_m": null', "heights_revision", STAMP.isoformat()):
         assert value in text
-    row = body["kinds"][0]["rows"][0]
+    row = next(k for k in body["kinds"] if k["key"] == "box_conflict")["rows"][0]
     for key in ("map", "match", "agent", "link", "reproduce"):
         assert str(row[key]) in text
     assert "synthetic-private-name" not in text

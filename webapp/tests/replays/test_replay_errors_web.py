@@ -36,9 +36,12 @@ def result():
            "link": "/replays/00000000-0000-4000-8000-000000000001?round=2&t=35.2",
            "error": "No single box explains this height", "revision": {"height_rules": 1},
            "reproduce": "Read the stored height metadata"}
+    event = {"kind": "page_error", "key": "GET /x", "count": 1, "first_seen": None, "last_seen": None,
+             "error": "ValueError: synthetic", "context": {}, "link": "", "reproduce": "Read site_events"}
     return {"checked_at": "2026-10-30T12:00:00+00:00",
             "kinds": [{"key": key, "label": label, "group": "Replays", "shape": "replay", "count": 51, "note": "Stored evidence",
-                       "rows": [copy.deepcopy(row) for _ in range(51)]} for key, label in replay_errors.KINDS]}
+                       "rows": [copy.deepcopy(event if key in replay_errors.EVENT_KINDS else row)
+                                for _ in range(51)]} for key, label in replay_errors.KINDS]}
 
 
 @pytest.mark.parametrize("name", ["upload_errors", "upload_errors_prompt"])
