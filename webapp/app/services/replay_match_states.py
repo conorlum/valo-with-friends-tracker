@@ -15,10 +15,11 @@ from sqlalchemy import text, update
 
 from app.config import settings
 from app.models.replay import ReplayMatchState
-from app.services import replay_progress
+from app.services import replay_progress, site_health
 
 log = logging.getLogger(__name__)
 
+LOOP_NAME = "replay-states"
 REFRESH_S = 60
 STALE_S = 5 * REFRESH_S
 LOCK_ID = 7_346_120_231   # distinct from replay_control_remote.LOCK_ID (7_346_120_117)
@@ -73,22 +74,33 @@ def refresh(db, now: datetime | None = None) -> dict:
 
 def run_forever(session_factory, stop: threading.Event, every_s: float = REFRESH_S) -> None:
     """One pass at once, then one every `every_s` until `stop` is set. A failed pass is logged, never fatal."""
-    while True:
-        db = session_factory()
-        try:
-            counts = refresh(db)
-            log.info("replay states: written %d, deleted %d, unchanged %d in %.2fs",
-                     counts["written"], counts["deleted"], counts["unchanged"], counts["seconds"])
-        except Exception:  # noqa: BLE001 - the refresher must never take the site down
-            log.exception("replay states refresh failed")
+    site_health.register(LOOP_NAME, every_s)
+    try:
+        while True:
+            site_health.beat(LOOP_NAME, "start")
+            db = session_factory()
+            ok = False
             try:
-                db.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            db.close()
-        if stop.wait(every_s):
-            return
+                counts = refresh(db)
+                log.info("replay states: written %d, deleted %d, unchanged %d in %.2fs",
+                         counts["written"], counts["deleted"], counts["unchanged"], counts["seconds"])
+                ok = True
+            except Exception as exc:  # noqa: BLE001 - the refresher must never take the site down
+                log.exception("replay states refresh failed")
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+            finally:
+                db.close()
+            if ok:
+                site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+            site_health.beat(LOOP_NAME, "end")
+            if stop.wait(every_s):
+                return
+    finally:
+        site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:

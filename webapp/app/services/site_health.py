@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+import traceback
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -263,6 +264,7 @@ def register(name, cycle_s, allowed_s=None):
         loop = _loops.setdefault(name, {"beats": {}})
         loop["cycle_s"] = cycle_s
         loop["allowed_s"] = allowed_s
+        loop["registered"] = _now()
 
 
 def unregister(name):
@@ -279,6 +281,40 @@ def beat(name, phase):
 def loops():
     with _lock:
         return copy.deepcopy(_loops)
+
+
+QUIET_FACTOR = 3  # PROVISIONAL(D1): a loop is quiet after this many of its cycles ...
+QUIET_SLACK_S = 120  # PROVISIONAL(D1): ... plus this many seconds
+
+
+def quiet_loops(now=None):
+    """Registered loops whose last finished pass (or registration) is older than their limit."""
+    now = now or _now()
+    out = []
+    for name, loop in sorted(loops().items()):
+        cycle_s = loop.get("cycle_s")
+        limit = loop.get("allowed_s") or (QUIET_FACTOR * cycle_s + QUIET_SLACK_S if cycle_s is not None else None)
+        if limit is None:
+            continue
+        beats = loop.get("beats", {})
+        last_end, started = beats.get("end"), beats.get("start")
+        since = last_end or loop.get("registered")
+        if since is None or (now - since).total_seconds() <= limit:
+            continue
+        in_pass = started if started is not None and (last_end is None or started > last_end) else None
+        out.append({"name": name, "last_end": last_end, "registered": loop.get("registered"),
+                    "in_pass_since": in_pass, "limit_s": limit})
+    return out
+
+
+def loop_failed(name, exc, *, session_factory):
+    """Record a loop's (or one of its steps') failure under `name`; call from inside the `except`."""
+    lines = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).splitlines()[-15:]
+    record("loop_failed", name, f"{type(exc).__name__}: {exc}", {"traceback": lines}, session_factory=session_factory)
+
+
+def loop_ok(name, *, session_factory):
+    resolve("loop_failed", name, session_factory=session_factory)
 
 
 KNOWN_KINDS = frozenset({

@@ -22,7 +22,7 @@ from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
 from app.models.replay import (ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                ReplayRoundUtil, ReplayUpload)
-from app.services import control_heights, replay_progress
+from app.services import control_heights, replay_progress, site_health
 from app.services.replay_gaps import Freshness
 
 SHOW = 50
@@ -48,10 +48,13 @@ KINDS = (
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
     ("page_error", "Pages that crashed"),
+    ("loop_failed", "Background loops that failed"),
+    ("loop_quiet", "Background loops gone quiet"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
-GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages"}   # later items add their kinds with their group
-EVENT_KINDS = frozenset({"page_error"})                    # kinds whose rows come from site_events
+GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages",
+          "loop_failed": "Background work", "loop_quiet": "Background work"}   # later items add their kinds
+EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet"})   # loop_quiet is live; the rest come from site_events
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -440,9 +443,20 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             log.warning("rollback after the site_events read failed", exc_info=True)
         stored = []
     for kind, key, count, first_seen, last_seen, error, context in stored:
-        if kind in EVENT_KINDS and kind in rows:
+        if kind in EVENT_KINDS and kind != "loop_quiet" and kind in rows:
             rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
                                          last_seen=last_seen, error=error, context=context))
+    if "loop_quiet" in rows:
+        moment = now()
+        for item in site_health.quiet_loops(moment):
+            since = item["last_end"] or item["registered"]
+            error = (f"last finished a pass at {_iso(item['last_end'])}" if item["last_end"]
+                     else f"never finished a pass since {_iso(item['registered'])}")
+            if item["in_pass_since"]:
+                error += f"; in a pass since {_iso(item['in_pass_since'])}"
+            rows["loop_quiet"].append(_event_row(
+                kind="loop_quiet", key=item["name"], count=1, first_seen=since, last_seen=moment, error=error,
+                context={"limit_s": item["limit_s"]}, reproduce="live: read in this process, not stored"))
     for key, values in rows.items():
         if key not in EVENT_KINDS:
             values.sort(key=_sort_key)
@@ -493,8 +507,10 @@ def _sql_string(value):
 
 def _rest_query(key, rows):
     """Select exactly the remaining stored identities, with only diagnostic columns."""
+    if key == "loop_quiet":
+        return "(live rows, not stored: read the site's loop state in the running process)"
     if key in EVENT_KINDS:
-        keys = ", ".join(_sql_string(r["key"]) for r in rows)
+        keys =", ".join(_sql_string(r["key"]) for r in rows)
         return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
                 f"WHERE kind = {_sql_string(key)} AND key IN ({keys}) ORDER BY last_seen DESC;")
     models = {"control_failed": ReplayRoundControl, "gaps_failed": ReplayRoundGapRun,

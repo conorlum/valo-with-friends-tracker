@@ -89,11 +89,12 @@ from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
-from app.services import replay_upload
+from app.services import replay_upload, site_health
 from app.services.replay_control_store import ALREADY, STORED, store_round
 
 log = logging.getLogger(__name__)
 
+LOOP_NAME = "control-dispatch"
 CYCLE_S = 20
 IN_FLIGHT = settings.control_max_runs        # rounds in flight at once (CONTROL_MAX_RUNS)
 MAX_MATCHES = settings.control_max_matches   # replays those rounds may come from (CONTROL_MAX_MATCHES)
@@ -795,8 +796,10 @@ def _reparse(session_factory, worker, state: State, now: float, counts: dict) ->
         try:
             held = reparse_auto.step(session_factory, worker, state.reparse, len(state.in_flight), now, counts,
                                      gave_up=state.gave_up)
-        except Exception:  # noqa: BLE001 - never the dispatcher's failure
+            site_health.loop_ok("reparse_pass", session_factory=session_factory)
+        except Exception as exc:  # noqa: BLE001 - never the dispatcher's failure
             log.exception("the automatic re-parse pass failed; map control goes on with nothing held back")
+            site_health.loop_failed("reparse_pass", exc, session_factory=session_factory)
     if counts["reparse_finished"] or held != state.held:
         # A replacement just landed, or a replay was released: plan now, not after PLAN_IDLE_S.
         state.last_planned, state.last_found = None, True
@@ -834,9 +837,11 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             try:
                 held_maps = frozenset(replay_heights_remote.step(session_factory, rebuild, client, state.heights, now,
                                                                  counts))
-            except Exception:  # noqa: BLE001 - a height rebuild must never stop map control
+                site_health.loop_ok("height_rebuild_step", session_factory=session_factory)
+            except Exception as exc:  # noqa: BLE001 - a height rebuild must never stop map control
                 log.exception("height rebuild step failed")
                 counts["heights_error"] = 1
+                site_health.loop_failed("height_rebuild_step", exc, session_factory=session_factory)
             finally:
                 rebuild.rollback()
                 rebuild.close()
@@ -857,16 +862,25 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
 
 def run_forever(session_factory, client, stop: threading.Event, every_s: float = CYCLE_S, worker=None) -> None:
     state = State()
-    while not stop.wait(every_s):
-        try:
-            counts = cycle(session_factory, client, state, worker=worker)
-        except Exception:  # noqa: BLE001 - the dispatcher must never take the site down
-            log.exception("map control dispatch failed")
-            continue
-        did = {k: v for k, v in counts.items() if v}
-        if did:
-            log.info("map control dispatch: %s; %d in flight", ", ".join(f"{k} {v}" for k, v in sorted(did.items())),
-                     len(state.in_flight))
+    site_health.register(LOOP_NAME, every_s)
+    try:
+        while not stop.wait(every_s):
+            site_health.beat(LOOP_NAME, "start")
+            try:
+                counts = cycle(session_factory, client, state, worker=worker)
+            except Exception as exc:  # noqa: BLE001 - the dispatcher must never take the site down
+                log.exception("map control dispatch failed")
+                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+                site_health.beat(LOOP_NAME, "end")
+                continue
+            site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+            site_health.beat(LOOP_NAME, "end")
+            did = {k: v for k, v in counts.items() if v}
+            if did:
+                log.info("map control dispatch: %s; %d in flight",
+                         ", ".join(f"{k} {v}" for k, v in sorted(did.items())), len(state.in_flight))
+    finally:
+        site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:

@@ -28,16 +28,22 @@ from sqlalchemy import and_, or_
 from app.config import settings
 from app.models.replay import ReplayDeletion, ReplayUpload
 from app.services import replay_upload as uploads
+from app.services import site_health
 
 log = logging.getLogger(__name__)
 
 CYCLE_S = 300
+LOOP_NAME = "archive-sync"
+WORKER_KEY = "archive_sync:worker"
+WORKER_FAILS_BEFORE_RECORD = 3  # PROVISIONAL(D1)
 RESEND_WITHIN = timedelta(days=2)  # the worker's PENDING_TTL_S: after it, nothing is held to ack
 
 
 @dataclass
 class State:
     synced_boot_id: str | None = None
+    worker_error: str | None = None   # the last cycle's worker error, if any
+    worker_fails: int = 0             # consecutive cycles that had one
 
 
 def enabled() -> bool:
@@ -47,13 +53,16 @@ def enabled() -> bool:
 def cycle(session_factory, client: uploads.WorkerClient, state: State, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     counts = {"collected": 0, "tombstones_pushed": 0, "acks_sent": 0, "acks_unsent": 0}
+    state.worker_error = None
     try:
         archive = client.health().get("archive") or {}
-    except uploads.WorkerError:
+    except uploads.WorkerError as exc:
+        state.worker_error = f"WorkerError: {exc}"
         return counts
     try:
         counts["collected"] = uploads.collect_unfinished(session_factory, client, now)
-    except uploads.WorkerError:
+    except uploads.WorkerError as exc:
+        state.worker_error = f"WorkerError: {exc}"
         log.warning("archive sync: the worker stopped answering while collecting uploads")
     if not archive.get("enabled"):
         return counts
@@ -78,7 +87,8 @@ def cycle(session_factory, client: uploads.WorkerClient, state: State, now: date
             else:
                 counts["acks_sent"] += 1
         return counts
-    except uploads.WorkerError:
+    except uploads.WorkerError as exc:
+        state.worker_error = f"WorkerError: {exc}"
         log.warning("archive sync: the worker stopped answering mid-cycle")
         return counts
     finally:
@@ -88,15 +98,36 @@ def cycle(session_factory, client: uploads.WorkerClient, state: State, now: date
 
 def run_forever(session_factory, client, stop: threading.Event, every_s: float = CYCLE_S) -> None:
     state = State()
-    while True:
-        try:
-            counts = cycle(session_factory, client, state)
-            if any(counts.values()):
-                log.info("archive sync: %s", ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if v))
-        except Exception:  # noqa: BLE001 - the sync must never take the site down
-            log.exception("archive sync failed")
-        if stop.wait(every_s):
-            return
+    site_health.register(LOOP_NAME, every_s)
+    try:
+        while True:
+            site_health.beat(LOOP_NAME, "start")
+            try:
+                counts = cycle(session_factory, client, state)
+                if any(counts.values()):
+                    log.info("archive sync: %s", ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if v))
+                site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+                _note_worker(session_factory, state)
+            except Exception as exc:  # noqa: BLE001 - the sync must never take the site down
+                log.exception("archive sync failed")
+                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+            site_health.beat(LOOP_NAME, "end")
+            if stop.wait(every_s):
+                return
+    finally:
+        site_health.unregister(LOOP_NAME)
+
+
+def _note_worker(session_factory, state: State) -> None:
+    """A worker that stays away for WORKER_FAILS_BEFORE_RECORD cycles in a row is recorded; one good cycle clears it."""
+    if state.worker_error is None:
+        state.worker_fails = 0
+        site_health.resolve("loop_failed", WORKER_KEY, session_factory=session_factory)
+        return
+    state.worker_fails += 1
+    if state.worker_fails >= WORKER_FAILS_BEFORE_RECORD:
+        site_health.record("loop_failed", WORKER_KEY, state.worker_error,
+                           {"consecutive_cycles": state.worker_fails}, session_factory=session_factory)
 
 
 def start(session_factory) -> threading.Event | None:
