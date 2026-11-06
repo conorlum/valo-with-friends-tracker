@@ -572,6 +572,38 @@ def test_a_workflow_round_keeps_its_limit_through_a_failed_health_read(factory, 
     assert counts["timed_out"] == 0 and not state.tries
 
 
+def test_a_round_sent_during_a_failed_health_read_gets_the_workflow_limit_once_health_is_back(
+        factory, db, linked, monkeypatch):
+    # R3-B3: sent with the local backstop (that pass's /health failed), but the worker runs it on Workflows.
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"}
+    worker.health_error = remote.Unreachable("blip")
+    remote.cycle(factory, worker, state, now=0)
+    assert state.in_flight and all(f.stale_s == remote.STALE_JOB_S for f in state.in_flight.values())
+    worker.health_error = None
+    remote.cycle(factory, worker, state, now=1)            # first seen running
+    # At the local cap of 8 a pass stops before its health read; the alarm poll reads it instead.
+    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)
+    assert state.remote_control
+    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
+
+
+def test_a_worker_restart_makes_an_equal_count_a_new_loss(factory, linked, caplog):
+    # R3-B5: counts restart at 0 with the worker process; compare them only within one boot.
+    worker, state = FakeWorker(), remote.State()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}, "boot": "one"}
+    remote.cycle(factory, worker, state, now=100)
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}, "boot": "two"}
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=remote.log.name):
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=200)
+    assert sum("Ascent:h:|" in r.getMessage() for r in caplog.records) == 1
+    assert state.warm_boot == "two"
+
+
 def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):
     from types import SimpleNamespace
     sentinel = object()

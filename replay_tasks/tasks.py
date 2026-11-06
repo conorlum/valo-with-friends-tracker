@@ -144,15 +144,17 @@ def _cache_files(cache: Path) -> dict[str, str]:
     return out
 
 
-REQUIRED_FETCH_TRIES = 3        # a leased warm cache file: fetched this many times before the run builds its own
+REQUIRED_FETCH_TRIES = 3        # a leased warm cache file: fetched this many times before the run gives up
 REQUIRED_FETCH_WAIT_S = 2.0     # times the try number, between tries
 
 
-def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path, required: str | None = None) -> None:
+def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path, required: str | None = None) -> str | None:
     """The worker's cached files for this run. One that can't be fetched (pruned since the run was opened) is
     skipped: the child rebuilds what it needs (spec D6). `required` is the warm cache file the worker leased for
-    this round: it can't have been pruned, so a failed fetch is the network's, and it is tried again before the
-    round gives up on it and builds its own (a miss, which the worker counts)."""
+    this round: it can't have been pruned, so a failed fetch is the network's, and it is tried again. Returns the
+    last error when `required` still couldn't be fetched (the run then must not build it: the worker requeues
+    the round), else None."""
+    missing = None
     for name in names:
         tries = REQUIRED_FETCH_TRIES if name == required else 1
         for attempt in range(1, tries + 1):
@@ -164,8 +166,8 @@ def _fetch_inputs(link: WorkerLink, names: list[str], cache: Path, required: str
                 if attempt < tries:
                     time.sleep(REQUIRED_FETCH_WAIT_S * attempt)
                 elif name == required:
-                    sys.stderr.write(f"control: the leased cache {name} could not be fetched ({error}); "
-                                     "building it instead\n")
+                    missing = f"the leased cache {name} could not be fetched ({error})"
+    return missing
 
 
 def _post_caches(link: WorkerLink, cache: Path, before: dict[str, str], map_name: str) -> list[str]:
@@ -190,7 +192,13 @@ def control(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
-        _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
+        missing = _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
+        if missing:
+            # Building it here would be the very rebuild the lease exists to avoid, possibly in every round released
+            # with this one: the worker puts the round back and counts a miss instead.
+            sys.stderr.write(f"control: {missing}; handing the round back\n")
+            link.post_result({"status": "failed", "error_kind": "cache_input", "error": missing})
+            return
         before = _cache_files(cache)
         stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)

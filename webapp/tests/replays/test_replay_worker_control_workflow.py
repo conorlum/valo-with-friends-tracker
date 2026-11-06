@@ -209,9 +209,10 @@ def test_control_task_tries_its_leased_cache_again_before_building_its_own(stub,
     link.fetch = flaky
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [name], "visibility": name}, link)
     assert link.result["had"] == [name] and link.result["visibility_source"] == "cache"
-    link2 = FakeLink({"task": json.dumps(round_task()).encode()})       # never fetchable: it builds its own
+    link2 = FakeLink({"task": json.dumps(round_task()).encode()})       # never fetchable: handed back, not built
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [name], "visibility": name}, link2)
-    assert link2.result["status"] == "ok" and link2.result["had"] == []
+    assert link2.result["status"] == "failed" and link2.result["error_kind"] == "cache_input"
+    assert "had" not in link2.result and link2.order == ["started", "result"]      # the child never ran
 
 
 def test_control_task_passes_an_engine_failure_through(stub):
@@ -404,42 +405,97 @@ def test_a_probe_that_reads_the_file_clears_the_identitys_earlier_trouble(warm_r
 def test_after_its_files_are_lost_the_fallback_warms_the_map_alone(warm_remote):
     # B1: the probe left the map's legacy warm flag set; losing the files must clear it, or every fallback round
     # would start at once and each rebuild the cache.
-    control, render, settings, _ = warm_remote
+    control, render, settings, base = warm_remote
     warm_and_confirm(control)
     for path in settings.control_cache_dir.glob("*.npz"):
         path.unlink()                                  # evicted after the probe used it: no D3 loss
-    inner = render.runner
-
-    def lose_the_file(kind, args):
-        out = inner(kind, args)
-        if kind == "warm":
-            for path in settings.control_cache_dir.glob("*.npz"):
-                path.unlink()
-        return out
-
-    render.runner = lose_the_file
+    render.runner = losing_warm_files(settings, base)
     jobs = [control.submit(round_task(f"f{i}", mode="sleep:1")) for i in range(3)]
-    peak, end = 0, time.time() + 60
-    while time.time() < end and not all(control.get(j.id).status in ("done", "failed") for j in jobs):
-        peak = max(peak, sum(control.get(j.id).status == "running" for j in jobs))
-        time.sleep(0.02)
+    assert peak_running(control, jobs) == 1            # no visibility file comes back: each round warms alone
     assert all(control.get(j.id).status == "done" for j in jobs)
-    assert peak < len(jobs)
     assert control.counts()["warm_builds"]["vanished"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
 
 
-def test_an_identity_whose_file_leaves_the_disk_after_every_warm_build_ends_in_the_fallback(warm_remote):
-    control, render, settings, _ = warm_remote
+def peak_running(control, jobs, timeout=60):
+    peak, end = 0, time.time() + timeout
+    while time.time() < end and not all(control.get(j.id).status in ("done", "failed") for j in jobs):
+        peak = max(peak, sum(control.get(j.id).status == "running" for j in jobs))
+        time.sleep(0.02)
+    return peak
+
+
+def test_a_falling_back_height_mode_does_not_trust_another_modes_warm_flag(warm_remote):
+    # R3-B1: the map's legacy flag is shared by height modes; the fallback asks for this identity's own warmth.
+    control, render, _, base = warm_remote
+    warm_and_confirm(control)                          # mode "": confirmed, and the map:heights flag is set
     inner = render.runner
 
-    def runner_then_lose_the_file(kind, args):       # the file is pruned after each warm build settles
-        out = inner(kind, args)
+    def fail_later_warm_builds(kind, args):
         if kind == "warm":
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "boom"})
+        return inner(kind, args)
+
+    render.runner = fail_later_warm_builds
+    jobs = [control.submit({**round_task(f"m{i}", mode="sleep:1"), "height_mode": "flat"}) for i in range(3)]
+    assert peak_running(control, jobs) < len(jobs)     # the first warms the map alone
+    assert all(control.get(j.id).status == "done" for j in jobs)
+    assert control.counts()["warm_builds"]["failures"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
+
+
+def test_a_round_that_cannot_download_its_leased_file_is_handed_back_and_counted_as_a_miss(warm_remote):
+    # R3-B2: no round builds the leased cache itself; a download that keeps failing ends in the fallback.
+    control, render, _, base = warm_remote
+    inner = render.runner
+
+    def downloads_fail(kind, args):
+        if kind == "control" and args.get("visibility"):
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "cache_input", "error": "reset"})
+        return inner(kind, args)
+
+    render.runner = downloads_fail
+    jobs = [control.submit(round_task(f"c{i}")) for i in range(3)]
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    state = control.counts()["warm_builds"]
+    assert state["missed"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES} and state["confirmed"] == []
+    assert warm_starts(render) == 1                    # the file stayed good: no rebuild was asked
+
+
+def test_a_probe_whose_file_goes_while_it_settles_is_not_a_d3_loss(warm_remote):
+    # R3-B4: between the probe's unlease and its settlement, waiting rounds wait for its answer.
+    control, _, settings, _ = warm_remote
+
+    def lose_after_the_probe(job):
+        if job.kind == "control" and job.released_name:
+            (settings.control_cache_dir / job.released_name).unlink(missing_ok=True)
+            control.wake.set()
+            time.sleep(1.5)                            # the scheduler passes over the waiting round meanwhile
+    control._before_settle = lose_after_the_probe
+    probe = control.submit(round_task("p"))
+    other = control.submit(round_task("o"))
+    assert all(j.status == "done" for j in wait_done(control, [probe, other]))
+    assert control.counts()["warm_builds"]["vanished"] == {}
+
+
+def losing_warm_files(settings, base):
+    """A runner whose warm builds post their cache, then see it cleaned off the worker's disk before their answer is
+    in: deterministic, unlike deleting after the run returns (the worker may have settled and leased by then)."""
+    class Losing(tasks.WorkerLink):
+        def post_result(self, result):
             for path in settings.control_cache_dir.glob("*.npz"):
                 path.unlink()
-        return out
+            return super().post_result(result)
 
-    render.runner = runner_then_lose_the_file
+    def runner(kind, args):
+        link = (Losing if kind == "warm" else tasks.WorkerLink)(base, args["job_id"], args["token"])
+        return tasks.TASKS[kind](args, link)
+    return runner
+
+
+def test_an_identity_whose_file_leaves_the_disk_after_every_warm_build_ends_in_the_fallback(warm_remote):
+    control, render, settings, base = warm_remote
+    render.runner = losing_warm_files(settings, base)
     jobs = [control.submit(round_task(f"v{i}")) for i in range(3)]
     assert all(j.status == "done" for j in wait_done(control, jobs))
     assert warm_starts(render) == server.WARM_BUILD_TRIES

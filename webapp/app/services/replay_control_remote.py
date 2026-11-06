@@ -261,8 +261,9 @@ class InFlight:
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
     inputs: object = None
-    stale_s: float = STALE_JOB_S         # its running backstop, fixed when sent: a later failed /health read
-                                         # must not cut a Workflow round short with the local limit
+    stale_s: float = STALE_JOB_S         # its running backstop when sent; _collect uses the longer of this and the
+                                         # current health's, so a failed /health read on either side can't cut a
+                                         # Workflow round short with the local limit
 
 
 @dataclass(frozen=True)
@@ -306,6 +307,14 @@ def warm_vanished(health) -> dict[str, int] | None:
     return {str(k): v for k, v in vanished.items() if isinstance(v, int) and not isinstance(v, bool) and v > 0}
 
 
+def warm_boot(health) -> str | None:
+    """The worker process its warm-build counts come from (`control.warm_builds.boot`); they restart at 0 with it."""
+    control = health.get("control") if isinstance(health, dict) else None
+    warm = control.get("warm_builds") if isinstance(control, dict) else None
+    boot = warm.get("boot") if isinstance(warm, dict) else None
+    return boot if isinstance(boot, str) else None
+
+
 def _height_state():
     from app.services.replay_heights_remote import HeightState
 
@@ -326,6 +335,7 @@ class State:
     capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
     warm_vanished: dict = field(default_factory=dict)   # the worker's last /health warm_builds.vanished (> 0)
     alarms_read_at: float | None = None                 # when /health was last read for the D3 alarm
+    warm_boot: str | None = None                        # the worker process warm_vanished's counts came from
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -455,10 +465,10 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
         if status == "running":
             if f.running_since is None:
                 f.running_since = now
-            elif now - f.running_since > f.stale_s:
+            elif now - f.running_since > max(f.stale_s, _job_stale_s(state.remote_control)):
                 del state.in_flight[key]
                 log.warning("map control %s ran over %ss on the worker; asked again", key,
-                            f.stale_s)
+                            max(f.stale_s, _job_stale_s(state.remote_control)))
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -689,22 +699,29 @@ def _note_warm_vanished(state: State, health, now: float) -> None:
     vanished = warm_vanished(health)
     if vanished is None:
         return
+    boot = warm_boot(health)
+    # Counts compare only within one worker process: after a restart every count above zero is a new loss.
+    before = state.warm_vanished if boot == state.warm_boot else {}
     for identity, count in vanished.items():
-        if count > state.warm_vanished.get(identity, 0):
+        if count > before.get(identity, 0):
             log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
                       "it is listed in the replay upload page's errors", identity, count)
-    state.warm_vanished = vanished
+    state.warm_vanished, state.warm_boot = vanished, boot
 
 
 def _poll_alarms(client, state: State, now: float) -> None:
-    """A pass that sends nothing still reads /health for the alarm, at most every ALARM_POLL_S: a full dispatcher
-    must not hide a loss for the hours a warm build can take. Only the alarm is read from it."""
+    """A pass that sends nothing still reads /health, at most every ALARM_POLL_S: a full dispatcher must not hide
+    a D3 loss for the hours a warm build can take, nor keep a stale runner reading (a failed read left it local,
+    and the local cap then stops every pass before the read). A failed read here changes nothing."""
     if state.alarms_read_at is not None and now - state.alarms_read_at < ALARM_POLL_S:
         return
     try:
         health = client.health()
     except (WorkerGone, WorkerBusy, Unreachable):
-        health = {}
+        state.alarms_read_at = now
+        return
+    state.remote_control = remote_control(health)
+    state.capable = supports_gaps(health)
     _note_warm_vanished(state, health, now)
 
 

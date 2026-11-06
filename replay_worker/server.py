@@ -1409,6 +1409,8 @@ class ControlRunner:
         self.warm_missed: dict[str, int] = {}    # rounds that had to build a cache the identity was warm for
         self.warm_vanished: dict[str, int] = {}  # its file left the disk before any round read it (D3)
         self.warm_vanished_seen: dict[str, int] = {}  # the same losses, never cleared: /health's alarm for the site
+        self.warm_ids: set[str] = set()          # identities a fallback round of their own warmed (self.warm by id)
+        self.boot = uuid.uuid4().hex             # this process, in /health: the site compares counts within one
         self.warm_retry_at: dict[str, float] = {}  # no warm build for this identity before this time (start refused)
         self.warm_refused_since: dict[str, float] = {}   # when its start was first refused, until one is accepted
         self.warm_misses = 0                     # rounds released to a name that still had to build the cache
@@ -1445,6 +1447,11 @@ class ControlRunner:
         name = self.warm_names.get(job.warm_id)
         return name is not None and (self.settings.control_cache_dir / name).is_file()
 
+    def _spent(self, warm_id: str) -> int:
+        """The identity's fallback count: failures, misses and vanished files since it last worked (under the lock)."""
+        return (self.warm_failures.get(warm_id, 0) + self.warm_missed.get(warm_id, 0)
+                + self.warm_vanished.get(warm_id, 0))
+
     def _note_gone(self, warm_id: str, warm_key: str) -> None:
         """The identity's named cache file is no longer on this disk (under the lock). Before any round read it,
         it is a D3 loss: counted toward the fallback and logged loudly. After a probe read it, it is ordinary
@@ -1460,6 +1467,7 @@ class ControlRunner:
         self.warm_names.pop(warm_id, None)
         self.warm_confirmed.discard(warm_id)
         self.warm.discard(warm_key)
+        self.warm_ids.discard(warm_id)
 
     def _ask_warm(self, job: ControlJob) -> None:
         """One warm build per identity, ahead of every round (under the lock). Its task is the round's own less what
@@ -1536,7 +1544,8 @@ class ControlRunner:
                                        # every loss since this process started (never cleared): the site's alarm
                                        "vanished": dict(sorted(self.warm_vanished_seen.items())),
                                        "start_refused": sorted(i for i, t in self.warm_retry_at.items() if t > now),
-                                       "misses": self.warm_misses, "recent_seconds": list(self.warm_seconds)}
+                                       "misses": self.warm_misses, "recent_seconds": list(self.warm_seconds),
+                                       "boot": self.boot}
             return body
 
     def preempt(self) -> int:
@@ -1600,22 +1609,35 @@ class ControlRunner:
             if job.kind == "warm":
                 return job, False                    # its own run: it neither waits for a map nor holds one
             if self.uses_warm_builds():
-                if self._ready(job):
-                    if job.warm_id not in self.warm_confirmed:
+                # Every warm path is checked against the spent tries, the leased one too: a file that is on the
+                # disk but that no round can use (a download that keeps failing) must still end in the fallback.
+                if self._spent(job.warm_id) < WARM_BUILD_TRIES:
+                    if self._ready(job):
+                        if job.warm_id not in self.warm_confirmed:
+                            if job.warm_id in self.warm_probe:
+                                continue             # one probe at a time; the rest wait for its answer (risk 2)
+                            self.warm_probe[job.warm_id] = job.id
+                        job.released_name = self.warm_names[job.warm_id]
+                        return job, False
+                    if job.warm_id in self.warm_names:   # named, but the file is gone (pruned or evicted)
                         if job.warm_id in self.warm_probe:
-                            continue                 # one probe at a time; the rest wait for its answer (risk 2)
-                        self.warm_probe[job.warm_id] = job.id
-                    job.released_name = self.warm_names[job.warm_id]
+                            continue                 # its probe may have read the file before it went: wait for it
+                        self._note_gone(job.warm_id, job.warm_key)
+                    if self.warm_retry_at.get(job.warm_id, 0.0) > time.time():
+                        continue                     # rule 9: its start was refused
+                    if self._spent(job.warm_id) < WARM_BUILD_TRIES:
+                        self._ask_warm(job)          # the round waits for its identity's one warm build
+                        continue
+                # Warm builds keep failing for this identity: today's rule, one round warms the map alone. Warm
+                # here means this identity's own round warmed it (warm_ids), not the map's shared flag: another
+                # height mode of the same map and heights sets that flag without this identity's file.
+                if job.warm_id in self.warm_ids:
+                    if job.map in warming_maps:
+                        continue
                     return job, False
-                if job.warm_id in self.warm_names:   # named, but the file is gone (pruned or evicted)
-                    self._note_gone(job.warm_id, job.warm_key)
-                if self.warm_retry_at.get(job.warm_id, 0.0) > time.time():
-                    continue                         # rule 9: its start was refused
-                if (self.warm_failures.get(job.warm_id, 0) + self.warm_missed.get(job.warm_id, 0)
-                        + self.warm_vanished.get(job.warm_id, 0)) < WARM_BUILD_TRIES:
-                    self._ask_warm(job)              # the round waits for its identity's one warm build
-                    continue
-                # Warm builds keep failing for this identity: today's rule below, one round warms the map alone.
+                if job.map not in busy_maps:
+                    return job, True
+                continue
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
@@ -1731,6 +1753,18 @@ class ControlRunner:
                     self.warm_probe.pop(job.warm_id, None)
                 job.released_name, job.status = None, "queued"
                 self.pending.insert(0, job.id)
+            elif kind == "cache_input" and job.released_name:
+                # The run couldn't download its leased file (the task tried REQUIRED_FETCH_TRIES times) and never
+                # started its child: back to the front, the identity unconfirmed so the next round is one probe
+                # again, and a miss counted, so a download that keeps failing ends in the fallback.
+                if self.warm_names.get(job.warm_id) == job.released_name:
+                    self.warm_missed[job.warm_id] = self.warm_missed.get(job.warm_id, 0) + 1
+                    self.warm_confirmed.discard(job.warm_id)
+                    _log(f"warm identity {job.warm_id}: a round couldn't download its cache; counted as a miss")
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                self.pending.insert(0, job.id)
             else:
                 job.status, job.error, job.error_kind, job.result = status, error, kind, result
                 job.error_code = error_code
@@ -1790,8 +1824,10 @@ class ControlRunner:
                         and not any(control_cache.visibility_name(n) for n in unsent))
                     if (status == "done" or kind == "engine") and cached:
                         self.warm.add(job.warm_key)
+                        self.warm_ids.add(job.warm_id)
                     else:
                         self.warm.discard(job.warm_key)
+                        self.warm_ids.discard(job.warm_id)
                 finished = sorted((j for j in self.jobs.values() if j.finished and j.kind == "control"),
                                   key=lambda j: j.finished)
                 for old in finished[:-CONTROL_FINISHED_KEPT]:
