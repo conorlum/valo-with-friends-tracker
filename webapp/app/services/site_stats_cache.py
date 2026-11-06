@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.site_stats_cache import SITE_STATS_CACHE_ROW_ID, SiteStatsCache
 from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
+from app.services import site_health
 from app.services.eco_followup import ECO_NUM_BUCKETS
 from app.services.enemy_at_11_response import BUY_CATEGORIES, RESPONSE_METRICS
 from app.services.force_buy_stats import FORCE_BUY_METRICS
@@ -354,6 +355,7 @@ def get_site_stats_cache(db: Session) -> dict | None:
         return None
     if not _validate_blob(row.data):
         logger.warning("site_stats_cache: invalid blob")
+        site_health.count("cache_fallback", "site_stats:invalid", None)
         return None
     return row.data
 

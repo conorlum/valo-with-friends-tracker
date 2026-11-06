@@ -22,6 +22,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, contains_eager, joinedload
 
 from app.models import AccountGroup, AccountGroupMember, AccountGroupViewCache, ImpactScore, MatchPlayer, Player
+from app.services import site_health
 from app.services.circle import circle_ids
 from app.services.player_view_cache import (
     CachedPlayerViews,
@@ -236,6 +237,7 @@ def get_cached_group_views(
         row = db.get(AccountGroupViewCache, (group_id, cache_scope_key(scope, key)))
     except Exception:
         logger.exception("account_group_view_cache: read failed for group %s", group_id)
+        site_health.count("cache_fallback", "account_group_cache:read", group_id)
         return None
     if row is None or row.fingerprint != fingerprint:
         return None
@@ -278,6 +280,7 @@ def prewarm_group_caches(db: Session, player_ids: set[int]) -> None:
     except Exception:
         db.rollback()
         logger.exception("Group cache pre-warm: couldn't look up groups; next page visits will recompute")
+        site_health.count("cache_fallback", "account_group_cache:prewarm", None)
         return
     for group_id in sorted(group_ids):
         try:
@@ -296,3 +299,4 @@ def prewarm_group_caches(db: Session, player_ids: set[int]) -> None:
         except Exception:
             db.rollback()
             logger.exception("Group cache pre-warm failed for group %s; next page visit will recompute", group_id)
+            site_health.count("cache_fallback", "account_group_cache:prewarm", group_id)

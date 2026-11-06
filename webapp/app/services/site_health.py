@@ -320,6 +320,10 @@ def loop_ok(name, *, session_factory):
 CACHE_FALLBACK_KEYS = frozenset({
     "player_view_cache:invalid", "player_view_cache:decode", "player_view_cache:prewarm",
     "player_page:write_through",
+    "site_stats:invalid", "site_stats:write_through",
+    "viewer_site_stats:read", "viewer_site_stats:invalid",
+    "viewer_site_stats:write_through", "viewer_site_stats:prewarm",
+    "account_group_cache:read", "account_group_cache:prewarm",
 })
 
 KNOWN_KINDS = frozenset({

@@ -1,4 +1,4 @@
-"""Player-page cache failures remain best-effort and reach site health."""
+"""Page cache failures remain best-effort and reach site health."""
 
 import re
 from pathlib import Path
@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -16,6 +17,7 @@ from app.models import Player
 from app.models.site_events import SiteEvent, SiteEventResolution
 from app.routers import players
 from app.services import account_groups, player_view_cache as cache, site_health
+from app.services import site_stats, site_stats_cache, viewer_site_stats_cache
 from tests.test_player_view_cache import _sample_views
 
 
@@ -48,7 +50,7 @@ def _assert_counter(key, items):
     assert set(site_health._counters) == {("cache_fallback", key)}
     counter = site_health._counters[("cache_fallback", key)]
     assert counter["n"] == len(items)
-    assert sorted(counter["items"]) == sorted(items)
+    assert sorted(counter["items"]) == sorted(item for item in items if item is not None)
 
 
 def test_invalid_cache_row():
@@ -127,6 +129,109 @@ def test_demo_mode_counts_nothing(monkeypatch):
     assert not site_health._counters
 
 
+def test_invalid_site_stats_cache_row():
+    row = SimpleNamespace(version=site_stats_cache.SITE_STATS_CACHE_SCHEMA_VERSION, data={"bad": 1})
+    db = Mock()
+    db.query.return_value.filter_by.return_value.one_or_none.return_value = row
+    assert site_stats_cache.get_site_stats_cache(db) is None
+    _assert_counter("site_stats:invalid", [None])
+
+
+@pytest.mark.parametrize("viewer", [False, True])
+def test_stats_write_through_failure_keeps_live_result(monkeypatch, viewer):
+    data = {"live": True}
+    db = SimpleNamespace(rollback=Mock())
+    store = Mock(side_effect=RuntimeError("write failed"))
+    if viewer:
+        monkeypatch.setattr(site_stats, "viewer_group_player_ids", lambda *a: {17})
+        monkeypatch.setattr(site_stats, "get_viewer_site_stats_cache", lambda *a: None)
+        monkeypatch.setattr(site_stats, "compute_viewer_site_stats", lambda *a: data)
+        monkeypatch.setattr(site_stats, "store_viewer_site_stats_cache", store)
+        assert site_stats.get_viewer_site_stats(db, 17) is data
+        _assert_counter("viewer_site_stats:write_through", [17])
+    else:
+        monkeypatch.setattr(site_stats, "get_site_stats_cache", lambda *a: None)
+        monkeypatch.setattr(site_stats, "_compute_site_stats", lambda *a: data)
+        monkeypatch.setattr(site_stats, "store_site_stats_cache", store)
+        assert site_stats.get_site_stats(db) is data
+        _assert_counter("site_stats:write_through", [None])
+    store.assert_called_once()
+    db.rollback.assert_called_once_with()
+
+
+def test_viewer_stats_cache_read_failure():
+    db = SimpleNamespace(get=Mock(side_effect=SQLAlchemyError("read failed")), rollback=Mock())
+    assert viewer_site_stats_cache.get_viewer_site_stats_cache(db, 17, "expected") is None
+    db.rollback.assert_called_once_with()
+    _assert_counter("viewer_site_stats:read", [17])
+
+
+def test_invalid_viewer_stats_cache_row():
+    row = SimpleNamespace(
+        version=viewer_site_stats_cache.viewer_cache_version(), friend_set_hash="expected", data={"bad": 1},
+    )
+    db = SimpleNamespace(get=Mock(return_value=row))
+    assert viewer_site_stats_cache.get_viewer_site_stats_cache(db, 17, "expected") is None
+    _assert_counter("viewer_site_stats:invalid", [17])
+
+
+@pytest.mark.parametrize("miss", ["no_row", "version", "friend_set"])
+def test_normal_viewer_stats_cache_misses_count_nothing(miss):
+    row = SimpleNamespace(
+        version=-1 if miss == "version" else viewer_site_stats_cache.viewer_cache_version(),
+        friend_set_hash="stale" if miss == "friend_set" else "expected", data={"bad": 1},
+    )
+    db = SimpleNamespace(get=Mock(return_value=None if miss == "no_row" else row))
+    assert viewer_site_stats_cache.get_viewer_site_stats_cache(db, 17, "expected") is None
+    assert not site_health._counters
+
+
+def test_viewer_stats_prewarm_failure_continues(monkeypatch):
+    db = Mock()
+    db.query.return_value.distinct.return_value.all.return_value = [(17,), (23,)]
+    monkeypatch.setattr(site_stats, "own_account_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(site_stats, "viewer_group_player_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(site_stats, "compute_viewer_site_stats", lambda *a: {"live": True})
+    store = Mock(side_effect=[RuntimeError("prewarm failed"), None])
+    monkeypatch.setattr(site_stats, "store_viewer_site_stats_cache", store)
+    assert site_stats.prewarm_viewer_site_stats(db) == 1
+    assert store.call_count == 2
+    db.rollback.assert_called_once_with()
+    _assert_counter("viewer_site_stats:prewarm", [17])
+
+
+def test_account_group_cache_read_failure():
+    db = SimpleNamespace(get=Mock(side_effect=RuntimeError("read failed")), rollback=Mock())
+    assert account_groups.get_cached_group_views(db, 31, "recent", "expected", Player(id=17)) is None
+    db.rollback.assert_not_called()
+    _assert_counter("account_group_cache:read", [31])
+
+
+@pytest.mark.parametrize("lookup_failure", [True, False])
+def test_account_group_cache_prewarm_failure(lookup_failure):
+    db = Mock()
+    failure = RuntimeError("group lookup failed")
+    if lookup_failure:
+        db.query.side_effect = failure
+    else:
+        groups = SimpleNamespace(filter=Mock(return_value=[(31,)]))
+        db.query.side_effect = [groups, failure]
+    assert account_groups.prewarm_group_caches(db, {17}) is None
+    db.rollback.assert_called_once_with()
+    _assert_counter("account_group_cache:prewarm", [None if lookup_failure else 31])
+
+
+def test_stats_cache_fallback_in_demo_counts_nothing(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", True)
+    row = SimpleNamespace(
+        version=site_stats_cache.SITE_STATS_CACHE_SCHEMA_VERSION, data={"bad": 1},
+    )
+    db = Mock()
+    db.query.return_value.filter_by.return_value.one_or_none.return_value = row
+    assert site_stats_cache.get_site_stats_cache(db) is None
+    assert not site_health._counters
+
+
 def test_cache_fallback_literal_keys_are_registered():
     pattern = re.compile(r'\bcount\(\s*"cache_fallback"\s*,\s*"([^"]+)"')
     hits = [
@@ -139,4 +244,8 @@ def test_cache_fallback_literal_keys_are_registered():
     assert site_health.CACHE_FALLBACK_KEYS == frozenset({
         "player_view_cache:invalid", "player_view_cache:decode",
         "player_view_cache:prewarm", "player_page:write_through",
+        "site_stats:invalid", "site_stats:write_through",
+        "viewer_site_stats:read", "viewer_site_stats:invalid",
+        "viewer_site_stats:write_through", "viewer_site_stats:prewarm",
+        "account_group_cache:read", "account_group_cache:prewarm",
     })
