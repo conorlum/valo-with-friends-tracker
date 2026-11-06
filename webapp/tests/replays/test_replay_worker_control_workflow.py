@@ -478,6 +478,135 @@ def test_a_probe_whose_file_goes_while_it_settles_is_not_a_d3_loss(warm_remote):
     assert control.counts()["warm_builds"]["vanished"] == {}
 
 
+def hand_back(base, args):
+    """A control run answering cache_input, as tasks.control does when its leased file can't be downloaded."""
+    link = tasks.WorkerLink(base, args["job_id"], args["token"])
+    return link.post_result({"status": "failed", "error_kind": "cache_input", "error": "reset"})
+
+
+def test_a_confirmed_batch_failing_its_downloads_together_counts_one_miss(warm_remote):
+    # R4 (first review B1): one outage across rounds released together is one event, not a try each.
+    control, render, _, base = warm_remote
+    warm_and_confirm(control)
+    inner, failed = render.runner, set()
+
+    def first_attempts_fail(kind, args):
+        if kind == "control" and args.get("visibility") and args["job_id"] not in failed:
+            failed.add(args["job_id"])
+            return hand_back(base, args)
+        return inner(kind, args)
+
+    render.runner = first_attempts_fail
+    jobs = [control.submit(round_task(f"b{i}")) for i in range(4)]
+    assert all(j.status == "done" for j in wait_done(control, jobs))
+    state = control.counts()["warm_builds"]
+    assert state["confirmed"] == [jobs[0].warm_id] and state["missed"] == {}    # recovered, never fell back
+    assert warm_starts(render) == 1
+
+
+def test_a_late_success_from_before_a_withdrawal_does_not_reopen_parallel_rounds(warm_remote):
+    # R4 (second review B1): only the new cycle's probe confirms again.
+    control, render, _, base = warm_remote
+    warm_and_confirm(control)
+    inner, failed, seen = render.runner, set(), []
+
+    def a_fails_once(kind, args):
+        job = control.jobs.get(args["job_id"])
+        if kind == "control" and args.get("visibility") and job.key == "a" and job.id not in failed:
+            failed.add(job.id)
+            return hand_back(base, args)
+        return inner(kind, args)
+
+    def check_at_the_new_probe(job):
+        if job.key == "a" and job.id in failed:            # a settling: its failed attempt, then its new probe
+            seen.append(job.warm_id in control.warm_confirmed)
+    render.runner = a_fails_once
+    control._before_settle = check_at_the_new_probe
+    a = control.submit(round_task("a", mode="sleep:2"))
+    b = control.submit(round_task("b", mode="sleep:0.5"))  # released with a, answers "cache" during a's new probe
+    assert all(j.status == "done" for j in wait_done(control, [a, b]))
+    assert seen == [True, False]      # its first attempt (before its own withdrawal), then the new probe
+    assert control.counts()["warm_builds"]["confirmed"] == [a.warm_id]
+
+
+def test_a_confirmed_identity_whose_downloads_keep_failing_warms_alone_in_the_fallback(warm_remote):
+    # R4 (second review B2): a leased round's success never stands in for the fallback's own warming round.
+    control, render, _, base = warm_remote
+    warm_and_confirm(control)
+    inner = render.runner
+    render.runner = lambda kind, args: (hand_back(base, args) if kind == "control" and args.get("visibility")
+                                        else inner(kind, args))
+    jobs = [control.submit(round_task(f"k{i}", mode="sleep:1")) for i in range(3)]
+    assert peak_running(control, jobs) < len(jobs)
+    assert all(control.get(j.id).status == "done" for j in jobs)
+    assert control.counts()["warm_builds"]["missed"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
+
+
+def test_a_file_read_before_a_withdrawal_is_not_a_d3_loss_when_evicted(warm_remote):
+    # R4 (second review B4): "read" is its own record, kept when a failed download withdraws confirmation.
+    control, render, settings, base = warm_remote
+    warm_and_confirm(control)
+    inner, done = render.runner, []
+
+    def evict_then_fail_once(kind, args):
+        if kind == "control" and args.get("visibility") and not done:
+            done.append(1)
+            (settings.control_cache_dir / args["visibility"]).unlink(missing_ok=True)
+            return hand_back(base, args)
+        return inner(kind, args)
+
+    render.runner = evict_then_fail_once
+    job = control.submit(round_task("e"))
+    assert wait_done(control, [job])[0].status == "done"
+    state = control.counts()["warm_builds"]
+    assert state["vanished"] == {} and state["rewarmed"] == {job.warm_id: 1}
+
+
+def test_a_file_lost_after_the_tries_are_spent_still_raises_the_alarm(warm_remote):
+    # R4 (second review B5): the missing-file check runs whatever the spent tries say.
+    control, render, settings, base = warm_remote
+    inner, calls = render.runner, []
+
+    def fail_downloads_then_lose_the_file(kind, args):
+        if kind == "control" and args.get("visibility"):
+            calls.append(1)
+            if len(calls) == server.WARM_BUILD_TRIES:
+                (settings.control_cache_dir / args["visibility"]).unlink(missing_ok=True)
+            return hand_back(base, args)
+        return inner(kind, args)
+
+    render.runner = fail_downloads_then_lose_the_file
+    job = control.submit(round_task("s"))
+    assert wait_done(control, [job])[0].status == "done"
+    assert control.counts()["warm_builds"]["vanished"] == {job.warm_id: 1}
+
+
+def test_a_warm_build_does_not_hold_its_map_from_another_identitys_warming_round(warm_remote):
+    # R4 (first review B2): the fallback round of one height mode needn't wait out another mode's warm build.
+    control, render, _, base = warm_remote
+    inner, slow_done = render.runner, threading.Event()
+
+    def runner(kind, args):
+        job = control.jobs.get(args["job_id"])
+        if kind == "warm" and job.warm_id.endswith("|flat"):
+            time.sleep(4)                                  # a long warm build of the other identity
+            out = inner(kind, args)
+            slow_done.set()
+            return out
+        if kind == "warm":                                 # this identity's warm builds fail: it falls back
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "boom"})
+        return inner(kind, args)
+
+    render.runner = runner
+    other = control.submit({**round_task("flat"), "height_mode": "flat"})
+    time.sleep(0.3)                                        # its warm build is running
+    mine = control.submit(round_task("mine"))
+    assert wait_done(control, [mine], timeout=3)[0].status == "done"
+    assert not slow_done.is_set()
+    wait_done(control, [other])
+
+
 def losing_warm_files(settings, base):
     """A runner whose warm builds post their cache, then see it cleaned off the worker's disk before their answer is
     in: deterministic, unlike deleting after the run returns (the worker may have settled and leased by then)."""

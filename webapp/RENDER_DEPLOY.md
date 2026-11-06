@@ -385,6 +385,10 @@ warm only once a round of that identity warmed it, never from another height mod
 it, so the fallback's first round warms alone. A round leased a warm file fetches it up to 3 times; if it still
 can't, it never starts its child: the round goes back to the worker's queue, the identity is unconfirmed (the next
 round is a probe again) and a miss is counted, so a download that keeps failing also ends in the fallback.
+Confirmation runs in cycles: each withdrawal (a failed download, a miss, a lost file) starts a new one, and only the
+new cycle's probe confirms again and clears the counts. A round released in an older cycle neither confirms nor
+counts a second miss when it answers late, so one outage across a batch of parallel rounds costs one try. A running
+warm build holds no map: another identity's warming round of the same map doesn't wait for it.
 
 **Time limits.** Each limit counts from its attempt's start. Render's own task limit is 300 s above the worker's.
 
@@ -405,7 +409,9 @@ Each site backstop is more than twice its limit: the worst case is a queue wait 
   round read it; the worker logs `warm identity ... vanished`, and the site logs an error and lists the identity under
   "Warm cache files deleted before use" in the replay upload page's errors and their prompt; a site pass that sends
   nothing still reads it every `ALARM_POLL_S`, 300 s, and compares counts only within one worker process, by
-  `boot`), `start_refused` (identities whose warm-build start Render refused),
+  `boot`; the errors page keeps earlier worker processes' losses until the site restarts), `rewarmed` (per identity,
+  cumulative: a file evicted after a round read it, then warmed again; rising fast means the cache is thrashing, see
+  `control.cache` and the reserve), `start_refused` (identities whose warm-build start Render refused),
   `misses` (rounds that built a cache a warm build should have supplied) and `recent_seconds` (recent warm-build times).
 - `control.cache`: `bytes` (the cache's size on the disk), `maps` (bytes per map), `evictions` and `kept_pruned`
   (both counted since the worker last started), and `reserve` (the budget, `REPLAY_CONTROL_CACHE_RESERVE_BYTES`,
@@ -456,5 +462,6 @@ Read the worker's `/health` from its Render shell:
    - Also check: `workflow.by_kind.control.oldest_run_s` stays under 7200; the site's `map control dispatch:` log
      shows `busy` and `unreachable` at 0; `evictions` stays flat.
 6. **Done** when a recompute holds 30+ open control runs from the end of warm-up to the start of its last match's
-   tail, and the dashboard shows no runs cancelled by a limit. A worker restart re-probes every identity: each one
-   runs a single round before the rest start (accepted cost).
+   tail, and the dashboard shows no runs cancelled by a limit. A worker restart starts every identity over: a
+   warm build (fast when its file is still on the disk, but still one Workflow start each, within the pacer's
+   starts per minute), then one probe round before the rest start (accepted cost).

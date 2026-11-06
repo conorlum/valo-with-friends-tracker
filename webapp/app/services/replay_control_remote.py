@@ -261,8 +261,8 @@ class InFlight:
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
     inputs: object = None
-    stale_s: float = STALE_JOB_S         # its running backstop when sent; _collect uses the longer of this and the
-                                         # current health's, so a failed /health read on either side can't cut a
+    stale_s: float = STALE_JOB_S         # its running backstop: set when sent, raised (never lowered) by _collect to the
+                                         # current health's, so no failed /health read, before or after, can cut a
                                          # Workflow round short with the local limit
 
 
@@ -333,9 +333,11 @@ class State:
     feature_retry_after: dict = field(default_factory=dict)
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
     capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
-    warm_vanished: dict = field(default_factory=dict)   # the worker's last /health warm_builds.vanished (> 0)
+    warm_vanished: dict = field(default_factory=dict)   # D3 losses per identity, every worker process this site has seen (LIVE)
     alarms_read_at: float | None = None                 # when /health was last read for the D3 alarm
-    warm_boot: str | None = None                        # the worker process warm_vanished's counts came from
+    warm_boot: str | None = None                        # the worker process warm_vanished_boot came from
+    warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
+    warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -463,12 +465,15 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             f.running_since = None       # D8: waiting behind parses is not a failure; only unbroken running counts
             continue
         if status == "running":
+            # Only ever raised: once a health read has shown Workflows, a later failed read can't lower it again.
+            # (A round the worker requeued and restarted between two reads keeps its first running_since: rare,
+            # and STALE_RUN_S is above two full attempts.)
+            f.stale_s = max(f.stale_s, _job_stale_s(state.remote_control))
             if f.running_since is None:
                 f.running_since = now
-            elif now - f.running_since > max(f.stale_s, _job_stale_s(state.remote_control)):
+            elif now - f.running_since > f.stale_s:
                 del state.in_flight[key]
-                log.warning("map control %s ran over %ss on the worker; asked again", key,
-                            max(f.stale_s, _job_stale_s(state.remote_control)))
+                log.warning("map control %s ran over %ss on the worker; asked again", key, f.stale_s)
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -700,13 +705,22 @@ def _note_warm_vanished(state: State, health, now: float) -> None:
     if vanished is None:
         return
     boot = warm_boot(health)
-    # Counts compare only within one worker process: after a restart every count above zero is a new loss.
-    before = state.warm_vanished if boot == state.warm_boot else {}
+    # Counts compare only within one worker process: after a restart every count above zero is a new loss. The
+    # earlier processes' counts are kept, so a deploy (every merge restarts the worker) doesn't empty the errors
+    # page before anyone saw the row. This process's memory only: a site restart starts the list again.
+    if boot != state.warm_boot:
+        for identity, count in state.warm_vanished_boot.items():
+            state.warm_vanished_earlier[identity] = state.warm_vanished_earlier.get(identity, 0) + count
+        state.warm_vanished_boot = {}
     for identity, count in vanished.items():
-        if count > before.get(identity, 0):
+        if count > state.warm_vanished_boot.get(identity, 0):
             log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
                       "it is listed in the replay upload page's errors", identity, count)
-    state.warm_vanished, state.warm_boot = vanished, boot
+    state.warm_vanished_boot, state.warm_boot = vanished, boot
+    merged = dict(state.warm_vanished_earlier)
+    for identity, count in vanished.items():
+        merged[identity] = merged.get(identity, 0) + count
+    state.warm_vanished = merged
 
 
 def _poll_alarms(client, state: State, now: float) -> None:

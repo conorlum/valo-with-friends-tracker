@@ -586,8 +586,26 @@ def test_a_round_sent_during_a_failed_health_read_gets_the_workflow_limit_once_h
     # At the local cap of 8 a pass stops before its health read; the alarm poll reads it instead.
     remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)
     assert state.remote_control
+    remote.cycle(factory, worker, state, now=2 + remote.ALARM_POLL_S)      # collected under Workflows: raised
+    assert all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
+    # R4: a second outage flips remote_control back; the raised backstop stays.
+    worker.health_error = remote.Unreachable("blip again")
+    state.last_planned = None
+    remote.cycle(factory, worker, state, now=3 + remote.ALARM_POLL_S)
+    assert not state.remote_control
     counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
     assert counts["timed_out"] == 0 and not state.tries
+
+
+def test_a_worker_restart_keeps_the_earlier_losses_on_the_errors_page(factory, linked):
+    # R4: every merge restarts the worker; its losses stay listed (summed), not emptied by the new process.
+    worker, state = FakeWorker(), remote.State()
+    for now, boot, vanished in ((100, "one", {"Ascent:h:|": 1}), (200, "two", {"Ascent:h:|": 1}),
+                                (300, "three", {})):
+        worker.warm_builds = {"vanished": vanished, "boot": boot}
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=now)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 2),)
 
 
 def test_a_worker_restart_makes_an_equal_count_a_new_loss(factory, linked, caplog):
