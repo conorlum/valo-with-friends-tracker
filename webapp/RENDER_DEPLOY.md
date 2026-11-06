@@ -393,6 +393,8 @@ visibility file it read (`visibility`) and any cache file it couldn't read (`unr
 leased file confirms, a probe that read another file or couldn't read its file is a miss, and the worker deletes its
 own copy of an unreadable file so the next warm build rebuilds it.
 
+Every scheduler event, what it does to each of these counts and flags, and the test for it: `docs/superpowers/specs/2026-11-06-warm-build-states.md`.
+
 **Time limits.** Each limit counts from its attempt's start. Render's own task limit is 300 s above the worker's.
 
 | What | Worker setting (Workflow runs only) | Render task `timeout_seconds` | Site backstop (Workflow only) | Local, unchanged |

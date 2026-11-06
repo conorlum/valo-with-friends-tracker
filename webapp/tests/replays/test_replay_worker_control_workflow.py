@@ -774,6 +774,31 @@ def test_a_fallback_round_that_reads_the_tracked_file_marks_it_read(warm_remote)
     assert control.counts()["warm_builds"]["vanished"] == {}
 
 
+def test_a_fallback_round_finding_the_tracked_file_unreadable_raises_no_d3_alarm(warm_remote):
+    # State table, event 13: the worker deleted the file itself; its absence later is not a loss before use.
+    control, render, settings, base = warm_remote
+    name = f"Ascent.{'e' * 16}.npz"
+    inner, done = render.runner, []
+
+    def runner(kind, args):
+        if kind == "control" and args.get("visibility"):
+            return hand_back(base, args)                    # downloads keep failing: two misses, the fallback
+        if kind == "control" and not done:
+            done.append(1)                                  # the fallback round can't read the tracked file
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "ValueError: bad zip",
+                                     "unreadable": [name]})
+        return inner(kind, args)
+
+    render.runner = runner
+    first = control.submit(round_task("x"))
+    assert wait_done(control, [first])[0].status == "failed"
+    assert not (settings.control_cache_dir / name).exists() and first.warm_id not in control.warm_names
+    later = control.submit(round_task("y"))
+    assert wait_done(control, [later])[0].status == "done"
+    assert control.counts()["warm_builds"]["vanished"] == {}
+
+
 def test_the_admission_answer_names_the_workflow_runner(remote):
     import urllib.request
 
