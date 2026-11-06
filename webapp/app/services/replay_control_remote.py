@@ -103,16 +103,17 @@ MAX_MATCHES = settings.control_max_matches   # replays those rounds may come fro
 LOCAL_IN_FLIGHT = 8
 STALE_JOB_S = 1800
 STALE_RUN_S = 15000     # the same backstop while control runs on Workflows: > 2 x REPLAY_CONTROL_RUN_TIMEOUT_S
-
-
-def _job_stale_s(remote_control: bool) -> float:
-    return STALE_RUN_S if remote_control else STALE_JOB_S
+ALARM_POLL_S = 300      # a pass that sends nothing reads /health for the D3 alarm at most this often
 MAX_TRIES = 3
 BACKOFF_S = 300
 PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
 LOCK_ID = 7_346_120_117          # pg_try_advisory_xact_lock's key for the dispatcher
 TIMEOUT_S = 30
 GAPS_PROTOCOL = 3               # the worker's control.gaps_protocol this deploy can talk to (its /health)
+
+
+def _job_stale_s(remote_control: bool) -> float:
+    return STALE_RUN_S if remote_control else STALE_JOB_S
 
 
 def enabled() -> bool:
@@ -260,6 +261,8 @@ class InFlight:
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
     inputs: object = None
+    stale_s: float = STALE_JOB_S         # its running backstop, fixed when sent: a later failed /health read
+                                         # must not cut a Workflow round short with the local limit
 
 
 @dataclass(frozen=True)
@@ -322,6 +325,7 @@ class State:
     remote_control: bool = False        # the worker's last /health named runners.control "workflow"
     capable: bool = False               # the worker's last /health could be sent a gaps block (supports_gaps)
     warm_vanished: dict = field(default_factory=dict)   # the worker's last /health warm_builds.vanished (> 0)
+    alarms_read_at: float | None = None                 # when /health was last read for the D3 alarm
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -451,10 +455,10 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
         if status == "running":
             if f.running_since is None:
                 f.running_since = now
-            elif now - f.running_since > _job_stale_s(state.remote_control):
+            elif now - f.running_since > f.stale_s:
                 del state.in_flight[key]
                 log.warning("map control %s ran over %ss on the worker; asked again", key,
-                            _job_stale_s(state.remote_control))
+                            f.stale_s)
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -671,18 +675,46 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
-                                        expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin)
+                                        expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin,
+                                        stale_s=_job_stale_s(state.remote_control))
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
     return held_features or any(not room_for(state, p.replay_id) for _, p in todo)
 
 
+def _note_warm_vanished(state: State, health, now: float) -> None:
+    """D3's alarm: each new loss the worker's /health reports is logged as an error; LIVE then lists it."""
+    state.alarms_read_at = now
+    vanished = warm_vanished(health)
+    if vanished is None:
+        return
+    for identity, count in vanished.items():
+        if count > state.warm_vanished.get(identity, 0):
+            log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
+                      "it is listed in the replay upload page's errors", identity, count)
+    state.warm_vanished = vanished
+
+
+def _poll_alarms(client, state: State, now: float) -> None:
+    """A pass that sends nothing still reads /health for the alarm, at most every ALARM_POLL_S: a full dispatcher
+    must not hide a loss for the hours a warm build can take. Only the alarm is read from it."""
+    if state.alarms_read_at is not None and now - state.alarms_read_at < ALARM_POLL_S:
+        return
+    try:
+        health = client.health()
+    except (WorkerGone, WorkerBusy, Unreachable):
+        health = {}
+    _note_warm_vanished(state, health, now)
+
+
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
             held_maps: frozenset = frozenset()) -> None:
     if len(state.in_flight) >= in_flight_cap(state):     # the last health's cap; read afresh below
+        _poll_alarms(client, state, now)
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
+        _poll_alarms(client, state, now)
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
@@ -695,13 +727,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
-    vanished = warm_vanished(health)
-    if vanished is not None:
-        for identity, count in vanished.items():
-            if count > state.warm_vanished.get(identity, 0):
-                log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
-                          "it is listed in the replay upload page's errors", identity, count)
-        state.warm_vanished = vanished
+    _note_warm_vanished(state, health, now)
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,

@@ -541,6 +541,37 @@ def test_the_workers_vanished_warm_files_reach_the_live_snapshot_loudly(factory,
     assert remote.LIVE.warm_vanished == ()
 
 
+def test_a_full_dispatcher_still_reads_the_warm_alarm(factory, db, linked, monkeypatch):
+    # B6: at the in-flight cap _submit sends nothing, but a new loss still reaches LIVE within ALARM_POLL_S.
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1)
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"}
+    remote.cycle(factory, worker, state, now=0)
+    assert len(state.in_flight) == 1                       # at the cap from here on
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}}
+    remote.cycle(factory, worker, state, now=1)
+    assert remote.LIVE.warm_vanished == ()                 # read at 0: not again before ALARM_POLL_S
+    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)
+    assert remote.LIVE.warm_vanished == (("Ascent:h:|", 1),)
+
+
+def test_a_workflow_round_keeps_its_limit_through_a_failed_health_read(factory, db, linked, monkeypatch):
+    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)            # never at the cap: every pass reads /health
+    # B4: the backstop is fixed when the round is sent; a blip that flips remote_control can't cut it short.
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"}
+    remote.cycle(factory, worker, state, now=0)
+    assert state.in_flight and all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
+    remote.cycle(factory, worker, state, now=1)            # first seen running
+    worker.health_error = remote.Unreachable("blip")
+    state.last_planned = None                              # plan now, so this pass reads (and fails) /health
+    remote.cycle(factory, worker, state, now=2)
+    assert not state.remote_control
+    worker.health_error = None
+    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
+
+
 def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):
     from types import SimpleNamespace
     sentinel = object()

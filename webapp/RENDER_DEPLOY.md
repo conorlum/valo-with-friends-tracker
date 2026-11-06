@@ -377,8 +377,12 @@ off, set `"false"` there by PR. A dashboard change is reset by a Blueprint sync.
 local runs never warm. If Render refuses a warm build's start (for example the worker came up before the workflow
 registered `warm`), no try is spent: the identity's rounds wait and a new warm build is asked after
 `WARM_START_RETRY_S` (60 s). Refusals older than `WARM_START_REFUSED_MAX_S` (1800 s) count as failures. An identity
-with `WARM_BUILD_TRIES` (2) failures, misses or vanished files falls back to today's way: one warming round, then the
-rest.
+with `WARM_BUILD_TRIES` (2) failures, misses or vanished files, added together, falls back to today's way: one round
+warms the map alone, then the rest. The three counts cover trouble since the identity last worked: a probe round that
+reads its file clears them, and nothing else does (a build that posts a file doesn't). A file evicted after a probe
+read it is ordinary cache cleanup, not a vanished file: the identity just warms again. Losing a file also clears the
+map's legacy warm flag, so the fallback's first round always warms alone. A round leased a warm file fetches it up to
+3 times before it builds its own (a miss).
 
 **Time limits.** Each limit counts from its attempt's start. Render's own task limit is 300 s above the worker's.
 
@@ -394,10 +398,11 @@ Each site backstop is more than twice its limit: the worst case is a queue wait 
 
 - `control.warm_builds` (only while warm builds are on): `ready` (identities whose cache file is on the disk),
   `confirmed` (a probe round passed), `building` (a warm build is open), `failures` and `missed` (per identity; a
-  failed warm build, and a round that built the cache anyway), `vanished` (per identity; a warm build's cache file
-  left the disk before a round leased it; the worker logs `warm identity ... vanished`, and the site logs an error and
-  lists the identity under "Warm cache files deleted before use" in the replay upload page's errors and their
-  prompt), `start_refused` (identities whose warm-build start Render refused),
+  failed warm build, and a round that built the cache anyway, since the identity last worked), `vanished` (per
+  identity, every loss since the worker started, never cleared: a warm build's cache file left the disk before any
+  round read it; the worker logs `warm identity ... vanished`, and the site logs an error and lists the identity under
+  "Warm cache files deleted before use" in the replay upload page's errors and their prompt; a site pass that sends
+  nothing still reads it every `ALARM_POLL_S`, 300 s), `start_refused` (identities whose warm-build start Render refused),
   `misses` (rounds that built a cache a warm build should have supplied) and `recent_seconds` (recent warm-build times).
 - `control.cache`: `bytes` (the cache's size on the disk), `maps` (bytes per map), `evictions` and `kept_pruned`
   (both counted since the worker last started), and `reserve` (the budget, `REPLAY_CONTROL_CACHE_RESERVE_BYTES`,
