@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -n 2 -m 'not slow and not postgres and not browser and not corpus' --require-node --require-fixtures -ra --junitxml=offline-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -n 0 -m 'postgres and not corpus and not slow' --require-postgres -ra --junitxml=postgres-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m playwright install --with-deps chromium --only-shell
       - run: python -m pytest tests/browser -n 0 -m browser --require-browser --require-fixtures -ra --junitxml=browser-results.xml
       - uses: actions/upload-artifact@v4
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -n 2 -m 'slow and not postgres and not browser and not corpus' --require-node --require-fixtures -ra --junitxml=slow-results.xml
       - uses: actions/upload-artifact@v4
         if: always()

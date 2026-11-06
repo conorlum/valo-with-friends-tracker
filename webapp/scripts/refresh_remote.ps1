@@ -109,7 +109,7 @@ try {
     # packages differ from the frozen candidate's, which .venv's do.
     $python = ".\.venv313\Scripts\python.exe"
     if (-not (Test-Path $python)) {
-        throw ".venv313 not found -- create it with Python 3.13 and install requirements.txt first."
+        throw ".venv313 not found -- create it with Python 3.13, then: pip install -r requirements.txt -c constraints-scoring.txt"
     }
     & $python "scripts\refresh_tracked_players.py" --count $Count
     # Exit 2 means the run worked but did not reach -Count for some player

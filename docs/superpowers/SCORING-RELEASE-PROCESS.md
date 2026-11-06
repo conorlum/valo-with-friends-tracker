@@ -21,7 +21,10 @@ Non-negotiable. Each one is here because breaking it went wrong at least once.
 - **Every step asserts its database by name first** (`--expect-database`, `release_preflight.py`). The production
   and rehearsal URLs differ only in that name.
 - **Python 3.13 (`webapp/.venv313`) for everything that scores, freezes, verifies or ingests.** The frozen manifest
-  records the interpreter, and a 3.11 process fails its verification.
+  records the interpreter, and a 3.11 process fails its verification. It also records `pip freeze`, and ingestion
+  refuses any difference, so build `.venv313` with `pip install -r requirements.txt -c constraints-scoring.txt` and
+  never install `requirements-dev.txt` (pytest-xdist) into it. After a freeze that becomes `ACTIVE_MANIFEST`, run
+  `scripts/scoring_constraints.py write` and commit the result (`tests/test_scoring_constraints.py` fails until then).
 - **`build_impact_rows_for_match` with no kwargs is the LEGACY formula**, not what ships. Every script, harness and
   test that scores MUST pass an explicit configuration. The ledger's 2026-09-21 CORRECTION records a whole
   investigation that measured the wrong formula because of this.

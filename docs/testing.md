@@ -6,9 +6,13 @@ this document records its implementation and remaining limits.
 
 ## Required lanes
 
-Run from `webapp/`, using Python 3.13 and `requirements.txt`. On this Windows checkout,
-use `./.venv313/Scripts/python.exe` in place of `python`. Node is needed for JavaScript
-contracts; Chromium is needed only for browser tests.
+Run from `webapp/`, using Python 3.13 and `requirements-dev.txt` (the app's requirements plus
+pytest-xdist). On this Windows checkout, use `./.venv313-test/Scripts/python.exe` in place of
+`python`. Keep tests out of `.venv313`: that venv is the scoring environment, built with
+`pip install -r requirements.txt -c constraints-scoring.txt`, and ingestion refuses it once
+anything else (pytest-xdist included) is installed. Create the test venv once with
+`py -3.13 -m venv .venv313-test` and `.venv313-test/Scripts/python.exe -m pip install -r requirements-dev.txt -c constraints-scoring.txt`.
+Node is needed for JavaScript contracts; Chromium is needed only for browser tests.
 
 Set `DATABASE_URL=sqlite://` and leave `VALO_TEST_DATABASE_URL` unset for offline,
 browser, and slow lanes. In PowerShell use `$env:DATABASE_URL='sqlite://'` and
