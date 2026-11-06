@@ -193,6 +193,27 @@ def test_control_task_skips_a_cache_file_it_cannot_fetch(stub):
     assert link.result["status"] == "ok" and link.result["had"] == []
 
 
+def test_control_task_tries_its_leased_cache_again_before_building_its_own(stub, monkeypatch):
+    # B2: the leased file can't have been pruned, so a failed fetch is the network's: tried again.
+    monkeypatch.setattr(tasks, "REQUIRED_FETCH_WAIT_S", 0)
+    name = f"Ascent.{'e' * 16}.npz"
+    link = FakeLink({"task": json.dumps(round_task()).encode(), name: b"vis"})
+    real, fails = link.fetch, []
+
+    def flaky(n, dest):
+        if n == name and len(fails) < tasks.REQUIRED_FETCH_TRIES - 1:
+            fails.append(1)
+            raise OSError("connection reset")
+        return real(n, dest)
+
+    link.fetch = flaky
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [name], "visibility": name}, link)
+    assert link.result["had"] == [name] and link.result["visibility_source"] == "cache"
+    link2 = FakeLink({"task": json.dumps(round_task()).encode()})       # never fetchable: it builds its own
+    tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": [name], "visibility": name}, link2)
+    assert link2.result["status"] == "ok" and link2.result["had"] == []
+
+
 def test_control_task_passes_an_engine_failure_through(stub):
     link = FakeLink({"task": json.dumps(round_task(mode="engine")).encode()})
     tasks.control({"job_id": "j", "token": "t", "map": "Ascent", "files": []}, link)
@@ -340,6 +361,71 @@ def test_a_round_whose_file_left_the_disk_waits_for_a_new_warm_build_never_runs_
     assert wait_done(control, [job])[0].status == "done"
     assert warm_starts(render) == 2
     assert f"Ascent.{'e' * 16}.npz" in job.result["had"]      # it ran with the cache, not cold
+    assert control.counts()["warm_builds"]["vanished"] == {}   # B5: evicted after a probe read it, not a D3 loss
+
+
+def test_a_failed_warm_build_and_a_probe_miss_together_end_in_the_fallback(warm_remote):
+    # B3: a build that posts a file doesn't clear the earlier failure; only a probe that reads the file does.
+    control, render, _, base = warm_remote
+    inner, warms = render.runner, []
+
+    def fail_the_first_warm_build(kind, args):
+        if kind == "warm" and not warms:
+            warms.append(1)
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "boom"})
+        return inner(kind, args)
+
+    render.runner = fail_the_first_warm_build
+    probe = control.submit(round_task("p", source="built"))
+    other = control.submit(round_task("o"))
+    assert all(j.status == "done" for j in wait_done(control, [probe, other]))
+    assert warm_starts(render) == server.WARM_BUILD_TRIES          # no third warm build
+    state = control.counts()["warm_builds"]
+    assert state["failures"] == {probe.warm_id: 1} and state["missed"] == {probe.warm_id: 1}
+
+
+def test_a_probe_that_reads_the_file_clears_the_identitys_earlier_trouble(warm_remote):
+    control, render, _, base = warm_remote
+    inner, warms = render.runner, []
+
+    def fail_the_first_warm_build(kind, args):
+        if kind == "warm" and not warms:
+            warms.append(1)
+            link = tasks.WorkerLink(base, args["job_id"], args["token"])
+            return link.post_result({"status": "failed", "error_kind": "infra", "error": "boom"})
+        return inner(kind, args)
+
+    render.runner = fail_the_first_warm_build
+    warm_and_confirm(control)
+    assert control.counts()["warm_builds"]["failures"] == {}
+
+
+def test_after_its_files_are_lost_the_fallback_warms_the_map_alone(warm_remote):
+    # B1: the probe left the map's legacy warm flag set; losing the files must clear it, or every fallback round
+    # would start at once and each rebuild the cache.
+    control, render, settings, _ = warm_remote
+    warm_and_confirm(control)
+    for path in settings.control_cache_dir.glob("*.npz"):
+        path.unlink()                                  # evicted after the probe used it: no D3 loss
+    inner = render.runner
+
+    def lose_the_file(kind, args):
+        out = inner(kind, args)
+        if kind == "warm":
+            for path in settings.control_cache_dir.glob("*.npz"):
+                path.unlink()
+        return out
+
+    render.runner = lose_the_file
+    jobs = [control.submit(round_task(f"f{i}", mode="sleep:1")) for i in range(3)]
+    peak, end = 0, time.time() + 60
+    while time.time() < end and not all(control.get(j.id).status in ("done", "failed") for j in jobs):
+        peak = max(peak, sum(control.get(j.id).status == "running" for j in jobs))
+        time.sleep(0.02)
+    assert all(control.get(j.id).status == "done" for j in jobs)
+    assert peak < len(jobs)
+    assert control.counts()["warm_builds"]["vanished"] == {jobs[0].warm_id: server.WARM_BUILD_TRIES}
 
 
 def test_an_identity_whose_file_leaves_the_disk_after_every_warm_build_ends_in_the_fallback(warm_remote):
