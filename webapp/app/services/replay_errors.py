@@ -36,7 +36,6 @@ KINDS = (
     ("util_failed", "Critical Util failed"),
     ("heights_rejected", "Height builds rejected"),
     ("heights_out_of_tries", "Height rebuilds out of tries"),
-    ("warm_vanished", "Warm cache files deleted before use"),
     ("given_up", "Rounds given up on"),
     ("held", "Replays held for a re-parse"),
     ("upload_failed", "Uploads failed"),
@@ -53,16 +52,22 @@ KINDS = (
     ("loop_quiet", "Background loops gone quiet"),
     ("util_build_failed", "Critical Util build failed"),
     ("util_build_stale", "Critical Util build out of date"),
+    ("worker_overrun", "Worker jobs that ran over"),
+    ("worker_refused", "Worker refusals and failures"),
+    ("warm_vanished", "Warm cache files deleted before use"),
     ("unscored_match", "Matches with no Impact scores"),
     ("kill_impact_missing", "Replays missing per-kill Impact"),
     ("map_pool_note", "Map-pool patch notes not read"),
+    ("cache_fallback", "Cache fallbacks"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
 GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_page": "Pages",
           "loop_failed": "Background work", "loop_quiet": "Background work",
           "util_build_failed": "Background work", "util_build_stale": "Background work",
-          "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data"}   # later items add their kinds
+          "worker_overrun": "Background work", "worker_refused": "Background work", "warm_vanished": "Background work",
+          "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data", "cache_fallback": "Data"}
 EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+                         "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback",
                          "unscored_match", "kill_impact_missing", "map_pool_note"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events
@@ -365,7 +370,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                 map_name=map_name, figures={"map": map_name}, reproduce=_height_command(map_name)))
         for identity, count in live.warm_vanished:
             # D3: counted toward the identity's warm-build fallback; this row is the alarm that it happened.
-            rows["warm_vanished"].append(_row(
+            row = _row(
                 map_name=identity.split(":", 1)[0], figures={"identity": identity, "times": count},
                 error=(f"a warm build's visibility cache file left the replay worker's disk {count} time(s) before "
                        "a round leased it (the worker's cache cleanup: 3 newest files per map, or the cache "
@@ -373,7 +378,11 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                        "weigh: lease the file from the warm build until its rounds are done, or keep more files "
                        "per map (replay_worker/server.py _next and control_cache). Evidence: the worker's /health "
                        "(control.warm_builds.vanished; control.cache maps, evictions, kept_pruned, reserve) and its "
-                       "log lines 'warm identity ... vanished'.")))
+                       "log lines 'warm identity ... vanished'."))
+            row.update(_event_row(kind="warm_vanished", key=identity, count=count, first_seen=None,
+                                  last_seen=None, error=row["error"],
+                                  context={"times": count, "map": row["map"]}, reproduce=row["reproduce"]))
+            rows["warm_vanished"].append(row)
         older = 0
         for rid, n, work, fp in live.given_up:
             if (states.get((rid, n)) not in {f"{work}_missing", f"{work}_stale"}
@@ -532,8 +541,13 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         except Exception:
             log.warning("rollback after the site_events read failed", exc_info=True)
         stored = []
+    live_warm_identities = {identity for identity, _ in live.warm_vanished} if live is not None else set()
     for kind, key, count, first_seen, last_seen, error, context in stored:
-        if kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
+        if kind == "warm_vanished":
+            if key not in live_warm_identities:
+                rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
+                                             last_seen=last_seen, error=error, context=context))
+        elif kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
             rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
                                          last_seen=last_seen, error=error, context=context))
     if "loop_quiet" in rows:

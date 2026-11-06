@@ -31,8 +31,10 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
-        "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
+KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+        "worker_overrun", "worker_refused", "warm_vanished", "unscored_match", "kill_impact_missing", "map_pool_note",
+        "cache_fallback", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+        "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
 RECORD = {"match": "0a9ab548-718b-41ee-94ce-db25fd430bf8", "round": 1, "slot": 5,
@@ -89,9 +91,7 @@ def event_kind(errors, monkeypatch):
     monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items()
                                              if k not in {"page_error", "slow_page"}},
                                            "test_event": "Pages"})
-    monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event", "loop_failed", "loop_quiet", "util_build_failed",
-                                                          "util_build_stale", "unscored_match", "kill_impact_missing",
-                                                          "map_pool_note"}))
+    monkeypatch.setattr(errors, "EVENT_KINDS", (errors.EVENT_KINDS - {"page_error", "slow_page"}) | {"test_event"})
     return errors
 
 
@@ -116,6 +116,56 @@ def test_kind_groups_are_complete(errors):
     assert set(dict(errors.KINDS)) <= errors.GROUPS.keys()
     assert set(errors.GROUPS.values()) <= set(errors.GROUP_ORDER)
     assert errors.EVENT_KINDS <= set(dict(errors.KINDS))
+
+
+def test_every_recorded_kind_has_a_card_entry(errors):
+    from app.services import site_health
+
+    assert set(dict(errors.KINDS)) == site_health.KNOWN_KINDS
+
+
+@pytest.mark.parametrize(("key", "group"), [
+    ("cache_fallback", "Data"), ("worker_overrun", "Background work"),
+    ("worker_refused", "Background work"), ("slow_page", "Pages"),
+    ("warm_vanished", "Background work"),
+])
+def test_recorded_kind_groups(errors, key, group):
+    assert errors.GROUPS[key] == group
+
+
+@pytest.mark.parametrize("event_kind", ["worker_refused", "worker_overrun", "cache_fallback", "slow_page"])
+def test_recorded_worker_cache_and_page_events_reach_collect(errors, db, event_kind):
+    db.add(SiteEvent(kind=event_kind, key="synthetic", error="synthetic failure", context={"times": 2},
+                     count=2, first_seen=STAMP - timedelta(hours=1), last_seen=STAMP))
+    db.commit()
+    [row] = errors.collect(db)[event_kind]
+    assert row["kind"] == event_kind and row["key"] == "synthetic" and row["count"] == 2
+    assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
+    assert row["last_seen"] == STAMP.isoformat() and row["context"] == {"times": 2}
+
+
+@pytest.mark.parametrize("live_identity", [None, "Bind:h:|", "Ascent:h:|"])
+def test_stored_warm_cache_history_is_listed_unless_live_has_the_identity(errors, db, live_identity):
+    from app.services.replay_control_remote import Live
+
+    identity = "Ascent:h:|"
+    db.add(SiteEvent(kind="warm_vanished", key=identity, error="synthetic loss",
+                     context={"times": 3, "map": "Ascent"}, count=2,
+                     first_seen=STAMP - timedelta(hours=1), last_seen=STAMP))
+    db.commit()
+    live = None if live_identity is None else Live(100, (), (), (), (), warm_vanished=((live_identity, 4),))
+    rows = errors.collect(db, live)["warm_vanished"]
+    assert len(rows) == (2 if live_identity == "Bind:h:|" else 1)
+    if live_identity != identity:
+        [row] = [row for row in rows if row.get("key") == identity]
+        assert row["kind"] == "warm_vanished" and row["count"] == 2
+        assert row["context"] == {"times": 3, "map": "Ascent"}
+        assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
+        assert row["last_seen"] == STAMP.isoformat()
+    else:
+        assert rows[0]["figures"] == {"identity": identity, "times": 4}
+    result = errors.compute(db, live)
+    assert identity in errors.prompt(result, "warm_vanished")
 
 
 def _quiet_loop(name="control-dispatch", registered=None):
@@ -253,11 +303,12 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert older["context"] == {}
     assert [entry["key"] for entry in body["kinds"][1:]] == [
         key for key in KEYS if key not in {"page_error", "slow_page"}]
-    data = ("unscored_", "kill_impact_", "map_pool_")
+    background = ("loop_", "util_build_", "worker_", "warm_")
+    data = ("unscored_", "kill_impact_", "map_pool_", "cache_")
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
-               for entry in body["kinds"][1:] if not entry["key"].startswith(("loop_", "util_build_") + data))
+               for entry in body["kinds"][1:] if not entry["key"].startswith(background + data))
     assert all(entry["shape"] == "event" and entry["group"] == "Background work"
-               for entry in body["kinds"][1:] if entry["key"].startswith(("loop_", "util_build_")))
+               for entry in body["kinds"][1:] if entry["key"].startswith(background))
     assert all(entry["shape"] == "event" and entry["group"] == "Data"
                for entry in body["kinds"][1:] if entry["key"].startswith(data))
     assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
@@ -659,7 +710,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     assert all(rows for key, rows in collected.items()
                if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error", "slow_page",
                           "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match",
-                          "kill_impact_missing", "map_pool_note"}), \
+                          "kill_impact_missing", "map_pool_note", "worker_overrun", "worker_refused", "cache_fallback"}), \
         "stored kinds"
     for key, rows in collected.items():
         for row in rows:

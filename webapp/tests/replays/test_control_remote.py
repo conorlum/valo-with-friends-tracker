@@ -636,7 +636,7 @@ def test_live_snapshot_is_frozen_and_detached_after_submit(factory, linked, monk
         state.heights.out_of_tries = frozenset({"Ascent"})
         return set()
     monkeypatch.setattr(remote.replay_heights_remote, "step", heights)
-    def submit(*args):
+    def submit(*args, **kwargs):
         state.tries[remote.task_key(linked.id, 1, "plain")] = (remote.MAX_TRIES, 0)
         state.tries[remote.full_key(linked.id, 2, "full", "gp")] = (remote.MAX_TRIES, 0)
         state.tries[remote.gaps_key(linked.id, 3, "gaps", "gp")] = (remote.MAX_TRIES, 0)
@@ -765,6 +765,93 @@ def test_a_worker_restart_makes_an_equal_count_a_new_loss(factory, linked, caplo
         remote.cycle(factory, worker, state, now=200)
     assert sum("Ascent:h:|" in r.getMessage() for r in caplog.records) == 1
     assert state.warm_boot == "two"
+
+
+def test_warm_cache_history_survives_a_dispatcher_restart(factory, db, linked, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    worker, state = FakeWorker(), remote.State()
+    identity = "Ascent:h:|"
+    worker.warm_builds = {"vanished": {identity: 1}}
+    remote.cycle(factory, worker, state, now=100)
+    db.expire_all()
+    row = db.get(SiteEvent, ("warm_vanished", identity))
+    assert row is not None
+    assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}
+    assert row.error == next(r.getMessage() for r in caplog.records if identity in r.getMessage())
+    first_seen = row.first_seen
+
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=200)
+    db.expire_all()
+    assert row.count == 1 and row.context["times"] == 1
+
+    worker.warm_builds = {"vanished": {identity: 3}}
+    remote.cycle(factory, worker, state, now=300)
+    db.expire_all()
+    assert row.count == 2 and row.context["times"] == 3
+    assert row.first_seen == first_seen and row.last_seen >= row.first_seen
+
+
+@pytest.mark.parametrize("demo", [False, True])
+def test_warm_cache_history_skips_disabled_warm_builds_and_demo(factory, db, linked, monkeypatch, demo):
+    worker = FakeWorker()
+    if demo:
+        worker.warm_builds = {"vanished": {"Ascent:h:|": 1}}
+    monkeypatch.setattr(settings, "demo_mode", demo)
+    reads = []
+    from sqlalchemy.orm import Session
+    get = Session.get
+
+    def tracked_get(session, model, *args, **kwargs):
+        if model is SiteEvent:
+            reads.append(args)
+        return get(session, model, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", tracked_get)
+    remote.cycle(factory, worker, remote.State(), now=100)
+    assert not reads
+    assert db.query(SiteEvent).filter_by(kind="warm_vanished").count() == 0
+
+
+def test_warm_cache_history_read_failure_rolls_back_and_still_records(factory, db, linked, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    worker = FakeWorker()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}}
+    get, rollback = Session.get, Session.rollback
+    calls = []
+
+    def failed_get(session, model, *args, **kwargs):
+        if model is SiteEvent:
+            calls.append("read")
+            raise RuntimeError("synthetic read failure")
+        return get(session, model, *args, **kwargs)
+
+    def tracked_rollback(session):
+        calls.append("rollback")
+        return rollback(session)
+
+    monkeypatch.setattr(Session, "get", failed_get)
+    monkeypatch.setattr(Session, "rollback", tracked_rollback)
+    remote.cycle(factory, worker, remote.State(), now=100)
+    assert calls.count("read") == 1
+    assert calls[calls.index("read") + 1] == "rollback"
+    [row] = db.query(SiteEvent).filter_by(kind="warm_vanished").all()
+    assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}
+
+
+def test_warm_cache_history_counts_a_new_worker_process_and_not_a_site_restart(factory, db, linked, monkeypatch):
+    # A worker restart sets its counts back to 0, so an equal count from a new boot is a new loss; a site restart
+    # re-reads the same boot's count and must not record it twice.
+    monkeypatch.setattr(settings, "demo_mode", False)
+    identity = "Ascent:h:|"
+    worker = FakeWorker()
+    for boot in ("one", "one", "two"):
+        worker.warm_builds = {"vanished": {identity: 1}, "boot": boot}
+        remote.cycle(factory, worker, remote.State(), now=100)        # a fresh State each time: a site restart
+    db.expire_all()
+    row = db.get(SiteEvent, ("warm_vanished", identity))
+    assert row.count == 2 and row.context == {"times": 1, "map": "Ascent", "boot": "two"}
 
 
 def test_locked_out_cycle_leaves_live_snapshot_untouched(monkeypatch):

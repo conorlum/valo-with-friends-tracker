@@ -81,6 +81,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.models.match import Match
 from app.models.replay import Replay, ReplayRound
+from app.models.site_events import SiteEvent
 from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import map_feature_artifacts as fa
@@ -728,8 +729,29 @@ def _admitted_stale_s(answer: dict, state: State) -> float:
     return _job_stale_s(state.remote_control)
 
 
-def _note_warm_vanished(state: State, health, now: float) -> None:
-    """D3's alarm: each new loss the worker's /health reports is logged as an error; LIVE then lists it."""
+def _record_warm_vanished(session, identity: str, count: int, boot, message: str, session_factory) -> None:
+    """Site health keeps the history the worker's memory loses. A site restart re-logs every nonzero count of the
+    same worker process, so a row is recorded only for a new worker process (`boot`) or a count above the stored
+    one."""
+    if session_factory is None or settings.demo_mode:
+        return
+    try:
+        row = session.get(SiteEvent, ("warm_vanished", identity))
+    except Exception:
+        row = None
+        session.rollback()
+    stored = (row.context or {}) if row is not None else None
+    if stored is not None and stored.get("boot") == boot and count <= stored.get("times", 0):
+        return
+    context = {"times": count, "map": identity.split(":", 1)[0]}
+    if boot is not None:
+        context["boot"] = boot
+    site_health.record("warm_vanished", identity, message, context, session_factory=session_factory)
+
+
+def _note_warm_vanished(state: State, health, now: float, *, session=None, session_factory=None) -> None:
+    """D3's alarm: each new loss the worker's /health reports is logged as an error; LIVE then lists it, and Site
+    health stores it (`_record_warm_vanished`)."""
     state.alarms_read_at = now
     vanished = warm_vanished(health)
     if vanished is None:
@@ -744,8 +766,11 @@ def _note_warm_vanished(state: State, health, now: float) -> None:
         state.warm_vanished_boot = {}
     for identity, count in vanished.items():
         if count > state.warm_vanished_boot.get(identity, 0):
-            log.error("warm build cache for %s left the worker's disk before a round used it (%d times); "
-                      "it is listed in the replay upload page's errors", identity, count)
+            message = (f"warm build cache for {identity} left the worker's disk before a round used it "
+                       f"({count} times); it is listed in the replay upload page's errors")
+            log.error(message)
+            if session is not None:
+                _record_warm_vanished(session, identity, count, boot, message, session_factory)
     state.warm_vanished_boot, state.warm_boot = vanished, boot
     merged = dict(state.warm_vanished_earlier)
     for identity, count in vanished.items():
@@ -753,7 +778,7 @@ def _note_warm_vanished(state: State, health, now: float) -> None:
     state.warm_vanished = merged
 
 
-def _poll_alarms(client, state: State, now: float) -> None:
+def _poll_alarms(client, state: State, now: float, *, session=None, session_factory=None) -> None:
     """A pass that sends nothing still reads /health, at most every ALARM_POLL_S: a full dispatcher must not hide
     a D3 loss for the hours a warm build can take, nor keep a stale runner reading (a failed read left it local,
     and the local cap then stops every pass before the read). A failed read here changes nothing."""
@@ -766,16 +791,16 @@ def _poll_alarms(client, state: State, now: float) -> None:
         return
     state.remote_control = remote_control(health)
     state.capable = supports_gaps(health)
-    _note_warm_vanished(state, health, now)
+    _note_warm_vanished(state, health, now, session=session, session_factory=session_factory)
 
 
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
-            held_maps: frozenset = frozenset()) -> None:
+            held_maps: frozenset = frozenset(), *, session_factory) -> None:
     if len(state.in_flight) >= in_flight_cap(state):     # the last health's cap; read afresh below
-        _poll_alarms(client, state, now)
+        _poll_alarms(client, state, now, session=session, session_factory=session_factory)
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
-        _poll_alarms(client, state, now)
+        _poll_alarms(client, state, now, session=session, session_factory=session_factory)
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
@@ -788,7 +813,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
-    _note_warm_vanished(state, health, now)
+    _note_warm_vanished(state, health, now, session=session, session_factory=session_factory)
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
@@ -869,7 +894,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
         try:
             names = [name for name, in session.query(Replay.map_name).distinct()]
             replay_control.prepare_discovered(session_factory, names, state.feature_retry_after, now)
-            _submit(session, client, state, now, counts, held, held_maps)
+            _submit(session, client, state, now, counts, held, held_maps, session_factory=session_factory)
         finally:
             session.rollback()
             session.close()
