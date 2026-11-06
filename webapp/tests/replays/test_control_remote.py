@@ -111,7 +111,10 @@ class FakeWorker:
             raise remote.WorkerBusy("503")
         job_id = f"j{len(self.tasks)}"
         self.tasks[job_id] = task
-        return {"id": job_id, "status": "queued"}
+        answer = {"id": job_id, "status": "queued"}
+        if self.runners is not None:              # an older worker image (runners None) names no runner
+            answer["runner"] = self.runners.get("control", "local")
+        return answer
 
     def push_height(self, map_name, digest, asset):
         self.heights.add((map_name, digest))
@@ -572,50 +575,36 @@ def test_a_workflow_round_keeps_its_limit_through_a_failed_health_read(factory, 
     assert counts["timed_out"] == 0 and not state.tries
 
 
-def test_a_round_sent_during_a_failed_health_read_gets_the_workflow_limit_once_health_is_back(
+def test_a_rounds_backstop_comes_from_the_workers_admission_answer_whatever_health_says(
         factory, db, linked, monkeypatch):
-    # R3-B3: sent with the local backstop (that pass's /health failed), but the worker runs it on Workflows.
-    monkeypatch.setattr(remote, "IN_FLIGHT", 1000)
-    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
-    worker.runners = {"control": "workflow"}
-    worker.health_error = remote.Unreachable("blip")
-    remote.cycle(factory, worker, state, now=0)
-    assert state.in_flight and all(f.stale_s == remote.STALE_JOB_S for f in state.in_flight.values())
-    worker.health_error = None
-    remote.cycle(factory, worker, state, now=1)            # first seen running
-    # At the local cap of 8 a pass stops before its health read; the alarm poll reads it instead.
-    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)
-    assert state.remote_control
-    remote.cycle(factory, worker, state, now=2 + remote.ALARM_POLL_S)      # collected under Workflows: raised
-    assert all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
-    # R4: a second outage flips remote_control back; the raised backstop stays.
-    worker.health_error = remote.Unreachable("blip again")
-    state.last_planned = None
-    remote.cycle(factory, worker, state, now=3 + remote.ALARM_POLL_S)
-    assert not state.remote_control
-    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
-    assert counts["timed_out"] == 0 and not state.tries
-
-
-def test_a_queued_round_is_raised_by_a_workflow_health_read_before_it_runs(factory, db, linked, monkeypatch):
-    # R5-B4: health recovers while the round is still queued, then fails again before it starts running.
+    # The worker names the round's runner when it takes it; no /health read before or after changes the backstop
+    # (replaces R1-B4, R3-B3, R4 and R5-B4's health-based patches).
     monkeypatch.setattr(remote, "IN_FLIGHT", 1000)
     phase = {"status": "queued"}
     worker, state = FakeWorker(answer=lambda task: {"status": phase["status"]}), remote.State()
     worker.runners = {"control": "workflow"}
     worker.health_error = remote.Unreachable("blip")
-    remote.cycle(factory, worker, state, now=0)                     # sent with the local backstop
-    worker.health_error = None
-    remote.cycle(factory, worker, state, now=1 + remote.ALARM_POLL_S)   # health back, the round still queued
-    assert all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
-    worker.health_error = remote.Unreachable("blip again")
-    state.last_planned = None
-    remote.cycle(factory, worker, state, now=2 + remote.ALARM_POLL_S)
+    remote.cycle(factory, worker, state, now=0)                     # /health failed, the worker took it anyway
     assert not state.remote_control
+    assert state.in_flight and all(f.stale_s == remote.STALE_RUN_S for f in state.in_flight.values())
     phase["status"] = "running"
-    remote.cycle(factory, worker, state, now=3 + remote.ALARM_POLL_S)   # first seen running
-    counts = remote.cycle(factory, worker, state, now=4 + remote.ALARM_POLL_S + remote.STALE_JOB_S)
+    remote.cycle(factory, worker, state, now=1)                     # first seen running
+    for now in (2, 3 + remote.ALARM_POLL_S):                        # health stays down
+        state.last_planned = None
+        remote.cycle(factory, worker, state, now=now)
+    counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_JOB_S)
     assert counts["timed_out"] == 0 and not state.tries
+    counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_RUN_S)
+    assert counts["timed_out"] > 0                                  # its own Workflow limit still holds
+
+
+def test_a_worker_image_without_the_runner_field_gets_the_last_healths_backstop(factory, db, linked):
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()   # runners None
+    remote.cycle(factory, worker, state, now=0)
+    assert state.in_flight and all(f.stale_s == remote.STALE_JOB_S for f in state.in_flight.values())
+    assert remote._admitted_stale_s({"id": "j", "runner": "workflow"}, state) == remote.STALE_RUN_S
+    assert remote._admitted_stale_s({"id": "j", "runner": "local"}, remote.State(remote_control=True)) \
+        == remote.STALE_JOB_S
 
 
 def test_a_worker_restart_keeps_the_earlier_losses_on_the_errors_page(factory, linked):

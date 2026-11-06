@@ -402,6 +402,9 @@ own copy of an unreadable file so the next warm build rebuilds it.
 | height build | `REPLAY_HEIGHT_RUN_TIMEOUT_S` 10800 | 11100 | `STALE_BUILD_RUN_S` 22200 | 3600 s; site `STALE_BUILD_S` 7200 |
 
 Each site backstop is more than twice its limit: the worst case is a queue wait plus a full attempt, or two attempts.
+A control round's backstop is fixed when the worker takes it, from the `runner` its admission answer names
+(`workflow` or `local`), never from a `/health` read; only a worker image from before that field falls back to the
+last `/health` read.
 
 **What `/health` shows.**
 

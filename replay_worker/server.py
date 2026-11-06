@@ -2562,7 +2562,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 job = control.submit(task)
             except queue.Full:
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the control queue is full"})
-            return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
+            # Where this round runs, from the worker itself: the site fixes its running backstop from it, never
+            # from a /health read that may have failed around the submission.
+            return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status,
+                                                    "runner": "workflow" if control.remote(job) else "local"})
 
         def _features(self):
             if control is None or not control.enabled:

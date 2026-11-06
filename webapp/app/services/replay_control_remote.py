@@ -261,9 +261,8 @@ class InFlight:
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
     inputs: object = None
-    stale_s: float = STALE_JOB_S         # its running backstop: set when sent, raised (never lowered) by _collect to the
-                                         # current health's, so no failed /health read, before or after, can cut a
-                                         # Workflow round short with the local limit
+    stale_s: float = STALE_JOB_S         # its running backstop, fixed at admission from the worker's own `runner`
+                                         # (_admitted_stale_s): no /health read, failed or not, changes it
 
 
 @dataclass(frozen=True)
@@ -465,10 +464,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             f.running_since = None       # D8: waiting behind parses is not a failure; only unbroken running counts
             continue
         if status == "running":
-            # Only ever raised: once a health read has shown Workflows, a later failed read can't lower it again.
-            # (A round the worker requeued and restarted between two reads keeps its first running_since: rare,
-            # and STALE_RUN_S is above two full attempts.)
-            f.stale_s = max(f.stale_s, _job_stale_s(state.remote_control))
+            # f.stale_s is fixed from the worker's own admission answer (its runner). (A round the worker requeued
+            # and restarted between two polls keeps its first running_since: rare, and STALE_RUN_S is above two
+            # full attempts.)
             if f.running_since is None:
                 f.running_since = now
             elif now - f.running_since > f.stale_s:
@@ -691,19 +689,22 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
                                         expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin,
-                                        stale_s=_job_stale_s(state.remote_control))
+                                        stale_s=_admitted_stale_s(answer, state))
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
     return held_features or any(not room_for(state, p.replay_id) for _, p in todo)
 
 
-def _raise_backstops(state: State) -> None:
-    """A health read that shows Workflows raises every round in flight to the Workflow backstop, queued ones too
-    (R5-B4): a later failed read lowers remote_control, never a round's stale_s."""
-    if state.remote_control:
-        for f in state.in_flight.values():
-            f.stale_s = max(f.stale_s, STALE_RUN_S)
+def _admitted_stale_s(answer: dict, state: State) -> float:
+    """A round's running backstop, from where the worker says it runs it (`runner` in its admission answer). Only a
+    worker image from before that field falls back to the last /health read."""
+    runner = answer.get("runner") if isinstance(answer, dict) else None
+    if runner == "workflow":
+        return STALE_RUN_S
+    if runner == "local":
+        return STALE_JOB_S
+    return _job_stale_s(state.remote_control)
 
 
 def _note_warm_vanished(state: State, health, now: float) -> None:
@@ -743,7 +744,6 @@ def _poll_alarms(client, state: State, now: float) -> None:
         state.alarms_read_at = now
         return
     state.remote_control = remote_control(health)
-    _raise_backstops(state)
     state.capable = supports_gaps(health)
     _note_warm_vanished(state, health, now)
 
@@ -765,7 +765,6 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
-    _raise_backstops(state)
     capable = state.capable = supports_gaps(health)
     control_health = health.get('control') if isinstance(health, dict) else None
     _note_warm_vanished(state, health, now)

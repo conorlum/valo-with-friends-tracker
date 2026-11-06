@@ -774,6 +774,18 @@ def test_a_fallback_round_that_reads_the_tracked_file_marks_it_read(warm_remote)
     assert control.counts()["warm_builds"]["vanished"] == {}
 
 
+def test_the_admission_answer_names_the_workflow_runner(remote):
+    import urllib.request
+
+    control, _, _, base = remote
+    request = urllib.request.Request(f"{base}/control", data=json.dumps(round_task("adm")).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = json.loads(response.read())
+    assert body["runner"] == "workflow"
+    wait_done(control, [control.get(body["id"])])
+
+
 def test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed(warm_remote):
     control, render, _, _ = warm_remote
     warm_and_confirm(control)
