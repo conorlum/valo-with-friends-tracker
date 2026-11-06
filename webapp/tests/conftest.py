@@ -109,6 +109,16 @@ def _no_background_util_build(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_site_health():
+    """Site health keeps its queue, counters and open keys in module memory: start every test clean."""
+    try:
+        from app.services import site_health
+    except ImportError:
+        return
+    site_health._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_required_postgres_case(request, monkeypatch):
     """Legacy PG fixtures delete whole tables: give each required-lane case its own migrated database.
 

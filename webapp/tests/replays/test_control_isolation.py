@@ -74,6 +74,7 @@ def test_the_web_apps_control_views_import_nothing_heavy():
                  WEBAPP / "app" / "services" / "replay_gaps_store.py",
                  WEBAPP / "app" / "services" / "replay_match_states.py",
                  WEBAPP / "app" / "services" / "replay_errors.py",
+                 WEBAPP / "app" / "services" / "site_health.py",
                  WEBAPP / "scripts" / "refresh_replay_states.py",
                  WEBAPP / "app" / "services" / "replay_gaps_view.py",
                  WEBAPP / "app" / "services" / "gap_patterns.py",
