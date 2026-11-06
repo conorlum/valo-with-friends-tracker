@@ -217,10 +217,15 @@ class _Stop:
     def __init__(self, *answers):
         self.answers = list(answers)
         self.waited = []
+        self.set_ = False
 
     def wait(self, timeout=None):
         self.waited.append(timeout)
-        return self.answers.pop(0) if self.answers else True
+        self.set_ = self.answers.pop(0) if self.answers else True
+        return self.set_
+
+    def is_set(self):
+        return self.set_
 
 
 @pytest.fixture(autouse=True)

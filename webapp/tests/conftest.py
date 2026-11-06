@@ -110,7 +110,7 @@ def _no_background_util_build(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_site_health():
-    """Site health keeps its queue, counters and open keys in module memory: start every test clean."""
+    """Site health keeps its queue, counters and loop registry in module memory: start every test clean."""
     try:
         from app.services import site_health
     except ImportError:

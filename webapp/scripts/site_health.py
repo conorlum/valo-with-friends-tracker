@@ -1,7 +1,7 @@
 """List the stored site health rows (`site_events`), one line each: kind, key, count, first seen, last seen, the
 error's first line. Sorted by kind, then last seen (newest first).
 
-    python scripts/with_friends_db.py --read-only scripts/site_health.py list [--kind K]
+    python scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only scripts/site_health.py list [--kind K]
 
 On the friends DB, run it through with_friends_db.py as above. The script never writes: rows are cleared only
 by a PR that adds an entry to app/data/site_health_resolved.json.
@@ -42,6 +42,11 @@ def main(argv=None, session_factory=None) -> int:
     listing = sub.add_parser("list", help="print every stored row")
     listing.add_argument("--kind", help="only this kind")
     args = parser.parse_args(argv)
+    from app.config import settings
+
+    if settings.demo_mode:
+        print("site_health: the demo never records site health; refusing to read its database", file=sys.stderr)
+        return 2
     if session_factory is None:
         from app.db import SessionLocal as session_factory
     return list_rows(session_factory, args.kind)

@@ -33,6 +33,7 @@ def factory(engine):
 
 
 def keys(factory, kind="loop_failed"):
+    site_health.flush(session_factory=factory)       # what the loops queued so far
     with factory() as s:
         return {r.key: r for r in s.scalars(select(SiteEvent).where(SiteEvent.kind == kind))}
 
@@ -42,8 +43,9 @@ class Boom(Exception):
 
 
 def drive(factory, name, run, patch, outcomes):
-    """Run a loop; pass i raises Boom if outcomes[i] is False. Returns the open loop_failed keys seen at each
-    pass's start. The last pass sets the stop event."""
+    """Run a loop; pass i raises Boom if outcomes[i] is False, and is locked out (another process holds the
+    loop's lock) if it is "locked". Returns the open loop_failed keys seen at each pass's start. The last pass
+    sets the stop event."""
     stop = threading.Event()
     seen = []
     calls = iter(outcomes)
@@ -53,9 +55,10 @@ def drive(factory, name, run, patch, outcomes):
         ok = next(calls)
         if len(seen) == len(outcomes):
             stop.set()
-        if not ok:
+        if ok is False:
             raise Boom("synthetic failure")
-        return {"written": 0, "deleted": 0, "unchanged": 0, "seconds": 0.0, "errors": 0}
+        return {"written": 0, "deleted": 0, "unchanged": 0, "seconds": 0.0, "errors": 0,
+                "locked_out": 1 if ok == "locked" else 0}
 
     patch(fake)
     run(stop)
@@ -87,6 +90,14 @@ def test_failed_pass_recorded_and_next_clean_pass_resolves(which, factory, monke
     seen = drive(factory, name, run, patch, [False, True])
     assert seen[0] == set() and seen[1] == {name}
     assert keys(factory) == {}
+
+
+@pytest.mark.parametrize("which", ["control", "states"])
+def test_a_locked_out_pass_is_not_a_success(which, factory, monkeypatch):
+    # B14: another process held the lock, so this one made no pass: the failure it recorded stays.
+    name, run, patch = loops_under_test(monkeypatch, factory)[which]
+    drive(factory, name, run, patch, [False, "locked", "locked"])
+    assert set(keys(factory)) == {name}
 
 
 @pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
@@ -123,7 +134,8 @@ class BadStop:
 
 
 @pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
-def test_unregistered_when_an_exception_escapes(which, factory, monkeypatch):
+def test_a_loop_that_dies_on_its_own_stays_registered_and_goes_quiet(which, factory, monkeypatch):
+    # B15: nothing restarts a dead thread; keeping its registration is what puts it on the card as quiet.
     name, _, patch = loops_under_test(monkeypatch, factory)[which]
     patch(lambda *a, **k: {"written": 0, "deleted": 0, "unchanged": 0, "seconds": 0.0, "errors": 0})
     runs = {
@@ -134,7 +146,9 @@ def test_unregistered_when_an_exception_escapes(which, factory, monkeypatch):
     }
     with pytest.raises(RuntimeError):
         runs[which]()
-    assert name not in site_health.loops()
+    assert name in site_health.loops()
+    later = datetime.now(timezone.utc) + timedelta(days=2)
+    assert name in [item["name"] for item in site_health.quiet_loops(later)]
 
 
 # ------------------------------------------------------------------------------------------- inner keys

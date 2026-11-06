@@ -48,18 +48,19 @@ async def lifespan(_app: FastAPI):
     started_at = datetime.now(timezone.utc)
     mask_accel.register()
     stops = []
+    health_stop = None
     try:
         for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states):
             stops.append(service.start(SessionLocal))
-        if not settings.demo_mode:
-            # Rows the committed app/data/site_health_resolved.json names are cleared here, once each (never raises).
-            site_health.apply_resolved(session_factory=SessionLocal, started_at=started_at)
-            stops.append(site_health.start(SessionLocal, started_at=started_at))
+        # The flush thread writes what the site recorded and applies app/data/site_health_resolved.json (once
+        # each); startup itself never waits on the database for it. None in demo mode.
+        health_stop = site_health.start(SessionLocal, started_at=started_at)
         yield
     finally:
         for stop in stops:
             if stop is not None:
                 stop.set()
+        site_health.stop(health_stop)      # last: its final flush also takes what the loops recorded as they stopped
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)

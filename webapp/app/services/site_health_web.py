@@ -19,6 +19,30 @@ _clock = time.perf_counter
 log = logging.getLogger(__name__)
 
 
+SECRET_PARAMS = ("key", "token", "code", "secret")    # a path holding one of these is stored as its template
+
+
+def safe_path(scope) -> str:
+    """The request path to store: the route template when the route takes a secret in its path (the upload
+    guide's `{key}`), else the path itself."""
+    route = scope.get("route")
+    template = getattr(route, "path", None)
+    if template and any("{" + name + "}" in template or "{" + name + ":" in template for name in SECRET_PARAMS):
+        return template
+    return scope.get("path", "")
+
+
+def _join_slowest(stored, batch):
+    """A flush's slow-page context joined with the stored one: the slowest ever, the last 5, every load."""
+    stored, batch = stored or {}, batch or {}
+    a = {"s": stored.get("slowest_s", 0), "path": stored.get("slowest_path")}
+    b = {"s": batch.get("slowest_s", 0), "path": batch.get("slowest_path")}
+    best = b if b["s"] > a["s"] else a
+    return {"slowest_s": best["s"], "slowest_path": best["path"],
+            "last": (stored.get("last", []) + batch.get("last", []))[-5:],
+            "n": stored.get("n", 0) + batch.get("n", 0)}
+
+
 def _keep_slowest(old, item):
     old = old or {}
     slowest = {"s": old.get("slowest_s", 0), "path": old.get("slowest_path")}
@@ -73,8 +97,8 @@ class SlowPageMiddleware:
                 return
             seconds = finished - started
             if seconds > SLOW_PAGE_S:
-                site_health.count("slow_page", route.path, {"s": round(seconds, 2), "path": scope["path"]},
-                                  merge=_keep_slowest)
+                site_health.count("slow_page", route.path, {"s": round(seconds, 2), "path": safe_path(scope)},
+                                  merge=_keep_slowest, combine=_join_slowest)
         except Exception:
             log.exception("could not record a slow page load")
 
@@ -91,7 +115,7 @@ def page_error_handler(request: Request, exc: Exception) -> PlainTextResponse:
         context = {
             "type": type(exc).__name__,
             "traceback": "\n".join(lines[-TRACEBACK_LINES:]),
-            "path": request.url.path,
+            "path": safe_path(request.scope),
             "logged_in": bool("session" in request.scope and request.session.get("player_id")),
         }
         site_health.enqueue("page_error", _key(request), f"{type(exc).__name__}: {exc}", context)

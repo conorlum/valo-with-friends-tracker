@@ -423,13 +423,14 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     return gaps
 
 
-def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool:
-    """Stores a result's gaps through the guarded writer. False when they can't be trusted (another deploy's
-    rules or assets, or malformed): dropped, and for a gaps-only job worth asking again."""
+def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict):
+    """Stores a result's gaps through the guarded writer and returns the writer's outcome (STORED, or a skip when
+    the round's control moved on). None when they can't be trusted (another deploy's rules or assets, or
+    malformed): dropped, and for a gaps-only job worth asking again."""
     gaps = _trusted_gaps(result, f)
     if gaps is None:
         counts["gaps_dropped"] += 1
-        return False
+        return None
     try:
         outcome = gaps_store.store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps["rows"],
                                         moments=gaps["moments"], util=gaps["util"],
@@ -437,9 +438,9 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool
     except Exception:  # noqa: BLE001 - rows the model refuses: the gaps are dropped, control stays stored
         log.exception("timing gaps of replay %s round %s could not be stored", f.replay_id, f.round_number)
         counts["gaps_dropped"] += 1
-        return False
+        return None
     counts["gaps_stored" if outcome == gaps_store.STORED else "gaps_skipped"] += 1     # skipped: stale, no failure
-    return True
+    return outcome
 
 
 def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
@@ -449,11 +450,10 @@ def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
                                     for k in ("sight", "walk", "barrier", "cover", "specials", "scale", "height", "features"))
 
 
-def _resolve_worker(session_factory, f: InFlight) -> None:
+def _resolve_worker(f: InFlight) -> None:
     """A stored result clears the round's overrun and the map's worker refusals."""
-    site_health.resolve("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}",
-                        session_factory=session_factory)
-    site_health.resolve_prefix("worker_refused", f"{f.map_name}:", session_factory=session_factory)
+    site_health.resolve("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}")
+    site_health.resolve_prefix("worker_refused", f"{f.map_name}:")
 
 
 def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
@@ -484,7 +484,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 site_health.record("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}",
                                    f"map control {key} ran over {f.stale_s}s on the worker; asked again",
                                    {"map": f.map_name, "replay": f.replay_id, "round": f.round_number,
-                                    "limit_s": f.stale_s}, session_factory=session_factory)
+                                    "limit_s": f.stale_s})
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -509,10 +509,11 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             if f.gaps_only:
                 # No control row is read or written here: the writer checks the round's control inside its
                 # own locked transaction, and a result it finds stale is skipped, not failed.
-                if not _keep_gaps(session_factory, f, result, counts):
+                outcome = _keep_gaps(session_factory, f, result, counts)
+                if outcome is None:
                     state.failed(key, now)
-                else:
-                    _resolve_worker(session_factory, f)
+                elif outcome == gaps_store.STORED:     # a skip (the round moved on) proves nothing
+                    _resolve_worker(f)
                 continue
             row = {"status": "ok", "data": base64.b64decode(result["data"]),
                    "summary": base64.b64decode(result["summary"]), 'geometry': result.get('geometry')}
@@ -553,7 +554,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                               planned_inputs=f.inputs)
         counts["stored" if outcome == STORED else "skipped"] += 1
         if outcome == STORED and row["status"] == "ok":
-            _resolve_worker(session_factory, f)
+            _resolve_worker(f)
         if row["status"] == "failed" and outcome == STORED:
             counts["stored_failed"] += 1
         if f.expect_gaps and row["status"] == "ok":
@@ -733,7 +734,7 @@ def _record_warm_vanished(session, identity: str, count: int, boot, message: str
     """Site health keeps the history the worker's memory loses. A site restart re-logs every nonzero count of the
     same worker process, so a row is recorded only for a new worker process (`boot`) or a count above the stored
     one."""
-    if session_factory is None or settings.demo_mode:
+    if settings.demo_mode:
         return
     try:
         row = session.get(SiteEvent, ("warm_vanished", identity))
@@ -746,7 +747,7 @@ def _record_warm_vanished(session, identity: str, count: int, boot, message: str
     context = {"times": count, "map": identity.split(":", 1)[0]}
     if boot is not None:
         context["boot"] = boot
-    site_health.record("warm_vanished", identity, message, context, session_factory=session_factory)
+    site_health.record("warm_vanished", identity, message, context)
 
 
 def _note_warm_vanished(state: State, health, now: float, *, session=None, session_factory=None) -> None:
@@ -841,10 +842,10 @@ def _reparse(session_factory, worker, state: State, now: float, counts: dict) ->
         try:
             held = reparse_auto.step(session_factory, worker, state.reparse, len(state.in_flight), now, counts,
                                      gave_up=state.gave_up)
-            site_health.loop_ok("reparse_pass", session_factory=session_factory)
+            site_health.loop_ok("reparse_pass")
         except Exception as exc:  # noqa: BLE001 - never the dispatcher's failure
             log.exception("the automatic re-parse pass failed; map control goes on with nothing held back")
-            site_health.loop_failed("reparse_pass", exc, session_factory=session_factory)
+            site_health.loop_failed("reparse_pass", exc)
     if counts["reparse_finished"] or held != state.held:
         # A replacement just landed, or a replay was released: plan now, not after PLAN_IDLE_S.
         state.last_planned, state.last_found = None, True
@@ -882,11 +883,11 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             try:
                 held_maps = frozenset(replay_heights_remote.step(session_factory, rebuild, client, state.heights, now,
                                                                  counts))
-                site_health.loop_ok("height_rebuild_step", session_factory=session_factory)
+                site_health.loop_ok("height_rebuild_step")
             except Exception as exc:  # noqa: BLE001 - a height rebuild must never stop map control
                 log.exception("height rebuild step failed")
                 counts["heights_error"] = 1
-                site_health.loop_failed("height_rebuild_step", exc, session_factory=session_factory)
+                site_health.loop_failed("height_rebuild_step", exc)
             finally:
                 rebuild.rollback()
                 rebuild.close()
@@ -915,17 +916,19 @@ def run_forever(session_factory, client, stop: threading.Event, every_s: float =
                 counts = cycle(session_factory, client, state, worker=worker)
             except Exception as exc:  # noqa: BLE001 - the dispatcher must never take the site down
                 log.exception("map control dispatch failed")
-                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+                site_health.loop_failed(LOOP_NAME, exc)
                 site_health.beat(LOOP_NAME, "end")
                 continue
-            site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+            if not counts.get("locked_out"):      # another process held the lock: no pass was made here
+                site_health.loop_ok(LOOP_NAME)
             site_health.beat(LOOP_NAME, "end")
             did = {k: v for k, v in counts.items() if v}
             if did:
                 log.info("map control dispatch: %s; %d in flight",
                          ", ".join(f"{k} {v}" for k, v in sorted(did.items())), len(state.in_flight))
     finally:
-        site_health.unregister(LOOP_NAME)
+        if stop.is_set():      # a thread that died on its own stays registered, so it shows as quiet
+            site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:

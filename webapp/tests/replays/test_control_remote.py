@@ -351,7 +351,9 @@ def test_a_job_running_past_the_limit_counts_as_a_failure(factory, db, linked):
     assert counts["timed_out"] == remote.IN_FLIGHT and all(c == 1 for c, _ in state.tries.values())
 
 
-def worker_events(db):
+def worker_events(db, flush=True):
+    if flush:
+        site_health.flush_for(db)        # what the dispatcher queued (the flush thread's job on the site)
     db.expire_all()
     return {(e.kind, e.key): e for e in db.query(SiteEvent)}
 
@@ -397,7 +399,7 @@ def test_worker_health_refusals_are_batched_by_map_and_cleared_by_a_good_round(f
     key = ("worker_refused", f"{linked.map_name}:{type(error).__name__}")
     assert len(worker.refused) >= 3
     assert site_health._counters[key]["n"] == len(worker.refused)
-    assert not worker_events(db), "refusals wait for a flush"
+    assert not worker_events(db, flush=False), "refusals wait for a flush"
     site_health.flush(session_factory=factory)
     events = worker_events(db)
     assert set(events) == {key} and events[key].count == len(worker.refused)
@@ -437,7 +439,7 @@ def test_worker_health_counts_infrastructure_but_not_compat_failures(factory, db
 def test_worker_health_a_stored_engine_failure_resolves_nothing(factory, db, linked):
     all_control(db, linked, but={1})
     key = f"{linked.map_name}:{linked.id}:1"
-    site_health.record("worker_overrun", key, "overrun", session_factory=factory)
+    site_health.record("worker_overrun", key, "overrun")
     site_health.count("worker_refused", f"{linked.map_name}:infrastructure")
     site_health.flush(session_factory=factory)
     site_health.count("worker_refused", f"{linked.map_name}:Refused")
@@ -451,8 +453,9 @@ def test_worker_health_a_stored_engine_failure_resolves_nothing(factory, db, lin
                                      ("worker_refused", f"{linked.map_name}:Refused")}
 
 
-@pytest.mark.parametrize("kept", [True, False])
-def test_worker_health_gaps_only_resolves_overruns_only_when_gaps_are_kept(factory, db, linked, kept):
+@pytest.mark.parametrize("kept", ["stored", "dropped", "skipped"])
+def test_worker_health_gaps_only_resolves_overruns_only_when_gaps_are_stored(factory, db, linked, kept,
+                                                                            monkeypatch):
     all_control(db, linked)
     worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
     remote.cycle(factory, worker, state, now=0)
@@ -460,16 +463,20 @@ def test_worker_health_gaps_only_resolves_overruns_only_when_gaps_are_kept(facto
     for f in state.in_flight.values():
         key = f"{f.map_name}:{f.replay_id}:{f.round_number}"
         keys.add(("worker_overrun", key))
-        site_health.record("worker_overrun", key, "overrun", session_factory=factory)
-    if not kept:
+        site_health.record("worker_overrun", key, "overrun")
+    site_health.flush(session_factory=factory)
+    if kept == "dropped":
         def untrusted(task):
             job = worker.ok(task)
             job["result"].pop("gaps")
             return job
         worker.answer = untrusted
+    if kept == "skipped":
+        # B10: the round's control moved on while it ran; the writer skips, and that proves nothing
+        monkeypatch.setattr(remote.gaps_store, "store_gaps", lambda *a, **k: "skipped: control changed")
     counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["gaps_stored" if kept else "gaps_dropped"] == len(keys)
-    assert set(worker_events(db)) == (set() if kept else keys)
+    assert counts[{"stored": "gaps_stored", "dropped": "gaps_dropped", "skipped": "gaps_skipped"}[kept]] == len(keys)
+    assert set(worker_events(db)) == (set() if kept == "stored" else keys)
 
 
 def test_worker_health_demo_overruns_and_refusals_leave_no_events(factory, db, linked, monkeypatch):
@@ -773,7 +780,7 @@ def test_warm_cache_history_survives_a_dispatcher_restart(factory, db, linked, m
     identity = "Ascent:h:|"
     worker.warm_builds = {"vanished": {identity: 1}}
     remote.cycle(factory, worker, state, now=100)
-    db.expire_all()
+    worker_events(db)
     row = db.get(SiteEvent, ("warm_vanished", identity))
     assert row is not None
     assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}
@@ -782,12 +789,12 @@ def test_warm_cache_history_survives_a_dispatcher_restart(factory, db, linked, m
 
     state = remote.State()
     remote.cycle(factory, worker, state, now=200)
-    db.expire_all()
+    worker_events(db)
     assert row.count == 1 and row.context["times"] == 1
 
     worker.warm_builds = {"vanished": {identity: 3}}
     remote.cycle(factory, worker, state, now=300)
-    db.expire_all()
+    worker_events(db)
     assert row.count == 2 and row.context["times"] == 3
     assert row.first_seen == first_seen and row.last_seen >= row.first_seen
 
@@ -810,7 +817,7 @@ def test_warm_cache_history_skips_disabled_warm_builds_and_demo(factory, db, lin
     monkeypatch.setattr(Session, "get", tracked_get)
     remote.cycle(factory, worker, remote.State(), now=100)
     assert not reads
-    assert db.query(SiteEvent).filter_by(kind="warm_vanished").count() == 0
+    assert not [k for k in worker_events(db) if k[0] == "warm_vanished"]
 
 
 def test_warm_cache_history_read_failure_rolls_back_and_still_records(factory, db, linked, monkeypatch):
@@ -836,7 +843,8 @@ def test_warm_cache_history_read_failure_rolls_back_and_still_records(factory, d
     remote.cycle(factory, worker, remote.State(), now=100)
     assert calls.count("read") == 1
     assert calls[calls.index("read") + 1] == "rollback"
-    [row] = db.query(SiteEvent).filter_by(kind="warm_vanished").all()
+    monkeypatch.setattr(Session, "get", get)
+    [row] = [e for k, e in worker_events(db).items() if k[0] == "warm_vanished"]
     assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}
 
 
@@ -849,7 +857,7 @@ def test_warm_cache_history_counts_a_new_worker_process_and_not_a_site_restart(f
     for boot in ("one", "one", "two"):
         worker.warm_builds = {"vanished": {identity: 1}, "boot": boot}
         remote.cycle(factory, worker, remote.State(), now=100)        # a fresh State each time: a site restart
-    db.expire_all()
+        worker_events(db)                                             # the old process's final flush
     row = db.get(SiteEvent, ("warm_vanished", identity))
     assert row.count == 2 and row.context == {"times": 1, "map": "Ascent", "boot": "two"}
 

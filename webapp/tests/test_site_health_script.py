@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.db import Base
-from app.models.site_events import SiteEvent
+from app.models.site_events import SiteEvent, SiteEventResolution
 from app.services import site_health
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "site_health.py"
@@ -27,15 +27,16 @@ def load_script():
 def factory(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__])
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
     yield sessionmaker(bind=eng)
     eng.dispose()
 
 
 def test_list_prints_rows(factory, capsys):
-    site_health.record("slow_page", "/x", "took long\nsecond line", session_factory=factory, at=T0)
-    site_health.record("page_error", "/a", "boom\ntrace", session_factory=factory, at=T0)
-    site_health.record("page_error", "/b", "bang", session_factory=factory, at=T0 + timedelta(hours=1))
+    site_health.record("slow_page", "/x", "took long\nsecond line", at=T0)
+    site_health.record("page_error", "/a", "boom\ntrace", at=T0)
+    site_health.record("page_error", "/b", "bang", at=T0 + timedelta(hours=1))
+    site_health.flush(session_factory=factory)
     script = load_script()
     assert script.main(["list"], session_factory=factory) == 0
     lines = capsys.readouterr().out.strip().splitlines()
@@ -46,8 +47,9 @@ def test_list_prints_rows(factory, capsys):
 
 
 def test_list_kind_filter(factory, capsys):
-    site_health.record("slow_page", "/x", "e", session_factory=factory, at=T0)
-    site_health.record("page_error", "/a", "e", session_factory=factory, at=T0)
+    site_health.record("slow_page", "/x", "e", at=T0)
+    site_health.record("page_error", "/a", "e", at=T0)
+    site_health.flush(session_factory=factory)
     load_script().main(["list", "--kind", "slow_page"], session_factory=factory)
     lines = capsys.readouterr().out.strip().splitlines()
     assert len(lines) == 1 and lines[0].startswith("slow_page")
@@ -58,3 +60,16 @@ def test_no_other_command():
     for argv in (["clear"], ["resolve", "x"], []):
         with pytest.raises(SystemExit):
             script.main(argv)
+
+
+def test_refuses_the_demo(monkeypatch, capsys):
+    monkeypatch.setattr(settings, "demo_mode", True)
+
+    def never():
+        raise AssertionError("a session was opened")
+    assert load_script().main(["list"], session_factory=never) == 2
+    assert "demo" in capsys.readouterr().err
+
+
+def test_the_documented_command_names_the_friends_database():
+    assert "--expect-database valowithfriendsdb --read-only scripts/site_health.py list" in SCRIPT.read_text()

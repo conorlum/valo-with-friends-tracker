@@ -84,23 +84,24 @@ def run_forever(session_factory, stop: threading.Event, every_s: float = REFRESH
                 counts = refresh(db)
                 log.info("replay states: written %d, deleted %d, unchanged %d in %.2fs",
                          counts["written"], counts["deleted"], counts["unchanged"], counts["seconds"])
-                ok = True
+                ok = not counts.get("locked_out")      # another process held the lock: no pass was made here
             except Exception as exc:  # noqa: BLE001 - the refresher must never take the site down
                 log.exception("replay states refresh failed")
                 try:
                     db.rollback()
                 except Exception:  # noqa: BLE001
                     pass
-                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+                site_health.loop_failed(LOOP_NAME, exc)
             finally:
                 db.close()
             if ok:
-                site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+                site_health.loop_ok(LOOP_NAME)
             site_health.beat(LOOP_NAME, "end")
             if stop.wait(every_s):
                 return
     finally:
-        site_health.unregister(LOOP_NAME)
+        if stop.is_set():      # a thread that died on its own stays registered, so it shows as quiet
+            site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:

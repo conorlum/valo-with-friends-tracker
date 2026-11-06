@@ -142,7 +142,9 @@ def test_a_linked_replay_without_kill_impact_on_a_scored_match_shows(db):
     [item] = site_health_checks.kill_impact_null(db)
     assert item["key"] == str(shown.id)
     assert item["context"] == {"match_id": scored.id, "map_name": "Ascent"}
-    assert item["reproduce"] == f"python scripts/link_replays.py --uuid {shown.match_uuid} --refresh-impact"
+    assert item["reproduce"].startswith("read-only: SELECT") and str(shown.match_uuid) in item["reproduce"]
+    assert "--refresh-impact" in item["reproduce"] and "EVERY linked replay" in item["reproduce"]
+    assert f"--uuid {shown.match_uuid} --refresh-impact" not in item["reproduce"]
     assert item["first_seen"] == T
 
 

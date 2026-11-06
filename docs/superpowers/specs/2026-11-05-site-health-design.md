@@ -49,44 +49,60 @@ per applied entry of the resolved file (see Clearing). Both new, no foreign keys
 | `count` | occurrences since first seen or last cleared |
 | `first_seen`, `last_seen` | UTC |
 
-Primary key `(kind, key)`. A repeat updates the row: `count + 1`, new `error`/`context`, new `last_seen`.
+Primary key `(kind, key)`. A repeat updates the row: `count + 1`, and the latest `error`/`context`/`last_seen`
+when it is at least as recent as the stored one; a late write of an older occurrence (another process's flush)
+never moves `last_seen` back, and `first_seen` keeps the earliest (branch review B4).
 
 - The model goes in its own file, `app/models/site_events.py`. It must not touch any model file the scoring
   manifest digests: an edit to those makes ingest refuse to run.
-- **Recording never fails or stalls its caller.** `site_health.record(kind, key, error, context)` uses its own
-  short session (never the caller's, which may be mid-rollback), catches everything, and logs if the record itself
-  failed. One upsert statement. It is called only from background threads and the util child process.
-- **Request-path recording is queued, never written inline** (P2 finding 3): a page crash or the util parent's
-  exit-code record goes through `site_health.enqueue(...)`, an in-memory queue the flush thread writes. A request
-  never waits on the pool (`app/db.py`: 30 s pool timeout) or a database that is down.
+- **Recording never fails or stalls its caller, and nothing it watches waits on the database for it** (branch
+  review B3): `site_health.record` (alias `enqueue`), `resolve` and `resolve_prefix` put an entry on an in-memory
+  queue, in the order things happened; the flush thread writes them. Neither a request nor a background loop (the
+  dispatcher holds its advisory lock while it runs) waits on the pool (`app/db.py`: 30 s pool timeout) or a
+  database that is down. Only a process about to exit, the Critical Util child, writes at once
+  (`record_now`/`resolve_now`, its own short session). Everything catches and logs its own failure.
 - **Batched recording for hot paths** (cache fallbacks, slow pages): `site_health.count(kind, key, ...)` adds to an
   in-memory counter and keeps each key's last occurrence time; one daemon thread, `site-health-flush`, writes the
-  batch and the queue every 60 s as one statement each. `last_seen` is the occurrence time, not the flush time
-  (P2 finding 2). Every time is Python UTC (`datetime.now(timezone.utc)`), never the server's `now()`. The site
-  runs one uvicorn process (`render.yaml`), so per-process memory is the whole picture; the flush also runs at
-  shutdown.
+  batch and the queue every 60 s in one transaction, one write per key between two resolves of it. A counter's
+  context is joined with the stored one (slow pages keep the slowest ever and the last five; others the last five
+  items), not replaced (B5/B16). `last_seen` is the occurrence time, not the flush time (P2 finding 2). Every time is
+  Python UTC (`datetime.now(timezone.utc)`), never the server's `now()`. The site runs one uvicorn process
+  (`render.yaml`), so per-process memory is the whole picture; shutdown waits up to 5 s for the final flush (B3).
+  The cache pre-warms run in command-line processes with no flush thread, so they flush at their end (`flush_for`).
+- **One bad entry never blocks the rest** (B2): text is made storable first (a NUL, which PostgreSQL's text and
+  JSONB refuse, is written as `\x00`; keys are cut to the column's 300 characters). If the database still refuses
+  the batch, it is written again one entry per savepoint and the refused entries are dropped and logged; a lost
+  connection keeps everything for the next flush (the queue stays bounded at 1,000).
 - **Scrubbing**: before anything is stored, remove credentials from connection URLs
-  (`postgresql://user:pass@` becomes `postgresql://user:***@`) and the values of `password=`, `token=` and `key=`
-  pairs. The card is visible to anyone with the upload code, and the repo is public.
+  (`postgresql://user:pass@` becomes `postgresql://user:***@`), Bearer/Basic credentials, and the values of
+  password, passwd, pwd, secret, token, api key, access key, authorization and key, written `name=value`,
+  `name: value` or `"name": "value"` (a quoted value up to its closing quote, B8). The card is visible to anyone with the upload code, and the repo is public.
 - **Retention**: rows untouched for 30 days are deleted by the flush thread; at most 500 keys per kind (the oldest
   `last_seen` goes first).
 
 ### Clearing
 
-- **Automatic**: the same job succeeding for the same key calls `site_health.resolve(kind, key)`, which deletes
-  the row. A recompute aimed at the errors therefore clears them as it fixes them. Each kind below says what
+- **Automatic**: the same job succeeding for the same key calls `site_health.resolve(kind, key)`; the flush
+  deletes the row if it was last seen before the success (a failure after it stays). It is queued in order with the
+  records, and the delete always runs, so it also clears a row another process wrote (B2, B5, B6). A recompute aimed at the errors therefore clears them as it fixes them. Each kind below says what
   counts as success. A kind with no success signal is cleared only by the PR that fixes it. (Owner, 2026-11-06,
   D1: a PR naming the fixed errors is the manual way to remove them; a later success of the same thing clearing
   them on its own is welcome on top of that.)
 - **By PR, never from the site** (owner's decision, 2026-11-05): there is no Clear button and no clear endpoint.
   The PR that fixes a problem adds an entry to the committed file `app/data/site_health_resolved.json`:
-  `{"kind": ..., "key": ... or null for the whole kind, "fixed_by": "<PR or note>"}`. **Each entry is applied
-  once** (P2 finding 1: every merge redeploys, so re-applying at every start would wipe later recurrences): the
-  first process that starts with an entry stores it in `site_event_resolutions` (entry hash, `cutoff`, `applied`)
-  with `cutoff` = that process's start time plus a 10 min grace. Render starts the new process
+  `{"kind": ..., "key": ... or null for the whole kind, "fixed_by": "<PR or note>"}`. An entry's identity is its
+  kind, key and `fixed_by`: a merged entry is never edited, and a later fix of the same key is a new entry with its
+  own `fixed_by`, so it applies again (B1/B8). Only stored kinds can be named (`site_health.RECORDED_KINDS`; a
+  test checks the file). **Each entry is applied once** (P2 finding 1: every merge redeploys, so re-applying at
+  every start would wipe later recurrences): the first process that starts with an entry stores it in
+  `site_event_resolutions` (entry hash, `cutoff`, `applied`) with `cutoff` = that process's start time plus a
+  10 min grace. The flush thread does this, never startup itself (B7 of the first review). Render starts the new process
   before it stops the old one, so the old code can still record for a few minutes; the grace clears those too. The
   flush thread (and each later start) deletes the entry's matching rows with `last_seen < cutoff` once the clock
   passes `cutoff`, then marks it applied; later starts skip applied entries. A recurrence after the cutoff stays.
+  A due entry is claimed (`UPDATE ... WHERE applied_at IS NULL`) in the transaction that deletes, so two overlapping
+  processes never both apply it, and a late flush of an occurrence from before an applied entry's cutoff (the old
+  process) is dropped (B7). Once every entry is applied the thread stops checking.
   Entries are kept in the file (they cost nothing and record what fixed what); a test checks every entry names a
   known kind.
 - `scripts/site_health.py list` (through `with_friends_db.py --read-only`) prints the stored rows, to find the
@@ -106,7 +122,8 @@ Key: method plus the route template from `request.scope["route"].path` (`GET /pl
 filled-in URL, so one bug is one row. Context: exception type, the last 15 traceback lines, the path without its
 query string, whether the viewer was logged in (from `request.session`, no DB call). A crash after the response
 has started is not passed to the handler by Starlette, so it isn't recorded.
-HTTPException (404, 403) is not an error and is not recorded. Cleared only by a PR (a later success of the same
+A route that takes a secret in its path (the upload guide's `{key}`) stores its route template as the path,
+for crashes and slow pages alike (second review B1). HTTPException (404, 403) is not an error and is not recorded. Cleared only by a PR (a later success of the same
 route doesn't prove the bug is fixed for other inputs).
 
 ### 2b. Critical Util background build: `util_build_failed` (recorded), `util_build_stale` (checked)
@@ -177,9 +194,11 @@ viewer ids. Cleared only by a PR.
 
 ### 2h. Replay worker overruns and refusals: `worker_overrun`, `worker_refused` (recorded)
 
-In `replay_control_remote.py`: a job that ran over its stale limit (line 456, `_job_stale_s`) and a refused job
+In `replay_control_remote.py`: a job that ran over its running backstop (`f.stale_s`, fixed when the worker
+admitted the round, from its `runner`) and a refused job
 (line 666), plus infrastructure failures (511; not compat refusals, `:513`). `worker_overrun` key: map plus replay
-and round; a later stored result for that round resolves it, the gaps-only path (`:479-484`) included.
+and round; a later stored result for that round resolves it, the gaps-only path included when its gaps were
+stored (a skip because the round's control moved on proves nothing, B10).
 `worker_refused` key: map plus the refusal's reason class, with replay and round in context, so the deploy gap
 (the worker on the old protocol refusing every round) is a few rows, not 500; a later stored result on that map
 resolves it.
@@ -197,7 +216,7 @@ times and paths, how many slow requests since first seen. To keep new routes hon
 
 ### 2j. Warm cache files deleted before use: `warm_vanished` (from the replay-throughput branch)
 
-Built on `afk/2026-11-05-replay-throughput` (commit 482249a1, not merged yet): the worker counts each map
+Built on `afk/2026-11-05-replay-throughput` (merged as PR #187): the worker counts each map
 variant's visibility cache file that its cleanup deleted before any round used it; the dispatcher reads the
 counts from the worker's `/health` every cycle into `LIVE.warm_vanished` and logs an error when one rises; the
 card gains a `warm_vanished` kind. Any count above 0 is worth a warning (none is expected); after 2 losses, with
@@ -205,9 +224,11 @@ failures and misses, that map variant has fallen back to the slower way. Results
 
 What Site health adds: the worker's counts live in memory and reset when the worker restarts, so the card's
 evidence disappears with them. At the point where the dispatcher logs a rising count, it also calls
-`site_health.record("warm_vanished", identity, ..., {"times": n, "map": ...})`, so the history survives worker and
-site restarts. A site restart empties the in-memory counts and re-logs every nonzero one, so it records only when
-`n` is above the stored row's `times`. The card's existing live row stays; the stored row carries the history. No extra `/health` call:
+`site_health.record("warm_vanished", identity, ..., {"times": n, "map": ..., "boot": ...})`, so the history
+survives worker and site restarts. Counts compare only within one worker process (main's boot-aware alarm): a
+site restart empties the in-memory counts and re-logs every nonzero one, so it records only for a new worker
+`boot` or a count above the stored row's `times`. The card shows both rows: the live one (this worker process's
+count) and the stored history (B18). No extra `/health` call:
 the dispatcher already reads it. No success signal, so only the PR with the fix clears it (the fix: protect the file until
 its rounds are done, or keep more files per map). Off when `REPLAY_WARM_BUILDS` is off, and on the demo.
 

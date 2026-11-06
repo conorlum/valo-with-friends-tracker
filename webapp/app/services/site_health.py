@@ -2,10 +2,12 @@
 (kind, key)) so the upload page's card can read it. Imports nothing heavy, and opens a session only when the
 caller hands in a session factory: there is no default database.
 
-Three ways in: `record` (one upsert now), `enqueue` (a queued entry, written by the next flush) and `count`
-(an in-memory counter, written by the next flush). `flush` also prunes (30 days, 500 keys per kind). Nothing
-here raises into its caller, and nothing writes in demo mode. The loop registry (`register`/`beat`/`loops`) is
-in memory only."""
+The jobs being watched never wait on the database for it: `record` (alias `enqueue`) and `resolve` /
+`resolve_prefix` queue in the order they happen, `count` adds to an in-memory counter, and the flush thread
+writes them every FLUSH_S in one transaction (a resolve deletes rows last seen before it), then prunes (30 days,
+500 keys per kind). Only a process about to exit (the Critical Util child) writes at once (`record_now`,
+`resolve_now`). Nothing here raises into its caller, and nothing writes in demo mode. The loop registry
+(`register`/`beat`/`loops`) is in memory only."""
 
 import copy
 import hashlib
@@ -18,7 +20,8 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects import postgresql, sqlite
 
 from app.config import settings
@@ -89,16 +92,21 @@ PAGE_ROUTES = {
 }
 
 _lock = threading.RLock()
-_queue: deque = deque()
+_queue: deque = deque()     # records and resolves, in the order they happened
 _dropped = 0
 _counters: dict = {}
-_open: set = set()
-_loaded_kinds: set = set()
 _loops: dict = {}
 _threads: dict = {}
+_resolved = {"inserted": False, "done": False}
 
 _URL_PASSWORD = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^:/@\s]*:)[^@\s]*@")
-_SECRET_VALUE = re.compile(r"(password|token|key)=([\"']?)[^&\s;\"']*", re.IGNORECASE)
+# name, an optional closing quote (JSON/dict keys), = or :, then a quoted value (to its closing quote) or a bare one
+_SECRET_VALUE = re.compile(
+    r"""(?P<head>\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|key)\b["']?\s*[=:]\s*)"""
+    r"""(?:(?P<q>["'])(?:\\.|(?!(?P=q)).)*(?P=q)|[^&\s;,"'}\]]*)""",
+    re.IGNORECASE)
+_BEARER = re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+KEY_MAX = 300
 
 
 def _now():
@@ -109,159 +117,175 @@ def _demo():
     return bool(settings.demo_mode)
 
 
+def _storable(text):
+    """Text PostgreSQL will take: no NUL (text and JSONB refuse it) and nothing UTF-8 can't encode."""
+    return text.replace("\x00", "\\x00").encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def scrub(text):
-    """Hide connection-URL passwords and the values of password=, token= and key=."""
+    """Hide connection-URL passwords, Bearer/Basic credentials and the values of password, secret, token, key
+    and the like (`name=value`, `name: value`, `"name": "value"`); make the text storable."""
     text = _URL_PASSWORD.sub(r"\1***@", text)
-    return _SECRET_VALUE.sub(lambda m: f"{m.group(1)}={m.group(2)}***", text)
+    text = _BEARER.sub(lambda m: f"{m.group(1)} ***", text)
+    text = _SECRET_VALUE.sub(lambda m: m.group("head") + (f"{m.group('q')}***{m.group('q')}" if m.group("q") else "***"),
+                             text)
+    return _storable(text)
 
 
 def _scrub_value(value):
     if isinstance(value, str):
         return scrub(value)
     if isinstance(value, dict):
-        return {k: _scrub_value(v) for k, v in value.items()}
+        return {_storable(str(k)): _scrub_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_scrub_value(v) for v in value]
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return scrub(str(value))     # anything JSON can't hold is stored as its (scrubbed) text
 
 
 def _clean_error(error):
     return scrub(str(error if error is not None else ""))[:ERROR_MAX]
 
 
-def _upsert(session, kind, key, *, error, context, n, first, last, set_error=True, set_context=True):
+def _clean_key(key):
+    return _storable(str(key))[:KEY_MAX]
+
+
+def _upsert(session, kind, key, *, error, context, n, first, last, set_error=True, set_context=True,
+            context_always=False):
+    """Insert or add to a row. A late write of an older occurrence never moves last_seen back or replaces
+    newer evidence; first_seen keeps the earliest."""
     table = SiteEvent.__table__
     dialect = session.get_bind().dialect.name
     insert = (postgresql if dialect == "postgresql" else sqlite).insert
     values = dict(kind=kind, key=key, error=error if error is not None else "", context=context,
                   count=n, first_seen=first, last_seen=last)
     stmt = insert(table).values(**values)
-    update = {"count": table.c.count + n, "last_seen": stmt.excluded.last_seen}
+    ex = stmt.excluded
+    newer = ex.last_seen >= table.c.last_seen
+    update = {"count": table.c.count + n,
+              "first_seen": case((ex.first_seen < table.c.first_seen, ex.first_seen), else_=table.c.first_seen),
+              "last_seen": case((newer, ex.last_seen), else_=table.c.last_seen)}
     if set_error:
-        update["error"] = stmt.excluded.error
+        update["error"] = case((newer, ex.error), else_=table.c.error)
     if set_context:
-        update["context"] = stmt.excluded.context
+        update["context"] = ex.context if context_always else case((newer, ex.context), else_=table.c.context)
     session.execute(stmt.on_conflict_do_update(index_elements=["kind", "key"], set_=update))
 
 
-def record(kind, key, error, context=None, *, session_factory, at=None):
-    """Store one occurrence now, in its own session. Never raises."""
+def _push(entry):
+    global _dropped
+    with _lock:
+        _queue.append(entry)
+        while len(_queue) > QUEUE_MAX:
+            _queue.popleft()
+            _dropped += 1
+
+
+def record(kind, key, error, context=None, *, at=None):
+    """Queue one occurrence for the next flush. Never touches the database, never raises."""
+    if _demo():
+        return
+    try:
+        _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": error, "context": context,
+               "at": at or _now()})
+    except Exception:
+        logger.exception("site health: could not queue %s %s", kind, key)
+
+
+enqueue = record
+
+
+def count(kind, key, context_item=None, *, merge=None, combine=None, at=None):
+    """Count one occurrence in memory. The stored context is the last 5 items, or `merge(old, item)` folded
+    over the items; `combine(stored, batch)` joins a flush's context with the stored one."""
+    if _demo():
+        return
+    try:
+        when = at or _now()
+        key = _clean_key(key)
+        with _lock:
+            c = _counters.get((kind, key))
+            if c is None:
+                c = _counters[(kind, key)] = {"n": 0, "first": when, "at": when, "items": [], "context": None,
+                                              "merge": None, "combine": None}
+            c["n"] += 1
+            c["first"] = min(c["first"], when)
+            if when >= c["at"]:
+                c["at"] = when
+            if merge is not None:
+                c["merge"], c["combine"] = merge, combine
+                c["context"] = merge(c["context"], context_item)
+            elif context_item is not None:
+                c["items"] = (c["items"] + [context_item])[-LAST_ITEMS:]
+    except Exception:
+        logger.exception("site health: could not count %s %s", kind, key)
+
+
+def _match(kind, key, prefix):
+    return lambda k, ky: k == kind and (ky.startswith(key) if prefix else ky == key)
+
+
+def _queue_resolve(kind, key, prefix, at):
+    if _demo():
+        return
+    try:
+        at = at or _now()
+        match = _match(kind, _clean_key(key), prefix)
+        with _lock:
+            for k in [k for k in _counters if match(*k)]:   # counted before the success: superseded by it
+                del _counters[k]
+        _push({"op": "resolve", "kind": kind, "key": _clean_key(key), "prefix": prefix, "at": at})
+    except Exception:
+        logger.exception("site health: could not queue a resolve of %s %s", kind, key)
+
+
+def resolve(kind, key, *, at=None):
+    """The job behind `key` succeeded: the next flush deletes its row (if last seen before now). Queued in order
+    with the records, so a failure that happened later stays, and one that happened earlier goes."""
+    _queue_resolve(kind, key, False, at)
+
+
+def resolve_prefix(kind, prefix, *, at=None):
+    """`resolve` for every key of the kind that starts with `prefix`."""
+    _queue_resolve(kind, prefix, True, at)
+
+
+def _delete_stmt(kind, key, prefix, at):
+    stmt = delete(SiteEvent).where(SiteEvent.kind == kind, SiteEvent.last_seen <= at)
+    return stmt.where(SiteEvent.key.startswith(key, autoescape=True) if prefix else SiteEvent.key == key)
+
+
+def record_now(kind, key, error, context=None, *, session_factory, at=None):
+    """Store one occurrence at once, for a process about to exit (the Critical Util child). Never raises."""
     if _demo():
         return
     try:
         when = at or _now()
         with session_factory() as session:
-            _upsert(session, kind, key, error=_clean_error(error), context=_scrub_value(context),
+            _upsert(session, kind, _clean_key(key), error=_clean_error(error), context=_scrub_value(context),
                     n=1, first=when, last=when)
             session.commit()
-        with _lock:
-            _open.add((kind, key))
     except Exception:
         logger.exception("site health: could not record %s %s", kind, key)
 
 
-def enqueue(kind, key, error, context=None, *, at=None):
-    """Queue one occurrence for the next flush. Never touches the database."""
-    global _dropped
+def resolve_now(kind, key, *, session_factory, at=None):
+    """`resolve` at once, for a process about to exit. Never raises."""
     if _demo():
         return
-    with _lock:
-        _queue.append({"kind": kind, "key": key, "error": error, "context": context, "at": at or _now()})
-        while len(_queue) > QUEUE_MAX:
-            _queue.popleft()
-            _dropped += 1
-        _open.add((kind, key))
-
-
-def count(kind, key, context_item=None, *, merge=None, at=None):
-    """Count one occurrence in memory. The stored context is the last 5 items, or `merge(old, item)`."""
-    if _demo():
-        return
-    when = at or _now()
-    with _lock:
-        c = _counters.get((kind, key))
-        if c is None:
-            c = _counters[(kind, key)] = {"n": 0, "first": when, "at": when, "items": [], "context": None, "merge": None}
-        c["n"] += 1
-        if when >= c["at"]:
-            c["at"] = when
-        if merge is not None:
-            c["merge"] = True
-            c["context"] = merge(c["context"], context_item)
-        elif context_item is not None:
-            c["items"] = (c["items"] + [context_item])[-LAST_ITEMS:]
-        _open.add((kind, key))
-
-
-def _counter_context(c):
-    return c["context"] if c["merge"] else (list(c["items"]) or None)
+    try:
+        with session_factory() as session:
+            session.execute(_delete_stmt(kind, _clean_key(key), False, at or _now()))
+            session.commit()
+    except Exception:
+        logger.exception("site health: could not resolve %s %s", kind, key)
 
 
 def _delete_keys(session, kind, keys):
     for i in range(0, len(keys), 200):
         session.execute(delete(SiteEvent).where(SiteEvent.kind == kind, SiteEvent.key.in_(keys[i:i + 200])))
-
-
-def _drop_memory(match):
-    with _lock:
-        for entry in [e for e in _queue if match(e["kind"], e["key"])]:
-            _queue.remove(entry)
-        for k in [k for k in _counters if match(*k)]:
-            del _counters[k]
-        for k in [k for k in _open if match(*k)]:
-            _open.discard(k)
-
-
-def _forget_open(match):
-    """Forget open keys whose stored rows were deleted, except a key with an occurrence not yet flushed
-    (a recurrence after a PR's cutoff must still reach the table)."""
-    with _lock:
-        pending = {(e["kind"], e["key"]) for e in _queue} | set(_counters)
-        for k in [k for k in _open if match(*k) and k not in pending]:
-            _open.discard(k)
-
-
-def _load_kind(session, kind):
-    if kind in _loaded_kinds:
-        return
-    keys = session.scalars(select(SiteEvent.key).where(SiteEvent.kind == kind)).all()
-    with _lock:
-        _open.update((kind, k) for k in keys)
-        _loaded_kinds.add(kind)
-
-
-def resolve(kind, key, *, session_factory):
-    """Delete the stored row for a key that is fine again. A key that is not open costs no statement."""
-    if _demo():
-        return
-    try:
-        with session_factory() as session:
-            _load_kind(session, kind)
-            with _lock:
-                was_open = (kind, key) in _open
-            if was_open:
-                _delete_keys(session, kind, [key])
-                session.commit()
-        _drop_memory(lambda k, ky: (k, ky) == (kind, key))
-    except Exception:
-        logger.exception("site health: could not resolve %s %s", kind, key)
-
-
-def resolve_prefix(kind, prefix, *, session_factory):
-    """`resolve` for every open key of the kind that starts with `prefix`."""
-    if _demo():
-        return
-    try:
-        with session_factory() as session:
-            _load_kind(session, kind)
-            with _lock:
-                keys = sorted(k for (kd, k) in _open if kd == kind and k.startswith(prefix))
-            if keys:
-                _delete_keys(session, kind, keys)
-                session.commit()
-        _drop_memory(lambda k, ky: k == kind and ky.startswith(prefix))
-    except Exception:
-        logger.exception("site health: could not resolve %s %s*", kind, prefix)
 
 
 def _retain(session):
@@ -275,8 +299,104 @@ def _retain(session):
             _delete_keys(session, kind, list(extra))
 
 
+def _coalesce(queued):
+    """One write per key between two resolves of it: records of the same key merge (count, earliest first,
+    latest error and context); a resolve drops the records of its keys queued before it."""
+    out, last = [], {}
+    for e in queued:
+        if e["op"] == "record":
+            k = (e["kind"], e["key"])
+            i = last.get(k)
+            if i is None:
+                last[k] = len(out)
+                out.append({**e, "n": 1, "first": e["at"], "last": e["at"]})
+            else:
+                o = out[i]
+                o["n"] += 1
+                o["first"] = min(o["first"], e["at"])
+                if e["at"] >= o["last"]:
+                    o["last"], o["error"], o["context"] = e["at"], e["error"], e["context"]
+        else:
+            match = _match(e["kind"], e["key"], e["prefix"])
+            for k in [k for k in last if match(*k)]:
+                out[last.pop(k)] = None
+            out.append(e)
+    return [o for o in out if o is not None]
+
+
+def _covered(cutoffs, kind, key, last):
+    """An occurrence from before an applied PR resolution's cutoff (a late flush from the old process)."""
+    return any(c_kind == kind and (c_key is None or c_key == key) and last < cutoff
+               for c_kind, c_key, cutoff in cutoffs)
+
+
+def _combined_context(session, kind, key, c):
+    batch = c["context"] if c["merge"] else (list(c["items"]) or None)
+    if batch is None:
+        return None
+    row = session.get(SiteEvent, (kind, key))
+    stored = row.context if row is not None else None
+    if stored is None:
+        return batch
+    if c["merge"]:
+        return c["combine"](stored, batch) if c["combine"] else batch
+    return ((stored if isinstance(stored, list) else []) + batch)[-LAST_ITEMS:]
+
+
+def _write(session, op):
+    if op["op"] == "resolve":
+        session.execute(_delete_stmt(op["kind"], op["key"], op["prefix"], op["at"]))
+    elif op["op"] == "record":
+        _upsert(session, op["kind"], op["key"], error=_clean_error(op["error"]),
+                context=_scrub_value(op["context"]), n=op["n"], first=op["first"], last=op["last"])
+    else:
+        kind, key, c = op["kind"], op["key"], op["counter"]
+        ctx = _combined_context(session, kind, key, c)
+        _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["first"],
+                last=c["at"], set_error=False, set_context=ctx is not None, context_always=True)
+
+
+def _connection_error(exc):
+    return isinstance(exc, (sa_exc.OperationalError, sa_exc.InterfaceError, sa_exc.DisconnectionError)) or \
+        bool(getattr(exc, "connection_invalidated", False))
+
+
+def _flush_ops(session_factory, ops, *, isolate):
+    """Write the ops in order, prune, commit. With `isolate`, each op runs in its own savepoint and one the
+    database refuses (a value it can't store) is dropped and logged; a lost connection still fails the whole
+    flush. Returns how many were dropped."""
+    dropped = 0
+    with session_factory() as session:
+        cutoffs = [(r.kind, r.key, _aware(r.cutoff)) for r in session.scalars(
+            select(SiteEventResolution).where(SiteEventResolution.applied_at.is_not(None))).all()]
+        for op in ops:
+            last = op.get("last") or (op["counter"]["at"] if op["op"] == "counter" else None)
+            if op["op"] != "resolve" and _covered(cutoffs, op["kind"], op["key"], last):
+                continue
+            if not isolate:
+                _write(session, op)
+                continue
+            try:
+                with session.begin_nested():
+                    _write(session, op)
+            except Exception as exc:
+                if _connection_error(exc):
+                    raise
+                dropped += 1
+                logger.error("site health: dropped an entry the database refused (%s %s): %s",
+                             op["kind"], op["key"], exc)
+        _retain(session)
+        session.commit()
+    return dropped
+
+
+def _aware(when):
+    return when.replace(tzinfo=timezone.utc) if when is not None and when.tzinfo is None else when
+
+
 def flush(*, session_factory):
-    """Write the queue and the counters in one transaction, then prune. On failure keep them for next time."""
+    """Write the queue (in order) and the counters in one transaction, then prune. If the database refuses
+    one entry, the rest are written without it; if it can't be reached, everything waits for the next flush."""
     if _demo():
         return
     with _lock:
@@ -284,34 +404,69 @@ def flush(*, session_factory):
         counters = dict(_counters)
         _queue.clear()
         _counters.clear()
+    if not queued and not counters:
+        _flush_prune(session_factory)
+        return
+    ops = _coalesce(queued) + [{"op": "counter", "kind": k, "key": ky, "counter": c} for (k, ky), c in counters.items()]
+    try:
+        try:
+            _flush_ops(session_factory, ops, isolate=False)
+        except Exception as exc:
+            if _connection_error(exc):
+                raise
+            _flush_ops(session_factory, ops, isolate=True)
+    except Exception:
+        logger.exception("site health: flush failed; entries kept for the next flush")
+        _requeue(queued, counters)
+
+
+def flush_for(db):
+    """Flush now on `db`'s engine, in a session of its own: for a command-line process (the cache pre-warms), which
+    has no flush thread. Never raises."""
+    if _demo():
+        return
+    try:
+        from sqlalchemy.orm import sessionmaker
+
+        bind = db.get_bind()
+    except Exception:
+        logger.exception("site health: no engine to flush on")
+        return
+    flush(session_factory=sessionmaker(bind=bind))
+
+
+def _flush_prune(session_factory):
     try:
         with session_factory() as session:
-            for e in queued:
-                _upsert(session, e["kind"], e["key"], error=_clean_error(e["error"]),
-                        context=_scrub_value(e["context"]), n=1, first=e["at"], last=e["at"])
-            for (kind, key), c in counters.items():
-                ctx = _counter_context(c)
-                _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["first"],
-                        last=c["at"], set_error=False, set_context=ctx is not None)
             _retain(session)
             session.commit()
     except Exception:
-        logger.exception("site health: flush failed; entries kept for the next flush")
-        with _lock:
-            for e in reversed(queued):
-                _queue.appendleft(e)
-            for k, c in counters.items():
-                cur = _counters.get(k)
-                if cur is None:
-                    _counters[k] = c
-                else:
-                    cur["n"] += c["n"]
-                    cur["at"] = max(cur["at"], c["at"])
-                    cur["first"] = min(cur["first"], c["first"])
-                    cur["items"] = (c["items"] + cur["items"])[-LAST_ITEMS:]
-                    if cur["context"] is None:
-                        cur["context"] = c["context"]
-                    cur["merge"] = cur["merge"] or c["merge"]
+        logger.exception("site health: pruning failed")
+
+
+def _requeue(queued, counters):
+    global _dropped
+    with _lock:
+        for e in reversed(queued):
+            _queue.appendleft(e)
+        while len(_queue) > QUEUE_MAX:
+            _queue.pop()
+            _dropped += 1
+        for k, c in counters.items():
+            cur = _counters.get(k)
+            if cur is None:
+                _counters[k] = c
+                continue
+            cur["n"] += c["n"]
+            cur["at"] = max(cur["at"], c["at"])
+            cur["first"] = min(cur["first"], c["first"])
+            cur["items"] = (c["items"] + cur["items"])[-LAST_ITEMS:]
+            if cur["merge"] and c["merge"] and cur["combine"] and c["context"] is not None:
+                cur["context"] = cur["combine"](c["context"], cur["context"])
+            elif cur["context"] is None:
+                cur["context"] = c["context"]
+            cur["merge"] = cur["merge"] or c["merge"]
+            cur["combine"] = cur["combine"] or c["combine"]
 
 
 def register(name, cycle_s, allowed_s=None):
@@ -362,14 +517,14 @@ def quiet_loops(now=None):
     return out
 
 
-def loop_failed(name, exc, *, session_factory):
-    """Record a loop's (or one of its steps') failure under `name`; call from inside the `except`."""
+def loop_failed(name, exc):
+    """Queue a loop's (or one of its steps') failure under `name`; call from inside the `except`."""
     lines = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).splitlines()[-15:]
-    record("loop_failed", name, f"{type(exc).__name__}: {exc}", {"traceback": lines}, session_factory=session_factory)
+    record("loop_failed", name, f"{type(exc).__name__}: {exc}", {"traceback": lines})
 
 
-def loop_ok(name, *, session_factory):
-    resolve("loop_failed", name, session_factory=session_factory)
+def loop_ok(name):
+    resolve("loop_failed", name)
 
 
 CACHE_FALLBACK_KEYS = frozenset({
@@ -381,12 +536,14 @@ CACHE_FALLBACK_KEYS = frozenset({
     "account_group_cache:read", "account_group_cache:prewarm",
 })
 
-KNOWN_KINDS = frozenset({
-    # recorded
-    "page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "cache_fallback",
-    "worker_overrun", "worker_refused", "slow_page", "warm_vanished",
-    # checked
-    "unscored_match", "kill_impact_missing", "map_pool_note",
+# Kinds stored in site_events: the only ones a resolved-file entry can clear.
+RECORDED_KINDS = frozenset({
+    "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
+    "slow_page", "warm_vanished",
+})
+KNOWN_KINDS = RECORDED_KINDS | frozenset({
+    # checked (read live when the card is computed)
+    "loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note",
     # replay kinds (app/services/replay_errors.py KINDS)
     "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed", "heights_rejected",
     "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held", "store_failed", "ack_missing",
@@ -400,72 +557,85 @@ def load_resolved():
     return json.loads(RESOLVED_FILE.read_text(encoding="utf-8"))
 
 
-def check_resolved(entries, known=KNOWN_KINDS):
-    """The problems in a resolved-file's entries (empty when it is fine)."""
+def check_resolved(entries, known=RECORDED_KINDS):
+    """The problems in a resolved-file's entries (empty when it is fine). Only stored kinds can be cleared;
+    each fix is its own entry: the same kind, key and fixed_by twice is an error."""
     if not isinstance(entries, list):
         return ["the file must hold a list"]
-    problems = []
+    problems, seen = [], set()
     for i, e in enumerate(entries):
         if not isinstance(e, dict):
             problems.append(f"entry {i}: not an object")
             continue
         if e.get("kind") not in known:
-            problems.append(f"entry {i}: unknown kind {e.get('kind')!r}")
+            problems.append(f"entry {i}: {e.get('kind')!r} is not a stored kind a PR can clear")
         if e.get("key") is not None and not isinstance(e.get("key"), str):
             problems.append(f"entry {i}: key must be a string or null")
         if not isinstance(e.get("fixed_by"), str) or not e["fixed_by"].strip():
             problems.append(f"entry {i}: fixed_by must be a non-empty string")
+            continue
+        ident = entry_id(e)
+        if ident in seen:
+            problems.append(f"entry {i}: the same kind, key and fixed_by as an earlier entry")
+        seen.add(ident)
     return problems
 
 
 def entry_id(entry):
-    """Identity of an entry: its kind and key only, so editing fixed_by never re-applies it."""
-    blob = json.dumps({"kind": entry["kind"], "key": entry.get("key")}, sort_keys=True)
+    """Identity of an entry: its kind, key and fixed_by. A later fix of the same key is a new entry (a new
+    fixed_by), so it applies again; entries are never edited once merged."""
+    blob = json.dumps({"kind": entry["kind"], "key": entry.get("key"), "fixed_by": entry.get("fixed_by")},
+                      sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def apply_resolved(*, session_factory, started_at, entries=None, now=None):
     """Clear the rows the committed file names, once each, GRACE_S after the first start that has the entry
-    (rows last seen before that cutoff go). Never raises."""
-    if _demo():
+    (rows last seen before that cutoff go). A due entry is claimed in the same transaction that deletes, so two
+    overlapping processes never both apply it. Stops querying once every entry is applied. Never raises."""
+    if _demo() or _resolved["done"]:
         return
     try:
         entries = load_resolved() if entries is None else entries
         now = now or _now()
-        known = []
-        for e in entries:
-            if not isinstance(e, dict) or e.get("kind") not in KNOWN_KINDS:
-                logger.warning("site health: skipping resolved entry with unknown kind: %r", e)
-                continue
-            known.append(e)
         with session_factory() as session:
-            insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
-            table = SiteEventResolution.__table__
-            for e in known:
-                session.execute(insert(table).values(
-                    entry=entry_id(e), kind=e["kind"], key=e.get("key"),
-                    cutoff=started_at + timedelta(seconds=GRACE_S), applied_at=None,
-                ).on_conflict_do_nothing(index_elements=["entry"]))
-            due = session.scalars(select(SiteEventResolution).where(
+            if not _resolved["inserted"]:
+                insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
+                table = SiteEventResolution.__table__
+                for e in entries:
+                    if not isinstance(e, dict) or e.get("kind") not in RECORDED_KINDS:
+                        logger.warning("site health: skipping a resolved entry that names no stored kind: %r", e)
+                        continue
+                    session.execute(insert(table).values(
+                        entry=entry_id(e), kind=e["kind"], key=e.get("key"),
+                        cutoff=started_at + timedelta(seconds=GRACE_S), applied_at=None,
+                    ).on_conflict_do_nothing(index_elements=["entry"]))
+            due = session.execute(select(SiteEventResolution.entry, SiteEventResolution.kind,
+                                         SiteEventResolution.key, SiteEventResolution.cutoff).where(
                 SiteEventResolution.applied_at.is_(None), SiteEventResolution.cutoff <= now)).all()
-            applied = []
-            for r in due:
-                stmt = delete(SiteEvent).where(SiteEvent.kind == r.kind, SiteEvent.last_seen < r.cutoff)
-                if r.key is not None:
-                    stmt = stmt.where(SiteEvent.key == r.key)
+            for entry, kind, key, cutoff in due:
+                claimed = session.execute(update(SiteEventResolution).where(
+                    SiteEventResolution.entry == entry, SiteEventResolution.applied_at.is_(None)
+                ).values(applied_at=now)).rowcount
+                if not claimed:
+                    continue        # another process applied it first
+                stmt = delete(SiteEvent).where(SiteEvent.kind == kind, SiteEvent.last_seen < cutoff)
+                if key is not None:
+                    stmt = stmt.where(SiteEvent.key == key)
                 session.execute(stmt)
-                r.applied_at = now
-                applied.append((r.kind, r.key))
+            pending = session.scalar(select(func.count()).select_from(SiteEventResolution)
+                                     .where(SiteEventResolution.applied_at.is_(None)))
             session.commit()
-        for kind, key in applied:
-            _forget_open(lambda k, kk, kind=kind, key=key: k == kind and (key is None or kk == key))
+        _resolved["inserted"] = True
+        _resolved["done"] = not pending
     except Exception:
         logger.exception("site health: could not apply the resolved file")
 
 
 def start(session_factory, started_at=None):
-    """Flush every FLUSH_S on a daemon thread (applying the resolved file after each flush when `started_at`
-    is given). Returns the stop event, or None in demo mode."""
+    """Flush every FLUSH_S on a daemon thread, applying the resolved file after each flush when `started_at`
+    is given (the first time one cycle after start: an entry's cutoff is GRACE_S later anyway). Returns the stop
+    event, or None in demo mode."""
     if _demo():
         return None
     stop_event = threading.Event()
@@ -483,14 +653,14 @@ def start(session_factory, started_at=None):
     return stop_event
 
 
-def stop(event):
-    """Stop the flush thread: it flushes once more and exits; wait up to 5 s for it."""
+def stop(event, timeout=5):
+    """Stop the flush thread: it flushes once more and exits; wait up to `timeout` s for it."""
     if event is None:
         return
     event.set()
     thread = _threads.pop(event, None)
     if thread is not None:
-        thread.join(timeout=5)
+        thread.join(timeout=timeout)
 
 
 def _reset_for_tests():
@@ -498,7 +668,6 @@ def _reset_for_tests():
     with _lock:
         _queue.clear()
         _counters.clear()
-        _open.clear()
-        _loaded_kinds.clear()
         _loops.clear()
         _dropped = 0
+        _resolved.update(inserted=False, done=False)

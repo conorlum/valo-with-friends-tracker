@@ -249,3 +249,39 @@ def test_cache_fallback_literal_keys_are_registered():
         "viewer_site_stats:write_through", "viewer_site_stats:prewarm",
         "account_group_cache:read", "account_group_cache:prewarm",
     })
+
+
+
+# B4 / B13: the pre-warms run in command-line processes, which have no flush thread: they flush at their end.
+def _stored(factory):
+    from sqlalchemy import select
+
+    with factory() as s:
+        return {(r.kind, r.key): r for r in s.scalars(select(SiteEvent))}
+
+
+def test_a_player_prewarm_failure_reaches_the_table_without_a_flush_thread(factory, monkeypatch):
+    monkeypatch.setattr(cache, "recompute_player_views", Mock(side_effect=RuntimeError("prewarm failed")))
+    monkeypatch.setattr(account_groups, "prewarm_group_caches", Mock())
+    with factory() as db:
+        cache.prewarm_player_cache(db, {17})
+    row = _stored(factory)[("cache_fallback", "player_view_cache:prewarm")]
+    assert row.count == 1 and row.context == [17]
+    assert not site_health._counters
+
+
+def test_a_viewer_stats_prewarm_failure_reaches_the_table_without_a_flush_thread(engine, factory, monkeypatch):
+    from app.models.friendship import Friendship
+
+    Base.metadata.create_all(engine, tables=[Friendship.__table__])
+    with factory() as s:
+        s.add(Friendship(owner_player_id=17, friend_player_id=23))
+        s.commit()
+    monkeypatch.setattr(site_stats, "own_account_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(site_stats, "viewer_group_player_ids", lambda db, pid: {pid})
+    monkeypatch.setattr(site_stats, "compute_viewer_site_stats", lambda *a: {"live": True})
+    monkeypatch.setattr(site_stats, "store_viewer_site_stats_cache", Mock(side_effect=RuntimeError("prewarm failed")))
+    with factory() as db:
+        assert site_stats.prewarm_viewer_site_stats(db) == 0
+    row = _stored(factory)[("cache_fallback", "viewer_site_stats:prewarm")]
+    assert row.count == 1 and row.context == [17]

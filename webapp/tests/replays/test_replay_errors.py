@@ -145,7 +145,8 @@ def test_recorded_worker_cache_and_page_events_reach_collect(errors, db, event_k
 
 
 @pytest.mark.parametrize("live_identity", [None, "Bind:h:|", "Ascent:h:|"])
-def test_stored_warm_cache_history_is_listed_unless_live_has_the_identity(errors, db, live_identity):
+def test_stored_warm_cache_history_is_listed_beside_the_live_row(errors, db, live_identity):
+    # B18: the live row (this worker process's count) and the stored history (first and last seen) both show.
     from app.services.replay_control_remote import Live
 
     identity = "Ascent:h:|"
@@ -155,15 +156,15 @@ def test_stored_warm_cache_history_is_listed_unless_live_has_the_identity(errors
     db.commit()
     live = None if live_identity is None else Live(100, (), (), (), (), warm_vanished=((live_identity, 4),))
     rows = errors.collect(db, live)["warm_vanished"]
-    assert len(rows) == (2 if live_identity == "Bind:h:|" else 1)
-    if live_identity != identity:
-        [row] = [row for row in rows if row.get("key") == identity]
-        assert row["kind"] == "warm_vanished" and row["count"] == 2
-        assert row["context"] == {"times": 3, "map": "Ascent"}
-        assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
-        assert row["last_seen"] == STAMP.isoformat()
-    else:
-        assert rows[0]["figures"] == {"identity": identity, "times": 4}
+    assert len(rows) == (1 if live_identity is None else 2)
+    [row] = [row for row in rows if row.get("context") == {"times": 3, "map": "Ascent"}]
+    assert row["kind"] == "warm_vanished" and row["count"] == 2 and row["key"] == identity
+    assert row["context"] == {"times": 3, "map": "Ascent"}
+    assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
+    assert row["last_seen"] == STAMP.isoformat()
+    if live_identity is not None:
+        [live_row] = [row for row in rows if row.get("context") != {"times": 3, "map": "Ascent"}]
+        assert live_row["figures"] == {"identity": live_identity, "times": 4}
     result = errors.compute(db, live)
     assert identity in errors.prompt(result, "warm_vanished")
 
@@ -357,6 +358,15 @@ def test_event_rest_query_quotes_values(event_kind):
     assert event_kind._rest_query("test_event", [{"key": "synthetic's key"}]) == (
         "SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
         "WHERE kind = 'test_event' AND key IN ('synthetic''s key') ORDER BY last_seen DESC;")
+
+
+@pytest.mark.parametrize("kind, table", [("unscored_match", "FROM matches"), ("kill_impact_missing", "FROM replays"),
+                                         ("map_pool_note", "FROM map_pool_patch_notes"),
+                                         ("util_build_stale", "FROM util_model")])
+def test_checked_kinds_rest_query_reads_their_own_tables(errors, kind, table):
+    # B19: checked kinds are never in site_events, so their "rest" query reads the table the check reads.
+    query = errors._rest_query(kind, [{"key": "1"}])
+    assert table in query and "FROM site_events" not in query and query.startswith("(checked live")
 
 
 def test_demo_event_kind_never_reads_db_even_with_warm_cache(stored_events, db, monkeypatch):

@@ -222,4 +222,5 @@ def prewarm_viewer_site_stats(db: Session) -> int:
             db.rollback()
             logger.exception("viewer_site_stats_cache: pre-warm failed for viewer %s", viewer_id)
             site_health.count("cache_fallback", "viewer_site_stats:prewarm", viewer_id)
+    site_health.flush_for(db)     # pre-warms run in command-line processes, which have no flush thread
     return written

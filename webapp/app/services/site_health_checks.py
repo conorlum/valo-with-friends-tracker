@@ -89,6 +89,15 @@ def _safely(db, label, body):
         return []
 
 
+def kill_impact_reproduce(match_uuid) -> str:
+    """How to look at one replay's per-kill Impact read-only, and the repair, which writes (its scope said)."""
+    uuid = str(match_uuid).replace("'", "''")
+    return (f"read-only: SELECT id, match_id, kill_impact->>'fingerprint' AS stored_fingerprint FROM replays "
+            f"WHERE match_uuid = '{uuid}'; compare it with app.replays.db.impact_fingerprint(session, match_id). "
+            "Repair (writes the split of EVERY linked replay, not just this one): "
+            "python scripts/link_replays.py --refresh-impact")
+
+
 def _scored(match_id_column):
     """EXISTS: an impact_scores row, through rounds, for the match whose id is `match_id_column`."""
     return (select(ImpactScore.round_id).join(Round, ImpactScore.round_id == Round.id)
@@ -123,7 +132,7 @@ def kill_impact_null(db) -> list[dict]:
             "key": str(rid), "first_seen": _aware(linked_at or created_at),
             "error": "linked replay has no stored per-kill Impact",
             "context": {"match_id": match_id, "map_name": map_name},
-            "reproduce": f"python scripts/link_replays.py --uuid {match_uuid} --refresh-impact",
+            "reproduce": kill_impact_reproduce(match_uuid),
         } for rid, match_id, map_name, match_uuid, linked_at, created_at in found]
     return _safely(db, "per-kill Impact", body)
 

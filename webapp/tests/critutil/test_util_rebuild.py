@@ -108,7 +108,7 @@ def test_a_build_that_raises_is_recorded_and_exits_3(health, monkeypatch):
 def test_a_good_build_clears_a_stored_failure(health, monkeypatch):
     from app.services import replay_util
 
-    site_health.record("util_build_failed", "build", "RuntimeError: old", session_factory=health)
+    site_health.record_now("util_build_failed", "build", "RuntimeError: old", session_factory=health)
     assert ("util_build_failed", "build") in stored(health)
     monkeypatch.setattr(replay_util, "ensure_values", lambda db: {"rows": []})
     assert util_rebuild.main() == 0
@@ -118,7 +118,7 @@ def test_a_good_build_clears_a_stored_failure(health, monkeypatch):
 def test_the_lock_held_exit_records_and_resolves_nothing(health, monkeypatch, capsys):
     import app.db
 
-    site_health.record("util_build_failed", "build", "RuntimeError: old", session_factory=health)
+    site_health.record_now("util_build_failed", "build", "RuntimeError: old", session_factory=health)
 
     class Result:
         def scalar(self):

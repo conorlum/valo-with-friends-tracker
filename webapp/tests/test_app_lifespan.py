@@ -29,9 +29,16 @@ def test_lifespan_cleans_up_normal_exit_runtime_error_and_partial_startup(monkey
         assert factory is SessionLocal and started_at is not None
         health["started"] = True
         return health_stop
-    monkeypatch.setattr(site_health, "apply_resolved", lambda **kw: health.setdefault("applied", kw))
+    def apply_forbidden(**kw): raise AssertionError("startup waited on the database to apply the resolved file")
+    monkeypatch.setattr(site_health, "apply_resolved", apply_forbidden)
     monkeypatch.setattr(site_health, "start", health_start)
-    monkeypatch.setattr(site_health, "stop", lambda event: event.set())
+
+    def health_stop_call(event):
+        # the loops are told to stop first, so what they record as they stop is in the final flush
+        health["loops_stopped_first"] = all(e.is_set() for e in events if e)
+        if event is not None:
+            event.set()
+    monkeypatch.setattr(site_health, "stop", health_stop_call)
     async def run():
         async with main.lifespan(main.app):
             assert calls == [0, 1, 2, 3]
@@ -43,13 +50,40 @@ def test_lifespan_cleans_up_normal_exit_runtime_error_and_partial_startup(monkey
     assert all(e.is_set() for e in events if e)
     assert calls == list(range(failure + 1)) if isinstance(failure, int) else calls == [0, 1, 2, 3]
     if isinstance(failure, int):
-        assert not health  # the four services did not all start, so health did not start either
+        assert "started" not in health  # the four services did not all start, so health did not start either
     else:
-        assert health["applied"]["session_factory"] is SessionLocal and health["started"]
-        assert health_stop.is_set()
+        assert health["started"] and health_stop.is_set() and health["loops_stopped_first"]
 
 
-def test_lifespan_yields_when_apply_resolved_meets_a_dead_database(monkeypatch):
+def test_shutdown_waits_for_the_final_flush(monkeypatch):
+    # B3/B12: what was queued just before a deploy's shutdown reaches the table.
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import app.db
+    from app.db import Base
+    from app.models.site_events import SiteEvent, SiteEventResolution
+
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(app.db, "SessionLocal", factory)
+    monkeypatch.setattr(site_health, "FLUSH_S", 3600)
+    for service in SERVICES:
+        monkeypatch.setattr(service, "start", lambda factory: None)
+
+    async def run():
+        async with main.lifespan(main.app):
+            site_health.enqueue("page_error", "GET /x", "boom")
+    asyncio.run(run())
+    with factory() as s:
+        assert [(r.kind, r.key) for r in s.scalars(select(SiteEvent))] == [("page_error", "GET /x")]
+    assert not any(t.name == "site-health-flush" for t in threading.enumerate())
+
+
+def test_lifespan_yields_when_the_database_is_dead(monkeypatch):
     import app.db
     monkeypatch.setattr(settings, "demo_mode", False)
     def dead():

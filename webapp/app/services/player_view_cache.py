@@ -770,3 +770,4 @@ def prewarm_player_cache(db: Session, player_ids: set[int]) -> None:
             logger.exception("Cache pre-warm failed for player %s; next page visit will recompute", pid)
             site_health.count("cache_fallback", "player_view_cache:prewarm", pid)
     prewarm_group_caches(db, set(player_ids))
+    site_health.flush_for(db)     # pre-warms run in command-line processes, which have no flush thread

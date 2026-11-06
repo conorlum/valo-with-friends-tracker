@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -10,7 +10,8 @@ from tests.support.postgres import scratch_database, migrated_database, pg_facto
 
 pytestmark = pytest.mark.postgres
 
-T0 = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+# Recent, so the 30-day retention in every flush never prunes the rows under test (B21: a fixed date aged out).
+T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
 
 
 @pytest.fixture(autouse=True)
@@ -23,21 +24,67 @@ def get(factory, kind, key):
         return s.get(SiteEvent, (kind, key))
 
 
+def put(factory, kind, key, error="e", context=None, at=T0):
+    site_health.record(kind, key, error, context, at=at)
+    site_health.flush(session_factory=factory)
+
+
 def test_two_records_count_two(pg_factory):
-    site_health.record("k", "a", "one", session_factory=pg_factory, at=T0)
-    site_health.record("k", "a", "two", session_factory=pg_factory, at=T0)
+    put(pg_factory, "k", "a", "one")
+    put(pg_factory, "k", "a", "two")
     r = get(pg_factory, "k", "a")
     assert r.count == 2 and r.error == "two"
 
 
+def test_a_late_older_occurrence_never_moves_last_seen_back(pg_factory):
+    put(pg_factory, "page_error", "/a", "new", {"v": 2}, at=T0 + timedelta(minutes=10))
+    put(pg_factory, "page_error", "/a", "old", {"v": 1}, at=T0)
+    r = get(pg_factory, "page_error", "/a")
+    assert r.count == 2 and r.error == "new" and r.context == {"v": 2}
+    assert r.first_seen == T0 and r.last_seen == T0 + timedelta(minutes=10)
+
+
+def test_a_nul_from_a_request_path_neither_fails_nor_blocks_the_flush(pg_factory):
+    # B2 (second review): PostgreSQL refuses NUL in text and JSONB; one such entry must not hold the rest back.
+    site_health.enqueue("page_error", "GET /matches/{external_id}", "bad \x00 path",
+                        {"path": "/matches/probe\x00"}, at=T0)
+    site_health.enqueue("page_error", "GET /other", "fine", at=T0)
+    site_health.count("slow_page", "/x", {"s": 6}, at=T0)
+    site_health.flush(session_factory=pg_factory)
+    r = get(pg_factory, "page_error", "GET /matches/{external_id}")
+    assert r.context == {"path": "/matches/probe\\x00"}
+    assert get(pg_factory, "page_error", "GET /other") is not None and get(pg_factory, "slow_page", "/x")
+    assert not site_health._queue
+
+
+def test_an_entry_postgres_refuses_is_dropped_and_the_rest_are_written(pg_factory, monkeypatch):
+    # past the cleaning, a value PostgreSQL still refuses (here: a key over the column's 300 characters,
+    # bypassing the cut) is dropped alone
+    monkeypatch.setattr(site_health, "_clean_key", lambda key: str(key))
+    site_health.enqueue("page_error", "k" * 400, "too long", at=T0)
+    site_health.enqueue("page_error", "GET /fine", "fine", at=T0)
+    site_health.flush(session_factory=pg_factory)
+    with pg_factory() as s:
+        keys = [r.key for r in s.scalars(select(SiteEvent))]
+    assert keys == ["GET /fine"] and not site_health._queue
+
+
+def test_resolve_deletes_what_another_process_wrote(pg_factory):
+    put(pg_factory, "loop_failed", "control-dispatch", "boom")
+    site_health._reset_for_tests()                    # this process never saw that row
+    site_health.resolve("loop_failed", "control-dispatch", at=T0 + timedelta(seconds=1))
+    site_health.flush(session_factory=pg_factory)
+    assert get(pg_factory, "loop_failed", "control-dispatch") is None
+
+
 def test_nested_context_roundtrips(pg_factory):
     ctx = {"a": {"b": [1, 2, {"c": "d"}]}, "e": None}
-    site_health.record("k", "a", "e", ctx, session_factory=pg_factory, at=T0)
+    put(pg_factory, "k", "a", "e", ctx)
     assert get(pg_factory, "k", "a").context == ctx
 
 
 def test_flush_counted(pg_factory):
-    site_health.record("k", "c", "e", session_factory=pg_factory, at=T0)
+    put(pg_factory, "k", "c", "e")
     for i in range(3):
         site_health.count("k", "c", {"i": i}, at=T0)
     site_health.enqueue("k", "q", "e", at=T0)
@@ -51,10 +98,11 @@ def test_apply_resolved_twice_deletes_and_does_not_raise(pg_factory):
     from datetime import timedelta
     from app.models.site_events import SiteEventResolution
     e = [{"kind": "page_error", "key": "/a", "fixed_by": "x"}]
-    site_health.record("page_error", "/a", "boom", session_factory=pg_factory, at=T0)
-    site_health.record("page_error", "/b", "boom", session_factory=pg_factory, at=T0)
+    put(pg_factory, "page_error", "/a", "boom")
+    put(pg_factory, "page_error", "/b", "boom")
     site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)
-    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)  # a second process
+    site_health._reset_for_tests()                    # a second process
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)
     assert get(pg_factory, "page_error", "/a") is not None
     site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0 + timedelta(seconds=601))
     assert get(pg_factory, "page_error", "/a") is None and get(pg_factory, "page_error", "/b") is not None

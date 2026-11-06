@@ -246,7 +246,7 @@ def _verify_kill_impact(db) -> dict:
             "key": str(rid), "first_seen": linked_at or created_at,
             "error": "stored per-kill Impact fingerprint no longer matches the match's Impact rows",
             "context": {"match_id": match_id, "map_name": map_name},
-            "reproduce": f"python scripts/link_replays.py --uuid {match_uuid} --refresh-impact"}
+            "reproduce": site_health_checks.kill_impact_reproduce(match_uuid)}
     return mismatched
 
 
@@ -541,13 +541,10 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         except Exception:
             log.warning("rollback after the site_events read failed", exc_info=True)
         stored = []
-    live_warm_identities = {identity for identity, _ in live.warm_vanished} if live is not None else set()
     for kind, key, count, first_seen, last_seen, error, context in stored:
-        if kind == "warm_vanished":
-            if key not in live_warm_identities:
-                rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
-                                             last_seen=last_seen, error=error, context=context))
-        elif kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
+        # a warm_vanished identity can show twice: the live row (this worker process's count) and the stored
+        # history (every process, with first and last seen)
+        if kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
             rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
                                          last_seen=last_seen, error=error, context=context))
     if "loop_quiet" in rows:
@@ -651,6 +648,18 @@ def _rest_query(key, rows):
     """Select exactly the remaining stored identities, with only diagnostic columns."""
     if key == "loop_quiet":
         return "(live rows, not stored: read the site's loop state in the running process)"
+    checked = {"util_build_stale": "SELECT name, key, computed_at FROM util_model WHERE name = 'values';",
+               "unscored_match": "SELECT m.id, m.external_id, m.map_name, m.created_at FROM matches m WHERE "
+                                 "m.created_at < now() - interval '1 hour' AND NOT EXISTS (SELECT 1 FROM rounds r "
+                                 "JOIN impact_scores i ON i.round_id = r.id WHERE r.match_id = m.id) ORDER BY m.id;",
+               "kill_impact_missing": "SELECT id, match_id, map_name, match_uuid, kill_impact->>'fingerprint' "
+                                      "AS stored_fingerprint FROM replays WHERE link_status = 'linked' AND "
+                                      "match_id IS NOT NULL ORDER BY id;  -- compare each with "
+                                      "app.replays.db.impact_fingerprint",
+               "map_pool_note": "SELECT url, patch, miss_count, last_error FROM map_pool_patch_notes "
+                                "WHERE last_error IS NOT NULL ORDER BY url;"}
+    if key in checked:
+        return f"(checked live, not stored in site_events; read-only) {checked[key]}"
     if key in EVENT_KINDS:
         keys =", ".join(_sql_string(r["key"]) for r in rows)
         return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "

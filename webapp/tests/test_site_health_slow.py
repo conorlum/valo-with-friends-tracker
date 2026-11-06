@@ -62,6 +62,10 @@ def client(monkeypatch):
     async def page(external_id: str):
         return HTMLResponse("page")
 
+    @app.get("/replays/upload/guide/{key}")
+    async def guide(key: str):
+        return HTMLResponse("guide")
+
     @app.get("/health")
     async def data():
         return {"status": "ok"}
@@ -114,6 +118,38 @@ def test_slow_pages_merge_by_template_without_query(client, monkeypatch):
         "slowest_s": 8, "slowest_path": "/matches/2",
         "last": [{"s": 6, "path": "/matches/1"}, {"s": 8, "path": "/matches/2"}], "n": 2,
     }
+
+
+def test_a_slow_page_with_a_secret_in_its_path_stores_the_template(client, monkeypatch):
+    clock(monkeypatch, 0, 7)
+    client.request("/replays/upload/guide/SECRETKEY123")
+    context = site_health._counters[("slow_page", "/replays/upload/guide/{key}")]["context"]
+    assert "SECRETKEY123" not in repr(context)
+    assert context["slowest_path"] == "/replays/upload/guide/{key}"
+
+
+def test_slowest_and_count_hold_across_flushes(client, monkeypatch):
+    # B5 / B16: each flush joins its context with the stored one instead of replacing it.
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base
+    from app.models.site_events import SiteEvent, SiteEventResolution
+
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    factory = sessionmaker(bind=engine)
+    clock(monkeypatch, 0, 40, 0, 6)
+    client.request("/matches/1")
+    site_health.flush(session_factory=factory)
+    client.request("/matches/2")
+    site_health.flush(session_factory=factory)
+    with factory() as s:
+        row = s.get(SiteEvent, ("slow_page", "/matches/{external_id}"))
+    assert row.count == 2
+    assert row.context["slowest_s"] == 40 and row.context["slowest_path"] == "/matches/1"
+    assert row.context["n"] == 2 and [i["path"] for i in row.context["last"]] == ["/matches/1", "/matches/2"]
 
 
 def test_keeps_slowest_and_only_last_five(client, monkeypatch):

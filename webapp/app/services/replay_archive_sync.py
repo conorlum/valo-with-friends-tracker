@@ -106,28 +106,29 @@ def run_forever(session_factory, client, stop: threading.Event, every_s: float =
                 counts = cycle(session_factory, client, state)
                 if any(counts.values()):
                     log.info("archive sync: %s", ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if v))
-                site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+                site_health.loop_ok(LOOP_NAME)
                 _note_worker(session_factory, state)
             except Exception as exc:  # noqa: BLE001 - the sync must never take the site down
                 log.exception("archive sync failed")
-                site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+                site_health.loop_failed(LOOP_NAME, exc)
             site_health.beat(LOOP_NAME, "end")
             if stop.wait(every_s):
                 return
     finally:
-        site_health.unregister(LOOP_NAME)
+        if stop.is_set():      # a thread that died on its own stays registered, so it shows as quiet
+            site_health.unregister(LOOP_NAME)
 
 
 def _note_worker(session_factory, state: State) -> None:
     """A worker that stays away for WORKER_FAILS_BEFORE_RECORD cycles in a row is recorded; one good cycle clears it."""
     if state.worker_error is None:
         state.worker_fails = 0
-        site_health.resolve("loop_failed", WORKER_KEY, session_factory=session_factory)
+        site_health.resolve("loop_failed", WORKER_KEY)
         return
     state.worker_fails += 1
     if state.worker_fails >= WORKER_FAILS_BEFORE_RECORD:
         site_health.record("loop_failed", WORKER_KEY, state.worker_error,
-                           {"consecutive_cycles": state.worker_fails}, session_factory=session_factory)
+                           {"consecutive_cycles": state.worker_fails})
 
 
 def start(session_factory) -> threading.Event | None:

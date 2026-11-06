@@ -107,10 +107,10 @@ def main() -> int:
         except Exception as exc:
             log.exception("the Critical Util build failed")
             tb = traceback.format_exc().splitlines()[-15:]
-            site_health.record("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
-                               {"traceback": tb}, session_factory=SessionLocal)
+            site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
+                                   {"traceback": tb}, session_factory=SessionLocal)
             return EXIT_RECORDED
-        site_health.resolve("util_build_failed", "build", session_factory=SessionLocal)
+        site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal)
         return code
     finally:
         if holder is not None:      # close() only returns it to the pool: unlock first (the exit would too)

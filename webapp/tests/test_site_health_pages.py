@@ -21,6 +21,10 @@ def make_app():
     def boom(n: int):
         raise ValueError(f"synthetic {n}")
 
+    @app.get("/replays/upload/guide/{key}")
+    def guide(key: str):
+        raise ValueError("synthetic guide failure")
+
     @app.get("/missing")
     def missing():
         raise HTTPException(404)
@@ -95,6 +99,14 @@ def test_the_record_fields(client, monkeypatch):
     assert isinstance(context["traceback"], str)
     assert len(context["traceback"].splitlines()) <= TRACEBACK_LINES
     assert "ValueError" in context["traceback"]
+
+
+def test_a_crash_on_a_route_with_a_secret_in_its_path_stores_the_template(client):
+    # B1 (second review): the upload guide's key is the dashboard-only secret; it never reaches the table.
+    client.get("/replays/upload/guide/SECRETKEY123")
+    [entry] = list(site_health._queue)
+    assert "SECRETKEY123" not in repr(entry)
+    assert entry["context"]["path"] == "/replays/upload/guide/{key}"
 
 
 def test_http_exceptions_are_not_recorded(client):

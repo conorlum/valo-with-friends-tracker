@@ -116,7 +116,7 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
     except Exception as exc:  # noqa: BLE001
         log.exception("map pool refresh: the listing could not be fetched")
         counts["errors"] += 1
-        site_health.loop_failed(CHECK_KEY, exc, session_factory=session_factory)
+        site_health.loop_failed(CHECK_KEY, exc)
         return counts
     counts["listed"] = len(items)
     try:
@@ -156,7 +156,7 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
                     session.rollback()
                     log.exception("map pool refresh: %s failed", item.url)
                     counts["errors"] += 1
-                    site_health.loop_failed(CHECK_KEY, exc, session_factory=session_factory)
+                    site_health.loop_failed(CHECK_KEY, exc)
                     continue
                 if miss:
                     counts["misses"] += 1
@@ -176,9 +176,9 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
     except Exception as exc:  # noqa: BLE001
         log.exception("map pool refresh failed")
         counts["errors"] += 1
-        site_health.loop_failed(CHECK_KEY, exc, session_factory=session_factory)
+        site_health.loop_failed(CHECK_KEY, exc)
     if counts["errors"] == 0:
-        site_health.loop_ok(CHECK_KEY, session_factory=session_factory)
+        site_health.loop_ok(CHECK_KEY)
     return counts
 
 
@@ -198,15 +198,16 @@ def run_forever(session_factory, fetch, stop: threading.Event, every_s: float = 
                 try:
                     counts = check(session_factory, fetch, stop=stop)
                     log.info("map pool refresh: %s", ", ".join(f"{k} {v}" for k, v in counts.items()))
-                    site_health.loop_ok(LOOP_NAME, session_factory=session_factory)
+                    site_health.loop_ok(LOOP_NAME)
                 except Exception as exc:  # noqa: BLE001
                     log.exception("map pool refresh failed")
-                    site_health.loop_failed(LOOP_NAME, exc, session_factory=session_factory)
+                    site_health.loop_failed(LOOP_NAME, exc)
                 site_health.beat(LOOP_NAME, "end")
             if stop.wait(every_s):
                 return
     finally:
-        site_health.unregister(LOOP_NAME)
+        if stop.is_set():      # a thread that died on its own stays registered, so it shows as quiet
+            site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:
