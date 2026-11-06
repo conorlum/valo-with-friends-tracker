@@ -48,6 +48,7 @@ KINDS = (
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
     ("page_error", "Pages that crashed"),
+    ("slow_page", "Slow page loads"),
     ("loop_failed", "Background loops that failed"),
     ("loop_quiet", "Background loops gone quiet"),
     ("util_build_failed", "Critical Util build failed"),
@@ -57,11 +58,11 @@ KINDS = (
     ("map_pool_note", "Map-pool patch notes not read"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
-GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages",
+GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_page": "Pages",
           "loop_failed": "Background work", "loop_quiet": "Background work",
           "util_build_failed": "Background work", "util_build_stale": "Background work",
           "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data"}   # later items add their kinds
-EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
                          "unscored_match", "kill_impact_missing", "map_pool_note"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events

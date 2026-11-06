@@ -31,7 +31,7 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -83,10 +83,11 @@ def one(errors, db, key):
 
 @pytest.fixture
 def event_kind(errors, monkeypatch):
-    # test_event stands in for page_error, so these tests see one synthetic event kind.
-    monkeypatch.setattr(errors, "KINDS", tuple(k for k in errors.KINDS if k[0] != "page_error")
+    # test_event stands in for page events, so these tests see one synthetic Pages kind.
+    monkeypatch.setattr(errors, "KINDS", tuple(k for k in errors.KINDS if k[0] not in {"page_error", "slow_page"})
                         + (("test_event", "Test events"),))
-    monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items() if k != "page_error"},
+    monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items()
+                                             if k not in {"page_error", "slow_page"}},
                                            "test_event": "Pages"})
     monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event", "loop_failed", "loop_quiet", "util_build_failed",
                                                           "util_build_stale", "unscored_match", "kill_impact_missing",
@@ -212,6 +213,19 @@ def test_page_error_events_are_listed_under_pages(errors, db):
     assert row["context"]["type"] == "ValueError"
 
 
+def test_slow_page_events_are_listed_under_pages(errors, db):
+    context = {"slowest_s": 8, "slowest_path": "/matches/2", "n": 2,
+               "last": [{"s": 6, "path": "/matches/1"}, {"s": 8, "path": "/matches/2"}]}
+    db.add(SiteEvent(kind="slow_page", key="/matches/{external_id}", context=context, count=2,
+                     first_seen=STAMP - timedelta(hours=2), last_seen=STAMP - timedelta(minutes=1)))
+    db.commit()
+    found = kind(errors, db, "slow_page")
+    assert (found["label"], found["group"], found["shape"], found["count"]) == (
+        "Slow page loads", "Pages", "event", 1)
+    [row] = found["rows"]
+    assert (row["key"], row["count"], row["context"]) == ("/matches/{external_id}", 2, context)
+
+
 def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     errors = stored_events
     queries = []
@@ -237,7 +251,8 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert newest["link"] == f"{errors.SITE}/replays/upload"
     assert newest["reproduce"] == errors._inventory_command()
     assert older["context"] == {}
-    assert [entry["key"] for entry in body["kinds"][1:]] == KEYS[1:]
+    assert [entry["key"] for entry in body["kinds"][1:]] == [
+        key for key in KEYS if key not in {"page_error", "slow_page"}]
     data = ("unscored_", "kill_impact_", "map_pool_")
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
                for entry in body["kinds"][1:] if not entry["key"].startswith(("loop_", "util_build_") + data))
@@ -642,7 +657,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     collected = errors.collect(db)
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
-               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error",
+               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error", "slow_page",
                           "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match",
                           "kill_impact_missing", "map_pool_note"}), \
         "stored kinds"

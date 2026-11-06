@@ -33,6 +33,61 @@ KEEP_DAYS = 30
 KEEP_PER_KIND = 500
 LAST_ITEMS = 5
 
+# Every GET APIRoute is classified explicitly. Only first full-page loads are timed.
+# tests/test_site_health_slow.py keeps this table in step with the app's routes.
+PAGE_ROUTES = {
+    "/": "page",
+    "//riot.txt": "not_page",
+    "/accounts": "page",
+    "/accounts/search": "not_page",
+    "/admin/replays/archive": "not_page",
+    "/admin/replays/reparse/status": "not_page",
+    "/admin/replays/uploads/{upload_id}": "not_page",
+    "/friends": "page",
+    "/gaps": "page",
+    "/gaps/{map_name}": "page",
+    "/gaps/{map_name}/routes.json": "not_page",
+    "/health": "not_page",
+    "/login": "page",
+    "/matches": "page",
+    "/matches/{external_id}": "page",
+    "/matches/{external_id}/replay": "page",
+    "/matches/{external_id}/rounds/{round_number}": "not_page",
+    "/players": "page",
+    "/players/{display_name}": "page",
+    "/players/{display_name}/career": "not_page",
+    "/players/{display_name}/recent-matches": "not_page",
+    "/replays": "page",
+    "/replays/upload": "page",
+    "/replays/upload/errors.json": "not_page",
+    "/replays/upload/errors/prompt.txt": "not_page",
+    "/replays/upload/guide/{key}": "page",
+    "/replays/upload/progress.json": "not_page",
+    "/replays/uploads/{upload_id}": "page",
+    "/replays/uploads/{upload_id}/status": "not_page",
+    "/replays/{match_uuid}": "page",
+    "/replays/{match_uuid}/coach": "page",
+    "/replays/{match_uuid}/coach/prompt": "not_page",
+    "/replays/{match_uuid}/control/heatmap.json": "not_page",
+    "/replays/{match_uuid}/control/players.json": "not_page",
+    "/replays/{match_uuid}/moments.json": "not_page",
+    "/replays/{match_uuid}/util.json": "not_page",
+    "/replays/{match_uuid}/{round_number}.json": "not_page",
+    "/replays/{match_uuid}/{round_number}/control.bin": "not_page",
+    "/replays/{match_uuid}/{round_number}/gaps.json": "not_page",
+    "/riot.txt": "not_page",
+    "/search": "page",
+    "/sessions": "page",
+    "/sessions/{session_index}": "page",
+    "/squad": "page",
+    "/squad/career": "not_page",
+    "/stats": "page",
+    "/stats/all": "not_page",
+    "/stats/friends/career": "not_page",
+    "/stats/map-control": "not_page",
+    "/util": "page",
+}
+
 _lock = threading.RLock()
 _queue: deque = deque()
 _dropped = 0
