@@ -61,3 +61,32 @@ def test_apply_resolved_twice_deletes_and_does_not_raise(pg_factory):
     with pg_factory() as s:
         rows = s.scalars(select(SiteEventResolution)).all()
     assert len(rows) == 1 and rows[0].applied_at is not None
+
+
+def test_util_build_stale_is_silent_while_the_build_lock_is_held(pg_factory):
+    from datetime import timedelta
+    from sqlalchemy import text
+    from app.models.replay import ReplayRoundUtil, Replay  # noqa: F401
+    from app.services import replay_gaps, site_health_checks, util_rebuild
+
+    old = T0 - timedelta(hours=6)
+    with pg_factory() as s:
+        # the FK chain is replay -> round -> util; the check reads only the util row, so drop the FK for the probe
+        s.execute(text("ALTER TABLE replay_round_util DROP CONSTRAINT IF EXISTS fk_replay_round_util_round"))
+        s.add(ReplayRoundUtil(replay_id=1, round_number=1, status="ok", fingerprint="f",
+                              gaps_revision=replay_gaps.GAPS_REVISION, computed_at=old))
+        s.commit()
+    with pg_factory() as s:
+        assert len(site_health_checks.util_build_stale(s, T0)) == 1
+    holder = pg_factory.kw["bind"].connect()
+    try:
+        holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": util_rebuild.LOCK_KEY})
+        holder.commit()
+        with pg_factory() as s:
+            assert site_health_checks.util_build_stale(s, T0) == []
+    finally:
+        holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": util_rebuild.LOCK_KEY})
+        holder.commit()
+        holder.close()
+    with pg_factory() as s:
+        assert len(site_health_checks.util_build_stale(s, T0)) == 1

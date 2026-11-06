@@ -25,7 +25,7 @@ import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil,
-                                ControlFeatureArtifact)  # noqa: E402
+                                ControlFeatureArtifact, UtilModel)  # noqa: E402
 from app.models.site_events import SiteEvent, SiteEventResolution  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
@@ -35,7 +35,7 @@ from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
 CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
-                                  ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__]
+                                  ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, UtilModel.__table__]
 
 
 def feature_free_source(monkeypatch):

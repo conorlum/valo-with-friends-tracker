@@ -31,7 +31,7 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["page_error", "loop_failed", "loop_quiet", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+KEYS = ["page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -84,7 +84,8 @@ def event_kind(errors, monkeypatch):
                         + (("test_event", "Test events"),))
     monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items() if k != "page_error"},
                                            "test_event": "Pages"})
-    monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event", "loop_failed", "loop_quiet"}))
+    monkeypatch.setattr(errors, "EVENT_KINDS", frozenset({"test_event", "loop_failed", "loop_quiet", "util_build_failed",
+                                                          "util_build_stale"}))
     return errors
 
 
@@ -154,6 +155,42 @@ def test_loop_quiet_not_listed_in_demo(errors, db, monkeypatch):
     assert next(k for k in body["kinds"] if k["key"] == "loop_quiet")["rows"] == []
 
 
+def _stale_util(db):
+    from app.models.replay import UtilModel
+
+    UtilModel.__table__.create(db.get_bind(), checkfirst=True)
+    db.add(UtilModel(name="values", version=1, key="k", data={}, computed_at=STAMP - timedelta(hours=9)))
+    db.add(ReplayRoundUtil(replay_id=1, round_number=1, status="ok", fingerprint="f",
+                           gaps_revision=replay_gaps.GAPS_REVISION, computed_at=STAMP - timedelta(hours=8)))
+    db.commit()
+
+
+def test_util_build_events_are_listed_under_background_work(errors, db):
+    _stale_util(db)
+    db.add(SiteEvent(kind="util_build_failed", key="build", error="RuntimeError: boom", context=None, count=1,
+                     first_seen=STAMP - timedelta(hours=1), last_seen=STAMP - timedelta(hours=1)))
+    db.commit()
+    body = errors.compute(db)
+    failed = next(k for k in body["kinds"] if k["key"] == "util_build_failed")
+    stale = next(k for k in body["kinds"] if k["key"] == "util_build_stale")
+    assert (failed["group"], failed["count"]) == ("Background work", 1)
+    assert (stale["group"], stale["count"]) == ("Background work", 1)
+    [row] = stale["rows"]
+    assert row["key"] == "values" and row["reproduce"].startswith("live: ")
+    assert row["last_seen"] == STAMP.isoformat()
+
+
+def test_util_build_events_not_listed_in_demo(errors, db, monkeypatch):
+    _stale_util(db)
+    db.add(SiteEvent(kind="util_build_failed", key="build", error="x", context=None, count=1,
+                     first_seen=STAMP, last_seen=STAMP))
+    db.commit()
+    monkeypatch.setattr(settings, "demo_mode", True)
+    body = errors.compute(db)
+    for key in ("util_build_failed", "util_build_stale"):
+        assert next(k for k in body["kinds"] if k["key"] == key)["rows"] == []
+
+
 def test_page_error_events_are_listed_under_pages(errors, db):
     db.add(SiteEvent(kind="page_error", key="GET /players/{display_name}", error="ValueError: synthetic",
                      context={"type": "ValueError", "traceback": "Traceback ...\nValueError: synthetic",
@@ -197,9 +234,9 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert older["context"] == {}
     assert [entry["key"] for entry in body["kinds"][1:]] == KEYS[1:]
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
-               for entry in body["kinds"][1:] if not entry["key"].startswith("loop_"))
+               for entry in body["kinds"][1:] if not entry["key"].startswith(("loop_", "util_build_")))
     assert all(entry["shape"] == "event" and entry["group"] == "Background work"
-               for entry in body["kinds"][1:] if entry["key"].startswith("loop_"))
+               for entry in body["kinds"][1:] if entry["key"].startswith(("loop_", "util_build_")))
     assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
     assert len(queries) == 1 and queries[0].startswith("select ")
     selected = queries[0].replace('"', "")      # SQLite quotes the reserved word key
@@ -597,7 +634,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
                if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error",
-                          "loop_failed", "loop_quiet"}), \
+                          "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale"}), \
         "stored kinds"
     for key, rows in collected.items():
         for row in rows:

@@ -50,11 +50,15 @@ KINDS = (
     ("page_error", "Pages that crashed"),
     ("loop_failed", "Background loops that failed"),
     ("loop_quiet", "Background loops gone quiet"),
+    ("util_build_failed", "Critical Util build failed"),
+    ("util_build_stale", "Critical Util build out of date"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
 GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages",
-          "loop_failed": "Background work", "loop_quiet": "Background work"}   # later items add their kinds
-EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet"})   # loop_quiet is live; the rest come from site_events
+          "loop_failed": "Background work", "loop_quiet": "Background work",
+          "util_build_failed": "Background work", "util_build_stale": "Background work"}   # later items add their kinds
+EVENT_KINDS = frozenset({"page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale"})
+LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale"})   # read when the card is computed; the rest come from site_events
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -443,7 +447,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             log.warning("rollback after the site_events read failed", exc_info=True)
         stored = []
     for kind, key, count, first_seen, last_seen, error, context in stored:
-        if kind in EVENT_KINDS and kind != "loop_quiet" and kind in rows:
+        if kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
             rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
                                          last_seen=last_seen, error=error, context=context))
     if "loop_quiet" in rows:
@@ -457,6 +461,15 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             rows["loop_quiet"].append(_event_row(
                 kind="loop_quiet", key=item["name"], count=1, first_seen=since, last_seen=moment, error=error,
                 context={"limit_s": item["limit_s"]}, reproduce="live: read in this process, not stored"))
+    if "util_build_stale" in rows:
+        from app.services import site_health_checks
+
+        moment = now()
+        for item in site_health_checks.util_build_stale(db, moment):
+            rows["util_build_stale"].append(_event_row(
+                kind="util_build_stale", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
+                error=item["error"], context=item["context"],
+                reproduce="live: checked when the card is computed"))
     for key, values in rows.items():
         if key not in EVENT_KINDS:
             values.sort(key=_sort_key)
