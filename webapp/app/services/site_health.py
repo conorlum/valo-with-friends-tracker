@@ -156,6 +156,15 @@ def _drop_memory(match):
             _open.discard(k)
 
 
+def _forget_open(match):
+    """Forget open keys whose stored rows were deleted, except a key with an occurrence not yet flushed
+    (a recurrence after a PR's cutoff must still reach the table)."""
+    with _lock:
+        pending = {(e["kind"], e["key"]) for e in _queue} | set(_counters)
+        for k in [k for k in _open if match(*k) and k not in pending]:
+            _open.discard(k)
+
+
 def _load_kind(session, kind):
     if kind in _loaded_kinds:
         return
@@ -349,7 +358,7 @@ def apply_resolved(*, session_factory, started_at, entries=None, now=None):
                 applied.append((r.kind, r.key))
             session.commit()
         for kind, key in applied:
-            _drop_memory(lambda k, kk, kind=kind, key=key: k == kind and (key is None or kk == key))
+            _forget_open(lambda k, kk, kind=kind, key=key: k == kind and (key is None or kk == key))
     except Exception:
         logger.exception("site health: could not apply the resolved file")
 

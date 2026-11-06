@@ -275,6 +275,24 @@ def test_two_starts_apply_once(factory):
     site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=1000), entries=e,
                                now=T0 + timedelta(seconds=2000))
     assert ("page_error", "/a") in rows(factory)
+    # an applied entry is skipped entirely: even a late-flushed row dated before the cutoff stays
+    site_health.record("page_error", "/a", "late", session_factory=factory, at=T0 + timedelta(seconds=100))
+    site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=3000), entries=e,
+                               now=T0 + timedelta(seconds=4000))
+    assert ("page_error", "/a") in rows(factory)
+
+
+def test_apply_spares_other_keys_and_rows_after_the_cutoff(factory):
+    site_health.record("page_error", "/a", "boom", session_factory=factory, at=T0)
+    site_health.record("page_error", "/b", "other", session_factory=factory, at=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    # the old process records /a again after the cutoff, before this process's next apply runs
+    site_health.record("page_error", "/a", "again", session_factory=factory, at=T0 + timedelta(seconds=650))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()],
+                               now=T0 + timedelta(seconds=700))
+    left = rows(factory)
+    assert ("page_error", "/b") in left
+    assert ("page_error", "/a") in left and left[("page_error", "/a")].error == "again"
 
 
 def test_row_inside_grace_is_deleted(factory):
@@ -338,6 +356,18 @@ def test_applied_drops_open_memory(factory):
     site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()],
                                now=T0 + timedelta(seconds=601))
     assert ("page_error", "/a") not in site_health._open
+
+
+def test_applying_keeps_a_recurrence_not_yet_flushed(factory):
+    # A crash queued after the cutoff is a recurrence: applying the entry must not drop it before the flush.
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    site_health.enqueue("page_error", "/a", "again", at=T0 + timedelta(seconds=650))
+    site_health.count("page_error", "/a", at=T0 + timedelta(seconds=650))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()],
+                               now=T0 + timedelta(seconds=700))
+    assert ("page_error", "/a") in site_health._open
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("page_error", "/a")].count == 2
 
 
 def test_check_resolved():
