@@ -45,3 +45,19 @@ def test_flush_counted(pg_factory):
     assert get(pg_factory, "k", "c").count == 4
     assert get(pg_factory, "k", "c").context == [{"i": 0}, {"i": 1}, {"i": 2}]
     assert get(pg_factory, "k", "q").count == 1
+
+
+def test_apply_resolved_twice_deletes_and_does_not_raise(pg_factory):
+    from datetime import timedelta
+    from app.models.site_events import SiteEventResolution
+    e = [{"kind": "page_error", "key": "/a", "fixed_by": "x"}]
+    site_health.record("page_error", "/a", "boom", session_factory=pg_factory, at=T0)
+    site_health.record("page_error", "/b", "boom", session_factory=pg_factory, at=T0)
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)  # a second process
+    assert get(pg_factory, "page_error", "/a") is not None
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0 + timedelta(seconds=601))
+    assert get(pg_factory, "page_error", "/a") is None and get(pg_factory, "page_error", "/b") is not None
+    with pg_factory() as s:
+        rows = s.scalars(select(SiteEventResolution)).all()
+    assert len(rows) == 1 and rows[0].applied_at is not None

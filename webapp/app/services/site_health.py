@@ -8,17 +8,20 @@ here raises into its caller, and nothing writes in demo mode. The loop registry 
 in memory only."""
 
 import copy
+import hashlib
+import json
 import logging
 import re
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects import postgresql, sqlite
 
 from app.config import settings
-from app.models.site_events import SiteEvent
+from app.models.site_events import SiteEvent, SiteEventResolution
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +272,91 @@ def loops():
         return copy.deepcopy(_loops)
 
 
-def start(session_factory):
-    """Flush every FLUSH_S on a daemon thread. Returns the stop event, or None in demo mode."""
+KNOWN_KINDS = frozenset({
+    # recorded
+    "page_error", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "cache_fallback",
+    "worker_overrun", "worker_refused", "slow_page", "warm_vanished",
+    # checked
+    "unscored_match", "kill_impact_missing", "map_pool_note",
+    # replay kinds (app/services/replay_errors.py KINDS)
+    "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed", "heights_rejected",
+    "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held", "store_failed", "ack_missing",
+    "stuck", "unlinked", "needs_a_person", "feature_failed",
+})
+GRACE_S = 600  # PROVISIONAL(D1): grace after the first start that has an entry
+RESOLVED_FILE = Path(__file__).resolve().parents[1] / "data" / "site_health_resolved.json"
+
+
+def load_resolved():
+    return json.loads(RESOLVED_FILE.read_text(encoding="utf-8"))
+
+
+def check_resolved(entries, known=KNOWN_KINDS):
+    """The problems in a resolved-file's entries (empty when it is fine)."""
+    if not isinstance(entries, list):
+        return ["the file must hold a list"]
+    problems = []
+    for i, e in enumerate(entries):
+        if not isinstance(e, dict):
+            problems.append(f"entry {i}: not an object")
+            continue
+        if e.get("kind") not in known:
+            problems.append(f"entry {i}: unknown kind {e.get('kind')!r}")
+        if e.get("key") is not None and not isinstance(e.get("key"), str):
+            problems.append(f"entry {i}: key must be a string or null")
+        if not isinstance(e.get("fixed_by"), str) or not e["fixed_by"].strip():
+            problems.append(f"entry {i}: fixed_by must be a non-empty string")
+    return problems
+
+
+def entry_id(entry):
+    """Identity of an entry: its kind and key only, so editing fixed_by never re-applies it."""
+    blob = json.dumps({"kind": entry["kind"], "key": entry.get("key")}, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def apply_resolved(*, session_factory, started_at, entries=None, now=None):
+    """Clear the rows the committed file names, once each, GRACE_S after the first start that has the entry
+    (rows last seen before that cutoff go). Never raises."""
+    if _demo():
+        return
+    try:
+        entries = load_resolved() if entries is None else entries
+        now = now or _now()
+        known = []
+        for e in entries:
+            if not isinstance(e, dict) or e.get("kind") not in KNOWN_KINDS:
+                logger.warning("site health: skipping resolved entry with unknown kind: %r", e)
+                continue
+            known.append(e)
+        with session_factory() as session:
+            insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
+            table = SiteEventResolution.__table__
+            for e in known:
+                session.execute(insert(table).values(
+                    entry=entry_id(e), kind=e["kind"], key=e.get("key"),
+                    cutoff=started_at + timedelta(seconds=GRACE_S), applied_at=None,
+                ).on_conflict_do_nothing(index_elements=["entry"]))
+            due = session.scalars(select(SiteEventResolution).where(
+                SiteEventResolution.applied_at.is_(None), SiteEventResolution.cutoff <= now)).all()
+            applied = []
+            for r in due:
+                stmt = delete(SiteEvent).where(SiteEvent.kind == r.kind, SiteEvent.last_seen < r.cutoff)
+                if r.key is not None:
+                    stmt = stmt.where(SiteEvent.key == r.key)
+                session.execute(stmt)
+                r.applied_at = now
+                applied.append((r.kind, r.key))
+            session.commit()
+        for kind, key in applied:
+            _drop_memory(lambda k, kk, kind=kind, key=key: k == kind and (key is None or kk == key))
+    except Exception:
+        logger.exception("site health: could not apply the resolved file")
+
+
+def start(session_factory, started_at=None):
+    """Flush every FLUSH_S on a daemon thread (applying the resolved file after each flush when `started_at`
+    is given). Returns the stop event, or None in demo mode."""
     if _demo():
         return None
     stop_event = threading.Event()
@@ -278,6 +364,8 @@ def start(session_factory):
     def run():
         while not stop_event.wait(FLUSH_S):
             flush(session_factory=session_factory)
+            if started_at is not None:
+                apply_resolved(session_factory=session_factory, started_at=started_at)
         flush(session_factory=session_factory)
 
     thread = threading.Thread(target=run, name="site-health-flush", daemon=True)

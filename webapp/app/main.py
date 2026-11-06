@@ -40,11 +40,20 @@ async def lifespan(_app: FastAPI):
     # stays standard library only, so the web app hands it the fast path.
     from app.services import mask_accel
 
+    from datetime import datetime, timezone
+
+    from app.services import site_health
+
+    started_at = datetime.now(timezone.utc)
     mask_accel.register()
     stops = []
     try:
         for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states):
             stops.append(service.start(SessionLocal))
+        if not settings.demo_mode:
+            # Rows the committed app/data/site_health_resolved.json names are cleared here, once each (never raises).
+            site_health.apply_resolved(session_factory=SessionLocal, started_at=started_at)
+            stops.append(site_health.start(SessionLocal, started_at=started_at))
         yield
     finally:
         for stop in stops:

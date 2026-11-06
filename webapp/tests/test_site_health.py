@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.db import Base
-from app.models.site_events import SiteEvent
+from app.models.site_events import SiteEvent, SiteEventResolution
 from app.services import site_health
 
 # Recent, so the 30-day retention in every flush never deletes the rows under test.
@@ -24,7 +24,7 @@ def naive(d):
 def engine(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__])
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
     yield eng
     eng.dispose()
 
@@ -248,3 +248,113 @@ def test_loops_registry():
     assert site_health.loops()["x"]["cycle_s"] == 10
     site_health.unregister("x")
     assert "x" not in site_health.loops()
+
+
+# ---------------------------------------------------------------------------------- clearing by PR (W6)
+def entry(kind="page_error", key="/a", fixed_by="x"):
+    return {"kind": kind, "key": key, "fixed_by": fixed_by}
+
+
+def resolutions(factory):
+    with factory() as s:
+        return {r.entry: r for r in s.scalars(select(SiteEventResolution))}
+
+
+def test_two_starts_apply_once(factory):
+    e = [entry()]
+    site_health.record("page_error", "/a", "boom", session_factory=factory, at=T0 - timedelta(hours=1))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=e, now=T0)
+    assert ("page_error", "/a") in rows(factory)  # still inside the grace
+    (res,) = resolutions(factory).values()
+    assert naive(res.cutoff) == naive(T0 + timedelta(seconds=600)) and res.applied_at is None
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=e, now=T0 + timedelta(seconds=601))
+    assert ("page_error", "/a") not in rows(factory)
+    (res,) = resolutions(factory).values()
+    assert naive(res.applied_at) == naive(T0 + timedelta(seconds=601))
+    site_health.record("page_error", "/a", "again", session_factory=factory, at=T0 + timedelta(seconds=700))
+    site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=1000), entries=e,
+                               now=T0 + timedelta(seconds=2000))
+    assert ("page_error", "/a") in rows(factory)
+
+
+def test_row_inside_grace_is_deleted(factory):
+    site_health.record("page_error", "/a", "boom", session_factory=factory, at=T0 + timedelta(seconds=300))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()],
+                               now=T0 + timedelta(seconds=601))
+    assert rows(factory) == {}
+
+
+def test_null_key_clears_the_kind_once(factory):
+    e = [entry(key=None)]
+    for k in ("/a", "/b"):
+        site_health.record("page_error", k, "boom", session_factory=factory, at=T0)
+    site_health.record("slow_page", "/a", "slow", session_factory=factory, at=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=e, now=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=e, now=T0 + timedelta(seconds=601))
+    assert set(rows(factory)) == {("slow_page", "/a")}
+    site_health.record("page_error", "/c", "boom", session_factory=factory, at=T0 + timedelta(seconds=700))
+    site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=1000), entries=e,
+                               now=T0 + timedelta(seconds=2000))
+    assert ("page_error", "/c") in rows(factory)
+
+
+def test_editing_fixed_by_does_not_reapply(factory):
+    assert site_health.entry_id(entry(fixed_by="x")) == site_health.entry_id(entry(fixed_by="PR 9"))
+    assert site_health.entry_id(entry()) != site_health.entry_id(entry(key=None))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=5000),
+                               entries=[entry(fixed_by="PR 9")], now=T0 + timedelta(seconds=5000))
+    assert len(resolutions(factory)) == 1
+
+
+def test_unknown_kind_is_skipped_with_a_warning(factory, caplog):
+    site_health.record("page_error", "/a", "boom", session_factory=factory, at=T0)
+    with caplog.at_level(logging.WARNING, logger=site_health.logger.name):
+        site_health.apply_resolved(session_factory=factory, started_at=T0,
+                                   entries=[entry(kind="nope"), entry()], now=T0)
+    assert any("nope" in r.getMessage() for r in caplog.records)
+    assert len(resolutions(factory)) == 1
+
+
+def test_apply_resolved_never_raises(caplog):
+    def broken():
+        raise RuntimeError("db down")
+    site_health.apply_resolved(session_factory=broken, started_at=T0, entries=[entry()], now=T0)
+
+
+def test_same_resolution_twice_does_not_raise(factory):
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    site_health._reset_for_tests()
+    site_health.apply_resolved(session_factory=factory, started_at=T0 + timedelta(seconds=1), entries=[entry()],
+                               now=T0 + timedelta(seconds=1))
+    assert len(resolutions(factory)) == 1
+
+
+def test_applied_drops_open_memory(factory):
+    site_health.record("page_error", "/a", "boom", session_factory=factory, at=T0)
+    site_health._open.add(("page_error", "/a"))
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()], now=T0)
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry()],
+                               now=T0 + timedelta(seconds=601))
+    assert ("page_error", "/a") not in site_health._open
+
+
+def test_check_resolved():
+    check = site_health.check_resolved
+    assert check([entry()]) == [] and check([entry(key=None)]) == []
+    assert check([entry(kind="nope")])
+    assert check([{"kind": "page_error", "key": "/a"}])
+    assert check([entry(fixed_by="")])
+    assert check([entry(key=5)])
+    assert check(["not a dict"])
+    assert "given_up" in site_health.KNOWN_KINDS and "unscored_match" in site_health.KNOWN_KINDS
+
+
+def test_committed_file_passes():
+    assert site_health.check_resolved(site_health.load_resolved()) == []
+
+
+def test_demo_mode_apply_resolved_issues_nothing(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", True)
+    site_health.apply_resolved(session_factory=never_factory, started_at=T0, entries=[entry()], now=T0)
