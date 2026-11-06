@@ -23,11 +23,13 @@ from test_replay_store import condensed, pg  # noqa: E402,F401  (fixtures)
 from app.config import settings  # noqa: E402
 from app.models.match import Match  # noqa: E402
 from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
+from app.models.site_events import SiteEvent  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replay_control_remote as remote  # noqa: E402
 from app.services import replay_gaps  # noqa: E402
+from app.services import site_health  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -347,6 +349,139 @@ def test_a_job_running_past_the_limit_counts_as_a_failure(factory, db, linked):
     remote.cycle(factory, worker, state, now=1)                      # first seen running
     counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_JOB_S)
     assert counts["timed_out"] == remote.IN_FLIGHT and all(c == 1 for c, _ in state.tries.values())
+
+
+def worker_events(db):
+    db.expire_all()
+    return {(e.kind, e.key): e for e in db.query(SiteEvent)}
+
+
+@pytest.mark.parametrize("workflow", [False, True])
+def test_worker_health_overruns_are_recorded_and_later_stored_results_resolve_them(
+        factory, db, linked, monkeypatch, caplog, workflow):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    all_control(db, linked, but=range(1, remote.IN_FLIGHT + 1))
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    worker.runners = {"control": "workflow"} if workflow else None
+    remote.cycle(factory, worker, state, now=0)
+    flights = list(state.in_flight.items())
+    remote.cycle(factory, worker, state, now=1)
+    limit = remote._job_stale_s(workflow)
+    late = limit + 2
+    with caplog.at_level(logging.WARNING):
+        assert remote.cycle(factory, worker, state, now=late)["timed_out"] == len(flights)
+    events = worker_events(db)
+    assert set(events) == {("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}")
+                           for _, f in flights}
+    for key, f in flights:
+        event = events["worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}"]
+        assert event.count == 1
+        assert event.error == f"map control {key} ran over {limit}s on the worker; asked again"
+        assert event.error in caplog.messages
+        assert event.context == {"map": f.map_name, "replay": f.replay_id,
+                                 "round": f.round_number, "limit_s": limit}
+    worker.answer = worker.ok
+    remote.cycle(factory, worker, state, now=late + remote.BACKOFF_S + 1)
+    assert remote.cycle(factory, worker, state, now=late + remote.BACKOFF_S + 2)["stored"] == len(flights)
+    assert not worker_events(db)
+
+
+@pytest.mark.parametrize("error", [remote.Refused("no"), remote.Rejected(400, {"error": "no"}),
+                                   remote.Conflict({"error": "no"})], ids=["refused", "rejected", "conflict"])
+def test_worker_health_refusals_are_batched_by_map_and_cleared_by_a_good_round(factory, db, linked, error):
+    worker = RefusingWorker(set(range(1, linked.round_count + 1)), error)
+    state = remote.State()
+    for now in (0, remote.BACKOFF_S + 1):
+        counts = remote.cycle(factory, worker, state, now=now)
+        assert counts["refused"] == linked.round_count
+    key = ("worker_refused", f"{linked.map_name}:{type(error).__name__}")
+    assert len(worker.refused) >= 3
+    assert site_health._counters[key]["n"] == len(worker.refused)
+    assert not worker_events(db), "refusals wait for a flush"
+    site_health.flush(session_factory=factory)
+    events = worker_events(db)
+    assert set(events) == {key} and events[key].count == len(worker.refused)
+    assert events[key].context[-1] == {"replay": linked.id, "round": worker.refused[-1],
+                                       "error": str(error)[:300]}
+    # Both persisted and still-counted refusals on this map are cleared; another map stays open.
+    site_health.count(*key, {"error": "another refusal"})
+    site_health.count("worker_refused", "Other:Refused")
+    worker.refuse = set()
+    remote.cycle(factory, worker, state, now=2 * remote.BACKOFF_S + 2)
+    assert remote.cycle(factory, worker, state, now=2 * remote.BACKOFF_S + 3)["stored"] > 0
+    site_health.flush(session_factory=factory)
+    assert set(worker_events(db)) == {("worker_refused", "Other:Refused")}
+    assert key not in site_health._counters
+
+
+@pytest.mark.parametrize("error_kind", ["infra", "compat"])
+def test_worker_health_counts_infrastructure_but_not_compat_failures(factory, db, linked, error_kind):
+    error = "ModuleNotFoundError: " + "x" * 400
+    worker = FakeWorker(answer=lambda task: {"status": "failed", "error_kind": error_kind, "error": error})
+    state = remote.State()
+    sent = remote.cycle(factory, worker, state, now=0)["sent"]
+    assert remote.cycle(factory, worker, state, now=1)["infra_failed"] == sent
+    if error_kind == "compat":
+        assert not site_health._counters
+    else:
+        counter = site_health._counters["worker_refused", f"{linked.map_name}:infrastructure"]
+        assert counter["n"] == sent
+        assert counter["items"][-1] == {"replay": linked.id, "round": sent, "error": error[:300]}
+    site_health.flush(session_factory=factory)
+    events = worker_events(db)
+    assert len(events) == (1 if error_kind == "infra" else 0)
+    if events:
+        assert next(iter(events.values())).count == sent
+
+
+def test_worker_health_a_stored_engine_failure_resolves_nothing(factory, db, linked):
+    all_control(db, linked, but={1})
+    key = f"{linked.map_name}:{linked.id}:1"
+    site_health.record("worker_overrun", key, "overrun", session_factory=factory)
+    site_health.count("worker_refused", f"{linked.map_name}:infrastructure")
+    site_health.flush(session_factory=factory)
+    site_health.count("worker_refused", f"{linked.map_name}:Refused")
+    worker = FakeWorker(answer=lambda task: {"status": "failed", "error_kind": "engine", "error": "boom"})
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    assert remote.cycle(factory, worker, state, now=1)["stored_failed"] == 1
+    site_health.flush(session_factory=factory)
+    assert set(worker_events(db)) == {("worker_overrun", key),
+                                     ("worker_refused", f"{linked.map_name}:infrastructure"),
+                                     ("worker_refused", f"{linked.map_name}:Refused")}
+
+
+@pytest.mark.parametrize("kept", [True, False])
+def test_worker_health_gaps_only_resolves_overruns_only_when_gaps_are_kept(factory, db, linked, kept):
+    all_control(db, linked)
+    worker, state = FakeWorker(gaps=remote.GAPS_PROTOCOL), remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    keys = set()
+    for f in state.in_flight.values():
+        key = f"{f.map_name}:{f.replay_id}:{f.round_number}"
+        keys.add(("worker_overrun", key))
+        site_health.record("worker_overrun", key, "overrun", session_factory=factory)
+    if not kept:
+        def untrusted(task):
+            job = worker.ok(task)
+            job["result"].pop("gaps")
+            return job
+        worker.answer = untrusted
+    counts = remote.cycle(factory, worker, state, now=1)
+    assert counts["gaps_stored" if kept else "gaps_dropped"] == len(keys)
+    assert set(worker_events(db)) == (set() if kept else keys)
+
+
+def test_worker_health_demo_overruns_and_refusals_leave_no_events(factory, db, linked, monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", True)
+    worker, state = FakeWorker(answer=lambda task: {"status": "running"}), remote.State()
+    assert remote.cycle(factory, worker, state, now=0)["sent"] > 0
+    remote.cycle(factory, worker, state, now=1)
+    assert remote.cycle(factory, worker, state, now=remote.STALE_JOB_S + 2)["timed_out"] > 0
+    refusing = RefusingWorker(set(range(1, linked.round_count + 1)), remote.Refused("no"))
+    assert remote.cycle(factory, refusing, remote.State(), now=0)["refused"] > 0
+    site_health.flush(session_factory=factory)
+    assert not worker_events(db) and not site_health._counters
 
 
 def test_a_preempted_job_starts_its_running_clock_again(factory, db, linked):

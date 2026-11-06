@@ -448,6 +448,13 @@ def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
                                     for k in ("sight", "walk", "barrier", "cover", "specials", "scale", "height", "features"))
 
 
+def _resolve_worker(session_factory, f: InFlight) -> None:
+    """A stored result clears the round's overrun and the map's worker refusals."""
+    site_health.resolve("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}",
+                        session_factory=session_factory)
+    site_health.resolve_prefix("worker_refused", f"{f.map_name}:", session_factory=session_factory)
+
+
 def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
     heights = control_heights.active_digests(session)
     for key, f in list(state.in_flight.items()):
@@ -473,6 +480,10 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             elif now - f.running_since > f.stale_s:
                 del state.in_flight[key]
                 log.warning("map control %s ran over %ss on the worker; asked again", key, f.stale_s)
+                site_health.record("worker_overrun", f"{f.map_name}:{f.replay_id}:{f.round_number}",
+                                   f"map control {key} ran over {f.stale_s}s on the worker; asked again",
+                                   {"map": f.map_name, "replay": f.replay_id, "round": f.round_number,
+                                    "limit_s": f.stale_s}, session_factory=session_factory)
                 state.failed(key, now)
                 counts["timed_out"] += 1
             continue
@@ -499,6 +510,8 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 # own locked transaction, and a result it finds stale is skipped, not failed.
                 if not _keep_gaps(session_factory, f, result, counts):
                     state.failed(key, now)
+                else:
+                    _resolve_worker(session_factory, f)
                 continue
             row = {"status": "ok", "data": base64.b64decode(result["data"]),
                    "summary": base64.b64decode(result["summary"]), 'geometry': result.get('geometry')}
@@ -529,12 +542,17 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             log.warning("map control %s failed on the worker (%s): %s", key, job.get("error_kind"),
                         str(job.get("error") or job.get("status"))[:300])
             if job.get('error_kind') != 'compat':
+                site_health.count("worker_refused", f"{f.map_name}:infrastructure",
+                                  {"replay": f.replay_id, "round": f.round_number,
+                                   "error": str(job.get("error") or job.get("status"))[:300]})
                 state.failed(key, now)
             counts["infra_failed"] += 1
             continue
         outcome = store_round(session_factory, f.replay_id, f.round_number, f.fingerprint, row, require_current=True,
                               planned_inputs=f.inputs)
         counts["stored" if outcome == STORED else "skipped"] += 1
+        if outcome == STORED and row["status"] == "ok":
+            _resolve_worker(session_factory, f)
         if row["status"] == "failed" and outcome == STORED:
             counts["stored_failed"] += 1
         if f.expect_gaps and row["status"] == "ok":
@@ -682,6 +700,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             # rounds behind it still go out: returning here sent nothing at all while the first round in D2's
             # order kept being refused, with no try ever spent.
             log.warning("map control %s refused: %s", key, refused)
+            site_health.count("worker_refused", f"{p.map_name}:{type(refused).__name__}",
+                              {"replay": p.replay_id, "round": p.round_number, "error": str(refused)[:300]})
             state.failed(key, now)
             counts["refused"] += 1
             continue
