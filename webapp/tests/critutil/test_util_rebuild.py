@@ -1,5 +1,6 @@
 """The background Critical Util build: one child per process at a time, never raising into a request."""
 
+import json
 import sys
 
 from app.services import util_rebuild
@@ -17,7 +18,7 @@ class Child:
 
 def test_one_child_at_a_time_then_another_once_it_has_finished(monkeypatch):
     spawned = []
-    monkeypatch.setattr(util_rebuild, "_spawn", lambda: spawned.append(Child()) or spawned[-1])
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: spawned.append(Child()) or spawned[-1])
     assert util_rebuild.request() is True and util_rebuild.running()
     assert util_rebuild.request() is False and len(spawned) == 1, "the first is still building"
     spawned[0].done = True
@@ -26,7 +27,7 @@ def test_one_child_at_a_time_then_another_once_it_has_finished(monkeypatch):
 
 
 def test_a_child_that_cannot_start_is_logged_not_raised(monkeypatch):
-    def fail():
+    def fail(previous=None):
         raise OSError("no fork")
 
     monkeypatch.setattr(util_rebuild, "_spawn", fail)
@@ -38,6 +39,9 @@ def test_the_child_runs_this_module_from_the_webapp_folder(monkeypatch):
     monkeypatch.setattr(util_rebuild.subprocess, "Popen", lambda args, **kw: seen.update(args=args, **kw) or Child())
     REAL_SPAWN()
     assert seen["args"] == [sys.executable, "-m", "app.services.util_rebuild"]
+    REAL_SPAWN({"error": "e", "context": None, "at": "2026-11-06T00:00:00+00:00"})
+    assert seen["args"][:4] == [sys.executable, "-m", "app.services.util_rebuild", "--previous"]
+    assert json.loads(seen["args"][4])["error"] == "e"
     assert seen["cwd"] == util_rebuild.WEBAPP and (util_rebuild.WEBAPP / "app" / "main.py").is_file()
 
 
@@ -54,7 +58,7 @@ def test_main_builds_through_ensure_values(monkeypatch, capsys):
     monkeypatch.setattr(app.db, "engine", engine)
     monkeypatch.setattr(app.db, "SessionLocal", sessionmaker(bind=engine))
     monkeypatch.setattr(replay_util, "ensure_values", lambda db: {"rows": [1, 2, 3]})
-    assert util_rebuild.main() == 0
+    assert util_rebuild.main([]) == 0
     assert "stored 3 valued casts" in capsys.readouterr().out
     assert map_feature_sources._accel is not None, "the child decodes masks with numpy"
 
@@ -99,10 +103,72 @@ def test_a_build_that_raises_is_recorded_and_exits_3(health, monkeypatch):
 
     monkeypatch.setattr(replay_util, "ensure_values", boom)
     assert util_rebuild.EXIT_RECORDED == 3
-    assert util_rebuild.main() == 3
+    assert util_rebuild.main([]) == 3
     row = stored(health)[("util_build_failed", "build")]
     assert row.error.startswith("RuntimeError: the corpus broke")
     assert row.context["traceback"] and len(row.context["traceback"]) <= 15
+
+
+def test_a_handed_failure_is_written_before_the_build_and_its_success_clears_it(health, monkeypatch):
+    # R4-4: the failure and the clear come from one process, in order
+    from app.services import replay_util
+
+    order = []
+    real = site_health.record_now
+    monkeypatch.setattr(site_health, "record_now", lambda *a, **k: order.append("record") or real(*a, **k))
+    monkeypatch.setattr(replay_util, "ensure_values",
+                        lambda db: order.append(("build", ("util_build_failed", "build") in stored(health)))
+                        or {"rows": []})
+    previous = {"error": "the build exited with code -9", "context": {"exit_code": -9},
+                "at": "2026-11-06T00:00:00+00:00"}
+    assert util_rebuild.main(["--previous", json.dumps(previous)]) == 0
+    assert order == ["record", ("build", True)]
+    assert stored(health) == {}
+
+
+def test_a_handed_failure_stays_when_another_process_is_building(health, monkeypatch):
+    import app.db
+
+    class Result:
+        def scalar(self):
+            return False
+
+    class Holder:
+        def execute(self, *a, **k):
+            return Result()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Dialect:
+        name = "postgresql"
+
+    class FakeEngine:
+        dialect = Dialect()
+
+        def connect(self):
+            return Holder()
+
+    monkeypatch.setattr(app.db, "engine", FakeEngine())
+    previous = {"error": "the build exited with code 9", "context": {"exit_code": 9},
+                "at": "2026-11-06T00:00:00+00:00"}
+    assert util_rebuild.main(["--previous", json.dumps(previous)]) == 0
+    assert stored(health)[("util_build_failed", "build")].error == "the build exited with code 9"
+
+
+def test_a_failure_the_child_could_not_store_exits_1_for_the_parent(health, monkeypatch):
+    # R4-4: EXIT_RECORDED only after a write that committed
+    from app.services import replay_util
+
+    def boom(db):
+        raise RuntimeError("the corpus broke")
+
+    monkeypatch.setattr(replay_util, "ensure_values", boom)
+    monkeypatch.setattr(site_health, "record_now", lambda *a, **k: False)
+    assert util_rebuild.main([]) == 1
 
 
 def test_a_good_build_clears_a_stored_failure(health, monkeypatch):
@@ -111,7 +177,7 @@ def test_a_good_build_clears_a_stored_failure(health, monkeypatch):
     site_health.record_now("util_build_failed", "build", "RuntimeError: old", session_factory=health)
     assert ("util_build_failed", "build") in stored(health)
     monkeypatch.setattr(replay_util, "ensure_values", lambda db: {"rows": []})
-    assert util_rebuild.main() == 0
+    assert util_rebuild.main([]) == 0
     assert stored(health) == {}
 
 
@@ -144,7 +210,7 @@ def test_the_lock_held_exit_records_and_resolves_nothing(health, monkeypatch, ca
             return Holder()
 
     monkeypatch.setattr(app.db, "engine", FakeEngine())
-    assert util_rebuild.main() == 0
+    assert util_rebuild.main([]) == 0
     assert "another process is building" in capsys.readouterr().out
     assert ("util_build_failed", "build") in stored(health), "the failure stays until a build succeeds"
 
@@ -159,31 +225,48 @@ class Done:
         return self.code
 
 
-@pytest.mark.parametrize("code, queued", [(9, True), (-9, True), (3, False), (0, False)])
-def test_a_finished_child_with_a_bad_exit_code_is_queued_once(monkeypatch, code, queued):
+@pytest.mark.parametrize("code, handed", [(9, True), (-9, True), (1, True), (3, False), (0, False)])
+def test_a_finished_child_with_a_bad_exit_code_is_handed_to_the_next_child(monkeypatch, code, handed):
+    # R4-4 / R3-3: the next child writes it first, so its own success's clear comes after it; this process
+    # queues nothing (a queued failure could land after that clear).
     monkeypatch.setattr(settings, "demo_mode", False)
-    spawned = [Done(code), Child(done=False)]
-    monkeypatch.setattr(util_rebuild, "_spawn", lambda: spawned.pop(0))
+    spawned, given = [Done(code), Child(done=False)], []
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: given.append(previous) or spawned.pop(0))
     assert util_rebuild.request() is True            # the child that will finish
-    assert util_rebuild.request() is True            # reads its exit code, starts the next
-    entries = [e for e in site_health._queue if e["kind"] == "util_build_failed"]
-    if queued:
-        [entry] = entries
-        assert entry["key"] == "build" and entry["context"]["exit_code"] == code
-        assert entry["context"]["pid"] == 77 and "ran_s" in entry["context"]
-        assert str(code) in entry["error"]
+    assert util_rebuild.request() is True            # reads its exit code, starts the next with it
+    assert given[0] is None
+    if handed:
+        previous = given[1]
+        assert previous["context"]["exit_code"] == code and previous["context"]["pid"] == 77
+        assert "ran_s" in previous["context"] and str(code) in previous["error"] and previous["at"]
     else:
-        assert entries == []
+        assert given[1] is None
+    assert not [e for e in site_health._queue if e["kind"] == "util_build_failed"]
     assert util_rebuild.request() is False           # the second child is still running: nothing more
-    assert len([e for e in site_health._queue if e["kind"] == "util_build_failed"]) == len(entries)
+    assert len(given) == 2
+
+
+def test_a_failure_with_no_child_to_take_it_is_queued_here(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    spawned = [Done(9)]
+
+    def spawn(previous=None):
+        if not spawned:
+            raise OSError("no fork")
+        return spawned.pop(0)
+
+    monkeypatch.setattr(util_rebuild, "_spawn", spawn)
+    assert util_rebuild.request() is True
+    assert util_rebuild.request() is False
+    [entry] = [e for e in site_health._queue if e["kind"] == "util_build_failed"]
+    assert entry["context"]["exit_code"] == 9
 
 
 def test_a_finished_child_is_read_once(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
-    spawned = [Done(9), Done(9), Done(9)]
-    monkeypatch.setattr(util_rebuild, "_spawn", lambda: spawned.pop(0))
+    spawned, given = [Done(9), Done(9), Done(9)], []
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: given.append(previous) or spawned.pop(0))
     util_rebuild.request()
-    util_rebuild.request()      # reads child 1 (one entry), starts child 2
-    assert len(site_health._queue) == 1
-    util_rebuild.request()      # reads child 2 (a second entry), starts child 3; child 1 is not read again
-    assert len(site_health._queue) == 2
+    util_rebuild.request()      # reads child 1, hands it to child 2
+    util_rebuild.request()      # reads child 2, hands it to child 3; child 1 is not read again
+    assert [g is not None for g in given] == [False, True, True]

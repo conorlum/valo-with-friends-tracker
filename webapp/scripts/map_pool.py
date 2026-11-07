@@ -51,9 +51,12 @@ def cmd_refresh(session_factory, fetch) -> int:
     if settings.demo_mode:
         print(REFUSED)
         return 2
-    from app.services import map_pool_refresh
+    from app.services import map_pool_refresh, site_health
 
-    counts = map_pool_refresh.check(session_factory, fetch)
+    try:
+        counts = map_pool_refresh.check(session_factory, fetch)
+    finally:     # this process has no flush thread: its failure, or the clear of a stored one, is written now
+        site_health.flush(session_factory=session_factory)
     print("refresh:", ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) if counts else "done")
     return 0
 

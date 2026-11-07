@@ -3,8 +3,8 @@ error's first line. Sorted by kind, then last seen (newest first).
 
     python scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only scripts/site_health.py list [--kind K]
 
-On the friends DB, run it through with_friends_db.py as above. The script never writes: rows are cleared only
-by a PR that adds an entry to app/data/site_health_resolved.json.
+On the friends DB, run it through with_friends_db.py as above. The script never writes. Rows clear on a later
+success of the same job, or through a PR entry in app/data/site_health_resolved.json.
 """
 
 from __future__ import annotations

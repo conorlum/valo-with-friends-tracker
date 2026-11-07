@@ -564,14 +564,16 @@ def ensure_values(db, *, force: bool = False) -> dict:
     return data
 
 
-def values_current(db, stored: tuple[str, dict] | None = None) -> bool:
+def values_current(db, stored: tuple[str, dict] | None = None, rows: list[tuple] | None = None) -> bool:
     """Whether the stored build is what `ensure_values` would return now, without building anything: the stored
-    estimator covers every match with a replay, and the build's key matches its inputs."""
+    estimator covers every match with a replay, and the build's key matches its inputs. `rows`: the caller's
+    `current_rows(db, with_data=False)`, when it has them already."""
     model = util_model.load(db)
     if not util_model.covers(model, util_model.replay_match_ids(db)):
         return False
     stored = _values_row(db) if stored is None else stored
-    return stored is not None and stored[0] == corpus_key(db, current_rows(db, with_data=False), model)
+    rows = current_rows(db, with_data=False) if rows is None else rows
+    return stored is not None and stored[0] == corpus_key(db, rows, model)
 
 
 def page_values(db) -> tuple[dict | None, bool]:

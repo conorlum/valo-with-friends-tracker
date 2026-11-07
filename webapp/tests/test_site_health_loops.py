@@ -305,3 +305,43 @@ def test_allowed_s_overrides_and_unregistered_never_shows(clock):
     assert [i["name"] for i in site_health.quiet_loops(T0 + timedelta(hours=27))] == ["pool"]
     site_health.unregister("pool")
     assert site_health.quiet_loops(T0 + timedelta(days=9)) == []
+
+
+
+def test_acks_the_worker_never_answers_count_as_a_worker_failure(monkeypatch):
+    # R4-9: /health answers but every ack times out: not a clean cycle
+    from unittest.mock import MagicMock
+
+    class Client:
+        def health(self):
+            return {"archive": {"enabled": True}}
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [object(), object()]
+    seen = []
+
+    def send_ack(db, upload, client, match_uuid=None, *, raise_unreachable=False):
+        seen.append(raise_unreachable)
+        raise replay_upload.WorkerError("ack timed out")
+
+    monkeypatch.setattr(replay_upload, "collect_unfinished", lambda *a, **k: 0)
+    monkeypatch.setattr(replay_upload, "send_ack", send_ack)
+    state = replay_archive_sync.State()
+    replay_archive_sync.cycle(lambda: session, Client(), state)
+    assert seen == [True] and state.worker_error == "WorkerError: ack timed out"
+
+
+def test_send_ack_raises_an_unreachable_worker_only_when_asked(monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(replay_upload, "ack_body", lambda *a, **k: {"x": 1})
+
+    class Worker:
+        def ack(self, job_id, body):
+            raise replay_upload.WorkerError("timed out")
+
+    db, upload = MagicMock(), MagicMock()
+    assert replay_upload.send_ack(db, upload, Worker()) is None
+    with pytest.raises(replay_upload.WorkerError):
+        replay_upload.send_ack(db, upload, Worker(), raise_unreachable=True)
+    assert db.rollback.call_count == 2

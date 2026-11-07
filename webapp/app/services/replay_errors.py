@@ -21,7 +21,7 @@ from app.config import settings
 from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
 from app.models.replay import (Replay, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
-                               ReplayRoundUtil, ReplayUpload)
+                               ReplayRoundUtil, ReplayUpload, UtilModel)
 from app.services import control_heights, replay_progress, site_health
 from app.services.replay_gaps import Freshness
 
@@ -85,6 +85,9 @@ _kill_impact_results: dict = {}     # replay id -> item dict, for linked replays
 _kill_impact_checked_at: datetime | None = None
 _util_values_current: bool | None = None   # the last pass's answer, None = never or failed
 _util_checked_at: datetime | None = None
+# the last pass's (build key, oldest current util row newer than that build or None): the age the out-of-date
+# warning uses, since the card's own cheap query also counts rows a newer input superseded
+_util_oldest_current: tuple | None = None
 _digests: dict = {}    # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
 
 
@@ -232,14 +235,14 @@ def _verify_kill_impact(db) -> dict:
     from app.replays.db import impact_fingerprint
     from app.services import site_health_checks
 
+    # only the stored split's fingerprint, read in the database: never the splits themselves
     found = db.execute(select(Replay.id, Replay.match_id, Replay.map_name, Replay.match_uuid, Replay.linked_at,
-                              Replay.created_at, Replay.kill_impact)
+                              Replay.created_at, Replay.kill_impact["fingerprint"].as_string())
                        .where(Replay.link_status == "linked", Replay.match_id.is_not(None),
                               Replay.kill_impact.is_not(None), site_health_checks._scored(Replay.match_id))
                        .order_by(Replay.id)).all()
     mismatched = {}
-    for rid, match_id, map_name, match_uuid, linked_at, created_at, split in found:
-        stored = split.get("fingerprint") if isinstance(split, dict) else None
+    for rid, match_id, map_name, match_uuid, linked_at, created_at, stored in found:
         if stored == impact_fingerprint(db, match_id):
             continue
         mismatched[rid] = {
@@ -253,7 +256,8 @@ def _verify_kill_impact(db) -> dict:
 def _verify_data(db):
     """The data checks that are too slow to run when the card is computed. Each keeps its previous result when it
     fails."""
-    global _kill_impact_results, _kill_impact_checked_at, _util_values_current, _util_checked_at
+    global _kill_impact_results, _kill_impact_checked_at, _util_values_current, _util_checked_at, \
+        _util_oldest_current
     try:
         results = _verify_kill_impact(db)
         with _verification_lock:
@@ -271,14 +275,19 @@ def _verify_data(db):
     try:
         from app.services import replay_util   # pulls numpy: only the background pass imports it
 
-        current = bool(replay_util.values_current(db))
+        rows = replay_util.current_rows(db, with_data=False)
+        build = db.execute(select(UtilModel.key, UtilModel.computed_at).where(UtilModel.name == "values")).first()
+        current = bool(replay_util.values_current(db, rows=rows))
+        newer = [_utc(r[3]) for r in rows if r[3] is not None
+                 and (build is None or _utc(r[3]) > _utc(build.computed_at))]
         with _verification_lock:
             _util_values_current, _util_checked_at = current, now()
+            _util_oldest_current = (build.key if build else None, min(newer) if newer else None)
         _verification_changed()
     except Exception:
         log.exception("the Critical Util build comparison could not finish")
         with _verification_lock:
-            _util_values_current = None
+            _util_values_current = _util_oldest_current = None
         try:
             db.rollback()
         except Exception:
@@ -561,14 +570,22 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
     from app.services import site_health_checks
 
     moment = now()
+    cap = site_health_checks.UNSCORED_CAP
+    cut_note = f"more than {cap}: the first {cap} are counted here; the rest query lists them all"
     if "unscored_match" in rows:
-        for item in site_health_checks.unscored_matches(db, moment):
+        found = site_health_checks.unscored_matches(db, moment)
+        if len(found) > cap:
+            found, notes["unscored_match"] = found[:cap], cut_note
+        for item in found:
             rows["unscored_match"].append(_event_row(
                 kind="unscored_match", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
                 error=item["error"], context=item["context"], link=item.get("link"),
                 reproduce=item.get("reproduce") or LIVE_NOTE))
     if "kill_impact_missing" in rows:
-        items = {item["key"]: item for item in site_health_checks.kill_impact_null(db)}
+        found = site_health_checks.kill_impact_null(db)
+        if len(found) > cap:
+            found, notes["kill_impact_missing"] = found[:cap], cut_note
+        items = {item["key"]: item for item in found}
         with _verification_lock:
             mismatched = dict(_kill_impact_results)
         for item in mismatched.values():
@@ -587,11 +604,18 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
     if "util_build_stale" in rows:
         with _verification_lock:
             util_current, util_checked = _util_values_current, _util_checked_at
+            oldest_current = _util_oldest_current
         for item in site_health_checks.util_build_stale(db, moment):
             if util_current is True and util_checked is not None:
                 newer = _parse_iso(item["context"].get("oldest_newer_row"))
                 if newer is not None and _utc(util_checked) > newer:
                     continue   # a pass after the newer rows found the build current: they were already covered
+            if util_current is False and oldest_current is not None \
+                    and oldest_current[0] == item["context"].get("build_key"):
+                # the pass read which rows are current: superseded ones don't make the build overdue
+                if oldest_current[1] is None or \
+                        (_utc(moment) - oldest_current[1]).total_seconds() <= site_health_checks.UTIL_STALE_S:
+                    continue
             rows["util_build_stale"].append(_event_row(
                 kind="util_build_stale", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
                 error=item["error"], context=item["context"],

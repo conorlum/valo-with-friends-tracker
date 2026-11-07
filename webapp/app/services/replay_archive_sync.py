@@ -82,7 +82,8 @@ def cycle(session_factory, client: uploads.WorkerClient, state: State, now: date
                           and_(ReplayUpload.store_outcome.is_(None), ReplayUpload.status == "stored")))
                       .order_by(ReplayUpload.finished_at).all())
         for upload in unanswered:
-            if uploads.send_ack(session, upload, client) is None:
+            # a worker that can't be reached raises (the except below): the cycle then counts as a worker failure
+            if uploads.send_ack(session, upload, client, raise_unreachable=True) is None:
                 counts["acks_unsent"] += 1
             else:
                 counts["acks_sent"] += 1
@@ -107,7 +108,7 @@ def run_forever(session_factory, client, stop: threading.Event, every_s: float =
                 if any(counts.values()):
                     log.info("archive sync: %s", ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if v))
                 site_health.loop_ok(LOOP_NAME)
-                _note_worker(session_factory, state)
+                _note_worker(state)
             except Exception as exc:  # noqa: BLE001 - the sync must never take the site down
                 log.exception("archive sync failed")
                 site_health.loop_failed(LOOP_NAME, exc)
@@ -119,7 +120,7 @@ def run_forever(session_factory, client, stop: threading.Event, every_s: float =
             site_health.unregister(LOOP_NAME)
 
 
-def _note_worker(session_factory, state: State) -> None:
+def _note_worker(state: State) -> None:
     """A worker that stays away for WORKER_FAILS_BEFORE_RECORD cycles in a row is recorded; one good cycle clears it."""
     if state.worker_error is None:
         state.worker_fails = 0

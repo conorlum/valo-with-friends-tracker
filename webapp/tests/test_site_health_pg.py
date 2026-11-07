@@ -138,3 +138,76 @@ def test_util_build_stale_is_silent_while_the_build_lock_is_held(pg_factory):
         holder.close()
     with pg_factory() as s:
         assert len(site_health_checks.util_build_stale(s, T0)) == 1
+
+
+
+def test_a_flush_waits_for_a_resolution_being_applied_and_then_honours_its_cutoff(pg_factory):
+    # R4-5: the old process's flush must not land an occurrence from before the cutoff after the deletion
+    import threading
+    import time
+
+    from sqlalchemy import update
+    from app.models.site_events import SiteEventResolution
+
+    e = [{"kind": "page_error", "key": "/a", "fixed_by": "x"}]
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)   # inserted, not due
+    applier = pg_factory()
+    applier.execute(update(SiteEventResolution).values(applied_at=T0 + timedelta(seconds=700)))   # claimed, open
+    site_health.record("page_error", "/a", "from the old process", at=T0 + timedelta(seconds=100))
+    flusher = threading.Thread(target=site_health.flush, kwargs={"session_factory": pg_factory})
+    flusher.start()
+    time.sleep(0.5)
+    assert flusher.is_alive(), "the flush waits for the resolution being applied"
+    applier.commit()
+    applier.close()
+    flusher.join(10)
+    assert not flusher.is_alive()
+    assert get(pg_factory, "page_error", "/a") is None and not site_health._queue
+
+
+def test_an_apply_waits_for_a_flush_in_progress(pg_factory):
+    from sqlalchemy import text, update
+    from sqlalchemy.exc import OperationalError
+    from app.models.site_events import SiteEventResolution
+
+    e = [{"kind": "page_error", "key": "/a", "fixed_by": "x"}]
+    site_health.apply_resolved(session_factory=pg_factory, started_at=T0, entries=e, now=T0)
+    flushing = pg_factory()
+    site_health._cutoffs(flushing)                      # a flush's transaction, before its writes commit
+    with pg_factory() as applier:
+        applier.execute(text("SET lock_timeout = '300ms'"))
+        with pytest.raises(OperationalError):
+            applier.execute(update(SiteEventResolution).values(applied_at=T0 + timedelta(seconds=700)))
+    flushing.rollback()
+    flushing.close()
+
+
+def test_two_flushes_of_one_counter_key_take_turns(pg_factory):
+    # R4-8: the stored context is read under a row lock, so a second writer waits for the first's commit
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    site_health.count("slow_page", "/a", {"s": 20}, at=T0)
+    site_health.flush(session_factory=pg_factory)
+    first = pg_factory()
+    row = site_health._insert_or_lock(first, "slow_page", "/a", error="", context=None, count=1,
+                                      first_seen=T0, last_seen=T0)
+    assert row is not site_health._INSERTED and row.context == [{"s": 20}]
+    with pg_factory() as second:
+        second.execute(text("SET lock_timeout = '300ms'"))
+        with pytest.raises(OperationalError):
+            site_health._insert_or_lock(second, "slow_page", "/a", error="", context=None, count=1,
+                                        first_seen=T0, last_seen=T0)
+    first.rollback()
+    first.close()
+
+
+def test_one_warm_loss_reported_by_two_processes_is_stored_once(pg_factory):
+    # R4-6, on PostgreSQL's upsert and row lock
+    def same(stored, new):
+        return (stored or {}).get("boot") == new.get("boot") and new["times"] <= (stored or {}).get("times", 0)
+
+    for _ in range(2):
+        site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b"}, at=T0, unless_stored=same)
+        site_health.flush(session_factory=pg_factory)
+    assert get(pg_factory, "warm_vanished", "Ascent:1").count == 1

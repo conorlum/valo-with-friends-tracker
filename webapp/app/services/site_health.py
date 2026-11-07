@@ -94,17 +94,24 @@ PAGE_ROUTES = {
 _lock = threading.RLock()
 _queue: deque = deque()     # records and resolves, in the order they happened
 _dropped = 0
+_dropped_logged = 0
 _counters: dict = {}
 _loops: dict = {}
+_loop_threads: dict = {}    # loop name -> the thread that registered it (join_loops)
 _threads: dict = {}
 _resolved = {"inserted": False, "done": False}
 
 _URL_PASSWORD = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^:/@\s]*:)[^@\s]*@")
-# name, an optional closing quote (JSON/dict keys), = or :, then a quoted value (to its closing quote) or a bare one
+_SECRET_NAMES = r"password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|key"
+# name, an optional closing quote (JSON/dict keys), = or :, then a quoted value or a bare one. A quoted value runs
+# to its closing quote, or to the end of the text when it has none (cut short): every character has one way to
+# match (an escape pair, or one character that is neither a backslash nor the quote), so it runs in linear time.
 _SECRET_VALUE = re.compile(
-    r"""(?P<head>\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|key)\b["']?\s*[=:]\s*)"""
-    r"""(?:(?P<q>["'])(?:\\.|(?!(?P=q)).)*(?P=q)|[^&\s;,"'}\]]*)""",
+    rf"""(?P<head>\b(?:{_SECRET_NAMES})\b["']?\s*[=:]\s*)"""
+    r"""(?:(?P<q>["'])(?:\\[\s\S]|(?!(?P=q))[^\\])*(?:(?P<end>(?P=q))|\\?\Z)|[^&\s;,"'}\]]*)""",
     re.IGNORECASE)
+# a mapping's field named like a secret (`token`, `db_password`, `X-Api-Key`): its value is hidden whole
+_SECRET_FIELD = re.compile(rf"(?:[\w-]*[_-])?(?:{_SECRET_NAMES})", re.IGNORECASE)
 _BEARER = re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 KEY_MAX = 300
 
@@ -127,8 +134,7 @@ def scrub(text):
     and the like (`name=value`, `name: value`, `"name": "value"`); make the text storable."""
     text = _URL_PASSWORD.sub(r"\1***@", text)
     text = _BEARER.sub(lambda m: f"{m.group(1)} ***", text)
-    text = _SECRET_VALUE.sub(lambda m: m.group("head") + (f"{m.group('q')}***{m.group('q')}" if m.group("q") else "***"),
-                             text)
+    text = _SECRET_VALUE.sub(lambda m: m.group("head") + (m.group("q") or "") + "***" + (m.group("end") or ""), text)
     return _storable(text)
 
 
@@ -136,7 +142,8 @@ def _scrub_value(value):
     if isinstance(value, str):
         return scrub(value)
     if isinstance(value, dict):
-        return {_storable(str(k)): _scrub_value(v) for k, v in value.items()}
+        return {_storable(str(k)): "***" if v is not None and _SECRET_FIELD.fullmatch(str(k)) else _scrub_value(v)
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_scrub_value(v) for v in value]
     if value is None or isinstance(value, (bool, int, float)):
@@ -174,22 +181,41 @@ def _upsert(session, kind, key, *, error, context, n, first, last, set_error=Tru
     session.execute(stmt.on_conflict_do_update(index_elements=["kind", "key"], set_=update))
 
 
+def _merge_resolve(entry):
+    """Drop an earlier queued resolve of the same kind, key and prefix when no record it would clear came after
+    it: the new one clears everything the old one did. Keeps a long outage's queue to its records. Under _lock."""
+    match = _match(entry["kind"], entry["key"], entry["prefix"])
+    ident = (entry["kind"], entry["key"], entry["prefix"])
+    for i in range(len(_queue) - 1, -1, -1):
+        e = _queue[i]
+        if e["op"] == "record" and match(e["kind"], e["key"]):
+            return
+        if e["op"] == "resolve" and (e["kind"], e["key"], e["prefix"]) == ident:
+            if e["at"] <= entry["at"]:
+                del _queue[i]
+            return
+
+
 def _push(entry):
     global _dropped
     with _lock:
+        if entry["op"] == "resolve":
+            _merge_resolve(entry)
         _queue.append(entry)
         while len(_queue) > QUEUE_MAX:
             _queue.popleft()
             _dropped += 1
 
 
-def record(kind, key, error, context=None, *, at=None):
-    """Queue one occurrence for the next flush. Never touches the database, never raises."""
+def record(kind, key, error, context=None, *, at=None, unless_stored=None):
+    """Queue one occurrence for the next flush. Never touches the database, never raises. `unless_stored(stored
+    context, this context)` -> True skips the write: it is decided at flush time, against the stored row locked
+    in the flush's transaction, so two processes reporting the same thing store it once."""
     if _demo():
         return
     try:
         _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": error, "context": context,
-               "at": at or _now()})
+               "at": at or _now(), "unless_stored": unless_stored})
     except Exception:
         logger.exception("site health: could not queue %s %s", kind, key)
 
@@ -258,17 +284,22 @@ def _delete_stmt(kind, key, prefix, at):
 
 
 def record_now(kind, key, error, context=None, *, session_factory, at=None):
-    """Store one occurrence at once, for a process about to exit (the Critical Util child). Never raises."""
+    """Store one occurrence at once, for a process about to exit (the Critical Util child). Never raises: True
+    when the write committed (or an applied PR resolution already covers it), False when it failed."""
     if _demo():
-        return
+        return False
     try:
         when = at or _now()
+        key = _clean_key(key)
         with session_factory() as session:
-            _upsert(session, kind, _clean_key(key), error=_clean_error(error), context=_scrub_value(context),
-                    n=1, first=when, last=when)
+            if not _covered(_cutoffs(session), kind, key, when):
+                _upsert(session, kind, key, error=_clean_error(error), context=_scrub_value(context),
+                        n=1, first=when, last=when)
             session.commit()
+        return True
     except Exception:
         logger.exception("site health: could not record %s %s", kind, key)
+        return False
 
 
 def resolve_now(kind, key, *, session_factory, at=None):
@@ -306,6 +337,10 @@ def _coalesce(queued):
     for e in queued:
         if e["op"] == "record":
             k = (e["kind"], e["key"])
+            if e.get("unless_stored") is not None:      # each is decided against the stored row on its own
+                last.pop(k, None)
+                out.append({**e, "n": 1, "first": e["at"], "last": e["at"]})
+                continue
             i = last.get(k)
             if i is None:
                 last[k] = len(out)
@@ -324,18 +359,39 @@ def _coalesce(queued):
     return [o for o in out if o is not None]
 
 
+def _cutoffs(session):
+    """The applied PR resolutions' (kind, key, cutoff). Every resolution row is share-locked for the transaction:
+    a process applying one waits for this write to commit (and then deletes what it wrote), and this read waits for
+    one being applied (and then sees its cutoff), so a late write never lands after the deletion it predates."""
+    rows = session.execute(select(SiteEventResolution.kind, SiteEventResolution.key, SiteEventResolution.cutoff,
+                                  SiteEventResolution.applied_at).with_for_update(read=True)).all()
+    return [(kind, key, _aware(cutoff)) for kind, key, cutoff, applied in rows if applied is not None]
+
+
 def _covered(cutoffs, kind, key, last):
     """An occurrence from before an applied PR resolution's cutoff (a late flush from the old process)."""
     return any(c_kind == kind and (c_key is None or c_key == key) and last < cutoff
                for c_kind, c_key, cutoff in cutoffs)
 
 
-def _combined_context(session, kind, key, c):
-    batch = c["context"] if c["merge"] else (list(c["items"]) or None)
-    if batch is None:
-        return None
-    row = session.get(SiteEvent, (kind, key))
-    stored = row.context if row is not None else None
+_INSERTED = object()
+
+
+def _insert_or_lock(session, kind, key, **values):
+    """Insert the row when there is none (returns _INSERTED), else the stored row's columns, locked for this
+    transaction: a write that reads the stored row before writing it is then never interleaved with another
+    process's (the insert waits on a concurrent insert of the same key, the lock on a concurrent update). None
+    when the row went in between."""
+    insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
+    done = session.execute(insert(SiteEvent.__table__).values(kind=kind, key=key, **values)
+                           .on_conflict_do_nothing(index_elements=["kind", "key"]))
+    if done.rowcount:
+        return _INSERTED
+    return session.execute(select(SiteEvent.context).where(SiteEvent.kind == kind, SiteEvent.key == key)
+                           .with_for_update()).first()
+
+
+def _joined(c, stored, batch):
     if stored is None:
         return batch
     if c["merge"]:
@@ -347,13 +403,30 @@ def _write(session, op):
     if op["op"] == "resolve":
         session.execute(_delete_stmt(op["kind"], op["key"], op["prefix"], op["at"]))
     elif op["op"] == "record":
-        _upsert(session, op["kind"], op["key"], error=_clean_error(op["error"]),
-                context=_scrub_value(op["context"]), n=op["n"], first=op["first"], last=op["last"])
+        error, context = _clean_error(op["error"]), _scrub_value(op["context"])
+        if op.get("unless_stored") is not None:
+            row = _insert_or_lock(session, op["kind"], op["key"], error=error, context=context, count=op["n"],
+                                  first_seen=op["first"], last_seen=op["last"])
+            if row is _INSERTED or (row is not None and op["unless_stored"](row.context, op["context"])):
+                return
+        _upsert(session, op["kind"], op["key"], error=error, context=context, n=op["n"], first=op["first"],
+                last=op["last"])
     else:
         kind, key, c = op["kind"], op["key"], op["counter"]
-        ctx = _combined_context(session, kind, key, c)
+        batch = c["context"] if c["merge"] else (list(c["items"]) or None)
+        if batch is None:
+            _upsert(session, kind, key, error="", context=None, n=c["n"], first=c["first"], last=c["at"],
+                    set_error=False, set_context=False)
+            return
+        # the stored context is joined with this flush's: read it under a lock so two processes' flushes of
+        # the same key both land (the slowest load and the last samples)
+        row = _insert_or_lock(session, kind, key, error="", context=_scrub_value(batch), count=c["n"],
+                              first_seen=c["first"], last_seen=c["at"])
+        if row is _INSERTED:
+            return
+        ctx = _joined(c, row.context if row is not None else None, batch)
         _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["first"],
-                last=c["at"], set_error=False, set_context=ctx is not None, context_always=True)
+                last=c["at"], set_error=False, context_always=True)
 
 
 def _connection_error(exc):
@@ -367,8 +440,7 @@ def _flush_ops(session_factory, ops, *, isolate):
     flush. Returns how many were dropped."""
     dropped = 0
     with session_factory() as session:
-        cutoffs = [(r.kind, r.key, _aware(r.cutoff)) for r in session.scalars(
-            select(SiteEventResolution).where(SiteEventResolution.applied_at.is_not(None))).all()]
+        cutoffs = _cutoffs(session)
         for op in ops:
             last = op.get("last") or (op["counter"]["at"] if op["op"] == "counter" else None)
             if op["op"] != "resolve" and _covered(cutoffs, op["kind"], op["key"], last):
@@ -397,6 +469,7 @@ def _aware(when):
 def flush(*, session_factory):
     """Write the queue (in order) and the counters in one transaction, then prune. If the database refuses
     one entry, the rest are written without it; if it can't be reached, everything waits for the next flush."""
+    global _dropped_logged
     if _demo():
         return
     with _lock:
@@ -404,6 +477,10 @@ def flush(*, session_factory):
         counters = dict(_counters)
         _queue.clear()
         _counters.clear()
+        dropped, _dropped_logged = _dropped - _dropped_logged, _dropped
+    if dropped > 0:
+        logger.warning("site health: %s queued entries were dropped (the queue holds %s; oldest go first)",
+                       dropped, QUEUE_MAX)
     if not queued and not counters:
         _flush_prune(session_factory)
         return
@@ -445,14 +522,19 @@ def _flush_prune(session_factory):
 
 
 def _requeue(queued, counters):
+    """Put a failed flush's entries back, ahead of what was queued meanwhile. A counter a resolve queued meanwhile
+    covers is dropped: every count in it came before that success (a resolve deletes its key's counters)."""
     global _dropped
     with _lock:
+        since = [_match(e["kind"], e["key"], e["prefix"]) for e in _queue if e["op"] == "resolve"]
         for e in reversed(queued):
             _queue.appendleft(e)
         while len(_queue) > QUEUE_MAX:
-            _queue.pop()
+            _queue.popleft()
             _dropped += 1
         for k, c in counters.items():
+            if any(match(*k) for match in since):
+                continue
             cur = _counters.get(k)
             if cur is None:
                 _counters[k] = c
@@ -475,11 +557,26 @@ def register(name, cycle_s, allowed_s=None):
         loop["cycle_s"] = cycle_s
         loop["allowed_s"] = allowed_s
         loop["registered"] = _now()
+        _loop_threads[name] = threading.current_thread()
 
 
 def unregister(name):
     with _lock:
         _loops.pop(name, None)
+        _loop_threads.pop(name, None)
+
+
+def join_loops(timeout):
+    """Wait up to `timeout` s in all for the registered loops' threads to end (after their stop events are set),
+    so what a pass records as it stops reaches the final flush."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    with _lock:
+        threads = list(_loop_threads.values())
+    for thread in threads:
+        if thread is not threading.current_thread() and thread.is_alive():
+            thread.join(max(0.0, deadline - time.monotonic()))
 
 
 def beat(name, phase):
@@ -664,10 +761,11 @@ def stop(event, timeout=5):
 
 
 def _reset_for_tests():
-    global _dropped
+    global _dropped, _dropped_logged
     with _lock:
         _queue.clear()
         _counters.clear()
         _loops.clear()
-        _dropped = 0
+        _loop_threads.clear()
+        _dropped = _dropped_logged = 0
         _resolved.update(inserted=False, done=False)

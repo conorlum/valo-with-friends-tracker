@@ -58,6 +58,7 @@ def errors(db, monkeypatch):
     monkeypatch.setattr(module, "_kill_impact_checked_at", None, raising=False)
     monkeypatch.setattr(module, "_util_values_current", None, raising=False)
     monkeypatch.setattr(module, "_util_checked_at", None, raising=False)
+    monkeypatch.setattr(module, "_util_oldest_current", None, raising=False)
     monkeypatch.setattr(module, "_real_start_verification", getattr(module, "_start_verification", None), raising=False)
     # Ordinary inventory tests never start a real verifier/child.
     monkeypatch.setattr(module, "_start_verification", lambda: None, raising=False)
@@ -961,10 +962,11 @@ def _score(db, replay):
     db.commit()
 
 
-def _stub_util_compare(monkeypatch, value=True):
+def _stub_util_compare(monkeypatch, value=True, rows=()):
     from app.services import replay_util
 
-    monkeypatch.setattr(replay_util, "values_current", lambda session: value)
+    monkeypatch.setattr(replay_util, "current_rows", lambda session, with_data=True: list(rows))
+    monkeypatch.setattr(replay_util, "values_current", lambda session, rows=None: value)
 
 
 def test_a_stale_kill_impact_fingerprint_shows_after_a_pass_and_goes_when_it_matches(
@@ -1045,6 +1047,31 @@ def test_the_background_pass_stores_the_util_compare(errors, db, factory, monkey
     _stub_util_compare(monkeypatch, True)
     errors._verify_features(factory, lambda session, row: None)
     assert errors._util_values_current is True and errors._util_checked_at == STAMP
+
+
+def test_the_background_pass_stores_the_oldest_current_row_newer_than_the_build(errors, db, factory, monkeypatch):
+    # R4-12: the age comes from the rows that are current (Freshness), read off the request path
+    _stale_util(db)     # the build: key "k", STAMP - 9 h
+    _stub_util_compare(monkeypatch, False, rows=[(1, 1, "f", STAMP - timedelta(hours=10)),
+                                                 (1, 2, "f", STAMP - timedelta(hours=2)),
+                                                 (1, 3, "f", STAMP - timedelta(hours=1))])
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._util_oldest_current == ("k", STAMP - timedelta(hours=2))
+
+
+@pytest.mark.parametrize("oldest, shown", [
+    (("k", STAMP - timedelta(hours=1)), False),     # the current rows are only an hour old: not overdue yet
+    (("k", None), False),                           # nothing current is newer than the build
+    (("k", STAMP - timedelta(hours=4)), True),
+    (("other build", STAMP - timedelta(hours=1)), True),   # the pass read another build: the cheap age stands
+    (None, True)])
+def test_a_superseded_util_row_does_not_make_the_build_overdue(errors, db, monkeypatch, oldest, shown):
+    # R4-12: the cheap query's oldest newer row (STAMP - 8 h) may be one a newer input superseded
+    _stale_util(db)
+    monkeypatch.setattr(errors, "_util_values_current", False)
+    monkeypatch.setattr(errors, "_util_checked_at", STAMP)
+    monkeypatch.setattr(errors, "_util_oldest_current", oldest)
+    assert (kind(errors, db, "util_build_stale")["count"] == 1) is shown
 
 
 def test_the_card_lists_the_checked_kinds_under_data_and_demo_lists_none(errors, db, linked, monkeypatch):
@@ -1183,3 +1210,22 @@ def test_feature_summaries_are_read_once_per_fingerprint(errors, db, linked):
     assert reread == 1
     assert {d: c for d, (_, _, c) in third[0].items()} == {"digest-a": 1, "digest-b": 1, "digest-c": 1}
     assert (linked.id, 2, "new") in errors._digests and len(errors._digests) == 4
+
+
+
+def test_a_capped_checked_kind_says_it_was_cut(errors, db, monkeypatch):
+    # R4-15: past the cap the count is not the total; the note says so and points at the rest query
+    from app.models.match import Match, MatchSource
+    from app.services import site_health_checks
+
+    monkeypatch.setattr(site_health_checks, "UNSCORED_CAP", 2)
+    for n in range(3):
+        db.add(Match(external_id=f"unscored-{n}", source=MatchSource.SCRAPED, map_name="Ascent",
+                     created_at=STAMP - timedelta(hours=2, minutes=n)))
+    db.commit()
+    entry = kind(errors, db, "unscored_match")
+    assert entry["count"] == 2 and entry["note"].startswith("more than 2")
+    monkeypatch.setattr(site_health_checks, "UNSCORED_CAP", 3)
+    errors._verification_changed()
+    entry = kind(errors, db, "unscored_match")
+    assert entry["count"] == 3 and not entry["note"]

@@ -9,10 +9,16 @@ rest of the site stays quick while it runs.
 One build at a time: each process starts at most one child while its last is still running, and a child that
 cannot take LOCK_KEY (a Postgres session lock: another process's child is building) exits at once. Waiting callers
 (the coach, scripts/critical_util.py) still call ensure_values directly.
+
+Site health: the child records its own failure, or clears the stored one after a build, at once (it exits). A child
+that died without recording (killed, or its write failed) is found by the parent at its next request(), which
+hands it to the next child (`--previous`): that child writes it before anything else, so the failure and a later
+success's clear come from one process, in order. Only a child that can't be started leaves it to the parent's queue.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -34,11 +40,14 @@ _child_started = 0.0
 EXIT_RECORDED = 3       # the child recorded its own failure in site_events: the parent adds nothing
 
 
-def _spawn() -> subprocess.Popen:
+def _spawn(previous: dict | None = None) -> subprocess.Popen:
     kwargs = {}
     if os.name == "posix":
         kwargs["preexec_fn"] = lambda: os.nice(NICENESS)
-    return subprocess.Popen([sys.executable, "-m", "app.services.util_rebuild"], cwd=WEBAPP, **kwargs)
+    args = [sys.executable, "-m", "app.services.util_rebuild"]
+    if previous is not None:
+        args += ["--previous", json.dumps(previous)]
+    return subprocess.Popen(args, cwd=WEBAPP, **kwargs)
 
 
 def running() -> bool:
@@ -47,19 +56,34 @@ def running() -> bool:
         return _child is not None and _child.poll() is None
 
 
-def _read_finished(child, started) -> None:
-    """Queue a site-health entry for a child that died without recording its own failure. Never raises."""
+def _read_finished(child, started) -> dict | None:
+    """The failure of a child that died without recording it ({error, context, at}), else None. Never raises."""
     try:
         code = child.poll()
         if code is None or code in (0, EXIT_RECORDED):
-            return
-        from app.services import site_health
+            return None
+        from datetime import datetime, timezone
 
-        site_health.enqueue("util_build_failed", "build", f"the build exited with code {code}",
-                            {"exit_code": code, "pid": getattr(child, "pid", None),
-                             "ran_s": round(time.monotonic() - started)})
+        return {"error": f"the build exited with code {code}",
+                "context": {"exit_code": code, "pid": getattr(child, "pid", None),
+                            "ran_s": round(time.monotonic() - started)},
+                "at": datetime.now(timezone.utc).isoformat()}
     except Exception:
         log.exception("could not read the Critical Util build's exit code")
+        return None
+
+
+def _queue_failure(previous: dict) -> None:
+    """No child to hand a failure to: queue it in this process. Never raises."""
+    try:
+        from datetime import datetime
+
+        from app.services import site_health
+
+        site_health.enqueue("util_build_failed", "build", previous["error"], previous["context"],
+                            at=datetime.fromisoformat(previous["at"]))
+    except Exception:
+        log.exception("could not queue the Critical Util build's failure")
 
 
 def request() -> bool:
@@ -69,26 +93,45 @@ def request() -> bool:
     with _lock:
         if _child is not None and _child.poll() is None:
             return False
+        previous = None
         if _child is not None:
             finished, _child = _child, None      # each finished child is read once
-            _read_finished(finished, _child_started)
+            previous = _read_finished(finished, _child_started)
         try:
-            _child = _spawn()
+            _child = _spawn(previous)
             _child_started = time.monotonic()
         except OSError:
             log.exception("could not start the Critical Util build")
             _child = None
+            if previous is not None:
+                _queue_failure(previous)
             return False
         log.info("started the Critical Util build (pid %s)", _child.pid)
         return True
 
 
-def main() -> int:
+def _previous(argv) -> dict | None:
+    """The failed child the parent handed over (`--previous <json>`), or None."""
+    if len(argv) >= 2 and argv[0] == "--previous":
+        try:
+            return json.loads(argv[1])
+        except ValueError:
+            log.warning("unreadable --previous: %r", argv[1])
+    return None
+
+
+def main(argv=None) -> int:
+    from datetime import datetime
+
     from sqlalchemy import text
 
     from app.db import SessionLocal, engine
     from app.services import mask_accel, replay_util, site_health
 
+    previous = _previous(sys.argv[1:] if argv is None else argv)
+    if previous is not None:      # before anything else: a clear this build makes must come after it
+        site_health.record_now("util_build_failed", "build", previous.get("error"), previous.get("context"),
+                               session_factory=SessionLocal, at=datetime.fromisoformat(previous["at"]))
     mask_accel.register()
 
     holder = None
@@ -107,9 +150,9 @@ def main() -> int:
         except Exception as exc:
             log.exception("the Critical Util build failed")
             tb = traceback.format_exc().splitlines()[-15:]
-            site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
-                                   {"traceback": tb}, session_factory=SessionLocal)
-            return EXIT_RECORDED
+            recorded = site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
+                                              {"traceback": tb}, session_factory=SessionLocal)
+            return EXIT_RECORDED if recorded else 1     # not stored: the parent hands it to the next child
         site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal)
         return code
     finally:

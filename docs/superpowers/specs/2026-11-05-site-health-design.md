@@ -60,23 +60,36 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
   queue, in the order things happened; the flush thread writes them. Neither a request nor a background loop (the
   dispatcher holds its advisory lock while it runs) waits on the pool (`app/db.py`: 30 s pool timeout) or a
   database that is down. Only a process about to exit, the Critical Util child, writes at once
-  (`record_now`/`resolve_now`, its own short session). Everything catches and logs its own failure.
+  (`record_now`/`resolve_now`, its own short session; `record_now` honours applied PR cutoffs like a flush, and the
+  child exits "recorded" only after its write committed). A child that died without recording is handed to the
+  next child, which writes it before building, so a failure and a later success's clear come from one process in
+  order (third and fourth reviews). Everything catches and logs its own failure.
 - **Batched recording for hot paths** (cache fallbacks, slow pages): `site_health.count(kind, key, ...)` adds to an
   in-memory counter and keeps each key's last occurrence time; one daemon thread, `site-health-flush`, writes the
   batch and the queue every 60 s in one transaction, one write per key between two resolves of it. A counter's
   context is joined with the stored one (slow pages keep the slowest ever and the last five; others the last five
-  items), not replaced (B5/B16). `last_seen` is the occurrence time, not the flush time (P2 finding 2). Every time is
+  items), not replaced (B5/B16); the stored context is read under a row lock (insert, or `SELECT ... FOR UPDATE`),
+  so two processes' flushes of one key both land. A record can be stored only if the stored row doesn't already
+  count it (`unless_stored`, decided in the flush under the same lock): a warm-cache loss the old and new site
+  both report during a deploy is stored once. A failed flush puts its entries back ahead of what was queued
+  meanwhile, minus counters a success queued meanwhile covers; a repeated resolve with no record of its keys
+  between replaces the earlier one, so an outage's queue holds its failures. `last_seen` is the occurrence time, not the flush time (P2 finding 2). Every time is
   Python UTC (`datetime.now(timezone.utc)`), never the server's `now()`. The site runs one uvicorn process
-  (`render.yaml`), so per-process memory is the whole picture; shutdown waits up to 5 s for the final flush (B3).
+  (`render.yaml`), so per-process memory is the whole picture; shutdown waits up to 10 s for the loops' threads
+  to finish their pass, then up to 5 s for the final flush (B3).
   The cache pre-warms run in command-line processes with no flush thread, so they flush at their end (`flush_for`).
 - **One bad entry never blocks the rest** (B2): text is made storable first (a NUL, which PostgreSQL's text and
   JSONB refuse, is written as `\x00`; keys are cut to the column's 300 characters). If the database still refuses
   the batch, it is written again one entry per savepoint and the refused entries are dropped and logged; a lost
-  connection keeps everything for the next flush (the queue stays bounded at 1,000).
+  connection keeps everything for the next flush (the queue stays bounded at 1,000, oldest dropped first, and a
+  drop is logged).
 - **Scrubbing**: before anything is stored, remove credentials from connection URLs
   (`postgresql://user:pass@` becomes `postgresql://user:***@`), Bearer/Basic credentials, and the values of
   password, passwd, pwd, secret, token, api key, access key, authorization and key, written `name=value`,
-  `name: value` or `"name": "value"` (a quoted value up to its closing quote, B8). The card is visible to anyone with the upload code, and the repo is public.
+  `name: value` or `"name": "value"` (a quoted value up to its closing quote, or to the end of the text when it was
+  cut short, in linear time: R4-1 found exponential backtracking), and the whole value of a context field named
+  like one (`token`, `db_password`, `X-Api-Key`). Worker refusals are scrubbed before they are cut to 300
+  characters. The card is visible to anyone with the upload code, and the repo is public.
 - **Retention**: rows untouched for 30 days are deleted by the flush thread; at most 500 keys per kind (the oldest
   `last_seen` goes first).
 
@@ -102,7 +115,10 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
   passes `cutoff`, then marks it applied; later starts skip applied entries. A recurrence after the cutoff stays.
   A due entry is claimed (`UPDATE ... WHERE applied_at IS NULL`) in the transaction that deletes, so two overlapping
   processes never both apply it, and a late flush of an occurrence from before an applied entry's cutoff (the old
-  process) is dropped (B7). Once every entry is applied the thread stops checking.
+  process) is dropped (B7). Every flush (and `record_now`) share-locks the resolution rows while it writes, so a
+  claim waits for a flush in progress and a flush waits for a claim in progress, then sees its cutoff. Once every
+  entry is applied the thread stops checking. A failure that recurs inside the grace is cleared with the rest: after
+  a fix PR, check the card again once the job has run past the cutoff.
   Entries are kept in the file (they cost nothing and record what fixed what); a test checks every entry names a
   known kind.
 - `scripts/site_health.py list` (through `with_friends_db.py --read-only`) prints the stored rows, to find the
@@ -158,8 +174,10 @@ past "held_back N; 0 in flight" case).
   under the same kind with their own keys, and each is resolved only where that step succeeds (P2 finding 5):
   `reparse_pass` (`replay_control_remote.py:733`) when the re-parse step returns, `height_rebuild_step` (`:772`) when
   the heights step returns, `archive_sync:worker` (`replay_archive_sync.py:81-83`) on a cycle with no worker error,
-  `map_pool:check` (`map_pool_refresh.py:151-154`, `:171-173`) on a check with no errors. An in-memory set of open
-  keys means a clean pass issues no DELETE.
+  `map_pool:check` (`map_pool_refresh.py:151-154`, `:171-173`) on a check with no errors. Every clean pass queues
+  its resolve (no cache of open keys: it went stale across processes), and repeated resolves are merged in the
+  queue. An archive acknowledgement the worker never answers counts as a worker error. `scripts/map_pool.py
+  refresh` flushes what its check queued.
 - The card shows heartbeats only for loops in this process; with one uvicorn process that is all of them.
 
 ### 2d. Matches with no Impact scores: `unscored_match` (checked)
@@ -175,7 +193,10 @@ stored fingerprint (`kill_impact->>'fingerprint'`) no longer matches the match's
 (`replays.db.impact_fingerprint`). The NULL check is one query. The fingerprint check is one query per linked
 replay, so it runs in the card's background verifier thread with its own pending condition (the existing verifier
 re-runs only for feature digests), recomputed every verifier pass, since a rescore changes `impact_scores` without
-changing anything cheap to key a cache on. Reproduce: `scripts/link_replays.py` for that match.
+changing anything cheap to key a cache on; it reads only the stored fingerprint, never the splits. Reproduce
+(read-only): `kill_impact_reproduce` selects the stored fingerprint to compare with `impact_fingerprint`; the
+repair, `scripts/link_replays.py --refresh-impact`, writes the split of every linked replay. Both checked kinds read
+at most 200 items, plus one to tell the card it was cut ("more than 200"; the rest query lists them all).
 
 ### 2f. Map-pool patch notes: `map_pool_note` (checked)
 

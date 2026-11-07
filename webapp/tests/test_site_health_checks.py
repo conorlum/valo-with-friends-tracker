@@ -127,7 +127,7 @@ def test_unscored_matches_are_capped(db, monkeypatch):
     monkeypatch.setattr(site_health_checks, "UNSCORED_CAP", 2)
     for n in range(4):
         add_match(db, f"m{n}", T - timedelta(hours=2, minutes=n))
-    assert len(site_health_checks.unscored_matches(db, T)) == 2
+    assert len(site_health_checks.unscored_matches(db, T)) == 3, "one past the cap: the card says it was cut"
 
 
 def test_a_linked_replay_without_kill_impact_on_a_scored_match_shows(db):

@@ -587,3 +587,175 @@ def test_committed_file_passes():
 def test_demo_mode_apply_resolved_issues_nothing(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", True)
     site_health.apply_resolved(session_factory=never_factory, started_at=T0, entries=[entry()], now=T0)
+
+
+# ------------------------------------------------------------------------------- third and fourth reviews
+def test_scrubbing_a_quote_followed_by_backslashes_takes_linear_time():
+    # R4-1: both quoted-value alternatives used to match a backslash, so an unmatched quote before a run of
+    # backslashes backtracked exponentially (125 ms at 28 backslashes).
+    import time
+
+    for text in ('password="' + "\\" * 5000, 'token="' + "\\a" * 3000 + "\\", "key='" + "\\" * 4999 + "x"):
+        started = time.perf_counter()
+        out = site_health.scrub(text)
+        assert time.perf_counter() - started < 0.5
+        assert "***" in out and "\\\\\\" not in out
+
+
+@pytest.mark.parametrize("text, kept", [
+    ('worker said password="hunter2 and the rest was cut', 'worker said password="***'),   # R4-2: cut short
+    ("conn token='abc", "conn token='***"),
+    ('key="ends with a backslash \\', 'key="***'),
+    ('password="done" then more', 'password="***" then more'),
+])
+def test_a_quoted_secret_with_no_closing_quote_is_hidden_to_the_end(text, kept):
+    assert site_health.scrub(text) == kept
+
+
+def test_a_context_field_named_like_a_secret_is_hidden(factory):
+    # R4-2 / R3-4: the value alone gives the scrubber nothing to go on
+    context = {"token": "abc", "db_password": 5, "X-Api-Key": "k", "map": "Ascent", "times": 2,
+               "nested": [{"secret": "s", "path": "/a"}], "key": None}
+    site_health.record("page_error", "/a", "e", context, at=T0)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("page_error", "/a")].context == {
+        "token": "***", "db_password": "***", "X-Api-Key": "***", "map": "Ascent", "times": 2,
+        "nested": [{"secret": "***", "path": "/a"}], "key": None}
+
+
+def test_a_counter_put_back_by_a_failed_flush_is_dropped_when_a_success_came_meanwhile(factory):
+    # R3-1 / R4-3: the flush took the counter, a success arrived, then the flush lost its connection
+    site_health.count("worker_refused", "Ascent:Refused", {"r": 1}, at=T0)
+
+    def racing_then_down():
+        site_health.resolve_prefix("worker_refused", "Ascent:", at=T0 + timedelta(seconds=1))
+        raise OperationalError("connect", {}, Exception("down"))
+    site_health.flush(session_factory=racing_then_down)
+    assert ("worker_refused", "Ascent:Refused") not in site_health._counters
+    site_health.flush(session_factory=factory)
+    assert rows(factory) == {}
+
+
+def test_a_counter_put_back_by_a_failed_flush_stays_when_no_success_came(factory):
+    site_health.count("worker_refused", "Ascent:Refused", {"r": 1}, at=T0)
+
+    def other_success_then_down():
+        site_health.resolve_prefix("worker_refused", "Bind:", at=T0 + timedelta(seconds=1))
+        raise OperationalError("connect", {}, Exception("down"))
+    site_health.flush(session_factory=other_success_then_down)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("worker_refused", "Ascent:Refused")].count == 1
+
+
+def test_repeated_resolves_of_one_key_are_one_queued_entry():
+    # R3-2: an idle dispatcher's clears no longer push an outage's failures out of the queue
+    for i in range(50):
+        site_health.resolve("loop_failed", "control-dispatch", at=T0 + timedelta(seconds=i))
+        site_health.resolve_prefix("worker_refused", "Ascent:", at=T0 + timedelta(seconds=i))
+    assert [(e["key"], e["at"]) for e in site_health._queue] == [
+        ("control-dispatch", T0 + timedelta(seconds=49)), ("Ascent:", T0 + timedelta(seconds=49))]
+
+
+def test_a_resolve_after_a_record_of_its_key_is_kept_apart(factory):
+    site_health.resolve("loop_failed", "a", at=T0)
+    site_health.record("loop_failed", "a", "e", at=T0 + timedelta(seconds=1))
+    site_health.resolve("loop_failed", "a", at=T0 + timedelta(seconds=2))
+    site_health.record("loop_failed", "a", "again", at=T0 + timedelta(seconds=3))
+    assert [e["op"] for e in site_health._queue] == ["resolve", "record", "resolve", "record"]
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("loop_failed", "a")].error == "again"
+
+
+def test_dropped_entries_are_logged_once(factory, caplog):
+    for i in range(1003):
+        site_health.enqueue("k", str(i), "e", at=T0)
+    with caplog.at_level(logging.WARNING, logger=site_health.logger.name):
+        site_health.flush(session_factory=factory)
+        site_health.flush(session_factory=factory)
+    assert [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()] == [
+        "site health: 3 queued entries were dropped (the queue holds 1000; oldest go first)"]
+
+
+def test_a_failed_flush_that_overfills_the_queue_drops_the_oldest(factory):
+    for i in range(600):
+        site_health.enqueue("k", f"old{i}", "e", at=T0)
+
+    def busy_then_down():
+        for i in range(600):
+            site_health.enqueue("k", f"new{i}", "e", at=T0)
+        raise OperationalError("connect", {}, Exception("down"))
+    site_health.flush(session_factory=busy_then_down)
+    keys = [e["key"] for e in site_health._queue]
+    assert len(keys) == 1000 and keys[0] == "old200" and keys[-1] == "new599"
+
+
+def same_boot(stored, new):
+    return (stored or {}).get("boot") == new.get("boot") and new["times"] <= (stored or {}).get("times", 0)
+
+
+def test_unless_stored_is_decided_against_the_stored_row_at_flush_time(factory):
+    # R4-6: the old and the new site report the same loss; whichever flushes second finds it stored
+    for _ in range(2):          # two processes, each flushing its own report
+        site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b1"}, at=T0,
+                           unless_stored=same_boot)
+        site_health.flush(session_factory=factory)
+    assert rows(factory)[("warm_vanished", "Ascent:1")].count == 1
+    site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 2, "boot": "b1"},
+                       at=T0 + timedelta(minutes=1), unless_stored=same_boot)
+    site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b2"},
+                       at=T0 + timedelta(minutes=2), unless_stored=same_boot)
+    site_health.flush(session_factory=factory)
+    r = rows(factory)[("warm_vanished", "Ascent:1")]
+    assert r.count == 3 and r.context == {"times": 1, "boot": "b2"}, "two new losses in one write; the new boot last"
+
+
+def test_a_new_counter_row_is_inserted_with_its_context(factory):
+    site_health.count("slow_page", "/a", {"s": 6}, at=T0)
+    site_health.flush(session_factory=factory)
+    r = rows(factory)[("slow_page", "/a")]
+    assert r.count == 1 and r.context == [{"s": 6}] and r.error == ""
+
+
+def test_record_now_skips_an_occurrence_an_applied_cutoff_covers(factory):
+    # R4-5: the child's direct write honours an applied PR resolution like a flush does
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=[entry("util_build_failed", "build")],
+                               now=T0 + timedelta(seconds=700))
+    assert site_health.record_now("util_build_failed", "build", "old", session_factory=factory, at=T0) is True
+    assert rows(factory) == {}
+    assert site_health.record_now("util_build_failed", "build", "new", session_factory=factory,
+                                  at=T0 + timedelta(seconds=601)) is True
+    assert ("util_build_failed", "build") in rows(factory)
+
+
+def test_record_now_says_whether_it_stored():
+    def bad():
+        raise RuntimeError("db down")
+    assert site_health.record_now("k", "a", "e", session_factory=bad) is False
+
+
+def test_join_loops_waits_for_the_registered_threads_only_up_to_its_timeout():
+    import time
+
+    go, registered = threading.Event(), threading.Event()
+
+    def loop(name, sleep_s):
+        site_health.register(name, 60)
+        registered.set()
+        go.wait()
+        time.sleep(sleep_s)
+        if name == "quick":
+            site_health.record("loop_failed", name, "late", at=T0)
+
+    threading.Thread(target=loop, args=("quick", 0.2), daemon=True).start()
+    assert registered.wait(5)
+    go.set()
+    site_health.join_loops(5)
+    assert [e["key"] for e in site_health._queue] == ["quick"]
+    registered.clear()
+    go.clear()
+    threading.Thread(target=loop, args=("slow", 10), daemon=True).start()
+    assert registered.wait(5)
+    go.set()
+    started = time.monotonic()
+    site_health.join_loops(0.3)
+    assert time.monotonic() - started < 2

@@ -83,6 +83,53 @@ def test_shutdown_waits_for_the_final_flush(monkeypatch):
     assert not any(t.name == "site-health-flush" for t in threading.enumerate())
 
 
+def test_what_a_loop_records_as_it_stops_reaches_the_final_flush(monkeypatch):
+    # R4-11 / R3-6: shutdown waits for the loops' threads before the final flush.
+    import time
+
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import app.db
+    from app.db import Base
+    from app.models.site_events import SiteEvent, SiteEventResolution
+
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(app.db, "SessionLocal", factory)
+    monkeypatch.setattr(site_health, "FLUSH_S", 3600)
+
+    def loop_start(session_factory):
+        stop, registered = threading.Event(), threading.Event()
+
+        def run():
+            site_health.register("test-loop", 60)
+            registered.set()
+            try:
+                stop.wait()
+                time.sleep(0.3)              # the pass in progress ends a little after the stop signal
+                site_health.loop_failed("test-loop", RuntimeError("failed as it stopped"))
+            finally:
+                site_health.unregister("test-loop")
+        threading.Thread(target=run, daemon=True).start()
+        assert registered.wait(5)
+        return stop
+
+    for service in SERVICES:
+        monkeypatch.setattr(service, "start", lambda factory: None)
+    monkeypatch.setattr(SERVICES[0], "start", loop_start)
+
+    async def run():
+        async with main.lifespan(main.app):
+            pass
+    asyncio.run(run())
+    with factory() as s:
+        assert [(r.kind, r.key) for r in s.scalars(select(SiteEvent))] == [("loop_failed", "test-loop")]
+
+
 def test_lifespan_yields_when_the_database_is_dead(monkeypatch):
     import app.db
     monkeypatch.setattr(settings, "demo_mode", False)

@@ -104,7 +104,7 @@ def _no_background_util_build(monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(util_rebuild, "_spawn", lambda: _Finished())
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: _Finished())
     monkeypatch.setattr(util_rebuild, "_child", None)
 
 

@@ -273,3 +273,30 @@ def test_slow_pages_are_stored_events_in_pages_group():
     assert ("slow_page", "Slow page loads") in replay_errors.KINDS
     assert replay_errors.GROUPS["slow_page"] == "Pages"
     assert "slow_page" in replay_errors.EVENT_KINDS
+
+
+
+def test_a_page_route_that_answers_json_or_a_redirect_is_not_a_page_load(monkeypatch):
+    # R4-14: a slow JSON 404 or redirect from a page route is not a slow first page load
+    from fastapi.responses import JSONResponse, RedirectResponse
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+    app = FastAPI()
+    app.add_middleware(site_health_web.SlowPageMiddleware)
+
+    @app.get("/matches/{external_id}")
+    async def page(external_id: str):
+        if external_id == "missing":
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if external_id == "moved":
+            return RedirectResponse("/matches/1")
+        if external_id == "error":
+            return HTMLResponse("oops", status_code=500)
+        return HTMLResponse("page")
+
+    client = TestClient(app)
+    for target in ("/matches/missing", "/matches/error", "/matches/moved", "/matches/1"):
+        clock(monkeypatch, 0, 9)
+        client.request(target)
+    counter = site_health._counters[("slow_page", "/matches/{external_id}")]
+    assert counter["n"] == 1 and counter["context"]["slowest_path"] == "/matches/1"

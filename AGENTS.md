@@ -65,7 +65,9 @@ is dropped alone). Only the Critical Util child, which exits, writes at once (`r
 cache pre-warms, which run in command-line processes, flush at their end (`flush_for`). Never in demo mode. A later
 success of the same job resolves a row; otherwise only a PR clears it, by a new entry in
 `app/data/site_health_resolved.json` (kind, key, `fixed_by`; never edit a merged entry, a later fix of the same key
-is a new entry), applied once by the flush thread. The site has no route that writes or clears rows;
+is a new entry), applied once by the flush thread 10 min after the first start that has it (a failure inside
+that grace is cleared too: check the card again after the job has run past it). The site has no route that writes
+or clears rows;
 `scripts/site_health.py` only lists. A route with a secret in its path (`{key}`) is stored as its template.
 A new recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
 Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.

@@ -80,12 +80,17 @@ class SlowPageMiddleware:
             return
 
         finished = None
+        page = False      # a 200 HTML answer: a JSON 404 or a redirect from a page route is not a page load
 
         async def timed_send(message):
-            nonlocal finished
+            nonlocal finished, page
             await send(message)
             try:
-                if message["type"] == "http.response.body" and not message.get("more_body", False):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers") or [])
+                    page = message.get("status") == 200 and \
+                        headers.get(b"content-type", b"").split(b";")[0].strip() == b"text/html"
+                elif message["type"] == "http.response.body" and not message.get("more_body", False):
                     finished = _clock()
             except Exception:
                 log.exception("could not finish slow page timing")
@@ -93,7 +98,7 @@ class SlowPageMiddleware:
         await self.app(scope, receive, timed_send)
         try:
             route = scope.get("route")
-            if finished is None or route is None or site_health.PAGE_ROUTES.get(route.path) != "page":
+            if finished is None or not page or route is None or site_health.PAGE_ROUTES.get(route.path) != "page":
                 return
             seconds = finished - started
             if seconds > SLOW_PAGE_S:

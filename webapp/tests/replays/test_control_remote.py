@@ -820,32 +820,38 @@ def test_warm_cache_history_skips_disabled_warm_builds_and_demo(factory, db, lin
     assert not [k for k in worker_events(db) if k[0] == "warm_vanished"]
 
 
-def test_warm_cache_history_read_failure_rolls_back_and_still_records(factory, db, linked, monkeypatch):
+def test_warm_cache_history_is_decided_at_flush_time_not_in_the_dispatchers_session(
+        factory, db, linked, monkeypatch):
+    # R3-5 / R4-6: the dispatcher never reads site_events (no read, no rollback of its planning session, no wait
+    # under its cycle lock); the flush compares against the stored row
     from sqlalchemy.orm import Session
 
     worker = FakeWorker()
     worker.warm_builds = {"vanished": {"Ascent:h:|": 1}}
-    get, rollback = Session.get, Session.rollback
-    calls = []
+    get = Session.get
 
-    def failed_get(session, model, *args, **kwargs):
-        if model is SiteEvent:
-            calls.append("read")
-            raise RuntimeError("synthetic read failure")
+    def no_site_events_read(session, model, *args, **kwargs):
+        assert model is not SiteEvent, "the dispatcher read site_events"
         return get(session, model, *args, **kwargs)
 
-    def tracked_rollback(session):
-        calls.append("rollback")
-        return rollback(session)
-
-    monkeypatch.setattr(Session, "get", failed_get)
-    monkeypatch.setattr(Session, "rollback", tracked_rollback)
+    monkeypatch.setattr(Session, "get", no_site_events_read)
     remote.cycle(factory, worker, remote.State(), now=100)
-    assert calls.count("read") == 1
-    assert calls[calls.index("read") + 1] == "rollback"
+    [queued] = [e for e in site_health._queue if e["kind"] == "warm_vanished"]
+    assert queued["unless_stored"] is remote._same_warm_loss
     monkeypatch.setattr(Session, "get", get)
     [row] = [e for k, e in worker_events(db).items() if k[0] == "warm_vanished"]
     assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}
+
+
+def test_the_old_and_new_dispatcher_store_one_warm_loss_once(factory, db, linked, monkeypatch):
+    # R4-6: during a deploy both see the same boot and count before either flushes
+    worker = FakeWorker()
+    worker.warm_builds = {"vanished": {"Ascent:h:|": 1}, "boot": "b1"}
+    remote.cycle(factory, worker, remote.State(), now=100)      # the old site
+    remote.cycle(factory, worker, remote.State(), now=100)      # the new site, nothing flushed in between
+    assert len([e for e in site_health._queue if e["kind"] == "warm_vanished"]) == 2
+    [row] = [e for k, e in worker_events(db).items() if k[0] == "warm_vanished"]
+    assert row.count == 1
 
 
 def test_warm_cache_history_counts_a_new_worker_process_and_not_a_site_restart(factory, db, linked, monkeypatch):

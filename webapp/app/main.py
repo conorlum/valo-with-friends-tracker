@@ -60,7 +60,9 @@ async def lifespan(_app: FastAPI):
         for stop in stops:
             if stop is not None:
                 stop.set()
-        site_health.stop(health_stop)      # last: its final flush also takes what the loops recorded as they stopped
+        # A loop in the middle of a pass finishes it (up to 10 s), so the final flush takes what it recorded.
+        site_health.join_loops(10)
+        site_health.stop(health_stop)
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)

@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 SITE_URL = "https://valowithfriendstracker.onrender.com"
 UNSCORED_AFTER_S = 3600   # a match gets an hour to be scored before it counts
-UNSCORED_CAP = 200        # the card shows 50 per kind anyway
+UNSCORED_CAP = 200        # the card shows 50 per kind anyway; one more is read to tell the card it was cut
 
 UTIL_STALE_S = 3 * 3600  # How old the oldest unbuilt util row may be before the build is out of date
 
@@ -105,12 +105,12 @@ def _scored(match_id_column):
 
 
 def unscored_matches(db, now: datetime) -> list[dict]:
-    """Matches stored over an hour ago that have no Impact score row. At most UNSCORED_CAP items."""
+    """Matches stored over an hour ago that have no Impact score row. At most UNSCORED_CAP + 1 items (more than the cap: cut)."""
     def body():
         cutoff = _aware(now) - timedelta(seconds=UNSCORED_AFTER_S)
         found = db.execute(select(Match.id, Match.external_id, Match.map_name, Match.created_at)
                            .where(Match.created_at < cutoff, ~_scored(Match.id))
-                           .order_by(Match.created_at).limit(UNSCORED_CAP)).all()
+                           .order_by(Match.created_at).limit(UNSCORED_CAP + 1)).all()
         return [{
             "key": external_id or str(match_id), "first_seen": _aware(created_at),
             "error": f"stored at {_iso(_aware(created_at))} and still has no Impact scores",
@@ -127,7 +127,7 @@ def kill_impact_null(db) -> list[dict]:
                                   Replay.created_at)
                            .where(Replay.link_status == "linked", Replay.match_id.is_not(None),
                                   Replay.kill_impact.is_(None), _scored(Replay.match_id))
-                           .order_by(Replay.id).limit(UNSCORED_CAP)).all()
+                           .order_by(Replay.id).limit(UNSCORED_CAP + 1)).all()
         return [{
             "key": str(rid), "first_seen": _aware(linked_at or created_at),
             "error": "linked replay has no stored per-kill Impact",
