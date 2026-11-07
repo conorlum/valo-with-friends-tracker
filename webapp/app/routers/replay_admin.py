@@ -8,6 +8,7 @@ Every route answers 404 unless REPLAY_ADMIN_TOKEN is set (and not in demo mode) 
                                      replay, rounds, players and control rows, and tell the worker to
                                      delete its pending and archived files. Idempotent.
     GET  /admin/replays/archive      the worker's archive index.
+    GET  /admin/replays/refused      undeleted replays refused by the linker, newest first.
     GET  /admin/replays/archive/{match_uuid}.vrf  stream an archived recording.
     POST /admin/replays/reparse      {"match_uuid"}: parse the archived file again; {"upload_id"}.
     GET  /admin/replays/uploads/{id} one poll of that reparse (the same refresh_job as an upload).
@@ -96,6 +97,21 @@ def archive_index():
         return _worker().archive()
     except uploads.WorkerError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.get("/refused", dependencies=[Depends(require_admin)])
+def refused_replays(db: Session = Depends(get_db)):
+    deleted = db.query(ReplayDeletion).filter(ReplayDeletion.match_uuid == Replay.match_uuid).exists()
+    replays = db.query(Replay).filter(Replay.link_status == "refused", ~deleted).order_by(
+        Replay.created_at.desc()).all()
+    return {"replays": [
+        {"match_uuid": replay.match_uuid, "map": replay.map_name,
+         "check": (replay.link_report or {}).get("check"),
+         "reason": (replay.link_report or {}).get("reason"),
+         "reasons": (replay.link_report or {}).get("reasons", []),
+         "created_at": replay.created_at.isoformat()}
+        for replay in replays
+    ]}
 
 
 @router.get("/archive/{match_uuid}.vrf", dependencies=[Depends(require_admin)])

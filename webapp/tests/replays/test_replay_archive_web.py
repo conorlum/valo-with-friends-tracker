@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import urllib.error
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,11 +39,60 @@ from app.routers import replay_admin as admin  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_archive_sync as sync  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
-from tests.support.site import site  # noqa: E402,F401
+from tests.support.site import pg_site, site  # noqa: E402,F401
 
 
 DOWNLOAD = f"/admin/replays/archive/{MATCH_UUID}.vrf"
 ADMIN_HEADERS = {"authorization": "Bearer test-admin"}
+
+
+def assert_refused_list(bound_site, monkeypatch):
+    client, factory = bound_site
+    monkeypatch.setattr(settings, "replay_admin_token", "test-admin")
+    def no_worker():
+        pytest.fail("the refused list must only read the database")
+    monkeypatch.setattr(uploads, "client", no_worker)
+    monkeypatch.setattr(admin, "_worker", no_worker)
+    uuids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 5)]
+    oldest = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    newest = oldest + timedelta(days=1)
+    report = {"check": "eligibility", "reason": "the replay is not eligible to link",
+              "reasons": ["link-blocking: RoundResults fell back to a raw payload in the fold"]}
+    with factory() as db:
+        for index, match_uuid in enumerate(uuids):
+            db.add(Replay(match_uuid=match_uuid, map_name="Haven", round_count=1,
+                          format_version=1, recipe="synthetic", game_branch="synthetic",
+                          source_sha256="0" * 64, source="local", link_inputs={},
+                          link_status="linked" if index == 2 else "refused",
+                          link_report=None if index == 0 else report,
+                          created_at=oldest if index == 0 else newest))
+        db.add(ReplayDeletion(match_uuid=uuids[3], reason="synthetic deletion"))
+        db.commit()
+    path = "/admin/replays/refused"
+    assert client.get(path).status_code == 404
+    response = client.get(path, headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    rows = response.json()["replays"]
+    assert [{key: value for key, value in row.items() if key != "created_at"} for row in rows] == [
+        {"match_uuid": uuids[1], "map": "Haven", **report},
+        {"match_uuid": uuids[0], "map": "Haven", "check": None, "reason": None, "reasons": []},
+    ]
+    stamps = [datetime.fromisoformat(row["created_at"]) for row in rows]
+    # sqlite gives naive UTC back; PostgreSQL gives an aware value in the session's zone.
+    assert [s.astimezone(timezone.utc) if s.tzinfo else s.replace(tzinfo=timezone.utc) for s in stamps] == [
+        newest, oldest,
+    ]
+    assert client.get(path, headers={"authorization": "Bearer wrong"}).status_code == 404
+    monkeypatch.setattr(settings, "replay_admin_token", None)
+    assert client.get(path, headers=ADMIN_HEADERS).status_code == 404
+
+
+def test_refused_list_and_admin_gate(site, monkeypatch):  # noqa: F811
+    assert_refused_list(site, monkeypatch)
+
+
+def test_refused_list_and_admin_gate_postgres(pg_site, monkeypatch):  # noqa: F811
+    assert_refused_list(pg_site, monkeypatch)
 
 
 def download_settings(monkeypatch, base):
