@@ -716,6 +716,10 @@ def read_game_state(export: Export) -> GameState:
     fallback = False
     results: dict[int, dict] = {}
     for _, value in history.get("RoundResults", []):
+        # Export schema 9 replicates the array as a delta, {"DeclaredCount": n, "Updates": [changed items]};
+        # each item still carries its own RoundNumber. Schema 8 sent the list itself.
+        if isinstance(value, dict) and isinstance(value.get("Updates"), list):
+            value = value["Updates"]
         if not isinstance(value, list):
             fallback = True
             continue
