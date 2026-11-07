@@ -30,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
+from app.services import site_health
 from app.services.site_stats_cache import (
     SITE_STATS_CACHE_SCHEMA_VERSION,
     STAT_VARIANT_VALIDATORS,
@@ -79,6 +80,7 @@ def get_viewer_site_stats_cache(db: Session, viewer_player_id: int, expected_fri
     except SQLAlchemyError:
         db.rollback()
         logger.exception("viewer_site_stats_cache: read failed for viewer %s", viewer_player_id)
+        site_health.count("cache_fallback", "viewer_site_stats:read", viewer_player_id)
         return None
     if row is None:
         return None
@@ -86,6 +88,7 @@ def get_viewer_site_stats_cache(db: Session, viewer_player_id: int, expected_fri
         return None
     if not _validate_viewer_blob(row.data):
         logger.warning("viewer_site_stats_cache: invalid blob for viewer %s", viewer_player_id)
+        site_health.count("cache_fallback", "viewer_site_stats:invalid", viewer_player_id)
         return None
     return row.data
 

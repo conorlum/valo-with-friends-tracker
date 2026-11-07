@@ -217,10 +217,24 @@ class _Stop:
     def __init__(self, *answers):
         self.answers = list(answers)
         self.waited = []
+        self.set_ = False
 
     def wait(self, timeout=None):
         self.waited.append(timeout)
-        return self.answers.pop(0) if self.answers else True
+        self.set_ = self.answers.pop(0) if self.answers else True
+        return self.set_
+
+    def is_set(self):
+        return self.set_
+
+
+@pytest.fixture(autouse=True)
+def _no_site_health_writes(monkeypatch):
+    # These fakes stand in for the session factory; the loop's health records are covered in test_site_health_loops.
+    from app.services import site_health
+
+    monkeypatch.setattr(site_health, "loop_failed", lambda *a, **k: None)
+    monkeypatch.setattr(site_health, "loop_ok", lambda *a, **k: None)
 
 
 def _factory(made):

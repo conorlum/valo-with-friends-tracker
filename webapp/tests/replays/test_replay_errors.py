@@ -25,13 +25,16 @@ from app.config import settings
 from app.models import Player
 from app.models.replay import (ControlHeight, Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayRoundGapRun,
                                ReplayRoundMoments, ReplayRoundUtil, ReplayUpload)
+from app.models.site_events import SiteEvent
 from app.services import control_heights as ch, replay_progress as progress
 from app.services.replay_progress import uploads, cf, replay_control, replay_gaps, STEPS, _LABELS
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
-        "heights_rejected", "heights_out_of_tries", "warm_vanished", "given_up", "held", "upload_failed", "upload_held",
+KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+        "worker_overrun", "worker_refused", "warm_vanished", "unscored_match", "kill_impact_missing", "map_pool_note",
+        "cache_fallback", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+        "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
 RECORD = {"match": "0a9ab548-718b-41ee-94ce-db25fd430bf8", "round": 1, "slot": 5,
@@ -51,6 +54,11 @@ def errors(db, monkeypatch):
     monkeypatch.setattr(module, "_verification_pending", False, raising=False)
     monkeypatch.setattr(module, "_verification_progress", (0, 0), raising=False)
     monkeypatch.setattr(module, "_digests", {}, raising=False)
+    monkeypatch.setattr(module, "_kill_impact_results", {}, raising=False)
+    monkeypatch.setattr(module, "_kill_impact_checked_at", None, raising=False)
+    monkeypatch.setattr(module, "_util_values_current", None, raising=False)
+    monkeypatch.setattr(module, "_util_checked_at", None, raising=False)
+    monkeypatch.setattr(module, "_util_oldest_current", None, raising=False)
     monkeypatch.setattr(module, "_real_start_verification", getattr(module, "_start_verification", None), raising=False)
     # Ordinary inventory tests never start a real verifier/child.
     monkeypatch.setattr(module, "_start_verification", lambda: None, raising=False)
@@ -74,6 +82,324 @@ def one(errors, db, key):
     assert row["reproduce"] and isinstance(row["figures"], dict)
     assert row["link"].startswith("https://valowithfriendstracker.onrender.com/replays/")
     return row
+
+
+@pytest.fixture
+def event_kind(errors, monkeypatch):
+    # test_event stands in for page events, so these tests see one synthetic Pages kind.
+    monkeypatch.setattr(errors, "KINDS", tuple(k for k in errors.KINDS if k[0] not in {"page_error", "slow_page"})
+                        + (("test_event", "Test events"),))
+    monkeypatch.setattr(errors, "GROUPS", {**{k: v for k, v in errors.GROUPS.items()
+                                             if k not in {"page_error", "slow_page"}},
+                                           "test_event": "Pages"})
+    monkeypatch.setattr(errors, "EVENT_KINDS", (errors.EVENT_KINDS - {"page_error", "slow_page"}) | {"test_event"})
+    return errors
+
+
+@pytest.fixture
+def stored_events(event_kind, db):
+    db.add_all([
+        SiteEvent(kind="test_event", key="GET /players/{player_id}",
+                  error="Traceback (most recent call last):\n  ...\nValueError: synthetic",
+                  context={"path": "/players/12", "status": 500}, count=3,
+                  first_seen=STAMP - timedelta(hours=5), last_seen=STAMP - timedelta(minutes=2)),
+        SiteEvent(kind="test_event", key="older", error="synthetic older", context=None, count=1,
+                  first_seen=STAMP - timedelta(days=1), last_seen=STAMP - timedelta(hours=1)),
+        SiteEvent(kind="unknown", key="ignored", error="unknown synthetic", context={}, count=1,
+                  first_seen=STAMP, last_seen=STAMP),
+    ])
+    db.commit()
+    return event_kind
+
+
+def test_kind_groups_are_complete(errors):
+    assert errors.GROUP_ORDER == ("Pages", "Background work", "Data", "Replays")
+    assert set(dict(errors.KINDS)) <= errors.GROUPS.keys()
+    assert set(errors.GROUPS.values()) <= set(errors.GROUP_ORDER)
+    assert errors.EVENT_KINDS <= set(dict(errors.KINDS))
+
+
+def test_every_recorded_kind_has_a_card_entry(errors):
+    from app.services import site_health
+
+    assert set(dict(errors.KINDS)) == site_health.KNOWN_KINDS
+
+
+@pytest.mark.parametrize(("key", "group"), [
+    ("cache_fallback", "Data"), ("worker_overrun", "Background work"),
+    ("worker_refused", "Background work"), ("slow_page", "Pages"),
+    ("warm_vanished", "Background work"),
+])
+def test_recorded_kind_groups(errors, key, group):
+    assert errors.GROUPS[key] == group
+
+
+@pytest.mark.parametrize("event_kind", ["worker_refused", "worker_overrun", "cache_fallback", "slow_page"])
+def test_recorded_worker_cache_and_page_events_reach_collect(errors, db, event_kind):
+    db.add(SiteEvent(kind=event_kind, key="synthetic", error="synthetic failure", context={"times": 2},
+                     count=2, first_seen=STAMP - timedelta(hours=1), last_seen=STAMP))
+    db.commit()
+    [row] = errors.collect(db)[event_kind]
+    assert row["kind"] == event_kind and row["key"] == "synthetic" and row["count"] == 2
+    assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
+    assert row["last_seen"] == STAMP.isoformat() and row["context"] == {"times": 2}
+
+
+@pytest.mark.parametrize("live_identity", [None, "Bind:h:|", "Ascent:h:|"])
+def test_stored_warm_cache_history_is_listed_beside_the_live_row(errors, db, live_identity):
+    # B18: the live row (this worker process's count) and the stored history (first and last seen) both show.
+    from app.services.replay_control_remote import Live
+
+    identity = "Ascent:h:|"
+    db.add(SiteEvent(kind="warm_vanished", key=identity, error="synthetic loss",
+                     context={"times": 3, "map": "Ascent"}, count=2,
+                     first_seen=STAMP - timedelta(hours=1), last_seen=STAMP))
+    db.commit()
+    live = None if live_identity is None else Live(100, (), (), (), (), warm_vanished=((live_identity, 4),))
+    rows = errors.collect(db, live)["warm_vanished"]
+    assert len(rows) == (1 if live_identity is None else 2)
+    [row] = [row for row in rows if row.get("context") == {"times": 3, "map": "Ascent"}]
+    assert row["kind"] == "warm_vanished" and row["count"] == 2 and row["key"] == identity
+    assert row["context"] == {"times": 3, "map": "Ascent"}
+    assert row["first_seen"] == (STAMP - timedelta(hours=1)).isoformat()
+    assert row["last_seen"] == STAMP.isoformat()
+    if live_identity is not None:
+        [live_row] = [row for row in rows if row.get("context") != {"times": 3, "map": "Ascent"}]
+        assert live_row["figures"] == {"identity": live_identity, "times": 4}
+    result = errors.compute(db, live)
+    assert identity in errors.prompt(result, "warm_vanished")
+
+
+def _quiet_loop(name="control-dispatch", registered=None):
+    from app.services import site_health
+
+    site_health.register(name, 300)
+    site_health._loops[name]["registered"] = registered or STAMP - timedelta(hours=3)
+
+
+def test_loop_events_are_listed_under_background_work(errors, db):
+    db.add(SiteEvent(kind="loop_failed", key="reparse_pass", error="Boom: x", context={"traceback": ["a"]},
+                     count=3, first_seen=STAMP - timedelta(hours=2), last_seen=STAMP - timedelta(minutes=1)))
+    db.commit()
+    _quiet_loop()
+    body = errors.compute(db)
+    failed = next(k for k in body["kinds"] if k["key"] == "loop_failed")
+    quiet = next(k for k in body["kinds"] if k["key"] == "loop_quiet")
+    assert (failed["group"], failed["shape"], failed["count"]) == ("Background work", "event", 1)
+    assert (quiet["group"], quiet["shape"], quiet["count"]) == ("Background work", "event", 1)
+    [row] = quiet["rows"]
+    assert row["key"] == "control-dispatch" and row["count"] == 1
+    assert row["error"].startswith("never finished a pass since ")
+    assert row["last_seen"] == STAMP.isoformat()
+    text = errors.prompt(body, "loop_quiet")
+    assert "control-dispatch" in text and "site_events" not in text
+
+
+def test_loop_quiet_with_a_finished_pass_and_in_pass(errors, db):
+    from app.services import site_health
+
+    _quiet_loop()
+    site_health._loops["control-dispatch"]["beats"] = {"end": STAMP - timedelta(hours=2),
+                                                       "start": STAMP - timedelta(hours=1)}
+    [row] = next(k for k in errors.compute(db)["kinds"] if k["key"] == "loop_quiet")["rows"]
+    assert row["error"].startswith("last finished a pass at ") and "; in a pass since " in row["error"]
+    assert row["first_seen"] == (STAMP - timedelta(hours=2)).isoformat()
+
+
+def test_loop_quiet_not_listed_in_demo(errors, db, monkeypatch):
+    _quiet_loop()
+    monkeypatch.setattr(settings, "demo_mode", True)
+    body = errors.compute(db)
+    assert next(k for k in body["kinds"] if k["key"] == "loop_quiet")["rows"] == []
+
+
+def _stale_util(db):
+    from app.models.replay import UtilModel
+
+    UtilModel.__table__.create(db.get_bind(), checkfirst=True)
+    db.add(UtilModel(name="values", version=1, key="k", data={}, computed_at=STAMP - timedelta(hours=9)))
+    db.add(ReplayRoundUtil(replay_id=1, round_number=1, status="ok", fingerprint="f",
+                           gaps_revision=replay_gaps.GAPS_REVISION, computed_at=STAMP - timedelta(hours=8)))
+    db.commit()
+
+
+def test_util_build_events_are_listed_under_background_work(errors, db):
+    _stale_util(db)
+    db.add(SiteEvent(kind="util_build_failed", key="build", error="RuntimeError: boom", context=None, count=1,
+                     first_seen=STAMP - timedelta(hours=1), last_seen=STAMP - timedelta(hours=1)))
+    db.commit()
+    body = errors.compute(db)
+    failed = next(k for k in body["kinds"] if k["key"] == "util_build_failed")
+    stale = next(k for k in body["kinds"] if k["key"] == "util_build_stale")
+    assert (failed["group"], failed["count"]) == ("Background work", 1)
+    assert (stale["group"], stale["count"]) == ("Background work", 1)
+    [row] = stale["rows"]
+    assert row["key"] == "values" and row["reproduce"].startswith("live: ")
+    assert row["last_seen"] == STAMP.isoformat()
+
+
+def test_util_build_events_not_listed_in_demo(errors, db, monkeypatch):
+    _stale_util(db)
+    db.add(SiteEvent(kind="util_build_failed", key="build", error="x", context=None, count=1,
+                     first_seen=STAMP, last_seen=STAMP))
+    db.commit()
+    monkeypatch.setattr(settings, "demo_mode", True)
+    body = errors.compute(db)
+    for key in ("util_build_failed", "util_build_stale"):
+        assert next(k for k in body["kinds"] if k["key"] == key)["rows"] == []
+
+
+def test_page_error_events_are_listed_under_pages(errors, db):
+    db.add(SiteEvent(kind="page_error", key="GET /players/{display_name}", error="ValueError: synthetic",
+                     context={"type": "ValueError", "traceback": "Traceback ...\nValueError: synthetic",
+                              "path": "/players/x", "logged_in": False}, count=2,
+                     first_seen=STAMP - timedelta(hours=2), last_seen=STAMP - timedelta(minutes=1)))
+    db.commit()
+    body = errors.compute(db)
+    found = next(k for k in body["kinds"] if k["key"] == "page_error")
+    assert found["label"] == "Pages that crashed" and found["count"] == 1
+    assert errors.GROUPS["page_error"] == "Pages" and "page_error" in errors.EVENT_KINDS
+    assert (found["group"], found["shape"]) == ("Pages", "event")
+    [row] = found["rows"]
+    assert (row["key"], row["count"], row["error"]) == ("GET /players/{display_name}", 2, "ValueError: synthetic")
+    assert row["context"]["type"] == "ValueError"
+
+
+def test_slow_page_events_are_listed_under_pages(errors, db):
+    context = {"slowest_s": 8, "slowest_path": "/matches/2", "n": 2,
+               "last": [{"s": 6, "path": "/matches/1"}, {"s": 8, "path": "/matches/2"}]}
+    db.add(SiteEvent(kind="slow_page", key="/matches/{external_id}", context=context, count=2,
+                     first_seen=STAMP - timedelta(hours=2), last_seen=STAMP - timedelta(minutes=1)))
+    db.commit()
+    found = kind(errors, db, "slow_page")
+    assert (found["label"], found["group"], found["shape"], found["count"]) == (
+        "Slow page loads", "Pages", "event", 1)
+    [row] = found["rows"]
+    assert (row["key"], row["count"], row["context"]) == ("/matches/{external_id}", 2, context)
+
+
+def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
+    errors = stored_events
+    queries = []
+    def record(conn, cursor, statement, parameters, context, many):
+        if "site_events" in statement.lower():
+            queries.append(statement.lower())
+    event.listen(db.get_bind(), "before_cursor_execute", record)
+    try:
+        body = errors.compute(db)
+    finally:
+        event.remove(db.get_bind(), "before_cursor_execute", record)
+    entry = body["kinds"][0]
+    assert (entry["key"], entry["group"], entry["shape"], entry["count"]) == (
+        "test_event", "Pages", "event", 2)
+    assert [row["key"] for row in entry["rows"]] == ["GET /players/{player_id}", "older"]
+    newest, older = entry["rows"]
+    assert set(newest) == {"kind", "key", "count", "first_seen", "last_seen", "error", "context",
+                           "link", "reproduce"}
+    assert newest["count"] == 3
+    assert newest["first_seen"] == (STAMP - timedelta(hours=5)).isoformat()
+    assert newest["last_seen"] == (STAMP - timedelta(minutes=2)).isoformat()
+    assert newest["context"] == {"path": "/players/12", "status": 500}
+    assert newest["link"] == f"{errors.SITE}/replays/upload"
+    assert newest["reproduce"] == errors._inventory_command()
+    assert older["context"] == {}
+    assert [entry["key"] for entry in body["kinds"][1:]] == [
+        key for key in KEYS if key not in {"page_error", "slow_page"}]
+    background = ("loop_", "util_build_", "worker_", "warm_")
+    data = ("unscored_", "kill_impact_", "map_pool_", "cache_")
+    assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
+               for entry in body["kinds"][1:] if not entry["key"].startswith(background + data))
+    assert all(entry["shape"] == "event" and entry["group"] == "Background work"
+               for entry in body["kinds"][1:] if entry["key"].startswith(background))
+    assert all(entry["shape"] == "event" and entry["group"] == "Data"
+               for entry in body["kinds"][1:] if entry["key"].startswith(data))
+    assert "unknown" not in json.dumps(body) and "ignored" not in json.dumps(body)
+    event_queries = [q for q in queries if "site_events" in q]
+    assert len(event_queries) == 1 and event_queries[0].startswith("select ")
+    selected = event_queries[0].replace('"', "")      # SQLite quotes the reserved word key
+    assert all(f"site_events.{column}" in selected for column in (
+        "kind", "key", "count", "first_seen", "last_seen", "error", "context"))
+
+
+def test_event_row_copies_nested_context_and_accepts_overrides(errors):
+    context = {"nested": {"items": ["synthetic"]}}
+    row = errors._event_row(kind="test_event", key="synthetic", count=1, first_seen=STAMP,
+                            last_seen=STAMP, error="synthetic", context=context,
+                            link="/synthetic", reproduce="synthetic command")
+    context["nested"]["items"].append("changed")
+    assert row["context"] == {"nested": {"items": ["synthetic"]}}
+    assert row["link"] == "/synthetic" and row["reproduce"] == "synthetic command"
+
+
+def test_event_prompt_and_remaining_query_share_budget(stored_events, db):
+    errors = stored_events
+    db.add_all([SiteEvent(kind="test_event", key=f"rest-{i:03}", count=1, error="synthetic",
+                          context={}, first_seen=STAMP, last_seen=STAMP - timedelta(days=2))
+                for i in reversed(range(199))])
+    db.commit()
+    body = errors.compute(db, limit=None)
+    text = errors.prompt(body)
+    assert text.startswith("Investigate site health problems that need a human.\n")
+    for line in ("kind: test_event", "key: GET /players/{player_id}", "count: 3",
+                 f"first_seen: {(STAMP - timedelta(hours=5)).isoformat()}",
+                 f"last_seen: {(STAMP - timedelta(minutes=2)).isoformat()}",
+                 'context: {"path": "/players/12", "status": 500}',
+                 "error: Traceback (most recent call last):\n  ...\nValueError: synthetic",
+                 f"link: {errors.SITE}/replays/upload", f"reproduce: {errors._inventory_command()}"):
+        assert line in text
+    assert text.count("\nkind: test_event") == 200
+    assert "1 more. List the rest read-only:" in text
+    assert ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+            "WHERE kind = 'test_event' AND key IN ('rest-198') ORDER BY last_seen DESC;") in text
+    assert "\nmap:" not in text and "\nrevision:" not in text
+    assert errors.prompt(body, "test_event") == text
+
+
+def test_event_rest_query_quotes_values(event_kind):
+    assert event_kind._rest_query("test_event", [{"key": "synthetic's key"}]) == (
+        "SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+        "WHERE kind = 'test_event' AND key IN ('synthetic''s key') ORDER BY last_seen DESC;")
+
+
+@pytest.mark.parametrize("kind, table", [("unscored_match", "FROM matches"), ("kill_impact_missing", "FROM replays"),
+                                         ("map_pool_note", "FROM map_pool_patch_notes"),
+                                         ("util_build_stale", "FROM util_model")])
+def test_checked_kinds_rest_query_reads_their_own_tables(errors, kind, table):
+    # B19: checked kinds are never in site_events, so their "rest" query reads the table the check reads.
+    query = errors._rest_query(kind, [{"key": "1"}])
+    assert table in query and "FROM site_events" not in query and query.startswith("(checked live")
+
+
+def test_demo_event_kind_never_reads_db_even_with_warm_cache(stored_events, db, monkeypatch):
+    errors = stored_events
+    errors.cached(db, now=100)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    class NoDB:
+        def execute(self, *args):
+            pytest.fail("demo execute")
+        def query(self, *args):
+            pytest.fail("demo query")
+    for body in (errors.compute(NoDB()), errors.cached(NoDB(), now=101)):
+        assert body["kinds"][0]["key"] == "test_event"
+        assert len(body["kinds"]) == len(errors.KINDS)
+        assert all(entry["count"] == 0 and entry["rows"] == [] for entry in body["kinds"])
+
+
+def test_missing_event_table_keeps_replay_evidence(event_kind, db, monkeypatch, caplog):
+    upload(db, status="failed", error="synthetic replay failure")
+    SiteEvent.__table__.drop(db.get_bind())
+    rollbacks = []
+    original = db.rollback
+    def rollback():
+        rollbacks.append(True)
+        original()
+    monkeypatch.setattr(db, "rollback", rollback)
+    body = event_kind.compute(db)
+    assert body["kinds"][0]["count"] == 0
+    entry = next(entry for entry in body["kinds"] if entry["key"] == "upload_failed")
+    assert entry["count"] == 1 and entry["rows"][0]["error"] == "synthetic replay failure"
+    assert rollbacks == [True]
+    assert any(record.levelname == "WARNING" and "site_events" in record.message for record in caplog.records)
 
 
 def upload(db, i=1, **kwargs):
@@ -255,8 +581,8 @@ def test_all_rows_kept_sorted_then_first_fifty_shown(errors, db, monkeypatch):
     found = kind(errors, db, "box_conflict")
     assert found["count"] == 53 and found["rows"] == expected[:50]
     full = errors.compute(db, limit=None)
-    assert len(full["kinds"][0]["rows"]) == 53
-    assert len(errors.cached(db)["kinds"][0]["rows"]) == 53
+    assert len(next(k for k in full["kinds"] if k["key"] == "box_conflict")["rows"]) == 53
+    assert len(next(k for k in errors.cached(db)["kinds"] if k["key"] == "box_conflict")["rows"]) == 53
 
 
 def test_demo_never_reads_db_even_with_warm_cache(errors, db, monkeypatch):
@@ -393,7 +719,9 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     collected = errors.collect(db)
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
-               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed"}), \
+               if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error", "slow_page",
+                          "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match",
+                          "kill_impact_missing", "map_pool_note", "worker_overrun", "worker_refused", "cache_fallback"}), \
         "stored kinds"
     for key, rows in collected.items():
         for row in rows:
@@ -621,6 +949,160 @@ def test_artifacts_arriving_after_the_first_pass_get_a_new_pass(errors, db, fact
     assert len(spawned) == 1, "all checked again: no third pass"
 
 
+def _score(db, replay):
+    from app.models.impact_score import ImpactScore
+    from app.models.round import Round
+
+    rnd = db.query(Round).filter_by(match_id=replay.match_id).first()
+    if rnd is None:
+        rnd = Round(match_id=replay.match_id, round_number=1)
+        db.add(rnd)
+        db.flush()
+    db.add(ImpactScore(round_id=rnd.id, match_player_id=1, kill_impact=0, death_impact=0, impact=0))
+    db.commit()
+
+
+def _stub_util_compare(monkeypatch, value=True, rows=()):
+    from app.services import replay_util
+
+    monkeypatch.setattr(replay_util, "current_rows", lambda session, with_data=True: list(rows))
+    monkeypatch.setattr(replay_util, "values_current", lambda session, rows=None: value)
+
+
+def test_a_stale_kill_impact_fingerprint_shows_after_a_pass_and_goes_when_it_matches(
+        errors, db, factory, linked, monkeypatch):
+    from app.replays import db as replay_db
+
+    _score(db, linked)
+    linked.kill_impact = {"fingerprint": "old"}
+    db.commit()
+    current = {"v": "new"}
+    monkeypatch.setattr(replay_db, "impact_fingerprint", lambda session, match_id: current["v"])
+    _stub_util_compare(monkeypatch)
+    verify = lambda session, row: None  # noqa: E731
+    assert kind(errors, db, "kill_impact_missing")["rows"] == []
+    errors._verify_features(factory, verify)
+    [row] = kind(errors, db, "kill_impact_missing")["rows"]
+    assert row["key"] == str(linked.id) and "fingerprint" in row["error"]
+    current["v"] = "old"
+    errors._verify_features(factory, verify)
+    assert kind(errors, db, "kill_impact_missing")["rows"] == []
+
+
+def test_a_failing_kill_impact_check_still_waits_its_recheck_time(errors, db, factory, monkeypatch):
+    def broken(session):
+        raise RuntimeError("no fingerprint today")
+
+    monkeypatch.setattr(errors, "_verify_kill_impact", broken)
+    _stub_util_compare(monkeypatch)
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", None)
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._kill_impact_checked_at is not None, "a failed attempt is stamped, else every card open restarts it"
+
+
+def test_a_null_replay_that_also_mismatches_is_listed_once(errors, db, linked, monkeypatch):
+    _score(db, linked)
+    monkeypatch.setattr(errors, "_kill_impact_results", {linked.id: {
+        "key": str(linked.id), "first_seen": STAMP, "error": "stale", "context": {}, "reproduce": "x"}})
+    found = kind(errors, db, "kill_impact_missing")
+    assert [row["key"] for row in found["rows"]] == [str(linked.id)]
+
+
+def test_start_verification_also_runs_when_the_kill_impact_check_is_old(errors, monkeypatch):
+    monkeypatch.setattr(errors, "_start_verification", errors._real_start_verification)
+    spawned = []
+    monkeypatch.setattr(errors, "_verify_features", lambda: spawned.append(1))
+    monkeypatch.setattr(errors, "_verification_started", True)
+    monkeypatch.setattr(errors, "_verification_pending", False)
+
+    def start():
+        monkeypatch.setattr(errors, "_verification_running", False)
+        errors._real_start_verification()
+        for worker in threading.enumerate():
+            if worker.name == "replay-error-features":
+                worker.join(10)
+
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", STAMP - timedelta(seconds=errors.KILL_IMPACT_RECHECK_S - 60))
+    start()
+    assert spawned == []
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", STAMP - timedelta(seconds=errors.KILL_IMPACT_RECHECK_S + 60))
+    start()
+    assert spawned == [1]
+    monkeypatch.setattr(errors, "_kill_impact_checked_at", None)
+    start()
+    assert spawned == [1, 1]
+
+
+@pytest.mark.parametrize("current, checked, dropped", [
+    (True, STAMP, True), (False, STAMP, False), (True, STAMP - timedelta(hours=10), False), (None, None, False)])
+def test_the_util_stale_row_is_dropped_only_when_a_later_pass_found_the_build_current(
+        errors, db, monkeypatch, current, checked, dropped):
+    _stale_util(db)    # the oldest newer row is STAMP - 8 h
+    monkeypatch.setattr(errors, "_util_values_current", current)
+    monkeypatch.setattr(errors, "_util_checked_at", checked)
+    assert (kind(errors, db, "util_build_stale")["count"] == 0) is dropped
+
+
+def test_the_background_pass_stores_the_util_compare(errors, db, factory, monkeypatch):
+    _stub_util_compare(monkeypatch, True)
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._util_values_current is True and errors._util_checked_at == STAMP
+
+
+def test_the_background_pass_stores_the_oldest_current_row_newer_than_the_build(errors, db, factory, monkeypatch):
+    # R4-12: the age comes from the rows that are current (Freshness), read off the request path
+    _stale_util(db)     # the build: key "k", STAMP - 9 h
+    _stub_util_compare(monkeypatch, False, rows=[(1, 1, "f", STAMP - timedelta(hours=10)),
+                                                 (1, 2, "f", STAMP - timedelta(hours=2)),
+                                                 (1, 3, "f", STAMP - timedelta(hours=1))])
+    errors._verify_features(factory, lambda session, row: None)
+    assert errors._util_oldest_current == ("k", STAMP - timedelta(hours=2))
+
+
+@pytest.mark.parametrize("oldest, shown", [
+    (("k", STAMP - timedelta(hours=1)), False),     # the current rows are only an hour old: not overdue yet
+    (("k", None), False),                           # nothing current is newer than the build
+    (("k", STAMP - timedelta(hours=4)), True),
+    (("other build", STAMP - timedelta(hours=1)), True),   # the pass read another build: the cheap age stands
+    (None, True)])
+def test_a_superseded_util_row_does_not_make_the_build_overdue(errors, db, monkeypatch, oldest, shown):
+    # R4-12: the cheap query's oldest newer row (STAMP - 8 h) may be one a newer input superseded
+    _stale_util(db)
+    monkeypatch.setattr(errors, "_util_values_current", False)
+    monkeypatch.setattr(errors, "_util_checked_at", STAMP)
+    monkeypatch.setattr(errors, "_util_oldest_current", oldest)
+    assert (kind(errors, db, "util_build_stale")["count"] == 1) is shown
+
+
+def test_the_card_lists_the_checked_kinds_under_data_and_demo_lists_none(errors, db, linked, monkeypatch):
+    from app.models.map_pool import MapPoolPatchNotes
+    from app.models.match import Match, MatchSource
+
+    _score(db, linked)
+    db.add(Match(external_id="unscored-1", source=MatchSource.SCRAPED, map_name="Ascent",
+                 created_at=STAMP - timedelta(hours=2)))
+    db.add(MapPoolPatchNotes(url="https://example.test/n", patch="11.01", published_at=STAMP, first_seen_at=STAMP,
+                             miss_count=2, last_error="no map section"))
+    db.commit()
+    body = errors.compute(db)
+    for key in ("unscored_match", "kill_impact_missing", "map_pool_note"):
+        found = next(k for k in body["kinds"] if k["key"] == key)
+        assert (found["group"], found["count"]) == ("Data", 1), key
+        assert found["rows"][0]["reproduce"]
+    note = next(k for k in body["kinds"] if k["key"] == "map_pool_note")["rows"][0]
+    assert note["count"] == 2 and note["link"] == "https://example.test/n"
+    monkeypatch.setattr(settings, "demo_mode", True)
+
+    class NoDB:
+        def __getattr__(self, name):
+            pytest.fail(f"demo used the database: {name}")
+
+    errors._cached = None
+    body = errors.compute(NoDB())
+    for key in ("unscored_match", "kill_impact_missing", "map_pool_note"):
+        assert next(k for k in body["kinds"] if k["key"] == key)["rows"] == []
+
+
 def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(errors, db, linked):
     linked.match_uuid = RECORD["match"]
     db.query(Player).update({Player.display_name: "synthetic-private-name"})
@@ -632,7 +1114,7 @@ def test_prompt_real_conflict_preserves_all_evidence_and_excludes_identity(error
                   "owner approves", "--expect-database valowithfriendsdb --read-only", "z: 2.0", '"piece": 15',
                   '"tops": [2.4]', '"dist_m": 0.58', '"dist_m": null', "heights_revision", STAMP.isoformat()):
         assert value in text
-    row = body["kinds"][0]["rows"][0]
+    row = next(k for k in body["kinds"] if k["key"] == "box_conflict")["rows"][0]
     for key in ("map", "match", "agent", "link", "reproduce"):
         assert str(row[key]) in text
     assert "synthetic-private-name" not in text
@@ -728,3 +1210,22 @@ def test_feature_summaries_are_read_once_per_fingerprint(errors, db, linked):
     assert reread == 1
     assert {d: c for d, (_, _, c) in third[0].items()} == {"digest-a": 1, "digest-b": 1, "digest-c": 1}
     assert (linked.id, 2, "new") in errors._digests and len(errors._digests) == 4
+
+
+
+def test_a_capped_checked_kind_says_it_was_cut(errors, db, monkeypatch):
+    # R4-15: past the cap the count is not the total; the note says so and points at the rest query
+    from app.models.match import Match, MatchSource
+    from app.services import site_health_checks
+
+    monkeypatch.setattr(site_health_checks, "UNSCORED_CAP", 2)
+    for n in range(3):
+        db.add(Match(external_id=f"unscored-{n}", source=MatchSource.SCRAPED, map_name="Ascent",
+                     created_at=STAMP - timedelta(hours=2, minutes=n)))
+    db.commit()
+    entry = kind(errors, db, "unscored_match")
+    assert entry["count"] == 2 and entry["note"].startswith("more than 2")
+    monkeypatch.setattr(site_health_checks, "UNSCORED_CAP", 3)
+    errors._verification_changed()
+    entry = kind(errors, db, "unscored_match")
+    assert entry["count"] == 3 and not entry["note"]

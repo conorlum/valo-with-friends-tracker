@@ -120,3 +120,24 @@ def test_seed_keeps_a_fetched_row_the_seed_now_also_has(factory, monkeypatch):
         same = [r for r in rows if r.map_name == last.map_name and r.in_pool == last.in_pool
                 and r.effective_at.replace(tzinfo=UTC) == last.effective_at]
         assert [r.source for r in same] == ["patch_notes"]
+
+
+def test_a_manual_refresh_stores_its_failure_and_a_later_success_clears_it(factory, monkeypatch):
+    # R4-10: the command has no flush thread, so it flushes what the check queued
+    from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
+    from app.services import site_health
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+    with factory() as db:
+        Base.metadata.create_all(db.get_bind(), tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
+
+    def down(url):
+        raise RuntimeError("listing down")
+
+    assert cli.cmd_refresh(factory, down) == 0
+    with factory() as db:
+        assert [(r.kind, r.key) for r in db.scalars(select(SiteEvent))] == [("loop_failed", "map_pool:check")]
+    assert not site_health._queue
+    assert cli.cmd_refresh(factory, lambda url: "") == 0
+    with factory() as db:
+        assert db.scalars(select(SiteEvent)).first() is None

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import SessionLocal, get_db
 from app.models import AccountGroupMember, Player
+from app.services import site_health
 from app.services.account_groups import (
     get_cached_group_views,
     group_fingerprint,
@@ -289,6 +290,7 @@ def _build_profile_context(
                 )
         except Exception:
             logger.exception("Cache write-through failed for player %s (%s)", player.id, scope)
+            site_health.count("cache_fallback", "player_page:write_through", player.id)
 
     if empty:
         context = {"page_player": player, "scope": scope, **_filter_context(filter_view, account_view or _AccountView([]))}

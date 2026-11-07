@@ -104,8 +104,19 @@ def _no_background_util_build(monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(util_rebuild, "_spawn", lambda: _Finished())
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: _Finished())
     monkeypatch.setattr(util_rebuild, "_child", None)
+    monkeypatch.setattr(util_rebuild, "_pending", [])
+
+
+@pytest.fixture(autouse=True)
+def _reset_site_health():
+    """Site health keeps its queue, counters and loop registry in module memory: start every test clean."""
+    try:
+        from app.services import site_health
+    except ImportError:
+        return
+    site_health._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

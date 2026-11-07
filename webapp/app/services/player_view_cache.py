@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountGroupMember, AccountGroupViewCache, MatchPlayer, Player, PlayerViewCache
 from app.scoring.impact import IMPACT_CALCULATION_VERSION
+from app.services import site_health
 from app.services.economy_graphs import (
     LoadoutWinScatter,
     PistolMatchStats,
@@ -577,10 +578,12 @@ def decode_cache_row(row: PlayerViewCache | None, player: Player) -> CachedPlaye
         return None
     try:
         if not _validate_blob(row.data):
+            site_health.count("cache_fallback", "player_view_cache:invalid", row.player_id)
             return None
         return _decode(row.data, player)
     except Exception:
         logger.exception("player_view_cache: decode failed for player %s scope %s", row.player_id, row.scope)
+        site_health.count("cache_fallback", "player_view_cache:decode", row.player_id)
         return None
 
 
@@ -598,10 +601,12 @@ def decode_player_views_blob(data: dict, version: int, player: Player) -> Cached
         return None
     try:
         if not _validate_blob(data):
+            site_health.count("cache_fallback", "player_view_cache:invalid", player.id)
             return None
         return _decode(data, player)
     except Exception:
         logger.exception("player view blob: decode failed for player %s", player.id)
+        site_health.count("cache_fallback", "player_view_cache:decode", player.id)
         return None
 
 
@@ -763,4 +768,6 @@ def prewarm_player_cache(db: Session, player_ids: set[int]) -> None:
         except Exception:
             db.rollback()
             logger.exception("Cache pre-warm failed for player %s; next page visit will recompute", pid)
+            site_health.count("cache_fallback", "player_view_cache:prewarm", pid)
     prewarm_group_caches(db, set(player_ids))
+    site_health.flush_for(db)     # pre-warms run in command-line processes, which have no flush thread

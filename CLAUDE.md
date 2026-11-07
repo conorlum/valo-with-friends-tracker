@@ -171,6 +171,29 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach
   brief's `util_facts` are logged with ids the checker trusts (`app/coach/runner.py`).
 
+### Site health
+
+The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`GROUPS`) lists the replay kinds plus
+stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
+(`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
+loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost; and checked
+kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs
+never wait on the database for it: `record`, `resolve` and `count` queue in memory, in the order they happen, and
+the flush thread writes them every 60 s (a resolve deletes rows last seen before it; one entry the database refuses
+is dropped alone). Only the Critical Util child, which exits, writes at once (`record_now`/`resolve_now`); every
+other command-line process that records must flush before it exits (the cache pre-warms' `flush_for`,
+`scripts/map_pool.py refresh`). Every health write holds one advisory lock (`site_health.WRITERS_LOCK`), and each
+clear leaves a mark (`site_event_marks`) so another process's late write of an earlier failure can't bring the row
+back. Never in demo mode. A later
+success of the same job resolves a row; otherwise only a PR clears it, by a new entry in
+`app/data/site_health_resolved.json` (kind, key, `fixed_by`; never edit a merged entry, a later fix of the same key
+is a new entry), applied once by the flush thread 10 min after the first start that has it (a failure inside
+that grace is cleared too: check the card again after the job has run past it). The site has no route that writes
+or clears rows;
+`scripts/site_health.py` only lists. A route with a secret in its path (`{key}`) is stored as its template.
+A new recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
+Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
+
 ### Running the webapp locally
 
 ```
@@ -192,7 +215,7 @@ See `docs/testing.md` for prerequisites, required CI lanes, and the coverage-aud
 
 **Which tests a change needs:** `python scripts/test_catalog.py plan --git` (or `plan <paths>`) names the suites
 from `tests/suites.toml` that guard the changed files, with each lane's estimated time and command; `run --git`
-runs them and reports each suite against its estimate; `list` describes all 25 suites. A new test file or app
+runs them and reports each suite against its estimate; `list` describes all 26 suites. A new test file or app
 module goes into `tests/suites.toml` (`check`, run by `tests/test_test_catalog.py`, fails otherwise).
 
 | Lane | Arguments after `-m pytest` |

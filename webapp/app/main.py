@@ -16,6 +16,7 @@ from app.maintenance import maintenance_middleware
 from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
                          site_stats, squad, util_page)
 from app.services.auth import get_current_player
+from app.services.site_health_web import SlowPageMiddleware, page_error_handler
 from app.templates import templates
 
 # INFO-level timing logs (see app.routers.sessions / app.services.sessions /
@@ -40,22 +41,37 @@ async def lifespan(_app: FastAPI):
     # stays standard library only, so the web app hands it the fast path.
     from app.services import mask_accel
 
+    from datetime import datetime, timezone
+
+    from app.services import site_health
+
+    started_at = datetime.now(timezone.utc)
     mask_accel.register()
     stops = []
+    health_stop = None
     try:
         for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states):
             stops.append(service.start(SessionLocal))
+        # The flush thread writes what the site recorded and applies app/data/site_health_resolved.json (once
+        # each); startup itself never waits on the database for it. None in demo mode.
+        health_stop = site_health.start(SessionLocal, started_at=started_at)
         yield
     finally:
         for stop in stops:
             if stop is not None:
                 stop.set()
+        # A loop in the middle of a pass finishes it (up to 10 s), so the final flush takes what it recorded.
+        site_health.join_loops(10)
+        site_health.stop(health_stop)
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)
+# A page that crashes is recorded as a page_error event (in memory only), then gets the usual plain 500.
+app.add_exception_handler(Exception, page_error_handler)
 # Blocks every page but /health while MAINTENANCE_MODE is set, so a rollback can
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)
+app.add_middleware(SlowPageMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,

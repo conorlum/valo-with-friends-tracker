@@ -719,9 +719,12 @@ def ack_body(db, upload: ReplayUpload, match_uuid: str | None = None) -> dict | 
     return body
 
 
-def send_ack(db, upload: ReplayUpload, worker: WorkerClient, match_uuid: str | None = None) -> str | None:
+def send_ack(db, upload: ReplayUpload, worker: WorkerClient, match_uuid: str | None = None, *,
+             raise_unreachable: bool = False) -> str | None:
     """Best effort: records the worker's answer in `archive_ack`; leaves it null when the worker can't be
-    reached (or asks to be asked again), for replay_archive_sync to re-send."""
+    reached (or asks to be asked again), for replay_archive_sync to re-send. With `raise_unreachable` (the sync),
+    a worker that can't be reached raises its WorkerError after the rollback, so the sync counts the cycle as a
+    worker failure."""
     body = ack_body(db, upload, match_uuid)
     if body is None:
         return None
@@ -737,6 +740,8 @@ def send_ack(db, upload: ReplayUpload, worker: WorkerClient, match_uuid: str | N
         recorded = f"refused: {refused}"
     except WorkerError:
         db.rollback()
+        if raise_unreachable:
+            raise
         return None
     upload = db.get(ReplayUpload, upload.id)
     upload.archive_ack = recorded[:160]

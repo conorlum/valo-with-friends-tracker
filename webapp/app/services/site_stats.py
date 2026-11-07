@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Friendship, Match, MatchPlayer, Round
+from app.services import site_health
 from app.services.eco_followup import compute_pistol_win_followup_eco
 from app.services.enemy_at_11_response import compute_enemy_at_11_response_stats
 from app.services.force_buy_stats import compute_force_buy_stats
@@ -161,6 +162,7 @@ def get_site_stats(db: Session) -> dict:
     except Exception:
         db.rollback()
         logger.exception("site_stats_cache: write-through failed, serving live result uncached")
+        site_health.count("cache_fallback", "site_stats:write_through", None)
     return data
 
 
@@ -199,6 +201,7 @@ def get_viewer_site_stats(db: Session, viewer_player_id: int) -> dict:
     except Exception:
         db.rollback()
         logger.exception("viewer_site_stats_cache: write-through failed for viewer %s", viewer_player_id)
+        site_health.count("cache_fallback", "viewer_site_stats:write_through", viewer_player_id)
     return data
 
 
@@ -218,4 +221,6 @@ def prewarm_viewer_site_stats(db: Session) -> int:
         except Exception:
             db.rollback()
             logger.exception("viewer_site_stats_cache: pre-warm failed for viewer %s", viewer_id)
+            site_health.count("cache_fallback", "viewer_site_stats:prewarm", viewer_id)
+    site_health.flush_for(db)     # pre-warms run in command-line processes, which have no flush thread
     return written

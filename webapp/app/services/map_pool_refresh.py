@@ -21,7 +21,7 @@ from sqlalchemy import select, update
 
 from app.config import settings
 from app.models.map_pool import MapPoolChange, MapPoolPatchNotes
-from app.services import map_pool
+from app.services import map_pool, site_health
 from app.services.patch_notes import parse_listing, parse_patch_notes
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,9 @@ MAX_PAGES = 5
 GIVE_UP_AFTER = timedelta(days=7)
 GIVEN_UP = "given up: parser miss"
 MIN_GAP_S = 24 * 3600
+LOOP_NAME = "map-pool-refresh"
+CHECK_KEY = "map_pool:check"
+ALLOWED_QUIET_S = 26 * 3600
 
 _last_check: float | None = None  # time.monotonic() of this process's last check
 
@@ -110,9 +113,10 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
     now = _utc(now) if now is not None else datetime.now(timezone.utc)
     try:
         items = parse_listing(fetch(LISTING_URL))
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception("map pool refresh: the listing could not be fetched")
         counts["errors"] += 1
+        site_health.loop_failed(CHECK_KEY, exc)
         return counts
     counts["listed"] = len(items)
     try:
@@ -148,10 +152,11 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
                 except Stopped:
                     session.rollback()
                     break
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     session.rollback()
                     log.exception("map pool refresh: %s failed", item.url)
                     counts["errors"] += 1
+                    site_health.loop_failed(CHECK_KEY, exc)
                     continue
                 if miss:
                     counts["misses"] += 1
@@ -168,29 +173,41 @@ def check(session_factory, fetch: Callable[[str], str], now: datetime | None = N
         finally:
             session.rollback()
             session.close()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception("map pool refresh failed")
         counts["errors"] += 1
+        site_health.loop_failed(CHECK_KEY, exc)
+    if counts["errors"] == 0:
+        site_health.loop_ok(CHECK_KEY)
     return counts
 
 
 def run_forever(session_factory, fetch, stop: threading.Event, every_s: float = 86400,
                 first_delay_s: float = 60) -> None:
     global _last_check
-    if stop.wait(first_delay_s):
-        return
-    while True:
-        if _last_check is not None and time.monotonic() - _last_check < MIN_GAP_S:
-            pass
-        else:
-            _last_check = time.monotonic()
-            try:
-                counts = check(session_factory, fetch, stop=stop)
-                log.info("map pool refresh: %s", ", ".join(f"{k} {v}" for k, v in counts.items()))
-            except Exception:  # noqa: BLE001
-                log.exception("map pool refresh failed")
-        if stop.wait(every_s):
+    site_health.register(LOOP_NAME, every_s, ALLOWED_QUIET_S)
+    try:
+        if stop.wait(first_delay_s):
             return
+        while True:
+            if _last_check is not None and time.monotonic() - _last_check < MIN_GAP_S:
+                pass
+            else:
+                _last_check = time.monotonic()
+                site_health.beat(LOOP_NAME, "start")
+                try:
+                    counts = check(session_factory, fetch, stop=stop)
+                    log.info("map pool refresh: %s", ", ".join(f"{k} {v}" for k, v in counts.items()))
+                    site_health.loop_ok(LOOP_NAME)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("map pool refresh failed")
+                    site_health.loop_failed(LOOP_NAME, exc)
+                site_health.beat(LOOP_NAME, "end")
+            if stop.wait(every_s):
+                return
+    finally:
+        if stop.is_set():      # a thread that died on its own stays registered, so it shows as quiet
+            site_health.unregister(LOOP_NAME)
 
 
 def start(session_factory) -> threading.Event | None:

@@ -15,11 +15,14 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from sqlalchemy import select
+
 from app.config import settings
+from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
-from app.models.replay import (ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
-                               ReplayRoundUtil, ReplayUpload)
-from app.services import control_heights, replay_progress
+from app.models.replay import (Replay, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
+                               ReplayRoundUtil, ReplayUpload, UtilModel)
+from app.services import control_heights, replay_progress, site_health
 from app.services.replay_gaps import Freshness
 
 SHOW = 50
@@ -33,7 +36,6 @@ KINDS = (
     ("util_failed", "Critical Util failed"),
     ("heights_rejected", "Height builds rejected"),
     ("heights_out_of_tries", "Height rebuilds out of tries"),
-    ("warm_vanished", "Warm cache files deleted before use"),
     ("given_up", "Rounds given up on"),
     ("held", "Replays held for a re-parse"),
     ("upload_failed", "Uploads failed"),
@@ -44,7 +46,32 @@ KINDS = (
     ("unlinked", "Replays unlinked"),
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
+    ("page_error", "Pages that crashed"),
+    ("slow_page", "Slow page loads"),
+    ("loop_failed", "Background loops that failed"),
+    ("loop_quiet", "Background loops gone quiet"),
+    ("util_build_failed", "Critical Util build failed"),
+    ("util_build_stale", "Critical Util build out of date"),
+    ("worker_overrun", "Worker jobs that ran over"),
+    ("worker_refused", "Worker refusals and failures"),
+    ("warm_vanished", "Warm cache files deleted before use"),
+    ("unscored_match", "Matches with no Impact scores"),
+    ("kill_impact_missing", "Replays missing per-kill Impact"),
+    ("map_pool_note", "Map-pool patch notes not read"),
+    ("cache_fallback", "Cache fallbacks"),
 )
+GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
+GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_page": "Pages",
+          "loop_failed": "Background work", "loop_quiet": "Background work",
+          "util_build_failed": "Background work", "util_build_stale": "Background work",
+          "worker_overrun": "Background work", "worker_refused": "Background work", "warm_vanished": "Background work",
+          "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data", "cache_fallback": "Data"}
+EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+                         "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback",
+                         "unscored_match", "kill_impact_missing", "map_pool_note"})
+LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
+# read when the card is computed; the rest come from site_events
+KILL_IMPACT_RECHECK_S = 600  # How often the background pass compares stored per-kill fingerprints
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -54,7 +81,14 @@ _verification_started = False
 _verification_pending = False   # the last compute saw a current artifact with no result
 _verification_running = False
 _verification_progress = (0, 0)
-_digests: dict = {}     # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
+_kill_impact_results: dict = {}     # replay id -> item dict, for linked replays whose stored fingerprint is stale
+_kill_impact_checked_at: datetime | None = None
+_util_values_current: bool | None = None   # the last pass's answer, None = never or failed
+_util_checked_at: datetime | None = None
+# the last pass's (build key, oldest current util row newer than that build or None): the age the out-of-date
+# warning uses, since the card's own cheap query also counts rows a newer input superseded
+_util_oldest_current: tuple | None = None
+_digests: dict = {}    # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
 
 
 def now() -> datetime:
@@ -64,6 +98,16 @@ def now() -> datetime:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+LIVE_NOTE = "live: checked when the card is computed"
+
+
+def _parse_iso(value) -> datetime | None:
+    try:
+        return _utc(datetime.fromisoformat(value)) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -91,6 +135,13 @@ def _row(*, replay=None, map_name=None, match=None, n=None, t=None, agent=None, 
     return {"map": map_name, "match": match, "round": n, "t": t, "agent": agent,
             "figures": copy.deepcopy(figures) if figures is not None else {}, "link": link,
             "error": error, "revision": revision, "reproduce": reproduce or _inventory_command()}
+
+
+def _event_row(*, kind, key, count, first_seen, last_seen, error, context, link=None, reproduce=None) -> dict:
+    return {"kind": kind, "key": key, "count": count, "first_seen": _iso(first_seen),
+            "last_seen": _iso(last_seen), "error": error,
+            "context": copy.deepcopy(context) if context is not None else {},
+            "link": link or f"{SITE}/replays/upload", "reproduce": reproduce or _inventory_command()}
 
 
 def _round_command(replay, n) -> str:
@@ -178,6 +229,71 @@ def _verification_changed():
         _cached = None
 
 
+def _verify_kill_impact(db) -> dict:
+    """Linked replays on a scored match whose stored per-kill split was made from other Impact rows than the
+    match has now: {replay id: item dict}."""
+    from app.replays.db import impact_fingerprint
+    from app.services import site_health_checks
+
+    # only the stored split's fingerprint, read in the database: never the splits themselves
+    found = db.execute(select(Replay.id, Replay.match_id, Replay.map_name, Replay.match_uuid, Replay.linked_at,
+                              Replay.created_at, Replay.kill_impact["fingerprint"].as_string())
+                       .where(Replay.link_status == "linked", Replay.match_id.is_not(None),
+                              Replay.kill_impact.is_not(None), site_health_checks._scored(Replay.match_id))
+                       .order_by(Replay.id)).all()
+    mismatched = {}
+    for rid, match_id, map_name, match_uuid, linked_at, created_at, stored in found:
+        if stored == impact_fingerprint(db, match_id):
+            continue
+        mismatched[rid] = {
+            "key": str(rid), "first_seen": linked_at or created_at,
+            "error": "stored per-kill Impact fingerprint no longer matches the match's Impact rows",
+            "context": {"match_id": match_id, "map_name": map_name},
+            "reproduce": site_health_checks.kill_impact_reproduce(match_uuid)}
+    return mismatched
+
+
+def _verify_data(db):
+    """The data checks that are too slow to run when the card is computed. Each keeps its previous result when it
+    fails."""
+    global _kill_impact_results, _kill_impact_checked_at, _util_values_current, _util_checked_at, \
+        _util_oldest_current
+    try:
+        results = _verify_kill_impact(db)
+        with _verification_lock:
+            _kill_impact_results = results
+            _kill_impact_checked_at = now()
+        _verification_changed()
+    except Exception:
+        log.exception("the per-kill Impact fingerprint check could not finish")
+        with _verification_lock:
+            _kill_impact_checked_at = now()   # an attempt counts: a failing check waits its 600 s like a finished one
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the per-kill Impact check failed", exc_info=True)
+    try:
+        from app.services import replay_util   # pulls numpy: only the background pass imports it
+
+        rows = replay_util.current_rows(db, with_data=False)
+        build = db.execute(select(UtilModel.key, UtilModel.computed_at).where(UtilModel.name == "values")).first()
+        current = bool(replay_util.values_current(db, rows=rows))
+        newer = [_utc(r[3]) for r in rows if r[3] is not None
+                 and (build is None or _utc(r[3]) > _utc(build.computed_at))]
+        with _verification_lock:
+            _util_values_current, _util_checked_at = current, now()
+            _util_oldest_current = (build.key if build else None, min(newer) if newer else None)
+        _verification_changed()
+    except Exception:
+        log.exception("the Critical Util build comparison could not finish")
+        with _verification_lock:
+            _util_values_current = _util_oldest_current = None
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the util comparison failed", exc_info=True)
+
+
 def _verify_features(session_factory=None, verifier=None):
     """Background body, injectable for offline tests. One session and one verifier call at a time."""
     global _verification_started, _verification_running, _verification_progress
@@ -212,6 +328,7 @@ def _verify_features(session_factory=None, verifier=None):
                     done += 1
                     _verification_progress = (done, len(representatives))
                 _verification_changed()
+            _verify_data(db)
     except Exception:
         log.exception("replay error feature verification could not finish")
     finally:
@@ -228,7 +345,11 @@ def _start_verification():
     if settings.demo_mode:
         return
     with _verification_lock:
-        if _verification_running or (_verification_started and not _verification_pending):
+        if _verification_running:
+            return
+        checked = _kill_impact_checked_at
+        recheck = checked is None or (now() - _utc(checked)).total_seconds() > KILL_IMPACT_RECHECK_S
+        if _verification_started and not _verification_pending and not recheck:
             return
         _verification_started = _verification_running = True
         _verification_pending = False
@@ -258,7 +379,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                 map_name=map_name, figures={"map": map_name}, reproduce=_height_command(map_name)))
         for identity, count in live.warm_vanished:
             # D3: counted toward the identity's warm-build fallback; this row is the alarm that it happened.
-            rows["warm_vanished"].append(_row(
+            row = _row(
                 map_name=identity.split(":", 1)[0], figures={"identity": identity, "times": count},
                 error=(f"a warm build's visibility cache file left the replay worker's disk {count} time(s) before "
                        "a round leased it (the worker's cache cleanup: 3 newest files per map, or the cache "
@@ -266,7 +387,11 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                        "weigh: lease the file from the warm build until its rounds are done, or keep more files "
                        "per map (replay_worker/server.py _next and control_cache). Evidence: the worker's /health "
                        "(control.warm_builds.vanished; control.cache maps, evictions, kept_pruned, reserve) and its "
-                       "log lines 'warm identity ... vanished'.")))
+                       "log lines 'warm identity ... vanished'."))
+            row.update(_event_row(kind="warm_vanished", key=identity, count=count, first_seen=None,
+                                  last_seen=None, error=row["error"],
+                                  context={"times": count, "map": row["map"]}, reproduce=row["reproduce"]))
+            rows["warm_vanished"].append(row)
         older = 0
         for rid, n, work, fp in live.given_up:
             if (states.get((rid, n)) not in {f"{work}_missing", f"{work}_stale"}
@@ -415,8 +540,92 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
     notes["feature_failed"] = (f"checking {done} of {total}" if running else
                                f"{verified} verified, {unavailable} unavailable or unsupported" if started else
                                "not checked yet")
-    for values in rows.values():
-        values.sort(key=_sort_key)
+    try:
+        stored = db.execute(select(SiteEvent.kind, SiteEvent.key, SiteEvent.count, SiteEvent.first_seen,
+                                   SiteEvent.last_seen, SiteEvent.error, SiteEvent.context)).all()
+    except Exception:
+        log.warning("site_events could not be read; showing replay evidence only", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            log.warning("rollback after the site_events read failed", exc_info=True)
+        stored = []
+    for kind, key, count, first_seen, last_seen, error, context in stored:
+        # a warm_vanished identity can show twice: the live row (this worker process's count) and the stored
+        # history (every process, with first and last seen)
+        if kind in EVENT_KINDS and kind not in LIVE_KINDS and kind in rows:
+            rows[kind].append(_event_row(kind=kind, key=key, count=count, first_seen=first_seen,
+                                         last_seen=last_seen, error=error, context=context))
+    if "loop_quiet" in rows:
+        moment = now()
+        for item in site_health.quiet_loops(moment):
+            since = item["last_end"] or item["registered"]
+            error = (f"last finished a pass at {_iso(item['last_end'])}" if item["last_end"]
+                     else f"never finished a pass since {_iso(item['registered'])}")
+            if item["in_pass_since"]:
+                error += f"; in a pass since {_iso(item['in_pass_since'])}"
+            rows["loop_quiet"].append(_event_row(
+                kind="loop_quiet", key=item["name"], count=1, first_seen=since, last_seen=moment, error=error,
+                context={"limit_s": item["limit_s"]}, reproduce="live: read in this process, not stored"))
+    from app.services import site_health_checks
+
+    moment = now()
+    cap = site_health_checks.UNSCORED_CAP
+    cut_note = f"more than {cap}: the first {cap} are counted here; the rest query lists them all"
+    if "unscored_match" in rows:
+        found = site_health_checks.unscored_matches(db, moment)
+        if len(found) > cap:
+            found, notes["unscored_match"] = found[:cap], cut_note
+        for item in found:
+            rows["unscored_match"].append(_event_row(
+                kind="unscored_match", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
+                error=item["error"], context=item["context"], link=item.get("link"),
+                reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "kill_impact_missing" in rows:
+        found = site_health_checks.kill_impact_null(db)
+        if len(found) > cap:
+            found, notes["kill_impact_missing"] = found[:cap], cut_note
+        items = {item["key"]: item for item in found}
+        with _verification_lock:
+            mismatched = dict(_kill_impact_results)
+        for item in mismatched.values():
+            items.setdefault(item["key"], item)
+        for item in items.values():
+            rows["kill_impact_missing"].append(_event_row(
+                kind="kill_impact_missing", key=item["key"], count=1, first_seen=item["first_seen"],
+                last_seen=moment, error=item["error"], context=item["context"], link=item.get("link"),
+                reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "map_pool_note" in rows:
+        for item in site_health_checks.map_pool_notes(db):
+            rows["map_pool_note"].append(_event_row(
+                kind="map_pool_note", key=item["key"], count=item["context"].get("miss_count") or 1,
+                first_seen=item["first_seen"], last_seen=moment, error=item["error"], context=item["context"],
+                link=item.get("link"), reproduce=item.get("reproduce") or LIVE_NOTE))
+    if "util_build_stale" in rows:
+        with _verification_lock:
+            util_current, util_checked = _util_values_current, _util_checked_at
+            oldest_current = _util_oldest_current
+        for item in site_health_checks.util_build_stale(db, moment):
+            if util_current is True and util_checked is not None:
+                newer = _parse_iso(item["context"].get("oldest_newer_row"))
+                if newer is not None and _utc(util_checked) > newer:
+                    continue   # a pass after the newer rows found the build current: they were already covered
+            if util_current is False and oldest_current is not None \
+                    and oldest_current[0] == item["context"].get("build_key"):
+                # the pass read which rows are current: superseded ones don't make the build overdue
+                if oldest_current[1] is None or \
+                        (_utc(moment) - oldest_current[1]).total_seconds() <= site_health_checks.UTIL_STALE_S:
+                    continue
+            rows["util_build_stale"].append(_event_row(
+                kind="util_build_stale", key=item["key"], count=1, first_seen=item["first_seen"], last_seen=moment,
+                error=item["error"], context=item["context"],
+                reproduce="live: checked when the card is computed"))
+    for key, values in rows.items():
+        if key not in EVENT_KINDS:
+            values.sort(key=_sort_key)
+    for key in EVENT_KINDS & rows.keys():
+        rows[key].sort(key=lambda row: row["key"])
+        rows[key].sort(key=lambda row: row["last_seen"] or "", reverse=True)
     return rows
 
 
@@ -425,10 +634,12 @@ def compute(db, live=None, *, limit=SHOW) -> dict:
     stale = Counter()
     notes = {}
     rows = collect(db, live=live, stale=stale, notes=notes)
-    return {"kinds": [{"key": key, "label": label, "count": len(rows[key]),
+    ordered = sorted(KINDS, key=lambda pair: GROUP_ORDER.index(GROUPS[pair[0]]))
+    return {"kinds": [{"key": key, "label": label, "group": GROUPS[key],
+                       "shape": "event" if key in EVENT_KINDS else "replay", "count": len(rows[key]),
                        "note": (f"{stale[key]} failed rows from older rules: the worker will retry them"
                                 if stale[key] else notes.get(key)), "rows": rows[key][:limit]}
-                      for key, label in KINDS],
+                      for key, label in ordered],
             "checked_at": _iso(now())}
 
 
@@ -459,6 +670,24 @@ def _sql_string(value):
 
 def _rest_query(key, rows):
     """Select exactly the remaining stored identities, with only diagnostic columns."""
+    if key == "loop_quiet":
+        return "(live rows, not stored: read the site's loop state in the running process)"
+    checked = {"util_build_stale": "SELECT name, key, computed_at FROM util_model WHERE name = 'values';",
+               "unscored_match": "SELECT m.id, m.external_id, m.map_name, m.created_at FROM matches m WHERE "
+                                 "m.created_at < now() - interval '1 hour' AND NOT EXISTS (SELECT 1 FROM rounds r "
+                                 "JOIN impact_scores i ON i.round_id = r.id WHERE r.match_id = m.id) ORDER BY m.id;",
+               "kill_impact_missing": "SELECT id, match_id, map_name, match_uuid, kill_impact->>'fingerprint' "
+                                      "AS stored_fingerprint FROM replays WHERE link_status = 'linked' AND "
+                                      "match_id IS NOT NULL ORDER BY id;  -- compare each with "
+                                      "app.replays.db.impact_fingerprint",
+               "map_pool_note": "SELECT url, patch, miss_count, last_error FROM map_pool_patch_notes "
+                                "WHERE last_error IS NOT NULL ORDER BY url;"}
+    if key in checked:
+        return f"(checked live, not stored in site_events; read-only) {checked[key]}"
+    if key in EVENT_KINDS:
+        keys =", ".join(_sql_string(r["key"]) for r in rows)
+        return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
+                f"WHERE kind = {_sql_string(key)} AND key IN ({keys}) ORDER BY last_seen DESC;")
     models = {"control_failed": ReplayRoundControl, "gaps_failed": ReplayRoundGapRun,
               "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
     if key in models:
@@ -497,7 +726,7 @@ def prompt(result, kind=None) -> str:
     chosen = [by_key[key] for key, _ in KINDS if key in by_key and (kind is None or kind == key)]
     if kind is not None and not any(entry["rows"] for entry in chosen):
         return f"{dict(KINDS)[kind]}: nothing to fix."
-    lines = ["Investigate replay errors that need a human.",
+    lines = ["Investigate site health problems that need a human.",
              "Repo: conorlum/valo-with-friends-tracker on GitHub; code is under webapp/.",
              "Investigate read-only: read the code, and access the DB only from webapp/ through",
              "scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only",
@@ -511,6 +740,13 @@ def prompt(result, kind=None) -> str:
         shown = entry["rows"][:remaining]
         for row in shown:
             lines.append("")
+            if entry.get("shape") == "event":
+                lines.extend([f"kind: {row['kind']}", f"key: {row['key']}", f"count: {row['count']}",
+                              f"first_seen: {row['first_seen']}", f"last_seen: {row['last_seen']}",
+                              f"error: {row['error']}",
+                              f"context: {json.dumps(row['context'], ensure_ascii=False, sort_keys=True)}",
+                              f"link: {row['link']}", f"reproduce: {row['reproduce']}"])
+                continue
             for field in ("map", "match", "round", "t", "agent"):
                 lines.append(f"{field}: {row[field]}")
             for name, value in row["figures"].items():
