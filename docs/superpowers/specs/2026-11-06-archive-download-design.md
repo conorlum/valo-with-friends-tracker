@@ -81,7 +81,7 @@ real text is in `reasons`). DB only.
   matches, skip with no download. No HEAD requests (the worker and FastAPI don't answer HEAD).
 - Download to `<uuid>.vrf.part`, hashing while writing; count bytes against `Content-Length` (urllib returns
   `b""` on an early end rather than raising); a missing sha header, a short body or a mismatch deletes the
-  part and counts `failed`. A 404 with `code` is reported as "not in archive" (or deleted) with its reason.
+  part and counts `failed`. A 404 with `code` `not_in_archive`, `deleted` or `tombstoned` is reported as "not in archive" with its reason; any other code (`missing_on_disk`, `archive_off`, `bad_uuid`) is a fault and counts `failed` (branch review B1). A non-JSON or malformed refused list or index exits 2 like an unreadable one.
 - Each match is wrapped in `except (AdminError, OSError, http.client.HTTPException)`: one failure never stops
   the rest. Summary: downloaded, skipped, not in archive, failed, each with UUIDs; exit 1 if any failed.
 

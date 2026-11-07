@@ -222,9 +222,13 @@ running or the stopped reason, both recipes, the worker's capabilities, how many
 any unfinished attempt, what gave up and why, and the rounds waiting. "Running" means switched on with a
 matching worker, not that a parse is in progress. It changes nothing.
 
-*Downloading archived replays.* Run
-`REPLAY_ADMIN_TOKEN=... .venv\Scripts\python.exe scripts\fetch_archived_replay.py <uuid>`
-(multiple UUIDs are allowed), or replace `<uuid>` with `--refused` to fetch the refused list.
+*Downloading archived replays.* From `webapp/` in Git Bash, run
+`REPLAY_ADMIN_TOKEN=... .venv/Scripts/python.exe scripts/fetch_archived_replay.py <uuid>`
+(multiple UUIDs are allowed), or replace `<uuid>` with `--refused` to fetch the refused list. In PowerShell,
+set `$env:REPLAY_ADMIN_TOKEN='...'` first, then run `.\.venv\Scripts\python.exe scripts\fetch_archived_replay.py <uuid>`.
+It exits 0 when every file was downloaded, skipped or is absent from the archive, 1 when any failed (a worker
+fault such as `missing_on_disk` or `archive_off` counts as failed), and 2 when the refused list or the archive
+index can't be read.
 The token comes from the environment; no database credentials are needed. Files go to `~/rp/vrf`
 by default (`--out` overrides it). Each download is written to `<uuid>.vrf.part`, checked against
 the archive's sha256, then renamed to `<uuid>.vrf`; existing files with the correct sha256 are skipped.

@@ -68,6 +68,8 @@ def call(site: str, method: str, path: str, body: dict | None = None, timeout: f
     try:
         with _open(site, method, path, body, timeout) as response:
             return json.loads(response.read())
+    except ValueError as error:
+        raise AdminError(redact(f"the site gave a non-JSON answer for {path}")) from error
     except (urllib.error.URLError, OSError) as error:
         raise AdminError(redact(f"the site is unreachable: {error}")) from error
 

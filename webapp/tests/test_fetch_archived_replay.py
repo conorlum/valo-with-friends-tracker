@@ -159,16 +159,41 @@ def test_existing_good_file_is_skipped(archive_site, tmp_path, capsys):
     assert "skipped" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("code", ["not_in_archive", "deleted", "bad_uuid", "tombstoned",
-                                 "missing_on_disk", "archive_off"])
-def test_coded_404_continues(archive_site, tmp_path, capsys, code):
+@pytest.mark.parametrize("code, outcome, exit_code", [
+    ("not_in_archive", "not in archive", 0), ("deleted", "not in archive", 0), ("tombstoned", "not in archive", 0),
+    ("bad_uuid", "failed", 1), ("missing_on_disk", "failed", 1), ("archive_off", "failed", 1)])
+def test_coded_404_continues(archive_site, tmp_path, capsys, code, outcome, exit_code):
     archive_site.put_json(download_path(UUID_A), {"detail": {"code": code, "reason": "synthetic refusal"}}, 404)
-    assert run(archive_site, tmp_path, UUID_A, UUID_B) == 0
+    assert run(archive_site, tmp_path, UUID_A, UUID_B) == exit_code
     assert not (tmp_path / f"{UUID_A}.vrf").exists()
     assert not list(tmp_path.glob("*.part"))
     assert (tmp_path / f"{UUID_B}.vrf").read_bytes() == BODY
     captured = capsys.readouterr()
-    assert "not in archive" in captured.out and code in captured.out and "synthetic refusal" in captured.out
+    assert f"{UUID_A}: {outcome}: {code}: synthetic refusal" in captured.out
+    assert TOKEN not in captured.out + captured.err
+
+
+def test_header_sha_must_match_index(archive_site, tmp_path, capsys):
+    other = b"another synthetic recording"
+    archive_site.routes[download_path(UUID_A)] = (200, {"X-Archive-Sha256": sha(other),
+                                                        "Content-Length": str(len(other))}, other)
+    assert run(archive_site, tmp_path, UUID_A) == 1
+    assert not (tmp_path / f"{UUID_A}.vrf").exists()
+    assert not list(tmp_path.glob("*.part"))
+    assert "differs from the archive index" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("route", [REFUSED, INDEX])
+@pytest.mark.parametrize("body", [b"<html>a login page</html>", b"null", b'{"files": null, "replays": null}',
+                                  b'{"files": [{}], "replays": [{}]}', b'{"files": [1], "replays": [1]}'])
+def test_malformed_preflight_answer_exits_2(archive_site, tmp_path, capsys, route, body):
+    archive_site.routes[route] = (200, {"Content-Type": "application/json"}, body)
+    assert run(archive_site, tmp_path, UUID_A) == 2
+    assert download_path(UUID_A) not in archive_site.requests
+    captured = capsys.readouterr()
+    expected = "could not read refused replays:" if route == REFUSED else "could not read the archive index:"
+    assert expected in captured.err
+    assert "Traceback" not in captured.err
     assert TOKEN not in captured.out + captured.err
 
 
