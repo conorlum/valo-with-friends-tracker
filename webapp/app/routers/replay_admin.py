@@ -8,6 +8,8 @@ Every route answers 404 unless REPLAY_ADMIN_TOKEN is set (and not in demo mode) 
                                      replay, rounds, players and control rows, and tell the worker to
                                      delete its pending and archived files. Idempotent.
     GET  /admin/replays/archive      the worker's archive index.
+    GET  /admin/replays/refused      undeleted replays refused by the linker, newest first.
+    GET  /admin/replays/archive/{match_uuid}.vrf  stream an archived recording.
     POST /admin/replays/reparse      {"match_uuid"}: parse the archived file again; {"upload_id"}.
     GET  /admin/replays/uploads/{id} one poll of that reparse (the same refresh_job as an upload).
     GET  /admin/replays/reparse/status  where the automatic re-parse queue stands
@@ -23,6 +25,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
+from starlette.responses import StreamingResponse
 
 from app.config import settings
 from app.db import get_db
@@ -93,6 +97,67 @@ def archive_index():
         return _worker().archive()
     except uploads.WorkerError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.get("/refused", dependencies=[Depends(require_admin)])
+def refused_replays(db: Session = Depends(get_db)):
+    deleted = db.query(ReplayDeletion).filter(ReplayDeletion.match_uuid == Replay.match_uuid).exists()
+    replays = db.query(Replay).filter(Replay.link_status == "refused", ~deleted).order_by(
+        Replay.created_at.desc()).all()
+    return {"replays": [
+        {"match_uuid": replay.match_uuid, "map": replay.map_name,
+         "check": (replay.link_report or {}).get("check"),
+         "reason": (replay.link_report or {}).get("reason"),
+         "reasons": (replay.link_report or {}).get("reasons", []),
+         "created_at": replay.created_at.isoformat()}
+        for replay in replays
+    ]}
+
+
+@router.get("/archive/{match_uuid}.vrf", dependencies=[Depends(require_admin)])
+def archive_file(match_uuid: str, db: Session = Depends(get_db)):
+    match_uuid = match_uuid.lower()
+    if not UUID_SHAPE.fullmatch(match_uuid):
+        raise HTTPException(status_code=404, detail={"code": "bad_uuid", "reason": "match_uuid must be a match UUID"})
+    if db.get(ReplayDeletion, match_uuid) is not None:
+        raise HTTPException(status_code=404, detail={"code": "deleted", "reason": "this match was deleted on request"})
+    try:
+        upstream = _worker().archive_file(match_uuid)
+    except uploads.WorkerRefused as refused:
+        raise HTTPException(status_code=404, detail={"code": refused.body["code"], "reason": str(refused)}) from refused
+    except uploads.WorkerRouteMissing as error:
+        raise HTTPException(status_code=503, detail="the replay worker has no download route yet (an older image?)") from error
+    except uploads.WorkerError as error:
+        raise HTTPException(status_code=502, detail="the replay worker is unreachable") from error
+
+    try:
+        length = upstream.headers["Content-Length"]
+        expected = int(length)
+        sha256 = upstream.headers["X-Archive-Sha256"]
+        if expected < 0 or not sha256:
+            raise ValueError("invalid archive headers")
+    except (KeyError, TypeError, ValueError) as error:
+        upstream.close()
+        raise HTTPException(status_code=502, detail="the replay worker gave invalid archive headers") from error
+
+    def chunks():
+        received = 0
+        try:
+            while True:
+                chunk = upstream.read(1024 * 1024)
+                if not chunk:
+                    if received < expected:
+                        raise OSError("the replay worker sent a short archive body")
+                    break
+                received += len(chunk)
+                yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(chunks(), media_type="application/octet-stream",
+                             headers={"Content-Length": length, "X-Archive-Sha256": sha256,
+                                      "Content-Disposition": f'attachment; filename="{match_uuid}.vrf"'},
+                             background=BackgroundTask(upstream.close))
 
 
 @router.post("/reparse", dependencies=[Depends(require_admin)])
