@@ -36,6 +36,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import time
 import urllib.error
@@ -226,6 +227,10 @@ class WorkerRefused(WorkerError):
         self.body = body
 
 
+class WorkerRouteMissing(WorkerError):
+    """The worker image predates the archive download route."""
+
+
 class WorkerClient:
     def __init__(self, base_url: str, timeout_s: float = WORKER_TIMEOUT_S):
         # render.yaml's `fromService ... property: hostport` gives "host:port" with no scheme.
@@ -246,6 +251,32 @@ class WorkerClient:
 
     def archive(self) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/archive"))
+
+    def archive_file(self, match_uuid: str):
+        """Open an archived recording; the caller must read and close the response."""
+        request = urllib.request.Request(f"{self.base}/archive/files/{match_uuid}")
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as error:
+            try:
+                with error:
+                    body = json.loads(error.read() or b"{}")
+            except (ValueError, OSError, http.client.HTTPException) as failure:
+                raise WorkerError("the replay worker is unreachable") from failure
+            if not isinstance(body, dict):
+                body = {}
+            reason = body.get("error") or f"worker answered {error.code}"
+            if error.code == 404:
+                if isinstance(body.get("code"), str):
+                    raise WorkerRefused(reason, 404, body) from error
+                raise WorkerRouteMissing("the replay worker has no download route yet (an older image?)") from error
+            raise WorkerError(reason) from error
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
+            raise WorkerError("the replay worker is unreachable") from error
+        if response.status != 200:
+            response.close()
+            raise WorkerError("the replay worker gave no archived file")
+        return response
 
     def ack(self, job_id: str, body: dict) -> dict:
         return self._post_json(f"/jobs/{job_id}/ack", body, timeout=ACK_TIMEOUT_S)

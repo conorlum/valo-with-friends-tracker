@@ -4,10 +4,15 @@ routes. Against the real worker with the stub parser and its archive in a temp f
 
 import hashlib
 import io
+import json
+import socket
 import sys
 import threading
 import time
+import urllib.error
 from datetime import timedelta
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -34,6 +39,246 @@ from app.routers import replay_admin as admin  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_archive_sync as sync  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
+from tests.support.site import site  # noqa: E402,F401
+
+
+DOWNLOAD = f"/admin/replays/archive/{MATCH_UUID}.vrf"
+ADMIN_HEADERS = {"authorization": "Bearer test-admin"}
+
+
+def download_settings(monkeypatch, base):
+    monkeypatch.setattr(settings, "replay_admin_token", "test-admin")
+    monkeypatch.setattr(settings, "replay_worker_url", base)
+
+
+@contextmanager
+def download_server(body, *, status=200, length=None, stall=False):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if stall:
+                released.wait(5)
+                return
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body) if length is None else length))
+            self.send_header("X-Archive-Sha256", hashlib.sha256(body).hexdigest())
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    released = threading.Event()
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}"
+    finally:
+        released.set()
+        httpd.shutdown()
+        thread.join()
+        httpd.server_close()
+
+
+def test_download_from_real_archive_and_admin_gate(site, tmp_path, stub, monkeypatch):  # noqa: F811
+    client, factory = site
+    _, httpd, base, _ = start_archive(tmp_path, stub)
+    download_settings(monkeypatch, base)
+    try:
+        with factory() as db:
+            assert collect(db, uploads.WorkerClient(base), vrf_bytes()).status == "stored"
+        response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+        assert response.status_code == 200
+        assert response.content == vrf_bytes()
+        assert response.headers["x-archive-sha256"] == hashlib.sha256(vrf_bytes()).hexdigest()
+        assert response.headers["content-length"] == str(len(vrf_bytes()))
+        assert response.headers["content-disposition"] == f'attachment; filename="{MATCH_UUID}.vrf"'
+        assert client.get(DOWNLOAD).status_code == 404
+        assert client.get(DOWNLOAD, headers={"authorization": "Bearer wrong"}).status_code == 404
+        monkeypatch.setattr(settings, "replay_admin_token", None)
+        assert client.get(DOWNLOAD, headers=ADMIN_HEADERS).status_code == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_download_missing_archive_entry(site, tmp_path, stub, monkeypatch):  # noqa: F811
+    client, _ = site
+    _, httpd, base, _ = start_archive(tmp_path, stub)
+    download_settings(monkeypatch, base)
+    try:
+        response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "not_in_archive"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_download_offline_validation_and_deleted(site, monkeypatch):  # noqa: F811
+    client, factory = site
+    download_settings(monkeypatch, "http://127.0.0.1:9")
+    def no_worker():
+        pytest.fail("validation and deletion must precede the worker call")
+    monkeypatch.setattr(uploads, "client", no_worker)
+    response = client.get("/admin/replays/archive/bad.vrf", headers=ADMIN_HEADERS)
+    assert response.status_code == 404 and response.json()["detail"]["code"] == "bad_uuid"
+    with factory() as db:
+        db.add(ReplayDeletion(match_uuid=MATCH_UUID, reason="synthetic deletion"))
+        db.commit()
+    response = client.get(f"/admin/replays/archive/{MATCH_UUID.upper()}.vrf", headers=ADMIN_HEADERS)
+    assert response.status_code == 404 and response.json()["detail"]["code"] == "deleted"
+
+
+def test_download_deploy_gap(site, monkeypatch):  # noqa: F811
+    client, _ = site
+    with download_server(b'{"error": "not found"}', status=404) as base:
+        download_settings(monkeypatch, base)
+        response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "the replay worker has no download route yet (an older image?)"
+
+
+def test_download_worker_down(site, monkeypatch):  # noqa: F811
+    client, _ = site
+    # Reserve an ephemeral port without listening: connection attempts are refused.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        download_settings(monkeypatch, f"http://127.0.0.1:{reserved.getsockname()[1]}")
+        response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the replay worker is unreachable"
+
+
+def test_download_worker_timeout(site, monkeypatch):  # noqa: F811
+    client, _ = site
+    with download_server(b"", stall=True) as base:
+        download_settings(monkeypatch, base)
+        monkeypatch.setattr(uploads, "client", lambda: uploads.WorkerClient(base, timeout_s=0.5))
+        began = time.monotonic()
+        response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+        assert time.monotonic() - began < 5
+    assert response.status_code == 502
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_download_closes_real_upstream(site, monkeypatch, short):  # noqa: F811
+    client, _ = site
+    closed = []
+    original = uploads.WorkerClient.archive_file
+    def tracked(self, match_uuid):
+        response = original(self, match_uuid)
+        close = response.close
+        def record_close():
+            closed.append(True)
+            close()
+        response.close = record_close
+        return response
+    monkeypatch.setattr(uploads.WorkerClient, "archive_file", tracked)
+    body = vrf_bytes()
+    with download_server(body, length=len(body) + int(short)) as base:
+        download_settings(monkeypatch, base)
+        try:
+            response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+        except Exception:
+            if not short:
+                raise
+        else:
+            assert response.status_code == 200
+            assert response.content == body
+            if short:
+                assert len(response.content) < int(response.headers["content-length"])
+    assert closed
+
+
+def test_download_offline_stream_chunks_and_close(site, monkeypatch):  # noqa: F811
+    client, _ = site
+    download_settings(monkeypatch, "http://worker.invalid")
+    body = b"synthetic" * (300 * 1024)
+    reads, closed = [], []
+    class Upstream(io.BytesIO):
+        status = 200
+        headers = {"Content-Length": str(len(body)), "X-Archive-Sha256": hashlib.sha256(body).hexdigest()}
+        def read(self, amount=-1):
+            reads.append(amount)
+            assert amount == 1024 * 1024
+            return super().read(amount)
+        def close(self):
+            closed.append(True)
+            super().close()
+    upstream = Upstream(body)
+    def open_file(request, timeout):
+        assert request.full_url == f"http://worker.invalid/archive/files/{MATCH_UUID}"
+        assert timeout == 0.5
+        return upstream
+    monkeypatch.setattr(uploads.urllib.request, "urlopen", open_file)
+    monkeypatch.setattr(uploads, "client", lambda: uploads.WorkerClient("http://worker.invalid", timeout_s=0.5))
+    response = client.get(f"/admin/replays/archive/{MATCH_UUID.upper()}.vrf", headers=ADMIN_HEADERS)
+    assert response.status_code == 200 and response.content == body
+    assert response.headers["content-length"] == str(len(body))
+    assert response.headers["x-archive-sha256"] == hashlib.sha256(body).hexdigest()
+    assert reads and closed and upstream.closed
+    assert client.get(DOWNLOAD).status_code == 404
+    assert client.get(DOWNLOAD, headers={"authorization": "Bearer wrong"}).status_code == 404
+    monkeypatch.setattr(settings, "replay_admin_token", None)
+    assert client.get(DOWNLOAD, headers=ADMIN_HEADERS).status_code == 404
+
+
+@pytest.mark.parametrize("body,status", [({"error": "not found"}, 503),
+    ({"code": "not_in_archive", "error": "no archived file"}, 404),
+    ({"code": "archive_off", "error": "archive off"}, 404)])
+def test_download_offline_worker_errors(site, monkeypatch, body, status):  # noqa: F811
+    client, _ = site
+    download_settings(monkeypatch, "http://worker.invalid")
+    error_body = io.BytesIO(json.dumps(body).encode())
+    def refused(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, error_body)
+    monkeypatch.setattr(uploads.urllib.request, "urlopen", refused)
+    response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert response.status_code == status
+    if status == 404:
+        assert response.json()["detail"] == {"code": body["code"], "reason": body["error"]}
+    assert error_body.closed
+
+
+@pytest.mark.parametrize("failure", ["short", "read"])
+def test_download_offline_closes_failed_stream(site, monkeypatch, failure):  # noqa: F811
+    client, _ = site
+    download_settings(monkeypatch, "http://worker.invalid")
+    class Upstream(io.BytesIO):
+        status = 200
+        headers = {"Content-Length": "100", "X-Archive-Sha256": "0" * 64}
+        def read(self, amount=-1):
+            if failure == "read":
+                raise OSError("synthetic read failure")
+            return super().read(amount)
+    upstream = Upstream(b"short")
+    monkeypatch.setattr(uploads.urllib.request, "urlopen", lambda *args, **kwargs: upstream)
+    with pytest.raises(Exception):
+        client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert upstream.closed
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("synthetic timeout"), OSError("synthetic failure"),
+    urllib.error.URLError("synthetic refusal"),
+    urllib.error.HTTPError("http://worker.invalid", 503, "Unavailable", {}, io.BytesIO(b'{}'))])
+def test_download_offline_unreachable(site, monkeypatch, failure):  # noqa: F811
+    client, _ = site
+    download_settings(monkeypatch, "http://worker.invalid")
+    def fail(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(uploads.urllib.request, "urlopen", fail)
+    response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the replay worker is unreachable"
+
+
+def test_download_offline_no_worker_configured(site, monkeypatch):  # noqa: F811
+    client, _ = site
+    download_settings(monkeypatch, None)
+    response = client.get(DOWNLOAD, headers=ADMIN_HEADERS)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "REPLAY_WORKER_URL is not set"
 
 
 @pytest.fixture
