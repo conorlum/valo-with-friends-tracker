@@ -222,6 +222,13 @@ running or the stopped reason, both recipes, the worker's capabilities, how many
 any unfinished attempt, what gave up and why, and the rounds waiting. "Running" means switched on with a
 matching worker, not that a parse is in progress. It changes nothing.
 
+*Downloading archived replays.* Run
+`REPLAY_ADMIN_TOKEN=... .venv\Scripts\python.exe scripts\fetch_archived_replay.py <uuid>`
+(multiple UUIDs are allowed), or replace `<uuid>` with `--refused` to fetch the refused list.
+The token comes from the environment; no database credentials are needed. Files go to `~/rp/vrf`
+by default (`--out` overrides it). Each download is written to `<uuid>.vrf.part`, checked against
+the archive's sha256, then renamed to `<uuid>.vrf`; existing files with the correct sha256 are skipped.
+
 *Before switching on* (the owner's checks; none was run by the build):
 
 1. Both PRs are deployed, `alembic current` is `0018`, and `--status` shows equal recipes, archive and

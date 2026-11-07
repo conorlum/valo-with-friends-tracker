@@ -234,7 +234,7 @@ tests = [
   "tests/replays/test_replay_upload_held.py", "tests/replays/test_replay_progress.py",
   "tests/replays/test_replay_reparse_auto.py", "tests/replays/test_replay_match_states.py",
   "tests/replays/test_replay_archive_web.py", "tests/replays/test_replay_view.py", "tests/replays/test_replay_viewer.py",
-  "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py",
+  "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py", "tests/test_fetch_archived_replay.py",
 ]
 guards = [
   "app/replays/store.py", "app/replays/db.py", "app/routers/replays.py", "app/routers/replay_admin.py",
@@ -242,6 +242,7 @@ guards = [
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
   "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
   "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
+  "scripts/fetch_archived_replay.py", "scripts/_admin_client.py",
 ]
 
 [replay-worker]
