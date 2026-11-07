@@ -6,7 +6,9 @@ The jobs being watched never wait on the database for it: `record` (alias `enque
 `resolve_prefix` queue in the order they happen, `count` adds to an in-memory counter, and the flush thread
 writes them every FLUSH_S in one transaction (a resolve deletes rows last seen before it), then prunes (30 days,
 500 keys per kind). Only a process about to exit (the Critical Util child) writes at once (`record_now`,
-`resolve_now`). Nothing here raises into its caller, and nothing writes in demo mode. The loop registry
+`resolve_now`); any other command-line process that records flushes before it exits (`flush_for`; the cache
+pre-warms, `scripts/map_pool.py refresh`). Every write holds the writers' advisory lock, and a clear leaves a mark
+(`site_event_marks`) that keeps another process's late write of an earlier failure out. Nothing here raises into its caller, and nothing writes in demo mode. The loop registry
 (`register`/`beat`/`loops`) is in memory only."""
 
 import copy
@@ -20,12 +22,12 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects import postgresql, sqlite
 
 from app.config import settings
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 
 logger = logging.getLogger(__name__)
 
@@ -101,17 +103,26 @@ _loop_threads: dict = {}    # loop name -> the thread that registered it (join_l
 _threads: dict = {}
 _resolved = {"inserted": False, "done": False}
 
-_URL_PASSWORD = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^:/@\s]*:)[^@\s]*@")
+# Every repeat is bounded (a scheme of 32, a user or password of 256), so a long run that never reaches its `@`
+# is given up after a fixed look-ahead: linear in the text (R5-A2: unbounded, "a://b:" * N was quadratic).
+_URL_PASSWORD = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]{0,31}://[^:/@\s]{0,256}:)[^@\s]{0,256}@")
 _SECRET_NAMES = r"password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|key"
-# name, an optional closing quote (JSON/dict keys), = or :, then a quoted value or a bare one. A quoted value runs
-# to its closing quote, or to the end of the text when it has none (cut short): every character has one way to
-# match (an escape pair, or one character that is neither a backslash nor the quote), so it runs in linear time.
+# A name may carry any prefix (`db_password`, `RIOT_API_KEY`, `PGPASSWORD`), starting a word; then an optional
+# closing quote (JSON/dict keys, backslash-escaped in a repr or log line), = or :, then the value:
+#   an escaped-quoted value (\"...\"), to its escaped closing quote or the end of the text;
+#   a quoted value (an optional b for bytes), to its closing quote or the end of the text (cut short); a doubled
+#   quote ('it''s') is part of it;
+#   a bare value.
+# Every character of a value has one way to match, so it runs in linear time (R4-1 found exponential backtracking).
 _SECRET_VALUE = re.compile(
-    rf"""(?P<head>\b(?:{_SECRET_NAMES})\b["']?\s*[=:]\s*)"""
-    r"""(?:(?P<q>["'])(?:\\[\s\S]|(?!(?P=q))[^\\])*(?:(?P<end>(?P=q))|\\?\Z)|[^&\s;,"'}\]]*)""",
+    rf"""(?P<head>(?<![\w-])[\w-]*?(?:{_SECRET_NAMES})\b\\?["']?\s*[=:]\s*)"""
+    r"""(?:\\(?P<eq>["'])(?:[^\\]|\\(?!(?P=eq))[\s\S])*(?P<eend>\\(?P=eq))?"""
+    r"""|(?P<b>b)?(?P<q>["'])(?:\\[\s\S]|(?P=q)(?P=q)|(?!(?P=q))[^\\])*(?:(?P<end>(?P=q))|\\?\Z)"""
+    r"""|[^&\s;,"'}\]\\]*)""",
     re.IGNORECASE)
-# a mapping's field named like a secret (`token`, `db_password`, `X-Api-Key`): its value is hidden whole
-_SECRET_FIELD = re.compile(rf"(?:[\w-]*[_-])?(?:{_SECRET_NAMES})", re.IGNORECASE)
+# a mapping's field named like a secret (`token`, `db_password`, `X-Api-Key`, `PGPASSWORD`): its value is hidden
+_SECRET_FIELD = re.compile(rf"[\w-]*(?:{_SECRET_NAMES})", re.IGNORECASE)
+SCRUB_SPAN = 4      # scrub at most this many times the kept length: the cut comes after, so nothing cut is shown
 _BEARER = re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 KEY_MAX = 300
 
@@ -129,18 +140,28 @@ def _storable(text):
     return text.replace("\x00", "\\x00").encode("utf-8", "backslashreplace").decode("utf-8")
 
 
-def scrub(text):
+def _hide(m):
+    if m.group("eq"):
+        return m.group("head") + "\\" + m.group("eq") + "***" + (m.group("eend") or "")
+    return m.group("head") + (m.group("b") or "") + (m.group("q") or "") + "***" + (m.group("end") or "")
+
+
+def scrub(text, limit=None):
     """Hide connection-URL passwords, Bearer/Basic credentials and the values of password, secret, token, key
-    and the like (`name=value`, `name: value`, `"name": "value"`); make the text storable."""
+    and the like (`name=value`, `name: value`, `"name": "value"`); make the text storable. With `limit`, the text
+    is cut to SCRUB_SPAN times that before scrubbing (bounded work) and to `limit` after."""
+    if limit is not None:
+        text = text[:limit * SCRUB_SPAN]
     text = _URL_PASSWORD.sub(r"\1***@", text)
     text = _BEARER.sub(lambda m: f"{m.group(1)} ***", text)
-    text = _SECRET_VALUE.sub(lambda m: m.group("head") + (m.group("q") or "") + "***" + (m.group("end") or ""), text)
-    return _storable(text)
+    text = _SECRET_VALUE.sub(_hide, text)
+    text = _storable(text)
+    return text if limit is None else text[:limit]
 
 
 def _scrub_value(value):
     if isinstance(value, str):
-        return scrub(value)
+        return scrub(value, ERROR_MAX)
     if isinstance(value, dict):
         return {_storable(str(k)): "***" if v is not None and _SECRET_FIELD.fullmatch(str(k)) else _scrub_value(v)
                 for k, v in value.items()}
@@ -148,11 +169,16 @@ def _scrub_value(value):
         return [_scrub_value(v) for v in value]
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return scrub(str(value))     # anything JSON can't hold is stored as its (scrubbed) text
+    return scrub(str(value), ERROR_MAX)     # anything JSON can't hold is stored as its (scrubbed) text
 
 
 def _clean_error(error):
-    return scrub(str(error if error is not None else ""))[:ERROR_MAX]
+    return scrub(str(error if error is not None else ""), ERROR_MAX)
+
+
+def _bounded(error):
+    """What the queue holds of an error: its text, cut to what the flush will scrub (R5-B3)."""
+    return None if error is None else str(error)[:ERROR_MAX * SCRUB_SPAN]
 
 
 def _clean_key(key):
@@ -207,15 +233,16 @@ def _push(entry):
             _dropped += 1
 
 
-def record(kind, key, error, context=None, *, at=None, unless_stored=None):
-    """Queue one occurrence for the next flush. Never touches the database, never raises. `unless_stored(stored
-    context, this context)` -> True skips the write: it is decided at flush time, against the stored row locked
-    in the flush's transaction, so two processes reporting the same thing store it once."""
+def record(kind, key, error, context=None, *, at=None, dedupe=None):
+    """Queue one occurrence for the next flush. Never touches the database, never raises. `dedupe(seen, this
+    context)` returns the new `seen` to keep, or None when `seen` already counts this occurrence (it is skipped):
+    decided at flush time against the key's stored mark, under the writers' lock, so two processes reporting the
+    same thing store it once, and a cleared row's mark still knows what it counted."""
     if _demo():
         return
     try:
-        _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": error, "context": context,
-               "at": at or _now(), "unless_stored": unless_stored})
+        _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": _bounded(error), "context": context,
+               "at": at or _now(), "dedupe": dedupe})
     except Exception:
         logger.exception("site health: could not queue %s %s", kind, key)
 
@@ -283,18 +310,21 @@ def _delete_stmt(kind, key, prefix, at):
     return stmt.where(SiteEvent.key.startswith(key, autoescape=True) if prefix else SiteEvent.key == key)
 
 
-def record_now(kind, key, error, context=None, *, session_factory, at=None):
-    """Store one occurrence at once, for a process about to exit (the Critical Util child). Never raises: True
-    when the write committed (or an applied PR resolution already covers it), False when it failed."""
+def record_now(kind, key, error, context=None, *, session_factory, at=None, dedupe=None):
+    """Store one occurrence at once, for a process about to exit (the Critical Util child), like a flush would
+    (the writers' lock, marks, `dedupe`). Never raises: True when the write committed (or a mark already covers
+    it), False when it failed."""
     if _demo():
         return False
     try:
         when = at or _now()
-        key = _clean_key(key)
+        op = {"op": "record", "kind": kind, "key": _clean_key(key), "error": _bounded(error), "context": context,
+              "at": when, "n": 1, "first": when, "last": when, "dedupe": dedupe}
         with session_factory() as session:
-            if not _covered(_cutoffs(session), kind, key, when):
-                _upsert(session, kind, key, error=_clean_error(error), context=_scrub_value(context),
-                        n=1, first=when, last=when)
+            _writers_lock(session)
+            marks = _Marks(session, [op])
+            if not marks.cleared(kind, op["key"], when):
+                _write(session, marks, op)
             session.commit()
         return True
     except Exception:
@@ -303,15 +333,19 @@ def record_now(kind, key, error, context=None, *, session_factory, at=None):
 
 
 def resolve_now(kind, key, *, session_factory, at=None):
-    """`resolve` at once, for a process about to exit. Never raises."""
+    """`resolve` at once, for a process about to exit. Never raises: True when the clear committed."""
     if _demo():
-        return
+        return False
     try:
+        op = {"op": "resolve", "kind": kind, "key": _clean_key(key), "prefix": False, "at": at or _now()}
         with session_factory() as session:
-            session.execute(_delete_stmt(kind, _clean_key(key), False, at or _now()))
+            _writers_lock(session)
+            _write(session, _Marks(session, [op]), op)
             session.commit()
+        return True
     except Exception:
         logger.exception("site health: could not resolve %s %s", kind, key)
+        return False
 
 
 def _delete_keys(session, kind, keys):
@@ -322,6 +356,7 @@ def _delete_keys(session, kind, keys):
 def _retain(session):
     cutoff = _now() - timedelta(days=KEEP_DAYS)
     session.execute(delete(SiteEvent).where(SiteEvent.last_seen < cutoff))
+    session.execute(delete(SiteEventMark).where(SiteEventMark.updated_at < cutoff))
     for kind in session.scalars(select(SiteEvent.kind).distinct()).all():
         extra = session.scalars(select(SiteEvent.key).where(SiteEvent.kind == kind)
                                 .order_by(SiteEvent.last_seen.desc(), SiteEvent.key.desc())
@@ -337,7 +372,7 @@ def _coalesce(queued):
     for e in queued:
         if e["op"] == "record":
             k = (e["kind"], e["key"])
-            if e.get("unless_stored") is not None:      # each is decided against the stored row on its own
+            if e.get("dedupe") is not None:      # each is decided against the stored mark on its own
                 last.pop(k, None)
                 out.append({**e, "n": 1, "first": e["at"], "last": e["at"]})
                 continue
@@ -359,36 +394,77 @@ def _coalesce(queued):
     return [o for o in out if o is not None]
 
 
-def _cutoffs(session):
-    """The applied PR resolutions' (kind, key, cutoff). Every resolution row is share-locked for the transaction:
-    a process applying one waits for this write to commit (and then deletes what it wrote), and this read waits for
-    one being applied (and then sees its cutoff), so a late write never lands after the deletion it predates."""
-    rows = session.execute(select(SiteEventResolution.kind, SiteEventResolution.key, SiteEventResolution.cutoff,
-                                  SiteEventResolution.applied_at).with_for_update(read=True)).all()
-    return [(kind, key, _aware(cutoff)) for kind, key, cutoff, applied in rows if applied is not None]
+WRITERS_LOCK = 0x5348_0001          # pg_advisory_xact_lock's key for every site health write ("SH" 1)
+LOCK_TIMEOUT = "30s"
 
 
-def _covered(cutoffs, kind, key, last):
-    """An occurrence from before an applied PR resolution's cutoff (a late flush from the old process)."""
-    return any(c_kind == kind and (c_key is None or c_key == key) and last < cutoff
-               for c_kind, c_key, cutoff in cutoffs)
+def _writers_lock(session):
+    """Every health write (a flush, record_now, resolve_now, applying a PR entry) runs under one transaction-level
+    advisory lock, so the writes of all processes take turns: none can deadlock another (R5-A4, R6-B4), and each
+    reads the marks the last one committed before it writes (R6-A1: a PR clear inserted after a writer's read). A
+    write that waits longer than LOCK_TIMEOUT fails like a lost connection: its entries wait for the next flush."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": WRITERS_LOCK})
 
 
-_INSERTED = object()
+class _Marks:
+    """The marks (`site_event_marks`) a write's ops can meet, read under the writers' lock and kept up to date as
+    the ops write. A clear leaves `cleared_at`: an occurrence last seen at or before it is never stored again, by
+    any process (R5-B1, R6-B1: the old process's late flush brought back what the new one's success cleared). A
+    record with `dedupe` keeps its `seen` there, which outlives the row (R5-A5, R6-A3)."""
 
+    def __init__(self, session, ops):
+        self.exact, self.prefixes = {}, {}
+        keys = {}
+        for op in ops:
+            keys.setdefault(op["kind"], set()).add(op["key"])
+        m = SiteEventMark
+        for kind, ks in sorted(keys.items()):
+            rows = list(session.scalars(select(m).where(m.kind == kind, m.prefix.is_(True))))
+            ks = sorted(ks)
+            for i in range(0, len(ks), 500):
+                rows += session.scalars(select(m).where(m.kind == kind, m.prefix.is_(False),
+                                                        m.key.in_(ks[i:i + 500])))
+            for row in rows:
+                if row.prefix:
+                    self.prefixes.setdefault(kind, {})[row.key] = _aware(row.cleared_at)
+                else:
+                    self.exact[(kind, row.key)] = {"cleared_at": _aware(row.cleared_at), "seen": row.seen}
 
-def _insert_or_lock(session, kind, key, **values):
-    """Insert the row when there is none (returns _INSERTED), else the stored row's columns, locked for this
-    transaction: a write that reads the stored row before writing it is then never interleaved with another
-    process's (the insert waits on a concurrent insert of the same key, the lock on a concurrent update). None
-    when the row went in between."""
-    insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
-    done = session.execute(insert(SiteEvent.__table__).values(kind=kind, key=key, **values)
-                           .on_conflict_do_nothing(index_elements=["kind", "key"]))
-    if done.rowcount:
-        return _INSERTED
-    return session.execute(select(SiteEvent.context).where(SiteEvent.kind == kind, SiteEvent.key == key)
-                           .with_for_update()).first()
+    def cleared(self, kind, key, last):
+        """An occurrence last seen at `last` that a stored clear already covers."""
+        if last is None:
+            return False
+        at = (self.exact.get((kind, key)) or {}).get("cleared_at")
+        if at is not None and last <= at:
+            return True
+        return any(c is not None and last <= c and key.startswith(p) for p, c in self.prefixes.get(kind, {}).items())
+
+    def seen(self, kind, key):
+        return (self.exact.get((kind, key)) or {}).get("seen")
+
+    def clear(self, session, kind, key, prefix, at):
+        cur = self.prefixes.get(kind, {}).get(key) if prefix else (self.exact.get((kind, key)) or {}).get("cleared_at")
+        at = max(cur, at) if cur is not None else at
+        self._put(session, kind, key, prefix, cleared_at=at)
+        if prefix:
+            self.prefixes.setdefault(kind, {})[key] = at
+        else:
+            self.exact.setdefault((kind, key), {"cleared_at": None, "seen": None})["cleared_at"] = at
+
+    def set_seen(self, session, kind, key, seen):
+        self._put(session, kind, key, False, seen=seen)
+        self.exact.setdefault((kind, key), {"cleared_at": None, "seen": None})["seen"] = seen
+
+    @staticmethod
+    def _put(session, kind, key, prefix, **values):
+        insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
+        now = _now()
+        stmt = insert(SiteEventMark.__table__).values(kind=kind, key=key, prefix=prefix, updated_at=now,
+                                                      cleared_at=values.get("cleared_at"), seen=values.get("seen"))
+        session.execute(stmt.on_conflict_do_update(index_elements=["kind", "key", "prefix"],
+                                                   set_={**values, "updated_at": now}))
 
 
 def _joined(c, stored, batch):
@@ -399,18 +475,18 @@ def _joined(c, stored, batch):
     return ((stored if isinstance(stored, list) else []) + batch)[-LAST_ITEMS:]
 
 
-def _write(session, op):
+def _write(session, marks, op):
     if op["op"] == "resolve":
         session.execute(_delete_stmt(op["kind"], op["key"], op["prefix"], op["at"]))
+        marks.clear(session, op["kind"], op["key"], op["prefix"], op["at"])
     elif op["op"] == "record":
-        error, context = _clean_error(op["error"]), _scrub_value(op["context"])
-        if op.get("unless_stored") is not None:
-            row = _insert_or_lock(session, op["kind"], op["key"], error=error, context=context, count=op["n"],
-                                  first_seen=op["first"], last_seen=op["last"])
-            if row is _INSERTED or (row is not None and op["unless_stored"](row.context, op["context"])):
+        if op.get("dedupe") is not None:
+            seen = op["dedupe"](marks.seen(op["kind"], op["key"]), op["context"])
+            if seen is None:
                 return
-        _upsert(session, op["kind"], op["key"], error=error, context=context, n=op["n"], first=op["first"],
-                last=op["last"])
+            marks.set_seen(session, op["kind"], op["key"], seen)
+        _upsert(session, op["kind"], op["key"], error=_clean_error(op["error"]), context=_scrub_value(op["context"]),
+                n=op["n"], first=op["first"], last=op["last"])
     else:
         kind, key, c = op["kind"], op["key"], op["counter"]
         batch = c["context"] if c["merge"] else (list(c["items"]) or None)
@@ -418,13 +494,10 @@ def _write(session, op):
             _upsert(session, kind, key, error="", context=None, n=c["n"], first=c["first"], last=c["at"],
                     set_error=False, set_context=False)
             return
-        # the stored context is joined with this flush's: read it under a lock so two processes' flushes of
-        # the same key both land (the slowest load and the last samples)
-        row = _insert_or_lock(session, kind, key, error="", context=_scrub_value(batch), count=c["n"],
-                              first_seen=c["first"], last_seen=c["at"])
-        if row is _INSERTED:
-            return
-        ctx = _joined(c, row.context if row is not None else None, batch)
+        # the stored context is joined with this flush's (the slowest load, the last samples): read under the
+        # writers' lock, so another process's flush of the same key can't land in between
+        stored = session.execute(select(SiteEvent.context).where(SiteEvent.kind == kind, SiteEvent.key == key)).first()
+        ctx = _joined(c, stored.context if stored is not None else None, batch)
         _upsert(session, kind, key, error="", context=_scrub_value(ctx), n=c["n"], first=c["first"],
                 last=c["at"], set_error=False, context_always=True)
 
@@ -435,22 +508,23 @@ def _connection_error(exc):
 
 
 def _flush_ops(session_factory, ops, *, isolate):
-    """Write the ops in order, prune, commit. With `isolate`, each op runs in its own savepoint and one the
-    database refuses (a value it can't store) is dropped and logged; a lost connection still fails the whole
-    flush. Returns how many were dropped."""
+    """Write the ops in order, prune, commit, under the writers' lock. With `isolate`, each op runs in its own
+    savepoint and one the database refuses (a value it can't store) is dropped and logged; a lost connection (or
+    the lock not given in time) still fails the whole flush. Returns how many were dropped."""
     dropped = 0
     with session_factory() as session:
-        cutoffs = _cutoffs(session)
+        _writers_lock(session)
+        marks = _Marks(session, ops)
         for op in ops:
             last = op.get("last") or (op["counter"]["at"] if op["op"] == "counter" else None)
-            if op["op"] != "resolve" and _covered(cutoffs, op["kind"], op["key"], last):
+            if op["op"] != "resolve" and marks.cleared(op["kind"], op["key"], last):
                 continue
             if not isolate:
-                _write(session, op)
+                _write(session, marks, op)
                 continue
             try:
                 with session.begin_nested():
-                    _write(session, op)
+                    _write(session, marks, op)
             except Exception as exc:
                 if _connection_error(exc):
                     raise
@@ -515,6 +589,7 @@ def flush_for(db):
 def _flush_prune(session_factory):
     try:
         with session_factory() as session:
+            _writers_lock(session)
             _retain(session)
             session.commit()
     except Exception:
@@ -689,13 +764,15 @@ def entry_id(entry):
 def apply_resolved(*, session_factory, started_at, entries=None, now=None):
     """Clear the rows the committed file names, once each, GRACE_S after the first start that has the entry
     (rows last seen before that cutoff go). A due entry is claimed in the same transaction that deletes, so two
-    overlapping processes never both apply it. Stops querying once every entry is applied. Never raises."""
+    overlapping processes never both apply it, under the writers' lock; it leaves a mark at the cutoff, so a late
+    write from before it is never stored again. Stops querying once every entry is applied. Never raises."""
     if _demo() or _resolved["done"]:
         return
     try:
         entries = load_resolved() if entries is None else entries
         now = now or _now()
         with session_factory() as session:
+            _writers_lock(session)
             if not _resolved["inserted"]:
                 insert = (postgresql if session.get_bind().dialect.name == "postgresql" else sqlite).insert
                 table = SiteEventResolution.__table__
@@ -709,7 +786,8 @@ def apply_resolved(*, session_factory, started_at, entries=None, now=None):
                     ).on_conflict_do_nothing(index_elements=["entry"]))
             due = session.execute(select(SiteEventResolution.entry, SiteEventResolution.kind,
                                          SiteEventResolution.key, SiteEventResolution.cutoff).where(
-                SiteEventResolution.applied_at.is_(None), SiteEventResolution.cutoff <= now)).all()
+                SiteEventResolution.applied_at.is_(None), SiteEventResolution.cutoff <= now)
+                .order_by(SiteEventResolution.entry)).all()
             for entry, kind, key, cutoff in due:
                 claimed = session.execute(update(SiteEventResolution).where(
                     SiteEventResolution.entry == entry, SiteEventResolution.applied_at.is_(None)
@@ -720,6 +798,8 @@ def apply_resolved(*, session_factory, started_at, entries=None, now=None):
                 if key is not None:
                     stmt = stmt.where(SiteEvent.key == key)
                 session.execute(stmt)
+                mark = {"kind": kind, "key": key if key is not None else ""}
+                _Marks(session, [mark]).clear(session, kind, mark["key"], key is None, _aware(cutoff))
             pending = session.scalar(select(func.count()).select_from(SiteEventResolution)
                                      .where(SiteEventResolution.applied_at.is_(None)))
             session.commit()

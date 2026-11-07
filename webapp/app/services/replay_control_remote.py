@@ -541,11 +541,11 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             row = {"status": "failed", "error": message, 'error_kind': job.get('error_kind')}
         else:
             log.warning("map control %s failed on the worker (%s): %s", key, job.get("error_kind"),
-                        site_health.scrub(str(job.get("error") or job.get("status")))[:300])
+                        site_health.scrub(str(job.get("error") or job.get("status")), 300))
             if job.get('error_kind') != 'compat':
                 site_health.count("worker_refused", f"{f.map_name}:infrastructure",
                                   {"replay": f.replay_id, "round": f.round_number,
-                                   "error": site_health.scrub(str(job.get("error") or job.get("status")))[:300]})
+                                   "error": site_health.scrub(str(job.get("error") or job.get("status")), 300)})
                 state.failed(key, now)
             counts["infra_failed"] += 1
             continue
@@ -702,7 +702,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             # order kept being refused, with no try ever spent.
             log.warning("map control %s refused: %s", key, refused)
             site_health.count("worker_refused", f"{p.map_name}:{type(refused).__name__}",
-                              {"replay": p.replay_id, "round": p.round_number, "error": site_health.scrub(str(refused))[:300]})
+                              {"replay": p.replay_id, "round": p.round_number, "error": site_health.scrub(str(refused), 300)})
             state.failed(key, now)
             counts["refused"] += 1
             continue
@@ -729,20 +729,31 @@ def _admitted_stale_s(answer: dict, state: State) -> float:
     return _job_stale_s(state.remote_control)
 
 
-def _same_warm_loss(stored, new) -> bool:
-    """The stored row already counts this loss: the same worker process (`boot`) and no higher count."""
-    stored = stored if isinstance(stored, dict) else {}
-    return stored.get("boot") == (new or {}).get("boot") and (new or {}).get("times", 0) <= stored.get("times", 0)
+WARM_BOOTS_KEPT = 20
+
+
+def _warm_seen(seen, new):
+    """Site health's dedupe for a warm-cache loss: `seen` holds the highest count stored per worker process
+    (`boot`). None when this one is already counted (the same boot, no higher count), else the new `seen`. Kept
+    per boot, in the key's mark, so a late report of an earlier boot (R6-A3) or a re-report after a PR cleared
+    the row (R5-A5) is still recognised."""
+    boots = dict((seen or {}).get("boots") or {}) if isinstance(seen, dict) else {}
+    boot, times = str((new or {}).get("boot")), (new or {}).get("times", 0)
+    if times <= boots.get(boot, 0):
+        return None
+    boots.pop(boot, None)
+    boots[boot] = times
+    return {"boots": dict(list(boots.items())[-WARM_BOOTS_KEPT:])}
 
 
 def _record_warm_vanished(identity: str, count: int, boot, message: str) -> None:
     """Site health keeps the history the worker's memory loses. A site restart (or the old and new site during a
     deploy) re-reports every nonzero count of the same worker process, so the flush stores a loss only for a new
-    worker process (`boot`) or a count above the stored one, compared against the stored row under its lock."""
+    worker process (`boot`) or a count above the one stored for it (`_warm_seen`, under the writers' lock)."""
     context = {"times": count, "map": identity.split(":", 1)[0]}
     if boot is not None:
         context["boot"] = boot
-    site_health.record("warm_vanished", identity, message, context, unless_stored=_same_warm_loss)
+    site_health.record("warm_vanished", identity, message, context, dedupe=_warm_seen)
 
 
 def _note_warm_vanished(state: State, health, now: float) -> None:

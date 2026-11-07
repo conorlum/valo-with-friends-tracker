@@ -106,6 +106,7 @@ def _no_background_util_build(monkeypatch):
 
     monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: _Finished())
     monkeypatch.setattr(util_rebuild, "_child", None)
+    monkeypatch.setattr(util_rebuild, "_pending", [])
 
 
 @pytest.fixture(autouse=True)

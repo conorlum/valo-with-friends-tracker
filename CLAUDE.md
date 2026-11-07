@@ -180,8 +180,11 @@ loops, the Critical Util build, cache fallbacks, worker overruns and refusals, w
 kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs
 never wait on the database for it: `record`, `resolve` and `count` queue in memory, in the order they happen, and
 the flush thread writes them every 60 s (a resolve deletes rows last seen before it; one entry the database refuses
-is dropped alone). Only the Critical Util child, which exits, writes at once (`record_now`/`resolve_now`); the
-cache pre-warms, which run in command-line processes, flush at their end (`flush_for`). Never in demo mode. A later
+is dropped alone). Only the Critical Util child, which exits, writes at once (`record_now`/`resolve_now`); every
+other command-line process that records must flush before it exits (the cache pre-warms' `flush_for`,
+`scripts/map_pool.py refresh`). Every health write holds one advisory lock (`site_health.WRITERS_LOCK`), and each
+clear leaves a mark (`site_event_marks`) so another process's late write of an earlier failure can't bring the row
+back. Never in demo mode. A later
 success of the same job resolves a row; otherwise only a PR clears it, by a new entry in
 `app/data/site_health_resolved.json` (kind, key, `fixed_by`; never edit a merged entry, a later fix of the same key
 is a new entry), applied once by the flush thread 10 min after the first start that has it (a failure inside

@@ -37,8 +37,9 @@ home and shows them on the same card, renamed **Site health**.
 
 ## 1. The events table
 
-Migration `0031_site_events`: `site_events`, one row per distinct problem, and `site_event_resolutions`, one row
-per applied entry of the resolved file (see Clearing). Both new, no foreign keys.
+Migration `0031_site_events`: `site_events`, one row per distinct problem; `site_event_resolutions`, one row
+per applied entry of the resolved file (see Clearing); and `site_event_marks`, what a clear or a deduplicated
+record leaves behind (see "Writers take turns"). All new, no foreign keys.
 
 | Column | Meaning |
 |---|---|
@@ -60,24 +61,36 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
   queue, in the order things happened; the flush thread writes them. Neither a request nor a background loop (the
   dispatcher holds its advisory lock while it runs) waits on the pool (`app/db.py`: 30 s pool timeout) or a
   database that is down. Only a process about to exit, the Critical Util child, writes at once
-  (`record_now`/`resolve_now`, its own short session; `record_now` honours applied PR cutoffs like a flush, and the
-  child exits "recorded" only after its write committed). A child that died without recording is handed to the
-  next child, which writes it before building, so a failure and a later success's clear come from one process in
-  order (third and fourth reviews). Everything catches and logs its own failure.
+  (`record_now`/`resolve_now`, its own short session, under the writers' lock and marks like a flush; each returns
+  whether it committed). A child that died without recording is handed to the next child (`--previous`), which
+  writes it before building, so a failure and a later success's clear come from one process in order. The parent
+  keeps a handed failure until a child's exit code says it was stored, and hands it on again otherwise; it carries
+  an id the write deduplicates on, so one handed twice is stored once. It is timed when its child exited. A clear the
+  child couldn't store is queued by the parent (fifth and sixth reviews). Every other command-line process that
+  records must flush before it exits: the cache pre-warms (`flush_for`) and `scripts/map_pool.py refresh` do.
+  Everything catches and logs its own failure.
 - **Batched recording for hot paths** (cache fallbacks, slow pages): `site_health.count(kind, key, ...)` adds to an
   in-memory counter and keeps each key's last occurrence time; one daemon thread, `site-health-flush`, writes the
   batch and the queue every 60 s in one transaction, one write per key between two resolves of it. A counter's
   context is joined with the stored one (slow pages keep the slowest ever and the last five; others the last five
-  items), not replaced (B5/B16); the stored context is read under a row lock (insert, or `SELECT ... FOR UPDATE`),
-  so two processes' flushes of one key both land. A record can be stored only if the stored row doesn't already
-  count it (`unless_stored`, decided in the flush under the same lock): a warm-cache loss the old and new site
-  both report during a deploy is stored once. A failed flush puts its entries back ahead of what was queued
+  items), not replaced (B5/B16); the stored context is read under the writers' lock, so two processes' flushes of
+  one key both land. A record can carry `dedupe(seen, context)`: it is stored only if the key's mark doesn't already
+  count it, and the mark keeps what it counted (a warm-cache loss: the highest count per worker boot), so a loss the
+  old and new site both report during a deploy is stored once, a late report of an earlier boot isn't counted
+  again, and a restart re-reading a count a PR already cleared doesn't bring the row back. A failed flush puts its entries back ahead of what was queued
   meanwhile, minus counters a success queued meanwhile covers; a repeated resolve with no record of its keys
   between replaces the earlier one, so an outage's queue holds its failures. `last_seen` is the occurrence time, not the flush time (P2 finding 2). Every time is
   Python UTC (`datetime.now(timezone.utc)`), never the server's `now()`. The site runs one uvicorn process
   (`render.yaml`), so per-process memory is the whole picture; shutdown waits up to 10 s for the loops' threads
   to finish their pass, then up to 5 s for the final flush (B3).
   The cache pre-warms run in command-line processes with no flush thread, so they flush at their end (`flush_for`).
+- **Writers take turns** (fifth and sixth reviews): every health write (a flush, `record_now`, `resolve_now`,
+  applying a PR entry, pruning) holds one transaction-level advisory lock (`site_health.WRITERS_LOCK`), so the
+  writes of all processes are serial: none can deadlock another, and each reads what the last one committed before
+  it writes. A write that waits over 30 s (`lock_timeout`) fails like a lost connection and waits for the next
+  flush. Each clear leaves a mark in `site_event_marks` (kind, key, `prefix`, `cleared_at`): an occurrence last seen
+  at or before it is never stored again, by any process, so the old process's late flush during a deploy can't
+  bring back what the new process's success cleared. Marks untouched for 30 days are pruned with the rows.
 - **One bad entry never blocks the rest** (B2): text is made storable first (a NUL, which PostgreSQL's text and
   JSONB refuse, is written as `\x00`; keys are cut to the column's 300 characters). If the database still refuses
   the batch, it is written again one entry per savepoint and the refused entries are dropped and logged; a lost
@@ -88,8 +101,11 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
   password, passwd, pwd, secret, token, api key, access key, authorization and key, written `name=value`,
   `name: value` or `"name": "value"` (a quoted value up to its closing quote, or to the end of the text when it was
   cut short, in linear time: R4-1 found exponential backtracking), and the whole value of a context field named
-  like one (`token`, `db_password`, `X-Api-Key`). Worker refusals are scrubbed before they are cut to 300
-  characters. The card is visible to anyone with the upload code, and the repo is public.
+  like one (`token`, `db_password`, `X-Api-Key`). A name may carry any prefix (`db_password=`, `RIOT_API_KEY=`,
+  `PGPASSWORD=`); escaped JSON (`{\"password\": \"x\"}`), bytes (`b'x'`) and SQL's doubled quote (`'it''s'`)
+  are hidden too. Every pattern runs in linear time (the URL pattern's repeats are bounded), and text is cut to
+  four times what is kept before it is scrubbed, then to what is kept (2,000 characters; worker refusals 300), so
+  no long error stalls a caller. The queue holds an error's text cut the same way. The card is visible to anyone with the upload code, and the repo is public.
 - **Retention**: rows untouched for 30 days are deleted by the flush thread; at most 500 keys per kind (the oldest
   `last_seen` goes first).
 
@@ -97,7 +113,8 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
 
 - **Automatic**: the same job succeeding for the same key calls `site_health.resolve(kind, key)`; the flush
   deletes the row if it was last seen before the success (a failure after it stays). It is queued in order with the
-  records, and the delete always runs, so it also clears a row another process wrote (B2, B5, B6). A recompute aimed at the errors therefore clears them as it fixes them. Each kind below says what
+  records, and the delete always runs, so it also clears a row another process wrote (B2, B5, B6); its mark keeps
+  another process's earlier failure from coming back after it (fifth and sixth reviews). A recompute aimed at the errors therefore clears them as it fixes them. Each kind below says what
   counts as success. A kind with no success signal is cleared only by the PR that fixes it. (Owner, 2026-11-06,
   D1: a PR naming the fixed errors is the manual way to remove them; a later success of the same thing clearing
   them on its own is welcome on top of that.)
@@ -115,8 +132,8 @@ never moves `last_seen` back, and `first_seen` keeps the earliest (branch review
   passes `cutoff`, then marks it applied; later starts skip applied entries. A recurrence after the cutoff stays.
   A due entry is claimed (`UPDATE ... WHERE applied_at IS NULL`) in the transaction that deletes, so two overlapping
   processes never both apply it, and a late flush of an occurrence from before an applied entry's cutoff (the old
-  process) is dropped (B7). Every flush (and `record_now`) share-locks the resolution rows while it writes, so a
-  claim waits for a flush in progress and a flush waits for a claim in progress, then sees its cutoff. Once every
+  process) is dropped (B7): applying leaves a mark at the cutoff, under the writers' lock, so a flush waiting for
+  it sees it once it writes. Once every
   entry is applied the thread stops checking. A failure that recurs inside the grace is cleared with the rest: after
   a fix PR, check the card again once the job has run past the cutoff.
   Entries are kept in the file (they cost nothing and record what fixed what); a test checks every entry names a

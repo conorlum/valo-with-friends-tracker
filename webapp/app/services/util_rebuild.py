@@ -12,8 +12,12 @@ cannot take LOCK_KEY (a Postgres session lock: another process's child is buildi
 
 Site health: the child records its own failure, or clears the stored one after a build, at once (it exits). A child
 that died without recording (killed, or its write failed) is found by the parent at its next request(), which
-hands it to the next child (`--previous`): that child writes it before anything else, so the failure and a later
-success's clear come from one process, in order. Only a child that can't be started leaves it to the parent's queue.
+hands it to the next child (`--previous`, a list): that child writes them before anything else, so a failure and a
+later success's clear come from one process, in order. The parent keeps every handed failure until a child's exit
+code says it stored them (EXIT_STORED_PREVIOUS), and hands them on again otherwise; each carries an id the write
+deduplicates on, so one handed twice (a child killed after its write committed) is stored once. A failure is timed
+when its child exited (a watcher thread), not when the parent noticed. Only a child that can't be started leaves
+them to the parent's queue, and a clear the child couldn't store (EXIT_UNCLEARED) is queued by the parent.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -37,17 +42,40 @@ NICENESS = 10
 _lock = threading.Lock()
 _child: subprocess.Popen | None = None
 _child_started = 0.0
-EXIT_RECORDED = 3       # the child recorded its own failure in site_events: the parent adds nothing
+_pending: list = []     # failures handed to a child that hasn't confirmed storing them
+PENDING_MAX = 5
+SEEN_IDS = 50
+
+EXIT_RECORDED = 3       # the build failed and the child stored it: the parent adds nothing
+EXIT_PREVIOUS_UNSTORED = 4      # the handed failures could not be stored: nothing built, the parent keeps them
+EXIT_UNCLEARED = 5      # the build is stored but its clear failed: the parent queues the clear
+EXIT_UNRECORDED = 6     # the build failed and its record failed: the parent records the exit
+# exit codes after which the handed failures are stored (any other code, a crash or a kill, may come before)
+EXIT_STORED_PREVIOUS = frozenset({0, EXIT_RECORDED, EXIT_UNCLEARED, EXIT_UNRECORDED})
 
 
-def _spawn(previous: dict | None = None) -> subprocess.Popen:
+def _spawn(previous: list | None = None) -> subprocess.Popen:
     kwargs = {}
     if os.name == "posix":
         kwargs["preexec_fn"] = lambda: os.nice(NICENESS)
     args = [sys.executable, "-m", "app.services.util_rebuild"]
-    if previous is not None:
+    if previous:
         args += ["--previous", json.dumps(previous)]
     return subprocess.Popen(args, cwd=WEBAPP, **kwargs)
+
+
+def _watch(child) -> None:
+    """Note when the child exits (monotonic and UTC), so its failure is timed then, not when it is read."""
+    def run():
+        try:
+            child.wait()
+            from datetime import datetime, timezone
+
+            child.exited = (time.monotonic(), datetime.now(timezone.utc))
+        except Exception:
+            pass
+
+    threading.Thread(target=run, name="util-rebuild-watch", daemon=True).start()
 
 
 def running() -> bool:
@@ -56,68 +84,118 @@ def running() -> bool:
         return _child is not None and _child.poll() is None
 
 
+def _exited(child):
+    from datetime import datetime, timezone
+
+    exited = getattr(child, "exited", None)
+    return exited if exited is not None else (time.monotonic(), datetime.now(timezone.utc))
+
+
 def _read_finished(child, started) -> dict | None:
-    """The failure of a child that died without recording it ({error, context, at}), else None. Never raises."""
+    """The failure of a child that died without recording it ({id, error, context, at}), else None. Never
+    raises."""
     try:
         code = child.poll()
-        if code is None or code in (0, EXIT_RECORDED):
+        if code is None or code in (0, EXIT_RECORDED, EXIT_UNCLEARED, EXIT_PREVIOUS_UNSTORED):
             return None
-        from datetime import datetime, timezone
-
-        return {"error": f"the build exited with code {code}",
+        mono, at = _exited(child)
+        return {"id": uuid.uuid4().hex, "error": f"the build exited with code {code}",
                 "context": {"exit_code": code, "pid": getattr(child, "pid", None),
-                            "ran_s": round(time.monotonic() - started)},
-                "at": datetime.now(timezone.utc).isoformat()}
+                            "ran_s": round(max(0.0, mono - started))},
+                "at": at.isoformat()}
     except Exception:
         log.exception("could not read the Critical Util build's exit code")
         return None
 
 
-def _queue_failure(previous: dict) -> None:
+def _seen_ids(seen, context):
+    """Site health's dedupe for a handed failure: None when its id is already stored, else the ids kept."""
+    ids = list((seen or {}).get("ids") or []) if isinstance(seen, dict) else []
+    failure_id = (context or {}).get("failure_id")
+    if failure_id is not None and failure_id in ids:
+        return None
+    return {"ids": (ids + [failure_id])[-SEEN_IDS:]}
+
+
+def _context(failure: dict) -> dict:
+    return {**(failure.get("context") or {}), "failure_id": failure.get("id")}
+
+
+def _queue_failure(failure: dict) -> None:
     """No child to hand a failure to: queue it in this process. Never raises."""
     try:
         from datetime import datetime
 
         from app.services import site_health
 
-        site_health.enqueue("util_build_failed", "build", previous["error"], previous["context"],
-                            at=datetime.fromisoformat(previous["at"]))
+        site_health.enqueue("util_build_failed", "build", failure["error"], _context(failure),
+                            at=datetime.fromisoformat(failure["at"]), dedupe=_seen_ids)
     except Exception:
         log.exception("could not queue the Critical Util build's failure")
+
+
+def _settle(child, started) -> None:
+    """Read a finished child once: drop the handed failures it stored, keep its own, queue a clear it couldn't
+    store. Under _lock."""
+    global _pending
+    try:
+        code = child.poll()
+    except Exception:
+        log.exception("could not read the Critical Util build's exit code")
+        code = None
+    if code in EXIT_STORED_PREVIOUS:
+        _pending = []
+    if code == EXIT_UNCLEARED:
+        try:
+            from app.services import site_health
+
+            site_health.resolve("util_build_failed", "build", at=_exited(child)[1])
+        except Exception:
+            log.exception("could not queue the Critical Util build's clear")
+    failure = _read_finished(child, started)
+    if failure is not None:
+        _pending.append(failure)
+    if len(_pending) > PENDING_MAX:
+        log.warning("dropping %s Critical Util build failures no child stored", len(_pending) - PENDING_MAX)
+        _pending = _pending[-PENDING_MAX:]
 
 
 def request() -> bool:
     """Start a background build unless this process's last one is still running. True when one was started.
     Never raises: a build that cannot start leaves the stored one in place, and the next visit tries again."""
-    global _child, _child_started
+    global _child, _child_started, _pending
     with _lock:
         if _child is not None and _child.poll() is None:
             return False
-        previous = None
         if _child is not None:
             finished, _child = _child, None      # each finished child is read once
-            previous = _read_finished(finished, _child_started)
+            _settle(finished, _child_started)
         try:
-            _child = _spawn(previous)
+            _child = _spawn(list(_pending) or None)
             _child_started = time.monotonic()
         except OSError:
             log.exception("could not start the Critical Util build")
             _child = None
-            if previous is not None:
-                _queue_failure(previous)
+            for failure in _pending:
+                _queue_failure(failure)
+            _pending = []
             return False
+        _watch(_child)
         log.info("started the Critical Util build (pid %s)", _child.pid)
         return True
 
 
-def _previous(argv) -> dict | None:
-    """The failed child the parent handed over (`--previous <json>`), or None."""
+def _previous(argv) -> list:
+    """The failures the parent handed over (`--previous <json list>`; one object is read as a list of one)."""
     if len(argv) >= 2 and argv[0] == "--previous":
         try:
-            return json.loads(argv[1])
+            value = json.loads(argv[1])
         except ValueError:
             log.warning("unreadable --previous: %r", argv[1])
-    return None
+            return []
+        items = value if isinstance(value, list) else [value]
+        return [v for v in items if isinstance(v, dict)]
+    return []
 
 
 def main(argv=None) -> int:
@@ -128,10 +206,12 @@ def main(argv=None) -> int:
     from app.db import SessionLocal, engine
     from app.services import mask_accel, replay_util, site_health
 
-    previous = _previous(sys.argv[1:] if argv is None else argv)
-    if previous is not None:      # before anything else: a clear this build makes must come after it
-        site_health.record_now("util_build_failed", "build", previous.get("error"), previous.get("context"),
-                               session_factory=SessionLocal, at=datetime.fromisoformat(previous["at"]))
+    # before anything else: a clear this build makes must come after them; nothing is built until they are stored
+    for failure in _previous(sys.argv[1:] if argv is None else argv):
+        if not site_health.record_now("util_build_failed", "build", failure.get("error"), _context(failure),
+                                      session_factory=SessionLocal, at=datetime.fromisoformat(failure["at"]),
+                                      dedupe=_seen_ids):
+            return EXIT_PREVIOUS_UNSTORED
     mask_accel.register()
 
     holder = None
@@ -152,8 +232,9 @@ def main(argv=None) -> int:
             tb = traceback.format_exc().splitlines()[-15:]
             recorded = site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
                                               {"traceback": tb}, session_factory=SessionLocal)
-            return EXIT_RECORDED if recorded else 1     # not stored: the parent hands it to the next child
-        site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal)
+            return EXIT_RECORDED if recorded else EXIT_UNRECORDED     # not stored: the parent records the exit
+        if not site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal):
+            return EXIT_UNCLEARED
         return code
     finally:
         if holder is not None:      # close() only returns it to the pool: unlock first (the exit would too)

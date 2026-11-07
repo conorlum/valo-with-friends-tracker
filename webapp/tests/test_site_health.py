@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.db import Base
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.services import site_health
 
 # Recent, so the 30-day retention in every flush never deletes the rows under test.
@@ -25,7 +25,7 @@ def naive(d):
 def engine(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     yield eng
     eng.dispose()
 
@@ -689,24 +689,138 @@ def test_a_failed_flush_that_overfills_the_queue_drops_the_oldest(factory):
     assert len(keys) == 1000 and keys[0] == "old200" and keys[-1] == "new599"
 
 
-def same_boot(stored, new):
-    return (stored or {}).get("boot") == new.get("boot") and new["times"] <= (stored or {}).get("times", 0)
+def warm_seen(seen, new):
+    from app.services.replay_control_remote import _warm_seen
+    return _warm_seen(seen, new)
 
 
-def test_unless_stored_is_decided_against_the_stored_row_at_flush_time(factory):
-    # R4-6: the old and the new site report the same loss; whichever flushes second finds it stored
+def test_dedupe_is_decided_against_the_stored_mark_at_flush_time(factory):
+    # R4-6: the old and the new site report the same loss; whichever flushes second finds it counted
     for _ in range(2):          # two processes, each flushing its own report
-        site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b1"}, at=T0,
-                           unless_stored=same_boot)
+        site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b1"}, at=T0, dedupe=warm_seen)
         site_health.flush(session_factory=factory)
     assert rows(factory)[("warm_vanished", "Ascent:1")].count == 1
     site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 2, "boot": "b1"},
-                       at=T0 + timedelta(minutes=1), unless_stored=same_boot)
+                       at=T0 + timedelta(minutes=1), dedupe=warm_seen)
     site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "b2"},
-                       at=T0 + timedelta(minutes=2), unless_stored=same_boot)
+                       at=T0 + timedelta(minutes=2), dedupe=warm_seen)
     site_health.flush(session_factory=factory)
     r = rows(factory)[("warm_vanished", "Ascent:1")]
     assert r.count == 3 and r.context == {"times": 1, "boot": "b2"}, "two new losses in one write; the new boot last"
+
+
+def test_a_late_report_of_an_earlier_boot_is_not_counted_again(factory):
+    # R6-A3: one process flushed boot A then boot B before the other's report of A arrived
+    for boot in ("A", "B", "A"):
+        site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": boot}, at=T0, dedupe=warm_seen)
+        site_health.flush(session_factory=factory)
+    assert rows(factory)[("warm_vanished", "Ascent:1")].count == 2
+
+
+def test_a_loss_cleared_by_a_pr_is_not_brought_back_by_a_restart_rereading_it(factory):
+    # R5-A5 / R6-A3: the mark outlives the row
+    site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "A"}, at=T0, dedupe=warm_seen)
+    site_health.flush(session_factory=factory)
+    e = [{"kind": "warm_vanished", "key": "Ascent:1", "fixed_by": "x"}]
+    site_health.apply_resolved(session_factory=factory, started_at=T0, entries=e, now=T0 + timedelta(seconds=601))
+    assert ("warm_vanished", "Ascent:1") not in rows(factory)
+    site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 1, "boot": "A"},
+                       at=T0 + timedelta(hours=1), dedupe=warm_seen)          # a site restart re-reads the count
+    site_health.flush(session_factory=factory)
+    assert ("warm_vanished", "Ascent:1") not in rows(factory)
+    site_health.record("warm_vanished", "Ascent:1", "lost", {"times": 2, "boot": "A"},
+                       at=T0 + timedelta(hours=2), dedupe=warm_seen)          # a new loss still lands
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("warm_vanished", "Ascent:1")].count == 1
+
+
+def test_another_processs_late_failure_from_before_a_success_is_not_stored(factory):
+    # R5-B1 / R6-B1: the new process's success flushed first; the old process's earlier failure arrives after
+    site_health.resolve("worker_overrun", "Ascent:1:3", at=T0 + timedelta(minutes=5))
+    site_health.flush(session_factory=factory)
+    site_health._reset_for_tests()                                       # the old process
+    site_health.record("worker_overrun", "Ascent:1:3", "late", at=T0)
+    site_health.count("worker_overrun", "Ascent:1:3", at=T0 + timedelta(minutes=1))
+    site_health.flush(session_factory=factory)
+    assert ("worker_overrun", "Ascent:1:3") not in rows(factory)
+    site_health.record("worker_overrun", "Ascent:1:3", "after", at=T0 + timedelta(minutes=6))
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("worker_overrun", "Ascent:1:3")].error == "after", "a failure after the success stays"
+
+
+def test_a_prefix_success_leaves_a_mark_for_every_key_under_it(factory):
+    site_health.resolve_prefix("worker_refused", "Ascent:", at=T0 + timedelta(minutes=5))
+    site_health.flush(session_factory=factory)
+    site_health._reset_for_tests()
+    site_health.count("worker_refused", "Ascent:Refused", at=T0)
+    site_health.count("worker_refused", "Bind:Refused", at=T0)
+    site_health.flush(session_factory=factory)
+    assert set(rows(factory)) == {("worker_refused", "Bind:Refused")}
+
+
+def test_resolve_now_leaves_a_mark_and_says_whether_it_stored(factory):
+    assert site_health.resolve_now("util_build_failed", "build", session_factory=factory,
+                                   at=T0 + timedelta(minutes=5)) is True
+    assert site_health.record_now("util_build_failed", "build", "late", session_factory=factory, at=T0) is True
+    assert rows(factory) == {}
+    assert site_health.resolve_now("util_build_failed", "build", session_factory=never_factory) is False
+
+
+def test_marks_are_kept_30_days(factory):
+    with factory() as s:
+        s.add(SiteEventMark(kind="k", key="old", prefix=False, cleared_at=T0, updated_at=T0 - timedelta(days=31)))
+        s.add(SiteEventMark(kind="k", key="new", prefix=False, cleared_at=T0, updated_at=T0))
+        s.commit()
+    put(factory, "k", "x")
+    with factory() as s:
+        assert [m.key for m in s.scalars(select(SiteEventMark))] == ["new"]
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("db_password=hunter2", "hunter2"),
+    ("RIOT_API_KEY=RGAPI-abc", "RGAPI-abc"),
+    ("PGPASSWORD=hunter2", "hunter2"),
+    ("client_secret=xyz", "xyz"),
+    ("access_token=abc", "abc"),
+    ("SESSION_SECRET=abc", "abc"),
+    ('{\\"password\\": \\"hunter2\\"}', "hunter2"),
+    ("{'token': b'raw'}", "raw"),
+    ("password='it''s'", "s'"),
+])
+def test_scrub_hides_prefixed_escaped_bytes_and_doubled_quote_forms(text, secret):
+    # R5-A1: a prefix before the name, escaped JSON, bytes and SQL's doubled quote were left in clear
+    out = site_health.scrub(text)
+    assert secret not in out and "***" in out, out
+
+
+def test_scrub_keeps_the_text_around_an_escaped_json_secret():
+    assert site_health.scrub('{\\"password\\": \\"hunter2\\", \\"user\\": \\"u\\"}') == \
+        '{\\"password\\": \\"***\\", \\"user\\": \\"u\\"}'
+
+
+def test_scrubbing_many_unfinished_urls_takes_linear_time():
+    # R5-A2 / R6-B2: the URL password pass looked for an @ to the end of the text from every start
+    import time
+
+    for text in ("a://b:" * 50_000, "a://u:p/" * 40_000, "a." * 100_000 + "://"):
+        started = time.perf_counter()
+        site_health.scrub(text)
+        assert time.perf_counter() - started < 1.0, text[:12]
+
+
+def test_scrub_with_a_limit_cuts_before_and_after(monkeypatch):
+    seen = []
+    real = site_health._storable
+    monkeypatch.setattr(site_health, "_storable", lambda text: seen.append(len(text)) or real(text))
+    out = site_health.scrub("token=abc " + "x" * 10_000, 300)
+    assert len(out) == 300 and out.startswith("token=*** ")
+    assert seen == [300 * site_health.SCRUB_SPAN - len("abc") + len("***")], "only the first 1,200 were scrubbed"
+
+
+def test_the_queue_holds_an_errors_text_cut_to_what_the_flush_scrubs():
+    # R5-B3
+    site_health.record("page_error", "/a", "e" * 100_000, at=T0)
+    assert len(site_health._queue[-1]["error"]) == site_health.ERROR_MAX * site_health.SCRUB_SPAN
 
 
 def test_a_new_counter_row_is_inserted_with_its_context(factory):

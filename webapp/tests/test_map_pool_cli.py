@@ -124,12 +124,12 @@ def test_seed_keeps_a_fetched_row_the_seed_now_also_has(factory, monkeypatch):
 
 def test_a_manual_refresh_stores_its_failure_and_a_later_success_clears_it(factory, monkeypatch):
     # R4-10: the command has no flush thread, so it flushes what the check queued
-    from app.models.site_events import SiteEvent, SiteEventResolution
+    from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
     from app.services import site_health
 
     monkeypatch.setattr(settings, "demo_mode", False)
     with factory() as db:
-        Base.metadata.create_all(db.get_bind(), tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+        Base.metadata.create_all(db.get_bind(), tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
 
     def down(url):
         raise RuntimeError("listing down")

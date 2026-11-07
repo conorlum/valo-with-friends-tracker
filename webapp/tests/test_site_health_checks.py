@@ -17,7 +17,7 @@ from app.models.map_pool import MapPoolPatchNotes
 from app.models.match import Match, MatchSource
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.services import replay_gaps, site_health_checks
 
 @compiles(JSONB, "sqlite")
@@ -32,7 +32,7 @@ def db(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[UtilModel.__table__, ReplayRoundUtil.__table__,
-                                             SiteEvent.__table__, SiteEventResolution.__table__,
+                                             SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__,
                                              Match.__table__, Round.__table__, ImpactScore.__table__,
                                              Replay.__table__, MapPoolPatchNotes.__table__])
     with sessionmaker(bind=engine)() as session:

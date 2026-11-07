@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.db import Base
 from app.models import Player
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.routers import players
 from app.services import account_groups, player_view_cache as cache, site_health
 from app.services import site_stats, site_stats_cache, viewer_site_stats_cache
@@ -29,7 +29,7 @@ def friends_mode(monkeypatch):
 @pytest.fixture
 def engine():
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     yield eng
     eng.dispose()
 

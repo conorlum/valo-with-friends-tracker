@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import Base
 from app.models.map_pool import MapPoolPatchNotes
 from app.models.replay import Replay
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.services import map_pool_refresh, replay_archive_sync, replay_match_states, site_health, replay_upload
 from app.services import replay_control_remote as remote
 
@@ -21,7 +21,7 @@ from app.services import replay_control_remote as remote
 def engine(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__, Replay.__table__,
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__, Replay.__table__,
                                          MapPoolPatchNotes.__table__])
     yield eng
     eng.dispose()

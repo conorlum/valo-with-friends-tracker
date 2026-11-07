@@ -837,7 +837,7 @@ def test_warm_cache_history_is_decided_at_flush_time_not_in_the_dispatchers_sess
     monkeypatch.setattr(Session, "get", no_site_events_read)
     remote.cycle(factory, worker, remote.State(), now=100)
     [queued] = [e for e in site_health._queue if e["kind"] == "warm_vanished"]
-    assert queued["unless_stored"] is remote._same_warm_loss
+    assert queued["dedupe"] is remote._warm_seen
     monkeypatch.setattr(Session, "get", get)
     [row] = [e for k, e in worker_events(db).items() if k[0] == "warm_vanished"]
     assert row.count == 1 and row.context == {"times": 1, "map": "Ascent"}

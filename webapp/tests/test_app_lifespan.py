@@ -63,10 +63,10 @@ def test_shutdown_waits_for_the_final_flush(monkeypatch):
 
     import app.db
     from app.db import Base
-    from app.models.site_events import SiteEvent, SiteEventResolution
+    from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 
     engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(settings, "demo_mode", False)
     monkeypatch.setattr(app.db, "SessionLocal", factory)
@@ -93,10 +93,10 @@ def test_what_a_loop_records_as_it_stops_reaches_the_final_flush(monkeypatch):
 
     import app.db
     from app.db import Base
-    from app.models.site_events import SiteEvent, SiteEventResolution
+    from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 
     engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(settings, "demo_mode", False)
     monkeypatch.setattr(app.db, "SessionLocal", factory)

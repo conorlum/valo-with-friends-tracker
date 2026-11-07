@@ -21,7 +21,7 @@ def test_empty_database_upgrade_persists_at_head_and_is_idempotent(scratch_datab
             tables = set(inspect(conn).get_table_names())
             assert {'players', 'impact_scores', 'replays', 'coach_feedback', 'account_group_view_cache',
                     'map_pool_changes', 'replay_round_moments', 'replay_round_util',
-                    'site_events', 'site_event_resolutions'} <= tables
+                    'site_events', 'site_event_resolutions', 'site_event_marks'} <= tables
             assert 'riot_subject' in {c['name'] for c in inspect(conn).get_columns('players')}
             assert 'scoring_version' in {c['name'] for c in inspect(conn).get_columns('impact_scores')}
             conn.execute(text("INSERT INTO players (display_name, created_at) VALUES ('migration-sentinel', now())"))
@@ -75,7 +75,7 @@ def test_site_events_upgrade_downgrade_upgrade(scratch_database):
         command(scratch_database, '-m', 'alembic', 'downgrade', '0030')
         with engine.connect() as conn:
             tables = set(inspect(conn).get_table_names())
-            assert 'site_events' not in tables and 'site_event_resolutions' not in tables
+            assert not {'site_events', 'site_event_resolutions', 'site_event_marks'} & tables
         command(scratch_database, '-m', 'alembic', 'upgrade', 'head')
         with engine.connect() as conn:
             assert conn.execute(text('SELECT count(*) FROM site_events')).scalar_one() == 0

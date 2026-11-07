@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.db import Base
-from app.models.site_events import SiteEvent, SiteEventResolution
+from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.services import site_health
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "site_health.py"
@@ -27,7 +27,7 @@ def load_script():
 def factory(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(eng, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     yield sessionmaker(bind=eng)
     eng.dispose()
 

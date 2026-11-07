@@ -135,10 +135,10 @@ def test_slowest_and_count_hold_across_flushes(client, monkeypatch):
     from sqlalchemy.pool import StaticPool
 
     from app.db import Base
-    from app.models.site_events import SiteEvent, SiteEventResolution
+    from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 
     engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__])
+    Base.metadata.create_all(engine, tables=[SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__])
     factory = sessionmaker(bind=engine)
     clock(monkeypatch, 0, 40, 0, 6)
     client.request("/matches/1")
