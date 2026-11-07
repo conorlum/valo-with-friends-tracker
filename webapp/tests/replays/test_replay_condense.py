@@ -133,6 +133,48 @@ def test_round_results_fallback_is_reported_not_fatal(tmp_path):
     assert out.link_inputs["round_results_fallback"] is True
 
 
+# Payloads copied from a real export at the 04dcbd9 pin (schema 9): RoundResults is a delta wrapper, one
+# Updates item per round as it ends. Only the RoundResults key is kept.
+SCHEMA9_ROUND_RESULTS = [
+    {"DeclaredCount": 1, "Updates": [{"EliminatedTeams": [{"NetGuid": {"net_guid": 430, "path": None}}],
+                                      "RoundNumber": 0, "RoundResult": "defuse", "TeamResults": None,
+                                      "WinningTeam": "Blue", "WinningTeamMode": None, "WinningTeamRole": "defender"}]},
+    {"DeclaredCount": 2, "Updates": [{"EliminatedTeams": [{"NetGuid": {"net_guid": 430, "path": None}}],
+                                      "RoundNumber": 1, "RoundResult": "defuse", "TeamResults": None,
+                                      "WinningTeam": "Blue", "WinningTeamMode": None, "WinningTeamRole": "defender"}]},
+    {"DeclaredCount": 3, "Updates": [{"EliminatedTeams": [{"NetGuid": {"net_guid": 280, "path": None}}],
+                                      "RoundNumber": 2, "RoundResult": "elimination", "TeamResults": None,
+                                      "WinningTeam": "Red", "WinningTeamMode": None, "WinningTeamRole": "attacker"}]},
+]
+
+
+def test_schema9_round_results_delta_is_read_not_a_fallback(tmp_path):
+    match = SyntheticMatch(rounds=3)
+    events, seen = [], 0
+    for event in match.events():
+        payload = event.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("RoundResults"), list):
+            event = {**event, "payload": {**payload, "RoundResults": SCHEMA9_ROUND_RESULTS[seen]}}
+            seen += 1
+        events.append(event)
+    assert seen == 3
+    out = run(tmp_path, match, events=events)
+    assert out.report["round_results_fallback"] is False
+    assert out.link_inputs["round_results_fallback"] is False
+    assert out.report["round_results_decoded"] == 3
+    assert {n: r["WinningTeam"] for n, r in out.link_inputs["round_results"].items()} == {"1": "Blue", "2": "Blue",
+                                                                                          "3": "Red"}
+    assert out.link_inputs["round_results"]["3"]["RoundResult"] == "elimination"
+
+
+def test_schema9_wrapper_without_an_updates_list_still_falls_back(tmp_path):
+    match = SyntheticMatch()
+    events = match.events() + [{"type": "export_group_received", "time_ms": 1, "packet_id": 1, "actor_net_guid": 50,
+                                "object_net_guid": 50, "channel": 2, "export_group_path": GAME_STATE_PATH,
+                                "payload": {"RoundResults": {"DeclaredCount": 1, "Updates": "AAAA"}}}]
+    assert run(tmp_path, match, events=events).report["round_results_fallback"] is True
+
+
 # ------------------------------------------------------------ players and map
 
 
