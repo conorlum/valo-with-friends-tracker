@@ -92,7 +92,7 @@ and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`s
   (the parse reserve), 5 GB of slack and what `pending/` holds; the earliest-played match is evicted first.
   An upload that would eat into the running parse's reserve gets `503`.
 - Routes (unauthenticated like `/jobs`; the service is private): `POST /jobs/{id}/ack`, `POST /reparse`,
-  `GET /archive`, `POST /archive/delete`, `POST /archive/tombstones`. `/health` has an `archive` block
+  `GET /archive`, `GET /archive/files/{uuid}`, `POST /archive/delete`, `POST /archive/tombstones`. `/health` has an `archive` block
   (`enabled`, `kept`, `bytes`, `budget_bytes`, `oldest_played_at`, `boot_id`).
 - Tests: `webapp/tests/replays/test_replay_archive.py` (the store), `test_replay_worker_archive.py` (the server),
   `test_replay_archive_web.py` (the web side).

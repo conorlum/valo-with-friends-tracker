@@ -199,6 +199,7 @@ except ImportError:  # pragma: no cover - run as a plain script from its folder
     import runs as runs_mod  # type: ignore[no-redef]  # noqa: E402
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
+ARCHIVE_CHUNK_BYTES = 1 << 20
 DEFAULT_PARSER_CMD = ["CliReader", "export", "{vrf}", "--output", "{out}"]
 FINISHED_KEPT = 50  # finished jobs whose results stay readable (oldest dropped first)
 
@@ -2236,6 +2237,42 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 self.end_headers()
                 shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
 
+        def _archive_file(self):
+            archive = worker.archive
+            if archive is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off", "code": "archive_off"})
+            match_uuid = self.path[len("/archive/files/"):].lower()
+            if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", match_uuid) is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "invalid match UUID", "code": "bad_uuid"})
+            opened = archive.open_file(match_uuid)
+            if isinstance(opened, str):
+                reasons = {"tombstoned": "deleted on request", "not_in_archive": "not in the archive",
+                           "missing_on_disk": "the archived file is missing on disk"}
+                return self._send(HTTPStatus.NOT_FOUND, {"error": reasons[opened], "code": opened})
+            source, sha256, size = opened
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                self.send_header("X-Archive-Sha256", sha256)
+                self.end_headers()
+                self.connection.settimeout(30)
+                remaining = size
+                while remaining:
+                    chunk = source.read(min(ARCHIVE_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        self.close_connection = True
+                        return
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+                    if remaining and archive.is_tombstoned(match_uuid):
+                        self.close_connection = True
+                        return
+            except OSError:
+                self.close_connection = True
+            finally:
+                source.close()
+
         def _length(self, low: int, high: int) -> int | None:
             """The request's Content-Length when it is a decimal integer in [low, high]; otherwise sends 411, 400
             or 413, marks the connection to close, and returns None. Nothing has been read or written yet."""
@@ -2396,6 +2433,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                     return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
                 return self._send(HTTPStatus.OK, {"files": worker.archive.entries(),
                                                   "status": worker.archive.status()})
+            if self.path.startswith("/archive/files/"):
+                return self._archive_file()
             if self.path.startswith("/heights/build/"):
                 found = heights.get(self.path[len("/heights/build/"):]) if heights else None
                 if found is None:

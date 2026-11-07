@@ -3,6 +3,7 @@ test_replay_worker.py: archive off is today's behaviour, a parsed upload waits f
 the intake reserve, reparse, deletion and tombstones. Localhost only; a temp folder stands in for the disk."""
 
 import hashlib
+import http.client
 import json
 import sys
 import time
@@ -43,6 +44,105 @@ def start_archive(tmp_path, stub, total=500 * arc.GB, mode="ok", **overrides):  
 def ack_body(sha, outcome="stored", replay_id=1, played_at="2026-09-30T20:00:00Z"):
     return {"match_uuid": MATCH_UUID, "sha256": sha, "outcome": outcome, "replay_id": replay_id,
             "played_at": played_at}
+
+
+@pytest.fixture
+def archived_upload(tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        body = vrf_bytes()
+        sha = hashlib.sha256(body).hexdigest()
+        done = wait(base, post(base, body)[1]["id"])
+        assert done["status"] == "done", done
+        assert send(base, f"/jobs/{done['id']}/ack", ack_body(sha)) == (
+            200, {"archived": True, "result": "archived"})
+        yield worker, base, disk, body, sha
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize("match_uuid", [MATCH_UUID, MATCH_UUID.upper()])
+def test_archive_file_streams_bytes_and_headers(archived_upload, match_uuid):
+    worker, base, disk, body, sha = archived_upload
+    # The response size comes from the open file, even if the index size is stale.
+    worker.archive.index[MATCH_UUID]["size"] = len(body) + 1
+    with urllib.request.urlopen(f"{base}/archive/files/{match_uuid}", timeout=30) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "application/octet-stream"
+        assert int(response.headers["Content-Length"]) == len(body)
+        assert response.headers["X-Archive-Sha256"] == sha
+        assert response.read() == body
+
+
+def test_archive_file_off_has_a_coded_404(tmp_path, stub):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        assert get(base, f"/archive/files/{MATCH_UUID}") == (
+            404, {"error": "the archive is off", "code": "archive_off"})
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize("tail,code", [
+    ("not-a-uuid", "bad_uuid"),
+    ("", "bad_uuid"),
+    (MATCH_UUID + "/extra", "bad_uuid"),
+    ("00000000-0000-0000-0000-000000000000", "not_in_archive"),
+])
+def test_archive_file_refusals_have_codes(archived_upload, tail, code):
+    worker, base, disk, body, sha = archived_upload
+    status, answer = get(base, f"/archive/files/{tail}")
+    assert status == 404 and answer["code"] == code and answer["error"]
+
+
+def test_archive_file_missing_on_disk_is_logged(archived_upload, monkeypatch):
+    worker, base, disk, body, sha = archived_upload
+    messages = []
+    monkeypatch.setattr(worker.archive, "log", messages.append)
+    (disk / "archive" / f"{MATCH_UUID}.vrf").unlink()
+    status, answer = get(base, f"/archive/files/{MATCH_UUID}")
+    assert status == 404 and answer["code"] == "missing_on_disk" and answer["error"]
+    assert any(MATCH_UUID in line and "missing_on_disk" in line for line in messages)
+
+
+def test_archive_file_tombstone_refuses_even_a_restored_file(archived_upload):
+    worker, base, disk, body, sha = archived_upload
+    assert send(base, "/archive/tombstones", {"match_uuids": [MATCH_UUID]})[0] == 200
+    (disk / "archive" / f"{MATCH_UUID}.vrf").write_bytes(body)
+    status, answer = get(base, f"/archive/files/{MATCH_UUID}")
+    assert status == 404 and answer["code"] == "tombstoned" and answer["error"]
+
+
+def test_archive_file_route_keeps_the_unknown_route_404(archived_upload):
+    worker, base, disk, body, sha = archived_upload
+    assert get(base, "/no-such-route") == (404, {"error": "not found"})
+
+
+def test_archive_file_delete_mid_stream_aborts(archived_upload, monkeypatch):
+    worker, base, disk, body, sha = archived_upload
+    monkeypatch.setattr(server, "ARCHIVE_CHUNK_BYTES", 8, raising=False)
+    checks = []
+
+    def deleted(match_uuid):
+        checks.append(match_uuid)
+        return True  # The atomic open checks the tombstone set under its own lock.
+
+    monkeypatch.setattr(worker.archive, "is_tombstoned", deleted)
+    connection = http.client.HTTPConnection(urllib.parse.urlsplit(base).netloc, timeout=30)
+    try:
+        connection.request("GET", f"/archive/files/{MATCH_UUID}")
+        response = connection.getresponse()
+        assert response.status == 200
+        length = int(response.getheader("Content-Length"))
+        try:
+            received = response.read()
+        except http.client.IncompleteRead as error:
+            received = error.partial
+        assert 0 < len(received) < length
+        assert body.startswith(received)
+        assert checks == [MATCH_UUID]
+    finally:
+        connection.close()
 
 
 def test_with_the_archive_off_the_worker_is_as_before_and_an_ack_is_a_no_op(tmp_path, stub):  # noqa: F811

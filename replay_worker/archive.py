@@ -30,6 +30,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 GB = 1024 ** 3
 # The reserve, slack and TTLs below, and the 50 GB disk in render.yaml.
@@ -248,6 +249,29 @@ class Archive:
     def is_tombstoned(self, match_uuid: str | None) -> bool:
         with self.lock:
             return bool(match_uuid) and match_uuid.lower() in self.tombstones
+
+    def open_file(self, match_uuid: str) -> tuple[BinaryIO, str, int] | str:
+        """Open a download atomically with deletion; return its handle/hash/size or a refusal code.
+
+        The caller owns the handle and must check for tombstones between streamed chunks.
+        """
+        with self.lock:
+            match_uuid = match_uuid.lower()
+            if match_uuid in self.tombstones:
+                return "tombstoned"
+            entry = self.index.get(match_uuid)
+            if entry is None:
+                return "not_in_archive"
+            source = None
+            try:
+                source = self.path_of(match_uuid).open("rb")
+                size = os.fstat(source.fileno()).st_size
+            except OSError as error:
+                if source is not None:
+                    source.close()
+                self.log(f"archive: missing_on_disk {match_uuid}: {error}")
+                return "missing_on_disk"
+            return source, entry["sha256"], size
 
     # ------------------------------------------------------------------ re-parse attempt receipts
 
