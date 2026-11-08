@@ -12,9 +12,11 @@ warm (a map's visibility cache by itself) runs on `flex`, its limit 300 s above 
 `REPLAY_WARM_BUILD_TIMEOUT_S`. Each limit sits 300 s above the worker's Workflow limit (`render.yaml`);
 tests/replays/test_control_remote.py pins the order."""
 
+import asyncio
+
 from render.workflows import Retry, TaskContext, Workflows
 
-from replay_tasks import tasks
+from replay_tasks import disk_probe, tasks
 
 app = Workflows(default_plan="flex")
 NO_RETRY = Retry(max_retries=0, wait_duration_ms=1000)
@@ -48,6 +50,21 @@ def heights(ctx: TaskContext, args: dict) -> dict:
 def warm(ctx: TaskContext, args: dict) -> dict:
     tasks.warm(args, tasks.link_for(args))
     return {"ok": True}
+
+
+# A one-off disk probe (replay_tasks/disk_probe.py), started by hand from the dashboard: `disk_probe` with input
+# `[]` starts 10 `disk` runs on pro (parse's plan) at once and answers with their summary. The worker never starts
+# either.
+@app.task(name="disk", plan="pro", timeout_seconds=1800, retry=NO_RETRY)
+def disk(ctx: TaskContext, args: dict | None = None) -> dict:
+    return disk_probe.run(args)
+
+
+@app.task(name="disk_probe", timeout_seconds=3600, retry=NO_RETRY)
+async def probe(ctx: TaskContext, runs: int = 10, write_gb: float = 15) -> dict:
+    answers = await asyncio.gather(*(ctx.run(disk, args) for args in disk_probe.plan(runs, write_gb)),
+                                   return_exceptions=True)
+    return disk_probe.summarize(answers)
 
 
 # Later steps add their @app.task blocks HERE, above this line: app.start() registers the tasks defined when it
