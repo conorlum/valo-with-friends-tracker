@@ -187,8 +187,11 @@ watch that process's memory as well as the children's while the backlog runs.
 
 **The automatic re-parse queue (2026-10-07; on since 2026-10-08).** When a deploy changes the recipe (a parser, condenser or
 asset change), stored replays go stale. With `REPLAY_REPARSE_AUTO` on, the site parses each stale *uploaded*
-replay again from the worker's archived recording: one at a time, newest match first, behind every upload,
-and only once map control has drained. A stale *local* replay stays with `scripts/reingest_replays.py`,
+replay again from the worker's archived recording: one at a time, newest match first. While the worker parses on
+its own CPU (`REPLAY_PARSE_RUNNER=local`), each one also waits behind every upload, for map control to drain, 3
+minutes after the last one, and for the last replacement's control and gaps to come back. While it parses on
+Workflows (`/health` `runners.parse` is `workflow`) none of that applies: the next re-parse starts as soon as the
+last one settles, and map control runs beside it (owner, 2026-11-08). A stale *local* replay stays with `scripts/reingest_replays.py`,
 even when the same file is archived. Code: `app/services/replay_reparse_auto.py`, run by the control
 dispatcher's thread. `render.yaml` sets it on (with `REPLAY_CONTROL_REMOTE` and the worker's `REPLAY_ARCHIVE_DIR`); the code default is off.
 
