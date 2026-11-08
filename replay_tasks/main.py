@@ -18,6 +18,7 @@ from render.workflows import Retry, TaskContext, Workflows
 
 from replay_tasks import disk_probe, tasks
 
+tasks.use_scratch()     # scratch on the root filesystem, not the run's 2.15 GB /tmp (disk probe, 2026-11-08)
 app = Workflows(default_plan="flex")
 NO_RETRY = Retry(max_retries=0, wait_duration_ms=1000)
 

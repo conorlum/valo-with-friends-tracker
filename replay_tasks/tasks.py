@@ -22,6 +22,19 @@ import urllib.request
 from pathlib import Path
 
 CHUNK = 1 << 20
+# A Workflow run's /tmp is its own 2.15 GB volume, while the root filesystem took 15 GB in every try (the disk probe,
+# 2026-11-08: 10 runs on pro, 4 machines). A parse's export alone is ~65x the .vrf, so scratch goes on the root.
+SCRATCH = "/var/tmp"
+
+
+def use_scratch(env=os.environ) -> str:
+    """Points every temp file of this run, and of the children it starts, at `REPLAY_TASK_TMP` (default SCRATCH)
+    instead of /tmp. Called once when the workflow starts (main.py), before anything asks for a temp folder."""
+    folder = env.get("REPLAY_TASK_TMP") or SCRATCH
+    os.makedirs(folder, exist_ok=True)
+    env["TMPDIR"] = folder
+    tempfile.tempdir = folder        # gettempdir() caches its first answer; set it outright
+    return folder
 
 
 class ShortInput(OSError):

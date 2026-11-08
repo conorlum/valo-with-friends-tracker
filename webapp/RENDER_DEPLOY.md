@@ -350,6 +350,9 @@ worker's at least the site's. After every later merge, check `/health`'s `runner
 5. Compare `parse_seconds` with step 1's. The `parse` task runs on `pro` (`replay_tasks/main.py`): on `flex`
    the parser's export (~65x the file) ran out of disk (2026-10-16). Each parse run's log starts with
    `parse: ... GB free of ... GB`, the run's disk; a parse that still runs out of it fails as `parse failed`.
+   A run's `/tmp` is its own 2.15 GB volume, which a parse overflowed (`[Errno 28]`); the root filesystem took 15 GB
+   in every try (the `disk_probe` task, 2026-11-08). So every task's scratch is `/var/tmp` (`REPLAY_TASK_TMP` on the
+   workflow overrides it). To measure again: replay-tasks → Definitions → `disk_probe` → Run, input `[]`.
 6. Result sizes (spec D18): in `replay-worker`'s logs, the `run result <job> parse <bytes>` lines. Note the
    largest. Step 5 shrinks the worker to 2 GB only if 15 of those at once fit comfortably.
 7. Roll back: `REPLAY_PARSE_RUNNER=local`. Do it when few uploads are in progress: the local worker parses one at a
