@@ -218,9 +218,19 @@ def supported_builds() -> frozenset[str]:
     return _builds
 
 
+def parses_on_workflows(health) -> bool:
+    """The worker's /health says its parses run as Workflow runs (`runners.parse`), not on its own CPU."""
+    runners = health.get("runners") if isinstance(health, dict) else None
+    return isinstance(runners, dict) and runners.get("parse") == "workflow"
+
+
 def busy_reason(session, health: dict, control_in_flight) -> str | None:
     """Why no parse may be asked for right now though everything is switched on; None when all is quiet.
-    A re-parse goes behind every upload and waits for map control to drain: a parse stops a control child."""
+    A re-parse on the worker's own CPU goes behind every upload and waits for map control to drain: a parse stops a
+    control child. A Workflow parse takes nothing from either (it runs on its own machine, beside up to
+    REPLAY_PARSE_PARALLEL others), so then nothing here holds it back: the owner's choice, 2026-11-08."""
+    if parses_on_workflows(health):
+        return None
     ordinary = (session.query(ReplayUpload.id)
                 .filter(ReplayUpload.status.in_(uploads.UNFINISHED),
                         or_(ReplayUpload.session_key.is_(None),
@@ -507,8 +517,12 @@ def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: di
         memo.index_at = now if memo.index is not None else None
     entries = classify(session, recipe, memo.index, supported_builds(), now)
     holding = held(entries)
-    if (memo.index is None or unfinished_attempts(session) or not quiet() or settling(session, now)
-            or restoration(session, recipe, gave_up) is not None):
+    if memo.index is None or unfinished_attempts(session):
+        return holding      # one attempt at a time, always
+    # Pacing for a parse on the worker's own CPU only. On Workflows the next re-parse goes as soon as the last one
+    # settles: its replay's map control runs beside it, not before it.
+    if not parses_on_workflows(health) and (not quiet() or settling(session, now)
+                                            or restoration(session, recipe, gave_up) is not None):
         return holding
     refused = recently_refused(session, recipe, now)
     by_id = {replay_id: sha for replay_id, sha in session.query(Replay.id, Replay.source_sha256)}
@@ -592,9 +606,10 @@ def status(session, worker, now: float | None = None) -> dict:
             waiting_on = "the worker's archive index could not be read"
         else:
             waiting_on = busy_reason(session, health, 0)
-        if waiting_on is None and settling(session, now):
+        paced = not parses_on_workflows(health)      # `_step`'s pacing applies only to a parse on the worker
+        if waiting_on is None and paced and settling(session, now):
             waiting_on = f"the last attempt settled less than {SETTLE_S} s ago"
-        if waiting_on is None and pending is not None:
+        if waiting_on is None and paced and pending is not None:
             waiting_on = "the last replacement's map control and timing gaps are not back yet"
     archive, control = (health or {}).get("archive") or {}, (health or {}).get("control") or {}
     return {

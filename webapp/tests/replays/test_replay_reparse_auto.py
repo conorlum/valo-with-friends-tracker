@@ -665,6 +665,44 @@ def test_nothing_is_reserved_until_everything_is_quiet(db, on, gate):
         assert run(on, worker, now=NOW + 10)[1] == {"reserved": 1, "sent": 1}
 
 
+@pytest.mark.parametrize("gate", ["an upload queued", "an upload parsing", "worker uploads queued",
+                                  "site control in flight", "worker control queued", "worker control running",
+                                  "worker says nothing about control", "the last attempt just settled"])
+def test_on_workflows_nothing_but_an_unfinished_attempt_holds_the_next_reparse(db, on, gate):
+    """A Workflow parse runs on its own machine: map control and uploads go on beside it (owner, 2026-11-08)."""
+    replay, worker = stale_one(db)
+    worker.health_body["runners"] = {"parse": "workflow", "control": "workflow"}
+    in_flight = 0
+    if gate.startswith("an upload"):
+        db.add(ReplayUpload(id=str(uuid.uuid4()), status=gate.split()[-1], session_key="sess", created_at=T0))
+        db.commit()
+    elif gate == "worker uploads queued":
+        worker.health_body["queued"] = 1
+    elif gate == "site control in flight":
+        in_flight = 40
+    elif gate == "worker says nothing about control":
+        del worker.health_body["control"]["running"]
+    elif gate.startswith("worker control"):
+        worker.health_body["control"][gate.split()[-1]] = 9
+    else:
+        other = add_replay(db, 2, recipe=NEW)
+        add_attempt(db, other, target="recipe-0", finished=T0 - timedelta(seconds=5))
+    holding, counts = run(on, worker, in_flight=in_flight)
+    assert holding == {replay.id} and counts == {"reserved": 1, "sent": 1}
+    # Still one at a time: with that attempt unfinished, a second stale replay waits.
+    second = add_replay(db, 3, played=T0 - timedelta(days=3))
+    worker.files[match_uuid(3)] = sha(3)
+    holding, counts = run(on, worker, in_flight=in_flight)
+    assert second.id in holding and "reserved" not in counts and len(auto.unfinished_attempts(db)) == 1
+
+
+def test_a_local_parse_runner_keeps_the_pacing(db, on):
+    replay, worker = stale_one(db)
+    worker.health_body["runners"] = {"parse": "local", "control": "workflow"}
+    holding, counts = run(on, worker, in_flight=3)
+    assert holding == {replay.id} and counts == {}
+
+
 def test_a_reservation_waits_out_a_busy_worker_without_being_closed(db, on):
     replay = add_replay(db, 1, played=T0)
     reserved = add_attempt(db, replay, phase="reserved", status="queued")
@@ -834,6 +872,17 @@ def test_the_next_replay_waits_until_the_last_replacement_has_its_control_and_ga
     assert auto.restoration(db, replay.recipe) is None
     assert run(on, worker)[1] == {"reserved": 1, "sent": 1}
     assert auto.unfinished_attempts(db)[0].auto_context["selected_replay_id"] == waiting.id
+
+
+def test_on_workflows_the_next_replay_does_not_wait_for_the_last_replacements_control(db, replaced):
+    replay, waiting, worker = replaced
+    worker.health_body["runners"] = {"parse": "workflow"}
+    on = sessionmaker(bind=db.get_bind())
+    assert auto.restoration(db, replay.recipe) is not None, "its control is still to compute"
+    holding, counts = run(on, worker)
+    assert counts == {"reserved": 1, "sent": 1}
+    assert auto.unfinished_attempts(db)[0].auto_context["selected_replay_id"] == waiting.id
+    assert replay.id not in holding, "the replaced replay's control goes on"
 
 
 def test_rounds_the_dispatcher_gave_up_on_no_longer_hold_the_queue(db, replaced):
