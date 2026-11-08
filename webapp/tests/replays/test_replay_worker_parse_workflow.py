@@ -125,6 +125,25 @@ def test_a_result_posts_from_memory_without_a_temp_file(monkeypatch):
     assert headers["Content-length"] == str(len(data)) and headers["X-run-token"] == "t"
 
 
+def test_scratch_moves_off_tmp_for_the_run_and_its_children(tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    env = {}
+    monkeypatch.setattr(tasks, "SCRATCH", str(tmp_path / "default"))
+    assert tasks.use_scratch(env) == str(tmp_path / "default")
+    assert env["TMPDIR"] == str(tmp_path / "default") and (tmp_path / "default").is_dir()
+    assert tempfile.mkdtemp(prefix="parse-").startswith(str(tmp_path / "default"))
+    env = {"REPLAY_TASK_TMP": str(tmp_path / "chosen")}
+    assert tasks.use_scratch(env) == str(tmp_path / "chosen") and tempfile.gettempdir() == str(tmp_path / "chosen")
+
+
+def test_the_workflow_moves_scratch_before_any_task_runs():
+    source = (Path(tasks.__file__).parent / "main.py").read_text(encoding="utf-8")
+    assert source.index("tasks.use_scratch()") < source.index("app = Workflows(")
+    assert tasks.SCRATCH == "/var/tmp"
+
+
 def test_the_parse_task_runs_on_pro():
     """Parsing needs more room than flex gave it (2026-10-16); control and heights stay on flex."""
     source = (Path(tasks.__file__).parent / "main.py").read_text(encoding="utf-8")
