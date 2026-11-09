@@ -63,3 +63,41 @@ def test_committed_maps_have_an_image_and_a_transform():
         assert (STATIC / entry["image"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", name
         assert entry["map_url"].startswith(f"/Game/Maps/{entry['code']}/")
         assert all(entry[k] for k in vendor_map_assets.TRANSFORM_KEYS)
+
+
+def _sha12(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+def test_a_refresh_keeps_a_hand_patched_minimap_while_upstream_is_unchanged(tmp_path, monkeypatch):
+    upstream, patch = b"\x89PNG old upstream", b"\x89PNG hand patch"
+    monkeypatch.setattr(vendor_map_assets, "PATCHED_MINIMAPS", {"Corrode": _sha12(upstream)})
+    path = tmp_path / "Corrode.png"
+    path.write_bytes(patch)
+    assert vendor_map_assets.write_minimap(path, "Corrode", upstream) == "kept"
+    assert path.read_bytes() == patch
+
+
+def test_a_new_upstream_minimap_supersedes_the_hand_patch(tmp_path, monkeypatch):
+    monkeypatch.setattr(vendor_map_assets, "PATCHED_MINIMAPS", {"Corrode": _sha12(b"\x89PNG old upstream")})
+    path = tmp_path / "Corrode.png"
+    path.write_bytes(b"\x89PNG hand patch")
+    assert vendor_map_assets.write_minimap(path, "Corrode", b"\x89PNG redrawn upstream") == "superseded"
+    assert path.read_bytes() == b"\x89PNG redrawn upstream"
+
+
+def test_an_unpatched_minimap_is_always_written(tmp_path):
+    path = tmp_path / "Ascent.png"
+    path.write_bytes(b"\x89PNG stale")
+    assert vendor_map_assets.write_minimap(path, "Ascent", b"\x89PNG fresh") == "written"
+    assert path.read_bytes() == b"\x89PNG fresh"
+
+
+def test_every_patched_minimap_differs_from_the_upstream_it_replaces_and_matches_its_control_tags():
+    tags = json.loads((STATIC / "data" / "control" / "tags.json").read_text(encoding="utf-8"))["maps"]
+    for name, upstream_sha in vendor_map_assets.PATCHED_MINIMAPS.items():
+        committed = _sha12((STATIC / "img" / "maps" / f"{name}.png").read_bytes())
+        assert committed != upstream_sha, f"{name}: the committed image is the upstream one; drop it from the list"
+        assert tags[name]["image_sha"] == committed, name

@@ -904,8 +904,16 @@ can satisfy.
      awarded score and mode:
      - with no surrender, `team1_rounds_won + team2_rounds_won` must equal the number of played rounds, and the
        winner's total must be a legal end for the mode (13 in competitive, or overtime win by 2; Swiftplay 5);
+     - a competitive draw (level at 13 or more, added 2026-11-09 for a 14-14 Abyss upload) is complete when the
+       awarded score is the played one, the replay's game state ended the match as a draw (`link_inputs.match_end`,
+       condenser revision 27: `MatchState` "WaitingPostMatch" with `CompletionState` 6; a win is 1, a surrender 5,
+       measured on three real exports) and the replay decoded nothing after it. 13-13 is also a score overtime
+       passes through, so a recording cut there, with no match end, never links as a draw;
      - a surrender is detected from the score, since the padding is gone: the awarded total is higher than the
        played rounds, or no team reached a legal end. Its shape is finding 26;
+     - a surrender is also detected from the replay when tracker.gg stored the played score unpadded (a 2-10
+       Haven upload, 2026-11-09): the decoded results after the last played round are all `surrendered`,
+       contiguous from the next round, all to the leader, and take it to a legal end;
      - a dropped final replay round is allowed only for a detected surrender.
 
      Any other discrepancy refuses. A probe linked a 4-round replay to 4 DB rounds of a 13-11 match; this closes

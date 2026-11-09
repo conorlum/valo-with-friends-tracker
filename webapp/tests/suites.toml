@@ -338,6 +338,10 @@ guards = [
   "app/control/feature*.py", "app/control/map_pool_runtime.py", "app/replays/map_feature_*.py",
   "app/replays/ascent_features.py", "app/replays/feature_audit.py", "app/services/control_feature_*.py",
   "scripts/prepare_ascent_features.py", "scripts/*feature*",
+  # what the legacy fingerprint fixture (tests/replays/map_feature_legacy.py) reads: every map's control assets,
+  # the fingerprint envelope and the game figures in it
+  "app/static/data/control/**", "app/replays/control_format.py", "app/control/hearing.json",
+  "app/control/utility.json",
 ]
 
 [timing-gaps]

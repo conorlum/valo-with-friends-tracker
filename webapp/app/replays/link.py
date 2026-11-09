@@ -8,14 +8,19 @@ docs/replay-viewer-plan.md, "Linking":
 0. the replay's eligibility (pass 6, P-f): no link-blocking diagnostic, coverage and gap
    limits met, the phase cycle and lifecycle validated;
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
-2. equal played-round sets, complete for the mode's score or a detected surrender (P-e);
-   when the replay decoded round winners, each equal to the DB's;
+2. equal played-round sets, complete (P-e, `check_completeness`): a legal end, a legal draw the
+   replay's game state ends as a draw with nothing decoded after it, a surrender tracker.gg padded, or
+   one the replay records as surrendered rounds after its last played round; when the replay decoded
+   round winners, each equal to the DB's;
 3. exactly one assignment of slots to match players that respects agents, the DB's teams
-   (every replay kill cross-team) and the kills; proximity (spawn points, tight round-start
+   and the enemy kills (a replay kill that is same-team under a mapping is set aside, so team
+   kills never choose between assignments); proximity (spawn points, tight round-start
    clusters, the condenser's side groups) only checks the survivor (pass 6, P-d);
-4. per-round kill sequences identical after the excluded DB kill classes, paired out of
-   time order only within MAX_RESIDUAL_S on both clocks (P-g);
-5. one match-wide clock offset within the limits, with an anchor in every round;
+4. per-round kill sequences identical after the excluded DB kill classes and the replay's
+   team kills, paired out of time order only within MAX_RESIDUAL_S on both clocks (P-g);
+5. one match-wide clock offset within the limits, with an anchor in every round; then each
+   replay team kill pairs one-to-one with a DB team kill of the same players in its round,
+   within MAX_RESIDUAL_S of that offset (never an anchor), or the link is refused;
 6. the `riot_subject` backfill, refused on any conflict, for the slots that have a Subject.
 
 The report holds IDs, counts, agents and reasons only: never a Subject or a name.
@@ -50,6 +55,24 @@ def is_legal_end(mode: str, winner: int, loser: int) -> bool:
     if mode == "swiftplay":
         return winner == 5 and loser <= 4
     raise Refused("completeness", "no completeness rule for this mode", mode=mode)
+
+
+def is_legal_draw(mode: str, each: int) -> bool:
+    """A Competitive match can end drawn after overtime (the 2026-11-08 Abyss upload ended 14-14). 12-12
+    always plays on, so a draw is level at 13 or more. Swiftplay settles 4-4 in one deciding round."""
+    return mode == "competitive" and each >= 13
+
+
+# The decoded RoundResult the game writes for each round a surrender awards.
+SURRENDERED = "surrendered"
+
+
+def game_says_drawn(link_inputs: dict) -> bool:
+    """Whether the replay's game state ended the match as a draw (`match_end`, condense.read_match_end:
+    completion state 6 after the post-match state). Missing on a recording cut short and on blobs condensed
+    before revision 27, so a level score from those never links as a draw."""
+    ending = link_inputs.get("match_end")
+    return isinstance(ending, dict) and ending.get("outcome") == "draw" and ending.get("completion") == 6
 
 
 @dataclass(frozen=True)
@@ -137,13 +160,23 @@ def outcome_winner(outcome: str | None) -> str | None:
 # ---------------------------------------------------------------- step 2: rounds
 
 
-def check_completeness(match: DbMatch) -> bool:
+def check_completeness(match: DbMatch, recorded_surrender: list[str | None] | None = None,
+                       results_after: bool = False, drawn: bool = False) -> bool:
     """P-e: the DB's played rounds against its awarded score and mode. Returns whether the match
     is a detected surrender; refuses anything else that isn't a complete match.
 
-    The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
-    surrender shows rows that reach no legal end under an awarded score that does.
-    The surrender shape is confirmed by finding 26.
+    Three ways to be complete:
+    - the played rounds reach a legal end (`is_legal_end`), or a legal draw (`is_legal_draw`) that the
+      awarded score repeats, that the replay's own game state ended as a draw (`drawn`, `game_says_drawn`:
+      13-13 is also a score overtime passes through, and a recording can stop there), and after which the
+      replay decoded nothing at all (`results_after`: a played round, a surrender award, or a key that
+      isn't a canonical round number);
+    - a padded surrender: the adapter drops tracker.gg's surrender padding rows but keeps its padded
+      `roundsWon`, so the rows reach no legal end under an awarded score that does (finding 26);
+    - a surrender the replay records: tracker.gg doesn't always pad (the 2026-11-08 Haven upload is stored
+      2-10, its played score). `recorded_surrender` is the team of each round the game awarded as
+      surrendered, contiguous after the last played one. It holds when the awarded score is the played one
+      and those rounds, all to the leading team, take it to a legal end. Any mode with a legal end.
     """
     wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
     if wins[None]:
@@ -155,6 +188,20 @@ def check_completeness(match: DbMatch) -> bool:
             raise Refused("score", "the played rounds reach a final score the DB's awarded score differs from",
                           rows=list(rows), awarded=list(awarded))
         return False
+    # A level score the DB awards as is: a draw. Awarded otherwise, it may still be a padded surrender below.
+    if rows[0] == rows[1] and rows == awarded and is_legal_draw(match.mode, rows[0]):
+        if results_after:
+            raise Refused("completeness", "the replay decoded results after a level score",
+                          rows=list(rows), awarded=list(awarded))
+        if not drawn:
+            raise Refused("completeness", "a level score the replay's game state doesn't end as a draw",
+                          rows=list(rows), awarded=list(awarded))
+        return False
+    if recorded_surrender and rows == awarded and rows[0] != rows[1]:
+        leader = "team-1" if rows[0] > rows[1] else "team-2"
+        if all(team == leader for team in recorded_surrender) and \
+                is_legal_end(match.mode, max(rows) + len(recorded_surrender), min(rows)):
+            return True
     if awarded[0] == awarded[1] or not is_legal_end(match.mode, max(awarded), min(awarded)):
         raise Refused("completeness", "the played rounds are not a complete match and the awarded score is no "
                                       "legal end", rows=list(rows), awarded=list(awarded))
@@ -171,7 +218,24 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> tuple[list[int], boo
     replay_played = list(range(1, replay.round_count + 1))
     if db_played != replay_played:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
-    surrender = check_completeness(match)
+    # The decoded results after the last played round. Any key that isn't a canonical round number ("13",
+    # never "013" or "²") makes the whole suffix unusable as evidence, and counts as something after a draw.
+    results = replay.link_inputs.get("round_results") or {}
+    canonical = {key: int(key) for key in results
+                 if isinstance(key, str) and key.isascii() and key.isdigit() and key == str(int(key))}
+    malformed = len(canonical) != len(results)
+    after = {canonical[key]: value for key, value in results.items()
+             if key in canonical and canonical[key] > replay.round_count}
+    recorded = None
+    if after and not malformed and \
+            sorted(after) == list(range(replay.round_count + 1, replay.round_count + 1 + len(after))) and \
+            all(isinstance(value, dict) and value.get("RoundResult") == SURRENDERED for value in after.values()):
+        # An unusable winner (not a team name) maps to None, which no leader equals: the evidence fails and
+        # the padded-score rules decide, as before.
+        recorded = [WINNER_FNAME_TO_TEAM.get(team) if isinstance(team := after[n].get("WinningTeam"), str) else None
+                    for n in sorted(after)]
+    surrender = check_completeness(match, recorded, results_after=bool(after) or malformed,
+                                   drawn=game_says_drawn(replay.link_inputs))
     if replay.dropped_final_round and not surrender:
         raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match is no surrender")
     if replay.link_inputs.get("round_results_fallback"):
@@ -220,19 +284,17 @@ def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[dict[i
     """Every slot -> match_player_id that respects agents, anchors and the DB's teams.
 
     Teams come from the DB only (P-d): every agent-respecting bijection over all ten players,
-    both teams at once, in which every replay kill (self-kills aside) is cross-team. The
-    condenser's side groups and spawn proximity are not constraints, so they can't exclude
+    both teams at once. A replay kill that is same-team under a mapping doesn't rule it out:
+    `match_kills` sets it aside, so the mapping must still match every DB enemy kill without it.
+    Team kills never choose between mappings (Summit's falling hazard credits the player who shot
+    it down: replay 706); `match_team_kills` checks them on the one survivor, on the fitted clock.
+    The condenser's side groups and spawn proximity are not constraints, so they can't exclude
     the true assignment; `check_proximity` tests the survivor against them instead.
     """
     anchors = {p.riot_subject: p.match_player_id for p in match.players if p.riot_subject}
-    team_of = {p.match_player_id: p.team for p in match.players}
     subject_of = {p["slot"]: p["subject"] for p in replay.players}
-    kill_pairs = {(killer, victim) for kills in (replay.link_inputs.get("kills") or {}).values()
-                  for _, killer, victim in kills if killer != victim}
     candidates = []
     for mapping in _bijections(replay.players, match.players):
-        if any(team_of[mapping[killer]] == team_of[mapping[victim]] for killer, victim in kill_pairs):
-            continue
         # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
         if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
                for slot, mp in mapping.items()) and \
@@ -323,7 +385,12 @@ def _bijections(slots: list[dict], players: list[DbPlayer]) -> list[dict[int, in
 
 
 def split_db_kills(match: DbMatch) -> tuple[dict[int, list[DbKill]], dict[int, list[DbKill]]]:
-    """(kills the replay must match, excluded kills that become db_deaths), per round."""
+    """(kills the replay must match, excluded kills), per round.
+
+    Excluded: no killer, self-kills and team kills; the report's `excluded_db_kills` counts them
+    all. Each becomes a db_death, except a team kill paired with the replay's own (the replay
+    has that death already).
+    """
     team = {p.match_player_id: p.team for p in match.players}
     matched, excluded = defaultdict(list), defaultdict(list)
     for kill in sorted(match.kills, key=lambda k: (k.round_number, k.t, k.id)):
@@ -333,7 +400,8 @@ def split_db_kills(match: DbMatch) -> tuple[dict[int, list[DbKill]], dict[int, l
     return matched, excluded
 
 
-def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int]) -> list[tuple[list, DbKill]] | None:
+def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int],
+                team: dict[int, str] | None = None) -> list[tuple[list, DbKill]] | None:
     """Pairs replay kills [t, killer, victim] with DB kills, or None if the sequences differ.
 
     Identity and order first, the clock second (P-g): each replay kill, in time order, pairs
@@ -341,9 +409,13 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
     two pairs may be out of time order only if they are within MAX_RESIDUAL_S of each other on
     both clocks. Pass 5 grouped 0.1 s ties separately on each side, which refused real jitter.
     A replay self-kill (Clove's ult running out, in the first real export) pairs with nothing,
-    as the DB's are excluded.
+    as the DB's are excluded. So does a replay team kill under this mapping (`team`: match
+    player id -> team), as split_db_kills excludes the DB's; `match_team_kills` pairs those.
     """
-    ours = sorted((k for k in replay_kills if k[1] != k[2]), key=lambda k: k[0])
+    def excluded(k: list) -> bool:
+        return k[1] == k[2] or (team is not None and team[mapping[k[1]]] == team[mapping[k[2]]])
+
+    ours = sorted((k for k in replay_kills if not excluded(k)), key=lambda k: k[0])
     pool = sorted(db_kills, key=lambda k: (k.t, k.id))
     if len(ours) != len(pool):
         return None
@@ -359,6 +431,35 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
         for b, db_b in pairs[i + 1:]:
             if db_a.t > db_b.t and (b[0] - a[0] > MAX_RESIDUAL_S or db_a.t - db_b.t > MAX_RESIDUAL_S):
                 return None
+    return pairs
+
+
+def is_db_team_kill(kill: DbKill, team: dict[int, str]) -> bool:
+    return (kill.killer is not None and kill.victim is not None and kill.killer != kill.victim
+            and team.get(kill.killer) == team.get(kill.victim))
+
+
+def match_team_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int],
+                     team: dict[int, str], offset: float) -> list[tuple[list, DbKill]] | None:
+    """Pairs each replay team kill under the linked mapping with its own DB team kill, or None.
+
+    `db_kills`: the round's excluded DB kills (only its team kills are candidates). Each replay
+    team kill, in time order, takes the unused DB team kill of the same (killer, victim) nearest
+    t_replay + offset, within MAX_RESIDUAL_S; DB rows off the clock are skipped. One with none
+    refuses the link. A DB team kill left over pairs with nothing and stays a db_death.
+    """
+    ours = sorted((k for k in replay_kills if k[1] != k[2] and team[mapping[k[1]]] == team[mapping[k[2]]]),
+                  key=lambda k: k[0])
+    pool = [k for k in db_kills if is_db_team_kill(k, team)]
+    pairs = []
+    for kill in ours:
+        key = (mapping[kill[1]], mapping[kill[2]])
+        near = [d for d in pool if (d.killer, d.victim) == key and abs(d.t - kill[0] - offset) <= MAX_RESIDUAL_S]
+        if not near:
+            return None
+        hit = min(near, key=lambda d: (abs(d.t - kill[0] - offset), d.id))
+        pool.remove(hit)
+        pairs.append((kill, hit))
     return pairs
 
 
@@ -388,9 +489,10 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
     db_matched, db_excluded = split_db_kills(match)
     replay_kills = {int(n): kills for n, kills in (replay.link_inputs.get("kills") or {}).items()}
 
+    team = {p.match_player_id: p.team for p in match.players}
     survivors = []
     for mapping in assignment_candidates(replay, match):
-        pairs = {n: match_kills(replay_kills.get(n, []), db_matched.get(n, []), mapping) for n in played}
+        pairs = {n: match_kills(replay_kills.get(n, []), db_matched.get(n, []), mapping, team) for n in played}
         if all(p is not None for p in pairs.values()):
             survivors.append((mapping, pairs))
     pins = pinning(replay, [mapping for mapping, _ in survivors])
@@ -421,6 +523,14 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
     missing = [n for n in played if n not in anchored]
     if missing:
         raise Refused("clock", "a round has no anchor", rounds=missing)
+    # Team kills aren't anchors and pair with nothing in kill_map, but each must have its own DB
+    # team kill on the fitted clock.
+    team_pairs = {n: match_team_kills(replay_kills.get(n, []), db_excluded.get(n, []), mapping, team, offset)
+                  for n in played}
+    unpaired = sorted(n for n, p in team_pairs.items() if p is None)
+    if unpaired:
+        raise Refused("kills", "a replay team kill has no DB team kill of the same players on the fitted clock",
+                      rounds=unpaired)
 
     # Step 6: the riot_subject backfill, refused on any conflict.
     subject_of = {p["slot"]: p["subject"] for p in replay.players}
@@ -446,8 +556,11 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
         for kill, db in pairs[n]:
             ids[order[id(kill)]] = db.id
         kill_map[str(n)] = ids
-    db_deaths = {str(n): [{"slot": slot_of_mp.get(k.victim), "t_db": k.t} for k in db_excluded[n]]
-                 for n in played if db_excluded.get(n)}
+    # Only the deaths the replay lacks: a DB team kill paired with the replay's is already there.
+    in_replay = {db.id for n in played for _, db in team_pairs[n]}
+    db_deaths = {str(n): deaths for n in played
+                 if (deaths := [{"slot": slot_of_mp.get(k.victim), "t_db": k.t}
+                                for k in db_excluded.get(n, []) if k.id not in in_replay])}
     report = {
         "match_id": match.match_id, "rounds": len(played), "anchors": len(anchors),
         "clock_offset": round(offset, 3), "max_residual": round(worst, 3), "median_residual": round(typical, 3),
