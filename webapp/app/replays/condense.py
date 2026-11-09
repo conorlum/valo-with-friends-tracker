@@ -20,6 +20,7 @@ decision D7).
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import math
 import re
@@ -1272,12 +1273,57 @@ def two_clusters(points: dict[int, tuple[float, float]]) -> tuple[list[int], lis
     return groups[0], groups[1], radius
 
 
+# A team kill is rare: 148 of the friends DB's 3,999 matches had one, none more than two
+# (2026-11-08). Utility (Paint Shells, Hot Hands, ults) and Summit's falling hazard, which credits
+# the player who shot it down ("Crush", replay 706), kill teammates.
+MAX_TEAM_KILLS = 3
+
+
 def side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
     """Unlabelled sides A/B per slot: kills are cross-side, spawn clusters are same-side.
 
     Parity union-find over both kinds of evidence. It must be consistent, connected and 5/5.
     Group A is the one holding slot 0.
+
+    A team kill breaks that. Then the split must be chosen twice, independently: the spawn
+    clusters must all give the same 5/5 split, and that split must be the kills' own unique best
+    5/5 fit (fewest kills inside a side, at most MAX_TEAM_KILLS). Otherwise it refuses: kills
+    alone can't tell a team kill from a misresolved killer or victim, and one round's crossed
+    cluster can't outvote the kills.
     """
+    try:
+        return _parity_side_groups(kills, clusters)
+    except ContractError:
+        if not _five_five(clusters):
+            raise
+    return _side_groups_with_team_kills(kills, _five_five(clusters))
+
+
+def _five_five(clusters: list[tuple[list[int], list[int]]]) -> list[tuple[list[int], list[int]]]:
+    return [(first, second) for first, second in clusters if len(first) == 5 and len(second) == 5]
+
+
+def _side_groups_with_team_kills(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
+    splits = {frozenset(first if 0 in first else second) for first, second in clusters}
+    if len(splits) != 1:
+        raise ContractError("side_groups", "inconsistent evidence (spawn clusters)")
+    spawn = next(iter(splits))
+
+    def inside(a: frozenset) -> int:
+        return sum(1 for k in kills if k.killer != k.victim and (k.killer in a) == (k.victim in a))
+
+    # Every 5/5 split, A holding slot 0: C(9, 4) = 126 of them.
+    fits = {a: inside(a) for a in (frozenset({0, *others}) for others in itertools.combinations(range(1, 10), 4))}
+    best = min(fits.values())
+    if fits[spawn] != best or sum(1 for n in fits.values() if n == best) != 1:
+        raise ContractError("side_groups", f"inconsistent evidence (the spawn clusters' split has {fits[spawn]} kills "
+                                           f"inside a side; the kills fit another split as well or better)")
+    if best > MAX_TEAM_KILLS:
+        raise ContractError("side_groups", f"inconsistent evidence ({best} team kills, at most {MAX_TEAM_KILLS})")
+    return ["A" if slot in spawn else "B" for slot in range(10)]
+
+
+def _parity_side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
     parent = list(range(10))
     parity = [0] * 10
 
@@ -1532,9 +1578,12 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     outside = len(kills) - assigned - excluded["dropped_final_round"]
     if outside:
         raise ContractError("kills_outside_rounds", f"{outside} kills fall in no round window")
-    # P-d: sides are for display only. If the evidence can't give one consistent, connected
-    # 5/5 partition, every side is null: the replay still stores and plays, with neutral
-    # colours, and the linker never needed them.
+    # P-d: the linker never needs sides; it only checks the survivor against them. They are not
+    # display only: map control and the coach read them as the teams on every round, linked or
+    # not, so a wrong split is worse than none. If the evidence can't give one 5/5 partition
+    # (side_groups: consistent and connected, or the spawn clusters' split when it is also the
+    # kills' unique best fit with at most MAX_TEAM_KILLS team kills), every side is null: the replay still stores and plays with neutral colours, and
+    # control can't run on it, linked or not (round_link maps the side groups to teams).
     try:
         sides: list[str | None] = side_groups(kills, clusters)
         sides_report = {"resolved": True}

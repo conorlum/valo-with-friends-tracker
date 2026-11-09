@@ -25,6 +25,7 @@ ROUNDS = 15
 LINK_KILLS = {n: list(BASE_KILLS[(n - 1) % 4 + 1]) for n in range(1, ROUNDS + 1)}
 WINNERS = {n: "Blue" if n in (2, 4) else "Red" for n in range(1, ROUNDS + 1)}
 OFFSET = 0.4  # DB clock = replay clock + 0.4 s
+NO_TEAM_KILL_PAIR = "a replay team kill has no DB team kill of the same players on the fitted clock"
 
 
 @pytest.fixture(scope="module")
@@ -281,11 +282,13 @@ def test_an_unresolved_partition_still_links_on_kills(condensed):
     assert result.side_to_team == {} and result.slot_to_match_player == {s: mp(s) for s in range(10)}
 
 
-def test_a_same_team_replay_kill_leaves_no_candidate(condensed):
+def test_a_same_team_replay_kill_the_db_lacks_refuses(condensed):
+    # Until team kills (replay 706) this refused at "assignment" with no candidate; team kills no
+    # longer choose between assignments, so it refuses at the team-kill check instead. Never linked.
     replay = view(condensed)
     replay.link_inputs["kills"]["1"].append([30.0, 0, 1])
     result = lk.link(replay, [db_match()], {})
-    assert (result.report["check"], result.report["candidates"]) == ("assignment", 0)
+    assert (result.status, result.report["check"], result.report["reason"]) == ("refused", "kills", NO_TEAM_KILL_PAIR)
 
 
 def test_misleading_tight_clusters_refuse_and_never_exclude_a_candidate(condensed):
@@ -511,6 +514,90 @@ def test_a_replay_self_kill_pairs_with_nothing(swiftplay):
     result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(3), mp(3))])], {})
     assert result.status == "linked", result.report
     assert result.kill_map["2"][-1] is None
+
+
+def test_a_replay_team_kill_pairs_with_nothing(condensed):
+    # Summit's falling hazard (replay 706, round 2): the player who shot it down is credited with
+    # killing a teammate under it. The DB excludes team kills, so the replay's must pair with
+    # nothing too, or every assignment fails on the count.
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([35.0, 0, 1])
+    result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(0), mp(1))])], {})
+    assert result.status == "linked", result.report
+    assert result.kill_map["2"][-1] is None
+    # The replay has this death already: db_deaths holds only the DB's deaths it lacks.
+    assert "2" not in result.db_deaths
+
+
+@pytest.mark.parametrize("extra", [
+    [],                                                       # the DB has none
+    [lk.DbKill(99, 1, 35.0 + OFFSET, mp(0), mp(1))],          # only in another round
+    [lk.DbKill(99, 2, 42.0 + OFFSET, mp(0), mp(1))],          # 7 s off the fitted clock
+    [lk.DbKill(99, 2, 35.0 + OFFSET, mp(2), mp(3))],          # other players of the same team
+])
+def test_a_replay_team_kill_without_its_db_team_kill_refuses(condensed, extra):
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([35.0, 0, 1])
+    result = lk.link(replay, [db_match(extra_kills=extra)], {})
+    assert (result.status, result.report["check"], result.report["reason"]) == ("refused", "kills", NO_TEAM_KILL_PAIR)
+
+
+def test_one_db_team_kill_pairs_with_one_replay_team_kill(condensed):
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].extend([[35.0, 0, 1], [36.0, 0, 1]])
+    result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(0), mp(1))])], {})
+    assert (result.status, result.report["check"], result.report["reason"]) == ("refused", "kills", NO_TEAM_KILL_PAIR)
+
+
+def test_a_replay_team_kill_skips_an_earlier_db_only_row(condensed):
+    # Two DB team kills by the same players in the round (one the replay lacks, earlier): the
+    # replay's pairs with the one on the clock, and the other stays a db_death.
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([29.0, 0, 1])
+    extra = [lk.DbKill(98, 2, 10.0 + OFFSET, mp(0), mp(1)), lk.DbKill(99, 2, 29.0 + OFFSET, mp(0), mp(1))]
+    result = lk.link(replay, [db_match(extra_kills=extra)], {})
+    assert result.status == "linked", result.report
+    assert result.db_deaths["2"] == [{"slot": 1, "t_db": 10.0 + OFFSET}]
+
+
+def test_team_kills_never_choose_between_assignments(condensed):
+    # Survivors are counted on enemy kills alone: a mapping that only a team kill pair would rule
+    # out still counts, so a team kill can't be the one fact that pins players (review, 2026-11-09).
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([35.0, 0, 1])
+    match = db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(0), mp(1))])
+    mappings = lk.assignment_candidates(replay, match)
+    other = lk.DbKill(99, 2, 35.0 + OFFSET, mp(2), mp(3))
+    assert mappings == lk.assignment_candidates(replay, db_match(extra_kills=[other]))
+
+
+def test_a_team_kill_also_resolves_the_condensers_side_groups(tmp_path):
+    # End to end: the export with 706's shape condenses with sides, and links.
+    kills = copy.deepcopy(LINK_KILLS)
+    # Rounds 5-9 (Red wins, as before): every cross-team pair meets once, so the kills are as
+    # dense as a real match's and pick one best split (side_groups' corroboration).
+    for r in range(5, 10):
+        kills[r] = [(t, a, 5 + (a + r) % 5) for a, t in enumerate((10.0, 12.0, 15.0, 20.0, 25.0))]
+    # Both alive in round 2's script, so the team kill closes an odd cycle as in 706.
+    kills[2].append((35.0, 7, 8))
+    match = SyntheticMatch(rounds=ROUNDS, kills=kills, winners=dict(WINNERS))
+    out = condense_export_dir(match.write(tmp_path / "export"), source_sha256=match.source_sha256)
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+    result = lk.link(view(out), [db_match(kills=kills)], {})
+    assert result.status == "linked", result.report
+    assert result.side_to_team == {"A": "team-1", "B": "team-2"}
+
+
+def test_match_team_kills_pairs_by_identity_on_the_clock():
+    mapping = {s: s for s in range(10)}
+    team = {s: "team-1" if s < 5 else "team-2" for s in range(10)}
+    ours = [[1.0, 0, 5], [29.0, 0, 1]]
+    early, on_clock = lk.DbKill(6, 1, 10.4, 0, 1), lk.DbKill(7, 1, 29.4, 0, 1)
+    assert [(k, d.id) for k, d in lk.match_team_kills(ours, [early, on_clock], mapping, team, 0.4)] \
+        == [([29.0, 0, 1], 7)]
+    assert lk.match_team_kills(ours, [early], mapping, team, 0.4) is None, "off the clock"
+    assert lk.match_team_kills(ours, [lk.DbKill(7, 1, 29.4, 1, 0)], mapping, team, 0.4) is None, "wrong direction"
+    assert [d.id for _, d in lk.match_kills(ours, [lk.DbKill(1, 1, 1.4, 0, 5)], mapping, team)] == [1]
 
 
 def test_loose_round_start_positions_do_not_refuse_a_correct_link(tmp_path):
