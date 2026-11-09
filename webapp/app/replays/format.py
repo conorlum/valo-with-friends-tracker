@@ -116,7 +116,7 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 25
+CONDENSE_REVISION = 26
 # 25: export schema 9's RoundResults delta wrapper ({"DeclaredCount", "Updates"}) is read, not a fallback
                          #     that refused every link (2026-11-07);
                          # 24: per-round "crouch": the CrouchHeld key spans per slot, round clock
