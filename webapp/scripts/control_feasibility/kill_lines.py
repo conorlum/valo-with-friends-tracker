@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,8 +24,8 @@ from app.replays import condense as cz  # noqa: E402
 from app.replays.contract import load_export_streaming  # noqa: E402
 
 POSITION_STEP_MS = 250
-# The `.vrf` names the map when the export doesn't, as at ingest.
-VRF_ARCHIVE = Path.home() / "ValorantReplayArchive"
+# The `.vrf` names the map when the export doesn't, as at ingest (same archive setting as ingest_replay.py).
+VRF_ARCHIVE = Path(os.environ.get("VALO_REPLAY_ARCHIVE") or Path.home() / "ValorantReplayArchive")
 # A kill's lethal damage row is within this long of the kill.
 LETHAL_MATCH_MS = cz.DAMAGE_KILL_MATCH_MS
 
@@ -59,11 +60,14 @@ def main(export_dir: Path, out_dir: Path) -> None:
         victim = players.resolve(int(payload.get("Character") or 0), row.time_ms)
         if victim is None:
             continue
-        used = payload.get("EquippableUsed") or {}
+        # Export schema 8 wrote the equippable as an object; schema 9 as a bare GUID (condense.equippable_used_guid).
+        # Informational only: Risk 1 qualifies a kill on its RPC and wall-penetration flag.
+        used = payload.get("EquippableUsed")
         lethal.append({"t_ms": row.time_ms, "victim": victim, "rpc": data.get("function_name"),
                        "wall_pen": payload.get("IsWallPenetration"),
-                       "equippable": used.get("Name") or used.get("ClassPath"),
-                       "category": used.get("Category")})
+                       "equippable": (used.get("Name") or used.get("ClassPath")) if isinstance(used, dict)
+                       else cz.equippable_used_guid(used),
+                       "category": used.get("Category") if isinstance(used, dict) else None})
     by_slot, _, _ = cz.read_movement(export, players)
     times = {slot: [s.t_ms for s in rows] for slot, rows in by_slot.items()}
 
