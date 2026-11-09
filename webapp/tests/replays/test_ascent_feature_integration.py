@@ -12,10 +12,13 @@ from test_ascent_features import runtime_case
 from control_toys import blob
 
 
-def compiled_case():
+def compiled_case(cutoff=None):
     _, mf, feature, evidence = runtime_case()
     mf = copy.deepcopy(mf)
     feature = mf['features'][0]
+    if cutoff is not None:
+        from app.replays.map_feature_schema import known
+        feature['sliding']['movement_cutoff'] = {**known(cutoff, 'fraction'), 'basis': 'conservative'}
     mf['bundles'][0]['id'] = feature['bundle'] = 'bundle-1'
     shape = feature['states'][0]['footprint']
     shape['uv'] = [[x + 8 * 10000 / 1024, y] for x, y in shape['uv']]
@@ -121,6 +124,82 @@ def test_archived_conservative_cutoff_is_eligible_and_samples_exact_boundary():
     assert runtime.sample(2.501)[0].any()
     assert not runtime.sample(8)[0].any()  # destruction releases the door
     assert not features.bundle_status(geometry_case(flat=True), mf)['bundle-1'].publishable
+
+
+@pytest.mark.slow
+def test_market_reopen_releases_doorway_at_first_nonblocking_float(monkeypatch):
+    import math
+    from app.control.feature_runtime import FeatureRuntime
+    from app.replays.ascent_features import state_at
+    from app.replays.map_feature_motion import movement_blocked, movement_cutoff
+    geo, _, mf, data, _, _ = compiled_case(cutoff=.3)
+    timeline = data['map_features']['features'][0]
+    # Market door times from the observed round, including qualified completion evidence.
+    timeline['events'] = [
+        {'t': 21.743, 'state': 'closing', 'rpc': 'PlayDoorSounds', 'line': 100},
+        {'t': 26.748, 'state': 'closed', 'rpc': 'PlayDoorSounds', 'line': 101},
+        {'t': 59.475, 'state': 'opening', 'rpc': 'PlayDoorSounds', 'line': 102},
+        {'t': 64.475, 'state': 'open', 'rpc': 'PlayDoorSounds', 'line': 103, 'evidence': [104]}]
+    runtime = FeatureRuntime(geo, data)
+    doorway = runtime.sample(30)[0]
+    assert doorway.any()
+    moving = runtime.sample(61)[1]
+    assert moving and all(not occ.cache_resting for occ in moving)
+    resting = runtime.sample(30)[1]
+    assert resting and all(occ.cache_resting for occ in resting)
+    assert not runtime.sample(65)[1]  # Fully open panels have no sight bounds.
+    feature = mf['features'][0]
+    boundary = 59.475 + 5 * (1 - movement_cutoff(feature))
+    release = runtime.reopened_by(65)[doorway]
+    assert np.all((release > boundary) & (release <= boundary + 1e-6))
+    assert len(set(release)) == 1
+    when = float(release[0])
+    assert movement_blocked(feature, state_at(timeline, when)['closure']) is False
+    assert movement_blocked(feature, state_at(timeline, math.nextafter(when, -math.inf))['closure']) is True
+    # Retain a blocker at the empty open pose to check the runtime's cache annotation there too.
+    from app.replays import map_feature_motion as motion
+    sample_effects = motion.sample_effects
+    def with_open_blocker(*args):
+        effects, occ = sample_effects(*args)
+        return effects, occ or resting
+    monkeypatch.setattr(motion, 'sample_effects', with_open_blocker)
+    cache_runtime = FeatureRuntime(geo, data)
+    assert all(not occ.cache_resting for occ in cache_runtime.sample(61)[1])
+    assert all(occ.cache_resting for occ in cache_runtime.sample(65)[1])
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('blocked,expected_calls', [(None, 1), (True, 65)])
+def test_reopen_release_search_stops_without_adding_an_unqualified_time(monkeypatch, blocked, expected_calls):
+    from app.control.feature_runtime import FeatureRuntime
+    from app.replays import map_feature_motion as motion
+    geo, _, _, data, _, _ = compiled_case(cutoff=.3)
+    data['map_features']['features'][0]['events'] = [
+        {'t': 1, 'state': 'closing'}, {'t': 6.002, 'state': 'closed'},
+        {'t': 59.475, 'state': 'opening'}, {'t': 64.475, 'state': 'open'}]
+    calls = []
+    def unavailable_release(feature, closure):
+        calls.append(closure)
+        return blocked
+    monkeypatch.setattr(motion, 'movement_blocked', unavailable_release)
+    assert FeatureRuntime(geo, data).transitions == [1.0, 2.5, 6.002, 59.475, 64.475]
+    assert len(calls) == expected_calls  # Initial candidate, then at most 64 nextafter steps.
+
+
+@pytest.mark.slow
+def test_reopen_without_conservative_cutoff_adds_only_source_times():
+    from app.control.feature_runtime import FeatureRuntime
+    geo, _, _, data, _, _ = compiled_case()
+    data['map_features']['features'][0]['events'] += [
+        {'t': 59.475, 'state': 'opening'}, {'t': 64.475, 'state': 'open'}]
+    assert [t for t in FeatureRuntime(geo, data).transitions if t >= 59] == [59.475, 64.475]
+
+
+@pytest.mark.slow
+def test_ascent_without_reopen_preserves_literal_transitions():
+    from app.control.feature_runtime import FeatureRuntime
+    geo, _, _, data, _, _ = compiled_case(cutoff=.3)
+    assert FeatureRuntime(geo, data).transitions == [1.0, 2.5, 6.002, 8.0]
 
 
 def test_private_candidate_preserves_annotations_and_refuses_conflicting_ownership():

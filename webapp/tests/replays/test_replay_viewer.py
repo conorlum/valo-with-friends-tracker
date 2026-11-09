@@ -122,6 +122,23 @@ def test_feature_panel_covers_supported_maps_in_both_viewer_modes(condensed, nam
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_ascent_opening_model_and_reversal_remain_visible():
+    feature = {'initial': 'closed', 'closing_s': 5, 'events': [
+        {'t': 8, 'state': 'opening'}, {'t': 11, 'state': 'closing'}, {'t': 20, 'state': 'closed'}]}
+    script = """
+      const R = require(process.argv[1]);
+      let text=''; process.stdin.on('data', d=>text+=d).on('end', ()=>{
+        const f=JSON.parse(text);
+        process.stdout.write(JSON.stringify([10.5,11,19,20].map(t=>R.mapFeatureState(f,t))));
+      });"""
+    assert run_node(script, feature) == [
+        {'state': 'opening', 'closure': .5, 'modeled': True, 'pending': False},
+        {'state': 'closing', 'closure': None, 'modeled': True, 'pending': True},
+        {'state': 'closing', 'closure': None, 'modeled': True, 'pending': True},
+        {'state': 'closed', 'closure': 1, 'modeled': False, 'pending': False}]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_feature_panel_seek_rows_escape_labels_and_old_replays_explain_reparse():
     feature = {'key':'ascent_market','name':'<img src=x>', 'initial':'open', 'closing_s':5,
                'events':[{'t':1,'state':'closing'}]}
