@@ -175,6 +175,41 @@ def test_schema9_wrapper_without_an_updates_list_still_falls_back(tmp_path):
     assert run(tmp_path, match, events=events).report["round_results_fallback"] is True
 
 
+def _game_end(match: SyntheticMatch, payload: dict, after_ms: int = 400) -> list[dict]:
+    """The match's events plus one BombGameState row after its last event, as the real exports end."""
+    events = match.events()
+    t = max(row["time_ms"] for row in events) + after_ms
+    return events + [{"type": "export_group_received", "time_ms": t, "packet_id": 99, "actor_net_guid": 50,
+                      "object_net_guid": 50, "channel": 2, "export_group_path": GAME_STATE_PATH,
+                      "payload": payload}]
+
+
+@pytest.mark.parametrize("payload, expected", [
+    # The three real endings (2026-11-09: a 13-11 win, the Haven surrender at 2-10, the Abyss draw at 14-14).
+    ({"MatchState": "WaitingPostMatch", "CompletionState": 1, "WinningTeam": {"net_guid": 280, "path": "BlueTeam"}},
+     {"completion": 1, "outcome": "win"}),
+    ({"MatchState": "WaitingPostMatch", "CompletionState": 5, "WinningTeam": {"net_guid": 426, "path": "BlueTeam"}},
+     {"completion": 5, "outcome": "surrender"}),
+    ({"MatchState": "WaitingPostMatch", "CompletionState": 6}, {"completion": 6, "outcome": "draw"}),
+    # A completion state never measured is kept as a number, with no outcome; a missing one as None.
+    ({"MatchState": "WaitingPostMatch", "CompletionState": 3}, {"completion": 3, "outcome": None}),
+    ({"MatchState": "WaitingPostMatch"}, {"completion": None, "outcome": None}),
+])
+def test_the_match_end_is_read_from_the_game_state(tmp_path, payload, expected):
+    match = SyntheticMatch()
+    out = run(tmp_path, match, events=_game_end(match, payload))
+    assert out.link_inputs["match_end"] == expected
+    assert out.report["match_end"] == expected
+
+
+def test_a_recording_that_never_reaches_post_match_has_no_match_end(tmp_path):
+    match = SyntheticMatch()
+    assert run(tmp_path / "a", match).link_inputs["match_end"] is None
+    # A completion state without the post-match state is no ending either.
+    events = _game_end(match, {"MatchState": "InProgress", "CompletionState": 6})
+    assert run(tmp_path / "b", match, events=events).link_inputs["match_end"] is None
+
+
 # ------------------------------------------------------------ players and map
 
 

@@ -8,8 +8,10 @@ docs/replay-viewer-plan.md, "Linking":
 0. the replay's eligibility (pass 6, P-f): no link-blocking diagnostic, coverage and gap
    limits met, the phase cycle and lifecycle validated;
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
-2. equal played-round sets, complete for the mode's score or a detected surrender (P-e);
-   when the replay decoded round winners, each equal to the DB's;
+2. equal played-round sets, complete (P-e, `check_completeness`): a legal end, a legal draw the
+   replay's game state ends as a draw with nothing decoded after it, a surrender tracker.gg padded, or
+   one the replay records as surrendered rounds after its last played round; when the replay decoded
+   round winners, each equal to the DB's;
 3. exactly one assignment of slots to match players that respects agents, the DB's teams
    and the enemy kills (a replay kill that is same-team under a mapping is set aside, so team
    kills never choose between assignments); proximity (spawn points, tight round-start
@@ -53,6 +55,24 @@ def is_legal_end(mode: str, winner: int, loser: int) -> bool:
     if mode == "swiftplay":
         return winner == 5 and loser <= 4
     raise Refused("completeness", "no completeness rule for this mode", mode=mode)
+
+
+def is_legal_draw(mode: str, each: int) -> bool:
+    """A Competitive match can end drawn after overtime (the 2026-11-08 Abyss upload ended 14-14). 12-12
+    always plays on, so a draw is level at 13 or more. Swiftplay settles 4-4 in one deciding round."""
+    return mode == "competitive" and each >= 13
+
+
+# The decoded RoundResult the game writes for each round a surrender awards.
+SURRENDERED = "surrendered"
+
+
+def game_says_drawn(link_inputs: dict) -> bool:
+    """Whether the replay's game state ended the match as a draw (`match_end`, condense.read_match_end:
+    completion state 6 after the post-match state). Missing on a recording cut short and on blobs condensed
+    before revision 27, so a level score from those never links as a draw."""
+    ending = link_inputs.get("match_end")
+    return isinstance(ending, dict) and ending.get("outcome") == "draw" and ending.get("completion") == 6
 
 
 @dataclass(frozen=True)
@@ -140,13 +160,23 @@ def outcome_winner(outcome: str | None) -> str | None:
 # ---------------------------------------------------------------- step 2: rounds
 
 
-def check_completeness(match: DbMatch) -> bool:
+def check_completeness(match: DbMatch, recorded_surrender: list[str | None] | None = None,
+                       results_after: bool = False, drawn: bool = False) -> bool:
     """P-e: the DB's played rounds against its awarded score and mode. Returns whether the match
     is a detected surrender; refuses anything else that isn't a complete match.
 
-    The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
-    surrender shows rows that reach no legal end under an awarded score that does.
-    The surrender shape is confirmed by finding 26.
+    Three ways to be complete:
+    - the played rounds reach a legal end (`is_legal_end`), or a legal draw (`is_legal_draw`) that the
+      awarded score repeats, that the replay's own game state ended as a draw (`drawn`, `game_says_drawn`:
+      13-13 is also a score overtime passes through, and a recording can stop there), and after which the
+      replay decoded nothing at all (`results_after`: a played round, a surrender award, or a key that
+      isn't a canonical round number);
+    - a padded surrender: the adapter drops tracker.gg's surrender padding rows but keeps its padded
+      `roundsWon`, so the rows reach no legal end under an awarded score that does (finding 26);
+    - a surrender the replay records: tracker.gg doesn't always pad (the 2026-11-08 Haven upload is stored
+      2-10, its played score). `recorded_surrender` is the team of each round the game awarded as
+      surrendered, contiguous after the last played one. It holds when the awarded score is the played one
+      and those rounds, all to the leading team, take it to a legal end. Any mode with a legal end.
     """
     wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
     if wins[None]:
@@ -158,6 +188,20 @@ def check_completeness(match: DbMatch) -> bool:
             raise Refused("score", "the played rounds reach a final score the DB's awarded score differs from",
                           rows=list(rows), awarded=list(awarded))
         return False
+    # A level score the DB awards as is: a draw. Awarded otherwise, it may still be a padded surrender below.
+    if rows[0] == rows[1] and rows == awarded and is_legal_draw(match.mode, rows[0]):
+        if results_after:
+            raise Refused("completeness", "the replay decoded results after a level score",
+                          rows=list(rows), awarded=list(awarded))
+        if not drawn:
+            raise Refused("completeness", "a level score the replay's game state doesn't end as a draw",
+                          rows=list(rows), awarded=list(awarded))
+        return False
+    if recorded_surrender and rows == awarded and rows[0] != rows[1]:
+        leader = "team-1" if rows[0] > rows[1] else "team-2"
+        if all(team == leader for team in recorded_surrender) and \
+                is_legal_end(match.mode, max(rows) + len(recorded_surrender), min(rows)):
+            return True
     if awarded[0] == awarded[1] or not is_legal_end(match.mode, max(awarded), min(awarded)):
         raise Refused("completeness", "the played rounds are not a complete match and the awarded score is no "
                                       "legal end", rows=list(rows), awarded=list(awarded))
@@ -174,7 +218,24 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> tuple[list[int], boo
     replay_played = list(range(1, replay.round_count + 1))
     if db_played != replay_played:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
-    surrender = check_completeness(match)
+    # The decoded results after the last played round. Any key that isn't a canonical round number ("13",
+    # never "013" or "²") makes the whole suffix unusable as evidence, and counts as something after a draw.
+    results = replay.link_inputs.get("round_results") or {}
+    canonical = {key: int(key) for key in results
+                 if isinstance(key, str) and key.isascii() and key.isdigit() and key == str(int(key))}
+    malformed = len(canonical) != len(results)
+    after = {canonical[key]: value for key, value in results.items()
+             if key in canonical and canonical[key] > replay.round_count}
+    recorded = None
+    if after and not malformed and \
+            sorted(after) == list(range(replay.round_count + 1, replay.round_count + 1 + len(after))) and \
+            all(isinstance(value, dict) and value.get("RoundResult") == SURRENDERED for value in after.values()):
+        # An unusable winner (not a team name) maps to None, which no leader equals: the evidence fails and
+        # the padded-score rules decide, as before.
+        recorded = [WINNER_FNAME_TO_TEAM.get(team) if isinstance(team := after[n].get("WinningTeam"), str) else None
+                    for n in sorted(after)]
+    surrender = check_completeness(match, recorded, results_after=bool(after) or malformed,
+                                   drawn=game_says_drawn(replay.link_inputs))
     if replay.dropped_final_round and not surrender:
         raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match is no surrender")
     if replay.link_inputs.get("round_results_fallback"):
