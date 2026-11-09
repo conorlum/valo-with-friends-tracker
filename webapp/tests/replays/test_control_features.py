@@ -27,7 +27,7 @@ GRID = cg.GRID
 
 
 def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
-    # W7a/R9: regenerate the legacy inputs for CONTROL 22 as the fixture helper directs.
+    # W7a/R9: regenerate the legacy inputs at the current CONTROL_REVISION as the fixture helper directs.
     recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
     assert recorded["maps"], "the snapshot should cover the committed maps"
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]

@@ -313,8 +313,12 @@ make them walkable corridors across the void.
 ### Which maps get the layer (Q59, Q67)
 
 - A map gets the layer only once **one of its replays passes** the kill-line test (Risk 1). Maps with no replay
-  (today Bind, Breeze, Corrode, Fracture, Icebox, Lotus and Pearl) wait for their first upload, which is also their
-  validation data.
+  (today Breeze, Fracture, Icebox and Pearl) wait for their first upload, which is also their validation data.
+  Bind, Lotus and Corrode have since passed; see each map's `kill_lines` in `app/static/data/control/index.json`.
+- A minimap can be older than the map. valorant-api.com still served Corrode's pre-13.08 layout, so its kill
+  lines failed and players stood inside drawn walls; its west side was redrawn by hand from an in-game screenshot
+  (`scripts/vendor_map_assets.py` `PATCHED_MINIMAPS` keeps the patch through refreshes). Assets are chosen by map
+  name, not game version, so a replay of a map from before a rework would be read against the new layout.
 - A map that passes on walls alone, with its boxes not yet tagged, shows a **"cover not reviewed"** badge. Its sight
   sees through every box, and a wrong choke changes safe space across the whole region, not only near the box.
   The badge goes once its candidates are tagged.

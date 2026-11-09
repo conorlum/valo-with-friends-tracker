@@ -17,11 +17,18 @@ Reads valorant-api.com's public `/v1/maps` and `/v1/agents` once and writes, und
 The files are committed and served locally, never hotlinked. Their hash is the
 replay recipe's `ASSETS_REVISION`, so re-running this after a new map or agent
 changes the recipe of every replay condensed afterwards.
+
+A minimap in `PATCHED_MINIMAPS` was redrawn by hand because the game changed the map and
+valorant-api.com still serves the old one. While upstream serves that same old image (its
+sha256, first 12 hex), the committed patch is kept. When upstream publishes a different
+image, it is written and reported: the patch is superseded, and the map's control assets must
+be rebuilt (scripts/build_control_geometry.py refuses until they are).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import urllib.request
@@ -30,6 +37,22 @@ from pathlib import Path
 API = "https://valorant-api.com/v1"
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
 TRANSFORM_KEYS = ("xMultiplier", "yMultiplier", "xScalarToAdd", "yScalarToAdd")
+# map -> sha256[:12] of the upstream minimap its committed image was redrawn from (see the docstring).
+# Corrode: the west side reworked by 13.08, redrawn from an in-game screenshot (2026-11-09).
+PATCHED_MINIMAPS = {"Corrode": "9f9ed010f502"}
+
+
+def write_minimap(path: Path, name: str, upstream: bytes) -> str:
+    """Writes one minimap unless it is a hand patch of this same upstream image. Returns "written", "kept"
+    (the patch stands) or "superseded" (upstream changed under a patch: written, and the caller reports it)."""
+    patched_from = PATCHED_MINIMAPS.get(name)
+    if patched_from is not None and path.is_file():
+        if hashlib.sha256(upstream).hexdigest()[:12] == patched_from:
+            return "kept"
+        path.write_bytes(upstream)
+        return "superseded"
+    path.write_bytes(upstream)
+    return "written"
 
 
 def fetch(url: str) -> bytes:
@@ -101,7 +124,12 @@ def main(argv: list[str] | None = None) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     by_name = {m["displayName"]: m for m in playable_maps(maps)}
     for name in maps_table:
-        (image_dir / f"{name}.png").write_bytes(fetch(by_name[name]["displayIcon"]))
+        outcome = write_minimap(image_dir / f"{name}.png", name, fetch(by_name[name]["displayIcon"]))
+        if outcome == "kept":
+            print(f"{name}: kept the hand-patched minimap (upstream still serves {PATCHED_MINIMAPS[name]})")
+        elif outcome == "superseded":
+            print(f"{name}: upstream minimap changed, so the hand patch is replaced: drop it from PATCHED_MINIMAPS "
+                  f"and rebuild the map's control assets (scripts/build_control_geometry.py --map {name})")
     (data_dir / "maps.json").write_text(json.dumps(maps_table, indent=2) + "\n", encoding="utf-8")
     (data_dir / "agents.json").write_text(json.dumps(agents_table, indent=2) + "\n", encoding="utf-8")
     print(f"{len(maps_table)} maps, {len(agents_table)} agents written under {args.static_dir}")
