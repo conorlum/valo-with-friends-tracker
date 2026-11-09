@@ -55,6 +55,16 @@ def is_legal_end(mode: str, winner: int, loser: int) -> bool:
     raise Refused("completeness", "no completeness rule for this mode", mode=mode)
 
 
+def is_legal_draw(mode: str, each: int) -> bool:
+    """A Competitive match can end drawn after overtime (the 2026-11-08 Abyss upload ended 14-14). 12-12
+    always plays on, so a draw is level at 13 or more. Swiftplay settles 4-4 in one deciding round."""
+    return mode == "competitive" and each >= 13
+
+
+# The decoded RoundResult the game writes for each round a surrender awards.
+SURRENDERED = "surrendered"
+
+
 @dataclass(frozen=True)
 class DbPlayer:
     match_player_id: int
@@ -140,24 +150,36 @@ def outcome_winner(outcome: str | None) -> str | None:
 # ---------------------------------------------------------------- step 2: rounds
 
 
-def check_completeness(match: DbMatch) -> bool:
+def check_completeness(match: DbMatch, recorded_surrender: list[str | None] | None = None) -> bool:
     """P-e: the DB's played rounds against its awarded score and mode. Returns whether the match
     is a detected surrender; refuses anything else that isn't a complete match.
 
     The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
     surrender shows rows that reach no legal end under an awarded score that does.
     The surrender shape is confirmed by finding 26.
+
+    tracker.gg doesn't always pad: the 2026-11-08 Haven upload is stored 2-10, its played score. So a
+    surrender the replay itself records also counts: `recorded_surrender` is the team of each round the
+    game awarded as surrendered after the last played one. It holds when the awarded score is the played
+    one and those rounds, all to the leading team, take it to a legal end.
     """
     wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
     if wins[None]:
         raise Refused("completeness", "a DB round has no winner", rounds=wins[None])
     rows = (wins["team-1"], wins["team-2"])
     awarded = (match.team1_rounds_won, match.team2_rounds_won)
-    if rows[0] != rows[1] and is_legal_end(match.mode, max(rows), min(rows)):
+    complete = (is_legal_draw(match.mode, rows[0]) if rows[0] == rows[1]
+                else is_legal_end(match.mode, max(rows), min(rows)))
+    if complete:
         if rows != awarded:
             raise Refused("score", "the played rounds reach a final score the DB's awarded score differs from",
                           rows=list(rows), awarded=list(awarded))
         return False
+    if recorded_surrender and rows == awarded and rows[0] != rows[1]:
+        leader = "team-1" if rows[0] > rows[1] else "team-2"
+        if all(team == leader for team in recorded_surrender) and \
+                is_legal_end(match.mode, max(rows) + len(recorded_surrender), min(rows)):
+            return True
     if awarded[0] == awarded[1] or not is_legal_end(match.mode, max(awarded), min(awarded)):
         raise Refused("completeness", "the played rounds are not a complete match and the awarded score is no "
                                       "legal end", rows=list(rows), awarded=list(awarded))
@@ -174,7 +196,11 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> tuple[list[int], boo
     replay_played = list(range(1, replay.round_count + 1))
     if db_played != replay_played:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
-    surrender = check_completeness(match)
+    results = replay.link_inputs.get("round_results") or {}
+    after = sorted(int(n) for n in results if str(n).isdigit() and int(n) > replay.round_count)
+    recorded = [WINNER_FNAME_TO_TEAM.get(results[str(n)].get("WinningTeam")) for n in after
+                if (results[str(n)] or {}).get("RoundResult") == SURRENDERED]
+    surrender = check_completeness(match, recorded if recorded and len(recorded) == len(after) else None)
     if replay.dropped_final_round and not surrender:
         raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match is no surrender")
     if replay.link_inputs.get("round_results_fallback"):
