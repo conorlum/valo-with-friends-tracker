@@ -674,6 +674,27 @@ class GameState:
     round_results_fallback: bool
     phase_ended_checked: bool = False
     dropped_final_end: int | None = None    # where the dropped final round's window ends
+    match_end: dict | None = None           # read_match_end: how the game says the match ended, if it did
+
+
+# How a match ends, from BombGameState once it reaches MatchState "WaitingPostMatch" (one row, after the final
+# round's RoundEnding). Measured 2026-11-09 on three real exports: a 13-11 win (1, WinningTeam set), the
+# Haven surrender at 2-10 (5, WinningTeam set) and the Abyss draw at 14-14 (6, no WinningTeam). A recording
+# that stops before the match ends never reaches the state. Unmeasured completion values keep no outcome.
+# WinningTeam is not kept: the reader turns its reference into a bare GUID (contract._unwrap_reference), and
+# the round results already name each round's winner.
+MATCH_STATE_POST = "WaitingPostMatch"
+COMPLETION_OUTCOMES = {1: "win", 5: "surrender", 6: "draw"}
+
+
+def read_match_end(history: dict) -> dict | None:
+    """`{"completion", "outcome"}` once the game state reaches the post-match state, else None."""
+    reached = [t for t, state in history.get("MatchState", []) if state == MATCH_STATE_POST]
+    if not reached:
+        return None
+    completion = _history_at(history.get("CompletionState", []), reached[0])
+    completion = int(completion) if isinstance(completion, (int, float)) and not isinstance(completion, bool) else None
+    return {"completion": completion, "outcome": COMPLETION_OUTCOMES.get(completion)}
 
 
 def _history_at(history: list[tuple[int, object]], t_ms: int) -> object | None:
@@ -739,7 +760,7 @@ def read_game_state(export: Export) -> GameState:
             raise ContractError("round_number", f"played round {n} carries RoundNumber {number}, expected "
                                                 f"{n - 1 + ROUND_NUMBER_BASE} (base {ROUND_NUMBER_BASE})")
     return GameState(match_ids.pop() if match_ids else None, windows, open_start, numbers, results, fallback,
-                     phase_ended_checked, dropped_end)
+                     phase_ended_checked, dropped_end, read_match_end(history))
 
 
 def phase_windows(collapsed: list[tuple[int, int]], end_ms: int) -> tuple[list[tuple[int, int, int]], int | None,
@@ -1660,6 +1681,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "round_number_at_start": game.round_number_at_start,
         "round_results_decoded": len(game.round_results),
         "round_results_fallback": game.round_results_fallback,
+        "match_end": game.match_end,
         "kills": len(kills),
         "kill_sources": kill_counts,
         "kills_outside_rounds": outside,
@@ -1692,6 +1714,9 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
                          if len(players.spawn_xy) == 10 else {}),
         "kills": link_kills,
         "round_results_fallback": game.round_results_fallback,
+        # How the game says the match ended (read_match_end), None when the recording stops before it.
+        # The linker accepts a draw only on {"outcome": "draw"}: a level score alone may be mid-overtime.
+        "match_end": game.match_end,
         "eligibility": eligibility(diagnostics, game, report["coverage"],
                                    channel_kinds(export, players, movement_channels)),
     }

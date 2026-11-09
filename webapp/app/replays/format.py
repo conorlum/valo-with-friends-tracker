@@ -116,8 +116,11 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 26
-# 26: a team kill no longer nulls every side group (side_groups: the spawn clusters' split when it
+CONDENSE_REVISION = 27
+# 27: link_inputs "match_end": how the game state ended the match (condense.read_match_end: completion 1 win,
+                         #     5 surrender, 6 draw), so the linker takes a level score as a draw only on the
+                         #     game's draw (2026-11-09; its own bump, so a 26 re-parse without it is redone);
+                         # 26: a team kill no longer nulls every side group (side_groups: the spawn clusters' split when it
                          #     is also the kills' unique best 5/5 fit, at most MAX_TEAM_KILLS; replay 706, 2026-11-08);
                          # 25: export schema 9's RoundResults delta wrapper ({"DeclaredCount", "Updates"}) is read, not a fallback
                          #     that refused every link (2026-11-07);
