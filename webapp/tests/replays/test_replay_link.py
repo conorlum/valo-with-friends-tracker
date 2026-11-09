@@ -208,19 +208,84 @@ def test_a_recorded_surrender_must_reach_a_legal_end_for_the_leader(condensed):
         assert (result.status, result.report["check"]) == ("refused", "completeness"), awarded
 
 
+def _alternating(played: int) -> list:
+    return [lk.DbRound(n, f"Team {'A' if n % 2 else 'B'} Elimination Win") for n in range(1, played + 1)]
+
+
+def _rounds_view(played: int, after: dict | None = None, dropped: bool = False) -> lk.ReplayLinkView:
+    """Only what `check_rounds` reads: the played rounds' decoded winners (alternating, as `_alternating`)
+    plus any decoded results after them."""
+    results = {str(n): {"RoundResult": "elimination", "WinningTeam": "Red" if n % 2 else "Blue"}
+               for n in range(1, played + 1)}
+    results.update(after or {})
+    return lk.ReplayLinkView(MATCH_UUID, played, dropped, [], {"round_results": results})
+
+
+def _awarded(team: str, result: str = "surrendered") -> dict:
+    return {"RoundResult": result, "WinningTeam": team, "WinningTeamRole": "attacker"}
+
+
+def _refusal(replay, match) -> str:
+    with pytest.raises(lk.Refused) as refused:
+        lk.check_rounds(replay, match)
+    return refused.value.check
+
+
 def test_a_drawn_match_is_complete():
     # 28 rounds ending 14-14 (the 2026-11-08 Abyss upload): Competitive can end in a draw after overtime.
-    rounds = [lk.DbRound(n, f"Team {'A' if n % 2 else 'B'} Elimination Win") for n in range(1, 29)]
-    match = lk.DbMatch(1, MATCH_UUID, 14, 14, rounds, [], [])
-    assert lk.check_completeness(match) is False
+    match = lk.DbMatch(1, MATCH_UUID, 14, 14, _alternating(28), [], [])
+    assert lk.check_rounds(_rounds_view(28), match) == (list(range(1, 29)), False)
     assert lk.is_legal_draw("competitive", 14) and lk.is_legal_draw("competitive", 13)
-    # 12-12 always goes to overtime, and a draw's awarded score must be the rows' own.
+    # 12-12 always goes to overtime; Swiftplay settles 4-4 in a deciding round.
     assert not lk.is_legal_draw("competitive", 12) and not lk.is_legal_draw("swiftplay", 4)
+    assert _refusal(_rounds_view(24), lk.DbMatch(1, MATCH_UUID, 12, 12, _alternating(24), [], [])) == "completeness"
+
+
+def test_a_level_score_with_play_after_it_is_no_draw():
+    # 13-13 is also a score overtime passes through: a replay that decoded rounds 27 and 28 kept playing.
+    match = lk.DbMatch(1, MATCH_UUID, 13, 13, _alternating(26), [], [])
+    later = {"27": _awarded("Red", "elimination"), "28": _awarded("Red", "elimination")}
+    assert _refusal(_rounds_view(26, later), match) == "completeness"
+    assert lk.check_rounds(_rounds_view(26), match)[1] is False
+
+
+def test_a_level_score_under_a_padded_award_is_still_a_padded_surrender():
+    # Before draws were legal, 13-13 rows under a 15-13 award read as tracker.gg's padded surrender; they still do.
+    assert lk.check_completeness(lk.DbMatch(1, MATCH_UUID, 15, 13, _alternating(26), [], [])) is True
+    # 14-14 rows can't be padded to 15-13: the loser's rounds differ, refused as incomplete, not as a draw.
+    with pytest.raises(lk.Refused) as refused:
+        lk.check_completeness(lk.DbMatch(1, MATCH_UUID, 15, 13, _alternating(28), [], []))
+    assert refused.value.check == "completeness"
+
+
+def test_recorded_surrender_rounds_must_be_canonical_contiguous_and_all_surrendered():
+    rows = [lk.DbRound(n, "Team A Elimination Win" if n not in (2, 4) else "Team B Elimination Win")
+            for n in range(1, 13)]
+    match = lk.DbMatch(1, MATCH_UUID, 10, 2, rows, [], [])
+
+    def replay(after, dropped=False):
+        view = _rounds_view(12, dropped=dropped)
+        view.link_inputs["round_results"] = {str(r.number): {"RoundResult": "elimination",
+                                                               "WinningTeam": "Red" if r.outcome[5] == "A" else "Blue"}
+                                             for r in rows}
+        view.link_inputs["round_results"].update(after)
+        return view
+
+    assert lk.check_rounds(replay({"13": _awarded("Red"), "14": _awarded("Red"), "15": _awarded("Red")}), match)[1]
+    for after in ({"14": _awarded("Red"), "15": _awarded("Red"), "16": _awarded("Red")},          # a gap at 13
+                  {"13": _awarded("Red"), "14": _awarded("Red", "elimination"), "15": _awarded("Red")},  # mixed
+                  {"13": _awarded("Red"), "14": _awarded("Red"), "15": _awarded("Gold")},          # unmapped winner
+                  {"13": _awarded("Red"), "14": _awarded("Red"), "016": _awarded("Red")}):          # not canonical
+        for dropped in (False, True):
+            assert _refusal(replay(after, dropped), match) == "completeness", (after, dropped)
+
+
+def test_a_recorded_surrender_holds_in_any_mode_with_a_legal_end():
+    rows = [lk.DbRound(n, "Team A Elimination Win" if n <= 4 else "Team B Elimination Win") for n in range(1, 7)]
+    match = lk.DbMatch(1, MATCH_UUID, 4, 2, rows, [], [], mode="swiftplay")
+    assert lk.check_completeness(match, ["team-1"]) is True
     with pytest.raises(lk.Refused):
-        lk.check_completeness(lk.DbMatch(1, MATCH_UUID, 15, 13, rounds, [], []))
-    short = rounds[:24]
-    with pytest.raises(lk.Refused):
-        lk.check_completeness(lk.DbMatch(1, MATCH_UUID, 12, 12, short, [], []))
+        lk.check_completeness(match)
 
 
 def test_an_incomplete_db_round_set_with_an_unchanged_score_refuses(condensed):

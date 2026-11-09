@@ -8,8 +8,9 @@ docs/replay-viewer-plan.md, "Linking":
 0. the replay's eligibility (pass 6, P-f): no link-blocking diagnostic, coverage and gap
    limits met, the phase cycle and lifecycle validated;
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
-2. equal played-round sets, complete for the mode's score or a detected surrender (P-e);
-   when the replay decoded round winners, each equal to the DB's;
+2. equal played-round sets, complete (P-e, `check_completeness`): a legal end, a legal draw with
+   nothing played after it, a surrender tracker.gg padded, or one the replay records as surrendered
+   rounds after its last played round; when the replay decoded round winners, each equal to the DB's;
 3. exactly one assignment of slots to match players that respects agents, the DB's teams
    and the enemy kills (a replay kill that is same-team under a mapping is set aside, so team
    kills never choose between assignments); proximity (spawn points, tight round-start
@@ -150,29 +151,36 @@ def outcome_winner(outcome: str | None) -> str | None:
 # ---------------------------------------------------------------- step 2: rounds
 
 
-def check_completeness(match: DbMatch, recorded_surrender: list[str | None] | None = None) -> bool:
+def check_completeness(match: DbMatch, recorded_surrender: list[str | None] | None = None,
+                       played_after: bool = False) -> bool:
     """P-e: the DB's played rounds against its awarded score and mode. Returns whether the match
     is a detected surrender; refuses anything else that isn't a complete match.
 
-    The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
-    surrender shows rows that reach no legal end under an awarded score that does.
-    The surrender shape is confirmed by finding 26.
-
-    tracker.gg doesn't always pad: the 2026-11-08 Haven upload is stored 2-10, its played score. So a
-    surrender the replay itself records also counts: `recorded_surrender` is the team of each round the
-    game awarded as surrendered after the last played one. It holds when the awarded score is the played
-    one and those rounds, all to the leading team, take it to a legal end.
+    Three ways to be complete:
+    - the played rounds reach a legal end (`is_legal_end`), or a legal draw (`is_legal_draw`) that the
+      awarded score repeats and after which the replay decoded no further played round (`played_after`:
+      13-13 is also a score overtime passes through);
+    - a padded surrender: the adapter drops tracker.gg's surrender padding rows but keeps its padded
+      `roundsWon`, so the rows reach no legal end under an awarded score that does (finding 26);
+    - a surrender the replay records: tracker.gg doesn't always pad (the 2026-11-08 Haven upload is stored
+      2-10, its played score). `recorded_surrender` is the team of each round the game awarded as
+      surrendered, contiguous after the last played one. It holds when the awarded score is the played one
+      and those rounds, all to the leading team, take it to a legal end. Any mode with a legal end.
     """
     wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
     if wins[None]:
         raise Refused("completeness", "a DB round has no winner", rounds=wins[None])
     rows = (wins["team-1"], wins["team-2"])
     awarded = (match.team1_rounds_won, match.team2_rounds_won)
-    complete = (is_legal_draw(match.mode, rows[0]) if rows[0] == rows[1]
-                else is_legal_end(match.mode, max(rows), min(rows)))
-    if complete:
+    if rows[0] != rows[1] and is_legal_end(match.mode, max(rows), min(rows)):
         if rows != awarded:
             raise Refused("score", "the played rounds reach a final score the DB's awarded score differs from",
+                          rows=list(rows), awarded=list(awarded))
+        return False
+    # A level score the DB awards as is: a draw. Awarded otherwise, it may still be a padded surrender below.
+    if rows[0] == rows[1] and rows == awarded and is_legal_draw(match.mode, rows[0]):
+        if played_after:
+            raise Refused("completeness", "the replay decoded played rounds after a level score",
                           rows=list(rows), awarded=list(awarded))
         return False
     if recorded_surrender and rows == awarded and rows[0] != rows[1]:
@@ -196,11 +204,16 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> tuple[list[int], boo
     replay_played = list(range(1, replay.round_count + 1))
     if db_played != replay_played:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
+    # The decoded results after the last played round, by canonical round number ("13", never "013").
     results = replay.link_inputs.get("round_results") or {}
-    after = sorted(int(n) for n in results if str(n).isdigit() and int(n) > replay.round_count)
-    recorded = [WINNER_FNAME_TO_TEAM.get(results[str(n)].get("WinningTeam")) for n in after
-                if (results[str(n)] or {}).get("RoundResult") == SURRENDERED]
-    surrender = check_completeness(match, recorded if recorded and len(recorded) == len(after) else None)
+    after = {int(key): value or {} for key, value in results.items()
+             if isinstance(key, str) and key.isdigit() and key == str(int(key)) and int(key) > replay.round_count}
+    surrendered = [n for n, value in after.items() if value.get("RoundResult") == SURRENDERED]
+    recorded = None
+    if after and len(surrendered) == len(after) and \
+            sorted(after) == list(range(replay.round_count + 1, replay.round_count + 1 + len(after))):
+        recorded = [WINNER_FNAME_TO_TEAM.get(after[n].get("WinningTeam")) for n in sorted(after)]
+    surrender = check_completeness(match, recorded, played_after=len(surrendered) < len(after))
     if replay.dropped_final_round and not surrender:
         raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match is no surrender")
     if replay.link_inputs.get("round_results_fallback"):
