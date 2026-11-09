@@ -129,7 +129,8 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     result = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=streaming, vrf_path=vrf)
     assert result.rounds[1]["crouch"] == {"0": [[1.0, 2.0]]}
     assert all(blob["crouch"] == {} for n, blob in result.rounds.items() if n != 1)
-    assert fmt.CONDENSE_REVISION == 27
+    # CONDENSE 28: Ascent door reopening
+    assert fmt.CONDENSE_REVISION == 28
 
 
 def test_a_legacy_blob_without_crouch_reads_unchanged():

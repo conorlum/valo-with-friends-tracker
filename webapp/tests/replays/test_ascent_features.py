@@ -48,10 +48,117 @@ def test_exact_binding_and_reviewed_states_do_not_depend_on_network_guid(tmp_pat
     assert af.read_capture(tmp_path, 'Ascent', manifest)[0] == []
 
 
-def test_opening_unknown_values_and_missing_parameter_are_not_guessed(tmp_path):
+def test_explicit_opening_and_unknown_values(tmp_path):
     manifest = capture(tmp_path, [(1000, 1), (2000, 255)])
     signals, _ = af.read_capture(tmp_path, 'Ascent', manifest)
-    assert [s['state'] for s in signals] == ['unknown', 'unknown']
+    assert [s['state'] for s in signals] == ['opening', 'unknown']
+
+
+def reopen_capture(tmp_path, *, witness=0, witness_time=2022612, extra_argument=False, new=None):
+    """Real export field layout and source lines, with anonymous map actors only."""
+    manifest = capture(tmp_path, [])
+    manifest['net_field_export_groups'] += [
+        {'path': af.DOOR_CLASS, 'fields': [
+            {'handle': h, 'name': n} for h, n in
+            [(3, '216'), (12, '215'), (16, 'LocalDoorPos'), (17, 'DoorState'), (18, 'Transition')]]}]
+    manifest['net_field_export_groups'][1]['fields'] = [
+        {'handle': h, 'name': n} for h, n in [(0, 'New State'), (1, 'Old State'), (2, 'isMoveTo')]]
+
+    def row(time, values, *, props=False):
+        body = [0]
+        for handle, value, width in values:
+            body += packed(handle + 1) + packed(width) + [(value >> i) & 1 for i in range(width)]
+        body += packed(0)
+        bits = body if props else [0, 0] + packed(len(body)) + body
+        raw = sum(bit << i for i, bit in enumerate(bits)).to_bytes((len(bits)+7)//8, 'little')
+        return dict(type='map_audit_raw_content', diagnostic_version=1, is_actor=True,
+                    has_rep_layout=props, actor_path='WindowShieldB1', actor_net_guid=99,
+                    channel=7, time_ms=time, truncated=False, payload_bits=len(bits),
+                    transformed_base64=base64.b64encode(raw).decode())
+
+    rows = [{} for _ in range(2164)]
+    rows[2154] = row(2017612, [(0, 1, 3), (1, 3, 3), (2, 1, 1)])
+    rows[2157] = row(2017612, [(17, 1, 3)], props=True)
+    args = [(1, 1, 3), (2, 1, 1)]
+    if extra_argument:
+        args.append((7, 1, 1))
+    if new is not None:
+        args.insert(0, (0, new, 8))
+    rows[2160] = row(2022612, args)
+    rows[2161] = row(2022612, [(2, 0, 3)], props=True)  # unknown #2 is not DoorState
+    if witness is not None:
+        rows[2163] = row(witness_time, [(17, witness, 3)], props=True)
+    (tmp_path/'map-audit.ndjson').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    return manifest
+
+
+def test_real_rows_opening_and_omitted_completion_keep_witness_lines(tmp_path):
+    manifest = reopen_capture(tmp_path)
+    signals, report = af.read_capture(tmp_path, 'Ascent', manifest)
+    assert report['status'] == 'decoded' and report['rows'] == 2164
+    assert signals == [
+        {'key': 'ascent_market', 'time_ms': 2017612, 'state': 'opening',
+         'rpc': 'PlayDoorSounds', 'line': 2155},
+        {'key': 'ascent_market', 'time_ms': 2022612, 'state': 'open',
+         'rpc': 'PlayDoorSounds', 'line': 2161, 'evidence': [2164]}]
+    replay = SimpleNamespace(map_name='Ascent', rounds={1: {}}, report={})
+    af.attach(replay, tmp_path, manifest, [(2017000, 2025000, 2030000)])
+    assert replay.rounds[1]['map_features']['features'][1]['events'] == [
+        {'t': .612, 'state': 'opening', 'rpc': 'PlayDoorSounds', 'line': 2155},
+        {'t': 5.612, 'state': 'open', 'rpc': 'PlayDoorSounds', 'line': 2161, 'evidence': [2164]}]
+
+
+def test_omitted_completion_becomes_open_only_with_shared_rule(tmp_path, monkeypatch):
+    from app.replays import map_feature_door_evidence as evidence, map_feature_events
+
+    assert af._door_parameter_evidence is map_feature_events._door_parameter_evidence is evidence._door_parameter_evidence
+    assert evidence.DOOR_CLASS == af.DOOR_CLASS == map_feature_events.CLASSES['WindowShield']
+    manifest = reopen_capture(tmp_path)
+    signals, _ = af.read_capture(tmp_path, 'Ascent', manifest)
+    assert signals[-1]['state'] == 'open' and signals[-1]['evidence'] == [2164]
+    monkeypatch.setattr(af, '_door_parameter_evidence', lambda row, properties: (row['params'], []))
+    signals, _ = af.read_capture(tmp_path, 'Ascent', manifest)
+    assert signals[-1] == {'key': 'ascent_market', 'time_ms': 2022612, 'state': 'unknown',
+                           'rpc': 'PlayDoorSounds', 'line': 2161}
+
+
+@pytest.mark.parametrize('options', [
+    {'witness': None}, {'witness_time': 2022613}, {'witness': 1},
+    {'extra_argument': True}, {'new': 255}])
+def test_omitted_completion_requires_exact_evidence(tmp_path, options):
+    manifest = reopen_capture(tmp_path, **options)
+    signals, report = af.read_capture(tmp_path, 'Ascent', manifest)
+    assert report['status'] == 'decoded'
+    assert signals[-1] == {'key': 'ascent_market', 'time_ms': 2022612, 'state': 'unknown',
+                           'rpc': 'PlayDoorSounds', 'line': 2161}
+
+
+def test_capture_without_reopen_preserves_serialized_signals_and_attach(tmp_path):
+    import hashlib
+
+    manifest = capture(tmp_path, [(0, 'reset'), (1100, 2), (6102, 3), (8000, 'broken')])
+    signals, _ = af.read_capture(tmp_path, 'Ascent', manifest)
+    expected = [
+        {'key': 'ascent_market', 'time_ms': 0, 'state': 'open', 'rpc': 'MulticastRoundBegin', 'line': 1},
+        {'key': 'ascent_market', 'time_ms': 1100, 'state': 'closing', 'rpc': 'PlayDoorSounds', 'line': 2},
+        {'key': 'ascent_market', 'time_ms': 6102, 'state': 'closed', 'rpc': 'PlayDoorSounds', 'line': 3},
+        {'key': 'ascent_market', 'time_ms': 8000, 'state': 'broken', 'rpc': 'HandleDoorDestroyed', 'line': 4}]
+    assert json.dumps(signals).encode() == json.dumps(expected).encode()
+    replay = SimpleNamespace(map_name='Ascent', rounds={1: {}}, report={})
+    af.attach(replay, tmp_path, manifest, [(1000, 9000, 10000)])
+    expected_blob = {'v': 1, 'status': 'decoded',
+        'sha256': hashlib.sha256((tmp_path/'map-audit.ndjson').read_bytes()).hexdigest(),
+        'features': [
+            {'key': 'ascent_garden', 'name': 'Garden Door', 'uv': [3940, 2340], 'initial': 'unknown',
+             'events': [], 'closing_s': 5},
+            {'key': 'ascent_market', 'name': 'Market Door', 'uv': [2880, 5980], 'initial': 'open',
+             'events': [
+                 {'t': .1, 'state': 'closing', 'rpc': 'PlayDoorSounds', 'line': 2},
+                 {'t': 5.102, 'state': 'closed', 'rpc': 'PlayDoorSounds', 'line': 3},
+                 {'t': 7.0, 'state': 'broken', 'rpc': 'HandleDoorDestroyed', 'line': 4}], 'closing_s': 5},
+            {'key': 'ascent_heaven_glass', 'name': 'Heaven Glass', 'uv': [2680, 2830], 'initial': 'unknown',
+             'events': [], 'closing_s': None}], 'calculation': 'pending geometry'}
+    assert json.dumps(replay.rounds[1]['map_features']).encode() == json.dumps(expected_blob).encode()
 
 
 def test_bad_capture_retains_diagnostic_and_disables_complete_status(tmp_path):

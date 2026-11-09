@@ -116,9 +116,11 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 27
-# 27: link_inputs "match_end": how the game state ended the match (condense.read_match_end: completion 1 win,
-                         #     5 surrender, 6 draw), so the linker takes a level score as a draw only on the
+CONDENSE_REVISION = 28
+# 28: Ascent doors read opening/open (the shared door-evidence rule), so a reopened door is no longer
+                         #     unverified (replays of match 6f12db3e r18 and a5549826 r8, 2026-11-09);
+                         # 27: link_inputs "match_end": how the game state ended the match
+                         #     (condense.read_match_end: completion 1 win, 5 surrender, 6 draw), so the linker takes a level score as a draw only on the
                          #     game's draw (2026-11-09; its own bump, so a 26 re-parse without it is redone);
                          # 26: a team kill no longer nulls every side group (side_groups: the spawn clusters' split when it
                          #     is also the kills' unique best 5/5 fit, at most MAX_TEAM_KILLS; replay 706, 2026-11-08);

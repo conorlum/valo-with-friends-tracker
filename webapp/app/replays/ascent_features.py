@@ -1,7 +1,8 @@
 """Bounded Ascent map-message decoder. Raw capture is evidence, never a state by itself.
 
-Bindings name map actors, not network GUIDs. Only the reviewed closing/closed and explicit break/reset
-RPCs are supported. Intact reopening and absent/default state parameters remain unknown.
+Bindings name map actors, not network GUIDs. Reviewed opening/closing/closed and explicit break/reset
+RPCs are supported. Omitted open completion needs explicit same-clock DoorState evidence;
+other absent/default state parameters remain unknown.
 """
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
+
+from app.replays.map_feature_door_evidence import _door_parameter_evidence
 
 VERSION = 1
 DOOR_CLASS = '/Game/Interactable/WindowShield.WindowShield_C'
@@ -92,7 +95,7 @@ def fields(bits, descriptor, *, preserve_unknown=False):
     return result
 
 
-def invocations(row, groups, class_path, *, strict=False, opaque_rpcs=()):
+def invocations(row, groups, class_path, *, strict=False, opaque_rpcs=(), keep_unknown_rpcs=()):
     encoded = row.get('transformed_base64')
     if row.get('diagnostic_version') != VERSION or row.get('truncated') or not isinstance(encoded, str) \
             or len(encoded) > ((MAX_BITS+7)//8+2)//3*4:
@@ -126,7 +129,8 @@ def invocations(row, groups, class_path, *, strict=False, opaque_rpcs=()):
             raise DecodeError('RPC parameter descriptor missing')
         # Strict map ledgers must retain unknown parameter handles: discarding one
         # could make an incomplete argument set look like a qualified omission.
-        params = fields(body, groups.get(layout, {}), preserve_unknown=opaque or strict) \
+        params = fields(body, groups.get(layout, {}),
+                        preserve_unknown=opaque or strict or name.strip() in keep_unknown_rpcs) \
             if body.remaining and (layout in groups or opaque) else {}
         calls.append((name, params))
     return calls
@@ -140,6 +144,7 @@ def read_capture(export_dir: Path, map_name: str, manifest: dict):
         return [], report
     groups = {g['path']: g for g in manifest.get('net_field_export_groups', [])}
     signals, digest = [], hashlib.sha256()
+    calls, properties = [], {}
     identities = {}  # Reject one authored actor name appearing on multiple live network identities.
     ambiguous = set()
     with path.open('rb') as stream:
@@ -166,29 +171,45 @@ def read_capture(export_dir: Path, map_name: str, manifest: dict):
                 time = row.get('time_ms')
                 if type(time) is not int or time < 0:
                     raise DecodeError('invalid replay time')
-                for name, params in invocations(row, groups, class_path):
-                    state = None
-                    if class_path == DOOR_CLASS:
-                        if name == 'MulticastRoundBegin':
-                            state = 'open'
-                        elif name == 'HandleDoorDestroyed':
-                            state = 'broken'
-                        elif name == 'PlayDoorSounds':
-                            new = params.get('New State')
-                            state = {2: 'closing', 3: 'closed'}.get(new[0]) if new and new[1] <= 32 else None
-                            if state is None:
-                                state = 'unknown'  # includes opening and absent/default parameters
-                    elif name == 'RoundBeginBroadcast':
-                        state = 'intact'
-                    elif name == 'OnDie':
-                        state = 'broken'
-                    if state:
-                        signals.append({'key': key, 'time_ms': time, 'state': state,
-                                        'rpc': name, 'line': line_number})
+                decoded = invocations(row, groups, class_path, keep_unknown_rpcs={'PlayDoorSounds'})
+                if class_path == DOOR_CLASS and row.get('has_rep_layout'):
+                    params = fields(Bits(base64.b64decode(row['transformed_base64'], validate=True),
+                                         row['payload_bits']), groups[class_path])
+                    if 'DoorState' in params:
+                        properties.setdefault((actor, class_path, time), []).append(
+                            {'params': {'DoorState': params['DoorState']}, 'line': line_number})
+                for name, params in decoded:
+                    calls.append({'actor': actor, 'class_path': class_path, 'key': key, 'time_ms': time,
+                                  'rpc': name, 'params': params, 'line': line_number})
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 if len(report['errors']) < 20:
                     report['errors'].append({'line': line_number, 'reason': str(exc)[:160]})
                 report['error_count'] = report.get('error_count', 0) + 1
+    # Resolve after collecting properties: the same-clock witness can follow its RPC in file order.
+    for row in calls:
+        name, params = row['rpc'], row['params']
+        state, witnesses = None, []
+        if row['class_path'] == DOOR_CLASS:
+            if name == 'MulticastRoundBegin':
+                state = 'open'
+            elif name == 'HandleDoorDestroyed':
+                state = 'broken'
+            elif name == 'PlayDoorSounds':
+                new = params.get('New State')
+                state = {1: 'opening', 2: 'closing', 3: 'closed'}.get(new[0]) if new and new[1] <= 32 else None
+                if state is None:
+                    _, witnesses = _door_parameter_evidence(row, properties)
+                    state = 'open' if witnesses else 'unknown'
+        elif name == 'RoundBeginBroadcast':
+            state = 'intact'
+        elif name == 'OnDie':
+            state = 'broken'
+        if state:
+            signal = {'key': row['key'], 'time_ms': row['time_ms'], 'state': state,
+                      'rpc': name, 'line': row['line']}
+            if witnesses:
+                signal['evidence'] = [e['line'] for e in witnesses]
+            signals.append(signal)
     # No partial rule activation when any captured frame failed or an actor binding is ambiguous.
     report.update(sha256=digest.hexdigest(), status='partial' if report['errors'] or ambiguous else 'decoded',
                   ambiguous_keys=sorted(ambiguous), signals=len(signals))
@@ -215,7 +236,8 @@ def attach(replay, export_dir, manifest, windows):
             initial = before[-1]['state'] if before and before[-1]['time_ms'] >= previous_end else 'unknown'
             reset_time = before[-1]['time_ms'] if initial != 'unknown' else start
             events = [{'t': round((s['time_ms']-start)/1000, 6), 'state': s['state'],
-                       'rpc': s['rpc'], 'line': s['line']} for s in signals
+                       'rpc': s['rpc'], 'line': s['line'],
+                       **({'evidence': s['evidence']} if 'evidence' in s else {})} for s in signals
                       if s['key'] == key and reset_time < s['time_ms'] < end]
             features.append({'key': key, 'name': label, 'uv': uv, 'initial': initial,
                              'events': events, 'closing_s': 5 if key != 'ascent_heaven_glass' else None})
