@@ -42,7 +42,7 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
     monkeypatch.setattr(control_format, "CONTROL_REVISION", 9)
     assert {name: row["fingerprint"] for name, row in map_feature_legacy.snapshot()["maps"].items()} == {
         "Abyss": "710180a264b68904", "Ascent": "002a6552b213cdd3", "Bind": "8746931ce5e1a5a7",
-        "Breeze": "df86bef00d2d287d", "Corrode": "7e20e46000047436", "Fracture": "68c12c250f89f0bf",
+        "Breeze": "df86bef00d2d287d", "Corrode": "93b4718103deb326", "Fracture": "68c12c250f89f0bf",
         "Haven": "73e3b3a896602d75", "Icebox": "cedf82afcf5485df", "Lotus": "f29785edc9d08bff",
         "Pearl": "78c9dcecac6432fa", "Split": "2d673942e43ee607", "Summit": "acf73736dffcd02c",
         "Sunset": "6c79b654ccf4284f"}
