@@ -89,17 +89,23 @@
    ]
   },
   "Corrode": {
-   "image_sha": "9f9ed010f502",
-   "sight_sha": "546e46286858",
-   "walk_sha": "04aad81276ad",
-   "bullet_sha": "546e46286858",
-   "walkable_cells": 5744,
+   "image_sha": "74f13f20647d",
+   "sight_sha": "b25b161d4a72",
+   "walk_sha": "683601dd7bf6",
+   "bullet_sha": "b25b161d4a72",
+   "walkable_cells": 5438,
    "cell_m": 1.116,
    "tags": 0,
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null,
+   "kill_lines": {
+    "qualifying": 485,
+    "on_cover": 0,
+    "blocked": 1,
+    "share": 0.0021,
+    "passes": true
+   },
    "barrier_sha": "2b9ac9333692",
    "paints": [
     "barrier_paint"
