@@ -513,6 +513,45 @@ def test_a_replay_self_kill_pairs_with_nothing(swiftplay):
     assert result.kill_map["2"][-1] is None
 
 
+def test_a_replay_team_kill_pairs_with_nothing(condensed):
+    # Summit's falling hazard (replay 706, round 2): the player who shot it down is credited with
+    # killing a teammate under it. The DB excludes team kills, so the replay's must pair with
+    # nothing too, or every assignment fails on the count.
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([35.0, 0, 1])
+    result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(0), mp(1))])], {})
+    assert result.status == "linked", result.report
+    assert result.kill_map["2"][-1] is None
+    assert result.db_deaths["2"] == [{"slot": 1, "t_db": 35.0 + OFFSET}]
+
+
+def test_a_replay_team_kill_the_db_lacks_refuses(condensed):
+    replay = view(condensed)
+    replay.link_inputs["kills"]["2"].append([35.0, 0, 1])
+    result = lk.link(replay, [db_match()], {})
+    assert (result.status, result.report["check"]) == ("refused", "assignment")
+
+
+def test_a_team_kill_also_resolves_the_condensers_side_groups(tmp_path):
+    # End to end: the export with 706's shape condenses with sides, and links.
+    kills = copy.deepcopy(LINK_KILLS)
+    kills[2].append((35.0, 6, 7))     # both still alive in round 2's script
+    match = SyntheticMatch(rounds=ROUNDS, kills=kills, winners=dict(WINNERS))
+    out = condense_export_dir(match.write(tmp_path / "export"), source_sha256=match.source_sha256)
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+    result = lk.link(view(out), [db_match(kills=kills)], {})
+    assert result.status == "linked", result.report
+    assert result.side_to_team == {"A": "team-1", "B": "team-2"}
+
+
+def test_match_kills_leaves_out_team_kills_by_the_mapping():
+    mapping = {s: s for s in range(10)}
+    team = {s: "team-1" if s < 5 else "team-2" for s in range(10)}
+    ours = [[1.0, 0, 5], [2.0, 0, 1]]
+    theirs = [lk.DbKill(1, 1, 1.4, 0, 5)]
+    assert [d.id for _, d in lk.match_kills(ours, theirs, mapping, team)] == [1]
+
+
 def test_loose_round_start_positions_do_not_refuse_a_correct_link(tmp_path):
     # As in the first real export: one side roams through the buy phase, so its round-start
     # positions spread far wider than the cluster radius. Those rounds are no side evidence.

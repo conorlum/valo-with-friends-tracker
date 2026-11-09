@@ -220,18 +220,23 @@ def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[dict[i
     """Every slot -> match_player_id that respects agents, anchors and the DB's teams.
 
     Teams come from the DB only (P-d): every agent-respecting bijection over all ten players,
-    both teams at once, in which every replay kill (self-kills aside) is cross-team. The
-    condenser's side groups and spawn proximity are not constraints, so they can't exclude
-    the true assignment; `check_proximity` tests the survivor against them instead.
+    both teams at once, in which every replay kill (self-kills aside) is cross-team, unless the
+    DB has the same team kill (Summit's falling hazard credits the player who shot it down:
+    replay 706). The condenser's side groups and spawn proximity are not constraints, so they
+    can't exclude the true assignment; `check_proximity` tests the survivor against them instead.
     """
     anchors = {p.riot_subject: p.match_player_id for p in match.players if p.riot_subject}
     team_of = {p.match_player_id: p.team for p in match.players}
     subject_of = {p["slot"]: p["subject"] for p in replay.players}
     kill_pairs = {(killer, victim) for kills in (replay.link_inputs.get("kills") or {}).values()
                   for _, killer, victim in kills if killer != victim}
+    db_team_kills = {(k.killer, k.victim) for k in match.kills
+                     if k.killer is not None and k.victim is not None and k.killer != k.victim
+                     and team_of.get(k.killer) == team_of.get(k.victim)}
     candidates = []
     for mapping in _bijections(replay.players, match.players):
-        if any(team_of[mapping[killer]] == team_of[mapping[victim]] for killer, victim in kill_pairs):
+        if any(team_of[mapping[killer]] == team_of[mapping[victim]]
+               and (mapping[killer], mapping[victim]) not in db_team_kills for killer, victim in kill_pairs):
             continue
         # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
         if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
@@ -333,7 +338,8 @@ def split_db_kills(match: DbMatch) -> tuple[dict[int, list[DbKill]], dict[int, l
     return matched, excluded
 
 
-def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int]) -> list[tuple[list, DbKill]] | None:
+def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int],
+                team: dict[int, str] | None = None) -> list[tuple[list, DbKill]] | None:
     """Pairs replay kills [t, killer, victim] with DB kills, or None if the sequences differ.
 
     Identity and order first, the clock second (P-g): each replay kill, in time order, pairs
@@ -341,9 +347,13 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
     two pairs may be out of time order only if they are within MAX_RESIDUAL_S of each other on
     both clocks. Pass 5 grouped 0.1 s ties separately on each side, which refused real jitter.
     A replay self-kill (Clove's ult running out, in the first real export) pairs with nothing,
-    as the DB's are excluded.
+    as the DB's are excluded. So does a replay team kill under this mapping (`team`: match
+    player id -> team), as split_db_kills excludes the DB's (Summit's falling hazard, replay 706).
     """
-    ours = sorted((k for k in replay_kills if k[1] != k[2]), key=lambda k: k[0])
+    def excluded(k: list) -> bool:
+        return k[1] == k[2] or (team is not None and team[mapping[k[1]]] == team[mapping[k[2]]])
+
+    ours = sorted((k for k in replay_kills if not excluded(k)), key=lambda k: k[0])
     pool = sorted(db_kills, key=lambda k: (k.t, k.id))
     if len(ours) != len(pool):
         return None
@@ -388,9 +398,10 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
     db_matched, db_excluded = split_db_kills(match)
     replay_kills = {int(n): kills for n, kills in (replay.link_inputs.get("kills") or {}).items()}
 
+    team = {p.match_player_id: p.team for p in match.players}
     survivors = []
     for mapping in assignment_candidates(replay, match):
-        pairs = {n: match_kills(replay_kills.get(n, []), db_matched.get(n, []), mapping) for n in played}
+        pairs = {n: match_kills(replay_kills.get(n, []), db_matched.get(n, []), mapping, team) for n in played}
         if all(p is not None for p in pairs.values()):
             survivors.append((mapping, pairs))
     pins = pinning(replay, [mapping for mapping, _ in survivors])

@@ -330,9 +330,46 @@ def test_side_groups_from_kills_alone():
 
 
 def test_side_groups_refuse_inconsistent_evidence():
-    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
+    # Two rounds' tight spawn clusters that disagree. (A kill inside a cluster used to be the
+    # example here; that is a team kill now, below.)
+    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9]), ([0, 1, 2, 3, 5], [4, 6, 7, 8, 9])]
     with pytest.raises(ContractError, match="inconsistent"):
-        cd.side_groups([cd.Kill(0, 0, 1)], clusters)
+        cd.side_groups([], clusters)
+
+
+CROSS_KILLS = [cd.Kill(0, a, b) for a, b in [(0, 5), (5, 1), (1, 6), (6, 2), (2, 7), (7, 3), (3, 8), (8, 4), (4, 9)]]
+
+
+def test_side_groups_keep_a_team_kill_with_spawn_clusters():
+    # Replay 706 (Summit): every kill cross-side but one, a teammate killed under the falling
+    # hazard the killer shot down. One team kill used to null all ten sides.
+    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
+    assert cd.side_groups(CROSS_KILLS + [cd.Kill(1, 0, 1)], clusters) == ["A"] * 5 + ["B"] * 5
+
+
+def test_side_groups_keep_a_team_kill_only_the_spawn_clusters_contradict():
+    # The kills alone are consistent; only the clusters say slots 0 and 1 are teammates.
+    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
+    assert cd.side_groups([cd.Kill(0, 0, 1)], clusters) == ["A"] * 5 + ["B"] * 5
+
+
+def test_side_groups_keep_a_team_kill_from_kills_alone():
+    kills = CROSS_KILLS + [cd.Kill(1, a, b) for a, b in [(0, 6), (1, 7), (2, 8), (3, 9)]] + [cd.Kill(2, 2, 4)]
+    assert cd.side_groups(kills, []) == ["A"] * 5 + ["B"] * 5
+
+
+def test_side_groups_refuse_more_team_kills_than_a_match_has():
+    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
+    team = [cd.Kill(1, a, b) for a, b in [(0, 1), (1, 2), (2, 3), (3, 4)][:cd.MAX_TEAM_KILLS + 1]]
+    with pytest.raises(ContractError, match="inconsistent"):
+        cd.side_groups(CROSS_KILLS + team, clusters)
+
+
+def test_side_groups_refuse_when_team_kills_leave_two_splits():
+    # A single kill chain with one odd edge: dropping any one of its kills fits equally well.
+    kills = CROSS_KILLS + [cd.Kill(1, 0, 4)]
+    with pytest.raises(ContractError, match="inconsistent"):
+        cd.side_groups(kills, [])
 
 
 def test_side_groups_refuse_disconnected_evidence():
@@ -737,10 +774,12 @@ def test_the_real_swiftplay_fixture_condenses():
 
 
 def test_unresolvable_sides_are_null_and_the_replay_still_condenses(tmp_path):
-    # A kill inside one spawn group contradicts the clusters: no consistent 5/5 partition.
+    # More kills inside one spawn group than any match has team kills: no 5/5 partition fits.
     # Pass 5 refused the whole condense; pass 6 stores and plays it with neutral colours.
+    # (One such kill was the example until 706: that is a team kill, resolved since.)
     kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
-    kills[1].append((30.0, 0, 1))
+    kills[1].extend([(30.0, 0, 1), (31.0, 2, 3), (32.0, 4, 2), (33.0, 0, 4)])
+    assert len(kills[1]) - len(DEFAULT_KILLS[1]) > cd.MAX_TEAM_KILLS
     out = run(tmp_path, SyntheticMatch(kills=kills))
     assert [p["side_group"] for p in out.players] == [None] * 10
     assert [p["side"] for p in out.rounds[1]["players"]] == [None] * 10

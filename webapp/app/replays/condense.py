@@ -20,6 +20,7 @@ decision D7).
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import math
 import re
@@ -1272,12 +1273,52 @@ def two_clusters(points: dict[int, tuple[float, float]]) -> tuple[list[int], lis
     return groups[0], groups[1], radius
 
 
+# A team kill is rare: 148 of the friends DB's 3,999 matches had one, none more than two
+# (2026-11-08). Utility (Paint Shells, Hot Hands, ults) and Summit's falling hazard, which credits
+# the player who shot it down ("Crush", replay 706), kill teammates.
+MAX_TEAM_KILLS = 3
+
+
 def side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
     """Unlabelled sides A/B per slot: kills are cross-side, spawn clusters are same-side.
 
     Parity union-find over both kinds of evidence. It must be consistent, connected and 5/5.
     Group A is the one holding slot 0.
+
+    A team kill makes the kills inconsistent. Then the split is the one 5/5 split that agrees
+    with every spawn cluster and leaves the fewest kills inside a side, if exactly one split
+    does best and it leaves at most MAX_TEAM_KILLS; otherwise it refuses.
     """
+    try:
+        return _parity_side_groups(kills, clusters)
+    except ContractError as error:
+        if not error.detail.startswith("inconsistent evidence"):
+            raise
+    return _side_groups_with_team_kills(kills, clusters)
+
+
+def _side_groups_with_team_kills(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
+    same_side = [set(group) for first, second in clusters if len(first) == 5 and len(second) == 5
+                 for group in (first, second)]
+    scored = []
+    for others in itertools.combinations(range(1, 10), 4):
+        a = {0, *others}
+        if any(0 < len(group & a) < 5 for group in same_side):
+            continue
+        inside = sum(1 for k in kills if k.killer != k.victim and (k.killer in a) == (k.victim in a))
+        scored.append((inside, a))
+    if not scored:
+        raise ContractError("side_groups", "inconsistent evidence (spawn clusters)")
+    best = min(inside for inside, _ in scored)
+    winners = [a for inside, a in scored if inside == best]
+    if len(winners) != 1:
+        raise ContractError("side_groups", f"inconsistent evidence ({len(winners)} splits each leave {best} team kills)")
+    if best > MAX_TEAM_KILLS:
+        raise ContractError("side_groups", f"inconsistent evidence ({best} team kills, at most {MAX_TEAM_KILLS})")
+    return ["A" if slot in winners[0] else "B" for slot in range(10)]
+
+
+def _parity_side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
     parent = list(range(10))
     parity = [0] * 10
 

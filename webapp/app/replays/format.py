@@ -116,8 +116,10 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 25
-# 25: export schema 9's RoundResults delta wrapper ({"DeclaredCount", "Updates"}) is read, not a fallback
+CONDENSE_REVISION = 26
+# 26: a team kill no longer nulls every side group (side_groups: the one 5/5 split with the fewest
+                         #     kills inside a side, at most MAX_TEAM_KILLS; replay 706, 2026-11-08);
+                         # 25: export schema 9's RoundResults delta wrapper ({"DeclaredCount", "Updates"}) is read, not a fallback
                          #     that refused every link (2026-11-07);
                          # 24: per-round "crouch": the CrouchHeld key spans per slot, round clock
                          # 23: a lethal hit in an object's close ms is `gone` (any object, not only Leer), Veto's

@@ -93,7 +93,8 @@ def test_the_revisions_of_this_release():
     # Condense 23 adds Evolution buff rows, which control reads (utility.evolution_spans); same recipe rule.
     # R9/W7a: airborne plate casts invalidate previously stored control. 23: the ground rule and box floors by side.
     # R7/R9: raw crouch spans bump condense only; readers of legacy blobs remain compatible.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (25, 23)
+    # Condense 26: a team kill keeps the side groups; control reads them unchanged, same recipe rule.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (26, 23)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
 
 
