@@ -11,11 +11,14 @@ docs/replay-viewer-plan.md, "Linking":
 2. equal played-round sets, complete for the mode's score or a detected surrender (P-e);
    when the replay decoded round winners, each equal to the DB's;
 3. exactly one assignment of slots to match players that respects agents, the DB's teams
-   (every replay kill cross-team) and the kills; proximity (spawn points, tight round-start
+   and the enemy kills (a replay kill that is same-team under a mapping is set aside, so team
+   kills never choose between assignments); proximity (spawn points, tight round-start
    clusters, the condenser's side groups) only checks the survivor (pass 6, P-d);
-4. per-round kill sequences identical after the excluded DB kill classes, paired out of
-   time order only within MAX_RESIDUAL_S on both clocks (P-g);
-5. one match-wide clock offset within the limits, with an anchor in every round;
+4. per-round kill sequences identical after the excluded DB kill classes and the replay's
+   team kills, paired out of time order only within MAX_RESIDUAL_S on both clocks (P-g);
+5. one match-wide clock offset within the limits, with an anchor in every round; then each
+   replay team kill pairs one-to-one with a DB team kill of the same players in its round,
+   within MAX_RESIDUAL_S of that offset (never an anchor), or the link is refused;
 6. the `riot_subject` backfill, refused on any conflict, for the slots that have a Subject.
 
 The report holds IDs, counts, agents and reasons only: never a Subject or a name.
@@ -220,24 +223,17 @@ def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[dict[i
     """Every slot -> match_player_id that respects agents, anchors and the DB's teams.
 
     Teams come from the DB only (P-d): every agent-respecting bijection over all ten players,
-    both teams at once, in which every replay kill (self-kills aside) is cross-team, unless the
-    DB has the same team kill (Summit's falling hazard credits the player who shot it down:
-    replay 706). The condenser's side groups and spawn proximity are not constraints, so they
-    can't exclude the true assignment; `check_proximity` tests the survivor against them instead.
+    both teams at once. A replay kill that is same-team under a mapping doesn't rule it out:
+    `match_kills` sets it aside, so the mapping must still match every DB enemy kill without it.
+    Team kills never choose between mappings (Summit's falling hazard credits the player who shot
+    it down: replay 706); `match_team_kills` checks them on the one survivor, on the fitted clock.
+    The condenser's side groups and spawn proximity are not constraints, so they can't exclude
+    the true assignment; `check_proximity` tests the survivor against them instead.
     """
     anchors = {p.riot_subject: p.match_player_id for p in match.players if p.riot_subject}
-    team_of = {p.match_player_id: p.team for p in match.players}
     subject_of = {p["slot"]: p["subject"] for p in replay.players}
-    kill_pairs = {(killer, victim) for kills in (replay.link_inputs.get("kills") or {}).values()
-                  for _, killer, victim in kills if killer != victim}
-    db_team_kills = {(k.killer, k.victim) for k in match.kills
-                     if k.killer is not None and k.victim is not None and k.killer != k.victim
-                     and team_of.get(k.killer) == team_of.get(k.victim)}
     candidates = []
     for mapping in _bijections(replay.players, match.players):
-        if any(team_of[mapping[killer]] == team_of[mapping[victim]]
-               and (mapping[killer], mapping[victim]) not in db_team_kills for killer, victim in kill_pairs):
-            continue
         # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
         if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
                for slot, mp in mapping.items()) and \
@@ -328,7 +324,12 @@ def _bijections(slots: list[dict], players: list[DbPlayer]) -> list[dict[int, in
 
 
 def split_db_kills(match: DbMatch) -> tuple[dict[int, list[DbKill]], dict[int, list[DbKill]]]:
-    """(kills the replay must match, excluded kills that become db_deaths), per round."""
+    """(kills the replay must match, excluded kills), per round.
+
+    Excluded: no killer, self-kills and team kills; the report's `excluded_db_kills` counts them
+    all. Each becomes a db_death, except a team kill paired with the replay's own (the replay
+    has that death already).
+    """
     team = {p.match_player_id: p.team for p in match.players}
     matched, excluded = defaultdict(list), defaultdict(list)
     for kill in sorted(match.kills, key=lambda k: (k.round_number, k.t, k.id)):
@@ -348,7 +349,7 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
     both clocks. Pass 5 grouped 0.1 s ties separately on each side, which refused real jitter.
     A replay self-kill (Clove's ult running out, in the first real export) pairs with nothing,
     as the DB's are excluded. So does a replay team kill under this mapping (`team`: match
-    player id -> team), as split_db_kills excludes the DB's (Summit's falling hazard, replay 706).
+    player id -> team), as split_db_kills excludes the DB's; `match_team_kills` pairs those.
     """
     def excluded(k: list) -> bool:
         return k[1] == k[2] or (team is not None and team[mapping[k[1]]] == team[mapping[k[2]]])
@@ -369,6 +370,35 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
         for b, db_b in pairs[i + 1:]:
             if db_a.t > db_b.t and (b[0] - a[0] > MAX_RESIDUAL_S or db_a.t - db_b.t > MAX_RESIDUAL_S):
                 return None
+    return pairs
+
+
+def is_db_team_kill(kill: DbKill, team: dict[int, str]) -> bool:
+    return (kill.killer is not None and kill.victim is not None and kill.killer != kill.victim
+            and team.get(kill.killer) == team.get(kill.victim))
+
+
+def match_team_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int],
+                     team: dict[int, str], offset: float) -> list[tuple[list, DbKill]] | None:
+    """Pairs each replay team kill under the linked mapping with its own DB team kill, or None.
+
+    `db_kills`: the round's excluded DB kills (only its team kills are candidates). Each replay
+    team kill, in time order, takes the unused DB team kill of the same (killer, victim) nearest
+    t_replay + offset, within MAX_RESIDUAL_S; DB rows off the clock are skipped. One with none
+    refuses the link. A DB team kill left over pairs with nothing and stays a db_death.
+    """
+    ours = sorted((k for k in replay_kills if k[1] != k[2] and team[mapping[k[1]]] == team[mapping[k[2]]]),
+                  key=lambda k: k[0])
+    pool = [k for k in db_kills if is_db_team_kill(k, team)]
+    pairs = []
+    for kill in ours:
+        key = (mapping[kill[1]], mapping[kill[2]])
+        near = [d for d in pool if (d.killer, d.victim) == key and abs(d.t - kill[0] - offset) <= MAX_RESIDUAL_S]
+        if not near:
+            return None
+        hit = min(near, key=lambda d: (abs(d.t - kill[0] - offset), d.id))
+        pool.remove(hit)
+        pairs.append((kill, hit))
     return pairs
 
 
@@ -432,6 +462,14 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
     missing = [n for n in played if n not in anchored]
     if missing:
         raise Refused("clock", "a round has no anchor", rounds=missing)
+    # Team kills aren't anchors and pair with nothing in kill_map, but each must have its own DB
+    # team kill on the fitted clock.
+    team_pairs = {n: match_team_kills(replay_kills.get(n, []), db_excluded.get(n, []), mapping, team, offset)
+                  for n in played}
+    unpaired = sorted(n for n, p in team_pairs.items() if p is None)
+    if unpaired:
+        raise Refused("kills", "a replay team kill has no DB team kill of the same players on the fitted clock",
+                      rounds=unpaired)
 
     # Step 6: the riot_subject backfill, refused on any conflict.
     subject_of = {p["slot"]: p["subject"] for p in replay.players}
@@ -457,8 +495,11 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
         for kill, db in pairs[n]:
             ids[order[id(kill)]] = db.id
         kill_map[str(n)] = ids
-    db_deaths = {str(n): [{"slot": slot_of_mp.get(k.victim), "t_db": k.t} for k in db_excluded[n]]
-                 for n in played if db_excluded.get(n)}
+    # Only the deaths the replay lacks: a DB team kill paired with the replay's is already there.
+    in_replay = {db.id for n in played for _, db in team_pairs[n]}
+    db_deaths = {str(n): deaths for n in played
+                 if (deaths := [{"slot": slot_of_mp.get(k.victim), "t_db": k.t}
+                                for k in db_excluded.get(n, []) if k.id not in in_replay])}
     report = {
         "match_id": match.match_id, "rounds": len(played), "anchors": len(anchors),
         "clock_offset": round(offset, 3), "max_residual": round(worst, 3), "median_residual": round(typical, 3),

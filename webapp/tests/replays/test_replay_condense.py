@@ -333,43 +333,72 @@ def test_side_groups_refuse_inconsistent_evidence():
     # Two rounds' tight spawn clusters that disagree. (A kill inside a cluster used to be the
     # example here; that is a team kill now, below.)
     clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9]), ([0, 1, 2, 3, 5], [4, 6, 7, 8, 9])]
-    with pytest.raises(ContractError, match="inconsistent"):
+    with pytest.raises(ContractError, match=r"inconsistent evidence \(spawn clusters\)"):
         cd.side_groups([], clusters)
 
 
 CROSS_KILLS = [cd.Kill(0, a, b) for a, b in [(0, 5), (5, 1), (1, 6), (6, 2), (2, 7), (7, 3), (3, 8), (8, 4), (4, 9)]]
 
 
+# A real match's kills: 706 had 135, most pairs across the teams meeting more than once.
+DENSE_KILLS = [cd.Kill(0, a, b) for a in range(5) for b in range(5, 10)]
+TRUE_CLUSTERS = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
+
+
 def test_side_groups_keep_a_team_kill_with_spawn_clusters():
     # Replay 706 (Summit): every kill cross-side but one, a teammate killed under the falling
     # hazard the killer shot down. One team kill used to null all ten sides.
-    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
-    assert cd.side_groups(CROSS_KILLS + [cd.Kill(1, 0, 1)], clusters) == ["A"] * 5 + ["B"] * 5
+    assert cd.side_groups(DENSE_KILLS + [cd.Kill(1, 0, 1)], TRUE_CLUSTERS) == ["A"] * 5 + ["B"] * 5
 
 
-def test_side_groups_keep_a_team_kill_only_the_spawn_clusters_contradict():
-    # The kills alone are consistent; only the clusters say slots 0 and 1 are teammates.
-    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
-    assert cd.side_groups([cd.Kill(0, 0, 1)], clusters) == ["A"] * 5 + ["B"] * 5
+def test_side_groups_refuse_a_team_kill_sparse_kills_cant_place():
+    # A 9-kill chain closed by one team kill: dropping any kill of the odd cycle fits as well, so
+    # the kills don't corroborate the clusters' split.
+    with pytest.raises(ContractError, match="the kills fit another split"):
+        cd.side_groups(CROSS_KILLS + [cd.Kill(1, 0, 1)], TRUE_CLUSTERS)
 
 
-def test_side_groups_keep_a_team_kill_from_kills_alone():
+def test_side_groups_keep_a_team_kill_that_leaves_the_kills_6_4():
+    # Slot 0's only kill is of teammate 1: the kills alone put 0 with the other five.
+    kills = [cd.Kill(0, a, b) for a in range(1, 5) for b in range(5, 10)] + [cd.Kill(1, 0, 1)]
+    with pytest.raises(ContractError, match="6/4|4/6"):
+        cd.side_groups(kills, [])
+    assert cd.side_groups(kills, TRUE_CLUSTERS) == ["A"] * 5 + ["B"] * 5
+
+
+def test_side_groups_refuse_a_team_kill_without_a_spawn_cluster():
+    # Kills alone can't tell a team kill from a misresolved killer or victim: nothing corroborates
+    # a split that drops one, so sides stay unresolved.
     kills = CROSS_KILLS + [cd.Kill(1, a, b) for a, b in [(0, 6), (1, 7), (2, 8), (3, 9)]] + [cd.Kill(2, 2, 4)]
+    with pytest.raises(ContractError, match=r"inconsistent evidence \(kill\)"):
+        cd.side_groups(kills, [])
+
+
+def test_side_groups_refuse_a_spawn_cluster_against_a_complete_kill_split():
+    # The kills alone split all ten 5/5 with no exception; one round's cluster has slots 4 and 5
+    # crossed. The cluster is the suspect, not two kills: refuse, as before team kills.
+    kills = CROSS_KILLS + [cd.Kill(1, a, b) for a, b in [(0, 6), (1, 7), (2, 8), (3, 9)]]
     assert cd.side_groups(kills, []) == ["A"] * 5 + ["B"] * 5
+    crossed = [([0, 1, 2, 3, 5], [4, 6, 7, 8, 9])]
+    with pytest.raises(ContractError, match="the kills fit another split"):
+        cd.side_groups(kills, crossed)
+
+
+def test_side_groups_refuse_a_crossed_spawn_cluster_beside_a_real_team_kill():
+    # One genuine team kill makes the kills inconsistent; a lone cluster with slots 4 and 5
+    # crossed would count the team kill and two enemy kills as friendly. The kills' own best
+    # split (one team kill) is the true one, so the clusters aren't corroborated: refuse.
+    kills = CROSS_KILLS + [cd.Kill(1, a, b) for a, b in [(0, 6), (1, 7), (2, 8), (3, 9)]] + [cd.Kill(2, 2, 4)]
+    with pytest.raises(ContractError, match="the kills fit another split"):
+        cd.side_groups(kills, [([0, 1, 2, 3, 5], [4, 6, 7, 8, 9])])
+    assert cd.side_groups(kills, [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]) == ["A"] * 5 + ["B"] * 5
 
 
 def test_side_groups_refuse_more_team_kills_than_a_match_has():
-    clusters = [([0, 1, 2, 3, 4], [5, 6, 7, 8, 9])]
     team = [cd.Kill(1, a, b) for a, b in [(0, 1), (1, 2), (2, 3), (3, 4)][:cd.MAX_TEAM_KILLS + 1]]
-    with pytest.raises(ContractError, match="inconsistent"):
-        cd.side_groups(CROSS_KILLS + team, clusters)
-
-
-def test_side_groups_refuse_when_team_kills_leave_two_splits():
-    # A single kill chain with one odd edge: dropping any one of its kills fits equally well.
-    kills = CROSS_KILLS + [cd.Kill(1, 0, 4)]
-    with pytest.raises(ContractError, match="inconsistent"):
-        cd.side_groups(kills, [])
+    assert len(team) == cd.MAX_TEAM_KILLS + 1
+    with pytest.raises(ContractError, match=rf"{cd.MAX_TEAM_KILLS + 1} team kills, at most {cd.MAX_TEAM_KILLS}"):
+        cd.side_groups(DENSE_KILLS + team, TRUE_CLUSTERS)
 
 
 def test_side_groups_refuse_disconnected_evidence():
