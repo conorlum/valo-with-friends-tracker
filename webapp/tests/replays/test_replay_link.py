@@ -241,11 +241,15 @@ def test_a_drawn_match_is_complete():
     assert _refusal(_rounds_view(24), lk.DbMatch(1, MATCH_UUID, 12, 12, _alternating(24), [], [])) == "completeness"
 
 
-def test_a_level_score_with_play_after_it_is_no_draw():
-    # 13-13 is also a score overtime passes through: a replay that decoded rounds 27 and 28 kept playing.
+def test_a_level_score_with_anything_decoded_after_it_is_no_draw():
+    # 13-13 is also a score overtime passes through: a replay that decoded rounds 27 and 28 kept playing, or
+    # recorded a surrender, and a malformed key could hide either.
     match = lk.DbMatch(1, MATCH_UUID, 13, 13, _alternating(26), [], [])
-    later = {"27": _awarded("Red", "elimination"), "28": _awarded("Red", "elimination")}
-    assert _refusal(_rounds_view(26, later), match) == "completeness"
+    for later in ({"27": _awarded("Red", "elimination"), "28": _awarded("Red", "elimination")},
+                  {"27": _awarded("Red"), "28": _awarded("Red")},
+                  {"027": _awarded("Red", "elimination")},
+                  {"²": _awarded("Red", "elimination")}):
+        assert _refusal(_rounds_view(26, later), match) == "completeness", later
     assert lk.check_rounds(_rounds_view(26), match)[1] is False
 
 
@@ -271,13 +275,30 @@ def test_recorded_surrender_rounds_must_be_canonical_contiguous_and_all_surrende
         view.link_inputs["round_results"].update(after)
         return view
 
-    assert lk.check_rounds(replay({"13": _awarded("Red"), "14": _awarded("Red"), "15": _awarded("Red")}), match)[1]
+    full = {"13": _awarded("Red"), "14": _awarded("Red"), "15": _awarded("Red")}
+    assert lk.check_rounds(replay(full), match)[1]
+    # Each bad suffix keeps (or would keep, if the bad entry were ignored) enough awards to reach 13.
     for after in ({"14": _awarded("Red"), "15": _awarded("Red"), "16": _awarded("Red")},          # a gap at 13
-                  {"13": _awarded("Red"), "14": _awarded("Red", "elimination"), "15": _awarded("Red")},  # mixed
-                  {"13": _awarded("Red"), "14": _awarded("Red"), "15": _awarded("Gold")},          # unmapped winner
-                  {"13": _awarded("Red"), "14": _awarded("Red"), "016": _awarded("Red")}):          # not canonical
+                  {**full, "16": _awarded("Red", "elimination")},                                # a played round after
+                  {**full, "15": _awarded("Gold")},                                              # unmapped winner
+                  {**full, "15": _awarded([])},                                                  # winner not a name
+                  {**full, "016": _awarded("Red", "elimination")},                               # not canonical
+                  {**full, "²": _awarded("Red", "elimination")}):                                # not ASCII
         for dropped in (False, True):
             assert _refusal(replay(after, dropped), match) == "completeness", (after, dropped)
+
+
+def test_unusable_surrender_evidence_leaves_the_padded_score_rule_as_it_was():
+    # Rows 10-2 under tracker.gg's padded 13-2: linked before recorded surrenders existed, whatever the suffix.
+    rows = [lk.DbRound(n, "Team A Elimination Win" if n not in (2, 4) else "Team B Elimination Win")
+            for n in range(1, 13)]
+    match = lk.DbMatch(1, MATCH_UUID, 13, 2, rows, [], [])
+    view = _rounds_view(12)
+    view.link_inputs["round_results"] = {str(r.number): {"RoundResult": "elimination",
+                                                           "WinningTeam": "Red" if r.outcome[5] == "A" else "Blue"}
+                                         for r in rows}
+    view.link_inputs["round_results"].update({"13": _awarded([]), "14": _awarded("Red"), "15": _awarded("Red")})
+    assert lk.check_rounds(view, match)[1] is True
 
 
 def test_a_recorded_surrender_holds_in_any_mode_with_a_legal_end():
