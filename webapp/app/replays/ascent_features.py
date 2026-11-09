@@ -249,21 +249,37 @@ def state_at(feature, t):
     """Source state plus a separately labeled five-second motion estimate. Missing endpoints stay unknown."""
     state, began = feature.get('initial', 'unknown'), None
     terminal = state == 'broken'
+    reversed_motion = False
+    duration = feature.get('closing_s')
+    usable_duration = isinstance(duration, (int, float)) and not isinstance(duration, bool) \
+        and duration > 0 and math.isfinite(duration)
+
+    def motion_closure(at):
+        if began is None or not usable_duration or at - began > duration + .25:
+            return None
+        progress = min(max((at - began) / duration, 0.0), 1.0)
+        return 1.0 - progress if state == 'opening' else progress
+
     for event in feature.get('events', []):
         if event['t'] > t:
             break
         # A terminal object cannot become intact/open without an explicit round reset.
         if terminal:
             continue
+        next_state = event['state']
+        if (state, next_state) in (('opening', 'closing'), ('closing', 'opening')):
+            endpoint = 0.0 if state == 'opening' else 1.0
+            if motion_closure(event['t']) != endpoint:
+                reversed_motion = True
+        if next_state in ('open', 'closed', 'broken'):
+            reversed_motion = False
         state = event['state']
         if state == 'broken':
             terminal = True
-        began = event['t'] if state == 'closing' else None
+        began = event['t'] if state in ('closing', 'opening') else None
     closure = {'open': 0.0, 'closed': 1.0}.get(state)
-    if state == 'closing' and began is not None:
-        duration = feature.get('closing_s')
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0 \
-                and math.isfinite(duration) and t - began <= duration + .25:
-            closure = min(max((t-began)/duration, 0.0), 1.0)
-    return {'state': state, 'closure': closure, 'modeled': state == 'closing',
-            'pending': state == 'unknown' or (state == 'closing' and closure is None)}
+    modeled = state in ('closing', 'opening')
+    if modeled and not reversed_motion:
+        closure = motion_closure(t)
+    return {'state': state, 'closure': closure, 'modeled': modeled,
+            'pending': reversed_motion or state == 'unknown' or (modeled and closure is None)}

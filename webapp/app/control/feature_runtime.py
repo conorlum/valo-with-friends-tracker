@@ -1,6 +1,8 @@
 """Shared artifact geometry and replay-state consumers, with the Ascent timeline adapter."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from app.replays.ascent_features import KEYS, VERSION, state_at
@@ -19,7 +21,7 @@ def readiness(feature):
     if feature.get('parent') or feature.get('rotation') or feature.get('platform'):
         reasons.append('Ascent consumer does not implement attached or rotating platforms')
     names = {s['name'] for s in feature.get('states', [])}
-    expected = {'intact', 'broken'} if key == 'ascent_heaven_glass' else {'open', 'closing', 'closed', 'broken'}
+    expected = {'intact', 'broken'} if key == 'ascent_heaven_glass' else {'open', 'opening', 'closing', 'closed', 'broken'}
     if not expected <= names:
         reasons.append('required replay states missing')
     broken = next((s for s in feature.get('states', []) if s['name'] == 'broken'), {})
@@ -131,24 +133,36 @@ class FeatureRuntime:
             self.items.append((mf, f, timeline))
             self.times.update(float(e['t']) for e in timeline['events'])
             if f.get('sliding'):
-                from app.replays.map_feature_motion import fs_known_metres, closed_state, movement_cutoff
+                from app.replays.map_feature_motion import fs_known_metres, closed_state, movement_cutoff, movement_blocked
                 top = fs_known_metres(f['sliding']['open_clearance'])
                 bottom = fs_known_metres(closed_state(f)['sight_bounds']['bottom'])
                 clearance = fs_known_metres(f['sliding'].get('movement_clearance'))
                 if top > bottom:
                     fraction = movement_cutoff(f)
+                    has_cutoff = fraction is not None
                     if fraction is None:
                         fraction = min(max((top-clearance)/(top-bottom), 0), 1)
                     for event in timeline['events']:
                         if event['state'] == 'closing':
                             self.times.add(float(event['t']) + 5 * fraction)
+                        elif event['state'] == 'opening' and has_cutoff:
+                            release = float(event['t']) + 5 * (1 - fraction)
+                            # The inverse motion can round back above the blocking cutoff.
+                            for step in range(65):
+                                blocked = movement_blocked(f, state_at(timeline, release)['closure'])
+                                if blocked is False:
+                                    self.times.add(release)
+                                    break
+                                if blocked is None or step == 64:
+                                    break
+                                release = math.nextafter(release, math.inf)
         self.transitions = sorted(self.times)
-        # Fail the round instead of computing through a coverage hole or unsupported opening.
+        # Fail the round instead of computing through a coverage hole.
         for _, _, timeline in self.items:
             terminal = timeline['initial'] == 'broken'
             for event in timeline['events']:
                 if event['state'] == 'unknown' and not terminal:
-                    raise FeatureSourceUnavailable('unverified opening/default state in active feature timeline')
+                    raise FeatureSourceUnavailable('unqualified door-state parameter in active feature timeline')
                 terminal |= event['state'] == 'broken'
 
     @property
@@ -241,7 +255,7 @@ class FeatureRuntime:
             for index, blocker in enumerate(occ):
                 mask_key = (f['id'], index)
                 blocker.mask = self._masks.setdefault(mask_key, blocker.mask)
-                blocker.cache_resting = current['state'] != 'closing'
+                blocker.cache_resting = current['state'] not in ('closing', 'opening')
                 occluders.append(blocker)
         self._time, self._sample = t, (blocked, occluders)
         return self._sample

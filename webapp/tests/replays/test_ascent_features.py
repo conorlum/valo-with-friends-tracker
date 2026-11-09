@@ -204,12 +204,76 @@ def test_linear_model_terminal_precedence_and_missing_endpoint():
 def test_python_js_sampling_matches():
     import subprocess
     from pathlib import Path
-    feature = {'initial':'open','closing_s':5,'events':[{'t':8,'state':'closing'},{'t':13.002,'state':'closed'},{'t':20,'state':'broken'}]}
+    feature = {'initial':'open','closing_s':5,'events':[
+        {'t':8,'state':'closing'},{'t':13.002,'state':'closed'},
+        {'t':15,'state':'opening'},{'t':20,'state':'open'},
+        {'t':22,'state':'closing'},{'t':24,'state':'opening'},
+        {'t':25,'state':'closing'},{'t':30,'state':'closed'},
+        {'t':31,'state':'opening'},{'t':33,'state':'closing'},
+        {'t':40,'state':'broken'}]}
     script = Path(__file__).resolve().parents[2]/'app/static/js/replay.js'
-    times = [0, 8, 10.5, 13.001, 13.002, 20, 100]
+    times = [0, 8, 10.5, 13.001, 13.002, 15, 17.5, 20, 22, 24, 25, 29, 30, 31, 33, 39, 40, 100]
     code = f"const r=require({json.dumps(str(script))});process.stdout.write(JSON.stringify({json.dumps(times)}.map(t=>r.mapFeatureState({json.dumps(feature)},t))));"
     result = subprocess.run(['node','-e',code], capture_output=True, text=True, check=True)
     assert json.loads(result.stdout) == [af.state_at(feature,t) for t in times]
+
+
+def test_opening_model_and_endpoint():
+    feature = {'initial': 'closed', 'closing_s': 5,
+               'events': [{'t': 8, 'state': 'opening'}, {'t': 13.002, 'state': 'open'}]}
+    for t, closure in [(8, 1.0), (10.5, .5), (13, 0.0)]:
+        assert af.state_at(feature, t) == {
+            'state': 'opening', 'closure': closure, 'modeled': True, 'pending': False}
+    assert af.state_at(feature, 14) == {
+        'state': 'open', 'closure': 0.0, 'modeled': False, 'pending': False}
+    feature['events'].pop()
+    assert af.state_at(feature, 13.25)['closure'] == 0
+    assert af.state_at(feature, 13.251)['pending']
+
+
+@pytest.mark.parametrize('duration', [None, 0, -1, True, float('inf'), float('nan'), '5'])
+def test_opening_without_usable_duration_is_pending(duration):
+    feature = {'initial': 'closed', 'closing_s': duration, 'events': [{'t': 8, 'state': 'opening'}]}
+    assert af.state_at(feature, 9) == {
+        'state': 'opening', 'closure': None, 'modeled': True, 'pending': True}
+
+
+@pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
+@pytest.mark.parametrize('endpoint,closure', [('open', 0.0), ('closed', 1.0), ('broken', None)])
+def test_reversal_stays_pending_until_observed_endpoint(first, reverse, endpoint, closure):
+    feature = {'initial': 'closed' if first == 'opening' else 'open', 'closing_s': 5,
+               'events': [{'t': 1, 'state': first}, {'t': 3, 'state': reverse},
+                          {'t': 4, 'state': first}, {'t': 12, 'state': endpoint}]}
+    assert not af.state_at(feature, 2)['pending']
+    assert af.state_at(feature, 3) == {
+        'state': reverse, 'closure': None, 'modeled': True, 'pending': True}
+    for t in (4, 8, 11):
+        assert af.state_at(feature, t) == {
+            'state': first, 'closure': None, 'modeled': True, 'pending': True}
+    assert af.state_at(feature, 12) == {
+        'state': endpoint, 'closure': closure, 'modeled': False, 'pending': False}
+
+
+@pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
+def test_opposite_motion_after_modeled_endpoint_is_not_a_reversal(first, reverse):
+    feature = {'initial': 'closed' if first == 'opening' else 'open', 'closing_s': 5,
+               'events': [{'t': 1, 'state': first}, {'t': 6, 'state': reverse}]}
+    assert not af.state_at(feature, 6)['pending']
+    assert af.state_at(feature, 8.5)['closure'] == .5
+
+
+def test_timeline_without_opening_preserves_literal_states():
+    feature = {'initial': 'open', 'closing_s': 5,
+               'events': [{'t': 1, 'state': 'closing'}, {'t': 6.002, 'state': 'closed'},
+                          {'t': 8, 'state': 'broken'}, {'t': 9, 'state': 'unknown'}]}
+    assert [af.state_at(feature, t) for t in (0, 1, 3.5, 6, 6.002, 8, 9)] == [
+        {'state': 'open', 'closure': 0.0, 'modeled': False, 'pending': False},
+        {'state': 'closing', 'closure': 0.0, 'modeled': True, 'pending': False},
+        {'state': 'closing', 'closure': .5, 'modeled': True, 'pending': False},
+        {'state': 'closing', 'closure': 1.0, 'modeled': True, 'pending': False},
+        {'state': 'closed', 'closure': 1.0, 'modeled': False, 'pending': False},
+        {'state': 'broken', 'closure': None, 'modeled': False, 'pending': False},
+        {'state': 'broken', 'closure': None, 'modeled': False, 'pending': False}]
 
 
 def runtime_case():
@@ -224,8 +288,11 @@ def runtime_case():
     f['replay_key'] = 'ascent_market'
     f['sliding'] = {'axis':'vertical','open_state':'open','closed_state':'closed',
                     'open_clearance':known(3,'m'),'movement_clearance':known(1,'m')}
-    f['states'] += [{'name':'closing','blocks_sight':True,'blocks_movement':True},
+    f['states'] += [{'name':'opening','blocks_sight':True,'blocks_movement':True,'terminal':False},
+                    {'name':'closing','blocks_sight':True,'blocks_movement':True},
                     {'name':'broken','terminal':True,'blocks_sight':False,'blocks_movement':False}]
+    f['transitions'] = [{'id': 'open', 'from': ['closed'], 'event': 'switch', 'to': 'open',
+                         'motion': {'state': 'opening', 'duration': known(5, 's')}, 'mid_motion': 'reverse'}]
     mf['bundles'] = [{'id':'ascent','enabled':True,'runtime_consumer':'ascent_replay_v1','members':[f['id']]}]
     geo = geometry_case(); geo.name = 'Ascent'
     # Compiler/transport integrity has its own owning suite; this fixture targets the consumer contract.
@@ -254,7 +321,7 @@ def test_runtime_descending_sight_movement_and_exact_release():
     assert (released[np.isfinite(released)] == 8).all() and np.isfinite(released).any()
 
 
-def test_runtime_refuses_incomplete_evidence_and_unverified_opening():
+def test_runtime_refuses_incomplete_evidence_and_unqualified_parameter():
     from app.control.feature_runtime import FeatureRuntime
     from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
     geo, _, _, blob = runtime_case()
@@ -263,8 +330,30 @@ def test_runtime_refuses_incomplete_evidence_and_unverified_opening():
         FeatureRuntime(geo,blob)
     blob['map_features']['status'] = 'decoded'
     blob['map_features']['features'][0]['events'].insert(1, {'t':2,'state':'unknown'})
-    with pytest.raises(FeatureArtifactCorrupt, match='unverified'):
+    with pytest.raises(FeatureArtifactCorrupt, match='unqualified door-state parameter'):
         FeatureRuntime(geo,blob)
+
+
+def test_readiness_refuses_door_without_opening():
+    from app.control.feature_runtime import readiness
+    _, _, feature, _ = runtime_case()
+    assert not readiness(feature)
+    feature['states'] = [state for state in feature['states'] if state['name'] != 'opening']
+    assert 'required replay states missing' in readiness(feature)
+
+
+@pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
+def test_runtime_reversal_raises_pending_endpoint_message(first, reverse):
+    from app.control.feature_runtime import FeatureRuntime
+    from app.replays.map_feature_artifacts import FeatureSourceUnavailable
+    geo, _, _, data = runtime_case()
+    timeline = data['map_features']['features'][0]
+    timeline.update(initial='closed' if first == 'opening' else 'open', events=[
+        {'t': 1, 'state': first}, {'t': 3, 'state': reverse}, {'t': 9, 'state': 'open'}])
+    runtime = FeatureRuntime(geo, data)
+    with pytest.raises(FeatureSourceUnavailable, match='feature endpoint/state unobserved at calculation time'):
+        runtime.sample(3)
+    assert not runtime.sample(9)[0].any()
 
 
 def test_unknown_after_destruction_cannot_restore_the_terminal_panel():
