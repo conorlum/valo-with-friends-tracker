@@ -257,7 +257,7 @@ def load_moments_payload(db, replay) -> dict:
         stored[row.round_number] = row
 
     groups = replay_control.side_groups(db, replay)
-    context = replay_control.resolve_current_geometry(db, replay.map_name)
+    freshness = replay_gaps.Freshness(db)
     stale = 0
     failed = []
     for n in range(1, replay.round_count + 1):
@@ -265,8 +265,7 @@ def load_moments_payload(db, replay) -> dict:
         if row is None or row.gaps_revision != replay_gaps.GAPS_REVISION:
             stale += 1
             continue
-        control = replay_control.round_fingerprint(replay, groups, n, context=context)
-        current = None if control is None else replay_gaps.gap_fingerprint(control, replay.map_name)
+        current = freshness.expected(replay, n)
         if current is None or row.fingerprint != current:
             stale += 1
         elif row.status != "ok":

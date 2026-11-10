@@ -39,7 +39,11 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     replay = session.get(Replay, replay_id)
     if replay is None:
         return "skipped: the replay is gone"
-    context = replay_control.resolve_current_geometry(session, replay.map_name)
+    selection = replay_control.layout_of(replay)
+    if selection.state != "ok":
+        return "skipped: its control inputs changed while computing"
+    key = selection.layout.asset_key
+    context = replay_control.resolve_current_geometry(session, key)
     current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), round_number,
                                                context=context)
     if current is None or current != expected:
@@ -48,9 +52,9 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     if control is None or control.status != "ok" or control.fingerprint != current \
             or control.data_version != cf.DATA_VERSION:
         return "skipped: the round has no current control"
-    wanted = replay_gaps.gap_fingerprint(current, replay.map_name)
+    wanted = replay_gaps.gap_fingerprint(current, key)
     if run.get("fingerprint") != wanted or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
-            or run.get("chokes_hash") != choke_assets.asset_hash(replay.map_name):
+            or run.get("chokes_hash") != choke_assets.asset_hash(key):
         return "skipped: computed under other gap rules or assets"
     existing = session.get(ReplayRoundGapRun, (replay_id, round_number))
     if existing is not None and existing.fingerprint == wanted:
