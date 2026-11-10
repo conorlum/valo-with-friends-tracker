@@ -524,11 +524,11 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 'gaps_revision': replay_gaps.GAPS_REVISION,
                 'chokes_hash': choke_assets.asset_hash(f.map_name),
                 'notes': {job.get('error_code') or 'source_unavailable': 1},
-                'error': job.get('error') or 'round source unavailable; reparse this recording'}, 'rows': [],
+                'error': job.get('error') or 'round source unavailable'}, 'rows': [],
                 'moments': {'status': 'failed', 'fights': [],
-                            'error': job.get('error') or 'round source unavailable; reparse this recording'},
+                            'error': job.get('error') or 'round source unavailable'},
                 'util': {'status': 'failed', 'data': None,
-                         'error': job.get('error') or 'round source unavailable; reparse this recording'}}}
+                         'error': job.get('error') or 'round source unavailable'}}}
             _keep_gaps(session_factory, f, failure, counts)
             continue
         elif status == "failed" and job.get("error_kind") in ('engine', 'inputs') and not f.gaps_only:
@@ -537,7 +537,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             # result and is stored above.)
             message = job.get("error") or "failed on the replay worker"
             if job.get('error_kind') == 'inputs':
-                message = f"{job.get('error_code') or 'source_unavailable'}: {message}; reparse this recording"
+                message = f"{job.get('error_code') or 'source_unavailable'}: {message}"
             row = {"status": "failed", "error": message, 'error_kind': job.get('error_kind')}
         else:
             log.warning("map control %s failed on the worker (%s): %s", key, job.get("error_kind"),

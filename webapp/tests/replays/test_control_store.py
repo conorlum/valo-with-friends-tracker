@@ -104,6 +104,23 @@ def put_row(db, replay, n, status="ok", fingerprint=None, data=b"x", data_versio
 # ---------------------------------------------------------------- the link and the fingerprint
 
 
+@pytest.mark.parametrize("error,code,expected", [
+    ("reset unobserved", "features_source_unavailable", "features_source_unavailable: reset unobserved"),
+    ("features_source_unavailable: reset unobserved", "features_source_unavailable",
+     "features_source_unavailable: reset unobserved"),
+    ("reset unobserved", None, "reset unobserved"),
+])
+def test_input_failure_preserves_its_code_only_when_supplied(factory, db, linked, error, code, expected):
+    from app.services.replay_control_store import store_round
+
+    result = {"status": "failed", "error_kind": "inputs", "error": error}
+    if code is not None:
+        result["error_code"] = code
+    assert store_round(factory, linked.id, 1, "test-inputs", result) == "stored"
+    db.expire_all()
+    assert db.get(ReplayRoundControl, (linked.id, 1)).error == expected
+
+
 def test_sides_follow_the_attacking_team_and_swap_at_the_half(db, linked):
     groups = rc.side_groups(db, linked)
     first, second = rc.round_link(linked, groups, 1), rc.round_link(linked, groups, 13)

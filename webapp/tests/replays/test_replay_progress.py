@@ -67,6 +67,43 @@ def test_an_older_recipe_needs_a_reparse_before_anything_else(factory, db, linke
     assert steps(progress.compute(db)) == {"reparse": linked.round_count}
 
 
+@pytest.mark.parametrize("manual_step", ["control_failed", "gaps_failed"])
+def test_unsupported_rounds_need_no_person_and_do_not_hide_manual_failures(factory, db, linked, manual_step):
+    from app.models.replay import ReplayRoundControl
+    from app.templates import templates
+    from types import SimpleNamespace as NS
+
+    for n in range(1, linked.round_count + 1):
+        put_row(db, linked, n)
+        _gap_run(factory, linked, n)
+    put_row(db, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    db.commit()
+    body = progress.compute(db)
+    assert progress.round_states(db)["states"][linked.id, 1] == "control_unsupported"
+    assert steps(body) == {"control_unsupported": 1}
+    assert (body["unsupported"], body["needs_a_person"], body["worker_will_do"]) == (1, 0, 0)
+    assert [key for key, _, _ in progress.STEPS].index("control_unsupported") < [
+        key for key, _, _ in progress.STEPS].index("control_failed")
+
+    def cell():
+        replay_match_states.refresh(db)
+        return templates.env.get_template("replays/_up_to_date_cell.html").render(
+            match=NS(external_id=str(linked.match_uuid)),
+            replay_states=progress.match_states(db, [str(linked.match_uuid)]))
+
+    assert "not supported" in cell() and "needs a person" not in cell()
+    if manual_step == "control_failed":
+        put_row(db, linked, 2, status="failed")
+    else:
+        _gap_run(factory, linked, 2, status="failed")
+    body = progress.compute(db)
+    assert progress.round_states(db)["states"][linked.id, 2] == manual_step
+    assert (body["unsupported"], body["needs_a_person"]) == (1, 1)
+    assert "needs a person" in cell()
+
+
 def test_a_match_is_up_to_date_only_when_every_round_is_done(factory, db, linked, monkeypatch):
     n, uuid = linked.round_count, str(linked.match_uuid).lower()
     for r in range(1, n + 1):
@@ -138,4 +175,48 @@ def test_the_page_has_the_closed_panel_below_the_uploads(db, monkeypatch):
     assert '<details class="card replay-progress" data-progress>' in page
     assert "<summary>Show Replay Info</summary>" in page
     assert page.index("data-upload-section") < page.index("data-progress")
+    assert 'p.unsupported' in page and 'not supported in their round' in page
+    assert 'Nobody: not supported' in page
     assert "data-progress" not in routes.upload_form(request({}), db).body.decode("utf-8"), "not before the code"
+
+
+def test_progress_panel_renders_unsupported_count_and_nobody_offline(db, linked, monkeypatch):
+    import json
+    import shutil
+    import subprocess
+    from app.models.replay import ReplayRoundControl
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is needed for the offline DOM check")
+    monkeypatch.setattr(settings, "replay_upload_code", "letmein")
+    monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
+    put_row(db, linked, 1, status="failed")
+    db.get(ReplayRoundControl, (linked.id, 1)).error = "features_source_unavailable: reset unobserved"
+    db.commit()
+    result = progress.compute(db)
+    page = routes.upload_form(request({"replay_upload_ok": True}), db).body.decode("utf-8")
+    script = page[page.index("    function cell("):page.index("    function poll()")]
+    harness = r'''
+const assert = require("node:assert/strict"), vm = require("node:vm");
+const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+function element() {
+  return {children: [], appendChild(child) { this.children.push(child); },
+    set textContent(value) { this.text = value; this.children = []; },
+    get textContent() { return this.text; }};
+}
+const nodes = {}, panel = {querySelector(key) { return nodes[key] ||= element(); }};
+const context = {panel, document: {createElement: element}, body: {}, input};
+vm.runInNewContext(input.script + "\nrender(input.result);", context);
+assert.match(nodes["[data-progress-headline]"].textContent, /1 not supported in their round/);
+const rows = nodes["[data-progress-rows]"].children;
+assert.equal(rows.find(r => r.children[0].textContent === "Map control: not supported in this round")
+  .children[2].textContent, "Nobody: not supported");
+input.result.unsupported = 0;
+input.result.steps = [];
+vm.runInNewContext("render(input.result);", context);
+assert.doesNotMatch(nodes["[data-progress-headline]"].textContent, /not supported/);
+'''
+    completed = subprocess.run([node, "-e", harness], input=json.dumps({"script": script, "result": result}),
+                               text=True, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr

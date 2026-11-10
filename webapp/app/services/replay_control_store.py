@@ -68,11 +68,15 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
             if not replay_control.current_source_matches(session, context):
                 return 'skipped: its inputs changed while computing'
         ok = result["status"] == "ok"
+        error = result.get("error")
+        error_code = result.get("error_code")
+        if result.get("error_kind") == "inputs" and error_code and not (error or "").startswith(error_code):
+            error = f"{error_code}: {error}"
         session.merge(ReplayRoundControl(
             replay_id=replay_id, round_number=round_number, status=result["status"], fingerprint=fingerprint,
             data_version=cf.DATA_VERSION if ok else None, control_revision=cf.CONTROL_REVISION,
             data=result.get("data"), summary=result.get("summary"),
-            error=result.get("error"), computed_at=datetime.now(timezone.utc)))
+            error=error, computed_at=datetime.now(timezone.utc)))
         session.commit()
         return STORED
     except (IntegrityError, replay_control.InvalidControlInputs, FeatureArtifactError):

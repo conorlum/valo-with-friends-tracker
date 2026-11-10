@@ -540,7 +540,7 @@ def test_the_rounds_own_failure_is_stored_and_the_machines_is_retried_then_left(
         remote.cycle(factory, worker, state, now=t)
         t += remote.BACKOFF_S + 1
     stored = rows(db, linked)
-    assert list(stored) == [1] and stored[1].status == "failed" and stored[1].error.startswith("ControlError")
+    assert list(stored) == [1] and stored[1].status == "failed" and stored[1].error == "ControlError: no side"
     round_two = [k for k in state.tries if k.split(":")[1] == "2"]
     assert round_two and state.tries[round_two[0]][0] == remote.MAX_TRIES
     asked = sum(1 for task in worker.tasks.values() if task["key"].split(":")[1] == "2")
@@ -558,8 +558,8 @@ def test_missing_feature_source_is_stored_once_and_not_retried(factory, db, link
         remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
     stored = rows(db, linked)
     assert len(stored) == linked.round_count
-    assert all(row.status == 'failed' and 'features_source_unavailable' in row.error and
-               'reparse' in row.error for row in stored.values())
+    assert all(row.status == 'failed' and row.error == 'features_source_unavailable: reset unobserved'
+               for row in stored.values())
     keys = [task['key'] for task in worker.tasks.values()]
     assert len(keys) == len(set(keys)) and not state.tries
 

@@ -717,7 +717,7 @@ KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)
     "loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note",
     # replay kinds (app/services/replay_errors.py KINDS)
-    "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed", "heights_rejected",
+    "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed", "heights_rejected",
     "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held", "store_failed", "ack_missing",
     "stuck", "unlinked", "needs_a_person", "feature_failed",
 })
