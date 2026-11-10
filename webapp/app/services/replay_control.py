@@ -29,6 +29,7 @@ from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundCont
 from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.replays import format as fmt
+from app.replays import layouts
 from app.scoring.plant_window import attacking_team
 from app.services import control_heights
 from app.replays import map_feature_inputs as fi
@@ -148,6 +149,10 @@ def map_layer(map_name: str) -> dict | None:
     return {"cover_reviewed": bool(entry.get("cover_reviewed")), "feature_names": names}
 
 
+def layout_of(replay: Replay) -> layouts.Selection:
+    return layouts.layout_for(replay.map_name, replay.game_branch)
+
+
 @dataclass(frozen=True)
 class CurrentGeometryContext:
     map_name: str
@@ -215,7 +220,7 @@ def resolve_current_geometry(db, map_name):
         selection = control_heights.select_height(db, map_name, entry.get('height_sha'))
         source = fi.capture_source_snapshot(map_name, raw)
         source_entry = tags.get(map_name, {})
-        if not isinstance(source_entry, dict) or not isinstance(maps.get(map_name, {}), dict):
+        if not isinstance(source_entry, dict) or not isinstance(maps.get(layouts.map_of(map_name), {}), dict):
             raise fi.FeatureInputsError('current map source requires object containers')
         mf = source_entry.get('map_features')
         if mf is None:
@@ -228,13 +233,13 @@ def resolve_current_geometry(db, map_name):
         base = {}
         if intended:
             from app.replays.map_feature_sources import base_snapshot
-            base = base_snapshot(map_name, CONTROL_DIR, source_entry, maps[map_name]['xMultiplier'])
+            base = base_snapshot(map_name, CONTROL_DIR, source_entry, maps[layouts.map_of(map_name)]['xMultiplier'])
             if _current_snapshot() != (index, tags, maps, raw):
                 raise fi.FeatureInputsError('source changed while reading masks')
         inp = _identify_features(map_name, selection.digest, source, base)
         geometry = {'sight': entry.get('sight_sha'), 'walk': entry.get('walk_sha'),
                     'barrier': entry.get('barrier_sha'), 'specials': source_entry.get('specials') or [],
-                    'scale': (maps.get(map_name) or {}).get('xMultiplier')}
+                    'scale': (maps.get(layouts.map_of(map_name)) or {}).get('xMultiplier')}
         if entry.get('cover_sha'):         # only a map with cover: a map without keeps its identity as it was
             if base and base.get('cover_sha') != entry['cover_sha']:
                 raise fi.FeatureInputsError('cover mask does not match the index')
@@ -280,8 +285,8 @@ def exact_height_bytes(db, map_name, digest):
     return (CONTROL_DIR / f'{map_name}.height.npz').read_bytes()
 
 
-def prepare_discovered(session_factory, map_names, retry_after, now):
-    for name in sorted(set(map_names)):
+def prepare_discovered(session_factory, asset_keys, retry_after, now):
+    for name in sorted(set(asset_keys)):
         with session_factory() as db:
             inp = None
             try:
@@ -321,7 +326,7 @@ def geometry_inputs(map_name: str, heights: dict | None = None, *, context=None)
         return None
     inputs = {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
               "specials": (tags.get(map_name) or {}).get("specials") or [],
-              "scale": (maps.get(map_name) or {}).get("xMultiplier")}
+              "scale": (maps.get(layouts.map_of(map_name)) or {}).get("xMultiplier")}
     if entry.get("cover_sha"):
         inputs["cover"] = entry["cover_sha"]
     height = (heights or {}).get(map_name) or entry.get("height_sha")
@@ -368,7 +373,11 @@ def round_link(replay: Replay, groups: dict[int, str], n: int) -> dict:
 
 
 def round_fingerprint(replay: Replay, groups: dict[int, str], n: int, heights: dict | None = None, *, context=None) -> str | None:
-    geometry = geometry_inputs(replay.map_name, heights, context=context) if context is not None else geometry_inputs(replay.map_name, heights)
+    selection = layout_of(replay)
+    if selection.state != 'ok':
+        return None
+    key = selection.layout.asset_key
+    geometry = geometry_inputs(key, heights, context=context) if context is not None else geometry_inputs(key, heights)
     if geometry is None:
         return None
     return cf.fingerprint(replay.recipe, replay.source_sha256, round_link(replay, groups, n), geometry)
@@ -379,21 +388,29 @@ class RoundControlAnswer:
     status: str                              # ok | not_ready | failed | no_map | old_blob
     row: ReplayRoundControl | None = None
     stale: bool = False
+    layout: str | None = None
 
 
 def round_control(db, replay: Replay, n: int) -> RoundControlAnswer:
     """The endpoint's answer. A row in an older byte format reads as not ready: a viewer that
     decodes the current format can't read it, unlike a row that is only stale."""
-    context = resolve_current_geometry(db, replay.map_name)
-    if context.state == 'no_map' or (context.state == 'ready' and map_layer(replay.map_name) is None):
-        return RoundControlAnswer("no_map")
-    if blob_too_old(replay):
-        return RoundControlAnswer("old_blob")
+    selection = layout_of(replay)
+    if selection.state == 'ok':
+        key = selection.layout.asset_key
+        context = resolve_current_geometry(db, key)
+        if context.state == 'no_map' or (context.state == 'ready' and map_layer(key) is None):
+            return RoundControlAnswer("no_map")
+        if blob_too_old(replay):
+            return RoundControlAnswer("old_blob")
     row = (db.query(ReplayRoundControl)
            .options(load_only(ReplayRoundControl.status, ReplayRoundControl.fingerprint,
                               ReplayRoundControl.data_version, ReplayRoundControl.data))
            .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.round_number == n)
            .one_or_none())
+    if selection.state != 'ok':
+        if row is not None and row.status == 'ok' and row.data_version == cf.DATA_VERSION:
+            return RoundControlAnswer("ok", row, stale=True, layout=selection.state)
+        return RoundControlAnswer(selection.state, layout=selection.state)
     if row is None or (row.status == "ok" and row.data_version != cf.DATA_VERSION):
         return RoundControlAnswer("not_ready")
     if row.status != "ok":
@@ -414,10 +431,12 @@ class PlannedRound:
     reason: str       # missing | stale | failed | retry_failed | forced | no_map | old_blob
     link: dict | None = None
     inputs: PinnedInputs | None = None
+    asset_key: str | None = None
 
     @property
     def computable(self) -> bool:
-        return self.reason not in ("no_map", "old_blob", 'features_pending', 'source_error')
+        return self.reason not in ("no_map", "old_blob", 'features_pending', 'source_error',
+                                   'layout_pending', 'layout_unknown')
 
 
 def _valid_ids(db, replays: list[Replay]) -> set[int]:
@@ -462,17 +481,25 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
             continue
         uuid = str(replay.match_uuid).lower()
         wanted = [n for n in range(1, replay.round_count + 1) if rounds is None or n in rounds]
-        if replay.map_name not in contexts:
-            contexts[replay.map_name] = resolve_current_geometry(db, replay.map_name)
-        context = contexts[replay.map_name]
+        selection = layout_of(replay)
+        key = selection.layout.asset_key if selection.layout else None
+        if selection.state != 'ok':
+            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, selection.state,
+                                 asset_key=key) for n in wanted]
+            continue
+        if key not in contexts:
+            contexts[key] = resolve_current_geometry(db, key)
+        context = contexts[key]
         if context.state != 'ready':
-            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, context.state) for n in wanted]
+            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, context.state,
+                                 asset_key=key) for n in wanted]
             continue
-        if map_layer(replay.map_name) is None or blob_too_old(replay):
-            reason = 'no_map' if map_layer(replay.map_name) is None else 'old_blob'
-            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, reason) for n in wanted]
+        if map_layer(key) is None or blob_too_old(replay):
+            reason = 'no_map' if map_layer(key) is None else 'old_blob'
+            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, reason,
+                                 asset_key=key) for n in wanted]
             continue
-        geometry = geometry_inputs(replay.map_name, heights, context=context)
+        geometry = geometry_inputs(key, heights, context=context)
         for n in wanted:
             link = round_link(replay, groups[replay.id], n)
             current = cf.fingerprint(replay.recipe, replay.source_sha256, link, geometry)
@@ -490,7 +517,7 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
             else:
                 continue
             pin = context.pinned.for_round(cf.input_envelope(replay.recipe, replay.source_sha256, link, geometry))
-            out.append(PlannedRound(replay.id, uuid, replay.map_name, n, current, reason, link, pin))
+            out.append(PlannedRound(replay.id, uuid, replay.map_name, n, current, reason, link, pin, key))
     return out
 
 
