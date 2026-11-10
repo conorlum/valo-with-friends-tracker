@@ -1474,6 +1474,7 @@
     this.highlight = null;                         // the slot whose control is highlighted
     this.canvas = root.querySelector("[data-replay-canvas]");
     this.ctx = this.canvas.getContext("2d");
+    fitMapToWindow(root);
     this.map = new Image();
     this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (map px - o) * k
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
@@ -1485,6 +1486,26 @@
     this.lastFrame = null;
     this.tick = this.tick.bind(this);
     requestAnimationFrame(this.tick);
+  }
+
+  // The linked page's map is as tall as the window has room for: from where the map starts on the page (below
+  // the site's nav and any coach strip, whatever their height) to the window's bottom, less the playback controls
+  // and timeline under it and a small margin, so the map and its controls fit on one screen with the page at the
+  // top. Sets --replay-map-h, which the stylesheet sizes the map and the columns beside it from (its own fallback
+  // is 100vh - 8rem); re-measured when the window is resized and once everything has loaded.
+  function fitMapToWindow(root) {
+    if (!root.classList.contains("is-linked")) return;
+    var stage = root.querySelector(".replay-stage"), below = root.querySelector(".replay-scrub-wrap");
+    if (!stage) return;
+    function fit() {
+      var s = stage.getBoundingClientRect();
+      var under = below ? Math.max(0, below.getBoundingClientRect().bottom - s.bottom) : 0;
+      var room = window.innerHeight - (s.top + window.scrollY) - under - 12;
+      root.style.setProperty("--replay-map-h", Math.max(280, Math.floor(room)) + "px");
+    }
+    fit();
+    window.addEventListener("resize", fit);
+    window.addEventListener("load", fit);
   }
 
   // The smallest square around the minimap's opaque pixels, with a margin: the view the

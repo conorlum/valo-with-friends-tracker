@@ -1718,30 +1718,91 @@ table.compact-table .badge-score {
 /* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
 .replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
   --replay-smoke-core: rgba(16, 18, 24, 0.84); }
-.replay.is-linked { --replay-side-w: minmax(320px, 400px); max-width: none; }
+/* --replay-map-h: the map's height (and so its width), and the height of the coach points' box beside it. */
+.replay.is-linked { --replay-side-w: minmax(320px, 400px); --replay-map-h: calc(100vh - 240px); max-width: none; }
 .replay-body { display: block; }
-/* Medium screens: the map with the tabs beside it, the players panel under the map. */
+/* Medium screens: the title across the top, the map with the tabs beside it, the round banner above the map and
+   the players panel under it. The title and the banner are items of this grid (replays/_player.html). */
 .replay.is-linked .replay-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--replay-side-w);
-  grid-template-areas: "main side" "board side";
+  grid-template-areas: "head head" "banner side" "main side" "board side";
   gap: 1.25rem;
   align-items: start;
 }
+.replay.is-linked .replay-body > .replay-header { grid-area: head; }
+.replay.is-linked .replay-body > .replay-banner { grid-area: banner; margin: 0; }
 .replay.is-linked .replay-main { grid-area: main; }
 .replay.is-linked .replay-board { grid-area: board; }
 .replay.is-linked .replay-side { grid-area: side; }
-/* Wide screens: the players panel left of the map, team 1 above team 2; the map column is as wide as the map is
-   tall, and the tabs take what's left (up to a cap), so the page fills the monitor rather than a fixed width. */
+/* Wide screens: three columns from the top of the page. Left: the title, the round banner and the players panel
+   (team 1 above team 2). Middle: the map, then the playback controls and everything else under it. Right: the tabs.
+   The map is the content: replay.js (fitMapToWindow) sets --replay-map-h to the room from the map's top to the
+   window's bottom less the controls and timeline under it, so the map and its controls fit on one screen; the
+   map takes that width first (--replay-map-w, less only when the two side columns at their narrowest leave less:
+   46rem is those two, the gaps, the edge space and the page's padding). The side columns grow into the rest of the
+   width, up to 32rem and 30rem, and both end level with the map's bottom.
+   How: .replay-main's children join the grid (display: contents). The map spans the first three rows, the left
+   column's title, banner and players; the players row is 1fr, so it gets the map's height less the title and
+   banner. The players panel and the tabs column are size-contained, so their content never makes those rows
+   taller: they stretch to them and scroll inside. Everything else under the map takes the rows after.
+   Each player row is two lines: name, health and K/D/A on the first; health bar, utility and credits beside it (a
+   long name is cut short; its title has all of it). */
 @media (min-width: 1400px) {
-  .replay.is-linked { --replay-side-w: minmax(320px, 560px); }
-  .replay.is-linked .replay-body {
-    grid-template-columns: minmax(26rem, 32rem) minmax(0, max(280px, calc(100vh - 240px))) var(--replay-side-w);
-    grid-template-areas: "board main side";
-    justify-content: center;
+  .replay.is-linked, .replay.is-linked.has-coach {
+    --replay-side-w: minmax(18rem, 30rem);
+    --replay-map-h: calc(100vh - 8rem);
+    --replay-map-w: min(max(280px, var(--replay-map-h)), calc(100vw - 46rem));
   }
-  .replay.is-linked .replay-board { grid-template-columns: minmax(0, 1fr); margin: 0; }
-  .replay.is-linked .replay-board .replay-pl-row { padding: 0.3rem 0; }
+  .replay.is-linked .replay-body {
+    grid-template-columns: minmax(17rem, 32rem) var(--replay-map-w) var(--replay-side-w);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas: none;
+    gap: 0.6rem 1.25rem;
+    justify-content: center;
+    padding-inline: 2rem;
+  }
+  .replay.is-linked .replay-body > .replay-header { grid-area: auto; grid-column: 1; grid-row: 1; margin: 0; }
+  .replay.is-linked .replay-body > .replay-banner { grid-area: auto; grid-column: 1; grid-row: 2; }
+  .replay.is-linked .replay-board {
+    grid-area: auto; grid-column: 1; grid-row: 3; align-self: stretch; contain: size;
+    display: flex; flex-direction: column; gap: 0.4rem; box-sizing: border-box; margin: 0; overflow-y: auto;
+  }
+  /* The map starts just under the nav: the page's top padding would be height the map loses. */
+  main:has(.replay.is-linked) { padding-top: 0.5rem; }
+  .replay.is-linked .replay-main { display: contents; }
+  .replay.is-linked .replay-main > * { grid-column: 2; min-width: 0; margin-top: 0; margin-bottom: 0; }
+  .replay.is-linked .replay-main > .replay-stage { grid-row: 1 / span 3; }
+  .replay.is-linked .replay-main .replay-canvas { width: 100%; }
+  .replay.is-linked .replay-side { grid-area: auto; grid-column: 3; grid-row: 1 / span 3; align-self: stretch; contain: size; }
+  .replay.is-linked .replay-header h1 { font-size: 1.5rem; margin: 0 0 0.15rem; }
+  .replay.is-linked .replay-header .replay-note { margin: 0; font-size: 0.85rem; }
+  .replay.is-linked .replay-board .replay-pl-team {
+    flex: 1 1 0; min-height: min-content; display: flex; flex-direction: column; padding: 0.25rem 0.6rem;
+  }
+  .replay.is-linked .replay-board .replay-pl-head { margin: 0; font-size: 0.7rem; line-height: 1.3; }
+  .replay.is-linked .replay-board .replay-pl-row {
+    flex: 1 1 0; min-height: min-content;
+    grid-template-columns: 2.2rem minmax(0, 1fr) auto; grid-template-areas: "agent main nums" "agent kit nums";
+    align-content: center; gap: 0.1rem 0.5rem; padding: 0.1rem 0;
+  }
+  .replay.is-linked .replay-board .replay-pl-agent { width: 2.2rem; height: 2.2rem; }
+  .replay.is-linked .replay-board .replay-pl-top { margin-bottom: 0.15rem; font-size: 0.9rem; line-height: 1.25; }
+  .replay.is-linked .replay-board .replay-pl-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .replay.is-linked .replay-board .replay-pl-kit { gap: 0.15rem; }
+  .replay.is-linked .replay-board .replay-pl-ability { width: 1.25rem; height: 1.25rem; }
+  .replay.is-linked .replay-board .replay-pl-ability img { width: 1rem; height: 1rem; }
+  .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.6rem; bottom: -4px; }
+  .replay.is-linked .replay-board .replay-pl-ult { width: 1.35rem; height: 1.35rem; margin-left: 0.1rem; }
+  .replay.is-linked .replay-board .replay-pl-ult img { width: 0.95rem; height: 0.95rem; }
+  .replay.is-linked .replay-board .replay-pl-nums { font-size: 0.72rem; line-height: 1.15; gap: 0; }
+  /* The tabs column ends level with the map: the tabs stay put and the open panel scrolls in what is left. */
+  .replay.is-linked .replay-side { display: flex; flex-direction: column; box-sizing: border-box; }
+  .replay.is-linked .replay-side > .replay-tabs { flex: none; }
+  .replay.is-linked .replay-side > [data-replay-panel]:not([hidden]) {
+    flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; margin-bottom: 0; padding-right: 0.5rem;
+  }
+  .replay.is-linked .replay-side > [data-replay-panel] .replay-feed { max-height: none; }
 }
 .replay-title-suffix { color: var(--ink-muted); font-size: 0.6em; font-weight: 500; }
 .replay-crumbs { color: var(--ink-muted); margin: 0 0 0.5rem; }
@@ -1972,7 +2033,7 @@ table.compact-table .badge-score {
 .replay-list th, .replay-list td { padding: 0.35rem 0.75rem; border-top: 1px solid var(--border); text-align: left; }
 
 @media (max-width: 960px) {
-  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "board" "side"; }
+  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "banner" "main" "board" "side"; }
   .replay-feed { max-height: 320px; }
 }
 
@@ -1998,7 +2059,7 @@ table.compact-table .badge-score {
 
 /* The replay page gets the full width: the map is the content. */
 main:has(.replay.is-linked) { max-width: none; }
-.replay.is-linked .replay-canvas { width: min(100%, calc(100vh - 240px)); min-width: 280px; margin: 0 auto; }
+.replay.is-linked .replay-canvas { width: min(100%, var(--replay-map-h)); min-width: 280px; margin: 0 auto; }
 
 /* Replay upload: the file's upload progress, then the parse's elapsed time (templates/replays/upload*.html). */
 .upload-progress { margin: 1rem 0 0.5rem; }
@@ -2146,7 +2207,7 @@ main:has(.replay.is-linked) { max-width: none; }
 .replay.has-coach .replay-tabs { flex-wrap: wrap; }
 @media (min-width: 961px) {
   .replay.has-coach { --replay-side-w: minmax(360px, 480px); }
-  .coach-panel { max-height: max(320px, calc(100vh - 240px)); overflow-y: auto; padding-right: 0.5rem; }
+  .coach-panel { max-height: max(320px, var(--replay-map-h, calc(100vh - 240px))); overflow-y: auto; padding-right: 0.5rem; }
 }
 .coach-panel { margin-bottom: 1.25rem; }
 .coach-panel .coach-point:first-child { border-top: 0; padding-top: 0; }
