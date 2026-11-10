@@ -205,6 +205,13 @@ def control(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
+        from app.replays import layouts
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        task = json.loads(stdin)
+        if task["map"] not in layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"):
+            link.post_result({"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
+                              "key": task.get("key"), "error": "layout assets are absent from this run"})
+            return
         missing = _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
         if missing:
             # Building it here would be the very rebuild the lease exists to avoid, possibly in every round released
@@ -213,7 +220,6 @@ def control(args: dict, link: WorkerLink) -> None:
             link.post_result({"status": "failed", "error_kind": "cache_input", "error": missing})
             return
         before = _cache_files(cache)
-        stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
         unsent = _post_caches(link, cache, before, args["map"])
         if unsent:

@@ -23,6 +23,11 @@ def map_of(asset_key: str) -> str:
     return _SUFFIX.sub("", asset_key)
 
 
+def control_layouts(index_path) -> list[str]:
+    """The control assets shipped with this worker or Workflow image."""
+    return sorted(json.loads(Path(index_path).read_text(encoding="utf-8"))["maps"])
+
+
 def key_for(map: str, patch: tuple[int, int] | None) -> str:
     return map if patch is None else f"{map}_{patch[0]}_{patch[1]}"
 

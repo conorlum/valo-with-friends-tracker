@@ -18,7 +18,7 @@ from pathlib import Path
 
 KEPT = 3
 RESERVE = 2 * 1024 ** 3
-_NAME = re.compile(r"^(?P<folder>feature-rows/)?(?P<map>[A-Za-z]+)\.(?P<key>[0-9a-f]{16}|[0-9a-f]{64})\.npz$")
+_NAME = re.compile(r"^(?P<folder>feature-rows/)?(?P<map>[A-Za-z][A-Za-z0-9]*(?:_\d+_\d+)?)\.(?P<key>[0-9a-f]{16}|[0-9a-f]{64})\.npz$")
 _LOCK = threading.Lock()          # every install and prune; reads (inputs) need none: files are replaced atomically
 EVICTIONS = 0                     # files `store` dropped for room since this process started (/health)
 KEPT_PRUNED = 0                   # older generations `store` dropped past KEPT since this process started (/health)

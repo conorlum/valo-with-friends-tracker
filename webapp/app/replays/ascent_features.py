@@ -12,6 +12,7 @@ import json
 import math
 from pathlib import Path
 
+from app.replays import layouts
 from app.replays.map_feature_door_evidence import _door_parameter_evidence
 
 VERSION = 1
@@ -141,7 +142,7 @@ def read_capture(export_dir: Path, map_name: str, manifest: dict):
     # No "opening" flag: openings are qualified per event (the witness rule), and the signals carry them.
     report = {'v': VERSION, 'status': 'unavailable', 'rows': 0, 'errors': [],
               'source_sha256': manifest.get('source_sha256')}
-    if map_name != 'Ascent' or not path.is_file():
+    if layouts.map_of(map_name) != 'Ascent' or not path.is_file():
         return [], report
     groups = {g['path']: g for g in manifest.get('net_field_export_groups', [])}
     signals, digest = [], hashlib.sha256()
@@ -223,7 +224,7 @@ def attach(replay, export_dir, manifest, windows):
     except (DecodeError, OSError) as exc:
         signals, report = [], {'v': VERSION, 'status': 'partial', 'errors': [{'reason': str(exc)[:160]}]}
     replay.report['map_features'] = report
-    if replay.map_name != 'Ascent':
+    if layouts.map_of(replay.map_name) != 'Ascent':
         return
     for number, (start, decided, end) in enumerate(windows, 1):
         if number not in replay.rounds:

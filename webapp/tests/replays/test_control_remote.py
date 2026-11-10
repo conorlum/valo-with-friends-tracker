@@ -52,13 +52,14 @@ class FakeWorker:
     `gaps` is the `control.gaps_protocol` its health names: None is a worker image from before timing gaps
     (the default, so every older test here is also the old-worker regression), 1 a capable one."""
 
-    def __init__(self, answer=None, busy_after=None, gaps=None, features=None):
+    def __init__(self, answer=None, busy_after=None, gaps=None, features=None, layouts=None):
         self.tasks, self.jobs, self.busy_after = {}, {}, busy_after
         self.answer = answer or self.ok
         self.forget = set()
         self.heights, self.pushed = set(), []
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
         self.features = features
+        self.layouts = layouts
         self.runners = None             # {"control": "workflow"}: the worker's control is on Workflows
         self.warm_builds = None         # the worker's control.warm_builds block (REPLAY_WARM_BUILDS on)
 
@@ -71,6 +72,8 @@ class FakeWorker:
             control["gaps_protocol"] = self.gaps
         if self.features is not None:
             control['features'] = self.features
+        if self.layouts is not None:
+            control['layouts'] = self.layouts
         if self.warm_builds is not None:
             control["warm_builds"] = self.warm_builds
         return {"ok": True, "queued": 0, "control": control,

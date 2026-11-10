@@ -37,6 +37,8 @@ from app.replays import map_feature_schema as ms
 from app.replays import map_feature_inputs as fi
 from app.replays import map_feature_artifacts as fa
 
+from app.replays import layouts
+
 COMPILER_VERSION = fi.FEATURE_COMPILER_VERSION
 P = PAINT_GRID
 CELL_UV = ms.UV_MAX / P          # 39.0625 u/v per paint cell (exact in binary)
@@ -1145,7 +1147,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                         for m in candidate.get('members', []) if m in features]
             if any(all_keys.count(key) > 1 for key in keys):
                 reasons.append('duplicate Ascent replay binding')
-            if geo is not None and geo.name != 'Ascent':
+            if geo is not None and layouts.map_of(geo.name) != 'Ascent':
                 reasons.append('Ascent consumer cannot run on another map')
             if geo is not None and (geo.heights is None or geo.movement_only) and any(
                     features[m].get('sliding') for m in members if m in features):
@@ -1177,7 +1179,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                 reasons += route_reasons
         if b.get('runtime_consumer') == 'map_pool_replay_v1':
             from app.control.map_pool_runtime import readiness as pool_readiness, MAPS
-            if geo is not None and geo.name not in MAPS:
+            if geo is not None and layouts.map_of(geo.name) not in MAPS:
                 reasons.append('map-pool replay consumer cannot run on this map')
             if geo is not None and (geo.heights is None or geo.movement_only) and any(features[m].get('sliding') or features[m].get('rotation')
                                                               for m in members if m in features):

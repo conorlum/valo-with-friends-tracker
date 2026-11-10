@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 import numpy as np
 
+from app.replays import layouts
+
 CONSUMER = 'quiet_rope_v1'
 MAPS = frozenset({'Split', 'Summit', 'Abyss'})
 
@@ -46,7 +48,7 @@ def landing_node(geo, cell, landing, *, xy=None):
 def readiness(geo, mf, members):
     from app.control import features as cf
     reasons = []
-    if geo.name not in MAPS or geo.heights is None:
+    if layouts.map_of(geo.name) not in MAPS or geo.heights is None:
         reasons.append('quiet ropes require a supported map and measured height asset')
     features = {f['id']: f for f in mf.get('features', [])}
     routes = [r for r in mf.get('routes', []) if r.get('owner') in members]

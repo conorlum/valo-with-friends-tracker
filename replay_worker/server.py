@@ -1272,7 +1272,9 @@ WARM_SECONDS_KEPT = 20   # recent warm-build durations /health shows
 WARM_START_RETRY_S = 60  # after Render refused a warm build's start (a deploy gap)
 WARM_START_REFUSED_MAX_S = 1800   # refused starts past this long count as failures (rule 4's fallback)
 HEIGHTS_KEPT = 3                 # pushed height assets kept per map (the newest); a missing one is pushed again
-MAP_NAME = re.compile(r"^[A-Za-z0-9]{1,64}$")
+from app.replays import layouts
+
+MAP_NAME = layouts.ASSET_KEY
 HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
 # The control child's task and result protocol, told to the web app in /health: 1 means a task's `gaps` block
 # is understood (replay_worker/control_job.py; the image ships app/gaps); 2, its result also carries the
@@ -2405,6 +2407,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                         "limits": {"timeout_s": worker.settings.timeout_s, "max_bytes": worker.settings.max_bytes,
                                    "queue_size": worker.settings.queue_size, "memory_cap": worker.memory_cap}}
                 body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
+                                   "layouts": layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"),
                                    "features": feature_artifacts.protocol_identity(),
                                    **(control.counts() if control else {})}
                 if control is not None:
@@ -2598,6 +2601,12 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                     raise ValueError("missing fields")
             except ValueError:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a control task"})
+            asset_key = str(task["map"])
+            if not MAP_NAME.fullmatch(asset_key):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "invalid layout key"})
+            if asset_key not in layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"):
+                return self._send(HTTPStatus.CONFLICT, {"code": "unknown_layout", "map": asset_key,
+                                                      "error": "layout assets are absent from this worker"})
             digest = task.get("height")
             if digest and not (MAP_NAME.match(str(task["map"])) and HEIGHT_DIGEST.match(str(digest))
                                and height_path(control.settings, str(task["map"]), str(digest)).is_file()):

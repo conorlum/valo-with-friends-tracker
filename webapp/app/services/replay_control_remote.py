@@ -129,6 +129,10 @@ class WorkerBusy(Exception):
     """The worker's control queue is full (503)."""
 
 
+class UnknownLayout(Exception):
+    """This worker image lacks the layout; hold the round without spending a try."""
+
+
 class Unreachable(Exception):
     pass
 
@@ -183,6 +187,8 @@ class ControlClient:
             return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
                                                      headers={"Content-Type": "application/json"}))
         except Conflict as conflict:
+            if conflict.body.get('code') == 'unknown_layout':
+                raise UnknownLayout(task['map']) from conflict
             if conflict.body.get('code') == 'needs_features':
                 raise NeedsFeatures(conflict.body.get('digest')) from conflict
             if conflict.body.get("height"):
@@ -385,6 +391,16 @@ def supports_gaps(health) -> bool:
     return control.get("enabled") is True and type(protocol) is int and protocol == GAPS_PROTOCOL
 
 
+def supports_layout(health, key: str) -> bool:
+    """Base assets remain compatible with workers predating layout advertisement."""
+    from app.replays import layouts
+    if layouts.map_of(key) == key:
+        return True
+    control = health.get('control') if isinstance(health, dict) else None
+    keys = control.get('layouts') if isinstance(control, dict) else None
+    return isinstance(keys, list) and key in keys
+
+
 def _gaps_capable(client) -> bool:
     try:
         return supports_gaps(client.health())
@@ -488,6 +504,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 counts["timed_out"] += 1
             continue
         del state.in_flight[key]
+        if status == 'failed' and job.get('error_code') == 'unknown_layout':
+            counts['held'] += 1
+            continue
         if status == "done":
             result = job.get("result") or {}
             if result.get("revision") != cf.CONTROL_REVISION or result.get("data_version") != cf.DATA_VERSION:
@@ -601,7 +620,7 @@ def send_key(p, kind: str, capable: bool) -> str:
 
 
 def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: bool = False,
-              held: frozenset = frozenset()) -> list:
+              held: frozenset = frozenset(), health=None, counts=None) -> list:
     """Of the planned `rounds`, those that may be sent now, each with its worker key: not held back, no job
     for the round in flight (whatever its kind, so a change of capability never makes a second one), and
     tries left for that key. `kind` is "control" (with `capable` the task will carry a gaps block) or
@@ -610,6 +629,10 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     out = []
     for p in rounds:
         if p.replay_id in held or (p.replay_id, p.round_number) in flying:
+            continue
+        if not supports_layout(health, p.asset_key or p.map_name):
+            if counts is not None:
+                counts['held'] += 1
             continue
         key = send_key(p, kind, capable)
         if state.may_try(key, now):
@@ -697,6 +720,9 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
         except WorkerBusy:
             counts["busy"] += 1
             return True
+        except UnknownLayout:
+            counts['held'] += 1
+            continue
         except (Refused, Conflict, Rejected, ValueError) as refused:
             # This round's own trouble (the worker turned it or a push down; its artifact or height can't be
             # read here: FeatureArtifactError and FeatureInputsError are ValueErrors). It spends a try and the
@@ -825,7 +851,8 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, todo, kind="control", capable=capable, held=held),
+                             _sendable(state, now, todo, kind="control", capable=capable, held=held,
+                                       health=health, counts=counts),
                              kind="control", features_capable=features_capable)
     # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
     if not state.last_found and capable:
@@ -834,9 +861,10 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
         wanted = [p for p in wanted if p.map_name not in held_maps]
         state.last_found = _send(session, client, state, now, counts,
-                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps",
+                                 _sendable(state, now, wanted, kind="gaps", held=held,
+                                           health=health, counts=counts), kind="gaps",
                                  features_capable=features_capable)
-    if held_maps:
+    if held_maps or counts['held']:
         state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
 
@@ -868,7 +896,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "refused", "pushed", "gaps_sent", "gaps_stored",
+                                             "busy", "unreachable", "refused", "held", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else

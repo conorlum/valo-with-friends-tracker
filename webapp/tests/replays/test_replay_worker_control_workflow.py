@@ -346,8 +346,10 @@ def test_a_new_height_digest_gets_its_own_warm_build(warm_remote):
     assert warm_starts(render) == 2
 
 
-def test_a_warm_build_that_keeps_failing_falls_back_to_one_warming_round(warm_remote):
+def test_a_warm_build_that_keeps_failing_falls_back_to_one_warming_round(warm_remote, monkeypatch):
     control, render, _, _ = warm_remote
+    # "Broken" stands for a shipped layout whose warm build fails, so the run's layout check must know it.
+    monkeypatch.setattr("app.replays.layouts.control_layouts", lambda path: ["Ascent", "Broken"])
     job = control.submit(round_task("x", map_name="Broken", build=True))
     assert wait_done(control, [job])[0].status == "done"
     assert warm_starts(render) == server.WARM_BUILD_TRIES
