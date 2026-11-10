@@ -93,7 +93,8 @@
       panel.querySelector("[data-progress-headline]").textContent = p.done + " of " + p.total_rounds +
         " rounds fully computed (" + pct.toFixed(1) + "%) across " + p.total_replays + " replays · " +
         p.needs_work + " need work: " + p.worker_will_do + " the worker will do on its own, " +
-        p.needs_a_person + " need a person.";
+        p.needs_a_person + " need a person." +
+        (p.unsupported ? " " + p.unsupported + " not supported in their round." : "");
       var rows = panel.querySelector("[data-progress-rows]");
       rows.textContent = "";
       var done = document.createElement("tr");
@@ -101,7 +102,8 @@
       rows.appendChild(done);
       p.steps.forEach(function (s) {
         var tr = document.createElement("tr");
-        cell(tr, s.label); cell(tr, s.rounds, "num"); cell(tr, s.automatic ? "The worker, automatically" : "A person");
+        cell(tr, s.label); cell(tr, s.rounds, "num");
+        cell(tr, s.unsupported ? "Nobody: not supported" : s.automatic ? "The worker, automatically" : "A person");
         rows.appendChild(tr);
       });
       var j = p.judged_against;
