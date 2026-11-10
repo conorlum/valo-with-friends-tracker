@@ -77,8 +77,8 @@ demo (it never has control).
   in its own table (one row per replay round, keyed by its control fingerprint), never in control's summary (that
   would change every fingerprint). Per map, the replays of patches after the current layout's `drawn_from` are
   compared with that layout's normal share (its replays up to `drawn_from`). When they land in walls above the
-  threshold, Site health raises an error, `map_layout_walls` (a recorded kind, keyed `<map>:<first patch>`): the
-  map, the first patch, the number of replays, and where the positions land. The threshold is a share of positions,
+  threshold, Site health raises an error, `map_layout_walls` (a recorded kind, keyed `<map>:<patch>`, one per patch over
+  the threshold; a pass resolves every key it didn't raise): the map, the patch, the number of replays, and where the positions land. The threshold is a share of positions,
   set from today's replays and calibrated on Corrode's pre-redraw walk mask (from git history, before PR #197)
   against today's (PROVISIONAL). It clears itself once a new layout covers those replays (they recompute and stop
   landing in walls); a false alarm is cleared the usual way, by an entry in `site_health_resolved.json`. A new
