@@ -1,0 +1,122 @@
+{
+ "version": 1,
+ "maps": {
+  "Abyss": [
+   {
+    "id": "Abyss@base",
+    "key": "Abyss",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Ascent": [
+   {
+    "id": "Ascent@base",
+    "key": "Ascent",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Bind": [
+   {
+    "id": "Bind@base",
+    "key": "Bind",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Breeze": [
+   {
+    "id": "Breeze@base",
+    "key": "Breeze",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Corrode": [
+   {
+    "id": "Corrode@base",
+    "key": "Corrode",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Fracture": [
+   {
+    "id": "Fracture@base",
+    "key": "Fracture",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Haven": [
+   {
+    "id": "Haven@base",
+    "key": "Haven",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Icebox": [
+   {
+    "id": "Icebox@base",
+    "key": "Icebox",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Lotus": [
+   {
+    "id": "Lotus@base",
+    "key": "Lotus",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Pearl": [
+   {
+    "id": "Pearl@base",
+    "key": "Pearl",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Split": [
+   {
+    "id": "Split@base",
+    "key": "Split",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Summit": [
+   {
+    "id": "Summit@base",
+    "key": "Summit",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ],
+  "Sunset": [
+   {
+    "id": "Sunset@base",
+    "key": "Sunset",
+    "start": null,
+    "drawn_from": "13.08",
+    "regions": null
+   }
+  ]
+ }
+}
