@@ -335,7 +335,7 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
     if not 1 <= round_number <= replay.round_count:
         raise HTTPException(status_code=404)
     answer = control_service.round_control(db, replay, round_number)
-    if answer.status in ("no_map", "old_blob"):
+    if answer.status in ("no_map", "old_blob", "layout_pending", "layout_unknown"):
         return JSONResponse({"status": answer.status}, status_code=404)
     if answer.status == "not_ready":
         return JSONResponse({"status": "not_ready"}, status_code=202,
@@ -351,7 +351,10 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
 def _control_replay_or_404(db: Session, match_uuid: str):
     """The replay, when its map has the layer and its blob can have control; else a 404 that says why."""
     replay = _replay_or_404(db, match_uuid)
-    if control_service.map_layer(replay.map_name) is None:
+    selection = control_service.layout_of(replay)
+    if selection.state != 'ok':
+        return replay, JSONResponse({"status": selection.state}, status_code=404)
+    if control_service.map_layer(selection.layout.asset_key) is None:
         return replay, JSONResponse({"status": "no_map"}, status_code=404)
     if control_service.blob_too_old(replay):
         return replay, JSONResponse({"status": "old_blob"}, status_code=404)
