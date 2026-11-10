@@ -1,7 +1,9 @@
 """Control selects replay layouts without changing the base identities."""
 
+import base64
 import copy
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ from sqlalchemy.orm import Session
 from test_control_store import db, factory, linked, put_row
 from test_replay_store import condensed, pg
 from test_replay_routes import request
+from test_control_remote import FakeWorker
 from app.control import geometry as cg
 from app.db import Base
 from app.models.replay import ControlFeatureArtifact, ControlHeight, Replay, ReplayRound
@@ -18,6 +21,8 @@ from app.replays import layouts
 from app.routers import replays as routes
 from app.services import control_feature_artifacts as artifacts
 from app.services import replay_control as rc
+from app.services import replay_control_remote as remote
+from app.services import replay_gaps
 from tests.replays import layout_golden as golden
 
 
@@ -140,6 +145,89 @@ def test_base_only_map_with_unparsed_branch_computes(db, linked):
     assert planned.computable
     assert planned.asset_key == linked.map_name
     assert rc.PlannedRound(1, "synthetic", "Ascent", 1, None, "missing").asset_key is None
+
+
+@pytest.mark.parametrize("branch,asset_key", [
+    ("release-13.08", "Toy"), ("release-13.10", "Toy_13_10"), ("release-13.08", None),
+])
+@pytest.mark.parametrize("kind", ["plain", "full", "gaps"])
+def test_dispatch_task_uses_layout_asset_key(factory, db, linked, layout_assets, monkeypatch,
+                                           branch, asset_key, kind):
+    linked.map_name, linked.game_branch = "Toy", branch
+    db.commit()
+    if kind == "gaps":
+        put_row(db, linked, 1)
+    [planned] = rc.plan(db, rounds={1}, force=True)
+    planned = replace(planned, asset_key=asset_key, reason="gaps" if kind == "gaps" else "missing")
+    monkeypatch.setattr(replay_gaps.choke_assets, "asset_hash", lambda name: name + "-chokes")
+    monkeypatch.setattr(rc, "plan", lambda session, **kwargs:
+                        [planned] if kind != "gaps" or kwargs.get("force") else [])
+    worker = FakeWorker(gaps=remote.GAPS_PROTOCOL if kind != "plain" else None)
+    counts = remote.cycle(factory, worker, remote.State(), now=0)
+    assert counts["gaps_sent" if kind == "gaps" else "sent"] == 1
+    [task] = worker.tasks.values()
+    key = asset_key or "Toy"
+    expected = {
+        "key": remote.task_key(linked.id, 1, planned.fingerprint),
+        "map": key,
+        "blob": base64.b64encode(db.get(ReplayRound, (linked.id, 1)).data).decode("ascii"),
+        "link": {"sides": planned.link["sides"], "db_deaths": planned.link["db_deaths"]},
+        "height_mode": planned.inputs.height_mode,
+    }
+    if kind != "plain":
+        gap_fp = replay_gaps.gap_fingerprint(planned.fingerprint, key)
+        expected["gaps"] = {
+            "replay_id": linked.id, "round": 1, "fingerprint": planned.fingerprint,
+            "gap_fingerprint": gap_fp, "engine_key": replay_gaps.engine_key(planned.fingerprint, key),
+        }
+        make_key = remote.gaps_key if kind == "gaps" else remote.full_key
+        expected["key"] = make_key(linked.id, 1, planned.fingerprint, gap_fp)
+    if kind == "gaps":
+        expected["gaps_only"] = True
+    assert task == expected
+
+
+@pytest.mark.parametrize("branch,key", [("release-13.08", "Toy"), ("release-13.10", "Toy_13_10")])
+@pytest.mark.parametrize("archived", [False, True])
+def test_dispatch_height_push_uses_layout_asset_key(factory, db, linked, layout_assets, monkeypatch,
+                                                  branch, key, archived):
+    linked.map_name, linked.game_branch = "Toy", branch
+    db.commit()
+    [planned] = rc.plan(db, rounds={1})
+    digest, features = "a" * 12, "f" * 64 if archived else None
+    planned = replace(planned, inputs=rc.PinnedInputs(
+        {**planned.inputs.geometry, "height": digest}, height_mode="asset", artifact_digest=features,
+        envelope={} if archived else None))
+    monkeypatch.setattr(rc, "plan", lambda *args, **kwargs: [planned])
+    reads = []
+    monkeypatch.setattr(rc, "exact_height_bytes", lambda session, name, sha:
+                        reads.append((name, sha)) or b"synthetic height")
+    monkeypatch.setattr(artifacts, "archived_height_bytes", lambda session, sha:
+                        reads.append(sha) or b"synthetic height")
+    worker = FakeWorker(features=remote.fa.protocol_identity())
+    counts = remote.cycle(factory, worker, remote.State(), now=0)
+    assert counts["sent"] == counts["pushed"] == 1
+    assert reads == ([features] if archived else [(key, digest)])
+    assert worker.pushed == [(key, digest, b"synthetic height")]
+
+
+def test_discovery_prepares_distinct_available_layout_keys(factory, db, linked, layout_assets, monkeypatch):
+    _, _, registry = layout_assets
+    registry["maps"]["Toy"].append({"id": "Toy@13.12", "key": "Toy_13_12",
+        "start": "13.12", "drawn_from": "13.12", "regions": None})
+    linked.map_name, linked.game_branch = "Toy", "release-13.08"
+    for number, branch in enumerate(("release-13.10", "release-13.10", "release-13.12", "b"), start=2):
+        db.add(Replay(match_uuid=f"00000000-0000-4000-8000-{number:012d}", map_name="Toy", round_count=1,
+                      format_version=linked.format_version, recipe=linked.recipe, game_branch=branch,
+                      source_sha256=linked.source_sha256, source="local", link_status="unlinked", link_inputs={}))
+    db.commit()
+    prepared = []
+    monkeypatch.setattr(rc, "prepare_discovered", lambda session_factory, keys, retry_after, now:
+                        prepared.append(list(keys)))
+    monkeypatch.setattr(remote, "_submit", lambda *args, **kwargs: None)
+    remote.cycle(factory, FakeWorker(), remote.State(), now=0)
+    [keys] = prepared
+    assert sorted(keys) == ["Toy", "Toy_13_10"]
 
 
 @pytest.mark.slow
