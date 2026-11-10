@@ -522,6 +522,20 @@ def test_failures_behind_a_local_reingest_promise_no_worker_retry(errors, factor
     assert found["note"] == "1 failed rows wait behind an earlier step that needs a person"
 
 
+def test_old_gap_failure_behind_an_unsupported_round_does_not_wait_on_a_person(errors, factory, db, linked):
+    # Round two R2-4: control replaced by an unsupported failure, an older failed gap run still stored.
+    put_row(db, linked, 1, status="failed")
+    _gap_run(factory, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    db.commit()
+    assert kind(errors, db, "control_unsupported")["count"] == 1
+    gaps = kind(errors, db, "gaps_failed")
+    assert gaps["count"] == 0
+    assert gaps["note"] == "1 older failed rows sit behind a round map control doesn't support"
+    assert kind(errors, db, "needs_a_person")["count"] == 0
+
+
 @pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
 def test_moments_and_util_use_util_freshness(errors, db, linked, key, model):
     from app.services import replay_gaps

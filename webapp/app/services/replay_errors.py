@@ -429,7 +429,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             revision={"heights_revision": (rules or {}).get("revision"), "built_at": _iso(built_at)},
             reproduce=_height_command(map_name)))
 
-    waiting = Counter()
+    waiting, unsupported_behind = Counter(), Counter()
     for key, model, revision in (("control_unsupported", ReplayRoundControl, "control_revision"),
                                  ("control_failed", ReplayRoundControl, "control_revision"),
                                  ("gaps_failed", ReplayRoundGapRun, "gaps_revision")):
@@ -439,7 +439,10 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                 if replay_progress.is_unsupported(stored.error) != (key == "control_unsupported"):
                     continue
             state = states.get((stored.replay_id, stored.round_number))
-            if state != key and state is not None and not replay_progress.automatic(state) \
+            if state != key and state in replay_progress.UNSUPPORTED_STEPS:
+                # Behind a round control doesn't support: listed under that kind; nobody, person or worker, moves it.
+                unsupported_behind[key] += 1
+            elif state != key and state is not None and not replay_progress.automatic(state) \
                     and stored.replay_id in replays:
                 # Behind an earlier step only a person moves (a local re-ingest): no worker retry is coming.
                 waiting[key] += 1
@@ -452,8 +455,11 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                                       revision={revision: stored.revision, "computed_at": _iso(stored.computed_at)},
                                       reproduce=_round_command(replay, stored.round_number)))
 
-    for key, count in waiting.items():
-        notes[key] = f"{count} failed rows wait behind an earlier step that needs a person"
+    for key in waiting.keys() | unsupported_behind.keys():
+        notes[key] = "; ".join(n for n in (
+            f"{waiting[key]} failed rows wait behind an earlier step that needs a person" if waiting[key] else None,
+            f"{unsupported_behind[key]} older failed rows sit behind a round map control doesn't support"
+            if unsupported_behind[key] else None) if n)
 
     fresh = Freshness(db)
     for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)):

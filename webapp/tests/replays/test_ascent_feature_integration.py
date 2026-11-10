@@ -202,7 +202,53 @@ def test_opening_release_is_bounded_by_the_next_event(later, expected):
         calls.append(closure)
         return closure > .3
     assert _opening_release({}, timeline, 59.475, 5, later, blocked) == expected
-    assert len(calls) <= 2 + math.ceil(math.log2(5 * 10 ** 6))
+    assert len(calls) <= 2 + math.ceil(math.log2(5 * 10 ** 6 + 1000))
+
+
+def _cut(cutoff):
+    return lambda _feature, closure: None if closure is None else closure > cutoff
+
+
+def test_last_opening_of_the_round_still_releases():
+    # Round two R2-1: no next event (the round ends mid-opening) passed math.inf into math.ceil: OverflowError.
+    from app.control.feature_runtime import _opening_release
+    timeline = {'initial': 'closed', 'closing_s': 5, 'events': [{'t': 59.475, 'state': 'opening'}]}
+    assert _opening_release({}, timeline, 59.475, 5, math.inf, _cut(.3)) == 62.975001
+
+
+def test_zero_cutoff_releases_just_past_the_nominal_end():
+    # Round two R2-3: at 8.008 the closure reads 2.2e-16, so a zero cutoff first clears one tick later.
+    from app.control.feature_runtime import _opening_release
+    timeline = {'initial': 'closed', 'closing_s': 5,
+                'events': [{'t': 3.008, 'state': 'opening'}, {'t': 8.108, 'state': 'open'}]}
+    assert _opening_release({}, timeline, 3.008, 5, 8.108, _cut(0)) == 8.008001
+
+
+def test_opening_after_destruction_adds_no_release():
+    from app.control.feature_runtime import _opening_release
+    timeline = {'initial': 'closed', 'closing_s': 5,
+                'events': [{'t': 10, 'state': 'broken'}, {'t': 59.475, 'state': 'opening'}]}
+    assert _opening_release({}, timeline, 59.475, 5, math.inf, _cut(.3)) is None
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('last', [True, False])
+def test_release_one_float_past_its_tick_is_still_recorded(last):
+    # Round two R2-2: an opening at 6.501 releases at 10.001001; minus 1e-6 that is the float
+    # 10.001000000000001, already clear, so reopened_by saw no change there.
+    # R2-1 at runtime level: the opening as the round's last event.
+    from app.control.feature_runtime import FeatureRuntime
+    geo, _, _, data, _, _ = compiled_case(cutoff=.3)
+    events = [{'t': 1, 'state': 'closing'}, {'t': 6.002, 'state': 'closed'}, {'t': 6.501, 'state': 'opening'}]
+    if not last:
+        events.append({'t': 11.501, 'state': 'open'})
+    data['map_features']['features'][0]['events'] = events
+    runtime = FeatureRuntime(geo, data)
+    assert 10.001001 in runtime.transitions
+    doorway = runtime.sample(6.2)[0]
+    assert doorway.any()
+    reopened = runtime.reopened_by(11)
+    assert set(reopened[doorway]) == {10.001001}
 
 
 @pytest.mark.slow

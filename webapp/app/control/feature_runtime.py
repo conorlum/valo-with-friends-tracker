@@ -101,14 +101,21 @@ def _opening_release(feature, timeline, start, duration, later, movement_blocked
     Searched on that clock, so the instant the engine evaluates is the one checked here: a release found on
     the float line (62.97500000000001) rounds back to a blocked 62.975. None when the opening is cut short
     by the next event before it releases, or when blocking is undecided."""
-    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not duration > 0:
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not duration > 0 \
+            or not math.isfinite(duration) or state_at(timeline, start)['state'] != 'opening':
         return None
+    # Until the next event the door is this one motion (reversals already failed the round), so the search
+    # samples it alone instead of rescanning the whole timeline per step.
+    motion = {'initial': 'closed', 'closing_s': duration, 'events': [{'t': start, 'state': 'opening'}]}
 
     def blocked(k):
-        return movement_blocked(feature, state_at(timeline, k / CLOCK)['closure'])
+        return movement_blocked(feature, state_at(motion, k / CLOCK)['closure'])
 
     lo = math.ceil(start * CLOCK - 1e-3)                    # blocked: closure 1 at the start
-    hi = min(round((start + duration) * CLOCK), math.ceil(later * CLOCK - 1e-3) - 1)
+    # 1 ms past the nominal end, inside the 0.25 s grace: at the end itself closure can read 2e-16 (a zero cutoff).
+    hi = round((start + duration) * CLOCK) + 1000
+    if math.isfinite(later):                                # a last opening has no next event (round end)
+        hi = min(hi, math.ceil(later * CLOCK - 1e-3) - 1)
     if hi <= lo or blocked(lo) is not True or blocked(hi) is not False:
         return None
     while hi - lo > 1:                                      # closure falls monotonically while opening
@@ -296,7 +303,9 @@ class FeatureRuntime:
             for when in self.transitions:
                 # Moving panels use 1/16-second occupancy steps. Stay outside their
                 # floating-point boundary tolerance when checking the preceding pose.
-                before = self.sample(when - 1e-6)[0]
+                # The analytic clock's previous tick too: a release at 8.001001 minus 1e-6 is the float
+                # 8.001000000000001, already clear, so the release went unrecorded.
+                before = self.sample(min(when - 1e-6, (math.ceil(when * CLOCK - 1e-3) - 1) / CLOCK))[0]
                 after = self.sample(when)[0]
                 nodes = np.flatnonzero(before & ~after)
                 if len(nodes):

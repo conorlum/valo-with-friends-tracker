@@ -112,10 +112,10 @@ order, at the same `time_ms`, beside an unknown `#2` row.
 Stop adding "; reparse this recording" to every `inputs` failure. The stored error is `<error_code>: <message>` on
 both paths: the remote path already writes it, and the local command (`task.py` -> `feature_failure` ->
 `compute_control.py` -> `store_round`) stores the same text, so the classifier below sees the same prefix
-wherever the round was computed. The gaps-only fallbacks at `remote.py:527-531` drop the suffix too. The raised
-messages that a re-parse can fix (`feature_runtime.py:117`, `map_pool_runtime.py:168`) keep saying so; they also
-carry `features_source_unavailable` and are filed as not supported, which is accepted: on a current recipe they
-fire only for partial captures, which a re-parse doesn't fix either.
+wherever the round was computed. The gaps-only fallbacks at `remote.py:527-531` drop the suffix too. The two raised
+messages about an incomplete map timeline (`feature_runtime.py`, `map_pool_runtime.py`) dropped the suffix too
+(branch review B7): they carry `features_source_unavailable` and are filed as not supported, since on a current
+recipe they fire only for partial captures, which a re-parse doesn't fix.
 
 ### 4. Replays page (`app/services/replay_progress.py`)
 
