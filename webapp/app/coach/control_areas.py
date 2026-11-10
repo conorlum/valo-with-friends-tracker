@@ -13,14 +13,14 @@ from app.replays import format as fmt
 _OWNER = (None, 0, 0, 0, 1, 1, 1, 2, 2)
 
 
-def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
+def area_shares(data: bytes, asset_key: str, table: dict | None = None) -> dict:
     header, streams = cf.unpack_data(data)
     walk = cf.walk_bitmap(header)
     labels = []
     for cell in walk:
         u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
         v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
-        area = areas.area_at(map_name, u, v, table)
+        area = areas.area_at(asset_key, u, v, table)
         labels.append(area["name"] if area else None)
     names = sorted({name for name in labels if name})
     frames = cf.decode_states(streams["states"], len(header["ticks"]), len(walk))

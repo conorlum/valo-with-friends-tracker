@@ -1,5 +1,5 @@
 """Named map areas: a point's area is its nearest in-game callout (app/static/data/callouts.json, written by
-scripts/fetch_callouts.py). A map the file does not have has no areas; callers get None, never a guess."""
+scripts/fetch_callouts.py). A layout the file does not have has no areas; callers get None."""
 
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ def _table() -> dict:
         return {}
 
 
-def callouts(map_name: str, table: dict | None = None) -> list[dict]:
-    return (table if table is not None else _table()).get(map_name, [])
+def callouts(asset_key: str | None, table: dict | None = None) -> list[dict]:
+    return (table if table is not None else _table()).get(asset_key, [])
 
 
-def area_at(map_name: str, u: float, v: float, table: dict | None = None) -> dict | None:
+def area_at(asset_key: str | None, u: float, v: float, table: dict | None = None) -> dict | None:
     best = None
-    for c in callouts(map_name, table):
+    for c in callouts(asset_key, table):
         d = (c["u"] - u) ** 2 + (c["v"] - v) ** 2
         if best is None or d < best[0]:
             best = (d, c)

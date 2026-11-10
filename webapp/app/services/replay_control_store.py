@@ -41,20 +41,26 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
         except replay_control.InvalidControlInputs:
             return 'skipped: invalid actual inputs'
         if require_current:
-            identity = session.query(Replay.map_name, Replay.match_uuid).filter(Replay.id == replay_id).first()
+            identity = session.query(Replay.map_name, Replay.match_uuid, Replay.game_branch).filter(
+                Replay.id == replay_id).first()
             if identity is None:
                 return "skipped: the replay is gone"
+            selection = replay_control.layout_of(identity)
+            if selection.state != 'ok':
+                return "skipped: its inputs changed while computing"
+            asset_key = selection.layout.asset_key
+            # Keyed by the map, like the heights and gap-store locks: one lock serializes every layout of a map.
             replay_db.advisory_lock(session, control_heights.lock_name(identity.map_name))
             replay_db.advisory_lock(session, str(identity.match_uuid))
             session.expire_all()
             replay = session.get(Replay, replay_id)
-            if replay is None or (replay.map_name, replay.match_uuid) != tuple(identity):
+            if replay is None or (replay.map_name, replay.match_uuid, replay.game_branch) != tuple(identity):
                 return 'skipped: the replay changed while waiting for locks'
-            context = replay_control.resolve_current_geometry(session, replay.map_name)
+            context = replay_control.resolve_current_geometry(session, asset_key)
             current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay),
                                                        round_number, context=context)
             if current is None or current != fingerprint or (planned_inputs is not None and
-                    replay_control.geometry_inputs(replay.map_name, context=context) != planned_inputs.geometry):
+                    replay_control.geometry_inputs(asset_key, context=context) != planned_inputs.geometry):
                 return "skipped: its inputs changed while computing"
             if context.pinned.artifact_digest and planned_inputs is None:
                 return 'skipped: feature result has no pinned inputs'

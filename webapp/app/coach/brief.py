@@ -86,7 +86,7 @@ def build(snap, slot: int) -> dict:
             gaps[str(n)] = snap.gaps(n)
     ranked.sort(key=lambda r: (-abs(r["impact"]), r["round"]))
     match = snap.context["match"]
-    names = sorted({c["name"] for c in areas.callouts(match["map"])})
+    names = sorted({c["name"] for c in areas.callouts(snap.asset_key)})
     if not names:
         gaps = {"match": ["areas"], **gaps}
     return {"v": VERSION,
