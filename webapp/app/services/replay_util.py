@@ -411,6 +411,10 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
     tot_yours: dict = {}
     dev_wrapped: dict = {}
     tot_dev: dict = {}
+    # each table's matches expanded once, kept across its casts (util_values.lift_v2 `expanded`)
+    exp_all: dict = {}
+    exp_yours: dict = defaultdict(dict)
+    exp_dev: dict = defaultdict(dict)
     for r in out_rows:
         r.update(lift_all=None, gate_all=None, yours_level=None, yours_n=0, lift_yours=None, gate_yours=None,
                  device_level=None, device_n=0, lift_device=None, gate_device=None, L=0, type=None)
@@ -429,7 +433,8 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
             continue
         keys = util_values.levels(data, side, max(util_values.start_time(data, float(segs[0][0])), 0.0))
         r.update(swing=round(swing, 4), L=L)
-        got = util_values.lift_v2(tot_all, tables["all"], typ, keys, L, swing, leave_out={r["match"]})
+        got = util_values.lift_v2(tot_all, tables["all"], typ, keys, L, swing, leave_out={r["match"]},
+                                  expanded=exp_all)
         if got is not None:
             r.update(base=round(got["mean"], 4), base_n=got["n"], base_level=got["level"],
                      lift_all=round(got["lift"], 4), gate_all=gate_pass["all"][L])
@@ -438,7 +443,7 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
             if pid not in tot_yours:
                 tot_yours[pid] = util_values.totals(tables["yours"][pid])
             got = util_values.lift_v2(tot_yours[pid], tables["yours"][pid], typ, keys, L, swing,
-                                      leave_out=lineup_matches[lineup_of(r)])
+                                      leave_out=lineup_matches[lineup_of(r)], expanded=exp_yours[pid])
             if got is not None:
                 r.update(yours_level=got["level"], yours_n=got["n"], lift_yours=round(got["lift"], 4),
                          gate_yours=gate_pass["yours"][L])
@@ -450,7 +455,7 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
                     dev_wrapped[dkey] = {mm: {"device": cells} for mm, cells in per.items()}
                     tot_dev[dkey] = util_values.totals(dev_wrapped[dkey])
                 got = util_values.lift_v2(tot_dev[dkey], dev_wrapped[dkey], "device", keys, L, swing,
-                                          leave_out={r["match"]})
+                                          leave_out={r["match"]}, expanded=exp_dev[dkey])
                 if got is not None:
                     r.update(device_level=got["level"], device_n=got["n"], lift_device=round(got["lift"], 4),
                              gate_device=gate_pass["device"][L])
@@ -510,9 +515,20 @@ def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = No
     Reads only: `ensure_values` stores it."""
     rows = current_rows(db) if rows is None else rows
     model = util_model.load(db) if model is None else model
+    return corpus_from_inputs(corpus_inputs(db, rows), rows, model)
+
+
+def corpus_inputs(db, rows: list[tuple]) -> tuple[dict, dict, set]:
+    """Everything build_corpus reads from the database for `rows`: (stored rounds, replay context, friend
+    players). Reading them first lets a caller end its transaction before the minutes of computing."""
     stored = _stored_rounds(db, rows=rows)
-    ctx = _replay_context(db, set(stored))
-    out = build_from_rounds(stored, ctx, model, friend_players(db))
+    return stored, _replay_context(db, set(stored)), friend_players(db)
+
+
+def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model) -> dict:
+    """build_corpus's computing, with no database: `inputs` from corpus_inputs on the same `rows`."""
+    stored, ctx, friends = inputs
+    out = build_from_rounds(stored, ctx, model, friends)
     out["fingerprints"] = {}
     for r in rows:
         out["fingerprints"].setdefault(str(r[0]), {})[str(r[1])] = r[2]
