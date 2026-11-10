@@ -592,10 +592,11 @@ def _order(session, todo: list) -> list:
 def send_key(p, kind: str, capable: bool) -> str:
     """The worker key a planned round goes out under: a gaps-only task (`kind` "gaps"), a control task with a gaps
     block (`capable`), or a plain one."""
+    asset_key = p.asset_key or p.map_name
     if kind == "gaps":
-        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, asset_key))
     if capable:
-        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, asset_key))
     return task_key(p.replay_id, p.round_number, p.fingerprint)
 
 
@@ -652,7 +653,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
         row = session.get(ReplayRound, (p.replay_id, p.round_number))
         if row is None:
             continue
-        task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
+        asset_key = p.asset_key or p.map_name
+        task = {"key": key, "map": asset_key, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
         pin = p.inputs
         task['height_mode'] = pin.height_mode
@@ -665,7 +667,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             task['inputs'] = pin.envelope
             task['geometry'] = pin.geometry
         if expect_gaps:
-            task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
+            task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, asset_key)
         if gaps_only:
             task["gaps_only"] = True
         digest = pin.geometry.get('height')
@@ -681,8 +683,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                     if missing.digest != digest or 'height' in pushed:
                         raise Refused('worker requested an unplanned or repeated height')
                     height_bytes = control_feature_artifacts.archived_height_bytes(session, features) if features \
-                        else replay_control.exact_height_bytes(session, p.map_name, digest)
-                    client.push_height(p.map_name, digest, height_bytes)
+                        else replay_control.exact_height_bytes(session, asset_key, digest)
+                    client.push_height(asset_key, digest, height_bytes)
                     pushed.add('height')
                     counts['pushed'] += 1
                 except NeedsFeatures as missing:
@@ -898,8 +900,12 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
                 rebuild.close()
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
-            names = [name for name, in session.query(Replay.map_name).distinct()]
-            replay_control.prepare_discovered(session_factory, names, state.feature_retry_after, now)
+            asset_keys = set()
+            for replay in session.query(Replay.map_name, Replay.game_branch).distinct():
+                selection = replay_control.layout_of(replay)
+                if selection.state == "ok":
+                    asset_keys.add(selection.layout.asset_key)
+            replay_control.prepare_discovered(session_factory, asset_keys, state.feature_retry_after, now)
             _submit(session, client, state, now, counts, held, held_maps, session_factory=session_factory)
         finally:
             session.rollback()
