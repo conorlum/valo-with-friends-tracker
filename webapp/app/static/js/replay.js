@@ -1488,24 +1488,66 @@
     requestAnimationFrame(this.tick);
   }
 
-  // The linked page's map is as tall as the window has room for: from where the map starts on the page (below
-  // the site's nav and any coach strip, whatever their height) to the window's bottom, less the playback controls
-  // and timeline under it and a small margin, so the map and its controls fit on one screen with the page at the
-  // top. Sets --replay-map-h, which the stylesheet sizes the map and the columns beside it from (its own fallback
-  // is 100vh - 8rem); re-measured when the window is resized and once everything has loaded.
+  // The stylesheet's wide replay layout (style.css, "Replay viewer, linked mode"): the same query, in em so a larger
+  // browser text size falls back to the stacked layout.
+  var WIDE_LAYOUT = "(min-width: 87.5em)";
+  // Refits in a row that each changed the map's size: a refit can rewrap the controls under the map, which changes
+  // the room again. That settles in one or two; past the cap the fit rests for REFIT_REST_MS, so a flip-flop
+  // between two sizes stops instead of looping.
+  var MAX_REFITS = 4, REFIT_REST_MS = 1000;
+
+  // The linked page's map in the wide layout is as tall as the window has room for: from where the map starts on
+  // the page (below the site's nav and any coach strip, whatever their height) to the window's bottom, less the
+  // playback controls and timeline under it and a small margin, so the map and its controls fit on one screen with
+  // the page at the top. Sets --replay-map-h, which the stylesheet sizes the map and the columns beside it from.
+  // Outside the wide layout it clears it, so the stylesheet's own sizing applies there. Re-measured when the window
+  // is resized or crosses the breakpoint, once everything has loaded, and whenever what sits above or under the map
+  // changes height (the controls fill in once the first round loads, and a new map width can rewrap them).
   function fitMapToWindow(root) {
     if (!root.classList.contains("is-linked")) return;
     var stage = root.querySelector(".replay-stage"), below = root.querySelector(".replay-scrub-wrap");
     if (!stage) return;
+    var wide = window.matchMedia ? window.matchMedia(WIDE_LAYOUT) : null;
+    var pending = false, resting = false, missed = false, refits = 0;
     function fit() {
+      pending = false;
+      if (!wide || !wide.matches) { root.style.removeProperty("--replay-map-h"); refits = 0; return; }
       var s = stage.getBoundingClientRect();
       var under = below ? Math.max(0, below.getBoundingClientRect().bottom - s.bottom) : 0;
       var room = window.innerHeight - (s.top + window.scrollY) - under - 12;
-      root.style.setProperty("--replay-map-h", Math.max(280, Math.floor(room)) + "px");
+      var value = Math.max(280, Math.floor(room)) + "px";
+      if (root.style.getPropertyValue("--replay-map-h") === value) { refits = 0; return; }   // settled
+      refits += 1;
+      root.style.setProperty("--replay-map-h", value);
+    }
+    function refit() {                 // a layout change: one fit per frame
+      if (pending || resting) return;
+      if (refits >= MAX_REFITS) {
+        resting = true;
+        setTimeout(function () {
+          resting = false;
+          refits = 0;
+          if (missed) { missed = false; refit(); }   // the window changed while resting: fit its final size
+        }, REFIT_REST_MS);
+        return;
+      }
+      pending = true;
+      requestAnimationFrame(fit);
+    }
+    function windowChanged() {         // resized, loaded or crossed the breakpoint: always gets a fit
+      if (resting) { missed = true; return; }
+      refits = 0;
+      refit();
     }
     fit();
-    window.addEventListener("resize", fit);
-    window.addEventListener("load", fit);
+    window.addEventListener("resize", windowChanged);
+    window.addEventListener("load", windowChanged);
+    if (wide && wide.addEventListener) wide.addEventListener("change", windowChanged);
+    if (window.ResizeObserver) {
+      var observer = new ResizeObserver(refit);
+      [root.querySelector(".replay-controls"), below, root.querySelector(".replay-body > .replay-header"),
+       root.querySelector("[data-replay-banner]")].forEach(function (el) { if (el) observer.observe(el); });
+    }
   }
 
   // The smallest square around the minimap's opaque pixels, with a margin: the view the

@@ -1722,10 +1722,13 @@ table.compact-table .badge-score {
 .replay.is-linked { --replay-side-w: minmax(320px, 400px); --replay-map-h: calc(100vh - 240px); max-width: none; }
 .replay-body { display: block; }
 /* Medium screens: the title across the top, the map with the tabs beside it, the round banner above the map and
-   the players panel under it. The title and the banner are items of this grid (replays/_player.html). */
+   the players panel under it. The title and the banner are items of this grid (replays/_player.html). The last
+   row is 1fr: the tabs column spans the banner, map and players rows, and a tab taller than those three grows the
+   flexible last row, never the banner's or the map's (which would open a gap above the map). */
 .replay.is-linked .replay-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--replay-side-w);
+  grid-template-rows: auto auto auto 1fr;
   grid-template-areas: "head head" "banner side" "main side" "board side";
   gap: 1.25rem;
   align-items: start;
@@ -1747,8 +1750,11 @@ table.compact-table .badge-score {
    banner. The players panel and the tabs column are size-contained, so their content never makes those rows
    taller: they stretch to them and scroll inside. Everything else under the map takes the rows after.
    Each player row is two lines: name, health and K/D/A on the first; health bar, utility and credits beside it (a
-   long name is cut short; its title has all of it). */
-@media (min-width: 1400px) {
+   long name is cut short; its title has all of it).
+   The breakpoint is in em (87.5em = 1400px at the default 16px), so a larger browser text size moves to the stacked
+   layout instead of squeezing the map and the players panel; replay.js uses the same query (WIDE_LAYOUT). The
+   players row keeps at least 10rem however short the window. */
+@media (min-width: 87.5em) {
   .replay.is-linked, .replay.is-linked.has-coach {
     --replay-side-w: minmax(18rem, 30rem);
     --replay-map-h: calc(100vh - 8rem);
@@ -1756,7 +1762,7 @@ table.compact-table .badge-score {
   }
   .replay.is-linked .replay-body {
     grid-template-columns: minmax(17rem, 32rem) var(--replay-map-w) var(--replay-side-w);
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto auto minmax(10rem, 1fr);
     grid-template-areas: none;
     gap: 0.6rem 1.25rem;
     justify-content: center;
@@ -1802,7 +1808,9 @@ table.compact-table .badge-score {
   .replay.is-linked .replay-side > [data-replay-panel]:not([hidden]) {
     flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; margin-bottom: 0; padding-right: 0.5rem;
   }
-  .replay.is-linked .replay-side > [data-replay-panel] .replay-feed { max-height: none; }
+  /* One scroll area per tab: the panel's lists drop their own height caps. */
+  .replay.is-linked .replay-side > [data-replay-panel] .replay-feed,
+  .replay.is-linked .replay-side > [data-replay-panel] .replay-gaps-list { max-height: none; overflow: visible; }
 }
 .replay-title-suffix { color: var(--ink-muted); font-size: 0.6em; font-weight: 500; }
 .replay-crumbs { color: var(--ink-muted); margin: 0 0 0.5rem; }
@@ -2033,7 +2041,7 @@ table.compact-table .badge-score {
 .replay-list th, .replay-list td { padding: 0.35rem 0.75rem; border-top: 1px solid var(--border); text-align: left; }
 
 @media (max-width: 960px) {
-  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "banner" "main" "board" "side"; }
+  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "head" "banner" "main" "board" "side"; }
   .replay-feed { max-height: 320px; }
 }
 
@@ -2216,6 +2224,8 @@ main:has(.replay.is-linked) { max-width: none; }
 .coach-moment-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
 .coach-overall { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
 .coach-overall textarea { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
+/* Beside Send: "Sending…", "Sent" or why it wasn't sent (coach.js). */
+.coach-send-status { margin-left: 0.6rem; color: var(--ink-muted); font-size: 0.85rem; }
 .coach { margin: 0 0 1rem; }
 .coach-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .coach-header h2 { margin: 0; }
