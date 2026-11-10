@@ -16,13 +16,14 @@ from test_replay_routes import request
 from test_control_remote import FakeWorker
 from app.control import geometry as cg
 from app.db import Base
-from app.models.replay import ControlFeatureArtifact, ControlHeight, Replay, ReplayRound
-from app.replays import layouts
+from app.models.replay import ControlFeatureArtifact, ControlHeight, Replay, ReplayRound, ReplayRoundGapRun
+from app.replays import choke_assets, layouts
 from app.routers import replays as routes
 from app.services import control_feature_artifacts as artifacts
 from app.services import replay_control as rc
 from app.services import replay_control_remote as remote
 from app.services import replay_gaps
+from app.services import replay_gaps_store, replay_progress
 from tests.replays import layout_golden as golden
 
 
@@ -74,6 +75,102 @@ def test_13_08_replay_keeps_golden_fingerprint(monkeypatch):
     expected = json.loads(golden.GOLDEN_PATH.read_text())["maps"]["Ascent"]["control_fingerprint"]
     assert rc.round_fingerprint(replay, {}, 1) == expected
     assert rc.layout_of(replay).layout.asset_key == "Ascent"
+    figures = json.loads(golden.GOLDEN_PATH.read_text())["maps"]["Ascent"]
+    assert replay_gaps.gap_fingerprint(expected, "Ascent") == figures["gap_fingerprint"]
+    assert replay_gaps.engine_key(golden.FIXED_CONTROL_FP, "Ascent") == figures["engine_key"]
+
+
+@pytest.fixture
+def layout_chokes(layout_assets, monkeypatch):
+    folder, _, _ = layout_assets
+    for key, cells in (("Toy", [1, 2]), ("Toy_13_10", [3, 4])):
+        choke_assets.save(key, [choke_assets.Choke(1, "1", cells)], 2, asset_dir=folder)
+    original = choke_assets.asset_hash
+    monkeypatch.setattr(choke_assets, "asset_hash", lambda key: original(key, asset_dir=folder))
+    assert choke_assets.asset_hash("Toy") != choke_assets.asset_hash("Toy_13_10")
+
+
+def test_gap_freshness_caches_each_layout_separately(db, linked, layout_chokes):
+    linked.map_name = "Toy"
+    freshness = replay_gaps.Freshness(db)
+    for branch, key in (("release-13.08", "Toy"), ("release-13.10", "Toy_13_10")):
+        linked.game_branch = branch
+        control = rc.round_fingerprint(linked, rc.side_groups(db, linked), 1)
+        expected = replay_gaps.gap_fingerprint(control, key)
+        assert freshness.expected(linked, 1) == expected
+        if key != "Toy":
+            assert expected != replay_gaps.gap_fingerprint(control, "Toy")
+            assert replay_gaps.engine_key(control, key) != replay_gaps.engine_key(control, "Toy")
+    assert set(freshness.maps) == {"Toy", "Toy_13_10"}
+
+
+@pytest.mark.parametrize("stamp", ["Toy_13_10", "Toy"])
+def test_guarded_gap_store_checks_layout_chokes(factory, db, linked, layout_chokes, stamp):
+    linked.map_name, linked.game_branch = "Toy", "release-13.10"
+    put_row(db, linked, 1)
+    control = rc.round_fingerprint(linked, rc.side_groups(db, linked), 1)
+    run = {"status": "ok", "fingerprint": replay_gaps.gap_fingerprint(control, "Toy_13_10"),
+           "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": choke_assets.asset_hash(stamp),
+           "notes": {}, "error": None}
+    result = replay_gaps_store.store_gaps(factory, linked.id, 1, run, [],
+        moments={"status": "ok", "v": 1, "sight": True, "fights": [], "error": None},
+        expected_control_fingerprint=control)
+    assert result == (replay_gaps_store.STORED if stamp == "Toy_13_10" else
+                      "skipped: computed under other gap rules or assets")
+
+
+def test_gap_reader_planner_and_progress_use_layout_key(db, linked, layout_chokes):
+    linked.map_name, linked.game_branch = "Toy", "release-13.10"
+    put_row(db, linked, 1)
+    control = rc.round_fingerprint(linked, rc.side_groups(db, linked), 1)
+    run = ReplayRoundGapRun(replay_id=linked.id, round_number=1, status="ok",
+        fingerprint=replay_gaps.gap_fingerprint(control, "Toy_13_10"),
+        gaps_revision=replay_gaps.GAPS_REVISION, chokes_hash=choke_assets.asset_hash("Toy_13_10"), gap_count=0)
+    db.add(run)
+    db.commit()
+    assert replay_gaps.round_gaps(db, linked, 1) == ("ok", [])
+    assert replay_gaps.plan_gaps(db, [], rc.plan(db, force=True, rounds={1})) == []
+    assert replay_progress.round_states(db)["states"][linked.id, 1] == "done"
+    run.status = "failed"
+    db.commit()
+    assert replay_progress.round_states(db)["states"][linked.id, 1] == "gaps_failed"
+
+
+@pytest.mark.parametrize("branch,state", [("release-13.10", "layout_pending"), ("b", "layout_unknown")])
+def test_gap_progress_counts_unavailable_layouts(db, linked, layout_assets, monkeypatch, branch, state):
+    folder, index, _ = layout_assets
+    linked.map_name, linked.game_branch = "Toy", branch
+    index["maps"].pop("Toy_13_10")
+    write_json(folder / "index.json", index)
+    db.commit()
+    def no_geometry(*args, **kwargs):
+        pytest.fail("unavailable layouts must not resolve geometry")
+    monkeypatch.setattr(rc, "resolve_current_geometry", no_geometry)
+    assert replay_gaps.Freshness(db).expected(linked, 1) is None
+    body = replay_progress.compute(db)
+    assert {step["key"]: step["rounds"] for step in body["steps"]} == {state: linked.round_count}
+    assert body["needs_a_person"] == linked.round_count
+    assert body["worker_will_do"] == body["done"] == 0
+
+
+@pytest.mark.parametrize("failed_inputs", [False, True])
+def test_gap_worker_collection_uses_layout_key(factory, db, linked, layout_chokes, monkeypatch, failed_inputs):
+    linked.map_name, linked.game_branch = "Toy", "release-13.10"
+    put_row(db, linked, 1)
+    original_plan = rc.plan
+    monkeypatch.setattr(rc, "plan", lambda session, **kwargs: original_plan(session, **{**kwargs, "rounds": {1}}))
+    worker = FakeWorker(gaps=remote.GAPS_PROTOCOL, layouts=["Toy", "Toy_13_10"])
+    if failed_inputs:
+        worker.answer = lambda task: {"status": "failed", "error_kind": "inputs",
+                                     "error_code": "source_unavailable", "error": "synthetic missing source"}
+    state = remote.State()
+    assert remote.cycle(factory, worker, state, now=0)["gaps_sent"] == 1
+    counts = remote.cycle(factory, worker, state, now=1)
+    assert counts["gaps_stored"] == 1, counts
+    db.expire_all()
+    run = db.get(ReplayRoundGapRun, (linked.id, 1))
+    assert run.status == ("failed" if failed_inputs else "ok")
+    assert run.chokes_hash == choke_assets.asset_hash("Toy_13_10")
 
 
 def test_new_layout_changes_only_newer_replays(db, linked, layout_assets):

@@ -270,6 +270,7 @@ class InFlight:
     inputs: object = None
     stale_s: float = STALE_JOB_S         # its running backstop, fixed at admission from the worker's own `runner`
                                          # (_admitted_stale_s): no /health read, failed or not, changes it
+    asset_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -431,9 +432,10 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     if not isinstance(util, dict) or util.get("status") not in ("ok", "failed") \
             or (util["status"] == "ok" and not isinstance(util.get("data"), dict)):
         return None
-    if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, f.map_name) \
+    asset_key = f.asset_key or f.map_name
+    if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, asset_key) \
             or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
-            or run.get("chokes_hash") != choke_assets.asset_hash(f.map_name):
+            or run.get("chokes_hash") != choke_assets.asset_hash(asset_key):
         return None
     return gaps
 
@@ -539,9 +541,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             # Source qualification fails before calculation. Keep its diagnostic under
             # the planned gap inputs, without replacing the already stored control.
             failure = {'gaps': {'run': {'status': 'failed',
-                'fingerprint': replay_gaps.gap_fingerprint(f.fingerprint, f.map_name),
+                'fingerprint': replay_gaps.gap_fingerprint(f.fingerprint, f.asset_key or f.map_name),
                 'gaps_revision': replay_gaps.GAPS_REVISION,
-                'chokes_hash': choke_assets.asset_hash(f.map_name),
+                'chokes_hash': choke_assets.asset_hash(f.asset_key or f.map_name),
                 'notes': {job.get('error_code') or 'source_unavailable': 1},
                 'error': job.get('error') or 'round source unavailable; reparse this recording'}, 'rows': [],
                 'moments': {'status': 'failed', 'fights': [],
@@ -739,7 +741,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
                                         expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin,
-                                        stale_s=_admitted_stale_s(answer, state))
+                                        stale_s=_admitted_stale_s(answer, state), asset_key=asset_key)
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
