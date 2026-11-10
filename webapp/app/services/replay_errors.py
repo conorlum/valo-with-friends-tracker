@@ -429,24 +429,31 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             revision={"heights_revision": (rules or {}).get("revision"), "built_at": _iso(built_at)},
             reproduce=_height_command(map_name)))
 
+    waiting = Counter()
     for key, model, revision in (("control_unsupported", ReplayRoundControl, "control_revision"),
                                  ("control_failed", ReplayRoundControl, "control_revision"),
                                  ("gaps_failed", ReplayRoundGapRun, "gaps_revision")):
         for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
                                getattr(model, revision).label("revision")).filter(model.status == "failed"):
             if model is ReplayRoundControl:
-                unsupported = (stored.error or "").startswith("features_source_unavailable")
-                if unsupported != (key == "control_unsupported"):
+                if replay_progress.is_unsupported(stored.error) != (key == "control_unsupported"):
                     continue
             state = states.get((stored.replay_id, stored.round_number))
-            if state != key:
-                # Stale, or behind an earlier step (a re-parse): the worker gets to it on its own.
+            if state != key and state is not None and not replay_progress.automatic(state) \
+                    and stored.replay_id in replays:
+                # Behind an earlier step only a person moves (a local re-ingest): no worker retry is coming.
+                waiting[key] += 1
+            elif state != key:
+                # Stale, or behind an earlier step the worker runs (a re-parse): it gets to it on its own.
                 stale[key] += 1
             else:
                 replay = replays[stored.replay_id]
                 rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
                                       revision={revision: stored.revision, "computed_at": _iso(stored.computed_at)},
                                       reproduce=_round_command(replay, stored.round_number)))
+
+    for key, count in waiting.items():
+        notes[key] = f"{count} failed rows wait behind an earlier step that needs a person"
 
     fresh = Freshness(db)
     for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)):
@@ -643,8 +650,9 @@ def compute(db, live=None, *, limit=SHOW) -> dict:
     ordered = sorted(KINDS, key=lambda pair: GROUP_ORDER.index(GROUPS[pair[0]]))
     return {"kinds": [{"key": key, "label": label, "group": GROUPS[key],
                        "shape": "event" if key in EVENT_KINDS else "replay", "count": len(rows[key]),
-                       "note": (f"{stale[key]} failed rows from older rules: the worker will retry them"
-                                if stale[key] else notes.get(key)), "rows": rows[key][:limit]}
+                       "note": "; ".join(n for n in (
+                           f"{stale[key]} failed rows from older rules: the worker will retry them" if stale[key]
+                           else None, notes.get(key)) if n) or None, "rows": rows[key][:limit]}
                       for key, label in ordered],
             "checked_at": _iso(now())}
 

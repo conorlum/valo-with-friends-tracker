@@ -46,6 +46,17 @@ STEPS = (
 UNSUPPORTED_STEPS = {"control_unsupported"}
 _LABELS = {key: (label, automatic) for key, label, automatic in STEPS}
 
+
+def is_unsupported(error: str | None) -> bool:
+    """A failed control row a re-parse can't fix: a missing feature source. One rule for the progress totals and
+    the errors card."""
+    return (error or "").startswith("features_source_unavailable")
+
+
+def automatic(step: str | None) -> bool:
+    """Whether the worker moves a round past this step by itself (an unknown step: no)."""
+    return step in _LABELS and _LABELS[step][1]
+
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
@@ -66,7 +77,7 @@ def round_states(db) -> dict:
     unsupported = {(r.replay_id, r.round_number) for r in db.query(
         ReplayRoundControl.replay_id, ReplayRoundControl.round_number, ReplayRoundControl.error
         ).filter(ReplayRoundControl.status == "failed")
-        if (r.error or "").startswith("features_source_unavailable")}
+        if is_unsupported(r.error)}
     gaps_todo = replay_gaps.plan_gaps(db, [p for p in control_todo if p.computable], list(every.values()),
                                       retry_failed=True)
     gaps = {(p.replay_id, p.round_number): p for p in gaps_todo}
