@@ -9,21 +9,25 @@
 {# The coaching page (`coach` with a report) puts the report's points in the first two tabs, beside the map. #}
 {% set coach_tabs = linked and coach is defined and coach and coach.report %}
 <section class="replay{% if linked %} is-linked{% endif %}{% if coach_tabs %} has-coach{% endif %}" data-replay tabindex="0" aria-label="Replay player">
-  <header class="replay-header">
+  {# Linked, the title and the round banner are items of the body's grid, so a wide screen puts them in the left
+     column above the players and the map starts at the top (style.css, "Replay viewer, linked mode"). #}
+  {% set header %}<header class="replay-header">
     <h1>{{ replay.map_name }} replay{% if replay.title_suffix %} <span class="replay-title-suffix">{{ replay.title_suffix }}</span>{% endif %}</h1>
     <p class="replay-note">
       {% if linked %}Linked to this match: names, weapons and Impact come from the match's own rows.{% else %}{{ (replay.reason or "Not linked to a match on this site") | capitalize }}: agents and side groups only.{% endif %}
     </p>
-  </header>
+  </header>{% endset %}
+  {% if not linked %}{{ header }}{% endif %}
   <div class="replay-body">
     {% if linked %}
+    {{ header }}
+    <p class="replay-banner" data-replay-banner aria-live="polite"></p>
     {# The players panel at the current moment: health and shield, utility used so far, the ult once cast, K/D/A,
        Impact, and tracker.gg's round-start loadout and credits (renderBoard). Left of the map on a wide screen,
        under it otherwise. #}
     <div class="replay-board" data-replay-board aria-label="Players"></div>
     {% endif %}
     <div class="replay-main">
-      {% if linked %}<p class="replay-banner" data-replay-banner aria-live="polite"></p>{% endif %}
       <div class="replay-stage">
         <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
                 aria-label="Minimap"></canvas>

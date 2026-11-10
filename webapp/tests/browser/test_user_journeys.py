@@ -179,3 +179,84 @@ def test_replay_fetch_canvas_round_seek_and_unavailable_control(browser_page, tm
     stopped = page.evaluate('window.viewer.t')
     after_frames = page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.viewer.t))))')
     assert after_frames == stopped, 'playback advanced after pausing'
+
+
+# The replay page's layout (style.css "Replay viewer, linked mode", replay.js fitMapToWindow).
+
+BOXES = """() => {
+    const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return {top: r.top, bottom: r.bottom}; };
+    return {map: box('[data-replay-canvas]'), scrub: box('.replay-scrub-wrap'), board: box('[data-replay-board]'),
+            side: box('.replay-side'), inline: document.querySelector('[data-replay]').style.getPropertyValue('--replay-map-h')};
+}"""
+SETTLED = '() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))'
+
+
+def open_replay(page, base, factory, tmp_path, width, height):
+    uuid, _, ids, _ = stored_replay(factory, tmp_path)
+    page.set_viewport_size({'width': width, 'height': height})
+    page.goto(base+f'/replays/{uuid}?round=1&t=5')
+    page.wait_for_function('window.viewer && window.viewer.current && window.viewer.map.complete')
+    page.evaluate(SETTLED)
+    return uuid, ids
+
+
+def test_wide_replay_fits_the_map_and_its_controls_in_the_window(browser_page, tmp_path):
+    page, base, factory = browser_page
+    open_replay(page, base, factory, tmp_path, 1920, 911)
+    b = page.evaluate(BOXES)
+    assert b['inline'], 'the wide layout sets the measured map height'
+    assert b['scrub']['bottom'] <= 911, f'the timeline runs off the window: {b}'
+    assert b['map']['bottom'] > 911 - 150, f'the map leaves the window unused: {b}'
+    assert abs(b['side']['top'] - b['map']['top']) <= 2, f'the tabs do not start with the map: {b}'
+    for column in ('board', 'side'):
+        assert abs(b[column]['bottom'] - b['map']['bottom']) <= 2, f'{column} does not end with the map: {b}'
+    assert b['board']['top'] > b['map']['top'], 'the title and banner sit above the players, beside the map'
+    # Resizing into the medium layout hands sizing back to the stylesheet; resizing back measures again.
+    page.set_viewport_size({'width': 1300, 'height': 911})
+    page.evaluate(SETTLED)
+    assert page.evaluate(BOXES)['inline'] == ''
+    page.set_viewport_size({'width': 1600, 'height': 800})
+    page.evaluate(SETTLED)
+    b = page.evaluate(BOXES)
+    assert b['inline'] and b['scrub']['bottom'] <= 800, b
+
+
+def test_a_tall_tab_does_not_move_the_map_at_medium_width(browser_page, tmp_path):
+    page, base, factory = browser_page
+    open_replay(page, base, factory, tmp_path, 1300, 900)
+    before = page.evaluate(BOXES)['map']['top']
+    page.evaluate("""() => {
+        const panel = document.querySelector('.replay-side [data-replay-panel]:not([hidden])');
+        const tall = document.createElement('div'); tall.style.height = '3000px'; panel.appendChild(tall);
+    }""")
+    page.evaluate(SETTLED)
+    assert page.evaluate(BOXES)['map']['top'] == pytest.approx(before, abs=1)
+
+
+def test_sending_coach_feedback_keeps_the_page_where_it_is(browser_page, tmp_path):
+    from app.models import Player, Replay
+    from app.models.coach import CoachFeedback
+    from app.services import coach
+    from tests.coach.test_coach_store import payload
+    page, base, factory = browser_page
+    uuid, _, ids, _ = stored_replay(factory, tmp_path)
+    with factory() as db:
+        match_id = db.query(Replay).filter(Replay.match_uuid == uuid).one().match_id
+        coach.store_report(db, match_id, ids[0], payload())
+        reader = db.get(Player, ids[1]).display_name
+    assert page.request.post(base+'/login', form={'display_name': reader}).ok
+    page.set_viewport_size({'width': 1920, 'height': 911})
+    page.goto(base+f'/replays/{uuid}/coach?player={ids[0]}')
+    page.wait_for_function('window.viewer && window.viewer.current')
+    page.evaluate('() => { window.notReloaded = true; window.scrollTo(0, 120); }')
+    page.evaluate(SETTLED)
+    scrolled = page.evaluate('window.scrollY')
+    point = page.locator('[data-coach-point]').first
+    point.locator('textarea[name="note"]').fill('Stays put')
+    point.get_by_role('button', name='Send').click()
+    expect(page.locator('[data-coach-send-status]').first).to_have_text('Sent')
+    assert page.evaluate('window.notReloaded') is True, 'Send reloaded the page'
+    assert page.evaluate('window.scrollY') == scrolled
+    expect(page.locator('[data-coach-point]').first.locator('textarea[name="note"]')).to_have_value('Stays put')
+    with factory() as db:
+        assert [row.note for row in db.query(CoachFeedback).all()] == ['Stays put']
