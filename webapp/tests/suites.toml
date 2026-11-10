@@ -179,6 +179,11 @@ about = "The stored site health inventory: failures and slow spots recorded in m
 tests = ["tests/test_site_health*.py"]
 guards = ["app/services/site_health*.py", "app/models/site_events.py", "app/data/site_health_resolved.json", "scripts/site_health.py"]
 
+[map-layouts]
+about = "Base map asset identities for replay control, gaps, heights and callouts, pinned before per-layout assets."
+tests = ["tests/replays/test_*layout*.py"]
+guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golden.json"]
+
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
