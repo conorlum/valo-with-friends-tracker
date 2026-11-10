@@ -20,13 +20,13 @@ _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
 
 
 class RoundView:
-    def __init__(self, blob: dict, names: dict[int, str], uv_per_unit: float, map_name: str,
+    def __init__(self, blob: dict, names: dict[int, str], uv_per_unit: float, asset_key: str | None,
                  callout_table: dict | None = None, groups: dict[int, str] | None = None, db_deaths=(),
                  roles: dict[int, str] | None = None):
         """`roles` is the link's `sides` (slot -> "attack"/"defense"): where the blob gives a player no side the
         group comes from the round's role, as the control engine does, and only then from `groups` (the page's
         fixed team group)."""
-        self.blob, self.names, self.uv_per_unit, self.map_name = blob, names, uv_per_unit, map_name
+        self.blob, self.names, self.uv_per_unit, self.asset_key = blob, names, uv_per_unit, asset_key
         self._table = callout_table
         self._side = {}
         for p in blob["players"]:
@@ -94,11 +94,11 @@ class RoundView:
         return samples[i] if i >= 0 else None
 
     def area(self, u: float, v: float) -> dict | None:
-        return areas.area_at(self.map_name, u, v, self._table)
+        return areas.area_at(self.asset_key, u, v, self._table)
 
     def area_names(self) -> list[str]:
-        """Every named area of this map, longest first."""
-        return sorted({c["name"] for c in areas.callouts(self.map_name, self._table)}, key=lambda a: (-len(a), a))
+        """Every named area of this layout, longest first."""
+        return sorted({c["name"] for c in areas.callouts(self.asset_key, self._table)}, key=lambda a: (-len(a), a))
 
     def position(self, slot: int, t: float) -> dict:
         if self.alive(slot, t):

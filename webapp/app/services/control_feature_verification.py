@@ -24,7 +24,10 @@ def _freshness(db, row):
     replay = db.get(Replay, row.replay_id)
     if replay is None:
         return 'unavailable', 'current replay unavailable'
-    context = rc.resolve_current_geometry(db, replay.map_name)
+    selection = rc.layout_of(replay)
+    if selection.state != 'ok':
+        return 'unavailable', 'current inputs unavailable: ' + selection.state
+    context = rc.resolve_current_geometry(db, selection.layout.asset_key)
     if context.state != 'ready':
         return 'unavailable', 'current inputs unavailable: ' + context.state
     fingerprint = rc.round_fingerprint(replay, rc.side_groups(db, replay), row.round_number, context=context)

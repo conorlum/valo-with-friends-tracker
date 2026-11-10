@@ -57,6 +57,9 @@ def read(db, match_uuid: str) -> dict:
     context = replays.page_context(db, replay)
     if not context["match"].get("linked"):
         raise SnapshotError(f"replay {match_uuid} is {context['match'].get('reason') or 'not linked'}: nothing to coach")
+    selection = replay_control.layout_of(replay)
+    asset_key = selection.layout.asset_key if selection.state == "ok" else None
+    context = {**context, "match": {**context["match"], "asset_key": asset_key}}
     groups = _groups(context)
     blobs, controls, links = {}, {}, {}
     for n in context["match"]["rounds"]:
@@ -69,7 +72,8 @@ def read(db, match_uuid: str) -> dict:
                 raise SnapshotError(f"round {n}: slot {p['slot']} has no side in the replay or the link: "
                                     "nothing can be said about teammates or enemies")
         answer = replay_control.round_control(db, replay, n)
-        shares = control_areas.area_shares(answer.row.data, replay.map_name) if answer.status == "ok" else None
+        shares = (control_areas.area_shares(answer.row.data, asset_key)
+                  if answer.status == "ok" and asset_key is not None else None)
         controls[n] = (answer.status, bool(answer.stale), shares)
     try:
         from app.services import replay_util
@@ -102,6 +106,8 @@ class Snapshot:
             raise SnapshotError(f"snapshot version {data.get('v')!r} is not {VERSION}")
         self.data, self.context = data, data["context"]
         self.map, self.uuid = self.context["match"]["map"], self.context["match"]["uuid"]
+        # Snapshots written before layout selection used the base map's callouts.
+        self.asset_key = self.context["match"].get("asset_key", self.map)
         self.names = {int(slot): p["name"] for slot, p in self.context["players"].items()}
         self._views: dict[int, RoundView] = {}
 
@@ -119,7 +125,7 @@ class Snapshot:
             entry = self._round(n)
             link = entry.get("link") or {}
             roles = {int(slot): role for slot, role in (link.get("sides") or {}).items()}
-            self._views[n] = RoundView(entry["blob"], self.names, self.context["match"]["uv_per_unit"], self.map,
+            self._views[n] = RoundView(entry["blob"], self.names, self.context["match"]["uv_per_unit"], self.asset_key,
                                        groups=_groups(self.context), db_deaths=link.get("db_deaths") or (),
                                        roles=roles)
         return self._views[n]

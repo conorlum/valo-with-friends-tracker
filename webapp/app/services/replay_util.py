@@ -100,12 +100,12 @@ def label_of(kinds) -> str | None:
 # --- areas and economy
 
 
-def area_of(map_name: str, u, v, side: str | None) -> str:
+def area_of(asset_key: str | None, u, v, side: str | None) -> str:
     from app.coach import areas
 
     if u is None or v is None:
         return "unknown"
-    found = areas.area_at(map_name, u, v)
+    found = areas.area_at(asset_key, u, v)
     sup = (found or {}).get("super")
     if sup in ("Attacker Side", "Defender Side"):
         own = (sup == "Attacker Side") == (side == "attack")
@@ -200,10 +200,11 @@ def _replay_context(db, replay_ids):
     from app.models.match import MatchPlayer
     from app.models.replay import Replay, ReplayPlayer
     from app.models.round import Round, RoundPlayerStat
+    from app.services import replay_control
 
     out = {}
     replays = db.query(Replay.id, Replay.map_name, Replay.match_uuid, Replay.match_id, Replay.clock_offset,
-                       Replay.recipe).filter(
+                       Replay.recipe, Replay.game_branch).filter(
         Replay.id.in_(list(replay_ids)), Replay.match_id.is_not(None)).all()
     match_of = {r.id: r.match_id for r in replays}
     players: dict[int, dict] = defaultdict(dict)
@@ -233,7 +234,9 @@ def _replay_context(db, replay_ids):
         team = players[slot[0]].get(slot[1], {}).get("team")
         loadouts[(rid, n, team)].append(s.loadout or 0)
     for r in replays:
-        out[r.id] = {"map": r.map_name, "uuid": str(r.match_uuid), "match_id": r.match_id,
+        selection = replay_control.layout_of(r)
+        asset_key = selection.layout.asset_key if selection.state == "ok" else None
+        out[r.id] = {"map": r.map_name, "asset_key": asset_key, "uuid": str(r.match_uuid), "match_id": r.match_id,
                      "offset": r.clock_offset or 0.0, "on_known": on_known(r.recipe),
                      "players": players.get(r.id, {}), "rounds": rounds.get(r.id, {}),
                      "loadout": {(n, team): sum(v) / len(v) for (rid, n, team), v in loadouts.items()
@@ -271,7 +274,8 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                 "i": c["i"], "slot": c["by"], "player_id": p.get("player_id"), "agent": c.get("agent") or p.get("agent"),
                 "ability": ability_label(c), "kind": kind_label(c.get("kinds")), "kinds": c.get("kinds"),
                 "label": label_of(c.get("kinds")),
-                "side": c.get("side"), "area": area_of(ctx["map"], c.get("u"), c.get("v"), c.get("side")),
+                "side": c.get("side"), "area": area_of(ctx.get("asset_key", ctx["map"]),
+                                                       c.get("u"), c.get("v"), c.get("side")),
                 "phase": c.get("phase"), "t": c["t"],
                 "buy": buy_type(n, ctx["loadout"].get((n, team))),
                 "won": (ctx["rounds"].get(n) or {}).get("winner") == c.get("side") if c.get("side") else None,
