@@ -2,6 +2,8 @@
 
 Design: `docs/superpowers/specs/2026-11-09-control-unsupported-reopen-design.md` (revised after P2). Paths are
 relative to `webapp/`. Every test command runs from `webapp/` with `-n 0`. Item numbers are the AFK run's (W4-W7).
+The plan was written and built on a base at CONDENSE 25, so it says 26 throughout; ported onto main (#195 and
+#196 took 26 and 27), the bump is 27 -> 28.
 
 Pin parts (the run's re-pack of the pin tests, each run with `-m "slow or not slow" -n 0`): A, B
 (`test_heights_remote.py`, by id), C (format/condense/contract/feature artifacts/Ascent integration/pinned

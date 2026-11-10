@@ -74,7 +74,8 @@ order, at the same `time_ms`, beside an unknown `#2` row.
   never becomes a state change on its own.
 - The derived `open` event keeps its witness (the property line) as Sunset's `parameter_evidence` does.
 - Anything else stays `unknown`.
-- `CONDENSE_REVISION` goes from 25 to 26. Pinned tests are bumped with it.
+- `CONDENSE_REVISION` goes up one, to the next unused: 25 to 26 when this was designed; 27 to 28 once ported onto
+  main, where #195 and #196 took 26 and 27. Pinned tests are bumped with it.
 
 ### 2. Ascent runtime (`app/control/feature_runtime.py`, `ascent_features.state_at`, the viewer)
 
@@ -148,7 +149,7 @@ failure depends only on the recording and the code, so the same recipe can never
 - Viewer: the JS `state_at` gives the opening closure.
 - `replay_progress` and `replay_errors` classify a `features_source_unavailable` row as `control_unsupported`
   (from the remote and the local path), and any other failure as `control_failed`; `needs_a_person` leaves it out.
-- Pinned-revision tests updated for CONDENSE 26; `tests/suites.toml` lists any new test file.
+- Pinned-revision tests updated for CONDENSE 28; `tests/suites.toml` lists any new test file.
 - The slow lane before merge, since control changes.
 - After deploy and the re-parse: 635 r18 and 644 r8 are ok, and the Replays page shows 22/22 and 24/24.
 
