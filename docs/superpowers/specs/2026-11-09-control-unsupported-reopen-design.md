@@ -86,9 +86,17 @@ order, at the same `time_ms`, beside an unknown `#2` row.
   starts while it is still opening, is pending (the round fails, as an unread state does today). The corpus has
   none; modelling a partial door is left until one appears.
 - The movement cutoff for `opening` is where closure falls to the door's cutoff fraction:
-  `t + duration * (1 - fraction)`, taken through the same closure function `state_at` uses and stepped to the
-  first float where the door no longer blocks, so `reopened_by` releases the doorway at that moment (at the raw
-  sum, closure computes as 0.30000000000000004 and the release would slip to the `open` event).
+  `t + duration * (1 - fraction)`, taken through the same closure function `state_at` uses and bisected to the
+  first instant **on the engine's analytic clock** (6 decimals, `engine.analytic_times`) where the door no longer
+  blocks, so `reopened_by` releases the doorway at an instant the engine evaluates (at the raw sum, closure
+  computes as 0.30000000000000004; a float-line release such as 62.97500000000001 rounds back to a blocked
+  62.975, and the doorway first read clear at the next grid frame or half-second tick: branch review B1). The
+  search stops at the next source event (an opening cut short adds nothing), and a door with no conservative
+  cutoff uses the measured-clearance fallback, as closing does (B5, B6).
+- Whether a motion has run its full duration is decided on the source's 6-decimal clock, in `state_at` and the
+  viewer alike: 8.008 - 3.008 is 4.999999999999999 in floats and read as a reversal (B2). The runtime also checks
+  the whole timeline for a reversal before sampling (`ascent_features.reverses`): when the reversal and its
+  endpoint share a timestamp, no sample falls between them and the round would otherwise pass (B3).
 - `cache_resting` is False while the door is opening, as while closing.
 - Line 151's message becomes "unqualified door-state parameter in active feature timeline": the case left after
   this fix.

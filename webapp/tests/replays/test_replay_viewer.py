@@ -139,6 +139,20 @@ def test_ascent_opening_model_and_reversal_remain_visible():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize('start,pending', [(3.008, False), (3.009, True)])
+def test_viewer_full_motion_is_done_on_the_millisecond_clock(start, pending):
+    # Branch review B2, as ascent_features.state_at: 8.008 - 3.008 is 4.999999999999999 in floats.
+    feature = {'initial': 'closed', 'closing_s': 5, 'events': [
+        {'t': start, 'state': 'opening'}, {'t': 8.008, 'state': 'closing'}]}
+    script = """
+      const R = require(process.argv[1]);
+      let text=''; process.stdin.on('data', d=>text+=d).on('end', ()=>{
+        process.stdout.write(JSON.stringify(R.mapFeatureState(JSON.parse(text), 9)));
+      });"""
+    assert run_node(script, feature)['pending'] is pending
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_feature_panel_seek_rows_escape_labels_and_old_replays_explain_reparse():
     feature = {'key':'ascent_market','name':'<img src=x>', 'initial':'open', 'closing_s':5,
                'events':[{'t':1,'state':'closing'}]}

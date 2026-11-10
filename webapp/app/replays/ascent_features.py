@@ -245,14 +245,46 @@ def attach(replay, export_dir, manifest, windows):
             'sha256': report.get('sha256'), 'features': features, 'calculation': 'pending geometry'}
 
 
+def _usable_duration(duration):
+    return isinstance(duration, (int, float)) and not isinstance(duration, bool) \
+        and duration > 0 and math.isfinite(duration)
+
+
+def _motion_done(began, at, duration):
+    """A motion begun at `began` has run its full duration by `at`, within the 0.25 s grace.
+
+    Compared on the source's 6-decimal clock: 8.008 - 3.008 is 4.999999999999999 in floats."""
+    return began is not None and _usable_duration(duration) and duration <= round(at - began, 6) <= duration + .25
+
+
+def _reverses(state, next_state, began, at, duration):
+    return (state, next_state) in (('opening', 'closing'), ('closing', 'opening')) \
+        and not _motion_done(began, at, duration)
+
+
+def reverses(feature):
+    """Whether the door reverses mid-motion anywhere in the round, even with an endpoint on the same clock.
+
+    `state_at` is pending only between a reversal and its endpoint; when both share a timestamp no sample falls
+    between them, so the runtime asks this once (a reversal fails the round, design section 2)."""
+    state, began = feature.get('initial', 'unknown'), None
+    for event in feature.get('events', []):
+        if state == 'broken':
+            return False
+        if _reverses(state, event['state'], began, event['t'], feature.get('closing_s')):
+            return True
+        state = event['state']
+        began = event['t'] if state in ('closing', 'opening') else None
+    return False
+
+
 def state_at(feature, t):
     """Source state plus a separately labeled five-second motion estimate. Missing endpoints stay unknown."""
     state, began = feature.get('initial', 'unknown'), None
     terminal = state == 'broken'
     reversed_motion = False
     duration = feature.get('closing_s')
-    usable_duration = isinstance(duration, (int, float)) and not isinstance(duration, bool) \
-        and duration > 0 and math.isfinite(duration)
+    usable_duration = _usable_duration(duration)
 
     def motion_closure(at):
         if began is None or not usable_duration or at - began > duration + .25:
@@ -267,10 +299,8 @@ def state_at(feature, t):
         if terminal:
             continue
         next_state = event['state']
-        if (state, next_state) in (('opening', 'closing'), ('closing', 'opening')):
-            endpoint = 0.0 if state == 'opening' else 1.0
-            if motion_closure(event['t']) != endpoint:
-                reversed_motion = True
+        if _reverses(state, next_state, began, event['t'], duration):
+            reversed_motion = True
         if next_state in ('open', 'closed', 'broken'):
             reversed_motion = False
         state = event['state']

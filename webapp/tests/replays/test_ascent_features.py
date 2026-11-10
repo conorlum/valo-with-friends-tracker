@@ -343,17 +343,37 @@ def test_readiness_refuses_door_without_opening():
 
 
 @pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
-def test_runtime_reversal_raises_pending_endpoint_message(first, reverse):
+@pytest.mark.parametrize('endpoint_t', [9, 3])   # 3: the endpoint shares the reversal's clock (branch review B3)
+def test_runtime_reversal_fails_the_round(first, reverse, endpoint_t):
     from app.control.feature_runtime import FeatureRuntime
     from app.replays.map_feature_artifacts import FeatureSourceUnavailable
     geo, _, _, data = runtime_case()
     timeline = data['map_features']['features'][0]
+    endpoint = 'open' if reverse == 'opening' else 'closed'
     timeline.update(initial='closed' if first == 'opening' else 'open', events=[
-        {'t': 1, 'state': first}, {'t': 3, 'state': reverse}, {'t': 9, 'state': 'open'}])
-    runtime = FeatureRuntime(geo, data)
-    with pytest.raises(FeatureSourceUnavailable, match='feature endpoint/state unobserved at calculation time'):
-        runtime.sample(3)
-    assert not runtime.sample(9)[0].any()
+        {'t': 1, 'state': first}, {'t': 3, 'state': reverse}, {'t': endpoint_t, 'state': endpoint}])
+    with pytest.raises(FeatureSourceUnavailable, match='door reversed mid-motion'):
+        FeatureRuntime(geo, data)
+
+
+@pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
+def test_same_clock_endpoint_still_counts_as_a_reversal(first, reverse):
+    feature = {'initial': 'closed' if first == 'opening' else 'open', 'closing_s': 5,
+               'events': [{'t': 1, 'state': first}, {'t': 3, 'state': reverse},
+                          {'t': 3, 'state': 'closed' if reverse == 'closing' else 'open'}]}
+    assert af.reverses(feature)
+    feature['events'][1:] = [{'t': 6, 'state': reverse}]
+    assert not af.reverses(feature)
+
+
+@pytest.mark.parametrize('first,reverse', [('opening', 'closing'), ('closing', 'opening')])
+@pytest.mark.parametrize('start,done', [(3.008, True), (59.475, True), (3.009, False)])
+def test_full_motion_is_done_on_the_millisecond_clock(first, reverse, start, done):
+    # Branch review B2: 8.008 - 3.008 is 4.999999999999999 in floats, which read as a reversal.
+    feature = {'initial': 'closed' if first == 'opening' else 'open', 'closing_s': 5,
+               'events': [{'t': start, 'state': first}, {'t': 8.008 if start < 10 else 64.475, 'state': reverse}]}
+    assert af.state_at(feature, 9 if start < 10 else 65)['pending'] is not done
+    assert af.reverses(feature) is not done
 
 
 def test_unknown_after_destruction_cannot_restore_the_terminal_panel():

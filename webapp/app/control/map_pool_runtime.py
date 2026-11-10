@@ -165,7 +165,7 @@ class MapPoolRuntime:
             return
         data = blob.get('map_messages') or {}
         if geo.name not in MAPS or data.get('map') != geo.name or data.get('v') != events.VERSION:
-            raise FeatureSourceUnavailable('active map features require their matching map RPC ledger; reparse this recording')
+            raise FeatureSourceUnavailable('active map features require their matching map RPC ledger')
         times = set()
         for f in mf.get('features', []):
             if f['id'] not in members:

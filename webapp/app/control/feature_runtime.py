@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from app.replays.ascent_features import KEYS, VERSION, state_at
+from app.replays.ascent_features import KEYS, VERSION, reverses, state_at
 from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, FeatureSourceUnavailable, expanded_assets
 from app.replays.map_feature_inputs import read_json
 
@@ -92,6 +92,34 @@ def prepare_geometry(geo):
     return fresh
 
 
+CLOCK = 10 ** 6   # the analytic clock's resolution (`engine.analytic_times` rounds to 6 decimals)
+
+
+def _opening_release(feature, timeline, start, duration, later, movement_blocked):
+    """The first instant on the analytic clock at which an opening door no longer blocks movement.
+
+    Searched on that clock, so the instant the engine evaluates is the one checked here: a release found on
+    the float line (62.97500000000001) rounds back to a blocked 62.975. None when the opening is cut short
+    by the next event before it releases, or when blocking is undecided."""
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not duration > 0:
+        return None
+
+    def blocked(k):
+        return movement_blocked(feature, state_at(timeline, k / CLOCK)['closure'])
+
+    lo = math.ceil(start * CLOCK - 1e-3)                    # blocked: closure 1 at the start
+    hi = min(round((start + duration) * CLOCK), math.ceil(later * CLOCK - 1e-3) - 1)
+    if hi <= lo or blocked(lo) is not True or blocked(hi) is not False:
+        return None
+    while hi - lo > 1:                                      # closure falls monotonically while opening
+        mid = (lo + hi) // 2
+        found = blocked(mid)
+        if found is None:
+            return None
+        lo, hi = (lo, mid) if found is False else (mid, hi)
+    return hi / CLOCK
+
+
 class FeatureRuntime:
     def __init__(self, geo, blob):
         self.geo, self.items, self.times = geo, [], set()
@@ -116,7 +144,7 @@ class FeatureRuntime:
         data = blob.get('map_features') or {}
         if data.get('v') != VERSION or data.get('status') != 'decoded' or geo.name != 'Ascent':
             if members:
-                raise FeatureSourceUnavailable('active Ascent features require a complete map-message timeline; reparse this recording')
+                raise FeatureSourceUnavailable('active Ascent features require a complete map-message timeline')
             return
         evidence = {f['key']: f for f in data.get('features', [])}
         for f in mf.get('features', []):
@@ -130,6 +158,8 @@ class FeatureRuntime:
             timeline = evidence[key]
             if timeline.get('initial') == 'unknown':
                 raise FeatureSourceUnavailable('feature round reset unobserved')
+            if reverses(timeline):
+                raise FeatureSourceUnavailable('door reversed mid-motion; partial doors are not modelled')
             self.items.append((mf, f, timeline))
             self.times.update(float(e['t']) for e in timeline['events'])
             if f.get('sliding'):
@@ -139,23 +169,21 @@ class FeatureRuntime:
                 clearance = fs_known_metres(f['sliding'].get('movement_clearance'))
                 if top > bottom:
                     fraction = movement_cutoff(f)
-                    has_cutoff = fraction is not None
                     if fraction is None:
                         fraction = min(max((top-clearance)/(top-bottom), 0), 1)
-                    for event in timeline['events']:
+                    duration = timeline.get('closing_s')
+                    events = timeline['events']
+                    for i, event in enumerate(events):
                         if event['state'] == 'closing':
-                            self.times.add(float(event['t']) + 5 * fraction)
-                        elif event['state'] == 'opening' and has_cutoff:
-                            release = float(event['t']) + 5 * (1 - fraction)
-                            # The inverse motion can round back above the blocking cutoff.
-                            for step in range(65):
-                                blocked = movement_blocked(f, state_at(timeline, release)['closure'])
-                                if blocked is False:
-                                    self.times.add(release)
-                                    break
-                                if blocked is None or step == 64:
-                                    break
-                                release = math.nextafter(release, math.inf)
+                            # No usable duration: state_at is pending there, and the round fails when sampled.
+                            if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                                self.times.add(float(event['t']) + duration * fraction)
+                        elif event['state'] == 'opening':
+                            later = events[i+1]['t'] if i + 1 < len(events) else math.inf
+                            release = _opening_release(f, timeline, float(event['t']), duration, later,
+                                                       movement_blocked)
+                            if release is not None:
+                                self.times.add(release)
         self.transitions = sorted(self.times)
         # Fail the round instead of computing through a coverage hole.
         for _, _, timeline in self.items:

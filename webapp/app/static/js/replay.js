@@ -3956,7 +3956,9 @@
     (feature.events || []).forEach(function (event) {
       if (event.t > t || terminal) return;
       if ((state === "opening" && event.state === "closing") || (state === "closing" && event.state === "opening")) {
-        if (motionClosure(event.t) !== (state === "opening" ? 0 : 1)) reversedMotion = true;
+        // Done on the source's 6-decimal clock (ascent_features._motion_done): 8.008 - 3.008 is 4.999999999999999.
+        var elapsed = began === null ? NaN : Math.round((event.t - began) * 1e6) / 1e6;
+        if (!(usableDuration && elapsed >= duration && elapsed <= duration + .25)) reversedMotion = true;
       }
       if (event.state === "open" || event.state === "closed" || event.state === "broken") reversedMotion = false;
       state = event.state; terminal = state === "broken";
