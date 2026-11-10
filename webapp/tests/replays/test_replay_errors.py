@@ -537,6 +537,21 @@ def test_old_gap_failure_behind_an_unsupported_round_does_not_wait_on_a_person(e
 
 
 @pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
+def test_moments_and_util_behind_an_unsupported_round_promise_no_retry(errors, db, linked, key, model):
+    # Round three R3-2: the gap planner needs a current successful control row, so nothing retries these.
+    put_row(db, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    from app.services import replay_gaps
+    db.add(model(replay_id=linked.id, round_number=1, status="failed", fingerprint="old",
+                 gaps_revision=replay_gaps.GAPS_REVISION, error="Synthetic computation error", computed_at=STAMP))
+    db.commit()
+    found = kind(errors, db, key)
+    assert found["count"] == 0
+    assert found["note"] == "1 older failed rows sit behind a round map control doesn't support"
+
+
+@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
 def test_moments_and_util_use_util_freshness(errors, db, linked, key, model):
     from app.services import replay_gaps
     fresh = Freshness(db)

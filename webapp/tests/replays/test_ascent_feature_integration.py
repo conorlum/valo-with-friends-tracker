@@ -141,6 +141,7 @@ def test_market_reopen_releases_doorway_at_first_nonblocking_float(monkeypatch):
         {'t': 26.748, 'state': 'closed', 'rpc': 'PlayDoorSounds', 'line': 101},
         {'t': 59.475, 'state': 'opening', 'rpc': 'PlayDoorSounds', 'line': 102},
         {'t': 64.475, 'state': 'open', 'rpc': 'PlayDoorSounds', 'line': 103, 'evidence': [104]}]
+    data['t_end'] = 70   # the observed round's length; releases past the end are never sampled
     runtime = FeatureRuntime(geo, data)
     doorway = runtime.sample(30)[0]
     assert doorway.any()
@@ -195,13 +196,12 @@ def test_reopen_release_is_on_the_engine_clock(start):
 def test_opening_release_is_bounded_by_the_next_event(later, expected):
     # Branch review B6: an opening superseded before its release is not searched (nor rescanned per float).
     from app.control.feature_runtime import _opening_release
-    timeline = {'initial': 'closed', 'closing_s': 5, 'events': [{'t': 59.475, 'state': 'opening'}]}
     calls = []
 
     def blocked(_feature, closure):
         calls.append(closure)
         return closure > .3
-    assert _opening_release({}, timeline, 59.475, 5, later, blocked) == expected
+    assert _opening_release({}, 59.475, 5, later, blocked) == expected
     assert len(calls) <= 2 + math.ceil(math.log2(5 * 10 ** 6 + 1000))
 
 
@@ -212,23 +212,55 @@ def _cut(cutoff):
 def test_last_opening_of_the_round_still_releases():
     # Round two R2-1: no next event (the round ends mid-opening) passed math.inf into math.ceil: OverflowError.
     from app.control.feature_runtime import _opening_release
-    timeline = {'initial': 'closed', 'closing_s': 5, 'events': [{'t': 59.475, 'state': 'opening'}]}
-    assert _opening_release({}, timeline, 59.475, 5, math.inf, _cut(.3)) == 62.975001
+    assert _opening_release({}, 59.475, 5, math.inf, _cut(.3)) == 62.975001
 
 
 def test_zero_cutoff_releases_just_past_the_nominal_end():
     # Round two R2-3: at 8.008 the closure reads 2.2e-16, so a zero cutoff first clears one tick later.
     from app.control.feature_runtime import _opening_release
-    timeline = {'initial': 'closed', 'closing_s': 5,
-                'events': [{'t': 3.008, 'state': 'opening'}, {'t': 8.108, 'state': 'open'}]}
-    assert _opening_release({}, timeline, 3.008, 5, 8.108, _cut(0)) == 8.008001
+    assert _opening_release({}, 3.008, 5, 8.108, _cut(0)) == 8.008001
 
 
-def test_opening_after_destruction_adds_no_release():
-    from app.control.feature_runtime import _opening_release
-    timeline = {'initial': 'closed', 'closing_s': 5,
-                'events': [{'t': 10, 'state': 'broken'}, {'t': 59.475, 'state': 'opening'}]}
-    assert _opening_release({}, timeline, 59.475, 5, math.inf, _cut(.3)) is None
+@pytest.mark.slow
+def test_releases_past_the_round_end_are_never_sampled():
+    # Round three R3-1: a release projected past the clipped round end (another door's, here appended) made
+    # reopened_by sample a door still closing at the end, past its motion grace: the round failed as pending.
+    from app.control.feature_runtime import FeatureRuntime
+    geo, _, _, data, _, _ = compiled_case(cutoff=.3)
+    data['map_features']['features'][0]['events'] = [{'t': 5, 'state': 'closing'}]
+    runtime = FeatureRuntime(geo, data)
+    assert data['t_end'] == 9
+    runtime.transitions.append(12.500001)
+    assert not (runtime.reopened_by(8.9) > 9).any()
+
+
+def test_live_openings_skip_destruction_and_pair_each_with_its_next_event():
+    from app.control.feature_runtime import _live_openings
+    timeline = {'initial': 'closed', 'closing_s': 5, 'events': [
+        {'t': 3, 'state': 'opening'}, {'t': 8, 'state': 'open'}, {'t': 9, 'state': 'closing'},
+        {'t': 14, 'state': 'closed'}, {'t': 20, 'state': 'opening'}]}
+    assert list(_live_openings(timeline)) == [(3.0, 8), (20.0, math.inf)]
+    timeline['events'][3:3] = [{'t': 12, 'state': 'broken'}]
+    assert list(_live_openings(timeline)) == [(3.0, 8)]
+    assert list(_live_openings({**timeline, 'initial': 'broken'})) == []
+
+
+def test_release_search_visits_each_event_once():
+    # Round three R3-3: one state_at per opening rescanned the whole prefix, quadratic in the events.
+    from app.control import feature_runtime as fr
+    events = [{'t': i * .02, 'state': 'opening'} for i in range(4000)]
+    seen = []
+    original = fr.state_at
+
+    def counting(feature, t):
+        seen.append(len(feature['events']))
+        return original(feature, t)
+    import unittest.mock as um
+    with um.patch.object(fr, 'state_at', counting):
+        for start, later in fr._live_openings({'initial': 'closed', 'events': events}):
+            fr._opening_release({}, start, 5, later, _cut(.3))
+    # Two bracket checks per superseded opening; the last one, with no next event, bisects (about 23 steps).
+    assert max(seen) == 1 and len(seen) <= 2 * len(events) + 2 + math.ceil(math.log2(5 * 10 ** 6 + 1000))
 
 
 @pytest.mark.slow
@@ -243,6 +275,7 @@ def test_release_one_float_past_its_tick_is_still_recorded(last):
     if not last:
         events.append({'t': 11.501, 'state': 'open'})
     data['map_features']['features'][0]['events'] = events
+    data['t_end'] = 12
     runtime = FeatureRuntime(geo, data)
     assert 10.001001 in runtime.transitions
     doorway = runtime.sample(6.2)[0]
@@ -278,6 +311,7 @@ def test_reopen_without_conservative_cutoff_releases_at_measured_clearance():
     data['map_features']['features'][0]['events'] = [
         {'t': 1, 'state': 'closing'}, {'t': 6.002, 'state': 'closed'},
         {'t': 59.475, 'state': 'opening'}, {'t': 64.475, 'state': 'open'}]
+    data['t_end'] = 70
     runtime = FeatureRuntime(geo, data)
     [release] = [t for t in runtime.transitions if 59.475 < t < 64.475]
     assert round(release, 6) == release

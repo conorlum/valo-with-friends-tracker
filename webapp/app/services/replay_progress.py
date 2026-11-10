@@ -53,9 +53,9 @@ def is_unsupported(error: str | None) -> bool:
     return (error or "").startswith("features_source_unavailable")
 
 
-def automatic(step: str | None) -> bool:
-    """Whether the worker moves a round past this step by itself (an unknown step: no)."""
-    return step in _LABELS and _LABELS[step][1]
+def needs_person(step: str | None) -> bool:
+    """A step only a person moves a round past ("done", None and unknown steps: no)."""
+    return step in _LABELS and not _LABELS[step][1]
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()

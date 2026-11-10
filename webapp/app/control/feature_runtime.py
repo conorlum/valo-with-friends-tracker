@@ -95,14 +95,26 @@ def prepare_geometry(geo):
 CLOCK = 10 ** 6   # the analytic clock's resolution (`engine.analytic_times` rounds to 6 decimals)
 
 
-def _opening_release(feature, timeline, start, duration, later, movement_blocked):
+def _live_openings(timeline):
+    """(start, next event's time or inf) for each opening a whole door makes, in one pass over the events.
+
+    An opening after destruction is ignored, as `state_at` ignores it."""
+    events = timeline['events']
+    terminal = timeline.get('initial') == 'broken'
+    for i, event in enumerate(events):
+        terminal |= event['state'] == 'broken'
+        if event['state'] == 'opening' and not terminal:
+            yield float(event['t']), (events[i+1]['t'] if i + 1 < len(events) else math.inf)
+
+
+def _opening_release(feature, start, duration, later, movement_blocked):
     """The first instant on the analytic clock at which an opening door no longer blocks movement.
 
     Searched on that clock, so the instant the engine evaluates is the one checked here: a release found on
     the float line (62.97500000000001) rounds back to a blocked 62.975. None when the opening is cut short
     by the next event before it releases, or when blocking is undecided."""
     if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not duration > 0 \
-            or not math.isfinite(duration) or state_at(timeline, start)['state'] != 'opening':
+            or not math.isfinite(duration):
         return None
     # Until the next event the door is this one motion (reversals already failed the round), so the search
     # samples it alone instead of rescanning the whole timeline per step.
@@ -133,6 +145,7 @@ class FeatureRuntime:
         self._time, self._sample = None, None
         self._masks = {}
         self._releases = None
+        self.t_end = blob.get('t_end')
         self.transitions = []
         from app.control.map_pool_runtime import MapPoolRuntime
         self.pool = MapPoolRuntime(geo, blob)
@@ -179,18 +192,15 @@ class FeatureRuntime:
                     if fraction is None:
                         fraction = min(max((top-clearance)/(top-bottom), 0), 1)
                     duration = timeline.get('closing_s')
-                    events = timeline['events']
-                    for i, event in enumerate(events):
+                    for event in timeline['events']:
                         if event['state'] == 'closing':
                             # No usable duration: state_at is pending there, and the round fails when sampled.
                             if isinstance(duration, (int, float)) and not isinstance(duration, bool):
                                 self.times.add(float(event['t']) + duration * fraction)
-                        elif event['state'] == 'opening':
-                            later = events[i+1]['t'] if i + 1 < len(events) else math.inf
-                            release = _opening_release(f, timeline, float(event['t']), duration, later,
-                                                       movement_blocked)
-                            if release is not None:
-                                self.times.add(release)
+                    for start, later in _live_openings(timeline):
+                        release = _opening_release(f, start, duration, later, movement_blocked)
+                        if release is not None:
+                            self.times.add(release)
         self.transitions = sorted(self.times)
         # Fail the round instead of computing through a coverage hole.
         for _, _, timeline in self.items:
@@ -301,6 +311,10 @@ class FeatureRuntime:
         if self._releases is None:
             self._releases = []
             for when in self.transitions:
+                # A release projected past the round's end (a door still moving when the round was clipped)
+                # is never reached; sampling there can find another door past its motion grace and fail the round.
+                if self.t_end is not None and when >= self.t_end:
+                    break
                 # Moving panels use 1/16-second occupancy steps. Stay outside their
                 # floating-point boundary tolerance when checking the preceding pose.
                 # The analytic clock's previous tick too: a release at 8.001001 minus 1e-6 is the float

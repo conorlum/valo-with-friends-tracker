@@ -430,6 +430,19 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             reproduce=_height_command(map_name)))
 
     waiting, unsupported_behind = Counter(), Counter()
+
+    def behind(key, state):
+        """Count a failed row that isn't its round's current step, by what its round waits on."""
+        if state in replay_progress.UNSUPPORTED_STEPS:
+            # Behind a round control doesn't support: listed under that kind; nobody, person or worker, moves it.
+            unsupported_behind[key] += 1
+        elif replay_progress.needs_person(state):
+            # Behind an earlier step only a person moves (a local re-ingest): no worker retry is coming.
+            waiting[key] += 1
+        else:
+            # Stale, or behind an earlier step the worker runs (a re-parse): it gets to it on its own.
+            stale[key] += 1
+
     for key, model, revision in (("control_unsupported", ReplayRoundControl, "control_revision"),
                                  ("control_failed", ReplayRoundControl, "control_revision"),
                                  ("gaps_failed", ReplayRoundGapRun, "gaps_revision")):
@@ -439,27 +452,13 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                 if replay_progress.is_unsupported(stored.error) != (key == "control_unsupported"):
                     continue
             state = states.get((stored.replay_id, stored.round_number))
-            if state != key and state in replay_progress.UNSUPPORTED_STEPS:
-                # Behind a round control doesn't support: listed under that kind; nobody, person or worker, moves it.
-                unsupported_behind[key] += 1
-            elif state != key and state is not None and not replay_progress.automatic(state) \
-                    and stored.replay_id in replays:
-                # Behind an earlier step only a person moves (a local re-ingest): no worker retry is coming.
-                waiting[key] += 1
-            elif state != key:
-                # Stale, or behind an earlier step the worker runs (a re-parse): it gets to it on its own.
-                stale[key] += 1
+            if state != key:
+                behind(key, state)
             else:
                 replay = replays[stored.replay_id]
                 rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
                                       revision={revision: stored.revision, "computed_at": _iso(stored.computed_at)},
                                       reproduce=_round_command(replay, stored.round_number)))
-
-    for key in waiting.keys() | unsupported_behind.keys():
-        notes[key] = "; ".join(n for n in (
-            f"{waiting[key]} failed rows wait behind an earlier step that needs a person" if waiting[key] else None,
-            f"{unsupported_behind[key]} older failed rows sit behind a round map control doesn't support"
-            if unsupported_behind[key] else None) if n)
 
     fresh = Freshness(db)
     for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)):
@@ -469,12 +468,18 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             if replay is None:
                 continue
             if not fresh.current(replay, stored.round_number, stored.gaps_revision, stored.fingerprint):
-                stale[key] += 1
+                behind(key, states.get((stored.replay_id, stored.round_number)))
                 continue
             rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
                                   revision={"gaps_revision": stored.gaps_revision,
                                             "computed_at": _iso(stored.computed_at)},
                                   reproduce=_round_command(replay, stored.round_number)))
+
+    for key in waiting.keys() | unsupported_behind.keys():
+        notes[key] = "; ".join(n for n in (
+            f"{waiting[key]} failed rows wait behind an earlier step that needs a person" if waiting[key] else None,
+            f"{unsupported_behind[key]} older failed rows sit behind a round map control doesn't support"
+            if unsupported_behind[key] else None) if n)
 
     for map_name, height in control_heights.last_builds(db).items():
         if height.status == control_heights.REJECTED:
