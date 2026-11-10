@@ -162,7 +162,7 @@ def test_dispatch_task_uses_layout_asset_key(factory, db, linked, layout_assets,
     monkeypatch.setattr(replay_gaps.choke_assets, "asset_hash", lambda name: name + "-chokes")
     monkeypatch.setattr(rc, "plan", lambda session, **kwargs:
                         [planned] if kind != "gaps" or kwargs.get("force") else [])
-    worker = FakeWorker(gaps=remote.GAPS_PROTOCOL if kind != "plain" else None)
+    worker = FakeWorker(gaps=remote.GAPS_PROTOCOL if kind != "plain" else None, layouts=['Toy', 'Toy_13_10'])
     counts = remote.cycle(factory, worker, remote.State(), now=0)
     assert counts["gaps_sent" if kind == "gaps" else "sent"] == 1
     [task] = worker.tasks.values()
@@ -204,7 +204,7 @@ def test_dispatch_height_push_uses_layout_asset_key(factory, db, linked, layout_
                         reads.append((name, sha)) or b"synthetic height")
     monkeypatch.setattr(artifacts, "archived_height_bytes", lambda session, sha:
                         reads.append(sha) or b"synthetic height")
-    worker = FakeWorker(features=remote.fa.protocol_identity())
+    worker = FakeWorker(features=remote.fa.protocol_identity(), layouts=['Toy', 'Toy_13_10'])
     counts = remote.cycle(factory, worker, remote.State(), now=0)
     assert counts["sent"] == counts["pushed"] == 1
     assert reads == ([features] if archived else [(key, digest)])

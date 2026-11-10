@@ -57,6 +57,8 @@ from scipy import ndimage
 from app.control import heights as hc
 from app.replays import format as fmt
 
+from app.replays import layouts
+
 GEOMETRY_VERSION = 1
 # In a map with heights' visibility cache key. 2: a line's ground follows the floor it travels over (_ground_floor).
 GROUND_RULE = 2
@@ -543,7 +545,7 @@ def load_base_geometry(name: str, asset_dir: Path = ASSET_DIR) -> Geometry:
     sight_path, walk_path = asset_dir / f'{name}.sight.png', asset_dir / f'{name}.walk.png'
     if not sight_path.is_file() or not walk_path.is_file():
         raise GeometryError(f'no control geometry for {name!r}')
-    scale = json.loads(MAPS_JSON.read_text(encoding='utf-8'))[name]['xMultiplier']
+    scale = json.loads(MAPS_JSON.read_text(encoding='utf-8'))[layouts.map_of(name)]['xMultiplier']
     return geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale, [])
 
 
@@ -556,7 +558,7 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
     sight_path, walk_path = asset_dir / f"{name}.sight.png", asset_dir / f"{name}.walk.png"
     if not sight_path.is_file() or not walk_path.is_file():
         raise GeometryError(f"no control geometry for {name!r}; run scripts/build_control_geometry.py")
-    scale = json.loads(MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
+    scale = json.loads(MAPS_JSON.read_text(encoding="utf-8"))[layouts.map_of(name)]["xMultiplier"]
     entry = load_tags(asset_dir).get("maps", {}).get(name, {})
     geo = geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale,
                               entry.get("specials") or [])

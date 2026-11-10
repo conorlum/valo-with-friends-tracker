@@ -35,6 +35,8 @@ import re
 
 from app.replays.map_feature_state import EVENTS, GUARD_KEYS, MID_MOTION
 
+from app.replays import layouts
+
 SCHEMA_VERSION = 1
 UV_MAX = 10000
 PAINT_BYTES = 256 * 256 // 8
@@ -189,7 +191,7 @@ NO_FEATURES_NOTE = "User reported no features (user input, not a verified engine
 
 def checklist_seed(map_name: str) -> list[dict]:
     """The map's categories as the page lists them: no placements, counts only where the user gave them."""
-    return [{"key": key, "label": label, "preset": p, "expected": n} for key, label, p, n in CHECKLIST_SEED.get(map_name, [])]
+    return [{"key": key, "label": label, "preset": p, "expected": n} for key, label, p, n in CHECKLIST_SEED.get(layouts.map_of(map_name), [])]
 
 
 # ---------------------------------------------------------------- ids

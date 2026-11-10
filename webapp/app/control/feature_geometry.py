@@ -15,11 +15,13 @@ from app.control import adaptive as ag, geometry as cg, heights as hc, height_re
 from app.replays.map_feature_inputs import canonical_json
 from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
 
+from app.replays import layouts
+
 MAX_PANEL_PARENTS = 1024
 
 
 def panel_parents(geo, mf):
-    if geo.name != 'Lotus' or geo.heights is None or geo.movement_only:
+    if layouts.map_of(geo.name) != 'Lotus' or geo.heights is None or geo.movement_only:
         return []
     owners = {m for b in mf.get('bundles', []) if b.get('enabled')
               and b.get('runtime_consumer') == 'map_pool_replay_v1' for m in b.get('members', [])}

@@ -9,6 +9,8 @@ from app.replays.map_feature_inputs import read_json
 from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, FeatureSourceUnavailable
 from app.replays.control_format import GRID_HZ as ROTATION_HZ
 
+from app.replays import layouts
+
 CONSUMER = 'map_pool_replay_v1'
 MAPS = frozenset(events.MAP_PREFIXES)
 ROTATION_BLOCK_FRACTION = .5
@@ -164,7 +166,8 @@ class MapPoolRuntime:
         if not members:
             return
         data = blob.get('map_messages') or {}
-        if geo.name not in MAPS or data.get('map') != geo.name or data.get('v') != events.VERSION:
+        if layouts.map_of(geo.name) not in MAPS or data.get('map') not in (geo.name, layouts.map_of(geo.name)) \
+                or data.get('v') != events.VERSION:
             raise FeatureSourceUnavailable('active map features require their matching map RPC ledger; reparse this recording')
         times = set()
         for f in mf.get('features', []):

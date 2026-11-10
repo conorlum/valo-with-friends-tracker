@@ -7,6 +7,8 @@ from app.replays.ascent_features import KEYS, VERSION, state_at
 from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, FeatureSourceUnavailable, expanded_assets
 from app.replays.map_feature_inputs import read_json
 
+from app.replays import layouts
+
 CONSUMER = 'ascent_replay_v1'
 
 
@@ -112,7 +114,7 @@ class FeatureRuntime:
         if not members:
             return
         data = blob.get('map_features') or {}
-        if data.get('v') != VERSION or data.get('status') != 'decoded' or geo.name != 'Ascent':
+        if data.get('v') != VERSION or data.get('status') != 'decoded' or layouts.map_of(geo.name) != 'Ascent':
             if members:
                 raise FeatureSourceUnavailable('active Ascent features require a complete map-message timeline; reparse this recording')
             return

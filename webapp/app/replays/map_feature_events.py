@@ -13,6 +13,8 @@ from pathlib import Path
 
 from app.replays.ascent_features import Bits, DecodeError, fields, invocations, MAX_ROWS
 
+from app.replays import layouts
+
 VERSION = 1
 CLASSES = {
     'WindowShield': '/Game/Interactable/WindowShield.WindowShield_C',
@@ -39,7 +41,7 @@ def read_ledger(export_dir: Path, map_name: str, manifest: dict):
     path = export_dir / 'map-audit.ndjson'
     report = {'v': VERSION, 'status': 'unavailable', 'rows': 0, 'errors': [],
               'source_sha256': manifest.get('source_sha256'), 'qualification': 'framing_only'}
-    if map_name not in MAP_PREFIXES or not path.is_file():
+    if layouts.map_of(map_name) not in MAP_PREFIXES or not path.is_file():
         return [], report
     groups = {g['path']: g for g in manifest.get('net_field_export_groups', [])}
     ledger, digest, identities, ambiguous = [], hashlib.sha256(), {}, set()
@@ -56,7 +58,7 @@ def read_ledger(export_dir: Path, map_name: str, manifest: dict):
                 actor = row.get('actor_path')
                 if not isinstance(actor, str) or not row.get('is_actor'):
                     continue
-                prefix = next((p for p in MAP_PREFIXES[map_name] if actor.startswith(p)), None)
+                prefix = next((p for p in MAP_PREFIXES[layouts.map_of(map_name)] if actor.startswith(p)), None)
                 if prefix is None:
                     continue
                 cls = CLASSES[prefix]
@@ -77,7 +79,7 @@ def read_ledger(export_dir: Path, map_name: str, manifest: dict):
                 # do not decide whether destruction occurred; validate their field
                 # framing and retain unnamed handles without inventing inherited names.
                 calls = invocations(row, groups, cls, strict=True, opaque_rpcs={'OnDie'})
-                if map_name == 'Sunset' and prefix == 'WindowShield' and row.get('has_rep_layout'):
+                if layouts.map_of(map_name) == 'Sunset' and prefix == 'WindowShield' and row.get('has_rep_layout'):
                     # Keep an explicitly serialized state, never an absent/default value. It can
                     # corroborate one same-clock RPC below, but cannot activate a door by itself.
                     params = fields(Bits(base64.b64decode(row['transformed_base64'], validate=True),
@@ -232,7 +234,7 @@ def bind_round(feature, ledger, report, start_ms, end_ms, previous_end_ms=0):
 
 
 def attach(replay, export_dir, manifest, windows):
-    if replay.map_name not in MAP_PREFIXES:
+    if layouts.map_of(replay.map_name) not in MAP_PREFIXES:
         return
     try:
         ledger, report = read_ledger(export_dir, replay.map_name, manifest)
