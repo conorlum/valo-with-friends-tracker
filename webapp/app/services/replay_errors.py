@@ -30,6 +30,7 @@ TTL_S = 55
 SITE = "https://valowithfriendstracker.onrender.com"
 KINDS = (
     ("box_conflict", "Box height conflicts"),
+    ("control_unsupported", "Map control: not supported in this round"),
     ("control_failed", "Map control failed"),
     ("gaps_failed", "Timing gaps failed"),
     ("moments_failed", "Critical Moments failed"),
@@ -428,14 +429,31 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             revision={"heights_revision": (rules or {}).get("revision"), "built_at": _iso(built_at)},
             reproduce=_height_command(map_name)))
 
-    for key, model, revision in (("control_failed", ReplayRoundControl, "control_revision"),
+    waiting, unsupported_behind = Counter(), Counter()
+
+    def behind(key, state):
+        """Count a failed row that isn't its round's current step, by what its round waits on."""
+        if state in replay_progress.UNSUPPORTED_STEPS:
+            # Behind a round control doesn't support: listed under that kind; nobody, person or worker, moves it.
+            unsupported_behind[key] += 1
+        elif replay_progress.needs_person(state):
+            # Behind an earlier step only a person moves (a local re-ingest): no worker retry is coming.
+            waiting[key] += 1
+        else:
+            # Stale, or behind an earlier step the worker runs (a re-parse): it gets to it on its own.
+            stale[key] += 1
+
+    for key, model, revision in (("control_unsupported", ReplayRoundControl, "control_revision"),
+                                 ("control_failed", ReplayRoundControl, "control_revision"),
                                  ("gaps_failed", ReplayRoundGapRun, "gaps_revision")):
         for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
                                getattr(model, revision).label("revision")).filter(model.status == "failed"):
+            if model is ReplayRoundControl:
+                if replay_progress.is_unsupported(stored.error) != (key == "control_unsupported"):
+                    continue
             state = states.get((stored.replay_id, stored.round_number))
             if state != key:
-                # Stale, or behind an earlier step (a re-parse): the worker gets to it on its own.
-                stale[key] += 1
+                behind(key, state)
             else:
                 replay = replays[stored.replay_id]
                 rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
@@ -450,12 +468,18 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             if replay is None:
                 continue
             if not fresh.current(replay, stored.round_number, stored.gaps_revision, stored.fingerprint):
-                stale[key] += 1
+                behind(key, states.get((stored.replay_id, stored.round_number)))
                 continue
             rows[key].append(_row(replay=replay, n=stored.round_number, error=stored.error,
                                   revision={"gaps_revision": stored.gaps_revision,
                                             "computed_at": _iso(stored.computed_at)},
                                   reproduce=_round_command(replay, stored.round_number)))
+
+    for key in waiting.keys() | unsupported_behind.keys():
+        notes[key] = "; ".join(n for n in (
+            f"{waiting[key]} failed rows wait behind an earlier step that needs a person" if waiting[key] else None,
+            f"{unsupported_behind[key]} older failed rows sit behind a round map control doesn't support"
+            if unsupported_behind[key] else None) if n)
 
     for map_name, height in control_heights.last_builds(db).items():
         if height.status == control_heights.REJECTED:
@@ -504,7 +528,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             rows["unlinked"].append(_row(replay=replay, figures=replay.link_report,
                                           revision={"recipe": replay.recipe}))
     manual = {key: label for key, label, automatic in replay_progress.STEPS
-              if not automatic and key not in ("control_failed", "gaps_failed")}
+              if not automatic and key not in ({"control_failed", "gaps_failed"} | replay_progress.UNSUPPORTED_STEPS)}
     counts = Counter((rid, step) for (rid, _), step in states.items() if step in manual)
     for (rid, step), count in counts.items():
         replay = replays[rid]
@@ -637,8 +661,9 @@ def compute(db, live=None, *, limit=SHOW) -> dict:
     ordered = sorted(KINDS, key=lambda pair: GROUP_ORDER.index(GROUPS[pair[0]]))
     return {"kinds": [{"key": key, "label": label, "group": GROUPS[key],
                        "shape": "event" if key in EVENT_KINDS else "replay", "count": len(rows[key]),
-                       "note": (f"{stale[key]} failed rows from older rules: the worker will retry them"
-                                if stale[key] else notes.get(key)), "rows": rows[key][:limit]}
+                       "note": "; ".join(n for n in (
+                           f"{stale[key]} failed rows from older rules: the worker will retry them" if stale[key]
+                           else None, notes.get(key)) if n) or None, "rows": rows[key][:limit]}
                       for key, label in ordered],
             "checked_at": _iso(now())}
 
@@ -688,8 +713,8 @@ def _rest_query(key, rows):
         keys =", ".join(_sql_string(r["key"]) for r in rows)
         return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
                 f"WHERE kind = {_sql_string(key)} AND key IN ({keys}) ORDER BY last_seen DESC;")
-    models = {"control_failed": ReplayRoundControl, "gaps_failed": ReplayRoundGapRun,
-              "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
+    models = {"control_unsupported": ReplayRoundControl, "control_failed": ReplayRoundControl,
+              "gaps_failed": ReplayRoundGapRun, "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
     if key in models:
         identities = ", ".join(f"({_sql_string(r['match'])}, {int(r['round'])})" for r in rows)
         return (f"SELECT r.map_name, r.match_uuid, e.round_number, e.error, e.computed_at "

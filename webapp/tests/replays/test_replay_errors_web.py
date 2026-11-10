@@ -199,7 +199,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(descendants(body, "tbody").map(node => node.children.length), [2, 1]);
   assert.equal(descendants(body, "h3")[0].textContent, "Replays");
   assert.equal(descendants(body, "h4")[0].textContent, "Box height conflicts (51)");
-  assert.match(body.textContent, /Stored evidence/); assert.match(body.textContent, /Nothing in: Map control failed/);
+  assert.match(body.textContent, /Stored evidence/);
+  assert.match(body.textContent, /Nothing in: Map control: not supported in this round, Map control failed/);
   // A check still running or unavailable isn't "nothing": it shows its note, and stays out of that list.
   assert.match(body.textContent, /Map features failed to verify: checking 0 of 3/);
   assert.doesNotMatch(body.textContent, /Nothing in:[^]*Map features failed to verify/);

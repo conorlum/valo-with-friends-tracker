@@ -4009,16 +4009,28 @@
       return current;
     }
     var state = feature.initial || "unknown", began = null, terminal = state === "broken";
+    var reversedMotion = false, duration = feature.closing_s;
+    var usableDuration = Number.isFinite(duration) && duration > 0;
+    function motionClosure(at) {
+      if (began === null || !usableDuration || at - began > duration + .25) return null;
+      var progress = Math.min(1, Math.max(0, (at - began) / duration));
+      return state === "opening" ? 1 - progress : progress;
+    }
     (feature.events || []).forEach(function (event) {
       if (event.t > t || terminal) return;
+      if ((state === "opening" && event.state === "closing") || (state === "closing" && event.state === "opening")) {
+        // Done on the source's 6-decimal clock (ascent_features._motion_done): 8.008 - 3.008 is 4.999999999999999.
+        var elapsed = began === null ? NaN : Math.round((event.t - began) * 1e6) / 1e6;
+        if (!(usableDuration && elapsed >= duration && elapsed <= duration + .25)) reversedMotion = true;
+      }
+      if (event.state === "open" || event.state === "closed" || event.state === "broken") reversedMotion = false;
       state = event.state; terminal = state === "broken";
-      began = state === "closing" ? event.t : null;
+      began = state === "closing" || state === "opening" ? event.t : null;
     });
     var closure = state === "open" ? 0 : state === "closed" ? 1 : null;
-    if (state === "closing" && began !== null && Number.isFinite(feature.closing_s) && feature.closing_s > 0 && t - began <= feature.closing_s + .25) {
-      closure = Math.min(1, Math.max(0, (t - began) / feature.closing_s));
-    }
-    return { state: state, closure: closure, modeled: state === "closing", pending: state === "unknown" || (state === "closing" && closure === null) };
+    var modeled = state === "closing" || state === "opening";
+    if (modeled && !reversedMotion) closure = motionClosure(t);
+    return { state: state, closure: closure, modeled: modeled, pending: reversedMotion || state === "unknown" || (modeled && closure === null) };
   }
 
   ReplayViewer.prototype.mapFeatureName = function (feature) {
@@ -4068,7 +4080,7 @@
       stateRows.push('<p><strong>' + escapeHtml(name) + '</strong>: ' + escapeHtml(detail) + '</p>');
       if (!self.layers.features || !feature.uv) return;
       var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
-      var emphasized = state === "closing" || state === "closed" || state === "broken" || sampled.blocks_movement;
+      var emphasized = state === "closing" || state === "opening" || state === "closed" || state === "broken" || sampled.blocks_movement;
       var color = state === "broken" ? "#ff4d5f" : state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffe54f";
       if (feature.mode === 'reducer_trace' && !sampled.movement_geometry && !sampled.blocks_movement && !sampled.pending && state !== 'broken') color = '#7dd3a8';
       var width = Math.max(emphasized ? 3 : 2, radius / (emphasized ? 4 : 5));

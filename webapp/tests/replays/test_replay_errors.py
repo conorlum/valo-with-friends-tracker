@@ -33,7 +33,7 @@ from app.services.replay_util import Freshness
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
         "worker_overrun", "worker_refused", "warm_vanished", "unscored_match", "kill_impact_missing", "map_pool_note",
-        "cache_fallback", "box_conflict", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+        "cache_fallback", "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -123,6 +123,7 @@ def test_every_recorded_kind_has_a_card_entry(errors):
     from app.services import site_health
 
     assert set(dict(errors.KINDS)) == site_health.KNOWN_KINDS
+    assert "control_unsupported" not in site_health.RECORDED_KINDS | errors.EVENT_KINDS | errors.LIVE_KINDS
 
 
 @pytest.mark.parametrize(("key", "group"), [
@@ -456,6 +457,22 @@ def test_real_shaped_box_conflict_and_shared_copy_cache(errors, db, linked, monk
     assert ch.all_box_conflicts(db)[0][3] == RECORD
 
 
+@pytest.mark.parametrize("suffix", ["", "; reparse this recording"])
+def test_unsupported_failure_is_listed_once_without_manual_work_or_staleness(errors, db, linked, suffix):
+    put_row(db, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline" + suffix
+    db.commit()
+    row = one(errors, db, "control_unsupported")
+    assert row["error"] == stored.error and row["round"] == 1
+    assert row["revision"]["control_revision"] == stored.control_revision
+    assert kind(errors, db, "control_unsupported")["note"] is None
+    assert kind(errors, db, "control_failed")["count"] == 0
+    assert kind(errors, db, "control_failed")["note"] is None
+    assert kind(errors, db, "needs_a_person")["count"] == 0
+    assert "replay_round_control" in errors._rest_query("control_unsupported", [row])
+
+
 @pytest.mark.parametrize("key,model", [("control_failed", ReplayRoundControl), ("gaps_failed", ReplayRoundGapRun)])
 def test_current_and_stale_round_failures(errors, factory, db, linked, key, model):
     if key == "control_failed":
@@ -487,6 +504,51 @@ def test_failures_behind_an_earlier_step_are_counted_not_listed(errors, factory,
     found = kind(errors, db, key)
     assert found["count"] == 0
     assert found["note"] == "1 failed rows from older rules: the worker will retry them"
+
+
+@pytest.mark.parametrize("key", ["control_unsupported", "control_failed", "gaps_failed"])
+def test_failures_behind_a_local_reingest_promise_no_worker_retry(errors, factory, db, linked, key):
+    # Branch review B4: a local replay on an older condenser waits for its owner, not for the worker.
+    put_row(db, linked, 1, status="ok" if key == "gaps_failed" else "failed")
+    if key == "gaps_failed":
+        _gap_run(factory, linked, 1, status="failed")
+    if key == "control_unsupported":
+        stored = db.get(ReplayRoundControl, (linked.id, 1))
+        stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    linked.recipe, linked.source = "000000000000.c9.f1.000000000", "local"
+    db.commit()
+    found = kind(errors, db, key)
+    assert found["count"] == 0
+    assert found["note"] == "1 failed rows wait behind an earlier step that needs a person"
+
+
+def test_old_gap_failure_behind_an_unsupported_round_does_not_wait_on_a_person(errors, factory, db, linked):
+    # Round two R2-4: control replaced by an unsupported failure, an older failed gap run still stored.
+    put_row(db, linked, 1, status="failed")
+    _gap_run(factory, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    db.commit()
+    assert kind(errors, db, "control_unsupported")["count"] == 1
+    gaps = kind(errors, db, "gaps_failed")
+    assert gaps["count"] == 0
+    assert gaps["note"] == "1 older failed rows sit behind a round map control doesn't support"
+    assert kind(errors, db, "needs_a_person")["count"] == 0
+
+
+@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
+def test_moments_and_util_behind_an_unsupported_round_promise_no_retry(errors, db, linked, key, model):
+    # Round three R3-2: the gap planner needs a current successful control row, so nothing retries these.
+    put_row(db, linked, 1, status="failed")
+    stored = db.get(ReplayRoundControl, (linked.id, 1))
+    stored.error = "features_source_unavailable: unverified opening/default state in active feature timeline"
+    from app.services import replay_gaps
+    db.add(model(replay_id=linked.id, round_number=1, status="failed", fingerprint="old",
+                 gaps_revision=replay_gaps.GAPS_REVISION, error="Synthetic computation error", computed_at=STAMP))
+    db.commit()
+    found = kind(errors, db, key)
+    assert found["count"] == 0
+    assert found["note"] == "1 older failed rows sit behind a round map control doesn't support"
 
 
 @pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
@@ -695,6 +757,9 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     height(db, linked.map_name, status="active", asset=asset([dict(RECORD, match=str(linked.match_uuid))]))
     height(db, linked.map_name, digest="rejected")
     put_row(db, linked, 1, status="failed")
+    put_row(db, linked, 5, status="failed")
+    db.get(ReplayRoundControl, (linked.id, 5)).error = "features_source_unavailable: reset unobserved"
+    db.commit()
     put_row(db, linked, 2)
     _gap_run(factory, linked, 2, status="failed")
     db.expire_all()
@@ -729,7 +794,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
             assert "--read-only" in command, (key, command)
             assert "--expect-database valowithfriendsdb" in command, (key, command)
             assert "--force" not in command, (key, command)
-            if key in ("control_failed", "gaps_failed", "moments_failed", "util_failed"):
+            if key in ("control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed"):
                 assert command.endswith("--retry-failed --dry-run"), command
             elif key in ("box_conflict", "heights_rejected"):
                 assert command.endswith(f'--out "$TEMP/{row["map"]}_heights.npz"'), command
@@ -803,6 +868,7 @@ def _before_split(db) -> dict:
         "needs_work": total - done,
         "worker_will_do": sum(s["rounds"] for s in steps if s["automatic"]),
         "needs_a_person": sum(s["rounds"] for s in steps if not s["automatic"]),
+        "unsupported": 0,  # R4 adds this total; the frozen fixture has no unsupported rounds.
         "steps": steps,
         "matches": matches,
         "judged_against": {"recipe": recipe, "control_revision": cf.CONTROL_REVISION,

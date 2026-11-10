@@ -13,7 +13,7 @@ FEATURE_NORMALIZATION_VERSION = 2
 FEATURE_CANONICAL_TAG_VERSION = 2
 FEATURE_WIRE_VERSION = 1
 RUNTIME_CONSUMERS = frozenset({'ascent_replay_v1', 'quiet_rope_v1', 'map_pool_replay_v1'})
-CONSUMER_VERSIONS = {'ascent_replay_v1': 4, 'quiet_rope_v1': 7, 'map_pool_replay_v1': 6}
+CONSUMER_VERSIONS = {'ascent_replay_v1': 5, 'quiet_rope_v1': 7, 'map_pool_replay_v1': 6}
 
 
 class FeatureInputsError(ValueError):
