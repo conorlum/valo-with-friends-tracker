@@ -33,6 +33,7 @@ class HeightSelection:
 
 from app.replays import control_format as cf
 from app.replays import format as fmt
+from app.replays import layouts
 
 CONTROL_DIR = fmt.STATIC_DIR / "data" / "control"
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
@@ -42,12 +43,19 @@ MANIFEST_VERSION = 2
 
 
 class CheckSetError(ValueError):
-    """The must-block check set can't be read: nothing may pass the check."""
+    """A required check set or region mask can't be read: the build must wait."""
 
 
-def must_block_set(path: Path | None = None) -> tuple[list, str]:
+def must_block_path(key: str | None) -> Path:
+    """Base layouts share the original check set; later layouts have their own."""
+    if key is None or layouts.map_of(key) == key:
+        return MUST_BLOCK
+    return CONTROL_DIR / f"must_block.{key}.json"
+
+
+def must_block_set(path: Path | None = None, *, key: str | None = None) -> tuple[list, str]:
     """(the lines, 12 hex of the file's bytes). Raises CheckSetError for a missing or malformed file."""
-    path = MUST_BLOCK if path is None else Path(path)
+    path = must_block_path(key) if path is None else Path(path)
     try:
         raw = path.read_bytes()
     except OSError as error:
@@ -61,9 +69,9 @@ def must_block_set(path: Path | None = None) -> tuple[list, str]:
     return lines, hashlib.sha256(raw).hexdigest()[:12]
 
 
-def must_block_sha(path: Path | None = None) -> str | None:
+def must_block_sha(path: Path | None = None, *, key: str | None = None) -> str | None:
     try:
-        return must_block_set(path)[1]
+        return must_block_set(path, key=key)[1]
     except CheckSetError:
         return None
 
@@ -73,7 +81,7 @@ def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json:
     try:
         entry = json.loads(((control_dir or CONTROL_DIR) / "index.json").read_text(encoding="utf-8")) \
             .get("maps", {}).get(map_name)
-        scale = (json.loads((maps_json or MAPS_JSON).read_text(encoding="utf-8")).get(map_name) or {}) \
+        scale = (json.loads((maps_json or MAPS_JSON).read_text(encoding="utf-8")).get(layouts.map_of(map_name)) or {}) \
             .get("xMultiplier")
     except (OSError, ValueError):
         return None
@@ -83,6 +91,43 @@ def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json:
     if entry.get("cover_sha"):          # only a map with cover pieces: the others' manifests stay as they were
         out["cover"] = entry["cover_sha"]
     return out
+
+
+def region_masks(map_name: str, registry=None, control_dir=None) -> list[tuple[str, str | None]]:
+    """Region file identities in layout order; an unreadable mask blocks the build."""
+    folder = CONTROL_DIR if control_dir is None else Path(control_dir)
+    masks = []
+    for layout in layouts.layouts_of(map_name, registry):
+        sha = None
+        if layout.region_mask is not None:
+            path = folder / layout.region_mask
+            try:
+                raw = path.read_bytes()
+            except OSError as error:
+                raise CheckSetError(f"{path} is missing or unreadable: {error}") from error
+            sha = hashlib.sha256(raw).hexdigest()[:12]
+        masks.append((layout.asset_key, sha))
+    return masks
+
+
+def changed_between(map_name, key_a, key_b, registry=None) -> list[str]:
+    """Masks after the earlier layout through the later layout, in either direction."""
+    if key_a == key_b:
+        return []
+    ordered = layouts.layouts_of(map_name, registry)
+    keys = [layout.asset_key for layout in ordered]
+    first, last = sorted((keys.index(key_a), keys.index(key_b)))
+    return [layout.asset_key for layout in ordered[first + 1:last + 1]
+            if layout.region_mask is not None]
+
+
+def regions_for(asset_key, pool, registry=None, control_dir=None) -> dict | None:
+    """Record changed-region inputs and the replays borrowed from other layouts."""
+    map_name = layouts.map_of(asset_key)
+    if len(layouts.layouts_of(map_name, registry)) == 1:
+        return None
+    return {"masks": [[key, sha] for key, sha in region_masks(map_name, registry, control_dir)],
+            "pool": sorted([str(uuid).lower(), from_key] for uuid, from_key in pool)}
 
 
 def refinement_history(map_name, value=None):
@@ -114,7 +159,8 @@ def check_refinement_transition(map_name, prior, receipt):
         raise ValueError('refinement receipt lost or changed durable history')
 
 
-def manifest(map_name: str, replays: list, geometry: dict, must_block: str | None, *, history=None) -> dict:
+def manifest(map_name: str, replays: list, geometry: dict, must_block: str | None, *, history=None,
+             regions=None) -> dict:
     """`replays` = [[match uuid, recipe, source sha256, round count], ...], in any order."""
     return {"v": MANIFEST_VERSION, "map": map_name, "height_version": cf.HEIGHT_VERSION,
             "height_rules": cf.HEIGHT_RULES_REVISION, "min_condense_revision": MIN_CONDENSE_REVISION,
@@ -123,7 +169,8 @@ def manifest(map_name: str, replays: list, geometry: dict, must_block: str | Non
             "must_block": must_block,
             "refinement_history": refinement_history(map_name, history),
             "replays": sorted([str(u).lower(), str(recipe), str(source), int(count)]
-                              for u, recipe, source, count in replays)}
+                              for u, recipe, source, count in replays),
+            **({"regions": regions} if regions is not None else {})}
 
 
 def digest(m: dict) -> str:
