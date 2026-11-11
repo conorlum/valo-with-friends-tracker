@@ -85,7 +85,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import map_feature_artifacts as fa
 from app.services import control_feature_artifacts
-from app.services import control_heights, replay_control, replay_gaps
+from app.services import control_heights, layout_walls, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
@@ -900,6 +900,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
                                              "busy", "unreachable", "refused", "held", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
+                                             "walls_computed", "walls_skipped", "walls_error",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else
     try:
@@ -928,6 +929,15 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             finally:
                 rebuild.rollback()
                 rebuild.close()
+        try:
+            walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
+            counts["walls_computed"] = walls.get("computed", 0)
+            counts["walls_skipped"] = int("skipped" in walls)
+            site_health.loop_ok("layout_walls_step")
+        except Exception as exc:  # noqa: BLE001 - wall shares must never stop map control
+            log.exception("layout wall-share step failed")
+            counts["walls_error"] = 1
+            site_health.loop_failed("layout_walls_step", exc)
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
             asset_keys = set()
