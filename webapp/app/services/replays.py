@@ -114,10 +114,16 @@ def _team(value) -> str:
 def page_context(db, replay: Replay) -> dict:
     """The page's data beside the blobs: JSON-ready, no Subjects."""
     uuid = str(replay.match_uuid).lower()
+    selection = replay_control.layout_of(replay)
+    layout = selection.layout
+    asset = layout.asset_key if selection.state == "ok" else replay.map_name
     base = {"uuid": uuid, "map": replay.map_name, "rounds": list(range(1, replay.round_count + 1)),
+            "asset": asset,
+            "layout": {"id": layout.display_id if layout else None, "state": selection.state,
+                       "patch": ".".join(str(part) for part in layout.start) if layout and layout.start else None},
             "source_sha256": replay.source_sha256, "uv_per_unit": _uv_per_unit().get(replay.map_name),
             "linked": replay_db.is_linked(replay), "status": replay.link_status,
-            "control": replay_control.map_layer(replay.map_name)}
+            "control": replay_control.map_layer(asset) if selection.state == "ok" else None}
     # Timing gaps: offered beside control, linked only (names and sides come from the link; gaps.json 404s
     # an unlinked replay).
     base["gaps"] = bool(base["linked"] and base["control"])

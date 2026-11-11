@@ -398,7 +398,8 @@ def replay_round_gaps(request: Request, match_uuid: str, round_number: int, db: 
     if not 1 <= round_number <= replay.round_count:
         raise HTTPException(status_code=404)
     status, rows = gaps_service.round_gaps(db, replay, round_number)
-    view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], replay.map_name)
+    key = control_service.layout_of(replay).layout.asset_key
+    view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], key)
     body = {"status": status, "stale": status == "stale", "revision": gaps_service.GAPS_REVISION,
             "rows": view["rows"], "chokes": view["chokes"]}
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -435,6 +436,7 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     return {
         "viewer_slot": viewer_slot,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
+                   "asset": context["match"]["asset"],
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},

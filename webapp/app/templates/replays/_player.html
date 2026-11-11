@@ -29,7 +29,9 @@
                 aria-label="Minimap"></canvas>
         <div class="replay-tip" data-replay-tip hidden></div>
         <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>
-      </div>
+      </div>{% if replay_data is defined and replay_data.match.layout is defined %}{% if replay_data.match.layout.state == "layout_pending" %}
+      <p class="replay-note">The map changed in {{ replay_data.match.layout.patch }}; this replay's map control is out of date until it is redrawn</p>{% elif replay_data.match.layout.state == "layout_unknown" %}
+      <p class="replay-note">This replay's patch is unknown and the map has several layouts; map control is not shown</p>{% endif %}{% endif %}
       <div class="replay-controls">
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
         <button type="button" class="replay-button" data-replay-prevkill title="Jump to 1 s before the previous kill (B)">Previous kill</button>
