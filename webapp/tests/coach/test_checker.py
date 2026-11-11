@@ -472,3 +472,114 @@ def test_a_cited_spike_area_attempt_length_and_time_left_pass(spike_log, body):
 def test_an_attempt_length_not_in_the_answer_fails(spike_log):
     snap, log = spike_log
     assert _check(snap, log, "You made a 2.5 s tap.", SPIKE_INST) != []
+
+
+@pytest.fixture
+def ability_check(tmp_path):
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [6, 7]},
+               "rounds": {str(n): {"db": {}, "stats": {}, "kills": {}} for n in (6, 7)}}
+    blobs = {n: toys.round_blob(toys.ten(), n=n) for n in (6, 7)}
+    snapshot.save(snapshot.assemble(context, blobs, {n: ("ok", False, SHARES) for n in blobs}), tmp_path)
+    snap = snapshot.load(tmp_path)
+
+    def check(body, reason=None, event_class="found", *, cmd="knew", cite=True,
+              answer_round=6, rounds=(6,), section="body", signals_missing=False, cited_instances=None):
+        signals = [] if reason is None else [
+            {"t": 10.0, "name": "P5", "reason": reason, "class": event_class}]
+        result = {"round": answer_round, "t": 15.0, "side": "A", "enemies": [],
+                  "signals": None if signals_missing else signals,
+                  "ruled_out": [{"t": 10.0, "name": f"P{s}", "reason": "haunt"} for s in range(5, 10)],
+                  "lost_track": []}
+        log = {"q1": {"cmd": cmd, "args": [str(answer_round), "15", "A"], "result": result}}
+        instances = [{"round": n, "t": 20.0, "caption": body if section == "caption" else "",
+                      "evidence": ["q1"] if cite and (cited_instances is None or i in cited_instances) else []}
+                     for i, n in enumerate(rounds)]
+        p = point(polarity="good", title="Ability information", body="You pushed afterwards.", instances=instances)
+        if section != "caption":
+            p[section] = body
+        return checker.check_point(p, log, snap, THEMES, 0)
+
+    return check
+
+
+@pytest.mark.parametrize("ability,reason", [
+    ("recon dart", "recon"), ("recon bolt", "recon"), ("camera dart", "camera_dart"),
+    ("drone dart", "drone_dart"), ("haunt", "haunt"), ("recon", "recon"),
+    ("knife", "knife_hit"), ("flash", "skye_hit"), ("drone", "tejo_drone"), ("dart", "camera_dart"),
+])
+@pytest.mark.parametrize("supported", [False, True])
+def test_ability_claim_requires_its_signal(ability_check, ability, reason, supported):
+    errors = ability_check(f"{ability.title()} revealed an enemy.", reason if supported else None)
+    assert errors == [] if supported else errors == [
+        f"instance 1: says {ability} located enemies in round 6, but no cited knew signal shows it"]
+
+
+@pytest.mark.parametrize("reason", [None, "haunt"])
+def test_haunt_exclusions_do_not_support_a_team_location_claim(ability_check, reason):
+    errors = ability_check("Haunt located the whole enemy team", reason)
+    assert errors == [] if reason else errors == [
+        "instance 1: says haunt located enemies in round 6, but no cited knew signal shows it"]
+
+
+def test_ability_claim_requires_a_cited_knew_answer(ability_check):
+    for kwargs in ({"cite": False}, {"cmd": "where"}, {"answer_round": 7}):
+        assert any("no cited knew signal" in e for e in ability_check("Haunt located an enemy", "haunt", **kwargs))
+
+
+@pytest.mark.parametrize("body", [
+    "You pushed after the Haunt.", "Haunt found nobody", "Recon did not reveal an enemy",
+    "The knife hit no one", "Your Haunt never located anyone", "Haunt revealed nothing",
+    "Nobody was revealed by the Haunt", "Haunt didn't reveal an enemy", "Haunt didn’t reveal an enemy",
+    "Haunt revealed no enemy", "Haunt found none", "You pushed without Haunt revealing anyone",
+    "Haunt expired. Recon revealed an enemy.",
+])
+def test_ability_nonclaims_and_negation_need_no_signal(ability_check, body):
+    reason = "recon" if body.startswith("Haunt expired.") else None
+    assert ability_check(body, reason) == []
+
+
+@pytest.mark.parametrize("ability,reason", [("Haunt", "haunt"), ("Recon dart", "recon")])
+@pytest.mark.parametrize("supported", [False, True])
+def test_passive_ability_claim(ability_check, ability, reason, supported):
+    errors = ability_check(f"An enemy was revealed by the {ability}", reason if supported else None)
+    assert bool(errors) is not supported
+    assert all("no cited knew signal" in e for e in errors)
+
+
+@pytest.mark.parametrize("reason,event_class", [
+    ("knife_hit", "roughly_placed"), ("knife_all", "roughly_placed"), ("skye_cue", "roughly_placed"),
+    ("drone_dart", "found"),
+])
+def test_ability_reason_prefixes_and_alternatives(ability_check, reason, event_class):
+    ability = "knife" if reason.startswith("knife_") else "flash" if reason.startswith("skye_") else "drone"
+    assert ability_check(f"{ability} spotted an enemy", reason, event_class) == []
+
+
+@pytest.mark.parametrize("reason,event_class,extra", [
+    ("haunt", "ruled_out", {}), ("haunt", "lost_track", {}), ("haunt", "other", {}),
+    ("recon", "found", {}), ("haunt", "found", {"signals_missing": True}),
+])
+def test_only_matching_location_signals_support_ability_claims(ability_check, reason, event_class, extra):
+    assert any("no cited knew signal" in e for e in ability_check("Haunt found an enemy", reason, event_class, **extra))
+
+
+@pytest.mark.parametrize("section", ["title", "body", "caption"])
+def test_ability_claim_in_any_point_text_needs_support_in_every_round(ability_check, section):
+    errors = ability_check("Haunt scanned an enemy", "haunt", rounds=(6, 7), section=section)
+    assert "instance 2: says haunt located enemies in round 7, but no cited knew signal shows it" in errors
+
+
+def test_negation_in_another_clause_does_not_hide_a_positive_claim(ability_check):
+    assert any("no cited knew signal" in e for e in ability_check(
+        "Haunt found nobody, but Recon revealed an enemy."))
+
+
+def test_ability_support_is_per_round_across_the_points_citations(ability_check):
+    errors = ability_check("Haunt found an enemy", "haunt", rounds=(6, 6), cited_instances={1})
+    assert not any("no cited knew signal" in e for e in errors)
+
+
+@pytest.mark.parametrize("ability,reason", [("Recon dart", "drone_dart"), ("Camera dart", "drone_dart"),
+                                          ("Drone dart", "tejo_drone")])
+def test_compound_ability_names_do_not_fall_back_to_tokens(ability_check, ability, reason):
+    assert any("no cited knew signal" in e for e in ability_check(f"{ability} revealed an enemy", reason))
