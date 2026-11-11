@@ -1,7 +1,8 @@
 import base64
 
-from app.coach import control_areas
+from app.coach import areas, control_areas
 from app.replays import control_format as cf
+from tests.coach.test_areas import painted_object, write_paint
 
 # Two walkable cells: cell 0 (top-left, nearest "A Site") and the last cell (bottom-right, nearest "B Site").
 TABLE = {"Toy": [{"name": "A Site", "super": "A", "u": 0, "v": 0},
@@ -33,6 +34,14 @@ def test_each_area_counts_its_cells_by_owner_per_tick():
     assert shares["areas"]["B Site"] == [[0, 1, 0], [0, 0, 0]]
     assert shares["group_side"] == {"A": "attack", "B": "defense"} and shares["knew"] is None
     assert shares["signals"] is None
+
+
+def test_painted_shares_use_ground_floor_and_skip_unpainted_cells(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    write_paint(tmp_path, painted_object({0: 2, 1: 3}, bands={"0": [[0, 30, 2], [60, 90, 3]]}))
+    shares = control_areas.area_shares(control_bytes([(1, 4)], [0]), "Sunset")
+    assert shares["cells"] == {"Top Mid": 1}
+    assert shares["areas"] == {"Top Mid": [[1, 0, 0]]}
 
 
 def test_control_over_a_span_is_time_weighted():

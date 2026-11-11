@@ -62,13 +62,15 @@ def known_enemies(knew: dict, side: str, t: float, view) -> list[dict]:
         if not seen:
             continue
         slot = int(slot_text)
-        t0, t1, u, v = seen[-1]
+        _, t1, u, v = seen[-1]
         in_view = t <= t1
-        if in_view:
-            now = view.position(slot, t)
-            if now.get("alive") and now.get("u") is not None:
-                u, v = now["u"], now["v"]
+        now = view.position(slot, t) if in_view else None
+        if now and now["alive"] and now.get("u") is not None:
+            u, v, area = now["u"], now["v"], now["area"]
+        else:
+            z = None if in_view else view.sighting_height(slot, t1)
+            area = view.area(u, v, z)
         out.append({"slot": slot, "name": view.names.get(slot), "first_seen": seen[0][0],
                     "last_seen": t if in_view else t1, "in_view": in_view, "u": u, "v": v,
-                    "area": view.area(u, v), "alive": view.alive(slot, t)})
+                    "area": area, "alive": view.alive(slot, t)})
     return sorted(out, key=lambda e: e["slot"])

@@ -1,7 +1,8 @@
 import pytest
 
-from app.coach import query, snapshot
+from app.coach import areas, query, snapshot
 from tests.coach import toys
+from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT
 
 KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
@@ -43,6 +44,36 @@ def test_knew_answers_for_a_side_or_for_a_players_side(snap):
     assert by_side["side"] == "A" and [e["name"] for e in by_side["enemies"]] == ["P5#T5"]
     assert query.knew(snap, 1, 15.0, "P2")["side"] == "A"
     assert query.knew(snap, 1, 15.0, "B")["enemies"] == []
+
+
+def test_where_knew_and_spike_label_approximate_areas_until_painted(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "map": "Sunset", "rounds": [1]},
+               "rounds": {"1": {"db": {}, "stats": {}}}}
+    upper = toys.stand(8000, 8000, t1=8.0, z=75)
+    lower = toys.stand(8000, 8000, t0=8.25, z=10)
+    bomb = {"k": "ability", "kind": "Bomb", "t": 6.0, "u": 8000, "v": 8000, "z": 75}
+    blob = toys.round_blob(toys.ten(), tracks={5: upper + lower}, util=[bomb])
+    snap = snapshot.Snapshot(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}))
+    note = "areas marked approximate are a nearest-label guess, not a painted area"
+    for response, row in ((query.where(snap, 1, 6), "players"), (query.knew(snap, 1, 6, "A"), "enemies"),
+                          (query.timeline(snap, 1), "events")):
+        assert any(item.get("area", {}).get("approximate") is True for item in response[row] if item.get("area"))
+        assert note in response["note"]
+
+    cell = areas.cell_at(8000, 8000)
+    write_paint(tmp_path, painted_object({cell: 1}, bands={str(cell): [[0, 30, 1], [60, 90, 2]]}))
+    expected = {"name": "Top Mid", "super": "Mid", "path": ["Mid", "Top Mid"], "approximate": False}
+    out = query.where(snap, 1, 6)
+    assert out["players"][5]["area"] == expected and note not in out["note"]
+    assert query.where(snap, 1, 15)["players"][5]["area"]["name"] == "Mid"
+    for t, in_view in ((6, True), (15, False)):
+        out = query.knew(snap, 1, t, "A")
+        (enemy,) = out["enemies"]
+        assert enemy["in_view"] is in_view and enemy["area"] == expected and note not in out["note"]
+    timeline = query.timeline(snap, 1)
+    assert next(event for event in timeline["events"] if event["kind"] == "plant")["area"] == expected
+    assert note not in timeline.get("note", "")
 
 
 def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):

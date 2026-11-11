@@ -253,9 +253,6 @@ def area_at(
     map_name: str, u: float, v: float, z: float | None = None, table: dict | None = None,
     areas_dir: Path | None = None,
 ) -> dict | None:
-    # Keep the positional callout-table form used by existing coach readers.
-    if isinstance(z, dict) and table is None:
-        table, z = z, None
     painted = load_painted(map_name, areas_dir)
     if painted is None:
         return _nearest_label(map_name, u, v, table)

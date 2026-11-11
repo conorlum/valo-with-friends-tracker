@@ -16,11 +16,15 @@ _OWNER = (None, 0, 0, 0, 1, 1, 1, 2, 2)
 def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
     header, streams = cf.unpack_data(data)
     walk = cf.walk_bitmap(header)
+    painted = areas.load_painted(map_name)
     labels = []
     for cell in walk:
-        u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
-        v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
-        area = areas.area_at(map_name, u, v, table)
+        if painted is not None:
+            area = painted.names.get(painted.cells[cell])
+        else:
+            u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
+            v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
+            area = areas._nearest_label(map_name, u, v, table)
         labels.append(area["name"] if area else None)
     names = sorted({name for name in labels if name})
     frames = cf.decode_states(streams["states"], len(header["ticks"]), len(walk))

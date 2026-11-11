@@ -47,8 +47,8 @@ def cell_at(u, v):
     return int(v / fmt.UV_SCALE * cf.GRID) * cf.GRID + int(u / fmt.UV_SCALE * cf.GRID)
 
 
-def write_paint(tmp_path, obj):
-    path = tmp_path / "Sunset.areas.json"
+def write_paint(tmp_path, obj, map_name="Sunset"):
+    path = tmp_path / f"{map_name}.areas.json"
     path.write_text(json.dumps(obj), encoding="utf-8")
     return path
 
