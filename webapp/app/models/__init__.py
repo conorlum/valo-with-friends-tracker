@@ -17,6 +17,7 @@ from app.models.replay import (
     ReplayPlayer,
     ReplayRound,
     ReplayRoundControl,
+    ReplayRoundWallShare,
     ReplayUpload,
 )
 from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
@@ -41,6 +42,7 @@ __all__ = [
     "Replay",
     "ReplayRound",
     "ReplayRoundControl",
+    "ReplayRoundWallShare",
     "ControlHeight",
     "ControlFeatureArtifact",
     "ReplayPlayer",
