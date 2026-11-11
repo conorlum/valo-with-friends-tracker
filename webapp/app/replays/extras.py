@@ -347,6 +347,7 @@ RPC_STOP = "MulticastStopContinuousEffect"
 RPC_ONESHOT = "MulticastPlayOneShotEffect"
 RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one per point laid
 RPC_FORCE = "NetMulticastApplyForceModule"
+RPC_FRAGMENT = "FragmentInfo"      # schema 9 sends a ground's first FragmentDeltas as these rpc rows
 # The carried spike: its equippable is named by an effect on the planter's character as the plant begins.
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
@@ -373,6 +374,60 @@ def packed_ints(data: bytes) -> list[int]:
                 break
         out.append(value)
     return out
+
+
+def actor_list_guids(value) -> frozenset[int]:
+    """The net GUIDs an `ActorListTransitionContext`'s `Actors` lists. Schema 9 (after `loads_row`): a list of
+    `{"NetGuid": N}` (or bare N), no leading count. Schema 8: `{BitCount, Data}`, a packed list led by a count.
+    Zeros are dropped; anything unreadable is empty."""
+    if isinstance(value, list):
+        out = set()
+        for item in value:
+            guid = item.get("NetGuid") if isinstance(item, dict) else item
+            if isinstance(guid, int) and not isinstance(guid, bool) and guid:
+                out.add(guid)
+        return frozenset(out)
+    if isinstance(value, dict) and value.get("Data"):
+        try:
+            return frozenset(v for v in packed_ints(base64.b64decode(value["Data"]))[1:] if v)
+        except (ValueError, TypeError):
+            return frozenset()
+    return frozenset()
+
+
+def damage_origin_point(value) -> tuple[float, float, float] | None:
+    """A damage notify's `DamageOrigin` in world units. Schema 9: a plain `{x, y, z}`. Schema 8: the packed
+    vector `{BitCount, Data}` (`packed_vector`). None when it is neither."""
+    if not isinstance(value, dict):
+        return None
+    if all(isinstance(value.get(k), (int, float)) and not isinstance(value.get(k), bool) for k in "xyz"):
+        return float(value["x"]), float(value["y"]), float(value["z"])
+    if value.get("Data"):
+        try:
+            return packed_vector(int(value.get("BitCount") or 0), base64.b64decode(value["Data"]))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def fragment_key(update: dict, default: int) -> int:
+    """The key a ground's hull is stored under: schema 9's `ReplicationKey`, else schema 8's `ReplicationID`,
+    else `default` (the next free position)."""
+    for name in ("ReplicationKey", "ReplicationID"):
+        if update.get(name) is not None:
+            return int(update[name])
+    return int(default)
+
+
+def apply_fragment_delta(shape: dict, delta: dict) -> None:
+    """One ground's `FragmentDelta` applied to its hulls (`shape`: key -> hull points)."""
+    for update in delta.get("Updates") or ():
+        hull = [(float(p["Point"]["x"]), float(p["Point"]["y"])) for p in update.get("ConvexHullPoints") or ()
+                if isinstance(p, dict) and isinstance(p.get("Point"), dict)]
+        if hull:
+            shape[fragment_key(update, len(shape))] = hull
+    for gone in delta.get("DeletedIds") or ():
+        shape.pop(gone, None)
 
 
 def _context_values(payload: dict) -> tuple[int, ...]:
@@ -580,14 +635,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.destroyed.setdefault(guid, t_ms)
                 if function and function.startswith("MulticastNotifyDamage") and guid in actors \
                         and actors[guid].name == MESH_NODE and guid not in raw.origins:
-                    origin = payload.get("DamageOrigin")
-                    if isinstance(origin, dict) and origin.get("Data"):
-                        try:
-                            point = packed_vector(int(origin.get("BitCount") or 0), base64.b64decode(origin["Data"]))
-                        except (ValueError, TypeError):
-                            point = None
-                        if point is not None:
-                            raw.origins[guid] = point
+                    point = damage_origin_point(payload.get("DamageOrigin"))
+                    if point is not None:
+                        raw.origins[guid] = point
+                if function == RPC_FRAGMENT and guid in actors and isinstance(payload.get("FragmentDelta"), dict):
+                    apply_fragment_delta(raw.footprints[guid], payload["FragmentDelta"])
             elif kind == "export_group_received":
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
@@ -614,22 +666,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                                                   None if z is None else float(z) * REPLICATED_SCALE))
                 delta = payload.get("FragmentDelta")
                 if isinstance(delta, dict) and guid in actors:
-                    shape = raw.footprints[guid]
-                    for update in delta.get("Updates") or ():
-                        hull = [(float(p["Point"]["x"]), float(p["Point"]["y"])) for p in update.get("ConvexHullPoints") or ()
-                                if isinstance(p, dict) and isinstance(p.get("Point"), dict)]
-                        if hull:
-                            shape[int(update.get("ReplicationID", len(shape)))] = hull
-                    for gone in delta.get("DeletedIds") or ():
-                        shape.pop(gone, None)
+                    apply_fragment_delta(raw.footprints[guid], delta)
                 if guid in walls and isinstance(payload.get("WallActivated"), bool):
                     raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
-                actor_list = payload.get("Actors")
-                if guid in equip_now and isinstance(actor_list, dict) and actor_list.get("Data"):
-                    try:
-                        listed = frozenset(v for v in packed_ints(base64.b64decode(actor_list["Data"]))[1:] if v)
-                    except (ValueError, TypeError):
-                        listed = frozenset()
+                if guid in equip_now:
+                    listed = actor_list_guids(payload.get("Actors"))
                     if listed:
                         raw.contexts.append(_Context(t_ms, equip_now[guid], listed))
     for guid, actor in actors.items():
