@@ -60,6 +60,7 @@ from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import gap_patterns
 from app.services import replay_errors
 from app.services import replay_moments
 from app.services import replay_util
@@ -433,8 +434,10 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     viewer = get_current_player(request, db) if "session" in request.scope else None
     viewer_slot = next((p["slot"] for p in context["players"].values()
                         if viewer is not None and p.get("player_id") == viewer.id), None)
+    asset = context["match"]["asset"]
+    gaps_layout = asset if context["match"].get("gaps") and asset != gap_patterns.default_layout(replay.map_name) else None
     return {
-        "viewer_slot": viewer_slot,
+        "viewer_slot": viewer_slot, "gaps_layout": gaps_layout,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
                    "asset": context["match"]["asset"],
                    "title_suffix": None, "linked": context["match"]["linked"],

@@ -48,6 +48,13 @@
 {% block content %}
 <p class="page-meta"><a href="/gaps">All maps</a></p>
 <h1>{{ map_name }} gap patterns</h1>
+{% if layout_links | length > 1 %}
+<p class="page-meta" data-gaps-layouts>Layout:
+  {% for layout in layout_links %}
+  <a href="{{ layout.url }}"{% if layout.key == data.layout %} aria-current="page"{% endif %}>{{ layout.id }}</a>
+  {% endfor %}
+</p>
+{% endif %}
 <p class="page-meta">Times a player's back was open to an enemy who could have got there unseen, and real shots from behind, grouped by the chokes the enemy's route crossed.</p>
 <p class="page-meta gaps-thin" data-gaps-thin>{{ thin_data_note }}</p>
 
@@ -60,6 +67,7 @@
 </p>
 
 <form method="get" action="/gaps/{{ map_name | urlencode }}" class="card gaps-filters" data-gaps-filters>
+  {% if data.params.layout %}<input type="hidden" name="layout" value="{{ data.params.layout }}">{% endif %}
   <div class="gaps-filter-row">
     <label>Show
       <select name="kind">

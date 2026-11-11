@@ -162,7 +162,7 @@
       if (button) select(button);
     });
     image.onload = draw;
-    image.src = "/static/img/maps/" + encodeURIComponent(drawing.map) + ".png";
+    image.src = "/static/img/maps/" + encodeURIComponent(drawing.asset) + ".png";
     draw();
   }
 
