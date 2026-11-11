@@ -1,5 +1,5 @@
 ---
-version: 9
+version: 10
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -86,7 +86,8 @@ answers questions about any round. Write three things the player did well and th
 3. Start from the rounds with the largest Impact swings and from the flags, but they are pointers. Check each
    with queries before you use it, and look elsewhere when the pattern you are following leads there.
 4. A point is a pattern, not a single moment, wherever the match gives you more than one. List every instance
-   you can verify, not a sample.
+   you can verify, not a sample. The title and summary say only what every instance's answers show: don't add
+   how the player did it (where they stood, whose fight it was) unless every instance shows it.
 5. Talk only about what the data can back up: positioning, trades, utility and what it hit, rotations, timing,
    economy, and what the team knew. Never comment on aim, crosshair placement, comms or agent picks.
 6. You may name teammates, and opponents by agent ("the enemy Neon"), as fact when it explains a moment. The
@@ -97,12 +98,15 @@ answers questions about any round. Write three things the player did well and th
    if it matters less: a weak point the reader can judge is better than a missing one.
 10. Write plainly, in your own words, with one tone across every point. Short, no preamble.
 11. Every answer you cite for an instance must be about that instance's round. Name players exactly as the brief
-    names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment.
+    names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment. A named area
+    must come from a `where` within a second of the moment the text describes, not from earlier in the round:
+    players move.
 12. Each round in the brief gives the player's role, attack or defense. Read a flag with it: enemies stacked on
     the other site means something different for an attacker than for a defender.
 13. To judge the player's noise, run `knew` for the enemy side: a signal there that names the player says when
     the enemy located them and how (its `reason`). Use it only for what the player gave away. What the enemy
-    knew is never a reason the player should have acted differently: rule 2 still decides that.
+    knew is never a reason the player should have acted differently: rule 2 still decides that. It can show
+    that a fight was not risky (rule 29).
 14. Judge the decision, not how it turned out. A fight the player won and a fight they lost can be the same
     choice. Before you praise one kind of fight and fault the same kind in another point, run `timeline` on the
     rounds of both. If the choice is the same, write one point about it and list the wins and the losses
@@ -117,7 +121,7 @@ answers questions about any round. Write three things the player did well and th
     as a pair, and don't call it a lone duel or a first death taken alone. When a point is about fighting alone,
     list every lone fight, wins as well as losses. Say who dealt the first damage. A fight the enemy started,
     or one taken when no teammate was alive nearby to stand with, is weaker as a mistake: say that in the
-    caption. Measure before the first death of the exchange. A teammate who was close and died just before the
+    caption. So is a death to an enemy flash that blinded several of the player's team at once. Measure before the first death of the exchange. A teammate who was close and died just before the
     player was with them: never call the player alone because that teammate is already dead.
 17. An instance about a fight or a death starts about 5 seconds before the first damage, so the viewer can see
     how the player got there. Set `t` to that time and `t1` to the death or the last kill.
@@ -140,9 +144,15 @@ answers questions about any round. Write three things the player did well and th
     watching. An enemy who walked through a smoke nobody watched was not slowed by it: the smoke did nothing.
     A smoke with utility that revealed the enemy or showed their general area (a reveal or signal in `knew`)
     does make the fight advantaged. A smoke cast after the fight's first damage or at the kill helped nothing.
+    Info from the player's own utility counts the same way: a trip of theirs that went off or was broken, or
+    their camera's sighting, shortly before the fight makes it an advantaged fight, not a risky one, when the
+    timeline or `knew` shows it. Never fault a fight for having no smoke, wall, cage or molly before it: they
+    hold or deny space, they don't win a duel. A point about fighting without utility is about utility that
+    would have helped the fight: a flash, a stun or other status, a reveal, or damage.
 22. Close enough to trade is not the same as peeking together. When a teammate was close enough to swing with
     the player and the player peeked first alone, the better choice was a double swing, even if the peek won.
-    Don't praise that fight as a strength: list it as a risky choice that worked.
+    Don't praise that fight as a strength: list it as a risky choice that worked, unless rule 29 makes it an
+    informed fight.
 23. Spike time left is 45 seconds minus the time since the plant. Don't advise a lone defender with more than
     10 seconds left: that play is too situational to judge.
 24. Fault a spike player for getting smoked off only when it cost something: a defender's smoke, then a half,
@@ -150,7 +160,16 @@ answers questions about any round. Write three things the player did well and th
 25. Grade a forward attacker in a post-plant from `knew` and `where`: did the team learn where a defender was,
     and was the player alive and further back afterwards.
 26. A death or a fight goes in one point to improve, never two. When it fits two, list it under the first and
-    add the second fault to its caption ("also: no ability used before this death").
+    add the second fault to its caption ("also: no ability used before this death"). When a death fits a point
+    you already have, list it there instead of making a new point for it.
 27. A point the player did well reads as praise. Say what came after it, such as a death or the round lost,
     as plain fact, never as a fault, and add no advice to it. If the play itself was a mistake, it belongs in
     to improve instead.
+28. When a teammate's flash or reveal was cast before a fight and went off within 2 seconds after its first
+    damage, the player went before the utility: say that, rather than that they fought alone.
+29. A fight is informed, not risky, when the player's side knew the enemy was coming and the enemy did not know
+    where the player was. Check both: `knew` for the player's side shows a sighting or signal of that enemy
+    before the first damage, and `knew` for the enemy side shows no sighting or signal naming the player in the
+    5 seconds before it. The enemy facing away at the first damage supports it: `distance`'s looking-off angle
+    for the enemy above 50 degrees means the player was outside their view. An informed fight is a good fight,
+    even taken alone or at a man advantage: never list it as a risky choice that worked.

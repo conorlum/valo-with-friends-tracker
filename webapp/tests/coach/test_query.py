@@ -105,6 +105,21 @@ def test_distance_between_two_living_players(snap):
     assert query.distance(snap, 1, 25.0, "P0", "P5") == {"available": False, "reason": "P0#T0 was dead at 25.0"}
 
 
+def test_distance_says_how_far_each_player_faced_off_the_other(snap):
+    view = snap.view(1)
+    a, b = view.position(0, 10.0), view.position(5, 10.0)
+    out = query.distance(snap, 1, 10.0, "P0", "P5")
+    assert {out["a_looking_off"], out["b_looking_off"]} <= set(range(0, 181))
+    # The toys stand still facing yaw 0 (+u): the one with the other further along +u faces it, the other away.
+    ahead, behind = (out["a_looking_off"], out["b_looking_off"]) if b["u"] > a["u"] else \
+        (out["b_looking_off"], out["a_looking_off"])
+    assert ahead < 90 < behind
+    assert query._looking_off({"yaw": 90, "u": 0, "v": 0}, {"u": 0, "v": 10}) == 0
+    assert query._looking_off({"yaw": 270, "u": 0, "v": 0}, {"u": 0, "v": 10}) == 180
+    assert query._looking_off({"yaw": 350, "u": 0, "v": 0}, {"u": 10, "v": 0}) == 10
+    assert query._looking_off({"u": 0, "v": 0}, {"u": 10, "v": 0}) is None
+
+
 def test_control_reports_shares_or_says_what_is_missing(snap):
     assert query.control(snap, 1, 0.0, 20.0, "A Site")["shares"] == {"a": 0.5, "b": 0.5, "contested": 0.0, "none": 0.0}
     assert query.control(snap, 2, 0.0, 20.0, "A Site") == {"available": False, "reason": "control_not_ready"}
