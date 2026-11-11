@@ -5,6 +5,7 @@ evidence cites those ids, which is how a claim is checked (app/coach/checker.py,
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -114,7 +115,19 @@ def distance(snap, n, t, a, b) -> dict:
     metres = view.distance_m(sa, sb, t)
     if metres is None:
         return _missing(f"no position for one of them at {t}")
-    return {"round": int(n), "t": t, "a": snap.names[sa], "b": snap.names[sb], "metres": round(metres, 1)}
+    pa, pb = view.position(sa, t), view.position(sb, t)
+    return {"round": int(n), "t": t, "a": snap.names[sa], "b": snap.names[sb], "metres": round(metres, 1),
+            "a_looking_off": _looking_off(pa, pb), "b_looking_off": _looking_off(pb, pa),
+            "note": "x_looking_off: degrees between where x faced and the direction to the other player (0 is "
+                    "straight at them, 180 straight away); null when the facing isn't recorded"}
+
+
+def _looking_off(me: dict, other: dict) -> int | None:
+    """Minimap degrees (0 = +u, 90 = +v, the replay's yaw convention) between `me`'s facing and `other`."""
+    if me.get("yaw") is None:
+        return None
+    toward = math.degrees(math.atan2(other["v"] - me["v"], other["u"] - me["u"]))
+    return int(round(abs((float(me["yaw"]) - toward + 180.0) % 360.0 - 180.0)))
 
 
 def control(snap, n, t0, t1, area) -> dict:
