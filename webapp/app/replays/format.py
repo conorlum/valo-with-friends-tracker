@@ -32,6 +32,9 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 `thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
 `path` point, `[t, u, v, z]`.
 
+A tripwire's first anchor with an `end` also has `"long": true` when its anchors are more than 16 m apart
+(app/replays/extras.py TRIP_MAX_M); the key is left out otherwise, and the viewer reads it, never measures.
+
 Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b): `util` has
 `{"k": "cast", "t", "by", "code", "name"}` per use of a movement ability (app/replays/extras.py
 MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser

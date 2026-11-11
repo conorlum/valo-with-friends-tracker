@@ -4,7 +4,7 @@
 the same thing. Each round's rows become three `util` kinds (a new `k` needs no format `v` bump):
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
-  "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
+  "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z", "long"],
   ["defuses"], ["points", "on"], ["fx"], ["charge"], ["gone"], ["possessed"], ["yaws"], ["off"], ["area"]}` (`area`,
   on Viper's Pit, is `[[[u, v], ...], ...]`: the ground it covers, one hull per fragment, revision 23; `possessed` and
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
@@ -39,7 +39,9 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   dart is one chain), what caused it (`caused_by`: the Chamber trap that fired, the ult kill in
   its tick, the plant that began 4 s before the spike), the one slot playing that agent, a
   parent's owner, or, for a thrown projectile only, the nearest player of that agent at spawn
-  time (`owner_by` says which). Equippable `Ability_*` actors are the held item,
+  time (`owner_by` says which). A trapwire pair's `long: true` marks anchors more than TRIP_MAX_M (16 m) apart
+  (kept, never dropped). A first anchor with no placement at round start is paired with the previous round's pair
+  (same guids, else within CARRY_UNITS), and an anchor alive into later rounds is in each. Equippable `Ability_*` actors are the held item,
   not something in the world: they are not drawn, only read for owners. A trapwire's first
   anchor carries its second anchor's point (`end`); the planted spike its defuse attempts
   (`defuses`: [[from, to | null, slot, finished]]); Viper's wall its laid line (`points`) and
@@ -157,6 +159,10 @@ class _Actor:
     instigator: int | None = None
     closed_ms: int | None = None
     z: float | None = None     # world z at spawn, or None when the export gave none
+    # A trapwire anchor is one instance per spawn (`Raw.trip_instances`): `own_life` says its close, destruction
+    # and instigator were read for this spawn alone, never for another that reused its guid.
+    own_life: bool = False
+    destroyed_ms: int | None = None
 
 
 @dataclass
@@ -339,6 +345,58 @@ class Raw:
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
     # Every raw CrouchHeld transition, including unknown pawns for the diagnostic count.
     crouch: list[tuple[int, int, bool]] = field(default_factory=list)
+    # Every trapwire anchor spawn (either anchor), in file order: a guid can come back, and `actors` keeps the last.
+    trip_instances: list[_Actor] = field(default_factory=list)
+
+
+TRIP_FIRST = "4_TripWire"
+TRIP_SECOND = "4_TripWire_SecondWire"
+TRIP_NAMES = (TRIP_FIRST, TRIP_SECOND)
+# A trapwire's longest wire is 15 m (the wiki); a pair whose anchors are farther apart than this is suspect.
+# The pair is kept with its far end and marked `long: true`, never dropped. Used only here, to set the mark:
+# the viewer reads the stored mark and never measures. Lengths come from the anchors' spawn x, y in world units
+# (REPLICATED_SCALE = 100 per metre); exactly 16.0 m is not long.
+TRIP_MAX_M = 16.0
+# A carried anchor whose guid is not in the previous round's pairs is matched by where it stands, within this
+# many world units (the changed-guid fallback).
+CARRY_UNITS = 2.0
+
+
+@dataclass
+class _TripPair:
+    """One round's trapwire pair as it was made, kept so a later round's carried anchors can be paired against
+    it (not against `actors`, where a re-spawn with a reused guid replaces the earlier anchor)."""
+    first_guid: int
+    first: tuple[float, float]
+    second_guid: int
+    second: tuple[float, float]
+    end_z: float | None
+    long: bool
+
+
+def _trip_is_long(first: tuple[float, float], second: tuple[float, float]) -> bool:
+    return math.hypot(second[0] - first[0], second[1] - first[1]) / REPLICATED_SCALE > TRIP_MAX_M
+
+
+def _match_carried(candidates: list[_Actor], previous: list[_TripPair]) -> dict[int, _TripPair]:
+    """Each carried first anchor's own previous pair, one to one: by guid first, then by where it stands
+    (within CARRY_UNITS), nearest first, so a tie between two anchors never crosses their partners."""
+    free = list(previous)
+    out: dict[int, _TripPair] = {}
+    for actor in sorted(candidates, key=lambda a: (a.t_ms, a.guid)):
+        same = [p for p in free if p.first_guid == actor.guid]
+        if same:
+            pair = min(same, key=lambda p: math.dist(p.first, (actor.x, actor.y)))
+            out[id(actor)] = pair
+            free.remove(pair)
+    near = sorted((math.dist(p.first, (a.x, a.y)), a.guid, k, id(a), a) for a in candidates if id(a) not in out
+                  for k, p in enumerate(free) if math.dist(p.first, (a.x, a.y)) <= CARRY_UNITS)
+    taken: set[int] = set()
+    for _, _, k, _, actor in near:
+        if id(actor) not in out and k not in taken:
+            out[id(actor)] = free[k]
+            taken.add(k)
+    return out
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -485,6 +543,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     open_effects: dict[tuple[int, int], _Effect] = {}
     holding: dict[int, int] = {}           # each character's current equippable, to see a switch
     unresolved: list[tuple[int, int, int]] = []    # switches to an equippable not spawned yet: (ms, character, guid)
+    live_trips: dict[int, _Actor] = {}     # the trapwire anchor alive under each GUID
+    closed_trips: dict[int, _Actor] = {}   # the last one closed under each GUID (a lethal hit can share its ms)
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if not any(needle in line for needle in _RAW_NEEDLES):
@@ -548,8 +608,19 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 actors[guid] = _Actor(guid, t_ms, kind, code, name,
                                       float(location["x"]), float(location["y"]), rotation.get("yaw"),
                                       z=None if location.get("z") is None else float(location["z"]))
+                live_trips.pop(guid, None)
+                closed_trips.pop(guid, None)
+                if name in TRIP_NAMES:
+                    instance = actors[guid]
+                    instance.own_life = True
+                    raw.trip_instances.append(instance)
+                    live_trips[guid] = instance
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
+                instance = live_trips.pop(guid, None)
+                if instance is not None and t_ms >= instance.t_ms:
+                    instance.closed_ms = t_ms
+                    closed_trips[guid] = instance
                 if guid in orb_now and orb_now[guid][3] is None:
                     orb_now[guid][3] = t_ms
             elif kind == "valorant_shot_received":
@@ -633,6 +704,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.kills.append((t_ms, int(payload["EventInstigatorPawn"])))
                 if function and function.startswith("MulticastNotifyDamage") and guid in actors                         and payload.get("DamageKilledTarget") is True:
                     raw.destroyed.setdefault(guid, t_ms)
+                if function and function.startswith("MulticastNotifyDamage") and payload.get("DamageKilledTarget") is True:
+                    hit = live_trips.get(guid) or closed_trips.get(guid)
+                    if hit is not None and hit.destroyed_ms is None and (hit.closed_ms is None or t_ms <= hit.closed_ms):
+                        hit.destroyed_ms = t_ms       # this anchor's own life: a reused guid's first hit is not its
                 if function and function.startswith("MulticastNotifyDamage") and guid in actors \
                         and actors[guid].name == MESH_NODE and guid not in raw.origins:
                     point = damage_origin_point(payload.get("DamageOrigin"))
@@ -648,6 +723,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.crouch.append((t_ms, guid, bool(payload["CrouchHeld"])))
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
+                    mine = live_trips.get(guid)
+                    if mine is not None and mine.instigator is None:
+                        mine.instigator = int(payload["Instigator"])
                 held_now = payload.get("NewCurrentEquippable")
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
                     if held_now not in equip_now:          # a gun, or an equippable whose spawn row is still to come
@@ -673,7 +751,18 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     listed = actor_list_guids(payload.get("Actors"))
                     if listed:
                         raw.contexts.append(_Context(t_ms, equip_now[guid], listed))
+    spawns_of: Counter[int] = Counter(a.guid for a in raw.trip_instances)
     for guid, actor in actors.items():
+        if actor.own_life:
+            # Its own close and instigator were read as they came. Only when the guid never came back is the
+            # guid-level first value a fallback (an Instigator row that arrived before the spawn row).
+            if spawns_of[guid] == 1:
+                if actor.instigator is None:
+                    actor.instigator = instigators.get(guid)
+                if actor.closed_ms is None:
+                    closed = closes.get(guid)
+                    actor.closed_ms = closed if closed is not None and closed >= actor.t_ms else None
+            continue
         actor.instigator = instigators.get(guid)
         # An actor GUID can be reused after a close: only a close after the spawn counts.
         closed = closes.get(guid)
@@ -856,26 +945,29 @@ def inherit_listed(contexts: list[_Context], owned: dict[int, int], counts: Coun
     return changed
 
 
-def equippable_claims(actors: dict[int, _Actor], contexts: list[_Context]) -> dict[int, tuple[int, _Context]]:
+def equippable_claims(actors: dict[int, _Actor] | list[_Actor], contexts: list[_Context],
+                      by_instance: bool = False) -> dict[int, tuple[int, _Context]]:
     """{actor guid: (owner slot, the placement it came from)} for the ability actors an owned
     equippable placed: listed in its context, or spawned in the same tick as its only-owner
-    context of that agent."""
+    context of that agent. `by_instance`: `actors` is a list of spawns (a guid can appear twice) and the
+    keys are `id(actor)`, each claimed by the placement nearest its own spawn time."""
     owned = sorted((c for c in contexts if c.equip.slot is not None), key=lambda c: c.t_ms)
     times = [c.t_ms for c in owned]
     out: dict[int, tuple[int, _Context]] = {}
-    for actor in actors.values():
+    for actor in (actors if by_instance else actors.values()):
+        key = id(actor) if by_instance else actor.guid
         lo = bisect.bisect_left(times, actor.t_ms - LISTED_MS)
         hi = bisect.bisect_right(times, actor.t_ms + LISTED_MS)
         near = owned[lo:hi]
         listed = [c for c in near if actor.guid in c.listed]
         if listed:
             best = min(listed, key=lambda c: abs(c.t_ms - actor.t_ms))
-            out[actor.guid] = (best.equip.slot, best)
+            out[key] = (best.equip.slot, best)
             continue
         same = [c for c in near if c.equip.code.lower() == actor.code.lower()
                 and abs(c.t_ms - actor.t_ms) <= SAME_TICK_MS]
         if len({c.equip.slot for c in same}) == 1:
-            out[actor.guid] = (same[0].equip.slot, same[0])
+            out[key] = (same[0].equip.slot, same[0])
     return out
 
 
@@ -1893,6 +1985,11 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 # and `Finisher_Ego2`, which never have an owner. Counted, not drawn.
                 counts_unknown[actor.code] += 1
                 del actors[guid]
+    # Trapwire anchors, one per spawn: the same normalising, and the guids dropped above stay dropped.
+    trips = [a for a in raw.trip_instances if a.guid in actors]
+    for a in trips:
+        if a is not actors[a.guid] and a.code:
+            a.code, a.name = normalize_archetype(a.code, a.name, agents_by_code)
     slots_of_agent: dict[str, list[int]] = defaultdict(list)
     for slot, agent in enumerate(players.agents):
         slots_of_agent[agent].append(slot)
@@ -1919,7 +2016,27 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     # A placement's actors, to find a trapwire's second anchor from its first.
     placed: dict[int, list[_Actor]] = defaultdict(list)
     for guid, (_, context) in claims.items():
-        placed[id(context)].append(actors[guid])
+        if not actors[guid].own_life:
+            placed[id(context)].append(actors[guid])
+    # A trapwire anchor is claimed per spawn, by the placement nearest its own spawn time.
+    trip_claims = equippable_claims(trips, raw.contexts, by_instance=True)
+    for anchor in trips:
+        if id(anchor) in trip_claims:
+            placed[id(trip_claims[id(anchor)][1])].append(anchor)
+    pair_log: dict[int, list[_TripPair]] = defaultdict(list)       # round -> the pairs made in it, as they were made
+    carry_of: dict[int, dict[int, _TripPair]] = {}                 # round -> carried first anchor -> its previous pair
+    carriers: dict[int, list[_Actor]] = defaultdict(list)
+    for anchor in trips:
+        n_of = _round_of(anchor.t_ms, windows, buy_phase=True)
+        if (anchor.name == TRIP_FIRST and id(anchor) not in trip_claims and n_of is not None
+                and anchor.t_ms <= windows[n_of - 1][0]):
+            carriers[n_of].append(anchor)
+    next_spawn: dict[int, int] = {}      # id(trip anchor) -> when a later spawn reused its guid
+    last_seen: dict[int, _Actor] = {}
+    for anchor in sorted(trips, key=lambda a: (a.t_ms, a.guid)):
+        if anchor.guid in last_seen:
+            next_spawn[id(last_seen[anchor.guid])] = anchor.t_ms
+        last_seen[anchor.guid] = anchor
     # Fault Line's charge (FAULT_LINE): each slot's characters, and the charge effect learnt from the Breaches'.
     pawns_of: dict[int, set[int]] = defaultdict(set)
     for pawn, owner in players.pawn_slot.items():
@@ -1964,9 +2081,10 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             spawners_at[a.t_ms].append(a)
     poison_zones = sorted((a for a in actors.values() if a.name == "4_SmokeZone"), key=lambda a: (a.t_ms, a.guid))
     poison_emitters: list[tuple[dict, _Actor, int | None, int, int]] = []
-    for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
+    loop_actors = [a for a in actors.values() if not a.own_life] + trips
+    for actor in sorted(loop_actors, key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
-        claim = claims.get(actor.guid)
+        claim = trip_claims.get(id(actor)) if actor.own_life else claims.get(actor.guid)
         # Owners first, for every actor, so a buy-phase throw can still hand its owner on.
         caused = caused_by(actor, known, raw, players, agent) if claim is None else None
         slot, owner_by, near = _owner(actor, agent, slots_of_agent, players, positions_at, known, counts,
@@ -2005,18 +2123,52 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if actor.yaw is not None:
             entry["yaw"] = game_map.yaw_to_map(float(actor.yaw))
         parts = [actor]
-        if claim is not None and actor.name == "4_TripWire":
-            # The trapwire's far end: the second anchor its placement listed.
-            ends = [a for a in placed[id(claim[1])] if a.name == "4_TripWire_SecondWire"]
-            if ends:
-                entry["end"] = list(game_map.to_uv(ends[0].x, ends[0].y))
-                if ends[0].z is not None:
-                    entry["end_z"] = _dm(ends[0].z)
-                counts["wires_paired"] += 1
-                parts.append(ends[0])
+        pair: _TripPair | None = None
+        if actor.own_life and actor.name == TRIP_FIRST:
+            if claim is not None:
+                # The trapwire's far end: the second anchor its placement listed.
+                ends = [a for a in placed[id(claim[1])] if a.name == TRIP_SECOND]
+                if ends:
+                    second = ends[0]
+                    pair = _TripPair(actor.guid, (actor.x, actor.y), second.guid, (second.x, second.y), second.z,
+                                     _trip_is_long((actor.x, actor.y), (second.x, second.y)))
+                    parts.append(second)
+                    counts["wires_paired"] += 1
+            elif id(actor) in {id(c) for c in carriers.get(n, [])}:
+                # Carried (no placement at round start): the previous round's pair, same guid, else same place.
+                if n not in carry_of:
+                    carry_of[n] = _match_carried(carriers[n], pair_log.get(n - 1, []))
+                before = carry_of[n].get(id(actor))
+                if before is not None:
+                    pair = _TripPair(actor.guid, (actor.x, actor.y), before.second_guid, before.second, before.end_z,
+                                     before.long)
+                    now = [a for a in trips if a.name == TRIP_SECOND and _round_of(a.t_ms, windows, buy_phase=True) == n
+                           and a.t_ms <= start and (a.guid == before.second_guid
+                                                    or math.dist((a.x, a.y), before.second) <= CARRY_UNITS)]
+                    if now:
+                        parts.append(now[0])
+                        pair.second_guid = now[0].guid
+                    counts["wires_carried"] += 1
+        if pair is not None:
+            entry["end"] = list(game_map.to_uv(*pair.second))
+            if pair.end_z is not None:
+                entry["end_z"] = _dm(pair.end_z)
+            if pair.long:
+                entry["long"] = True
+                counts["wires_too_long"] += 1
+            pair_log[n].append(pair)
+
+        def destroyed_of(a: _Actor) -> int | None:
+            return a.destroyed_ms if a.own_life else raw.destroyed.get(a.guid)
+
+        def gone_of(parts: list[_Actor]) -> list[int]:
+            return [d for a in parts if (d := destroyed_of(a)) is not None and a.t_ms <= d]
+
         # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
         # doesn't use utility up: a trip, a Vyse flash or a Killjoy turret stays until it's destroyed.
-        gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
+        gone = gone_of(parts)
+        if actor.own_life:
+            gone = [g for g in gone if g <= end]      # a hit in a later round is that round's, not this one's
         # A lethal hit usually lands in the very ms the object closes (Leer, a shot alarmbot, turret or camera),
         # so a hit at the close counts (trap-jobs D4, CONDENSE 23; Leer alone had it before).
         if gone and (actor.closed_ms is None or min(gone) <= actor.closed_ms):
@@ -2171,6 +2323,26 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             _control_inputs(entry, actor, players, pawn_yaws, game_map, start, end, counts)
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
+        if actor.own_life:
+            # An anchor still alive when later rounds begin is in each of them, clipped to the round and with the
+            # same pair (its life ends at its close, its destruction, or a later spawn under its guid).
+            over = [actor.closed_ms, next_spawn.get(id(actor)), *[destroyed_of(a) for a in parts]]
+            life_end = min((t for t in over if t is not None), default=None)
+            for m in range(n + 1, len(windows) + 1):
+                m_start, _, m_end = windows[m - 1]
+                if life_end is not None and life_end < m_start:
+                    break
+                row = {k: v for k, v in entry.items() if k != "gone"}
+                row["t0"] = 0.0
+                row["t1"] = _seconds(min(actor.closed_ms, m_end), m_start) if actor.closed_ms is not None else None
+                hit = [g for g in gone_of(parts) if m_start <= g <= m_end]
+                if hit and (actor.closed_ms is None or min(hit) <= actor.closed_ms):
+                    row["gone"] = max(0.0, _seconds(min(hit), m_start))
+                out.rounds.setdefault(m, {"abilities": [], "shots": []})["abilities"].append(row)
+                counts["abilities"] += 1
+                counts["trips_carried_over"] += 1
+                if pair is not None:
+                    pair_log[m].append(pair)     # the same pair, so it is counted once (`wires_*` count pairs made)
 
     for entry, anchor, slot, start, end in anchors:
         recall = recall_of(anchor, slot, actors, owner_of)

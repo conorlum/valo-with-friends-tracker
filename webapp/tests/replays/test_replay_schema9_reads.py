@@ -129,7 +129,10 @@ def test_real_placements_give_the_trips_their_equippables_owner_and_an_end(tmp_p
     path.write_text((ROWS / "actors_context.ndjson").read_text(encoding="utf-8"), encoding="utf-8")
     extras = build_extras(path, two_cyphers(), WINDOWS, GAME_MAP, AGENTS, lambda t_ms: {})
     wires = [a for r in extras.rounds.values() for a in r["abilities"] if a["name"] == "4_TripWire"]
-    assert len(wires) == 5
+    # The trimmed export has no close rows, so round 1's trip (placed at 20.5 s) is still alive in round 2 and is
+    # in both rounds (W3): five placements, six rows, one id twice.
+    assert len(wires) == 6 and len({a["id"] for a in wires}) == 5
+    wires = list({a["id"]: a for a in wires}.values())
     assert {a["owner_by"] for a in wires} == {"equippable"}
     assert all(a["end"] is not None for a in wires)
     assert extras.report["wires_paired"] == 5
