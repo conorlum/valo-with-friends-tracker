@@ -28,7 +28,7 @@ def steps(body) -> dict:
 def test_step_registry_includes_layout_blockers():
     assert [key for key, _, _ in progress.STEPS] == [
         "reparse", "reparse_local", "incomplete", "no_map", "layout_pending", "layout_unknown",
-        "old_blob", "features_pending", "source_error", "control_missing", "control_stale", "control_failed",
+        "old_blob", "features_pending", "source_error", "control_missing", "control_stale", "control_unsupported", "control_failed",
         "gaps_missing", "gaps_stale", "gaps_failed",
     ]
     assert dict((key, (label, automatic)) for key, label, automatic in progress.STEPS)["layout_pending"] == (

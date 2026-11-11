@@ -99,7 +99,7 @@ def test_a_cover_only_change_moves_the_control_gap_and_util_fingerprints(monkeyp
     from app.services import replay_util
     replay = SimpleNamespace(id=1, map_name=COVER, recipe="r.c1.f1.a0", source_sha256="0" * 64,
                              link_status="none", match_id=None, link_report=None, clock_offset=0.0,
-                             db_deaths=None)
+                             db_deaths=None, game_branch=None)
     monkeypatch.setattr(rcn, "side_groups", lambda db, r: {})
     monkeypatch.setattr(replay_gaps.choke_assets, "asset_hash", lambda m: "c" * 8)
     before_inputs = rcn.geometry_inputs(COVER, {})
