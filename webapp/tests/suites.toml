@@ -192,7 +192,7 @@ tests = ["tests/coach/test_*.py", "tests/test_coach_journey.py"]
 guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
-  "scripts/coach*",
+  "scripts/coach*", "app/replays/control_reasons.py",
 ]
 
 [critical-util]
@@ -206,7 +206,7 @@ guards = [
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
 tests = ["tests/moments/test_*.py", "tests/replays/test_moments_*.py", "tests/replays/test_replay_moments.py"]
-guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/moments.js"]
+guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/moments.js", "app/replays/control_reasons.py"]
 
 # ---------------------------------------------------------------------------------------------------- Replays
 
@@ -266,6 +266,7 @@ tests = [
   "tests/replays/test_control_figures.py", "tests/replays/test_control_format.py", "tests/replays/test_control_hearing.py",
   "tests/replays/test_control_knew.py", "tests/replays/test_control_knife_skye.py", "tests/replays/test_control_mollies.py",
   "tests/replays/test_control_reasons.py", "tests/replays/test_control_reveals.py", "tests/replays/test_control_stats.py",
+  "tests/replays/test_control_reason_classes.py",
   "tests/replays/test_control_task.py", "tests/replays/test_control_teleports.py", "tests/replays/test_control_unknown.py",
   "tests/replays/test_control_utility.py", "tests/replays/test_control_veto.py", "tests/replays/test_control_cases.py",
   "tests/replays/test_seen_from_pairs.py", "tests/replays/test_fight_swing.py", "tests/replays/test_replay_tracers.py",
@@ -273,7 +274,7 @@ tests = [
 guards = [
   "app/control/__init__.py", "app/control/engine.py", "app/control/utility.py", "app/control/utility.json",
   "app/control/hearing.json", "app/control/mollies.py", "app/control/encode.py", "app/control/task.py",
-  "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py",
+  "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
   "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
   "tests/fixtures/control/**", "tests/replays/control_toys.py", "tests/replays/conftest.py",
 ]
