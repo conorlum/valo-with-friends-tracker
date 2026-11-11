@@ -478,13 +478,14 @@
       "map's geometry). Queued for recompute.";
   }
 
-  // Why an enemy's unknown changed (the header's optional `knowledge_events`: {A: [[t, slot, reason], ...], B: ...},
+  // Why an enemy's unknown changed (the header's optional `knowledge_events`: {A: [[t, slot, reason, kind], ...], B: ...},
   // t in round seconds at the event's own time). The words the Control panel shows for each reason.
   var REASON_TEXT = {
     seen: "seen", kill: "got a kill", plant: "planted", damage: "dealt gun damage", gunfire: "gunfire heard",
     footsteps: "footsteps heard", tap: "spike tap heard", orb: "ult orb taken: heard", revived: "revived", neural_theft: "revealed by Neural Theft",
     haunt: "Haunt saw the area", recon: "Recon Bolt saw the area", drone_dart: "tagged by a drone dart",
     camera_dart: "tagged by a camera dart", tejo_drone: "revealed by a drone", trip: "set off a trip",
+    trip_destroyed: "destroyed your trip: near it", camera_destroyed: "destroyed your camera: in its sight",
     reveal: "revealed", knife_zero: "knife hit nobody: not in its radius", knife_all: "knife hit everyone: inside its radius",
     knife_hit: "knife hit them: inside its radius", knife_missed: "knife missed them: not in its radius",
     skye_no_cue: "Skye's flash hit nobody: not in its sight", leer_seen: "Leer seen: cast from near the eye",
@@ -492,6 +493,10 @@
     waylay_recall: "Waylay's recall heard: at her return point", yoru_beacon: "Yoru's beacon heard: may be there too",
     yoru_drift_unheard: "Yoru left his ult unheard: could be anywhere unheard", died: "died",
     hypothesis_cleared: "second position checked: not there"
+  };
+  var REASON_TEXT_BY_KIND = {
+    "haunt|exclude": "Haunt: not in its sight",
+    "recon|exclude": "Recon Bolt: not in its sight"
   };
 
   // The reasons at or before t, newest first: those in the last `windowS` seconds, at most `limit`. Computed from t
@@ -504,7 +509,9 @@
     ["A", "B"].forEach(function (side) {
       (events[side] || []).forEach(function (e) {
         if (e[0] <= t + 1e-9 && e[0] > t - windowS) {
-          rows.push({ side: side, t: e[0], slot: e[1], reason: e[2], text: REASON_TEXT[e[2]] || String(e[2]).replace(/_/g, " ") });
+          var kind = e[3];
+          rows.push({ side: side, t: e[0], slot: e[1], reason: e[2],
+            text: REASON_TEXT_BY_KIND[e[2] + "|" + kind] || REASON_TEXT[e[2]] || String(e[2]).replace(/_/g, " ") });
         }
       });
     });
@@ -513,7 +520,7 @@
   }
 
   var api = {
-    revisionNote: revisionNote, reasonsAt: reasonsAt, REASON_TEXT: REASON_TEXT,
+    revisionNote: revisionNote, reasonsAt: reasonsAt, REASON_TEXT: REASON_TEXT, REASON_TEXT_BY_KIND: REASON_TEXT_BY_KIND,
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
