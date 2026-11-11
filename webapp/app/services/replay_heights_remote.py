@@ -44,6 +44,7 @@ library and the DB only; the asset is opened by a child process.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -54,6 +55,7 @@ from app.models.replay import Replay, ReplayRound
 from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.replays import height_inputs as hi
+from app.replays import layouts
 from app.services import control_heights, replay_control
 
 log = logging.getLogger(__name__)
@@ -140,32 +142,40 @@ class HeightState:
         return self.tries.get(key, (0, 0.0))[0] >= MAX_TRIES
 
 
-def current_manifests(db) -> dict[str, tuple[dict, list]]:
-    """{map: (its input manifest now, [(replay id, match uuid, round count)])} for every map with geometry and at
-    least one valid replay new enough to carry heights."""
+def current_manifests(db, *, registry=None, index=None) -> dict[str, tuple[dict, list]]:
+    """{asset key: (manifest, [(replay id, match uuid, round count)])} for each played layout with geometry.
+    Each build borrows the other layouts' valid replays from the same map."""
+    registry = layouts.load_registry() if registry is None else registry
+    if index is None:
+        index = json.loads((hi.CONTROL_DIR / "index.json").read_text(encoding="utf-8"))
     replays = db.query(Replay).options(load_only(
         Replay.id, Replay.match_uuid, Replay.map_name, Replay.recipe, Replay.source_sha256, Replay.round_count,
-        Replay.format_version)).order_by(Replay.id).all()
+        Replay.format_version, Replay.game_branch)).order_by(Replay.id).all()
     valid = replay_control._valid_ids(db, replays)
-    by_map: dict[str, list] = {}
+    by_map: dict[str, dict[str, list]] = {}
     for replay in replays:
         if replay.id in valid and (replay_control.condense_revision(replay.recipe) or 0) >= hi.MIN_CONDENSE_REVISION:
-            by_map.setdefault(replay.map_name, []).append(replay)
-    must_block = hi.must_block_sha()
+            selected = layouts.layout_for(replay.map_name, replay.game_branch, registry=registry, index=index)
+            if selected.state == "ok":
+                by_map.setdefault(replay.map_name, {}).setdefault(selected.layout.asset_key, []).append(replay)
     histories = {}
     for row in control_heights.rows(db):
         receipt = (row.report or {}).get('refinement')
         if receipt is not None and row.map_name not in histories:
             histories[row.map_name] = hi.refinement_history(row.map_name, receipt['history'])
     out = {}
-    for name, rows in by_map.items():
-        geometry = hi.geometry_identity(name)
-        if geometry is None:
-            continue
-        uuids = [str(r.match_uuid).lower() for r in rows]
-        out[name] = (hi.manifest(name, [[u, r.recipe, r.source_sha256, r.round_count] for u, r in zip(uuids, rows)],
-                                 geometry, must_block, history=histories.get(name)),
-                     [(r.id, u, r.round_count) for u, r in zip(uuids, rows)])
+    for groups in by_map.values():
+        for key, own in groups.items():
+            geometry = hi.geometry_identity(key)
+            if geometry is None:
+                continue
+            borrowed = [(r, other_key) for other_key, rows in groups.items() if other_key != key for r in rows]
+            rows = own + [r for r, _ in borrowed]
+            regions = hi.regions_for(key, [(r.match_uuid, other_key) for r, other_key in borrowed], registry=registry)
+            uuids = [str(r.match_uuid).lower() for r in rows]
+            out[key] = (hi.manifest(key, [[u, r.recipe, r.source_sha256, r.round_count] for u, r in zip(uuids, rows)],
+                                    geometry, hi.must_block_sha(key=key), history=histories.get(key), regions=regions),
+                        [(r.id, u, r.round_count) for u, r in zip(uuids, rows)])
     return out
 
 
@@ -189,12 +199,14 @@ def plan_maps(db) -> Plan:
                 plan.off.append(name)          # the rebuild after a deletion was rejected: the old heights go
         else:
             moved = hi.changes(row.inputs, manifest)
+            pool = {uuid for uuid, _ in manifest.get("regions", {}).get("pool", [])}
+            own_added = len(set(moved["added"]) - pool)
             if moved["gone"] or gone:
                 plan.due.append(Due(name, manifest, replays, "its evidence changed"))
             elif moved["other"]:
                 plan.due.append(Due(name, manifest, replays, "its inputs changed"))
-            elif len(moved["added"]) >= HEIGHT_REBUILD_EVERY:
-                plan.due.append(Due(name, manifest, replays, f"{len(moved['added'])} new matches"))
+            elif own_added >= HEIGHT_REBUILD_EVERY:
+                plan.due.append(Due(name, manifest, replays, f"{own_added} new matches"))
     plan.due.sort(key=lambda d: (d.why != "its evidence changed", d.map_name))
     return plan
 
@@ -277,7 +289,8 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         asset = base64.b64decode(result["asset"], validate=True)
     except (KeyError, TypeError, ValueError) as error:              # binascii.Error is a ValueError
         raise BuildFailed(f"the worker's result can't be used: {error}") from error
-    why = control_heights.integrity(digest, report, control_heights.verify_asset(asset, build.map_name), hi.must_block_sha())
+    why = control_heights.integrity(digest, report, control_heights.verify_asset(asset, build.map_name),
+                                    hi.must_block_sha(key=build.map_name))
     if why:
         raise BuildFailed("the worker's result can't be trusted: " + "; ".join(why))
     current = current_manifests(session).get(build.map_name)

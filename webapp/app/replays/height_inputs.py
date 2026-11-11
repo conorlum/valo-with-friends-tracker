@@ -193,12 +193,16 @@ def matches(m: dict) -> list[str]:
 def changes(old: dict | None, new: dict) -> dict:
     """How `new` differs from the last build's manifest: the matches added, the ones whose evidence is gone
     (deleted, or replaced by other blobs under the same match), and whether anything else moved (the masks, the
-    rules, the check set). With no old manifest (a row from before manifests) everything else counts as moved."""
+    rules, the check set). Pool membership is counted through added/gone replays, not as another input.
+    With no old manifest (a row from before manifests) everything else counts as moved."""
     now = {row[0]: row for row in new["replays"]}
     if old is None:
         return {"added": sorted(now), "gone": [], "other": True}
     was = {row[0]: row for row in old.get("replays") or []}
-    rest = {k: v for k, v in new.items() if k != "replays"}
+    def rest(manifest):
+        return {k: ({name: value for name, value in v.items() if name != "pool"} if k == "regions" else v)
+                for k, v in manifest.items() if k != "replays"}
+
     return {"added": sorted(set(now) - set(was)),
             "gone": sorted(u for u, row in was.items() if now.get(u) != row),
-            "other": rest != {k: v for k, v in old.items() if k != "replays"}}
+            "other": rest(new) != rest(old)}
