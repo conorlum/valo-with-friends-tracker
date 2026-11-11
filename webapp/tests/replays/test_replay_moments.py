@@ -1,6 +1,8 @@
 import copy
 import json
 
+import pytest
+
 from app.services.replay_moments import (
     attach_deaths,
     attach_team_fights,
@@ -53,10 +55,64 @@ def test_info_merge():
 
 
 def test_info_both_sides_and_reasons_separate():
-    e = {2: {"A": [[1.0, 3, "recon"]], "B": [[1.5, 3, "footsteps"], [1.2, 3, "shock"]]}}
+    e = {2: {"A": [[1.0, 3, "neural_theft"]],
+             "B": [[1.5, 3, "footsteps"], [1.2, 3, "recon", "locate"]]}}
     r = player_info(3, e, {})
     assert len(r["heard"]) == 1
-    assert [(m["reason"]) for m in r["found_by_utility"]] == ["recon", "shock"]
+    assert r["found_by_utility"] == [
+        {"round": 2, "t": 1.0, "reason": "neural_theft", "class": "found"},
+        {"round": 2, "t": 1.2, "reason": "recon", "class": "found"},
+    ]
+
+
+def test_info_legacy_haunt_rows_are_not_finds():
+    e = {6: ev(*[(t, 5, "haunt") for t in (1.0, 4.0, 7.0, 10.0, 13.0)])}
+    assert player_info(5, e, {})["found_by_utility"] == []
+
+
+@pytest.mark.parametrize("reason, kind, expected_class", [
+    ("haunt", "locate", "found"),
+    ("knife_hit", None, "roughly_placed"),
+    ("neural_theft", None, "found"),
+])
+def test_info_utility_finds_have_classes(reason, kind, expected_class):
+    row = [10.0, 5, reason] + ([kind] if kind is not None else [])
+    e = {6: ev(row, (12.0, 5, "footsteps"))}
+    r = player_info(5, e, {})
+    assert r["found_by_utility"] == [
+        {"round": 6, "t": 10.0, "reason": reason, "class": expected_class},
+    ]
+    assert r["heard"] == [{"round": 6, "t": 12.0}]
+
+
+@pytest.mark.parametrize("reason", [
+    "knife_missed", "skye_no_cue", "hypothesis_cleared", "died", "omen_unheard", "recon", "shock",
+])
+@pytest.mark.parametrize("kind", [None, "exclude"])
+def test_info_non_finds_are_hidden(reason, kind):
+    row = [10.0, 5, reason] + ([kind] if kind is not None else [])
+    assert player_info(5, {6: ev(row)}, {})["found_by_utility"] == []
+
+
+@pytest.mark.parametrize("kind", [None, "locate"])
+def test_info_sight_and_sound_never_become_utility_finds(kind):
+    rows = [[t, 5, reason] + ([kind] if kind is not None else [])
+            for t, reason in ((1.0, "tap"), (2.0, "orb"), (3.0, "seen"),
+                              (4.0, "footsteps"), (5.0, "gunfire"), (12.0, "gunfire"),
+                              (13.0, "damage"), (14.0, "kill"))]
+    moments = {6: {"status": "ok", "fights": [fight(slot=5, t0=10, t1=14)]}}
+    r = player_info(5, {6: ev(*rows)}, moments)
+    assert r == {"found_by_utility": [], "seen": 1,
+                 "heard": [{"round": 6, "t": 4.0}],
+                 "gunfire_outside": [{"round": 6, "t": 5.0}]}
+
+
+def test_info_mixed_haunt_kinds_are_filtered_before_merging():
+    e = {21: ev((9.9, 5, "haunt", "exclude"), (10.0, 5, "haunt", "locate"),
+                (10.1, 5, "haunt", "exclude"))}
+    assert player_info(5, e, {})["found_by_utility"] == [
+        {"round": 21, "t": 10.0, "reason": "haunt", "class": "found"},
+    ]
 
 
 def test_gunfire_seen_and_ignored():

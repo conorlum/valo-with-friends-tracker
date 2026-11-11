@@ -9,6 +9,7 @@ import statistics
 
 from app.moments.constants import (DEATH_MATCH_S, EXPENSIVE_FIGHT_M2, EXPENSIVE_FIGHTS_SHOWN, INFO_MERGE_S,
                                    MEDIAN_MIN_CLEAN)
+from app.replays.control_reasons import SIGHT_SOUND, classify
 from app.services import enemy_names
 
 
@@ -122,17 +123,22 @@ def player_info(slot, events, moments) -> dict:
     for n, groups in (events or {}).items():
         rnd = int(n)
         fights = _fights_of(slot, (moments or {}).get(n, (moments or {}).get(rnd)))
-        by_reason: dict[str, list[float]] = {}
+        by_reason: dict[tuple[str, str], list[float]] = {}
         for side in (groups or {}).values():
-            for t, s, reason in side:
+            for row in side:
+                t, s, reason = row[:3]
+                kind = row[3] if len(row) > 3 else None
                 if _as_int(s) != slot:
                     continue
-                if reason in ("damage", "kill"):
+                reason_class = classify(reason, kind)
+                if reason not in SIGHT_SOUND and reason_class not in ("found", "roughly_placed"):
+                    continue
+                if reason in ("damage", "kill", "tap", "orb"):
                     continue
                 if reason == "gunfire" and any(f["t0"] <= t <= f["t1"] for f in fights):
                     continue
-                by_reason.setdefault(reason, []).append(t)
-        for reason, ts in by_reason.items():
+                by_reason.setdefault((reason, reason_class), []).append(t)
+        for (reason, reason_class), ts in by_reason.items():
             for t in _merge(ts):
                 if reason == "footsteps":
                     heard.append({"round": rnd, "t": t})
@@ -141,7 +147,7 @@ def player_info(slot, events, moments) -> dict:
                 elif reason == "seen":
                     seen.append(t)
                 else:
-                    util.append({"round": rnd, "t": t, "reason": reason})
+                    util.append({"round": rnd, "t": t, "reason": reason, "class": reason_class})
     key = lambda m: (m["round"], m["t"])
     return {
         "heard": sorted(heard, key=key),
