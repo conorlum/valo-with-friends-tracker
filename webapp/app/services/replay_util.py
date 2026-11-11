@@ -20,6 +20,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from app.coach import areas
 from app.critutil import abilities, constants
 from app.services import util_model, util_values
 from app.services.replay_gaps import Freshness  # re-export the shared lightweight rule
@@ -101,8 +102,6 @@ def label_of(kinds) -> str | None:
 
 
 def area_of(map_name: str, u, v, side: str | None) -> str:
-    from app.coach import areas
-
     if u is None or v is None:
         return "unknown"
     found = areas.area_at(map_name, u, v)
@@ -332,8 +331,8 @@ REBUILD_TRIES = 3
 
 def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
     """What a corpus build is made from, as one key: the versions, every current util row it reads (round,
-    fingerprint, when computed), each of their replays' match and clock offset, and the estimator's key. Computed
-    from the very rows a build reads, so the key stored with a build always describes that build's inputs."""
+    fingerprint, when computed), each of their replays' match and clock offset, the estimator's key, and any
+    reviewed map areas. Computed from the rows a build reads, so the key describes that build's inputs."""
     from app.models.replay import Replay
 
     ids = sorted({r[0] for r in rows})
@@ -341,6 +340,9 @@ def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
     friends = hashlib.sha256(",".join(str(p) for p in sorted(friend_players(db))).encode()).hexdigest()
     h = hashlib.sha256(f"{util_values.VERSION}:{PAGE_VERSION}:{(model or {}).get('key')}:{abilities.table_hash()}:"
                        f"{constants.VERSION}:{friends}".encode())
+    areas_hash = areas.table_hash()
+    if areas_hash is not None:
+        h.update(f":areas={areas_hash}".encode())
     for rid, n, fp, at, *_ in sorted(rows, key=lambda r: (r[0], r[1])):
         h.update(f"|{rid}:{n}:{fp}:{at}".encode())
     for rid, match_id, offset in replays:
