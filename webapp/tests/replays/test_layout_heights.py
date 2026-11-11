@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -16,6 +17,10 @@ from app.models.replay import ControlHeight, Replay, ReplayRound
 from app.replays import control_format as cf
 from app.services import control_heights as ch
 from app.services import replay_control_remote as remote, replay_heights_remote as hr
+from app.control import height_build as hb, height_job, height_motion as hm
+from app.replays import format as fmt
+from tests.replays.control_toys import height_blob, standing
+from tests.replays.test_control_heights import write_blobs
 
 
 @pytest.fixture
@@ -297,3 +302,192 @@ def test_active_height_rows_are_separate_by_asset_key(db):
     assert ch.active_digests(db) == {"Toy": "a" * 12, "Toy_13_10": "b" * 12}
     assert ch.select_height(db, "Toy_13_10", None) == hi.HeightSelection("asset", "b" * 12)
     assert ch.select_height(db, "Toy", None) == hi.HeightSelection("asset", "a" * 12)
+
+
+@pytest.mark.parametrize("target,borrowed", [("Toy_13_10", "Toy"), ("Toy", "Toy_13_10")])
+def test_blob_dir_masks_pool_tracks_and_kills_only(height_layouts, monkeypatch, target, borrowed):
+    folder, _ = height_layouts
+    own, pool = str(UUID(int=101)), str(UUID(int=102))
+    crossing = ("A", [(0.0, 1, 3, 20, 1.0), (4.0, 5, 3, 80, 2.0)])
+    blob = height_blob({0: crossing, 1: standing(3, 3, 1.0),
+                        5: standing(5, 3, 1.0, "B")}, t_end=4.0)
+    u, v = round(5 / cg.PX * 10000), round(3 / cg.PX * 10000)
+    blob["kills"] = [
+        {"i": 0, "t": 2.0, "killer": 1, "victim": 5, "u": u, "v": v},
+        {"i": 1, "t": 2.0, "killer": 5, "victim": 1,
+         "u": round(3 / cg.PX * 10000), "v": v},
+        {"i": 2, "t": 4.0, "killer": 0, "victim": 5, "u": u, "v": v},
+    ]
+    blobs = write_blobs(folder / "blobs", [(own, 1, blob), (pool, 1, blob)], name="Toy")
+    # Preserve decoder identity to check that own rounds pass through as the same objects.
+    monkeypatch.setattr(fmt, "decode_blob", lambda raw: blob)
+    reads = []
+    reader = cg.read_mask_png
+    monkeypatch.setattr(cg, "read_mask_png", lambda path: (reads.append(path), reader(path))[1])
+    source = height_job.BlobDir(blobs, target, pool=[(pool, borrowed)])
+    rows = list(source)
+    assert rows[0][2] is blob
+    masked = rows[1][2]
+    assert masked is not blob and len(blob["tracks"]["0"]) == 1
+    original = next(hm.tracks(blob))
+    pieces = [row for row in hm.tracks(masked) if row[0] == 0]
+    assert len(pieces) == 2
+    keep = ~((original[2] >= 2) & (original[2] < 4))
+    for column in range(1, 5):
+        np.testing.assert_allclose(np.concatenate([p[column] for p in pieces]), original[column][keep])
+    original_yaw = np.cumsum(blob["tracks"]["0"][0]["yaw"]) % 360
+    masked_yaw = np.concatenate([np.cumsum(piece["yaw"]) % 360 for piece in masked["tracks"]["0"]])
+    np.testing.assert_array_equal(masked_yaw, original_yaw[keep])
+    assert pieces[0][1][-1] < pieces[1][1][0] - 1 / blob["hz"]
+    assert list(masked["tracks"]["1"]) == []
+    assert masked["tracks"]["5"] == blob["tracks"]["5"]
+    assert masked["kills"] == [blob["kills"][2]]
+    assert len(blob["kills"]) == 3
+    geo = cg.geometry_from_masks("Toy", np.zeros((cg.PX, cg.PX), bool),
+                                 np.ones((cg.PX, cg.PX), bool), 7e-5)
+    stands, _, _, counts = hb.all_ground([(pool, 1, masked)], geo)
+    assert 1 not in {stand.slot for stand in stands}
+    assert 5 in {stand.slot for stand in stands}
+    assert counts["rounds"] == 1
+    assert source.per_match() == {own: 1, pool: 1}
+    list(source)
+    assert len(reads) == 1, "the union is reused on later passes"
+
+
+def test_base_blob_dir_preserves_decoded_objects(tmp_path, monkeypatch):
+    blob = height_blob({0: standing(3, 3, 1.0)}, t_end=2.0)
+    blob["map"] = "Ascent"
+    folder = write_blobs(tmp_path / "blobs", [("synthetic", 1, blob)])
+    monkeypatch.setattr(fmt, "decode_blob", lambda raw: blob)
+    assert list(height_job.BlobDir(folder, "Ascent"))[0][2] is blob
+
+
+@pytest.fixture
+def height_child(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]))
+    from replay_worker import height_job as child
+
+    return child
+
+
+@pytest.mark.parametrize("key", ["Toy", "Toy_13_10"])
+def test_child_recomputes_regions_and_uses_layout_checks(height_layouts, monkeypatch, height_child, key):
+    folder, _ = height_layouts
+    uuid = str(UUID(int=103))
+    blob = height_blob({0: standing(5, 3, 1.0)}, t_end=2.0)
+    directory = write_blobs(folder / "blobs", [(uuid, 1, blob)], name="Toy")
+    other = "Toy" if key != "Toy" else "Toy_13_10"
+    manifest = hi.manifest(key, [[uuid, "p.c11.f1.a1", "a" * 64, 1]],
+                           hi.geometry_identity(key), hi.must_block_sha(key=key),
+                           regions=hi.regions_for(key, [(uuid, other)]))
+    seen = []
+
+    def build(name, source, **options):
+        seen.append((name, list(source), options))
+        return {"status": "ok", "asset": b"synthetic"}
+
+    monkeypatch.setattr(height_job, "run", build)
+    answer = height_child.run({"key": hi.key(manifest), "map": key, "manifest": manifest, "dir": str(directory)})
+    assert answer["status"] == "ok", answer
+    assert answer["inputs_sha"] == hi.digest(manifest) and answer["rounds"] == 1
+    assert seen[0][0] == key and seen[0][1][0][2]["map"] == "Toy"
+    assert seen[0][2]["must_block"] == hi.must_block_path(key)
+
+
+@pytest.mark.parametrize("missing", ["target", "mask", "map", "pool"])
+def test_child_refuses_unavailable_regions_as_unknown_layout(height_layouts, monkeypatch, height_child, missing):
+    folder, registry = height_layouts
+    key = "Toy_13_10"
+    manifest = hi.manifest(key, [], hi.geometry_identity(key), hi.must_block_sha(key=key),
+                           regions=hi.regions_for(key, []))
+    if missing == "target":
+        registry["maps"]["Toy"].pop()
+    elif missing == "map":
+        registry["maps"].pop("Toy")
+    elif missing == "pool":
+        manifest["regions"]["pool"] = [[str(UUID(int=104)), "Toy_13_12"]]
+    else:
+        (folder / "regions/Toy_13_10.png").unlink()
+    monkeypatch.setattr(height_job, "run", lambda *a, **k: pytest.fail("an incompatible build ran"))
+    answer = height_child.run({"key": hi.key(manifest), "map": key, "manifest": manifest, "dir": str(folder)})
+    assert (answer["status"], answer["error_kind"], answer.get("error_code")) == (
+        "failed", "compat", "unknown_layout")
+
+
+@pytest.fixture
+def height_client(monkeypatch):
+    client = SimpleNamespace(health=lambda: {"idle": True, "heights": {}}, opened=[])
+
+    def open_build(*args, **options):
+        client.opened.append(args)
+        return {"id": "synthetic", "status": "running"}
+
+    client.open_build = open_build
+    monkeypatch.setattr(ch, "active_digests", lambda session: {})
+    return client
+
+
+@pytest.mark.parametrize("regions,protocol,opens", [(True, None, False), (True, 0, False),
+    (True, 1, True), (True, 2, True), (False, None, True)])
+def test_site_requires_heights_protocol_for_regions(monkeypatch, height_client, regions, protocol, opens):
+    manifest = hi.manifest("Toy", [], {}, None)
+    if regions:
+        manifest["regions"] = {"masks": [["Toy", None]], "pool": []}
+    due = hr.Due("Toy", manifest, [], "synthetic")
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[due]))
+    health = {"idle": True, "heights": {} if protocol is None else {"protocol": protocol}}
+    height_client.health = lambda: health
+    state, counts = hr.HeightState(), {}
+    assert hr.step(None, None, height_client, state, 10.0, counts) == {"Toy"}
+    assert bool(height_client.opened) is opens
+    assert state.tries == {} and counts["heights_failed"] == 0
+
+
+def test_unknown_layout_height_failure_waits_at_no_cost(monkeypatch, height_client):
+    manifest = hi.manifest("Toy", [], {}, None)
+    due = hr.Due("Toy", manifest, [], "synthetic")
+    key = hi.key(manifest)
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[due]))
+    build = hr.Build("Toy", key, manifest, [], 0.0, job_id="synthetic")
+    state = hr.HeightState(builds={key: build})
+    height_client.build = lambda job: {"status": "failed", "error_kind": "compat",
+                                     "error_code": "unknown_layout"}
+    height_client.cancel_build = lambda job: None
+    counts = {}
+    assert hr.step(None, None, height_client, state, 10.0, counts) == {"Toy"}
+    assert not state.builds and state.tries == {} and counts["heights_failed"] == 0
+    assert hr.step(None, None, height_client, state, 10.0 + hr.BACKOFF_S - 1, counts) == {"Toy"}
+    assert height_client.opened == []
+    assert hr.step(None, None, height_client, state, 10.0 + hr.BACKOFF_S, counts) == {"Toy"}
+    assert len(height_client.opened) == 1 and state.tries == {}
+
+
+def test_regions_remain_held_when_worker_has_no_heights_health(monkeypatch, height_client):
+    from app.services import replay_upload
+
+    manifest = hi.manifest("Toy", [], {}, None, regions={"masks": [], "pool": []})
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[hr.Due("Toy", manifest, [], "synthetic")]))
+    height_client.health = lambda: {"idle": True, "recipe": replay_upload.site_recipe()}
+    state = hr.HeightState()
+    assert hr.step(None, None, height_client, state, 10.0, {}) == {"Toy"}
+    assert not height_client.opened and not state.tries
+
+
+def test_unopened_regions_build_waits_if_worker_protocol_changes(monkeypatch, height_client):
+    manifest = hi.manifest("Toy", [], {}, None, regions={"masks": [], "pool": []})
+    due = hr.Due("Toy", manifest, [], "synthetic")
+    key = hi.key(manifest)
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[due]))
+    state = hr.HeightState(builds={key: hr.Build("Toy", key, manifest, [], 0.0)})
+    assert hr.step(None, None, height_client, state, 10.0, {}) == {"Toy"}
+    assert not height_client.opened and not state.tries
+
+
+@pytest.mark.parametrize("health", [None, {"heights": {}}, {"idle": True, "heights": []}])
+def test_unconfirmed_regions_protocol_spends_no_try(monkeypatch, height_client, health):
+    manifest = hi.manifest("Toy", [], {}, None, regions={"masks": [], "pool": []})
+    monkeypatch.setattr(hr, "plan_maps", lambda session: hr.Plan(due=[hr.Due("Toy", manifest, [], "synthetic")]))
+    height_client.health = lambda: health
+    state = hr.HeightState()
+    assert hr.step(None, None, height_client, state, 10.0, {}) == {"Toy"}
+    assert not height_client.opened and not state.tries

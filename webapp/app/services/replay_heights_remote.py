@@ -88,6 +88,10 @@ class _Stale(Exception):
     """The map's inputs are no longer the build's: drop the build, at no cost."""
 
 
+class _UnknownLayout(Exception):
+    """The worker needs a newer layout image before this build can run."""
+
+
 @dataclass
 class Due:
     map_name: str
@@ -124,6 +128,7 @@ class HeightState:
     builds: dict = field(default_factory=dict)     # manifest key -> Build, one per map, at most MAX_BUILDS
     tries: dict = field(default_factory=dict)       # manifest key -> (failures, last)
     out_of_tries: frozenset = frozenset()
+    waiting: dict = field(default_factory=dict)     # manifest key -> earliest next open after a layout refusal
 
     @property
     def build(self) -> Build | None:
@@ -336,6 +341,12 @@ def _resend(build: Build, why: str) -> None:
         raise BuildFailed(why)
 
 
+def _supports_regions(health: dict) -> bool:
+    heights = health.get("heights") if isinstance(health, dict) else None
+    protocol = heights.get("protocol") if isinstance(heights, dict) else None
+    return isinstance(protocol, int) and protocol >= 1
+
+
 def _advance(session_factory, session, client, build: Build, now: float, counts: dict) -> bool:
     """Asks the worker what state the build is in and does the one thing that state allows. True when the build
     is over (its result stored)."""
@@ -348,6 +359,8 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             from app.services import control_feature_artifacts
             options = {}
             health = client.health()
+            if "regions" in build.manifest and not _supports_regions(health):
+                return False
             if (health.get('heights') or {}).get('diagnostics_protocol') == 1:
                 options['diagnostic'] = control_feature_artifacts.diagnostic_snapshot(session, build.map_name)
             state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest, **options)
@@ -412,6 +425,8 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if status == "done":
             _finish(session_factory, session, build, state if "result" in state else client.build(build.job_id), counts)
             return True
+        if status == "failed" and state.get("error_code") == "unknown_layout":
+            raise _UnknownLayout(str(state.get("error") or "worker layout unavailable"))
         raise BuildFailed(str(state.get("error") or f"the worker says the build is {status!r}"))
     except WorkerGone:
         # Includes 404 while opening, before there is a job id. Reopening after this 404 is already charged;
@@ -435,6 +450,10 @@ def _try_build(session_factory, session, client, hstate: HeightState, build: Bui
             held.discard(build.map_name)
     except (Unreachable, WorkerBusy):
         counts["unreachable"] = counts.get("unreachable", 0) + 1
+    except _UnknownLayout as refused:
+        log.info("heights: %s build waiting for worker layout: %s", build.map_name, refused)
+        hstate.builds.pop(build.key, None)
+        hstate.waiting[build.key] = now + BACKOFF_S
     except _Stale as stale:
         log.info("heights: %s build dropped: %s", build.map_name, stale)
         _cancel(client, build)
@@ -467,6 +486,7 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             counts["heights_off"] += 1
             log.info("heights: %s off: what its heights were built from is gone", name)
     due = {hi.key(d.manifest): d for d in plan.due}
+    hstate.waiting = {key: until for key, until in hstate.waiting.items() if key in due and now < until}
     hstate.out_of_tries = frozenset(d.map_name for key, d in due.items() if hstate.spent(key))
     for key, d in due.items():
         if hstate.spent(key):
@@ -486,13 +506,18 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     building = {b.map_name for b in hstate.builds.values()}
     ready = [d for key, d in due.items()
              if key not in attempted and key not in hstate.builds and d.map_name not in building
-             and hstate.may_try(key, now)]
+             and key not in hstate.waiting and hstate.may_try(key, now)]
     if not ready or len(hstate.builds) >= MAX_BUILDS:
         return held
     try:
         answer = client.health()
         if _other_deploy(answer):
-            return {b.map_name for b in hstate.builds.values()}   # the deploy gap: open nothing, hold only what runs
+            return ({b.map_name for b in hstate.builds.values()}
+                    | {d.map_name for key, d in due.items() if "regions" in d.manifest and not hstate.spent(key)})
+        ready = [d for d in ready if "regions" not in d.manifest or
+                 _supports_regions(answer)]
+        if not ready:
+            return held
         if not _idle(client, answer):
             return held
         # A worker whose heights runner is local runs one build at a time; the rest would only sit queued.
