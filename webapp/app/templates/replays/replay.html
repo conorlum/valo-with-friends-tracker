@@ -24,9 +24,9 @@
     json("/static/data/abilities.json?v={{ static_version() }}").catch(function () { return {}; }).then(function (abilityIcons) {
       window.viewer = new Replay.ReplayViewer(root, {
         rounds: match.rounds,
-        mapImage: "/static/img/maps/" + match.map + ".png",
+        mapImage: "/static/img/maps/" + match.asset + ".png",
         // What stops a tracer (walls and low boxes); a map without one keeps the fixed-length tracer.
-        bulletMask: "/static/data/control/" + match.map + ".bullet.png?v={{ static_version() }}",
+        bulletMask: "/static/data/control/" + match.asset + ".bullet.png?v={{ static_version() }}",
         agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
         loadRound: function (n) { return json("/replays/" + match.uuid + "/" + n + ".json").then(function (blob) { return withSiteData(n, blob); }); },
         roundWinner: function (n) { var site = data.rounds[String(n)]; return site && site.db && site.db.winner; },

@@ -181,7 +181,7 @@ guards = ["app/services/site_health*.py", "app/models/site_events.py", "app/data
 
 [map-layouts]
 about = "Base map asset identities and per-layout replay selection and readers for control, gaps, heights and callouts."
-tests = ["tests/replays/test_*layout*.py"]
+tests = ["tests/replays/test_layout_viewer.py", "tests/replays/test_*layout*.py"]
 guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golden.json",
           "app/replays/layouts.py", "app/static/data/layouts.json", "../replay_tasks/tasks.py",
           "../replay_worker/server.py", "../replay_worker/control_cache.py"]
