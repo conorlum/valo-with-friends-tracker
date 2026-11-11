@@ -52,6 +52,40 @@ def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
     # heard, so placed only roughly: a quarter direction and a 10 m band from the nearest teammate (121.2 m away)
     assert signal["rough_place"] == {"from": "P0#T0", "direction": "right", "metres_min": 120.0, "metres_max": 130.0}
     assert "never a spot or a named area" in out["note"]
+    assert signal["class"] == "found"
+    assert out["ruled_out"] == out["lost_track"] == []
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_round_6_exclusions_have_no_place(snap, monkeypatch, with_kind):
+    rows = [[10.0, s, "haunt", "exclude"] if with_kind else [10.0, s, "haunt"] for s in range(5, 10)]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert out["signals"] == out["lost_track"] == []
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[s], "reason": "haunt"} for s in range(5, 10)]
+
+
+def test_knew_separates_found_roughly_placed_and_non_finds(snap, monkeypatch):
+    rows = [[10.0, s, "haunt", "locate"] for s in (5, 6, 7, 9)] + [
+        [10.0, 8, "haunt", "exclude"], [10.0, 5, "knife_hit", "restrict"],
+        [10.0, 6, "omen_unheard"], [10.0, 7, "died"], [11.0, 8, "haunt", "locate"]]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert [e["class"] for e in out["signals"]] == ["found"] * 4 + ["roughly_placed"]
+    assert all("rough_place" in e for e in out["signals"])
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[8], "reason": "haunt"}]
+    assert out["lost_track"] == [{"t": 10.0, "name": snap.names[6], "reason": "omen_unheard"}]
+    assert "found or roughly placed" in out["note"]
+    assert "ruled_out" in out["note"] and "NOT" in out["note"] and "no place" in out["note"]
+    assert "lost_track" in out["note"]
+
+
+@pytest.mark.parametrize("events", [None, {}])
+def test_knew_distinguishes_missing_events_from_empty_events(snap, monkeypatch, events):
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": events})
+    out = query.knew(snap, 1, 10.0, "A")
+    for key in ("signals", "ruled_out", "lost_track"):
+        assert out[key] == (None if events is None else [])
 
 
 def test_where_gives_health_as_a_word_after_the_last_recorded_hit(snap):

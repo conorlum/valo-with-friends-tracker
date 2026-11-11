@@ -1,11 +1,14 @@
 """What a side knew of each enemy by a time, from map control's stored rows: `header["knew"]` (sightings, each
-with a place) and `header["knowledge_events"]` (every locating event, sound included, with a reason and only a
-rough place: a quarter direction and a distance band from the nearest teammate). The spec's "knowable": team
-knowledge, perfect comms."""
+with a place) and `header["knowledge_events"]` (time, slot, reason, and optionally kind). Only found and
+roughly_placed events are signals with a rough place: a quarter direction and a distance band from the nearest
+teammate. Ruled-out and lost-track events have separate lists with no place; other events are dropped.
+The spec's "knowable": team knowledge, perfect comms."""
 
 from __future__ import annotations
 
 import math
+
+from app.replays import control_reasons
 
 # How closely a signal places an enemy (the owner, 2026-10-12): a sound tells you the direction to within a 90
 # degree quarter and the distance to within 5 m, so the answer is a piece of a ring around the teammate, never
@@ -40,18 +43,25 @@ def rough_place(view, side: str, enemy: int, t: float) -> dict | None:
     return {"from": view.names.get(mate), "direction": direction, "metres_min": low, "metres_max": low + ROUGH_BAND_M}
 
 
-def signals(events: dict | None, side: str, t: float, names: dict[int, str], view=None) -> list[dict] | None:
+def signals(events: dict | None, side: str, t: float, names: dict[int, str], view=None) -> dict | None:
     if events is None:
         return None
-    out = []
+    out = {"signals": [], "ruled_out": [], "lost_track": []}
     for row in events.get(side) or []:
         if row[0] > t:
             continue
+        event_class = control_reasons.classify(row[2], row[3] if len(row) > 3 else None)
+        if event_class == "other":
+            continue
         signal = {"t": row[0], "name": names.get(int(row[1])), "reason": row[2]}
+        if event_class in ("ruled_out", "lost_track"):
+            out[event_class].append(signal)
+            continue
+        signal["class"] = event_class
         rough = rough_place(view, side, int(row[1]), float(row[0])) if view is not None else None
         if rough is not None:
             signal["rough_place"] = rough
-        out.append(signal)
+        out["signals"].append(signal)
     return out
 
 

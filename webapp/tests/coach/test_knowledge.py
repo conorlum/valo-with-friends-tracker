@@ -43,15 +43,17 @@ EVENTS = {"A": [[3.0, 6, "footsteps"], [12.5, 7, "gunfire"], [40.0, 6, "seen"]],
 
 
 def test_signals_are_the_sides_locating_events_so_far():
-    assert knowledge.signals(EVENTS, "A", 20.0, toys.NAMES) == [{"t": 3.0, "name": "P6", "reason": "footsteps"},
-                                                                {"t": 12.5, "name": "P7", "reason": "gunfire"}]
-    assert knowledge.signals(EVENTS, "B", 20.0, toys.NAMES) == []
+    assert knowledge.signals(EVENTS, "A", 20.0, toys.NAMES) == {
+        "signals": [{"t": 3.0, "name": "P6", "reason": "footsteps", "class": "found"},
+                    {"t": 12.5, "name": "P7", "reason": "gunfire", "class": "found"}],
+        "ruled_out": [], "lost_track": []}
+    assert knowledge.signals(EVENTS, "B", 20.0, toys.NAMES) == {"signals": [], "ruled_out": [], "lost_track": []}
 
 
 def test_a_signal_places_the_enemy_only_roughly_from_the_nearest_teammate():
     # slot 6 stands at (8000, 8000); teammate 1 is 3000 uv straight above (42.9 m), the rest 121 m away
     v = view(toys.round_blob({**toys.ten(), 1: (8000, 5000)}))
-    first = knowledge.signals(EVENTS, "A", 20.0, toys.NAMES, v)[0]
+    first = knowledge.signals(EVENTS, "A", 20.0, toys.NAMES, v)["signals"][0]
     assert first["rough_place"] == {"from": "P1", "direction": "down", "metres_min": 40.0, "metres_max": 50.0}
     assert not {"u", "v", "area"} & set(first) and not {"u", "v", "area"} & set(first["rough_place"])
 
@@ -60,21 +62,67 @@ def test_a_signal_places_the_enemy_only_roughly_from_the_nearest_teammate():
                                              ((7000, 6500), "down"), ((6500, 7000), "right")])
 def test_the_direction_is_one_of_four_minimap_quarters(mate, direction):
     v = view(toys.round_blob({**toys.ten(), 1: mate}))
-    assert knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v)[0]["rough_place"]["direction"] == direction
+    assert knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v)["signals"][0]["rough_place"]["direction"] == direction
 
 
 def test_the_distance_band_is_fixed_so_it_does_not_give_the_distance_away():
     for u in (7300, 7000, 6610):                    # 10.0 m, 14.3 m and 19.9 m to the left of the enemy
         v = view(toys.round_blob({**toys.ten(), 1: (u, 8000)}))
-        rough = knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v)[0]["rough_place"]
+        rough = knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v)["signals"][0]["rough_place"]
         assert (rough["metres_min"], rough["metres_max"]) == (10.0, 20.0)
 
 
 def test_a_signal_with_no_living_teammate_to_place_it_from_has_no_rough_place():
     kills = [{"t": 1.0, "killer": 5, "victim": s} for s in range(5)]
     v = view(toys.round_blob(toys.ten(), kills=kills))
-    assert knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v) == [{"t": 3.0, "name": "P6", "reason": "footsteps"}]
+    assert knowledge.signals(EVENTS, "A", 5.0, toys.NAMES, v) == {
+        "signals": [{"t": 3.0, "name": "P6", "reason": "footsteps", "class": "found"}],
+        "ruled_out": [], "lost_track": []}
 
 
 def test_a_round_that_stores_no_events_has_no_signals_answer():
     assert knowledge.signals(None, "A", 20.0, toys.NAMES) is None
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_round_6_haunt_exclusions_never_request_or_return_a_place(with_kind, monkeypatch):
+    events = {"A": [[10.0, s, "haunt", "exclude"] if with_kind else [10.0, s, "haunt"]
+                    for s in range(5, 10)]}
+
+    def no_place(*args):
+        pytest.fail("an exclusion must not request the enemy's position")
+
+    monkeypatch.setattr(knowledge, "rough_place", no_place)
+    out = knowledge.signals(events, "A", 10.0, toys.NAMES, object())
+    assert out == {"signals": [], "ruled_out": [
+        {"t": 10.0, "name": toys.NAMES[s], "reason": "haunt"} for s in range(5, 10)], "lost_track": []}
+
+
+def test_round_21_haunt_locates_have_places_but_the_exclusion_does_not():
+    events = {"A": [[10.0, s, "haunt", "locate"] for s in (5, 6, 7, 9)] + [[10.0, 8, "haunt", "exclude"]]}
+    out = knowledge.signals(events, "A", 10.0, toys.NAMES, view(toys.round_blob(toys.ten())))
+    assert [e["name"] for e in out["signals"]] == [toys.NAMES[s] for s in (5, 6, 7, 9)]
+    assert all(e["class"] == "found" and "rough_place" in e for e in out["signals"])
+    assert out["ruled_out"] == [{"t": 10.0, "name": toys.NAMES[8], "reason": "haunt"}]
+    assert out["lost_track"] == []
+
+
+def test_restricted_knife_is_roughly_placed_and_other_and_future_events_are_dropped():
+    events = {"A": [[10.0, 5, "knife_hit", "restrict"], [10.0, 6, "died"],
+                    [11.0, 7, "haunt", "locate"], [11.0, 8, "haunt", "exclude"],
+                    [11.0, 9, "omen_unheard"], [10.0, 7, "unknown_reason"]]}
+    out = knowledge.signals(events, "A", 10.0, toys.NAMES, view(toys.round_blob(toys.ten())))
+    (signal,) = out["signals"]
+    assert (signal["name"], signal["reason"], signal["class"]) == (toys.NAMES[5], "knife_hit", "roughly_placed")
+    assert "rough_place" in signal
+    assert out["ruled_out"] == out["lost_track"] == []
+
+
+def test_lost_track_never_requests_or_returns_a_place(monkeypatch):
+    def no_place(*args):
+        pytest.fail("losing track must not request the enemy's position")
+
+    monkeypatch.setattr(knowledge, "rough_place", no_place)
+    assert knowledge.signals({"A": [[10.0, 5, "omen_unheard"]]}, "A", 10.0, toys.NAMES, object()) == {
+        "signals": [], "ruled_out": [],
+        "lost_track": [{"t": 10.0, "name": toys.NAMES[5], "reason": "omen_unheard"}]}
