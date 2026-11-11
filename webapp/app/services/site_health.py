@@ -711,7 +711,7 @@ CACHE_FALLBACK_KEYS = frozenset({
 # Kinds stored in site_events: the only ones a resolved-file entry can clear.
 RECORDED_KINDS = frozenset({
     "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
-    "slow_page", "warm_vanished",
+    "slow_page", "warm_vanished", "map_layout_walls",
 })
 KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)

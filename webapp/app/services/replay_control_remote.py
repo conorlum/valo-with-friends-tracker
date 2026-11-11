@@ -345,6 +345,7 @@ class State:
     warm_boot: str | None = None                        # the worker process warm_vanished_boot came from
     warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
     warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
+    walls_evaluated: bool = False                      # evaluate existing shares on the first pass too
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -933,6 +934,13 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
             counts["walls_computed"] = walls.get("computed", 0)
             counts["walls_skipped"] = int("skipped" in walls)
+            if walls.get("computed") or not state.walls_evaluated:
+                evaluation = session_factory()
+                try:
+                    layout_walls.evaluate(evaluation)
+                    state.walls_evaluated = True
+                finally:
+                    evaluation.close()
             site_health.loop_ok("layout_walls_step")
         except Exception as exc:  # noqa: BLE001 - wall shares must never stop map control
             log.exception("layout wall-share step failed")

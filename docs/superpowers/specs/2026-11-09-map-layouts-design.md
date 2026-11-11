@@ -75,13 +75,18 @@ demo (it never has control).
 - **Wall signal (automatic).** For each computed round, the site measures the share of the round's 4 Hz player
   positions on non-walkable cells of the stored row's own walk bitmap, in an idle step behind uploads, and stores it
   in its own table (one row per replay round, keyed by its control fingerprint), never in control's summary (that
-  would change every fingerprint). Per map, the replays of patches after the current layout's `drawn_from` are
-  compared with that layout's normal share (its replays up to `drawn_from`). When they land in walls above the
-  threshold, Site health raises an error, `map_layout_walls` (a recorded kind, keyed `<map>:<patch>`, one per patch over
-  the threshold; a pass resolves every key it didn't raise): the map, the patch, the number of replays, and where the positions land. The threshold is a share of positions,
-  set from today's replays and calibrated on Corrode's pre-redraw walk mask (from git history, before PR #197)
-  against today's (PROVISIONAL). It clears itself once a new layout covers those replays (they recompute and stop
-  landing in walls); a false alarm is cleared the usual way, by an entry in `site_health_resolved.json`. A new
+  would change every fingerprint). Only shares joined to an `ok` control row with the same replay, round and
+  current fingerprint count. Rows without a parsed patch or an `ok` layout selection are skipped. Per map and
+  layout asset key, the baseline is the pooled share (sum inside / sum total) over replay patches up to and
+  including that layout's `drawn_from`. A layout without `drawn_from` or sampled baseline replays is not evaluated.
+  Each later patch with at least **4 distinct replays** raises `map_layout_walls` when its pooled share rises
+  **more than 0.5 percentage points** over baseline (both values PROVISIONAL(D12)). The recorded key is
+  `<map>:<patch>` (for example `Ascent:13.10`), one per patch over the threshold; every pass resolves open keys
+  it didn't raise. Context includes map, patch, layout asset key, replay count, share and baseline in percent
+  rounded to three decimals, and the top three callout names and inside-position counts. Only a patch about to
+  raise decodes blobs, at most 200 current rounds; missing area names are `unnamed`.
+  A new layout whose `drawn_from` covers a patch clears its alarm; a false alarm is cleared the usual way,
+  by an entry in `site_health_resolved.json`. A new
   recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS`, `EVENT_KINDS` (CLAUDE.md,
   "Site health"). Never in demo mode.
 - **Patch notes (on demand only).** No scheduled read. The redraw session (Section 3) reads the patch's notes.

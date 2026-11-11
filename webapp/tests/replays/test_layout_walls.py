@@ -17,6 +17,7 @@ from app.models.replay import Replay, ReplayRound, ReplayRoundControl, ReplayRou
 from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
 from app.replays import format as fmt
+from app.replays import layouts
 from app.services import layout_walls as walls
 from app.services import replay_control_remote as remote
 from app.services import replay_upload, site_health
@@ -257,3 +258,227 @@ def test_cycle_wall_failure_records_loop_key_and_continues(db, factory, replay, 
     site_health.flush(session_factory=factory)
     db.expire_all()
     assert db.get(SiteEvent, ("loop_failed", "layout_walls_step")) is None
+
+
+@pytest.fixture
+def alarm(monkeypatch):
+    """A checked base layout, independent of the shipped map registry."""
+    layout = layouts.Layout("Ascent@base", "Ascent", None, (13, 9), None)
+    monkeypatch.setattr(walls.replay_control, "layout_of", lambda r: layouts.Selection("ok", layout))
+    recorded, resolved = [], []
+    monkeypatch.setattr(site_health, "record", lambda *a: recorded.append(a))
+    monkeypatch.setattr(site_health, "resolve", lambda *a: resolved.append(a))
+    return recorded, resolved
+
+
+def alarm_replay(db, patch="13.10", *, inside=110, total=1000, rounds=1, current=True, status="ok",
+                 map_name="Ascent"):
+    serial = db.query(Replay).count() + 1
+    row = Replay(match_uuid=f"00000000-0000-4000-8000-{serial:012d}", map_name=map_name,
+                 round_count=rounds, format_version=1, recipe="toy",
+                 game_branch=f"++Ares-Core+release-{patch}", source_sha256="0" * 64,
+                 source="local", link_status="unlinked", link_inputs={})
+    db.add(row)
+    db.commit()
+    for number in range(1, rounds + 1):
+        put_round(db, row, number, status=status)
+        db.add(ReplayRoundWallShare(replay_id=row.id, round_number=number, asset_key=map_name,
+                                   control_fingerprint="first" if current else "old",
+                                   inside=inside, total=total, computed_at=datetime.fromtimestamp(NOW, timezone.utc)))
+    db.commit()
+    return row
+
+
+def open_alarm(db, key="Ascent:13.10", kind="map_layout_walls"):
+    db.add(SiteEvent(kind=kind, key=key, error="synthetic", count=1,
+                     first_seen=datetime.fromtimestamp(NOW, timezone.utc),
+                     last_seen=datetime.fromtimestamp(NOW, timezone.utc)))
+    db.commit()
+
+
+def later_replays(db, **kwargs):
+    for _ in range(4):
+        alarm_replay(db, **kwargs)
+
+
+def test_evaluate_records_patch_rise_and_context(db, alarm):
+    # Pooled baseline is 10%, rather than the unweighted mean of the round shares (30%).
+    alarm_replay(db, "13.08", inside=50, total=100)
+    alarm_replay(db, "13.09", inside=50, total=900)
+    later_replays(db)
+    open_alarm(db)
+    open_alarm(db, "Ascent:13.11")
+    walls.evaluate(db)
+    recorded, resolved = alarm
+    [(kind, key, error, context)] = recorded
+    assert (kind, key) == ("map_layout_walls", "Ascent:13.10")
+    assert error and "\n" not in error
+    assert {k: context[k] for k in ("map", "patch", "layout", "replays", "share", "baseline")} == {
+        "map": "Ascent", "patch": "13.10", "layout": "Ascent", "replays": 4,
+        "share": 11.0, "baseline": 10.0}
+    assert "callouts" in context
+    assert resolved == [("map_layout_walls", "Ascent:13.11")]
+
+
+@pytest.mark.parametrize("inside", [104, 105])
+def test_evaluate_below_or_at_threshold_resolves_without_decoding(db, alarm, monkeypatch, inside):
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db, inside=inside)
+    open_alarm(db)
+    open_alarm(db, "unrelated", kind="page_error")
+    monkeypatch.setattr(fmt, "decode_blob", lambda *a: pytest.fail("a quiet patch must not decode blobs"))
+    walls.evaluate(db)
+    assert alarm == ([], [("map_layout_walls", "Ascent:13.10")])
+
+
+def test_evaluate_requires_four_distinct_replays(db, alarm):
+    alarm_replay(db, "13.09", inside=100)
+    for _ in range(3):
+        alarm_replay(db, rounds=2)
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+def test_evaluate_baseline_patches_never_raise(db, alarm):
+    later_replays(db, patch="13.08", inside=0)
+    later_replays(db, patch="13.09", inside=900)
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+def test_evaluate_redraw_covers_patch_and_resolves(db, alarm, monkeypatch):
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    open_alarm(db)
+    redraw = layouts.Layout("Ascent@13.10", "Ascent_13_10", (13, 10), (13, 10), None)
+    base = layouts.Layout("Ascent@base", "Ascent", None, (13, 9), None)
+    monkeypatch.setattr(walls.replay_control, "layout_of", lambda r: layouts.Selection(
+        "ok", redraw if layouts.parse_patch(r.game_branch) >= (13, 10) else base))
+    walls.evaluate(db)
+    assert alarm == ([], [("map_layout_walls", "Ascent:13.10")])
+
+
+def test_evaluate_demo_does_not_even_read_session(db, alarm, monkeypatch):
+    open_alarm(db)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    walls.evaluate(None)
+    assert alarm == ([], [])
+
+
+@pytest.mark.parametrize("invalid", [{"current": False}, {"status": "failed"}, {"patch": "unknown"}])
+def test_evaluate_excludes_noncurrent_failed_and_unpatched_rows(db, alarm, invalid):
+    alarm_replay(db, "13.09", inside=100)
+    for _ in range(3):
+        alarm_replay(db)
+    alarm_replay(db, **invalid)
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+@pytest.mark.parametrize("state", ["layout_unknown", "layout_pending"])
+def test_evaluate_skips_unavailable_selection(db, alarm, monkeypatch, state):
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    monkeypatch.setattr(walls.replay_control, "layout_of", lambda r: layouts.Selection(state, None))
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+@pytest.mark.parametrize("missing", ["baseline", "drawn_from", "samples", "other_map"])
+def test_evaluate_requires_a_sampled_baseline_for_same_map_and_layout(db, alarm, monkeypatch, missing):
+    if missing != "baseline":
+        alarm_replay(db, "13.09", inside=0, total=0 if missing == "samples" else 1000,
+                     map_name="Haven" if missing == "other_map" else "Ascent")
+    if missing == "drawn_from":
+        layout = layouts.Layout("Ascent@base", "Ascent", None, None, None)
+        monkeypatch.setattr(walls.replay_control, "layout_of", lambda r: layouts.Selection("ok", layout))
+    later_replays(db)
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+def test_evaluate_names_inside_callouts_and_limits_decoding(db, alarm, monkeypatch):
+    from app.coach import areas
+
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db, rounds=51)
+    decoded, located = [], []
+    original = fmt.decode_blob
+
+    def decode(data):
+        decoded.append(True)
+        return original(data)
+
+    def locate(key, u, v):
+        located.append((key, u, v))
+        return {"name": "Mid", "super": "Center"}
+
+    monkeypatch.setattr(fmt, "decode_blob", decode)
+    monkeypatch.setattr(areas, "area_at", locate)
+    walls.evaluate(db)
+    context = alarm[0][0][3]
+    assert context["callouts"] == [{"name": "Mid", "count": 400}]
+    assert len(decoded) == 200
+    assert len(located) == 400 and set(located) == {("Ascent", 100, 10)}
+
+
+def test_evaluate_top_three_callouts_include_unnamed(db, alarm, monkeypatch):
+    from app.coach import areas
+
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    names = iter(["Mid", "Mid", None, "Mid", None, "A", "B", "Mid"])
+    monkeypatch.setattr(areas, "area_at", lambda *a: None if (name := next(names)) is None else {"name": name})
+    walls.evaluate(db)
+    assert alarm[0][0][3]["callouts"] == [
+        {"name": "Mid", "count": 4}, {"name": "unnamed", "count": 2}, {"name": "A", "count": 1}]
+
+
+def test_cycle_evaluate_failure_records_loop_key_and_continues(db, factory, monkeypatch):
+    submitted, closed = [], []
+    monkeypatch.setattr(remote, "_collect", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "_reparse", lambda *a, **k: frozenset())
+    monkeypatch.setattr(remote, "_submit", lambda *a, **k: submitted.append(True))
+    monkeypatch.setattr(remote, "_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "LIVE", None)
+    monkeypatch.setattr(remote.replay_control, "prepare_discovered", lambda *a, **k: None)
+    monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: False)
+    monkeypatch.setattr(walls, "step", lambda *a, **k: {"computed": 0})
+
+    def boom(session):
+        original = session.close
+
+        def close():
+            closed.append(True)
+            original()
+
+        monkeypatch.setattr(session, "close", close)
+        raise ValueError("synthetic evaluation failure")
+
+    monkeypatch.setattr(walls, "evaluate", boom, raising=False)
+    state = remote.State()
+    counts = remote.cycle(factory, None, state, now=NOW)
+    assert counts["walls_error"] == 1
+    assert closed == [True] and submitted == [True]
+    site_health.flush(session_factory=factory)
+    db.expire_all()
+    event = db.get(SiteEvent, ("loop_failed", "layout_walls_step"))
+    assert "synthetic evaluation failure" in event.error
+
+
+def test_cycle_evaluates_first_pass_and_after_computation(db, factory, monkeypatch):
+    evaluated = []
+    monkeypatch.setattr(remote, "_collect", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "_reparse", lambda *a, **k: frozenset())
+    monkeypatch.setattr(remote, "_submit", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "LIVE", None)
+    monkeypatch.setattr(remote.replay_control, "prepare_discovered", lambda *a, **k: None)
+    monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: False)
+    monkeypatch.setattr(walls, "evaluate", lambda session: evaluated.append(True), raising=False)
+    results = iter([{"skipped": "busy"}, {"computed": 0}, {"computed": 1}, {"computed": 0}])
+    monkeypatch.setattr(walls, "step", lambda *a, **k: next(results))
+    state = remote.State()
+    for i in range(4):
+        remote.cycle(factory, None, state, now=NOW + i)
+        assert len(evaluated) == [1, 1, 2, 2][i]
