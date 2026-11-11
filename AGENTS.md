@@ -40,6 +40,10 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 - `scripts/seed_demo_matches.py` / `scripts/ingest_demo_match.py` — one-off scripts to bulk- or single-ingest match JSONs from `MatchHTMLJsons/` into the DB via the adapter above. Not part of the deploy path.
 - `seed_data/demo_matches.sql` — the public ValoMaths demo's sample data (six matches plus a fixed sample friend group), a data-only dump at the schema head. `scripts/load_seed_data.py` loads it and `scripts/dump_seed_data.py` regenerates it. Every command against the demo DB goes through `scripts/with_demo_db.py`, which reads `webapp/.env.demo-remote` and refuses to run unless it is connected to `valomaths_demo`. See `load_seed_data.py`'s docstring for the rebuild order.
 
+### Map layouts
+
+`app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`.
+
 ### Player page pre-compute cache
 
 The player detail page's two heaviest computations (the round-win/kill-order state diagrams and the fight-EV diamond, both of which replay every round of every match a player has played) are pre-computed and cached in the `player_view_cache` table instead of being recomputed on every page load. See `docs/player_page_precompute.txt` for the full design.

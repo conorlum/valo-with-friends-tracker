@@ -80,8 +80,8 @@ def _must_block_sha_lf():
         return height_inputs.must_block_sha(path)
 
 
-def build_figures():
-    """Read today's code and assets without using any external database or service."""
+def build_figures(*, asset_keys=None):
+    """Read local figures, optionally resolving map names through selected asset keys."""
     must_block = _figure("must_block_sha_lf", _must_block_sha_lf)
     figures = {"hearing_hash": _figure("hearing_hash", replay_gaps.hearing_hash),
                "must_block_sha_lf": must_block,
@@ -93,26 +93,27 @@ def build_figures():
         with Session(engine) as db, patch.object(settings, "demo_mode", False), \
                 patch.object(control_feature_artifacts, "find_artifact_header", _fixed_header):
             for name in map_names():
+                key = name if asset_keys is None else asset_keys[name]
                 def read(figure, compute):
                     return _figure(f"{name}.{figure}", compute)
 
-                geometry = read("geometry_inputs", lambda: replay_control.geometry_inputs(name, None))
-                identity = read("height_geometry_identity", lambda: height_inputs.geometry_identity(name))
+                geometry = read("geometry_inputs", lambda: replay_control.geometry_inputs(key, None))
+                identity = read("height_geometry_identity", lambda: height_inputs.geometry_identity(key))
                 fp = read("control_fingerprint", lambda: control_format.fingerprint(
                     FIXED_RECIPE, FIXED_SHA, FIXED_LINK, geometry)) if geometry is not None else None
                 figures["maps"][name] = {
                     "geometry_inputs": geometry,
-                    "current_geometry": read("current_geometry", lambda: _current_geometry(db, name)),
-                    "map_layer_sha256": read("map_layer_sha256", lambda: _json_sha(replay_control.map_layer(name))),
-                    "choke_asset_hash": read("choke_asset_hash", lambda: choke_assets.asset_hash(name)),
-                    "engine_key": read("engine_key", lambda: replay_gaps.engine_key(FIXED_CONTROL_FP, name)),
+                    "current_geometry": read("current_geometry", lambda: _current_geometry(db, key)),
+                    "map_layer_sha256": read("map_layer_sha256", lambda: _json_sha(replay_control.map_layer(key))),
+                    "choke_asset_hash": read("choke_asset_hash", lambda: choke_assets.asset_hash(key)),
+                    "engine_key": read("engine_key", lambda: replay_gaps.engine_key(FIXED_CONTROL_FP, key)),
                     "height_geometry_identity": identity,
                     "height_manifest_digest": read("height_manifest_digest", lambda: height_inputs.digest(
-                        height_inputs.manifest(name, FIXED_REPLAYS, identity, must_block)))
+                        height_inputs.manifest(key, FIXED_REPLAYS, identity, must_block)))
                         if identity is not None else None,
-                    "callouts_sha256": read("callouts_sha256", lambda: _json_sha(areas.callouts(name))),
+                    "callouts_sha256": read("callouts_sha256", lambda: _json_sha(areas.callouts(key))),
                     "control_fingerprint": fp,
-                    "gap_fingerprint": read("gap_fingerprint", lambda: replay_gaps.gap_fingerprint(fp, name))
+                    "gap_fingerprint": read("gap_fingerprint", lambda: replay_gaps.gap_fingerprint(fp, key))
                         if fp is not None else None,
                 }
     finally:
