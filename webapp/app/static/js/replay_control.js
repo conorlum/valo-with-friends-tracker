@@ -510,8 +510,10 @@
       (events[side] || []).forEach(function (e) {
         if (e[0] <= t + 1e-9 && e[0] > t - windowS) {
           var kind = e[3];
+          var legacyPulse = e.length < 4 && (e[2] === "haunt" || e[2] === "recon");
           rows.push({ side: side, t: e[0], slot: e[1], reason: e[2],
-            text: REASON_TEXT_BY_KIND[e[2] + "|" + kind] || REASON_TEXT[e[2]] || String(e[2]).replace(/_/g, " ") });
+            text: legacyPulse ? (e[2] === "haunt" ? "Haunt: sight pulse" : "Recon Bolt: sight pulse") :
+              REASON_TEXT_BY_KIND[e[2] + "|" + kind] || REASON_TEXT[e[2]] || String(e[2]).replace(/_/g, " ") });
         }
       });
     });

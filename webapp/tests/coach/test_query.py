@@ -65,6 +65,23 @@ def test_knew_round_6_exclusions_have_no_place(snap, monkeypatch, with_kind):
     assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[s], "reason": "haunt"} for s in range(5, 10)]
 
 
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_serves_the_pulse_device_area(snap, monkeypatch, with_kind):
+    view = snap.view(1)
+    monkeypatch.setattr(view, "_table", {view.map_name: toys.CALLOUTS["Toy"]})
+    monkeypatch.setattr(snap, "view", lambda n: view)
+    view.blob["util"].append({"k": "ability", "t": 8.0, "t1": 12.0, "by": 0,
+                             "code": "BountyHunter", "name": "E_LoSReveal_Source_Reactivate",
+                             "u": 2000, "v": 2000})
+    row = [10.0, 5, "haunt"] + (["exclude"] if with_kind else [])
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": [row]}})
+    out = query.knew(snap, 1, 15.0, "A")
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[5], "reason": "haunt",
+                                 "area": view.area(2000, 2000)}]
+    assert out["ruled_out"][0]["area"] != view.area(8000, 8000)
+    assert "area is where the pulse looked" in out["note"]
+
+
 def test_knew_separates_found_roughly_placed_and_non_finds(snap, monkeypatch):
     rows = [[10.0, s, "haunt", "locate"] for s in (5, 6, 7, 9)] + [
         [10.0, 8, "haunt", "exclude"], [10.0, 5, "knife_hit", "restrict"],

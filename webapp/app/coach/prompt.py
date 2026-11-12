@@ -6,7 +6,7 @@ import json
 
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
-./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out and lost_track (time, name, reason only; no place)
+./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out (time, name, reason, optional pulse-device area), lost_track (time, name, reason)
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
@@ -49,7 +49,7 @@ a clock time, 0:41); each must be in an answer you cite for that instance. A nam
 answer too. In a point to improve, an enemy's distance or place counts only while the player's side could see
 them; otherwise use the last sighting or the rough place that `knew` gives for found or roughly_placed signals.
 `ruled_out` says utility showed where an enemy was NOT, and `lost_track` says the team lost where an enemy was.
-Neither gives a place.
+For Haunt and Recon, `area` is where the pulse looked and found nobody of that name; neither list gives the enemy's position.
 
 # The brief
 

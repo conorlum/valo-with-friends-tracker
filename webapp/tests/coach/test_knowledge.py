@@ -93,7 +93,7 @@ def test_round_6_haunt_exclusions_never_request_or_return_a_place(with_kind, mon
         pytest.fail("an exclusion must not request the enemy's position")
 
     monkeypatch.setattr(knowledge, "rough_place", no_place)
-    out = knowledge.signals(events, "A", 10.0, toys.NAMES, object())
+    out = knowledge.signals(events, "A", 10.0, toys.NAMES, view(toys.round_blob(toys.ten())))
     assert out == {"signals": [], "ruled_out": [
         {"t": 10.0, "name": toys.NAMES[s], "reason": "haunt"} for s in range(5, 10)], "lost_track": []}
 
@@ -105,6 +105,54 @@ def test_round_21_haunt_locates_have_places_but_the_exclusion_does_not():
     assert all(e["class"] == "found" and "rough_place" in e for e in out["signals"])
     assert out["ruled_out"] == [{"t": 10.0, "name": toys.NAMES[8], "reason": "haunt"}]
     assert out["lost_track"] == []
+
+
+@pytest.mark.parametrize("reason, code, device", [
+    ("haunt", "BountyHunter", "E_LoSReveal_Source_Reactivate"),
+    ("recon", "Hunter", "Q_SonarBolt"),
+])
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_ruled_out_pulse_area_comes_from_its_own_active_device(reason, code, device, with_kind, monkeypatch):
+    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": code, "name": device,
+             "u": 2000, "v": 2000}
+    # Enemy 5 is on B Site; expired, future and enemy-side devices are there too.
+    util = [{**pulse, "t": 1.0, "t1": 7.0, "u": 8000, "v": 8000}, pulse,
+            {**pulse, "t": 11.0, "t1": 20.0, "u": 8000, "v": 8000},
+            {**pulse, "by": 5, "u": 8000, "v": 8000}]
+    v = view(toys.round_blob(toys.ten(), util=util))
+    enemy = v.position(5, 10.0)
+    enemy_area = v.area(enemy["u"], enemy["v"])
+
+    def no_enemy_position(*args):
+        pytest.fail("a ruled-out pulse must not look up any player's position")
+
+    monkeypatch.setattr(v, "position", no_enemy_position)
+    row = [10.0, 5, reason] + (["exclude"] if with_kind else [])
+    out = knowledge.signals({"A": [row]}, "A", 20.0, toys.NAMES, v)
+    assert out == {"signals": [], "lost_track": [], "ruled_out": [
+        {"t": 10.0, "name": toys.NAMES[5], "reason": reason, "area": v.area(2000, 2000)}]}
+    assert out["ruled_out"][0]["area"]["name"] == "A Site"
+    assert out["ruled_out"][0]["area"] != enemy_area
+
+
+@pytest.mark.parametrize("change", [None, {"t": 11.0}, {"t1": 9.0}, {"gone": 9.0},
+                                    {"by": 5}, {"by": None}, {"u": None}, {"v": None},
+                                    {"k": "cast"}, {"name": "Q_TetherGrenade"}])
+def test_ruled_out_pulse_without_a_usable_device_omits_area(change):
+    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
+             "name": "E_LoSReveal_Source_Reactivate", "u": 2000, "v": 2000}
+    util = [] if change is None else [{**pulse, **change}]
+    out = knowledge.signals({"A": [[10.0, 5, "haunt", "exclude"]]}, "A", 10.0, toys.NAMES,
+                            view(toys.round_blob(toys.ten(), util=util)))
+    assert out["ruled_out"] == [{"t": 10.0, "name": toys.NAMES[5], "reason": "haunt"}]
+
+
+def test_ruled_out_pulse_with_ambiguous_devices_omits_area():
+    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
+             "name": "E_LoSReveal_Source_Reactivate", "u": 2000, "v": 2000}
+    v = view(toys.round_blob(toys.ten(), util=[pulse, {**pulse, "by": 1, "u": 8000, "v": 8000}]))
+    out = knowledge.signals({"A": [[10.0, 5, "haunt", "exclude"]]}, "A", 10.0, toys.NAMES, v)
+    assert "area" not in out["ruled_out"][0]
 
 
 def test_restricted_knife_is_roughly_placed_and_other_and_future_events_are_dropped():

@@ -132,7 +132,7 @@ def test_the_panel_uses_kind_specific_words_and_keeps_old_rows_readable():
     got = json.loads(done.stdout)
     assert got["text"] == [
         "destroyed your camera: in its sight", "destroyed your trip: near it",
-        "Recon Bolt saw the area", "Haunt saw the area",
+        "Recon Bolt: sight pulse", "Haunt: sight pulse",
         "Recon Bolt saw the area", "Haunt saw the area",
         "Recon Bolt: not in its sight", "Haunt: not in its sight",
     ]
