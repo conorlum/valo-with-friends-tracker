@@ -210,6 +210,19 @@ def test_an_orphan_second_wire_with_gone_is_one_trip():
     assert (e["device"], e["id"], e["u"], e["v"]) == ("trip", 104, 300, 400)
 
 
+@pytest.mark.parametrize("own_second", [False, True])
+def test_an_orphan_anchor_and_a_new_trip_reusing_its_endpoint_are_two_events(own_second):
+    orphan = second(id=5, t=0.0, t1=10.0, gone=10.0, u=50, v=60)
+    main = trip(id=12, t=20.0, t1=30.0, gone=29.0, u=100, v=200, end=[50, 60])
+    util = [orphan, main]
+    if own_second:
+        util.append(second(id=13, t=20.0, t1=30.0, u=50, v=60))
+    old, new = found(util)
+    assert (old["t"], old["id"], old["u"], old["v"]) == (10.0, 5, 50, 60)
+    assert (new["t"], new["id"], new["u"], new["v"]) == (29.0, 12, 75.0, 130.0)
+    assert new["wire"] == [[100, 200], [50, 60]]
+
+
 def test_two_trips_one_tethers_an_enemy_the_other_is_shot():
     t1 = trip(id=100, u=100, v=100, t=0.0, t1=20.0, gone=18.0)
     t2 = trip(id=200, u=500, v=500, t=1.0, t1=20.0, gone=18.0)
@@ -238,7 +251,21 @@ def _critutil_broken(util):
     rnd, data = round_of(players(), util=list(util), geo=GEO, t_end=30.0)
     out = extract.round_util(rnd, data)
     devices = [c for c in out["casts"] if "device" in c["kinds"] and c["by"] == 1]
-    return any(c["set_off_kind"] == "broken" for c in devices), data
+    broken = any(c["set_off_kind"] == "broken" for c in devices)
+    # Haunt/recon are sight casts in round_util, not device kinds. Exercise Critical Util's underlying
+    # effect matching and set-off rules for these destroyable objects without changing that taxonomy.
+    casts = extract.build_casts(rnd, data)
+    effects = extract._effects(rnd, data, casts)
+    for c in casts:
+        if c.by != 1 or not any(DESTROYABLE.get((r.get("code"), r.get("name"))) in ("haunt", "recon")
+                                for r in c.rows):
+            continue
+        enemy_eff = [e for e in effects[c.i] if SIDES.get(e["target"]) not in (None, SIDES[c.by])]
+        seen = [t for t in (extract._trigger(c), *(e["t0"] for e in enemy_eff))
+                if t is not None and t >= c.t - extract._EPS]
+        _, kind = extract._set_off(rnd, c, enemy_eff, min(seen) if seen else None)
+        broken |= kind == "broken"
+    return broken, data
 
 
 def ab(code, name, **kw):
@@ -254,6 +281,14 @@ PARITY = {
     "camera_gone": [ab("Gumshoe", "E_PossessableCamera", gone=12.0, t1=12.0)],
     "camera_closed": [ab("Gumshoe", "E_PossessableCamera", t1=12.0)],
     "turret_gone": [ab("Killjoy", "E_Turret", gone=12.0, t1=12.0)],
+    "turret_damaged_enemy_then_shot": [ab("Killjoy", "E_Turret", gone=12.0, t1=12.0),
+        {"k": "damage", "t": 5.0, "by": 1, "target": 5, "code": "Killjoy", "name": "E_Turret", "src": "ability"}],
+    "turret_gun_hit_then_shot": [ab("Killjoy", "E_Turret", gone=12.0, t1=12.0, id=77),
+        {"k": "damage", "t": 5.0, "by": 1, "target": 5, "id": 77, "src": "weapon"}],
+    "haunt_gone": [ab("BountyHunter", "E_Divebomb", gone=12.0, t1=12.0)],
+    "haunt_with_seize_status": [ab("BountyHunter", "E_Divebomb", gone=12.0, t1=12.0),
+        {"k": "status", "t": 8.0, "t1": 10.0, "by": 1, "target": 5, "code": "BountyHunter",
+         "name": "Q_TetherGrenade_SphereExpansion", "status": "tethered", "id": 999}],
     "alarmbot_chased": [ab("Killjoy", "Q_StealthAlarmbot", gone=13.2, t1=13.2,
                            yaws=[[0.0, 216], [12.3, 47]])],
     "alarmbot_shot": [ab("Killjoy", "Q_StealthAlarmbot", gone=13.2, t1=13.2, yaws=[[0.0, 216]])],
@@ -267,4 +302,5 @@ def test_the_verdict_equals_critical_utils_broken(case):
     mine = destroyed_devices(data["util"], {0: "A", 1: "A", 5: "B", 6: "B"}, data["t_decided"])
     assert bool(mine) == broken
     assert broken == (case in {"trip_gone", "trip_pair", "camera_gone",
-                               "turret_gone", "alarmbot_shot", "sound_sensor_gone"}), "the toy no longer exercises it"
+                               "turret_gone", "turret_gun_hit_then_shot", "haunt_gone", "haunt_with_seize_status",
+                               "alarmbot_shot", "sound_sensor_gone"}), "the toy no longer exercises it"

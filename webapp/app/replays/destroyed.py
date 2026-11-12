@@ -35,12 +35,18 @@ _EFFECT_NAMES = {
 }
 
 
+def _key_of(name: str | None) -> str | None:
+    # Same archetype key as critutil.extract._key_of; keep this worker helper stdlib-only.
+    return name.split("_", 1)[0] if name and "_" in name else None
+
+
 class _Device:
     def __init__(self, device: str, rows: list[dict]):
         self.device, self.rows = device, rows
         main = rows[0]
         self.owner = main.get("by")
         self.code = main.get("code")
+        self.key = _key_of(main.get("name"))
         self.t = min(float(r["t"]) for r in rows)
         self.ids = {r["id"] for r in rows if r.get("id") is not None}
         self.names = {r.get("name") for r in rows} | _EFFECT_NAMES.get(device, set())
@@ -56,7 +62,8 @@ def _is_device_row(r) -> bool:
 
 def _pair_trips(rows: list[dict]) -> list[_Device]:
     """Devices from the device rows. A main `4_TripWire` and its `4_TripWire_SecondWire` are one trip: paired by the
-    main row's `end` when it has one, else by owner, close `t1` and nearest id. Any other row is a device alone."""
+    main row's `end` when it has one, else nearest id, always by owner and close `t1` (placement time when either
+    `t1` is absent). Any other row is a device alone."""
     out: list[_Device] = []
     mains = sorted((r for r in rows if r["name"] == _TRIP), key=lambda r: (r.get("id") or 0, float(r["t"])))
     seconds = sorted((r for r in rows if r["name"] == _SECOND), key=lambda r: (r.get("id") or 0, float(r["t"])))
@@ -64,14 +71,16 @@ def _pair_trips(rows: list[dict]) -> list[_Device]:
     for m in mains:
         pick = None
         end = m.get("end")
+
+        def close(s):
+            a, b = (m.get("t1"), s.get("t1")) if m.get("t1") is not None and s.get("t1") is not None \
+                else (m["t"], s["t"])
+            return abs(float(a) - float(b)) <= _PAIR_T1_S
+
         if isinstance(end, list) and len(end) >= 2:
             pick = next((s for s in seconds if id(s) not in taken and s.get("by") == m.get("by")
-                         and abs(s["u"] - end[0]) <= 1 and abs(s["v"] - end[1]) <= 1), None)
+                         and close(s) and abs(s["u"] - end[0]) <= 1 and abs(s["v"] - end[1]) <= 1), None)
         if pick is None:
-            def close(s):
-                a, b = (m.get("t1"), s.get("t1")) if m.get("t1") is not None and s.get("t1") is not None \
-                    else (m["t"], s["t"])
-                return abs(float(a) - float(b)) <= _PAIR_T1_S
             near = [s for s in seconds if id(s) not in taken and s.get("by") == m.get("by") and close(s)]
             if near:
                 pick = min(near, key=lambda s: (abs((s.get("id") or 0) - (m.get("id") or 0)), s.get("id") or 0))
@@ -113,13 +122,17 @@ def _own_signal(dev: _Device) -> float | None:
 
 
 def _touches(devices: list[_Device], util, side_of) -> dict[int, float]:
-    """Each device's first touch on an enemy: the earliest status/reveal row on an enemy of its owner attributed to
+    """Each device's first touch on an enemy: the earliest status/reveal/ability-damage row attributed to
     it the way critutil `_effects` attributes a row to a cast: by `id`, else by caster and the row's name inside the
-    device's life (+1 s), else by the owner's live device of the row's code; several: the one placed latest."""
+    device's life (+1 s), else by the owner's live device of the row's code and ability key; several: the one placed
+    latest. Device rows are always non-`cast` rows, as that code fallback requires."""
     by_id = {i: d for d in devices for i in d.ids}
     first: dict[int, float] = {}
     for r in util:
-        if r.get("k") not in ("reveal", "status") or r.get("target") is None or r.get("t") is None:
+        k = r.get("k")
+        if k not in ("reveal", "status", "damage") or r.get("target") is None or r.get("t") is None:
+            continue
+        if k == "damage" and r.get("src") != "ability" and not r.get("code"):
             continue
         t = float(r["t"])
         dev = by_id.get(r["id"]) if r.get("id") is not None else None
@@ -131,7 +144,9 @@ def _touches(devices: list[_Device], util, side_of) -> dict[int, float]:
                 return d.owner == r.get("by") and d.t - _EPS <= t <= end + _EFFECT_TAIL_S
             cands = [d for d in devices if live(d) and (not name or name in d.names)]
             if not cands and r.get("code"):
-                cands = [d for d in devices if live(d) and d.code == r["code"]]
+                key = _key_of(name)
+                cands = [d for d in devices if live(d) and d.code == r["code"]
+                         and (key is None or d.key is None or d.key == key)]
             if not cands:
                 continue
             dev = max(cands, key=lambda d: d.t)
