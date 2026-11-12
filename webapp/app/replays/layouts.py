@@ -20,6 +20,11 @@ def parse_patch(branch) -> tuple[int, int] | None:
     return (int(match[1]), int(match[2])) if match else None
 
 
+def patch_text(patch: tuple[int, int]) -> str:
+    """(13, 8) -> "13.08": how Riot writes a patch, and how the registry and the wall alarm do."""
+    return f"{patch[0]}.{patch[1]:02d}"
+
+
 def map_of(asset_key: str) -> str:
     return _SUFFIX.sub("", asset_key)
 
