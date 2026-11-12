@@ -80,7 +80,7 @@ demo (it never has control).
   layout asset key, the baseline is the pooled share (sum inside / sum total) over replay patches up to and
   including that layout's `drawn_from`. A layout without `drawn_from` or sampled baseline replays is not evaluated.
   Each later patch with at least **4 distinct replays** raises `map_layout_walls` when its pooled share rises
-  **more than 0.5 percentage points** over baseline (both values PROVISIONAL(D12)). The recorded key is
+  **more than 0.5 percentage points** over baseline (D12). The recorded key is
   `<map>:<patch>` (for example `Ascent:13.10`), one per patch over the threshold; every pass resolves open keys
   it didn't raise. Context includes map, patch, layout asset key, replay count, share and baseline in percent
   rounded to three decimals, and the top three callout names and inside-position counts. Only a patch about to
