@@ -236,6 +236,7 @@ guards = [
 [replay-web]
 about = "Replays on the site: upload and held uploads, storage and links, routes, re-parse queue, match states, the viewer and its JS."
 tests = [
+  "tests/replays/test_areas_route.py",
   "tests/replays/test_replay_store.py", "tests/replays/test_replay_routes.py", "tests/replays/test_replay_upload.py",
   "tests/replays/test_replay_upload_held.py", "tests/replays/test_replay_progress.py",
   "tests/replays/test_replay_reparse_auto.py", "tests/replays/test_replay_match_states.py",
@@ -243,6 +244,7 @@ tests = [
   "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py", "tests/test_fetch_archived_replay.py",
 ]
 guards = [
+  "app/services/replay_areas.py",
   "app/replays/store.py", "app/replays/db.py", "app/routers/replays.py", "app/routers/replay_admin.py",
   "app/services/replays.py", "app/services/replay_upload.py", "app/services/replay_progress.py",
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",

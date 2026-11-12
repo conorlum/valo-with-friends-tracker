@@ -61,6 +61,7 @@ from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
 from app.services import replay_errors
+from app.services import replay_areas
 from app.services import replay_moments
 from app.services import replay_util
 from app.services import replay_progress as progress
@@ -280,6 +281,19 @@ def upload_errors_prompt(request: Request, db: Session = Depends(get_db), kind: 
 
 
 # ---------------------------------------------------------------- replay pages
+
+
+# Before the generic round JSON route, which would parse the map name as a round.
+@router.get("/replays/areas/{map_name}.json")
+def replay_areas_json(map_name: str):
+    """The same reviewed paint (or approximate callouts) for every viewer."""
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    try:
+        body = replay_areas.payload(map_name)
+    except (KeyError, FileNotFoundError):
+        raise HTTPException(status_code=404) from None
+    return JSONResponse(body, headers={"Cache-Control": "no-cache"})
 
 
 # Declared before /{round_number}.json: routes match in order, and that one would take "moments" as a round
