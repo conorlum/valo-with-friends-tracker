@@ -8,6 +8,7 @@ import json
 import re
 
 from app.coach import knowledge, query
+from app.services.agent_roles import role_of
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
@@ -78,31 +79,46 @@ _ABILITY_REASONS = {
 _ABILITY = re.compile(r"\b(?:" + "|".join(map(re.escape, _ABILITY_REASONS)) + r")\b", re.IGNORECASE)
 _LOCATING = r"\b(?:locat\w*|reveal\w*|found|scann\w*|spotted)\b"
 _ACTIVE_LOCATING = re.compile(_LOCATING, re.IGNORECASE)
-_PASSIVE_LOCATING = re.compile(_LOCATING + r".*\bby\s+(?:(?:the|your|a)\s+)?$", re.IGNORECASE)
-_CLAUSE = re.compile(r"[.!?;,\n]+|\b(?:but|yet|however)\b", re.IGNORECASE)
+_PASSIVE_LOCATING = re.compile(_LOCATING + r"\s+by\s+(?:(?:the|your|a)\s+)?$", re.IGNORECASE)
+_PASSIVE_AUXILIARY = re.compile(r"\b(?:was|were|is|are|been|being)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+_ENEMY_OBJECT = re.compile(
+    r"\s+(?:(?:an?|the|your|whole|entire|other)\s+)*"
+    r"(?:enem(?:y|ies)|players?|opponents?|someone|anyone|them|people|team|everyone)\b", re.IGNORECASE)
+_AGENT_OBJECT = re.compile(r"\s+the\s+([\w/]+)\b", re.IGNORECASE)
+_CLAUSE = re.compile(r"[.!?;,\n]+|\b(?:but|yet|however)\b|\s+(?:and|then)\s+", re.IGNORECASE)
 _NEGATED = re.compile(r"\b(?:not|never|no\s+one|nobody|nothing|none|without|no\s+enem(?:y|ies))\b|n['\u2019]t\b",
                       re.IGNORECASE)
 
 
 def _ability_claims(text: str) -> set[str]:
-    """Affirmative location claims, with negation bounded to the claim's clause."""
+    """An ability locating an enemy, with negation local to the locating verb."""
     claims = set()
     for clause in _CLAUSE.split(text):
-        if _NEGATED.search(clause):
-            continue
         for match in _ABILITY.finditer(clause):
-            if (_ACTIVE_LOCATING.search(clause[match.end():])
-                    or _PASSIVE_LOCATING.search(clause[:match.start()])):
+            for verb in _ACTIVE_LOCATING.finditer(clause, match.end()):
+                before = " ".join(clause[:verb.start()].split()[-3:])
+                after = clause[verb.end():]
+                agent = _AGENT_OBJECT.match(after)
+                if (not _NEGATED.search(before) and (_ENEMY_OBJECT.match(after)
+                        or (agent and (role_of(agent[1].title()) or role_of(agent[1].upper()))))):
+                    claims.add(match.group().lower())
+            verb = _PASSIVE_LOCATING.search(clause[:match.start()])
+            if (verb and _PASSIVE_AUXILIARY.search(clause[:verb.start()])
+                    and not _NEGATED.search(" ".join(clause[:verb.start()].split()[-3:]))):
                 claims.add(match.group().lower())
     return claims
 
 
-def _has_ability_signal(entries: list[dict], ability: str) -> bool:
+def _has_ability_signal(entries: list[dict], ability: str, side: str, t: float) -> bool:
     for entry in entries:
-        if entry["cmd"] != "knew":
+        if entry["cmd"] != "knew" or entry["result"].get("side") != side:
             continue
         for signal in entry["result"].get("signals") or []:
             if signal.get("class") not in ("found", "roughly_placed"):
+                continue
+            when = signal.get("t")
+            if (isinstance(when, bool) or not isinstance(when, (int, float))
+                    or not t - KNEW_WINDOW_S <= when <= t):
                 continue
             reason = signal.get("reason", "")
             if any(reason.startswith(r) if r.endswith("_") else reason == r for r in _ABILITY_REASONS[ability]):
@@ -384,6 +400,7 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     cited.tallies.add(len(instances))
     captions = []
     round_evidence = {}
+    moments = []
     for i, inst in enumerate(instances):
         label = f"instance {i + 1}"
         if not isinstance(inst, dict):
@@ -446,9 +463,8 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
                 _collect(result, None, cited, hidden)
                 cited.pairs |= _pairs(entry)
-        if n not in round_evidence:
-            round_evidence[n] = (label, [])
-        round_evidence[n][1].extend(entries)
+        round_evidence.setdefault(n, []).extend(entries)
+        moments.append((label, n, t, side, captions[-1], entries))
         if polarity == "improve":
             if "team_knowledge" in snap.gaps(n):
                 if NO_KNOWLEDGE_NOTE not in captions[-1].lower():
@@ -462,11 +478,13 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
     if len(text) > BODY_MAX:
         return problems + [f"the text is over {BODY_MAX} characters"]
-    # Keep title, body and captions apart so negation in one cannot hide another's claim.
-    claims = _ability_claims("\n".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions))
-    for n, (label, entries) in round_evidence.items():
-        for ability in sorted(claims):
-            if not _has_ability_signal(entries, ability):
+    # Title/body claims apply to each moment; captions apply only to their own instance.
+    claims = _ability_claims("\n".join([str(point.get("title") or ""), str(point.get("body") or "")]))
+    for label, n, t, side, caption, entries in moments:
+        caption_claims = _ability_claims(caption)
+        for ability in sorted(claims | caption_claims):
+            evidence = entries if ability in caption_claims else round_evidence[n]
+            if not _has_ability_signal(evidence, ability, side, t):
                 problems.append(f"{label}: says {ability} located enemies in round {n}, "
                                 "but no cited knew signal shows it")
     area_names = snap.view(snap.round_numbers[0]).area_names() if snap.round_numbers else []

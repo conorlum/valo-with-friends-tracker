@@ -475,29 +475,35 @@ def test_an_attempt_length_not_in_the_answer_fails(spike_log):
 
 
 @pytest.fixture
-def ability_check(tmp_path):
+def ability_snap(tmp_path):
     context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [6, 7]},
                "rounds": {str(n): {"db": {}, "stats": {}, "kills": {}} for n in (6, 7)}}
     blobs = {n: toys.round_blob(toys.ten(), n=n) for n in (6, 7)}
     snapshot.save(snapshot.assemble(context, blobs, {n: ("ok", False, SHARES) for n in blobs}), tmp_path)
-    snap = snapshot.load(tmp_path)
+    return snapshot.load(tmp_path)
+
+
+@pytest.fixture
+def ability_check(ability_snap):
 
     def check(body, reason=None, event_class="found", *, cmd="knew", cite=True,
-              answer_round=6, rounds=(6,), section="body", signals_missing=False, cited_instances=None):
+              answer_round=6, rounds=(6,), section="body", signals_missing=False, cited_instances=None,
+              side="A", signal_t=10.0, answer_t=15.0, instance_t=20.0, times=None, t1=None):
         signals = [] if reason is None else [
-            {"t": 10.0, "name": "P5", "reason": reason, "class": event_class}]
-        result = {"round": answer_round, "t": 15.0, "side": "A", "enemies": [],
+            {"t": signal_t, "name": "P5", "reason": reason, "class": event_class}]
+        result = {"round": answer_round, "t": answer_t, "side": side, "enemies": [],
                   "signals": None if signals_missing else signals,
                   "ruled_out": [{"t": 10.0, "name": f"P{s}", "reason": "haunt"} for s in range(5, 10)],
                   "lost_track": []}
-        log = {"q1": {"cmd": cmd, "args": [str(answer_round), "15", "A"], "result": result}}
-        instances = [{"round": n, "t": 20.0, "caption": body if section == "caption" else "",
+        log = {"q1": {"cmd": cmd, "args": [str(answer_round), str(answer_t), side], "result": result}}
+        instances = [{"round": n, "t": times[i] if times else instance_t, "t1": t1,
+                      "caption": body if section == "caption" else "",
                       "evidence": ["q1"] if cite and (cited_instances is None or i in cited_instances) else []}
                      for i, n in enumerate(rounds)]
         p = point(polarity="good", title="Ability information", body="You pushed afterwards.", instances=instances)
         if section != "caption":
             p[section] = body
-        return checker.check_point(p, log, snap, THEMES, 0)
+        return checker.check_point(p, log, ability_snap, THEMES, 0)
 
     return check
 
@@ -583,3 +589,55 @@ def test_ability_support_is_per_round_across_the_points_citations(ability_check)
                                           ("Drone dart", "tejo_drone")])
 def test_compound_ability_names_do_not_fall_back_to_tokens(ability_check, ability, reason):
     assert any("no cited knew signal" in e for e in ability_check(f"{ability} revealed an enemy", reason))
+
+
+def test_enemy_side_knowledge_does_not_back_an_ability_claim(ability_check):
+    errors = ability_check("Haunt revealed an enemy.", "haunt", side="B")
+    assert any("no cited knew signal" in e for e in errors)
+
+
+@pytest.mark.parametrize("signal_t,supported", [(10.0, False), (19.9, False), (20.0, True),
+                                               (50.0, True), (50.1, False), (None, False)])
+def test_ability_signal_must_be_inside_the_instances_moment(ability_check, signal_t, supported):
+    errors = ability_check("Haunt revealed an enemy.", "haunt", signal_t=signal_t,
+                           answer_t=50.0, instance_t=50.0, t1=55.0)
+    assert bool(errors) is not supported
+    assert all("no cited knew signal" in e for e in errors)
+
+
+def test_same_round_instances_do_not_share_an_old_ability_signal(ability_check):
+    errors = ability_check("Haunt revealed an enemy.", "haunt", rounds=(6, 6), times=(20.0, 50.0), answer_t=20.0)
+    assert errors == ["instance 2: says haunt located enemies in round 6, but no cited knew signal shows it"]
+
+
+def test_caption_claim_only_needs_support_for_its_own_instance(ability_snap):
+    log = {f"q{i}": {"cmd": "knew", "args": [str(n), "15.0", "A"],
+                     "result": {"round": n, "t": 15.0, "side": "A", "enemies": [],
+                                "signals": [{"t": 10.0, "name": "P5", "reason": "haunt", "class": "found"}]
+                                if n == 6 else [], "ruled_out": [], "lost_track": []}}
+           for i, n in enumerate((6, 7), 1)}
+    instances = [{"round": 6, "t": 20.0, "caption": "Haunt revealed an enemy.", "evidence": ["q1"]},
+                 {"round": 7, "t": 20.0, "caption": "You pushed with the team.", "evidence": ["q2"]}]
+    p = point(polarity="good", title="Ability information", body="You pushed afterwards.", instances=instances)
+    assert checker.check_point(p, log, ability_snap, THEMES, 0) == []
+
+
+@pytest.mark.parametrize("text,claims", [
+    ("Haunt revealed an enemy and you never swung", {"haunt"}),
+    ("You used Haunt and then found cover", set()),
+    ("Haunt revealed an enemy, you never swung", {"haunt"}),
+    ("Haunt revealed an enemy then you never swung", {"haunt"}),
+    ("You never swung after Haunt revealed an enemy", {"haunt"}),
+    ("Haunt did not actually reveal an enemy", set()),
+    ("Haunt found cover", set()),
+    ("Haunt revealed the path", set()),
+    ("Haunt revealed the Jett", {"haunt"}),
+    ("Haunt revealed the doorway", set()),
+    ("Someone was revealed by the Haunt", {"haunt"}),
+    ("Nobody was ever revealed by the Haunt", set()),
+    ("Haunt spotted them", {"haunt"}),
+    ("Haunt scanned a player", {"haunt"}),
+    ("Haunt found an opponent", {"haunt"}),
+])
+def test_ability_claim_binds_the_verb_object_and_local_negation(text, claims):
+    assert checker._ability_claims(text) == claims
