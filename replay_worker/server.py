@@ -185,6 +185,7 @@ WEBAPP = Path(__file__).resolve().parents[1] / "webapp"
 if str(WEBAPP) not in sys.path:
     sys.path.insert(0, str(WEBAPP))
 
+from app.critutil import build_digest  # noqa: E402 - standard library only; never app.critutil.corpus (numpy)
 from app.replays.condense import condense_export_dir  # noqa: E402
 from app.replays.contract import ContractError, current_recipe, load_pin  # noqa: E402
 from app.replays.header import game_build  # noqa: E402
@@ -297,6 +298,18 @@ class Settings:
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
+    # The Critical Util input store (UtilStore): None keeps `<archive_dir>/util`, else `<temp_root>/util`.
+    util_dir: Path | None = None                  # REPLAY_UTIL_DIR
+    util_reserve: int = 2 * 1024 ** 3             # REPLAY_UTIL_RESERVE: the most the stored rounds + observations hold
+
+    @property
+    def util_result_max(self) -> int:
+        return self.run_result_max_bytes
+
+    def util_root(self) -> Path:
+        if self.util_dir is not None:
+            return self.util_dir
+        return (self.archive_dir if self.archive_dir is not None else self.temp_root) / "util"
 
     def workflow_wanted(self) -> bool:
         return "workflow" in (self.parse_runner, self.control_runner, self.heights_runner)
@@ -344,6 +357,9 @@ class Settings:
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
+        if env.get("REPLAY_UTIL_DIR"):
+            settings.util_dir = Path(env["REPLAY_UTIL_DIR"])
+        settings.util_reserve = int(env.get("REPLAY_UTIL_RESERVE", settings.util_reserve))
         for name in ("parse", "control", "heights"):
             value = env.get(f"REPLAY_{name.upper()}_RUNNER", "local")
             if value not in ("local", "workflow"):
@@ -368,7 +384,17 @@ def make_runs(settings: Settings):
                          settings.temp_root / "runs")
 
 
-LOCAL_QUEUE_SIZE = 5        # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
+def reserve_util(settings: Settings, runs_table) -> None:
+    """The archive leaves room for the util store's folders (rounds + observations, their packed tars, and results)
+    only when the store lives under the archive and Workflows are on, as heights reserve their spool."""
+    if runs_table is None or settings.archive_dir is None:
+        return
+    root, archive = settings.util_root().resolve(), settings.archive_dir.resolve()
+    if root.is_relative_to(archive) and root != archive:
+        settings.archive_extra_reserve += 2 * settings.util_reserve + 4 * settings.util_result_max
+
+
+LOCAL_QUEUE_SIZE = 5       # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
 LOCAL_SPOOL_BYTES = 512 * 1024 * 1024      # Settings.height_spool_bytes' default before Workflows
 
 
@@ -2175,11 +2201,157 @@ class _JobFailed(Exception):
         self.reason = reason
 
 
+class UtilKeyError(ValueError):
+    """A key (or a body) the util store refuses: a 400."""
+
+
+class UtilFull(Exception):
+    """A put that would pass `util_reserve`: a 507."""
+
+
+class UtilStore:
+    """The Critical Util inputs the site has sent: `rounds/<row_key>.json` and `obs/<obs_key>.json` under
+    `settings.util_root()`, so a build reads them from disk and the site sends each only once. `runs/` (packed
+    tars) and `results/` are scratch for builds and are cleared at every start, as heights clear their leftovers.
+
+    - A file is written to a temp name and renamed; other bytes under the same key overwrite (the DB is authoritative).
+    - A key not matching `build_digest.KEY_RE` is refused before anything is written.
+    - `have(rows, obs, prune=True)` first deletes what the new corpus doesn't name, so a corpus that fits once the
+      old files are replaced never gets stuck at a 507. Files named by a held build (`hold`, until `release`: one
+      still queued or running) are never deleted.
+    - The folders together stay under `util_reserve`."""
+
+    KINDS = ("rounds", "obs")
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.root = settings.util_root()
+        self.reserve = settings.util_reserve
+        for scratch in ("runs", "results"):
+            shutil.rmtree(self.root / scratch, ignore_errors=True)
+        for folder in (*self.KINDS, "runs", "results"):
+            (self.root / folder).mkdir(parents=True, exist_ok=True)
+        for kind in self.KINDS:                     # a write a crash cut short
+            for leftover in (self.root / kind).glob("*.tmp-*"):
+                leftover.unlink(missing_ok=True)
+        self.lock = threading.Lock()
+        self._held: dict[str, tuple[frozenset, frozenset]] = {}
+        try:
+            self.digest = build_digest.digest(WEBAPP)
+        except OSError:                             # a source this image doesn't carry: never dispatched to
+            self.digest = None
+
+    # ---- keys
+
+    @staticmethod
+    def check_key(key) -> str:
+        if not isinstance(key, str) or re.fullmatch(build_digest.KEY_RE, key) is None:
+            raise UtilKeyError("not a valid key")
+        return key
+
+    def _path(self, kind: str, key: str) -> Path:
+        return self.root / kind / f"{key}.json"
+
+    def _keys(self, kind: str) -> list[str]:
+        return [p.name[:-len(".json")] for p in (self.root / kind).iterdir() if p.name.endswith(".json")]
+
+    # ---- what the site asks
+
+    def have(self, rows, obs=None, prune: bool = False) -> dict:
+        rows = [self.check_key(k) for k in rows]
+        obs_keys = None if obs is None else [self.check_key(k) for k in obs]
+        with self.lock:
+            if prune:
+                self._prune(rows, obs_keys)
+            return {"missing_rows": self._missing("rounds", rows),
+                    "missing_obs": self._missing("obs", obs_keys or [])}
+
+    def _missing(self, kind: str, keys) -> list[str]:
+        seen, missing = set(), []
+        for key in keys:
+            if key not in seen and not self._path(kind, key).is_file():
+                missing.append(key)
+            seen.add(key)
+        return missing
+
+    def put(self, kind: str, items: dict[str, bytes]) -> int:
+        """Store the batch, or none of it (a bad key, or past the reserve)."""
+        for key in items:
+            self.check_key(key)
+        with self.lock:
+            delta = 0
+            for key, data in items.items():
+                path = self._path(kind, key)
+                delta += len(data) - (path.stat().st_size if path.is_file() else 0)
+            if delta > 0 and self._usage() + delta > self.reserve:
+                raise UtilFull("the util store is at its reserve")
+            for key, data in items.items():
+                path = self._path(kind, key)
+                temp = path.with_name(f"{key}.json.tmp-{uuid.uuid4().hex}")
+                temp.write_bytes(data)
+                os.replace(temp, path)
+        return len(items)
+
+    def put_round(self, key: str, data: bytes) -> None:
+        self.put("rounds", {key: data})
+
+    def put_obs(self, key: str, data: bytes) -> None:
+        self.put("obs", {key: data})
+
+    def prune(self, keep_rows, keep_obs=None) -> int:
+        """Delete every round file not named and, only when `keep_obs` is given, every observation file not named."""
+        with self.lock:
+            return self._prune([self.check_key(k) for k in keep_rows],
+                               None if keep_obs is None else [self.check_key(k) for k in keep_obs])
+
+    def _prune(self, keep_rows, keep_obs) -> int:
+        held_rows = set().union(*(rows for rows, _ in self._held.values())) if self._held else set()
+        held_obs = set().union(*(obs for _, obs in self._held.values())) if self._held else set()
+        removed = 0
+        for kind, keep, held in (("rounds", keep_rows, held_rows), ("obs", keep_obs, held_obs)):
+            if keep is None:
+                continue
+            keep = set(keep) | held
+            for key in self._keys(kind):
+                if key not in keep:
+                    self._path(kind, key).unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
+    def hold(self, ref: str, rows, obs) -> None:
+        """A build is queued or running on these files: no prune deletes them until `release`."""
+        with self.lock:
+            self._held[ref] = (frozenset(rows), frozenset(obs))
+
+    def release(self, ref: str) -> None:
+        with self.lock:
+            self._held.pop(ref, None)
+
+    def _usage(self) -> int:
+        total = 0
+        for kind in self.KINDS:
+            for path in (self.root / kind).iterdir():
+                if path.name.endswith(".json"):
+                    try:
+                        total += path.stat().st_size
+                    except OSError:
+                        pass
+        return total
+
+    def usage(self) -> int:
+        """Bytes of `rounds` + `obs`."""
+        with self.lock:
+            return self._usage()
+
+
 # ---------------------------------------------------------------- HTTP
+
+UTIL_BODY_MAX = 4 * 1024 * 1024
+UTIL_PROTOCOL = 1
 
 
 def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None,
-                 runs_table=None):
+                 runs_table=None, util: "UtilStore | None" = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "replay-worker"
 
@@ -2340,6 +2512,70 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             finally:
                 incoming.unlink(missing_ok=True)
 
+        def _util_off(self):
+            # Drain an admitted-size body first: closing with it unread can reset the client before the 404.
+            try:
+                remaining = int(self.headers.get("Content-Length", "0"))
+                if 0 <= remaining <= UTIL_BODY_MAX:
+                    self.rfile.read(remaining)
+                else:
+                    self.close_connection = True
+            except (ValueError, OSError):
+                self.close_connection = True
+            return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+        def _util(self):
+            """POST /util/have | /util/rounds | /util/obs. Each logs one line: `util <what> ref=<build_ref> counts`."""
+            what = self.path[len("/util/"):]
+            if what not in ("have", "rounds", "obs"):
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            if util is None or runs_table is None:
+                return self._util_off()
+            size = self._length(1, UTIL_BODY_MAX)
+            if size is None:
+                return None
+            try:
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a JSON object"})
+            ref = body.get("ref")
+            ref = ref if isinstance(ref, str) and re.fullmatch(r"[0-9A-Za-z._-]{1,64}", ref) else "-"
+            try:
+                if what == "have":
+                    rows, obs = body.get("rows", []), body.get("obs")
+                    if not isinstance(rows, list) or not (obs is None or isinstance(obs, list)):
+                        raise UtilKeyError("rows and obs are lists of keys")
+                    prune = body.get("prune") is True
+                    answer = util.have(rows, obs, prune=prune)
+                    _log(f"util have ref={ref} rows={len(rows)} obs={len(obs or [])} prune={int(prune)} "
+                         f"missing_rows={len(answer['missing_rows'])} missing_obs={len(answer['missing_obs'])}")
+                    return self._send(HTTPStatus.OK, answer)
+                kind, field_name = ("rounds", "rows") if what == "rounds" else ("obs", "obs")
+                entries = body.get(field_name)
+                if not isinstance(entries, list):
+                    raise UtilKeyError(f"{field_name} is a list of {{key, data}}")
+                items = {}
+                for entry in entries:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("data"), str):
+                        raise UtilKeyError("an entry is {key, data (base64)}")
+                    try:
+                        items[util.check_key(entry.get("key"))] = base64.b64decode(entry["data"], validate=True)
+                    except ValueError as error:
+                        if isinstance(error, UtilKeyError):
+                            raise
+                        raise UtilKeyError("data is not base64") from None
+                stored = util.put(kind, items)
+            except UtilKeyError as error:
+                _log(f"util {what} ref={ref} refused: {error}")
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            except UtilFull as error:
+                _log(f"util {what} ref={ref} refused: at the reserve")
+                return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": str(error)})
+            _log(f"util {what} ref={ref} {field_name}={len(entries)} stored={stored}")
+            return self._send(HTTPStatus.OK, {"stored": stored})
+
         def _run_started(self):
             parts = self.path.split("/")          # ["", "runs", job, "started"]
             ok = len(parts) == 4 and runs_table.started(parts[2], self.headers.get("X-Run-Token"))
@@ -2421,6 +2657,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
                                    "heights": worker.settings.heights_runner}
                 body["workflow"] = runs_table.status() if runs_table is not None else None
+                on = util is not None and runs_table is not None
+                body["util"] = {"enabled": on, "digest": util.digest if on else None, "protocol": UTIL_PROTOCOL,
+                                "bytes": util.usage() if on else 0, "reserve": worker.settings.util_reserve}
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -2453,6 +2692,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if self.path.startswith("/util/"):
+                return self._util()
             if runs_table is not None and self.path.startswith("/runs/"):
                 if self.path == "/runs/ping":
                     return self._run_ping()
@@ -2693,8 +2934,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
                 control: ControlRunner | None = None, heights: HeightBuilds | None = None,
-                runs_table=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table))
+                runs_table=None, util: "UtilStore | None" = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table, util))
 
 
 def main() -> None:
@@ -2711,7 +2952,9 @@ def main() -> None:
     if settings.archive_dir is not None and settings.height_spool_dir is not None and \
             settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
         settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)
+    reserve_util(settings, runs_table)
     control_cache.clear_incoming(settings.control_cache_dir)
+    util = UtilStore(settings) if runs_table is not None else None
     control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
     # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
     # ControlRunner.preempt itself never touches a Workflow run.
@@ -2725,7 +2968,7 @@ def main() -> None:
     heights = HeightBuilds(settings, control) if control is not None else None
     server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
                          int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights,
-                         runs_table=runs_table)
+                         runs_table=runs_table, **({"util": util} if util is not None else {}))
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)
     server.serve_forever()

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.critutil.build_digest import KEY_RE  # noqa: F401 - the worker checks keys with the same pattern
 from app.services import util_model, util_values
 
 
@@ -364,7 +365,6 @@ def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model)
 
 # --- the shared site / task wire format
 
-KEY_RE = r"^[0-9A-Za-z._-]{1,120}$"
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 

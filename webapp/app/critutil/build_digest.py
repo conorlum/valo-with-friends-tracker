@@ -9,7 +9,10 @@ import hashlib
 from pathlib import Path
 
 
-_WEBAPP_ROOT = Path(__file__).resolve().parents[2]
+# A util input key (a round row's or an observation's): the one pattern the site, the task and the worker's store share.
+KEY_RE = r"^[0-9A-Za-z._-]{1,120}$"
+
+_WEBAPP_ROOT =Path(__file__).resolve().parents[2]
 SOURCES = tuple(sorted(
     [path.relative_to(_WEBAPP_ROOT).as_posix() for path in (_WEBAPP_ROOT / "app" / "critutil").rglob("*.py")]
     + [
