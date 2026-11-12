@@ -19,9 +19,9 @@ from app.services import replay_control, replay_reparse_auto, site_health
 
 log = logging.getLogger(__name__)
 
-STEP_ROWS = 20  # PROVISIONAL(D12): until W14 times one replay
-MIN_REPLAYS = 4  # PROVISIONAL(D12)
-THRESHOLD_POINTS = 0.5  # PROVISIONAL(D12)
+STEP_ROWS = 20  # ~0.55 s a round over the external DB: ~11 s a pass (W14)
+MIN_REPLAYS = 4  # D12
+THRESHOLD_POINTS = 0.5  # D12
 
 
 def _cell(u, v) -> int:
