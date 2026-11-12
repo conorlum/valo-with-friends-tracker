@@ -40,7 +40,8 @@ OBS_VERSION = hashlib.sha256(b"".join(
 BATCH_BYTES = 2_000_000
 BATCHES_PER_CYCLE = 8
 ROW_CHUNK = 200
-# Provisional pending W3's per-match seconds; target: one cycle's share under 5 s.
+# Measured 2026-11-12 (friends DB): all 3,909 matches' observations load in 19.6 s (~5 ms a match in one batch;
+# a lone match is 0.16 s, mostly three round trips), so 200 a cycle is ~1-1.3 s, under the 5 s budget.
 OBS_MATCHES_PER_CYCLE = 200
 FULL_CHECK_S = 600
 QUIET_S = 120
