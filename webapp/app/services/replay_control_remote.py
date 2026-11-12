@@ -345,7 +345,8 @@ class State:
     warm_boot: str | None = None                        # the worker process warm_vanished_boot came from
     warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
     warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
-    walls_evaluated: bool = False                      # evaluate existing shares on the first pass too
+    walls_evaluated_at: float | None = None            # last wall evaluation: on the first pass, after new shares,
+                                                       # and every layout_walls.EVALUATE_EVERY_S on a quiet site
     layout_wait: dict = field(default_factory=dict)     # asset key -> when its rounds may go out again (F6)
 
     def layout_refused(self, asset_key: str, now: float) -> None:
@@ -946,11 +947,13 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
             counts["walls_computed"] = walls.get("computed", 0)
             counts["walls_skipped"] = int("skipped" in walls)
-            if walls.get("computed") or not state.walls_evaluated:
+            if walls.get("computed") or state.walls_evaluated_at is None \
+                    or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S:
                 evaluation = session_factory()
                 try:
-                    layout_walls.evaluate(evaluation)
-                    state.walls_evaluated = True
+                    unjudged = layout_walls.evaluate(evaluation)
+                    counts["walls_unjudged"] = len(unjudged or {})
+                    state.walls_evaluated_at = now
                 finally:
                     evaluation.close()
             site_health.loop_ok("layout_walls_step")
