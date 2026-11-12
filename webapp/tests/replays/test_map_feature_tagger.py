@@ -454,7 +454,7 @@ def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
                    'data-layer="grid"', 'data-layer="sight"', "probes are not available", 'id="featHelp"'):
         assert needle in page, needle
     scripts = page.split("<script>")
-    assert len(scripts) == 4, "core, the page, the features panel"
+    assert len(scripts) == 5, "core, the page, the features panel, and the areas panel"
     for body in scripts[1:]:
         code = body.split("</script>")[0]
         done = subprocess.run([NODE, "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=code,

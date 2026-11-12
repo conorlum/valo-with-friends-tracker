@@ -33,6 +33,13 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
   `--heights-dir <dir>`: read each map's heights from an export of the database's active asset
   (`control_heights.py export`) instead of a committed one.
 
+- in Areas mode (M), start from a walking-distance draft or a saved `<Map>.areas.json` from
+  `--areas-dir` (default `%TEMP%\\valo-areas`). Paint or fill names on the walk grid, with a floor
+  picker for cells with multiple height bands. Organise names into a tree, confirm regions, and
+  load a local reference image or correction pins. Export reviewed paint and copy it to
+  `app/static/data/control/<Map>.areas.json` when ready. Export fixture downloads the resolved pins
+  as `area_cases.json` for the owner-confirmed test cases. Area edits live in the page until export.
+
 Then copy the export over `app/static/data/control/tags.json` and run `scripts/build_control_geometry.py`: the
 masks, index.json and the kill-line results are rebuilt, and every stored round of a changed map goes stale
 until `scripts/compute_control.py` recomputes it.
@@ -74,6 +81,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "control_tagger.template.html"
 CORE_JS = HERE / "control_tagger_core.js"
 FEATURES_JS = HERE / "control_tagger_features.js"
+AREAS_JS = HERE / "control_tagger_areas.js"
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
 AREA_FLOOR_PADDING_DM = 10
 _LOG = logging.getLogger(__name__)
@@ -251,8 +259,9 @@ def render(
                       separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
     ui = FEATURES_JS.read_text(encoding="utf-8")
+    areas_ui = AREAS_JS.read_text(encoding="utf-8")
     return (TEMPLATE.read_text(encoding="utf-8").replace("/*CORE*/", core).replace("/*FEATURES_UI*/", ui)
-            .replace("/*DATA*/null", data))
+            .replace("/*AREAS_UI*/", areas_ui).replace("/*DATA*/null", data))
 
 
 def main(argv: list[str] | None = None) -> int:
