@@ -106,3 +106,45 @@ def test_refresh_ends_read_transaction_before_computing(db, monkeypatch):
     monkeypatch.setattr(util_model, "refit_from", refit)
     assert util_model.refresh(db) == json.loads(GOLDEN.read_text())
     assert not db.in_transaction()
+
+
+def add_plain_match(db, m=7):
+    from app.models.match import Match, MatchPlayer, MatchSource, Team
+    from app.models.player import Player
+    from app.models.round import Round
+    from app.models.kill_event import KillEvent
+
+    db.add(Match(id=m, external_id=f"synthetic-match-{m}", source=MatchSource.SCRAPED))
+    for slot in (1, 2):
+        pid = m * 10 + slot
+        db.add(Player(id=pid, display_name=f"synthetic-{pid}"))
+        db.add(MatchPlayer(id=pid, match_id=m, player_id=pid, agent="Sage",
+                           team=Team.TEAM_1 if slot == 1 else Team.TEAM_2))
+    rid = m * 100 + 1
+    db.add(Round(id=rid, match_id=m, round_number=1, outcome="Team A Elimination Win", planted=False,
+                 exploded=False, defused=False))
+    db.add(KillEvent(id=rid, round_id=rid, weapon="Vandal", killer_match_player_id=m * 10 + 1,
+                     death_match_player_id=m * 10 + 2, event_time_seconds=9.0))
+    db.commit()
+
+
+def test_refresh_always_refits_and_ensure_refits_only_when_not_covered(db, monkeypatch):
+    first = util_model.refresh(db)
+    assert util_model.ensure(db) == first
+    add_plain_match(db)                       # a new non-replay match; the excluded set is unchanged
+    calls = []
+    real = util_model.refit_from
+    monkeypatch.setattr(util_model, "refit_from", lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert util_model.ensure(db)["matches"] == first["matches"], "a covering model is not refitted"
+    assert calls == []
+    refreshed = util_model.refresh(db)
+    assert calls == [1] and refreshed["matches"] == first["matches"] + 1
+    assert util_model.load(db)["matches"] == first["matches"] + 1
+
+
+def test_ensure_refits_outside_any_transaction_and_stores_after_the_lock(db, monkeypatch):
+    seen = []
+    real = util_model.refit_from
+    monkeypatch.setattr(util_model, "refit_from", lambda *a, **k: seen.append(db.in_transaction()) or real(*a, **k))
+    util_model.ensure(db)
+    assert seen == [False] and not db.in_transaction()

@@ -201,19 +201,31 @@ def refit_from(by_match, excluded, holdout: float = 0.2) -> dict:
     return model
 
 
-def refresh(db, *, holdout: float = 0.2) -> dict:
-    """Read non-replay observations, end the read transaction, refit, and store util_model "win"."""
+def _read_and_refit(db, holdout: float) -> dict:
+    """Read the observations, end the transaction, then refit: nothing is held through the compute (R3)."""
+    excluded = replay_match_ids(db)
+    by_match = load_observations(db, excluded, by_match=True)
+    db.commit()
+    return refit_from(by_match, excluded, holdout)
+
+
+def _store(db, model: dict) -> None:
+    """A short transaction: the lock, the row, the commit (which releases the lock)."""
     from datetime import datetime, timezone
 
     from app.models.replay import UtilModel
 
-    excluded = replay_match_ids(db)
-    by_match = load_observations(db, excluded, by_match=True)
-    db.commit()
-    model = refit_from(by_match, excluded, holdout)
-    db.merge(UtilModel(name="win", version=VERSION, key=model["key"], data=model,
-                       computed_at=datetime.now(timezone.utc)))
-    db.commit()
+    with rebuild_lock(db, "win"):
+        db.merge(UtilModel(name="win", version=VERSION, key=model["key"], data=model,
+                           computed_at=datetime.now(timezone.utc)))
+        db.commit()
+
+
+def refresh(db, *, holdout: float = 0.2) -> dict:
+    """Read non-replay observations, end the read transaction, refit, and store util_model "win". Always refits
+    (`fit-win` depends on it)."""
+    model = _read_and_refit(db, holdout)
+    _store(db, model)
     return model
 
 
@@ -231,17 +243,11 @@ def covers(model: dict | None, match_ids) -> bool:
 
 def ensure(db) -> dict:
     """The stored estimator, refitted first when there is none or a match that now has a replay was in its
-    training. One refit at a time (`rebuild_lock`); a request that waited on another's uses that one."""
+    training. No lock or transaction is held through the refit; the result is stored under a short lock (R3)."""
     model = load(db)
     if covers(model, replay_match_ids(db)):
         return model
-    with rebuild_lock(db, "win"):
-        db.expire_all()
-        model = load(db)
-        if covers(model, replay_match_ids(db)):
-            db.commit()             # ends the transaction, and with it the lock
-            return model
-        return refresh(db)          # commits
+    return refresh(db)              # reads, commits, refits with no transaction open, then a short locked store
 
 
 LOCK_IDS = {"win": 0x7574696C01, "values": 0x7574696C02}   # "util" + 1, 2: Postgres advisory lock keys

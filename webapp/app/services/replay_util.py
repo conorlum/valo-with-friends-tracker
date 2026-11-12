@@ -181,10 +181,13 @@ def friend_players(db) -> set[int]:
 def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None) -> dict:
     """The stored build's data (`build_from_rounds`) from `rows` (`current_rows`; read here when not given), the
     estimator `model` (the stored one when not given) and the friendships, with each row's fingerprint added.
-    Reads only: `ensure_values` stores it."""
+    Reads only: `ensure_values` stores it. Ends the caller's transaction (commit) before computing, so no
+    connection is held through the build."""
     rows = current_rows(db) if rows is None else rows
     model = util_model.load(db) if model is None else model
-    return corpus_from_inputs(corpus_inputs(db, rows), rows, model)
+    inputs = corpus_inputs(db, rows)
+    db.commit()
+    return corpus_from_inputs(inputs, rows, model)
 
 
 def corpus_inputs(db, rows: list[tuple]) -> tuple[dict, dict, set]:
@@ -212,8 +215,8 @@ def _store_values(db, key: str, data: dict) -> None:
 def ensure_values(db, *, force: bool = False) -> dict:
     """The stored corpus build, rebuilt when what it is made from changed (`corpus_key`) or with `force`.
 
-    One rebuild at a time (util_model.rebuild_lock): a request that waited on another's rebuild re-reads and uses
-    it. The key stored is computed from the rows the build read, and when the rows changed while it was building it
+    No connection or transaction is held while it computes (R3); the result is stored under a short lock, under
+    the key of the inputs it was built from, even if superseded (D6). The key stored is computed from the rows the build read, and when the rows changed while it was building it
     builds again (up to REBUILD_TRIES), so an older build is never stored under a newer key, and a request never
     goes on with a build it knows is stale."""
     data = None
@@ -223,16 +226,13 @@ def ensure_values(db, *, force: bool = False) -> dict:
         stored = _values_row(db)
         if not force and stored is not None and stored[0] == key:
             return stored[1]
-        with util_model.rebuild_lock(db, "values"):
-            db.expire_all()
-            stored = _values_row(db)
-            if not force and stored is not None and stored[0] == key:
-                db.commit()                 # ends the transaction, and with it the lock
-                return stored[1]
-            rows = current_rows(db)
-            used = corpus_key(db, rows, model)
-            data = build_corpus(db, rows=rows, model=model)
-            _store_values(db, used, data)
+        rows = current_rows(db)
+        used = corpus_key(db, rows, model)
+        inputs = corpus_inputs(db, rows)
+        db.commit()                         # nothing is held through the compute (R3)
+        data = corpus_from_inputs(inputs, rows, model)
+        with util_model.rebuild_lock(db, "values"):     # a short transaction: the lock, the row, the commit
+            _store_values(db, used, data)   # stored even if superseded (D6)
         force = False
         if corpus_key(db, current_rows(db, with_data=False), util_model.load(db)) == used:
             return data
