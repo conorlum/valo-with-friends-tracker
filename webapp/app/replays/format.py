@@ -119,7 +119,9 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 28
+CONDENSE_REVISION = 29
+# 29: schema 9 placement contexts and DamageOrigin read again; trips over 16 m marked long; carried trips
+                         #     paired; ground fragment deltas and LifeChangeEvents read again;
 # 28: Ascent doors read opening/open (the shared door-evidence rule), so a reopened door is no longer
                          #     unverified (replays of match 6f12db3e r18 and a5549826 r8, 2026-11-09);
                          # 27: link_inputs "match_end": how the game state ended the match

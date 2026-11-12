@@ -61,8 +61,9 @@ def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
     # Revision 21 (damage causes, heals, charges) is a new recipe too: replay_reparse_auto re-parses every upload.
     # R7/R9: crouch spans use revision 24; legacy blobs are witnessed in test_replay_crouch.
     # CONDENSE 28: Ascent door reopening
-    assert fmt.CONDENSE_REVISION == 28 and fmt.FORMAT_VERSION == 1
-    assert ".c28.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
+    assert fmt.CONDENSE_REVISION == 29 and fmt.FORMAT_VERSION == 1
+    assert ".c29.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def _blob(**extra):

@@ -95,7 +95,8 @@ def test_the_revisions_of_this_release():
     # R7/R9: raw crouch spans bump condense only; readers of legacy blobs remain compatible.
     # Condense 26: a team kill keeps the side groups; control reads them unchanged, same recipe rule.
     # CONDENSE 28: Ascent door reopening
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (28, 23)
+    # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents; control unchanged.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (29, 23)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
 
 
