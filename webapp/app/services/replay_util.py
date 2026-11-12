@@ -23,7 +23,7 @@ from app.critutil.corpus import (  # re-export the portable build and its helper
     PAGE_VERSION, PISTOL_ROUNDS, SHRINK_K,
     _ability_styles, _cast_rows, _gate_list, _item_of, _mark_combos, _round_data,
     ability_label, area_of, build_from_rounds, buy_type, corpus_from_inputs, kind_label,
-    label_of, lineup_score,
+    label_of, lineup_score, values_key,
 )
 from app.services import util_model, util_values
 from app.services.replay_gaps import Freshness  # re-export the shared lightweight rule
@@ -151,18 +151,24 @@ def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
     """What a corpus build is made from, as one key: the versions, every current util row it reads (round,
     fingerprint, when computed), each of their replays' match and clock offset, and the estimator's key. Computed
     from the very rows a build reads, so the key stored with a build always describes that build's inputs."""
+    return values_key(corpus_key_parts(db, rows), (model or {}).get("key"))
+
+
+def corpus_key_parts(db, rows: list[tuple]) -> dict:
+    """Freeze the metadata hashed by corpus_key, apart from the estimator's key.
+
+    Timestamp text retains the original key's timezone/naive spelling; the wire rows separately carry UTC
+    microseconds. Neither requires loading the util blobs.
+    """
     from app.models.replay import Replay
 
     ids = sorted({r[0] for r in rows})
     replays = sorted(db.query(Replay.id, Replay.match_id, Replay.clock_offset).filter(Replay.id.in_(ids))) if ids else []
     friends = hashlib.sha256(",".join(str(p) for p in sorted(friend_players(db))).encode()).hexdigest()
-    h = hashlib.sha256(f"{util_values.VERSION}:{PAGE_VERSION}:{(model or {}).get('key')}:{abilities.table_hash()}:"
-                       f"{constants.VERSION}:{friends}".encode())
-    for rid, n, fp, at, *_ in sorted(rows, key=lambda r: (r[0], r[1])):
-        h.update(f"|{rid}:{n}:{fp}:{at}".encode())
-    for rid, match_id, offset in replays:
-        h.update(f"|r{rid}:{match_id}:{offset}".encode())
-    return h.hexdigest()[:32]
+    return {"values_version": util_values.VERSION, "page_version": PAGE_VERSION,
+            "abilities_hash": abilities.table_hash(), "constants_version": constants.VERSION,
+            "friends_hash": friends, "rows": [[rid, n, fp, str(at)] for rid, n, fp, at, *_ in rows],
+            "replays": [list(r) for r in replays]}
 
 
 def friend_players(db) -> set[int]:

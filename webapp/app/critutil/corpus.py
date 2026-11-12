@@ -6,11 +6,17 @@ The site loads the inputs in app.services.replay_util and re-exports these helpe
 from __future__ import annotations
 
 import functools
+import hashlib
+import io
+import json
 import re
+import tarfile
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.services import util_values
+from app.services import util_model, util_values
 
 
 PAGE_VERSION = 2
@@ -354,3 +360,161 @@ def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model)
     for r in rows:
         out["fingerprints"].setdefault(str(r[0]), {})[str(r[1])] = r[2]
     return out
+
+
+# --- the shared site / task wire format
+
+KEY_RE = r"^[0-9A-Za-z._-]{1,120}$"
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _at_us(at: datetime) -> int:
+    # SQLite returns naive UTC; never interpret it in the machine's local timezone.
+    at = at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at.astimezone(timezone.utc)
+    delta = at - _EPOCH
+    return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+def row_key(replay, n, fp, computed_at) -> str:
+    """The site's file-safe name for one frozen util row, precise to the microsecond."""
+    key = f"{replay}-{n}-{fp}-{_at_us(computed_at)}"
+    _check_key(key)
+    return key
+
+
+def _check_key(key: str) -> None:
+    if not isinstance(key, str) or re.fullmatch(KEY_RE, key) is None:
+        raise ValueError("invalid input key")
+
+
+def encode_output(data) -> bytes:
+    """The exact bytes hashed and stored by the site; non-finite values are errors."""
+    return json.dumps(data, separators=(",", ":"), allow_nan=False).encode()
+
+
+def encode_round(data) -> bytes:
+    return encode_output(data)
+
+
+def encode_obs(entries: list) -> bytes:
+    """Encode a shard as a list of [match_id, observations] pairs.
+
+    A shard may hold one or several matches. Match ids live in the payload, never in the opaque filename;
+    observations have util_model.fit's six fields. For one match use [[match_id, observations]].
+    """
+    return encode_output(entries)
+
+
+def dispatch_key(values_key_now, refit, excluded, obs_keys, digest) -> str:
+    """Build/tries identity, distinct from the output's estimator-dependent values key."""
+    return hashlib.sha256(encode_output(
+        [values_key_now, bool(refit), sorted(excluded), sorted(obs_keys), digest])).hexdigest()
+
+
+def values_key(key_parts, model_key) -> str:
+    """The original corpus_key hash, from frozen metadata with no database access."""
+    p = key_parts
+    h = hashlib.sha256(f"{p['values_version']}:{p['page_version']}:{model_key}:{p['abilities_hash']}:"
+                       f"{p['constants_version']}:{p['friends_hash']}".encode())
+    for rid, n, fp, at in sorted(p["rows"], key=lambda r: (r[0], r[1])):
+        h.update(f"|{rid}:{n}:{fp}:{at}".encode())
+    for rid, match_id, offset in sorted(p["replays"]):
+        h.update(f"|r{rid}:{match_id}:{offset}".encode())
+    return h.hexdigest()[:32]
+
+
+def encode_context(ctx, friends, model_or_None, rows, excluded, refit, key_parts) -> bytes:
+    """Freeze replay context and ordered row metadata without loading their blobs.
+
+    Pair lists keep integer keys, tuple loadout keys, and insertion order without JSON object-key coercion.
+    The context's rows are always [replay id, round, fingerprint, UTC epoch microseconds], in load order.
+    """
+    replays = []
+    for rid, c in ctx.items():
+        replays.append([rid, {**c, "players": list(c["players"].items()),
+                              "rounds": list(c["rounds"].items()),
+                              "loadout": [[n, team, value] for (n, team), value in c["loadout"].items()]}])
+    return encode_output({"ctx": replays, "friends": sorted(friends), "model": model_or_None,
+                          "rows": [[rid, n, fp, _at_us(at)] for rid, n, fp, at, *_ in rows],
+                          "excluded": sorted(excluded), "refit": bool(refit), "key_parts": key_parts})
+
+
+def decode_context(data: bytes) -> dict:
+    context = json.loads(data)
+    context["ctx"] = {
+        rid: {**c, "players": dict(c["players"]), "rounds": dict(c["rounds"]),
+              "loadout": {(n, team): value for n, team, value in c["loadout"]}}
+        for rid, c in context["ctx"]}
+    context["friends"] = set(context["friends"])
+    context["excluded"] = set(context["excluded"])
+    context["rows"] = [(rid, n, fp, _EPOCH + timedelta(microseconds=at))
+                       for rid, n, fp, at in context["rows"]]
+    return context
+
+
+@dataclass(frozen=True)
+class Inputs:
+    """Decoded build inputs. Round/observation names are opaque transport keys."""
+
+    context: dict
+    rounds: dict[str, dict]
+    obs: dict[str, list]
+
+
+def pack_inputs(context_bytes, rounds: dict[str, bytes], obs: dict[str, bytes], tar_path) -> None:
+    """Write the three shared member namespaces. Nothing is extracted to disk on read."""
+    with tarfile.open(tar_path, "w") as archive:
+        def add(name, data):
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+        add("context.json", context_bytes)
+        for folder, blobs in (("rounds", rounds), ("obs", obs)):
+            for key, data in blobs.items():
+                _check_key(key)
+                add(f"{folder}/{key}.json", data)
+
+
+def unpack_inputs(tar_path) -> Inputs:
+    context, rounds, obs = None, {}, {}
+    seen = set()
+    with tarfile.open(tar_path, "r:*") as archive:
+        for member in archive:
+            if not member.isfile() or member.name in seen:
+                raise ValueError("invalid or duplicate input member")
+            seen.add(member.name)
+            name = member.name
+            if name == "context.json":
+                context = decode_context(archive.extractfile(member).read())
+                continue
+            folder, sep, filename = name.partition("/")
+            if not sep or folder not in ("rounds", "obs") or not filename.endswith(".json"):
+                raise ValueError("unknown input member")
+            key = filename[:-5]
+            _check_key(key)
+            data = json.loads(archive.extractfile(member).read())
+            (rounds if folder == "rounds" else obs)[key] = data
+    if context is None:
+        raise ValueError("missing context.json")
+    return Inputs(context, rounds, obs)
+
+
+def compute(inputs: Inputs) -> dict:
+    """The entire portable build, including an optional estimator refit, without a database."""
+    c = inputs.context
+    win = c["model"]
+    if c["refit"]:
+        by_match = {}
+        for entries in inputs.obs.values():
+            for match_id, observations in entries:
+                if match_id in by_match:
+                    raise ValueError("duplicate observation match")
+                by_match[match_id] = [tuple(o) for o in observations]
+        win = util_model.refit_from(by_match, c["excluded"])
+    stored = defaultdict(dict)
+    for row in c["rows"]:
+        data = inputs.rounds[row_key(*row)]
+        if data:
+            stored[row[0]][row[1]] = data
+    values = corpus_from_inputs((stored, c["ctx"], c["friends"]), c["rows"], win)
+    return {"win": win, "values": values, "values_key": values_key(c["key_parts"], (win or {}).get("key"))}

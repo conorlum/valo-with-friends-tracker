@@ -105,9 +105,11 @@ def calibration(model: dict, observations, bins: int = 10) -> list[dict]:
 # --- the DB
 
 
-def load_observations(db, exclude_match_ids: set[int] | frozenset = frozenset(), *, by_match: bool = False):
+def load_observations(db, exclude_match_ids: set[int] | frozenset = frozenset(), *, by_match: bool = False,
+                      match_ids=None):
     """Every state entry of every scraped round outside `exclude_match_ids`, as fit() observations (or, with
-    `by_match`, {match_id: [observations]} for a held-out split)."""
+    `by_match`, {match_id: [observations]} for a held-out split). With `match_ids`, all three reads are restricted
+    in SQL, so pushing a few missing observation shards never loads the entire history."""
     from sqlalchemy import select
 
     from app.models.kill_event import KillEvent
@@ -117,20 +119,30 @@ def load_observations(db, exclude_match_ids: set[int] | frozenset = frozenset(),
     from app.services import state_replay as sr
 
     teams: dict[int, dict] = defaultdict(lambda: {Team.TEAM_1: set(), Team.TEAM_2: set()})
-    for mp_id, match_id, team in db.execute(select(MatchPlayer.id, MatchPlayer.match_id, MatchPlayer.team)):
+    players_q = select(MatchPlayer.id, MatchPlayer.match_id, MatchPlayer.team)
+    if match_ids is not None:
+        match_ids = tuple(match_ids)
+        players_q = players_q.where(MatchPlayer.match_id.in_(match_ids))
+    for mp_id, match_id, team in db.execute(players_q):
         if match_id not in exclude_match_ids:
             teams[match_id][team].add(mp_id)
     rounds: dict[int, list] = defaultdict(list)
     meta: dict[int, tuple] = {}
-    for r in db.execute(select(Round.id, Round.match_id, Round.round_number, Round.outcome, Round.planted,
-                               Round.plant_time, Round.exploded, Round.defused, Round.defuse_time)):
+    rounds_q = select(Round.id, Round.match_id, Round.round_number, Round.outcome, Round.planted,
+                      Round.plant_time, Round.exploded, Round.defused, Round.defuse_time)
+    if match_ids is not None:
+        rounds_q = rounds_q.where(Round.match_id.in_(match_ids))
+    for r in db.execute(rounds_q):
         if r.match_id in exclude_match_ids:
             continue
         rounds[r.match_id].append(r)
         meta[r.id] = (r.round_number, r.plant_time)
     kills: dict[int, list] = defaultdict(list)
-    for k in db.execute(select(KillEvent.id, KillEvent.round_id, KillEvent.killer_match_player_id,
-                               KillEvent.death_match_player_id, KillEvent.event_time_seconds)):
+    kills_q = select(KillEvent.id, KillEvent.round_id, KillEvent.killer_match_player_id,
+                     KillEvent.death_match_player_id, KillEvent.event_time_seconds)
+    if match_ids is not None:
+        kills_q = kills_q.where(KillEvent.round_id.in_(meta))
+    for k in db.execute(kills_q):
         if k.round_id in meta:
             kills[k.round_id].append(sr.KillEventInput(k.id, k.killer_match_player_id, k.death_match_player_id,
                                                        k.event_time_seconds))
@@ -167,18 +179,13 @@ def replay_match_ids(db) -> set[int]:
     return {m for (m,) in db.execute(select(Replay.match_id).where(Replay.match_id.is_not(None)))}
 
 
-def refresh(db, *, holdout: float = 0.2) -> dict:
-    """Fits the estimator on every non-replay match and stores it as util_model "win", with a held-out check
-    (the last `holdout` share of matches by id, fitted without them). The matches it left out for having a replay
-    are stored with it (`excluded`): a match that gets a replay later was in its training, and `covers` then says
-    it must be refitted before that match is valued. Returns the stored data."""
-    from datetime import datetime, timezone
+def refit_from(by_match, excluded, holdout: float = 0.2) -> dict:
+    """Fit, held-out check and calibration from plain observations, without a database.
 
-    from app.models.replay import UtilModel
-
-    excluded = replay_match_ids(db)
-    by_match = load_observations(db, excluded, by_match=True)
-    ids = sorted(by_match)
+    The last `holdout` share of eligible matches by id is held out for the check. Every excluded match stays
+    out of both fits, including when an observation shard for it was supplied.
+    """
+    ids = sorted(m for m in by_match if m not in excluded)
     cut = int(len(ids) * (1 - holdout))
     train = [o for m in ids[:cut] for o in by_match[m]]
     test = [o for m in ids[cut:] for o in by_match[m]]
@@ -191,7 +198,21 @@ def refresh(db, *, holdout: float = 0.2) -> dict:
     key = hashlib.sha256(f"{VERSION}:{len(ids)}:{model['n']}:{ids[-1] if ids else 0}:{model['excluded']}".encode()
                          ).hexdigest()[:16]
     model["key"] = key
-    db.merge(UtilModel(name="win", version=VERSION, key=key, data=model, computed_at=datetime.now(timezone.utc)))
+    return model
+
+
+def refresh(db, *, holdout: float = 0.2) -> dict:
+    """Read non-replay observations, end the read transaction, refit, and store util_model "win"."""
+    from datetime import datetime, timezone
+
+    from app.models.replay import UtilModel
+
+    excluded = replay_match_ids(db)
+    by_match = load_observations(db, excluded, by_match=True)
+    db.commit()
+    model = refit_from(by_match, excluded, holdout)
+    db.merge(UtilModel(name="win", version=VERSION, key=model["key"], data=model,
+                       computed_at=datetime.now(timezone.utc)))
     db.commit()
     return model
 
