@@ -294,8 +294,9 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         asset = base64.b64decode(result["asset"], validate=True)
     except (KeyError, TypeError, ValueError) as error:              # binascii.Error is a ValueError
         raise BuildFailed(f"the worker's result can't be used: {error}") from error
-    why = control_heights.integrity(digest, report, control_heights.verify_asset(asset, build.map_name),
-                                    hi.must_block_sha(key=build.map_name))
+    # The layout's own check set, the one the worker built against (F2/S1, 2026-11-12).
+    verified = control_heights.verify_asset(asset, build.map_name, must_block=hi.must_block_path(build.map_name))
+    why = control_heights.integrity(digest, report, verified, hi.must_block_sha(key=build.map_name))
     if why:
         raise BuildFailed("the worker's result can't be trusted: " + "; ".join(why))
     current = current_manifests(session).get(build.map_name)

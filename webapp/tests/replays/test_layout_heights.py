@@ -491,3 +491,9 @@ def test_unconfirmed_regions_protocol_spends_no_try(monkeypatch, height_client, 
     state = hr.HeightState()
     assert hr.step(None, None, height_client, state, 10.0, {}) == {"Toy"}
     assert not height_client.opened and not state.tries
+
+
+def test_every_layout_of_a_map_shares_one_heights_lock():
+    """F7/S12 (2026-11-12): heights writers lock by asset key, the round stores by the map name; one lock."""
+    assert ch.lock_name("Ascent_13_10") == ch.lock_name("Ascent") == "control-heights:Ascent"
+    assert ch.lock_name("Lotus_13_10") != ch.lock_name("Ascent_13_10")
