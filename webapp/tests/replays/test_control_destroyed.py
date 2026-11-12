@@ -233,7 +233,7 @@ def test_off_grid_destruction_is_judged_against_before_at_the_next_tick(monkeypa
     assert judged_against_before(rec)["A"] == {5}
 
 
-def test_trip_on_upper_floor_seeds_the_upper_node():
+def test_trip_on_upper_floor_seeds_both_floors_and_contains_the_shooter():
     rect = (96, 96, 160, 128)
     geo = toy_heights("DestroyedTripFloors", [rect], ground=[(rect, -2.0)], upper=[(rect, 4.0)])
     point = (124, 108)
@@ -247,9 +247,18 @@ def test_trip_on_upper_floor_seeds_the_upper_node():
     upper = geo.node_at_px(x, y, z + hc.STAND_M)
     lower = geo.node_at_px(x, y, 0.0)
     assert upper != lower
-    assert hit[3] == upper
+    assert upper in hit[3] and lower in hit[3]
     area = runner.unknown._area(hit[3], x, y, hit[2], geo.walk_n)
-    assert area[upper] and not area[lower]
+    assert area[upper] and area[lower]
+    sx, sy = np.array(uv(148, 108)) * ce.PX / 10000
+    shooter_node = geo.node_at_px(sx, sy, -2.0 + hc.STAND_M)
+    assert area[shooter_node]
+    # Ordinary locates still seed only the known floor.
+    ordinary = runner.unknown._area(upper, x, y, hit[2], geo.walk_n)
+    assert ordinary[upper] and not ordinary[shooter_node]
+    for t in (0.0, 17.0, 17.25):
+        _step(rnd, runner, t)
+    assert np.isfinite(runner.unknown.reached["A"][5][shooter_node])
 
 
 SIDE_OF = {0: "A", 1: "A", 5: "B", 6: "B"}
@@ -287,6 +296,29 @@ def test_only_shooter_fallback_accepts_a_row_without_a_segment():
     assert _destroyer([{"k": "shot", "t": GONE, "by": 5, "u": 0, "v": 0}]) == 5
 
 
+def test_camera_ray_reaches_beyond_the_display_tracer_with_two_shooters():
+    shots = [{"k": "shot", "t": GONE, "by": 5, "u": 0, "v": 0, "u1": 25, "v1": 0},
+             {"k": "shot", "t": GONE, "by": 6, "u": 0, "v": 50, "u1": 0, "v1": 75}]
+    assert ce.destroyer(shots, (30, 0), GONE, "A", SIDE_OF, 1.0) == 5
+
+
+@pytest.mark.parametrize("wire", [None, [[1000, 1900], [1000, 2100]]])
+def test_sole_shooter_whose_rays_clearly_miss_is_not_credited(wire):
+    # Thirty metres to the side; explicitly use the trip's 20 m reach.
+    shots = [_segment(5, 3100), _segment(5, 3200)]
+    assert ce.destroyer(shots, (1000, 2000), GONE, "A", SIDE_OF, 0.01,
+                        wire=wire, reach_m=ce.TRIP_DESTROY_REACH_M) is None
+
+
+def test_trip_ray_and_fallback_use_the_trip_reach_in_world_metres():
+    shots = [{"k": "shot", "t": GONE, "by": 5, "u": 0, "v": 0, "u1": 2500, "v1": 0},
+             {"k": "shot", "t": GONE, "by": 6, "u": 0, "v": 5000, "u1": 0, "v1": 7500}]
+    assert ce.destroyer(shots, (3000, 0), GONE, "A", SIDE_OF, 0.01,
+                        reach_m=ce.TRIP_DESTROY_REACH_M) is None
+    assert ce.destroyer(shots[:1], (1000, 2500), GONE, "A", SIDE_OF, 0.01,
+                        reach_m=ce.TRIP_DESTROY_REACH_M) is None
+
+
 def test_only_shooter_fallback_counts_distinct_slots():
     assert _destroyer([_segment(5, 300), _segment(5, 400)]) == 5
     assert _destroyer([_segment(5, 300), _segment(6, 400)]) is None
@@ -297,10 +329,12 @@ def test_destroyer_window_edges(offset, expected):
     assert _destroyer([_segment(5, 0, t=GONE + offset)]) == expected
 
 
-def test_segment_is_finite_and_includes_the_two_metre_boundary():
+def test_ray_is_forward_reach_limited_and_includes_the_two_metre_boundary():
     assert _destroyer([_segment(5, 200), _segment(6, 300)]) == 5
     short = _segment(5, 0)
-    short["u"], short["u1"] = 500, 600
+    short["u"], short["u1"] = -3000, -2900
+    assert _destroyer([short, _segment(6, 300)]) is None
+    short["u"], short["u1"] = 1300, 1400
     assert _destroyer([short, _segment(6, 300)]) is None
 
 
