@@ -1270,6 +1270,7 @@ CONTROL_FINISHED_KEPT = 200
 WARM_BUILD_TRIES = 2     # failed warm builds of one identity before its rounds fall back to one warming round
 WARM_SECONDS_KEPT = 20   # recent warm-build durations /health shows
 WARM_START_RETRY_S = 60  # after Render refused a warm build's start (a deploy gap)
+WARM_LAYOUT_RETRY_S = 300  # after a warm run's image had no assets for the layout (a redraw's deploy gap)
 WARM_START_REFUSED_MAX_S = 1800   # refused starts past this long count as failures (rule 4's fallback)
 HEIGHTS_KEPT = 3                 # pushed height assets kept per map (the newest); a missing one is pushed again
 from app.replays import layouts
@@ -1825,6 +1826,11 @@ class ControlRunner:
                     elif built:
                         # Posted, then cleaned off the disk before this answer settled: a D3 loss, not a failure.
                         self._note_gone(job.warm_id, job.warm_key)
+                    elif error_code == "unknown_layout":
+                        # A redraw's deploy gap: this worker knows the layout, the run's image doesn't yet (D6). No
+                        # try is spent; a warm build is asked again later, once the Workflow has caught up.
+                        self.warm_retry_at[job.warm_id] = time.time() + WARM_LAYOUT_RETRY_S
+                        _log(f"warm build {job.warm_id}: the run has no assets for {job.map}; asked again later")
                     else:
                         since = self.warm_refused_since.setdefault(job.warm_id, time.time()) if refused else None
                         if refused and time.time() - since <= WARM_START_REFUSED_MAX_S:

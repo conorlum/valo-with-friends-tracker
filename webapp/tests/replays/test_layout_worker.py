@@ -195,6 +195,53 @@ def test_workflow_unknown_layout_never_runs_child(tmp_path, monkeypatch, visibil
     assert link.result['error_kind'] == 'compat'
 
 
+TASK_ALONE = r'''
+import json, sys
+from pathlib import Path
+assert not any(Path(p or ".").resolve().name == "webapp" for p in sys.path), sys.path
+from replay_tasks import tasks
+class Link:
+    def __init__(self, task): self.task, self.result = task, None
+    def post_started(self): pass
+    def fetch(self, name, dest):
+        Path(dest).write_bytes(json.dumps(self.task).encode()); return Path(dest)
+    def post_result(self, result): self.result = result
+out = {}
+for name in ("control", "warm"):
+    link = Link({"key": "k", "map": "Nowhere_13_10", "blob": "", "link": {}})
+    getattr(tasks, name)({"map": "Nowhere_13_10", "files": []}, link)
+    out[name] = link.result
+print(json.dumps(out))
+'''
+
+
+def test_workflow_tasks_import_the_app_with_only_the_repo_root_on_the_path(tmp_path):
+    """B1: the Workflow starts `python -m replay_tasks.main` from /srv with no PYTHONPATH: only the repo root."""
+    import os
+    import subprocess
+    import sys
+
+    repo = tasks.REPO
+    env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+    done = subprocess.run([sys.executable, '-c', TASK_ALONE], cwd=repo, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    for name in ('control', 'warm'):
+        assert out[name]['error_code'] == 'unknown_layout', out
+
+
+def test_workflow_warm_unknown_layout_never_runs_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, 'WEBAPP', tmp_path)
+    index = tmp_path / 'app/static/data/control/index.json'
+    index.parent.mkdir(parents=True)
+    index.write_text('{"maps": {"Ascent": {}}}')
+    monkeypatch.setattr(tasks, '_run_child', lambda *a, **kw: pytest.fail('unknown layout ran the warm child'))
+    link = FakeLink({'task': json.dumps({'key': 'warm:x', 'map': 'Ascent_13_10'}).encode()})
+    tasks.warm({'map': 'Ascent_13_10', 'files': []}, link)
+    assert link.result['status'] == 'failed' and link.result['error_code'] == 'unknown_layout'
+
+
 def test_client_maps_unknown_layout(monkeypatch):
     client = remote.ControlClient('unused')
     def conflict(*args):

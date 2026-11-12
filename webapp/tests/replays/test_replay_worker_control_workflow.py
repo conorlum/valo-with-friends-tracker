@@ -356,6 +356,20 @@ def test_a_warm_build_that_keeps_failing_falls_back_to_one_warming_round(warm_re
     assert control.counts()["warm_builds"]["failures"] == {job.warm_id: server.WARM_BUILD_TRIES}
 
 
+def test_a_warm_build_on_a_run_without_the_layout_waits_and_spends_no_try(warm_remote, monkeypatch):
+    """B5 (2026-11-12): in a redraw's deploy gap the worker knows a layout the Workflow image doesn't yet: its
+    warm build answers unknown_layout, which waits like a refused start instead of counting toward the fallback."""
+    control, render, _, _ = warm_remote
+    monkeypatch.setattr("app.replays.layouts.control_layouts", lambda path: ["Ascent"])
+    job = control.submit(round_task("x", map_name="Ascent_13_10"))
+    end = time.time() + 30
+    while time.time() < end and job.warm_id not in control.warm_retry_at:
+        time.sleep(0.02)
+    assert job.warm_id in control.warm_retry_at
+    assert control.counts()["warm_builds"]["failures"] == {}
+    assert control.get(job.id).status == "queued"
+
+
 def test_a_round_whose_file_left_the_disk_waits_for_a_new_warm_build_never_runs_cold(warm_remote):
     control, render, settings, _ = warm_remote
     warm_and_confirm(control)
