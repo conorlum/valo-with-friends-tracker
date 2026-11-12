@@ -55,6 +55,9 @@ def layout_assets(tmp_path, monkeypatch):
     original = layouts.layout_for
     monkeypatch.setattr(layouts, "layout_for", lambda name, branch: original(
         name, branch, registry=registry, index=json.loads((tmp_path / "index.json").read_text())))
+    original_load = layouts.load_registry
+    monkeypatch.setattr(layouts, "load_registry",
+                        lambda path=None: registry if path is None else original_load(path))
     monkeypatch.setattr(rc, "CONTROL_DIR", tmp_path)
     monkeypatch.setattr(rc, "MAPS_JSON", tmp_path / "maps.json")
     rc._assets.cache_clear()
