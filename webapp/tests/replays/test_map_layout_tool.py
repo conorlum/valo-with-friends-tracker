@@ -241,3 +241,107 @@ def test_build_refuses_a_key_that_already_exists(tmp_path):
     with pytest.raises(SystemExit):
         _run(root, tmp_path)
     assert _snapshot(root) == before
+
+
+# ---- overlay, fetch-minimap, notes: network and database reads behind fetch() and positions() -----------------
+import hashlib  # noqa: E402
+import io  # noqa: E402
+
+PATCH_PAGE = """<html><body>
+<h2>Agent Updates</h2><p>Nothing about maps here.</p>
+<H2 class="x">MAP UPDATES</H2>
+<h3>Ascent</h3><p>Ascent line one.</p>
+<h3>Toy Town</h3>
+<p>Moved the <b>east</b> door.</p>
+<ul><li>Opened a new wing</li></ul>
+<img src="https://example.test/toy-a.jpg" alt="a"><img data-src="https://example.test/toy-b.jpg">
+<h3>Haven</h3><p>Haven line.</p><img src="https://example.test/haven.jpg">
+<h2>Bug Fixes</h2><p>Unrelated.</p>
+</body></html>"""
+
+
+def _png_bytes(color) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGBA", (8, 8), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_notes_pulls_the_map_subsection_of_a_synthetic_page(tmp_path, monkeypatch):
+    asked = []
+    monkeypatch.setattr(map_layout, "fetch", lambda url: asked.append(url) or PATCH_PAGE.encode())
+    assert map_layout.main(["notes", "13.10", "--map", "Toy", "--out", str(tmp_path)]) == 0
+    assert asked == ["https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-13-10/"]
+    text = (tmp_path / "notes-13.10-Toy.txt").read_text(encoding="utf-8").splitlines()
+    assert "Moved the east door." in text and "Opened a new wing" in text
+    assert not any("Ascent" in line or "Haven" in line or "Unrelated" in line for line in text)
+    urls = (tmp_path / "notes-13.10-Toy.images.txt").read_text(encoding="utf-8").split()
+    assert urls == ["https://example.test/toy-a.jpg", "https://example.test/toy-b.jpg"]
+
+
+def test_notes_without_a_map_subsection_exits_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(map_layout, "fetch", lambda url: PATCH_PAGE.encode())
+    assert map_layout.main(["notes", "13.10", "--map", "Lotus", "--out", str(tmp_path), "--url", "http://x/"]) == 1
+    assert "Lotus" in capsys.readouterr().err
+    assert not list(tmp_path.glob("notes-*"))
+
+
+def _api(icon):
+    return json.dumps({"status": 200, "data": [{"displayName": "Toy", "displayIcon": icon, "uuid": "u",
+                                                 "mapUrl": "/Game/Maps/Toy/Toy", "xMultiplier": 1, "yMultiplier": 1,
+                                                 "xScalarToAdd": 1, "yScalarToAdd": 1}]}).encode()
+
+
+def _fetch_minimap(tmp_path, monkeypatch, icon_png, vendored_png, patched=None):
+    root = tmp_path / "static"
+    (root / "img" / "maps").mkdir(parents=True, exist_ok=True)
+    (root / "img" / "maps" / "Toy.png").write_bytes(vendored_png)
+    monkeypatch.setattr(map_layout, "STATIC", root)
+    if patched is not None:
+        monkeypatch.setattr(map_layout.vendor_map_assets, "PATCHED_MINIMAPS", {"Toy": patched})
+    monkeypatch.setattr(map_layout, "fetch", lambda url: _api("http://i/toy.png") if "v1/maps" in url else icon_png)
+    return root
+
+
+def test_fetch_minimap_says_differs_and_saves_the_new_image(tmp_path, monkeypatch, capsys):
+    new, old = _png_bytes((1, 2, 3, 255)), _png_bytes((9, 9, 9, 255))
+    root = _fetch_minimap(tmp_path, monkeypatch, new, old)
+    out = tmp_path / "scratch"
+    assert map_layout.main(["fetch-minimap", "Toy", "--out", str(out)]) == 0
+    assert capsys.readouterr().out.strip().startswith("differs")
+    assert (out / "Toy.png").read_bytes() == new
+    assert (root / "img" / "maps" / "Toy.png").read_bytes() == old
+
+
+def test_fetch_minimap_same_and_patched_unchanged(tmp_path, monkeypatch, capsys):
+    same = _png_bytes((1, 2, 3, 255))
+    _fetch_minimap(tmp_path, monkeypatch, same, same)
+    assert map_layout.main(["fetch-minimap", "Toy", "--out", str(tmp_path / "o")]) == 0
+    assert capsys.readouterr().out.strip() == "same"
+    other = _png_bytes((5, 5, 5, 255))
+    _fetch_minimap(tmp_path, monkeypatch, same, other, patched=hashlib.sha256(same).hexdigest()[:12])
+    assert map_layout.main(["fetch-minimap", "Toy", "--out", str(tmp_path / "o")]) == 0
+    assert capsys.readouterr().out.strip() == "patched, upstream unchanged"
+    assert not (tmp_path / "o" / "Toy.png").exists()
+
+
+def test_overlay_has_one_row_per_region_and_exports_a_mask(tmp_path, monkeypatch):
+    picture, _, _ = _inputs(tmp_path)
+    ours = tmp_path / "ours.png"
+    _toy_minimap().save(ours)
+    fit_dir = tmp_path / "fit"
+    fit_dir.mkdir()
+    (fit_dir / "fit.json").write_text(json.dumps({"rot": 0, "scale": 1.0, "tx": 0, "ty": 0, "crop": None,
+                                                  "picture": str(picture)}), encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(map_layout, "positions", lambda name: asked.append(name) or [(500, 250), (520, 260), (50, 50)])
+    out = tmp_path / "scratch"
+    assert map_layout.main(["overlay", "--ours", str(ours), "--fit", str(fit_dir), "--map", "Toy",
+                            "--out", str(out)]) == 0
+    assert asked == ["Toy"]
+    html = (out / "overlay.html").read_text(encoding="utf-8")
+    assert html.count('class="region"') == 1
+    assert 'data-kind="added"' in html and 'data-positions="2"' in html
+    for control in ("keep", "reject", "cant-show"):
+        assert f'value="{control}"' in html
+    assert "toDataURL" in html and "data:image/png;base64," in html
+    assert "http://" not in html and "https://" not in html

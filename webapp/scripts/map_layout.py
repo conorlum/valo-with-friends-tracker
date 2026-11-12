@@ -8,13 +8,31 @@
            index.json entries and an empty must_block.<key>.json, all under --into (a tree shaped like
            webapp/app/static; default the real one). The base layout and maps.json are never touched.
 
-Offline only: no database, no network.
+    overlay --ours <png> --fit <align out dir> --map <Map> --out <scratch dir>
+           overlay.html (self-contained): old, new, replay positions, each region with keep / reject /
+           "minimap can't show", and a button that exports the kept regions as a 1024x1024 mask png
+           (the input of `build --regions`)
+    fetch-minimap <Map> --out <dir>
+           compares valorant-api's minimap with the vendored one: same | differs (image saved to --out) |
+           patched, upstream unchanged. Never writes under app/.
+    notes <patch, 13.10 form> --map <Map> --out <dir> [--url <page>]
+           the patch page's Map Updates section, the map's subsection: notes-<patch>-<Map>.txt and
+           notes-<patch>-<Map>.images.txt in --out; exit 1 when the map has no subsection
+
+Everything but overlay/fetch-minimap/notes is offline. Those three read the network through `fetch(url)` and the
+friends DB through `positions(map)` (run under `with_friends_db.py --expect-database valowithfriendsdb
+--read-only`); nothing else here touches either.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import html as html_lib
+import io
 import json
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +40,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import map_layout_fit as fit  # noqa: E402
+import vendor_map_assets  # noqa: E402
 
 SIZE = 1024
 
@@ -187,6 +206,307 @@ def cmd_build(args) -> int:
     return 0
 
 
+def fetch(url: str) -> bytes:
+    """Every network read of this tool goes through here (tests replace it)."""
+    return vendor_map_assets.fetch(url)
+
+
+POSITION_ROUND_CAP = 200
+
+
+def positions(map_name: str) -> list[tuple[int, int]]:
+    """Alive 4 Hz replay positions on `map_name` as minimap pixels (0..1023), from the stored round blobs of at
+    most POSITION_ROUND_CAP rounds. Reads the database through the app's session, so run it under
+    `scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only`. Tests replace this."""
+    from app.db import SessionLocal
+    from app.models.replay import Replay, ReplayRound
+    from app.replays import format as fmt
+
+    out: list[tuple[int, int]] = []
+    db = SessionLocal()
+    try:
+        rows = (db.query(ReplayRound.data).join(Replay, Replay.id == ReplayRound.replay_id)
+                .filter(Replay.map_name == map_name, ReplayRound.data.isnot(None))
+                .order_by(ReplayRound.replay_id.desc(), ReplayRound.round_number)
+                .limit(POSITION_ROUND_CAP).all())
+        for (data,) in rows:
+            try:
+                blob = fmt.decode_blob(data)
+            except Exception:  # noqa: BLE001 - one unreadable round does not stop the tool
+                continue
+            for slot, segments in blob.get("tracks", {}).items():
+                lives = [(t0, float("inf") if t1 is None else t1) for t0, t1, _ in blob.get("alive", {}).get(slot, [])]
+                for segment in segments:
+                    for t, u, v, _ in fmt.decode_segment(segment, blob["hz"]):
+                        if abs(round(t * 4) - t * 4) > 1e-6 or not any(t0 <= t < t1 for t0, t1 in lives):
+                            continue
+                        out.append((min(SIZE - 1, int(u / fmt.UV_SCALE * SIZE)),
+                                    min(SIZE - 1, int(v / fmt.UV_SCALE * SIZE))))
+    finally:
+        db.close()
+    return out
+
+
+def _data_uri(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _floor_image(mask: np.ndarray) -> Image.Image:
+    out = np.zeros(mask.shape + (4,), np.uint8)
+    out[mask] = (200, 200, 200, 255)
+    return Image.fromarray(out, "RGBA")
+
+
+OVERLAY_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Layout overlay: __MAP__</title>
+<style>
+body{font-family:sans-serif;background:#111;color:#ddd;margin:12px}
+#stage{position:relative;width:1024px;height:1024px;background:#090f14}
+#stage canvas,#stage img{position:absolute;left:0;top:0}
+table{border-collapse:collapse;margin-top:12px}td,th{border:1px solid #444;padding:3px 8px;text-align:left}
+</style></head><body>
+<h1>__MAP__: old, new, positions</h1>
+<p><label><input type="checkbox" id="show-old" checked> old (ours)</label>
+<label><input type="checkbox" id="show-new" checked> new (picture)</label>
+<label><input type="checkbox" id="show-pos" checked> positions (__NPOS__)</label>
+<label><input type="checkbox" id="show-reg" checked> regions</label></p>
+<div id="stage">
+<img id="old" width="1024" height="1024" style="opacity:.5" src="__OLD__">
+<img id="new" width="1024" height="1024" style="opacity:.5" src="__NEW__">
+<canvas id="regions" width="1024" height="1024"></canvas>
+<canvas id="pos" width="1024" height="1024"></canvas>
+</div>
+<table><tr><th>#</th><th>kind</th><th>area</th><th>bbox</th><th>positions inside</th><th>decision</th></tr>
+__ROWS__
+</table>
+<p><button id="export">Export kept regions as mask png</button>
+<button id="marks">Show the "minimap can't show" list</button></p>
+<pre id="marks-out"></pre>
+<script>
+var POSITIONS = __POSITIONS__;
+var COLOURS = {added: [60, 200, 90], removed: [230, 60, 60]};
+var rows = Array.prototype.slice.call(document.querySelectorAll("tr.region"));
+function decision(row) {
+  var r = row.querySelector("input[type=radio]:checked");
+  return r ? r.value : "keep";
+}
+function load(row) {
+  return new Promise(function (resolve) {
+    var img = new Image();
+    img.onload = function () { resolve(img); };
+    img.src = row.getAttribute("data-mask");
+  });
+}
+function draw() {
+  var ctx = document.getElementById("regions").getContext("2d");
+  ctx.clearRect(0, 0, 1024, 1024);
+  var shown = document.getElementById("show-reg").checked;
+  Promise.all(rows.map(load)).then(function (imgs) {
+    imgs.forEach(function (img, i) {
+      var d = decision(rows[i]);
+      if (!shown || d === "reject") { return; }
+      var tmp = document.createElement("canvas");
+      tmp.width = tmp.height = 1024;
+      var t = tmp.getContext("2d");
+      t.drawImage(img, 0, 0);
+      var data = t.getImageData(0, 0, 1024, 1024), c = COLOURS[rows[i].getAttribute("data-kind")];
+      for (var p = 0; p < data.data.length; p += 4) {
+        var on = data.data[p] > 0;
+        data.data[p] = c[0]; data.data[p + 1] = c[1]; data.data[p + 2] = c[2];
+        data.data[p + 3] = on ? (d === "cant-show" ? 90 : 170) : 0;
+      }
+      t.putImageData(data, 0, 0);
+      ctx.drawImage(tmp, 0, 0);
+    });
+  });
+}
+function drawPositions() {
+  var ctx = document.getElementById("pos").getContext("2d");
+  ctx.clearRect(0, 0, 1024, 1024);
+  if (!document.getElementById("show-pos").checked) { return; }
+  ctx.fillStyle = "rgba(255,230,0,.6)";
+  POSITIONS.forEach(function (p) { ctx.fillRect(p[0] - 1, p[1] - 1, 3, 3); });
+}
+function layers() {
+  document.getElementById("old").style.display = document.getElementById("show-old").checked ? "" : "none";
+  document.getElementById("new").style.display = document.getElementById("show-new").checked ? "" : "none";
+  drawPositions(); draw();
+}
+["show-old", "show-new", "show-pos", "show-reg"].forEach(function (id) {
+  document.getElementById(id).addEventListener("change", layers);
+});
+rows.forEach(function (row) { row.addEventListener("change", draw); });
+document.getElementById("export").addEventListener("click", function () {
+  var canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1024;
+  var ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 1024, 1024);
+  Promise.all(rows.map(load)).then(function (imgs) {
+    ctx.globalCompositeOperation = "lighten";
+    imgs.forEach(function (img, i) { if (decision(rows[i]) === "keep") { ctx.drawImage(img, 0, 0); } });
+    var a = document.createElement("a");
+    a.href = canvas.toDataURL("image/png");
+    a.download = "regions-__MAP__.png";
+    a.click();
+  });
+});
+document.getElementById("marks").addEventListener("click", function () {
+  document.getElementById("marks-out").textContent = rows.filter(function (r) { return decision(r) === "cant-show"; })
+    .map(function (r) { return "region " + r.getAttribute("data-index") + " " + r.getAttribute("data-kind") +
+      " bbox " + r.getAttribute("data-bbox"); }).join("\\n");
+});
+layers();
+</script></body></html>
+"""
+
+
+def cmd_overlay(args) -> int:
+    res = json.loads((args.fit / "fit.json").read_text(encoding="utf-8"))
+    crop = tuple(res["crop"]) if res.get("crop") else None
+    _, pic, ours = _load(Path(res["picture"]), crop, args.ours)
+    new = fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
+    regions = fit.diff_regions(ours, new, min_px=args.min_px)
+    spots = [(int(x), int(y)) for x, y in positions(args.map)]
+    counts = fit.count_positions(regions, spots)
+    rows = []
+    for i, (r, n) in enumerate(zip(regions, counts), 1):
+        x0, y0, x1, y1 = r["bbox"]
+        mask = _data_uri(Image.fromarray(r["mask"].astype(np.uint8) * 255, "L"))
+        radios = "".join(
+            f'<label><input type="radio" name="d{i}" value="{v}"{" checked" if v == "keep" else ""}> {label}</label> '
+            for v, label in (("keep", "keep"), ("reject", "reject"), ("cant-show", "minimap can't show")))
+        rows.append(
+            f'<tr class="region" data-index="{i}" data-kind="{r["kind"]}" data-area="{r["area"]}" '
+            f'data-bbox="{x0},{y0},{x1},{y1}" data-positions="{n}" data-mask="{mask}">'
+            f'<td>{i}</td><td>{r["kind"]}</td><td>{r["area"]}</td><td>x {x0}-{x1} y {y0}-{y1}</td>'
+            f'<td>{n}</td><td>{radios}</td></tr>')
+    page = (OVERLAY_PAGE.replace("__MAP__", html_lib.escape(args.map))
+            .replace("__NPOS__", str(len(spots)))
+            .replace("__OLD__", _data_uri(_floor_image(ours))).replace("__NEW__", _data_uri(_floor_image(new)))
+            .replace("__ROWS__", "\n".join(rows)).replace("__POSITIONS__", json.dumps([list(s) for s in spots])))
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "overlay.html").write_text(page, encoding="utf-8")
+    print(f"{len(regions)} regions, {len(spots)} positions -> {args.out / 'overlay.html'}")
+    return 0
+
+
+def _sha12(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+def cmd_fetch_minimap(args) -> int:
+    body = json.loads(fetch(f"{vendor_map_assets.API}/maps"))
+    if body.get("status") != 200:
+        raise SystemExit(f"valorant-api returned status {body.get('status')}")
+    found = [m for m in vendor_map_assets.playable_maps(body["data"]) if m["displayName"] == args.map]
+    if not found:
+        raise SystemExit(f"valorant-api has no playable map called {args.map!r}")
+    upstream = fetch(found[0]["displayIcon"])
+    vendored = STATIC / "img" / "maps" / f"{args.map}.png"
+    patched_from = vendor_map_assets.PATCHED_MINIMAPS.get(args.map)
+    new_sha = _sha12(upstream)
+    if patched_from is not None and new_sha == patched_from:
+        print("patched, upstream unchanged")
+        return 0
+    if vendored.is_file() and _sha12(vendored.read_bytes()) == new_sha:
+        print("same")
+        return 0
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / f"{args.map}.png").write_bytes(upstream)
+    note = " (a hand patch stands; upstream changed under it)" if patched_from is not None else ""
+    print(f"differs: upstream {new_sha}, vendored "
+          f"{_sha12(vendored.read_bytes()) if vendored.is_file() else 'missing'}{note}; saved {args.out / (args.map + '.png')}")
+    return 0
+
+
+class _NotesParser(HTMLParser):
+    """Flat events from a page: ("h", level, text), ("line", text), ("img", url)."""
+
+    BLOCKS = {"p", "li", "br", "div", "ul", "ol", "tr", "section", "article", "blockquote", "figure", "figcaption"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.events: list[tuple] = []
+        self._buf: list[str] = []
+        self._heading: int | None = None
+
+    def _flush(self):
+        text = " ".join("".join(self._buf).split())
+        self._buf = []
+        if text:
+            self.events.append(("h", self._heading, text) if self._heading else ("line", text))
+
+    def handle_starttag(self, tag, attrs):
+        if len(tag) == 2 and tag[0] == "h" and tag[1].isdigit():
+            self._flush()
+            self._heading = int(tag[1])
+        elif tag in self.BLOCKS:
+            self._flush()
+        elif tag == "img":
+            d = dict(attrs)
+            url = d.get("src") or d.get("data-src")
+            if url:
+                self.events.append(("img", url))
+
+    def handle_endtag(self, tag):
+        if len(tag) == 2 and tag[0] == "h" and tag[1].isdigit():
+            self._flush()
+            self._heading = None
+        elif tag in self.BLOCKS:
+            self._flush()
+
+    def handle_data(self, data):
+        self._buf.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
+
+
+def map_notes(page: str, map_name: str) -> tuple[list[str], list[str]] | None:
+    """(text lines, image urls) of the map's subsection under the page's "Map Updates" heading, or None."""
+    parser = _NotesParser()
+    parser.feed(page)
+    parser.close()
+    updates = None      # level of the open Map Updates heading
+    mine = None         # level of the open map heading
+    lines: list[str] = []
+    urls: list[str] = []
+    found = False
+    for ev in parser.events:
+        if ev[0] == "h":
+            level, text = ev[1], ev[2]
+            if mine is not None and level <= mine:
+                mine = None
+            if updates is not None and level <= updates:
+                updates = None
+            if updates is None and "map updates" in text.lower():
+                updates = level
+            elif updates is not None and mine is None and map_name.lower() in text.lower():
+                mine, found = level, True
+        elif mine is not None:
+            (lines if ev[0] == "line" else urls).append(ev[1])
+    return (lines, urls) if found else None
+
+
+def cmd_notes(args) -> int:
+    major, minor = _patch(args.patch)
+    url = args.url or f"https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-{major}-{minor}/"
+    got = map_notes(fetch(url).decode("utf-8", "replace"), args.map)
+    if got is None:
+        print(f"no {args.map} subsection under Map Updates in {url}", file=sys.stderr)
+        return 1
+    lines, urls = got
+    args.out.mkdir(parents=True, exist_ok=True)
+    stem = f"notes-{args.patch}-{args.map}"
+    (args.out / f"{stem}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (args.out / f"{stem}.images.txt").write_text("".join(u + "\n" for u in urls), encoding="utf-8")
+    print(f"{len(lines)} lines, {len(urls)} pictures -> {args.out / stem}.txt")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -209,6 +529,23 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--into", type=Path, default=STATIC, help="an asset tree shaped like app/static")
     b.add_argument("--kill-lines", type=Path, default=None, help="kill lines json (default the tests' fixture)")
     b.set_defaults(func=cmd_build)
+    o = sub.add_parser("overlay", help="a self-contained html to review the changed regions")
+    o.add_argument("--ours", type=Path, required=True)
+    o.add_argument("--fit", type=Path, required=True, help="the --out dir of an align run")
+    o.add_argument("--map", required=True)
+    o.add_argument("--out", type=Path, required=True, help="a scratch dir")
+    o.add_argument("--min-px", type=int, default=60)
+    o.set_defaults(func=cmd_overlay)
+    f = sub.add_parser("fetch-minimap", help="compare valorant-api's minimap with the vendored one")
+    f.add_argument("map")
+    f.add_argument("--out", type=Path, required=True, help="a scratch dir for a differing image")
+    f.set_defaults(func=cmd_fetch_minimap)
+    n = sub.add_parser("notes", help="a patch page's Map Updates text for one map")
+    n.add_argument("patch", help="13.10 form")
+    n.add_argument("--map", required=True)
+    n.add_argument("--out", type=Path, required=True)
+    n.add_argument("--url", default=None, help="override the patch page url")
+    n.set_defaults(func=cmd_notes)
     return p
 
 
