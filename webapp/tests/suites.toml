@@ -192,7 +192,7 @@ tests = ["tests/coach/test_*.py", "tests/test_coach_journey.py"]
 guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
-  "scripts/coach*", "tests/coach/data/area_cases.json", "alembic/versions/0032_coach_feedback_area.py",
+  "scripts/coach*", "scripts/area_pins.py", "tests/coach/data/area_cases.json", "alembic/versions/0032_coach_feedback_area.py",
 ]
 
 [critical-util]
