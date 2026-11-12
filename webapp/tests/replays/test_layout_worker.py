@@ -295,3 +295,32 @@ def test_unknown_layout_spends_no_try(factory, db, linked, monkeypatch, workflow
     assert counts['refused'] == 0
     assert not state.tries
     assert not any(e[0] == 'worker_refused' for e in events)
+
+
+@pytest.mark.parametrize('workflow', [False, True])
+def test_unknown_layout_waits_before_the_round_is_sent_again(factory, db, linked, monkeypatch, workflow):
+    """F6 (2026-11-12): a refused layout is held for BACKOFF_S, not sent again on every 20 s cycle."""
+    [planned] = rc.plan(db, rounds={1})
+    monkeypatch.setattr(rc, 'plan', lambda *a, **kw: [planned])
+    worker, state = FakeWorker(), remote.State()
+    refused = []
+    if workflow:
+        worker.answer = lambda task: {'status': 'failed', 'error_kind': 'compat', 'error_code': 'unknown_layout',
+                                      'error': 'absent'}
+    else:
+        def refuse(task):
+            refused.append(task['map'])
+            raise remote.UnknownLayout(task['map'])
+        worker.submit = refuse
+
+    def sent():
+        return len(worker.tasks) if workflow else len(refused)
+
+    remote.cycle(factory, worker, state, now=0)
+    remote.cycle(factory, worker, state, now=1)          # a workflow answer settles here
+    assert sent() == 1
+    remote.cycle(factory, worker, state, now=40)
+    assert sent() == 1
+    remote.cycle(factory, worker, state, now=1 + remote.BACKOFF_S + 1)
+    assert sent() == 2
+    assert not state.tries
