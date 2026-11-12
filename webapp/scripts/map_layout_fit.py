@@ -115,3 +115,32 @@ def diff_image(ours: np.ndarray, new: np.ndarray) -> np.ndarray:
     img[ours & ~new] = (230, 60, 60)
     img[~ours & new] = (60, 200, 90)
     return img
+
+
+FLOOR_RGB = (118, 118, 118)
+OUTER_PX = 2
+
+
+def layout_minimap(old_rgba: np.ndarray, picture_floor: np.ndarray, regions: np.ndarray) -> np.ndarray:
+    """The layout's minimap (RGBA) in the vendored style: inside `regions`, floor of the aligned picture is
+    (118,118,118) with its outer 2 px white and everything else transparent wall; outside them the old
+    minimap's pixels are kept."""
+    out = np.array(old_rgba, dtype=np.uint8, copy=True)
+    floor = np.asarray(picture_floor, bool)
+    inner = ndimage.binary_erosion(floor, iterations=OUTER_PX)
+    inside = np.asarray(regions, bool)
+    out[inside] = (0, 0, 0, 0)
+    out[inside & floor] = (*FLOOR_RGB, 255)
+    out[inside & floor & ~inner] = (255, 255, 255, 255)
+    return out
+
+
+def callouts_in(callouts: list[dict], regions: np.ndarray, uv_scale: int = 10000) -> list[dict]:
+    """The callouts (u, v in 0..uv_scale) whose minimap pixel lies inside the region mask."""
+    h, w = regions.shape
+    found = []
+    for c in callouts:
+        x, y = int(c["u"] / uv_scale * w), int(c["v"] / uv_scale * h)
+        if 0 <= y < h and 0 <= x < w and regions[y, x]:
+            found.append(c)
+    return found

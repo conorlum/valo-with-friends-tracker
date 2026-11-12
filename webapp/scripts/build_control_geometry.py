@@ -40,8 +40,10 @@ RISK1_BAR = cg._RISK1_BAR
 kill_line_result = cg.kill_line_result     # one rule for the build and the tests (lines on cover aren't judged)
 
 
-def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> dict:
-    png = cg.MINIMAP_DIR / f"{name}.png"
+def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path, *, png: Path | None = None,
+              scale: float | None = None) -> dict:
+    """`png` and `scale` default to the base map's minimap and maps.json scale; a layout key passes its own."""
+    png = png or cg.MINIMAP_DIR / f"{name}.png"
     image_sha = hashlib.sha256(png.read_bytes()).hexdigest()[:12]
     if entry.get("image_sha") and entry["image_sha"] != image_sha:
         raise cg.GeometryError(f"{name}'s minimap changed since it was tagged ({entry['image_sha']} -> {image_sha})")
@@ -52,7 +54,8 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     # The tracer's obstacles (the viewer's; not a control input, so no round's fingerprint moves).
     bullet = cg.bullet_mask(rgba, entry)
     cg.write_mask_png(asset_dir / f"{name}.bullet.png", bullet)
-    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
+    if scale is None:
+        scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     geo = cg.geometry_from_masks(name, m.sight, m.walk, scale)
     row = {"image_sha": image_sha,
            "sight_sha": hashlib.sha256(np.packbits(m.sight).tobytes()).hexdigest()[:12],
