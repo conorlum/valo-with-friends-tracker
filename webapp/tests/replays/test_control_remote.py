@@ -1505,6 +1505,8 @@ def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays(
     assert render["util"] == Settings().util_run_timeout_s + 300
     assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
     assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
+    from app.services import util_build_remote as util
+    assert util.STALE_BUILD_S == 3600 and util.STALE_BUILD_S > 2 * Settings().util_run_timeout_s
     # Local mode: untouched.
     assert remote.STALE_JOB_S == 1800 and heights.STALE_BUILD_S == 7200
     assert "REPLAY_CONTROL_TIMEOUT_S" not in yaml_text and "REPLAY_HEIGHT_TIMEOUT_S" not in yaml_text

@@ -204,6 +204,34 @@ def test_height_rebuild_step_key(cycle_env, factory, monkeypatch):
     assert keys(factory) == {}
 
 
+def test_util_build_step_key(cycle_env, factory, monkeypatch):
+    from app.services import util_build_remote as util
+
+    monkeypatch.setattr(remote, "cycle", lambda *a, **kw: {})
+    monkeypatch.setattr(util, "enabled", lambda: True)
+
+    def run(fails=False):
+        stop = threading.Event()
+        def step(*a, **kw):
+            stop.set()
+            if fails:
+                raise Boom("util")
+        monkeypatch.setattr(util, "step", step)
+        remote.run_forever(factory, object(), stop, every_s=0)
+
+    run(fails=True)
+    run(fails=True)
+    assert keys(factory)["util_build_step"].count == 2
+    monkeypatch.setattr(util, "enabled", lambda: False)
+    stop = threading.Event()
+    monkeypatch.setattr(remote, "cycle", lambda *a, **kw: stop.set() or {})
+    remote.run_forever(factory, object(), stop, every_s=0)
+    assert set(keys(factory)) == {"util_build_step"}
+    monkeypatch.setattr(util, "enabled", lambda: True)
+    run()
+    assert keys(factory) == {}
+
+
 def test_archive_worker_needs_three_failing_cycles(factory, monkeypatch):
     class Client:
         fail = True

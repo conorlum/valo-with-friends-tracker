@@ -2,7 +2,7 @@
 
 The loop's cheap signature gates the full freshness/key check. A preparation keeps
 metadata and encoded context, and reads only worker-missing blobs in bounded chunks.
-Collection of an open build belongs to the caller; one UtilState admits one build.
+One UtilState admits one build, followed and collected outside the control lock.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import logging
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
 
-from sqlalchemy import case, func, tuple_
+from sqlalchemy import case, func, text, tuple_
 
 from app.config import settings
 from app.critutil import build_digest, corpus
@@ -46,6 +47,7 @@ QUIET_S = 120
 DIGEST_GRACE_S = 1800
 MAX_TRIES = 3
 BACKOFF_S = 300
+STALE_BUILD_S = 3600  # seen running: > 2 x the worker's 1500 s task limit
 
 
 class Signature(NamedTuple):
@@ -68,6 +70,7 @@ class UtilState:
     asked: bool = False
     digest_mismatch_since: float | None = None
     digest_reported: bool = False
+    deploy_mismatch: bool = False
     last_signature: Signature | None = None
     last_full_check: float | None = None
     stale: bool = False
@@ -87,6 +90,9 @@ class UtilState:
     have_pending: bool = False
     resends: int = 0
     gave_up: set = field(default_factory=set)
+    opened_at: float | None = None
+    running_since: float | None = None
+    last_status: str | None = None
 
 
 STATE = UtilState()
@@ -94,6 +100,10 @@ STATE = UtilState()
 
 def enabled() -> bool:
     return bool(getattr(settings, "util_build_remote", False) and not settings.demo_mode)
+
+
+def in_flight(state: UtilState | None = None) -> bool:
+    return (STATE if state is None else state).phase != "idle"
 
 
 def obs_key(match_id, count, max_kill_id) -> str:
@@ -180,6 +190,7 @@ def _abandon(state: UtilState) -> None:
     state.have_pending = False
     state.prepared_signature = None
     state.last_signature = None
+    state.opened_at = state.running_since = state.last_status = None
     util_build_health.set_in_flight(False)
 
 
@@ -296,14 +307,16 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
         if (health.get("util") or {}).get("digest") != digest:
             note_digest_mismatch(state, now)
             return
-        state.digest_mismatch_since = None
-        state.digest_reported = False
+        if not state.deploy_mismatch:
+            state.digest_mismatch_since = None
+            state.digest_reported = False
         if state.phase == "idle":
             if not due(db, state, now) or not _prepare(db, state, digest, now):
                 return
         elif _signature(db) != state.prepared_signature or digest != state.digest:
             raise _Changed("prepared signature changed while pushing")
         if state.have_pending:
+            db.rollback()  # detached preparation; no connection through worker I/O
             answer = client.util_have(list(state.row_keys), list(state.obs_keys), prune=True, ref=state.ref)
             _missing(state, answer)
             state.have_pending = False
@@ -312,6 +325,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
         budget = BATCHES_PER_CYCLE
         while state.missing_rows and budget:
             entries = _round_entries(db, state, state.missing_rows[:ROW_CHUNK])
+            db.rollback()
             budget = _send_entries(client, state, "rows", entries, budget)
         if state.missing_obs and budget:
             keys = state.missing_obs[:OBS_MATCHES_PER_CYCLE]
@@ -321,10 +335,12 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
             observations = util_model.load_observations(db, set(state.excluded), by_match=True, match_ids=ids)
             entries = [{"key": key, "data": base64.b64encode(corpus.encode_obs(
                 [[state.obs_keys[key], observations.get(state.obs_keys[key], [])]])).decode("ascii")} for key in keys]
+            db.rollback()
             _send_entries(client, state, "obs", entries, budget)
         if state.missing_rows or state.missing_obs:
             return
         stage = "dispatch"
+        db.rollback()
         answer = client.util_open(key=state.key, digest=state.digest, rows=list(state.row_keys),
                                   obs=list(state.obs_keys), refit=state.refit,
                                   context=base64.b64encode(state.context).decode("ascii"), ref=state.ref)
@@ -338,13 +354,118 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
         if not answer.get("id") or answer.get("key") != state.key:
             raise ValueError("worker returned an invalid build identity")
         state.build_id, state.phase = answer["id"], "open"
-        log.info("util open key=%s ref=%s id=%s", state.key, state.ref, state.build_id)
+        state.opened_at = now
+        state.running_since = state.last_status = None
+        log.info("util open key=%s ref=%s id=%s bytes=0 seconds=0.0", state.key, state.ref, state.build_id)
     except _Changed as error:
         log.info("util abandon key=%s ref=%s reason=%s", state.key, state.ref, error)
         _abandon(state)
     except Exception as error:
-        util_build_health.record(stage, str(error), {"key": state.key, "ref": state.ref})
-        log.warning("util %s failed key=%s ref=%s error=%s", stage, state.key, state.ref, error)
-        if state.key:
+        _failure(state, stage, error, now)
+
+
+def _failure(state: UtilState, stage: str, error, now: float) -> None:
+    context = {"key": state.key, "ref": state.ref, "id": state.build_id}
+    util_build_health.record(stage, str(error), context)
+    log.warning("util %s failed key=%s ref=%s id=%s error=%s", stage, state.key, state.ref, state.build_id, error)
+    if state.key:
+        state.backoff[state.key] = now + BACKOFF_S
+        if state.tries.get(state.key, 0) >= MAX_TRIES and state.key not in state.gave_up:
+            util_build_health.record("gave_up", "three build tries exhausted", context)
+            state.gave_up.add(state.key)
+    _abandon(state)
+
+
+def _store(session_factory, state: UtilState, answer: dict, data: str) -> None:
+    """Extract both products in SQL from one bound text value; never decode the build."""
+    with session_factory() as db:
+        with util_model.rebuild_lock(db, "values"):
+            source = "CAST(:data AS JSONB)" if db.get_bind().dialect.name == "postgresql" else ":data"
+            products = [f"('values', :values_version, :values_key, {source} -> 'values', CURRENT_TIMESTAMP)"]
+            if state.refit:
+                products.append(f"('win', :win_version, ({source} -> 'win' ->> 'key'), "
+                                f"{source} -> 'win', CURRENT_TIMESTAMP)")
+            db.execute(text("INSERT INTO util_model (name, version, key, data, computed_at) VALUES "
+                            + ", ".join(products) + " ON CONFLICT (name) DO UPDATE SET "
+                            "version = excluded.version, key = excluded.key, data = excluded.data, "
+                            "computed_at = excluded.computed_at"),
+                       {"data": data, "values_version": util_values.VERSION, "values_key": answer["values_key"],
+                        "win_version": util_model.VERSION})
+            db.commit()
+
+
+def _follow(session_factory, client, state: UtilState, now: float) -> None:
+    stage = "run"
+    try:
+        answer = client.util_build(state.build_id)
+        if answer.get("id") != state.build_id or answer.get("key") != state.key:
+            raise ValueError("worker returned another build's status")
+        status = answer.get("status")
+        if status != state.last_status:
+            log.info("util poll key=%s ref=%s id=%s status=%s bytes=%s seconds=%.1f", state.key, state.ref,
+                     state.build_id, status, answer.get("bytes") or 0, now - state.opened_at)
+            state.last_status = status
+        if status == "queued":
+            state.running_since = None
+            return
+        if status == "running":
+            if state.running_since is None:
+                state.running_since = now
+            if now - state.running_since > STALE_BUILD_S:
+                raise ValueError("build ran longer than 3600 seconds")
+            return
+        if status == "failed" and answer.get("error_kind") == "deploy":
+            state.deploy_mismatch = True
+            note_digest_mismatch(state, now, answer.get("error", "task deploy mismatch"))
+            state.tries[state.key] = max(0, state.tries.get(state.key, 1) - 1)
             state.backoff[state.key] = now + BACKOFF_S
+            log.info("util deploy retry key=%s ref=%s id=%s", state.key, state.ref, state.build_id)
+            _abandon(state)
+            return
+        if status != "done":
+            raise ValueError(answer.get("error") or f"build ended in {status!r}")
+        stage = "collect"
+        if (answer.get("version") != util_values.VERSION or answer.get("digest") != state.digest
+                or answer.get("digest") != build_digest.digest(WEBAPP) or answer.get("refit") != state.refit
+                or not isinstance(answer.get("values_key"), str) or not answer["values_key"]):
+            raise ValueError("build version, digest, refit or values key differs")
+        with tempfile.TemporaryDirectory(prefix="util-result-") as folder:
+            path = Path(folder) / "result.json"
+            client.util_result(state.build_id, path)
+            with path.open("rb") as source:
+                sha = hashlib.file_digest(source, "sha256").hexdigest()
+            size = path.stat().st_size
+            if sha != answer.get("sha256") or size != answer.get("bytes"):
+                raise ValueError("build result sha256 or byte count differs")
+            data = path.read_text(encoding="utf-8")
+            log.info("util collect key=%s ref=%s id=%s bytes=%s seconds=%.1f", state.key, state.ref,
+                     state.build_id, size, now - state.opened_at)
+            stage = "store"
+            _store(session_factory, state, answer, data)
+        log.info("util store key=%s ref=%s id=%s bytes=%s seconds=%.1f", state.key, state.ref,
+                 state.build_id, size, now - state.opened_at)
+        state.deploy_mismatch = False
+        state.digest_mismatch_since = None
+        state.digest_reported = False
         _abandon(state)
+        util_build_health.clear_all()
+    except Exception as error:
+        _failure(state, stage, error, now)
+
+
+def step(session_factory, client, state: UtilState | None = None, now: float | None = None) -> None:
+    """Advance one build after the control cycle has released its transaction and lock."""
+    if not enabled():
+        return
+    state = STATE if state is None else state
+    now = time.time() if now is None else now
+    if state.phase == "open":
+        _follow(session_factory, client, state, now)
+        return
+    try:
+        health = client.health()
+    except Exception as error:
+        _failure(state, "dispatch", error, now)
+        return
+    with session_factory() as db:
+        push(db, client, state, health, now)

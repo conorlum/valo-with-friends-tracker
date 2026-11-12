@@ -191,6 +191,7 @@ Conventions for every item:
   `loop_failed` key = loop name (`record`, background thread), a finished pass resolves that key.
 - Inner keys, each resolved only where its step succeeds: `reparse_pass` (`replay_control_remote.py:733`; resolved
   after the re-parse step returns), `height_rebuild_step` (`:772`; after the heights step returns),
+  `util_build_step` (after the remote Util step returns, outside the control cycle's lock transaction),
   `archive_sync:worker` (`replay_archive_sync.py:81-83`; a cycle with no worker error), `map_pool:check`
   (`map_pool_refresh.py:151-154` per page, `:171-173` whole check; resolved when the check's errors count is 0).
 - `site_health.quiet_loops(now)`: registered loops whose last "end" beat (or registration) is older than 3x cycle +

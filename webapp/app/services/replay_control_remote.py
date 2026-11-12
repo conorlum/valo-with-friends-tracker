@@ -970,6 +970,16 @@ def run_forever(session_factory, client, stop: threading.Event, every_s: float =
                 continue
             if not counts.get("locked_out"):      # another process held the lock: no pass was made here
                 site_health.loop_ok(LOOP_NAME)
+            # cycle's advisory-lock transaction is closed before any Util worker call.
+            from app.services import util_build_remote
+
+            if util_build_remote.enabled():
+                try:
+                    util_build_remote.step(session_factory, client)
+                    site_health.loop_ok("util_build_step")
+                except Exception as exc:  # noqa: BLE001 - Util must never stop map control
+                    log.exception("util build step failed")
+                    site_health.loop_failed("util_build_step", exc)
             site_health.beat(LOOP_NAME, "end")
             did = {k: v for k, v in counts.items() if v}
             if did:

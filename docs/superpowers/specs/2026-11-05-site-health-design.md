@@ -190,7 +190,8 @@ past "held_back N; 0 in flight" case).
   tail; the next finished pass resolves that key only. Failures caught inside a pass that still finishes record
   under the same kind with their own keys, and each is resolved only where that step succeeds (P2 finding 5):
   `reparse_pass` (`replay_control_remote.py:733`) when the re-parse step returns, `height_rebuild_step` (`:772`) when
-  the heights step returns, `archive_sync:worker` (`replay_archive_sync.py:81-83`) on a cycle with no worker error,
+  the heights step returns, `util_build_step` after the remote Util step returns (outside the control cycle's
+  lock transaction), `archive_sync:worker` (`replay_archive_sync.py:81-83`) on a cycle with no worker error,
   `map_pool:check` (`map_pool_refresh.py:151-154`, `:171-173`) on a check with no errors. Every clean pass queues
   its resolve (no cache of open keys: it went stale across processes), and repeated resolves are merged in the
   queue. An archive acknowledgement the worker never answers counts as a worker error. `scripts/map_pool.py

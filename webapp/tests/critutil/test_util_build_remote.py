@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.critutil import build_digest, corpus
 from app.db import Base
@@ -482,3 +482,283 @@ def test_result_failure_is_client_error(tmp_path, monkeypatch, code, error):
     monkeypatch.setattr("urllib.request.urlopen", fail)
     with pytest.raises(error):
         ControlClient("synthetic.invalid").util_result("job", tmp_path / "result")
+
+
+@pytest.fixture
+def stepping(env, monkeypatch):
+    """Worker-shaped answers and fresh, tracked sessions; all calls are in-process."""
+    sessions, flags, clears = [], [], []
+    maker = sessionmaker(bind=env.db.get_bind())
+
+    def factory():
+        db = maker()
+        sessions.append(db)
+        return db
+
+    env.factory, env.sessions = factory, sessions
+    env.flags, env.clears = flags, clears
+    env.status = "queued"
+    env.error_kind = "infra"
+    env.output = None
+    env.overrides = {}
+    env.paths = []
+    env.polls = 0
+    env.worker_jobs = {}
+
+    def no_transaction():
+        assert not any(db.in_transaction() for db in sessions)
+
+    def health():
+        no_transaction()
+        return env.health
+
+    def poll(build_id):
+        no_transaction()
+        env.polls += 1
+        if isinstance(env.status, Exception):
+            raise env.status
+        ctx = corpus.decode_context(env.state.context)
+        win = {"key": "synthetic-refitted", "excluded": sorted(env.state.excluded), "cells": {}}
+        values = {"casts": [], "weights": {"cover": 0.125}, "nested": [True, None, "synthetic"]}
+        output = corpus.encode_output({"win": win if env.state.refit else None, "values": values})
+        env.output = output if env.output is None else env.output
+        return dict({"id": build_id, "key": env.state.key, "status": env.status,
+                     "values_key": corpus.values_key(ctx["key_parts"], win["key"] if env.state.refit else env.state.win_key),
+                     "digest": env.state.digest, "version": util_values.VERSION, "refit": env.state.refit,
+                     "bytes": len(env.output), "sha256": hashlib.sha256(env.output).hexdigest(),
+                     "error": "synthetic failure", "error_kind": env.error_kind}, **env.overrides)
+
+    def result(build_id, path):
+        no_transaction()
+        env.paths.append(path)
+        path.write_bytes(env.output)
+        return path
+
+    monkeypatch.setattr(env.client, "health", health, raising=False)
+    monkeypatch.setattr(env.client, "util_build", poll, raising=False)
+    monkeypatch.setattr(env.client, "util_result", result, raising=False)
+    for name in ("util_have", "util_rounds", "util_obs", "util_open"):
+        original = getattr(env.client, name)
+        def checked(*a, _method=original, _name=name, **kw):
+            no_transaction()
+            answer = _method(*a, **kw)
+            if _name == "util_open" and answer.get("id"):
+                # Model worker dedupe: equal dispatch keys return the same build.
+                answer["id"] = env.worker_jobs.setdefault(kw["key"], f"synthetic-job-{len(env.worker_jobs) + 1}")
+            return answer
+        monkeypatch.setattr(env.client, name, checked)
+    monkeypatch.setattr(remote.util_build_health, "set_in_flight", flags.append)
+    monkeypatch.setattr(remote.util_build_health, "clear_all", lambda: clears.append(True))
+    return env
+
+
+def advance(env, at=NOW):
+    remote.step(env.factory, env.client, env.state, at)
+
+
+@pytest.mark.parametrize("refit", [False, True])
+def test_step_queued_running_done_stores_exact_output_and_estimator_key(stepping, refit, caplog, monkeypatch):
+    env = stepping
+    put_rows(env)
+    if refit:
+        env.db.query(UtilModel).delete()
+        env.db.commit()
+    sql = []
+    event.listen(env.db.get_bind(), "before_cursor_execute", lambda c, u, s, p, x, m: sql.append(s))
+    with caplog.at_level(logging.INFO, logger=remote.__name__):
+        advance(env)
+        dispatch_key, ref = env.state.key, env.state.ref
+        assert remote.in_flight(env.state)
+        advance(env, NOW + 1)
+        env.status = "running"
+        advance(env, NOW + 2)
+        env.status = "done"
+        # Collection must not decode the output in Python. ORM reads below happen after restoration.
+        original_loads = json.loads
+        def reject_output(data, *a, **kw):
+            assert data != env.output, "collector decoded the result blob"
+            return original_loads(data, *a, **kw)
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", reject_output)
+            advance(env, NOW + 3)
+    assert not remote.in_flight(env.state)
+    assert env.flags[0] is True and env.flags[-1] is False and env.clears == [True]
+    assert all(not path.exists() for path in env.paths)
+    with env.factory() as db:
+        stored = db.get(UtilModel, "values")
+        assert stored.data == json.loads(env.output)["values"]
+        assert stored.version == util_values.VERSION and stored.computed_at is not None
+        assert stored.key != dispatch_key
+        assert stored.key == replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
+        if refit:
+            win = db.get(UtilModel, "win")
+            assert win.data == json.loads(env.output)["win"] and win.version == util_model.VERSION
+    assert any("->" in statement and "INSERT INTO util_model" in statement for statement in sql)
+    advance(env, NOW + 4)
+    assert len(env.client.sent("open")) == 1
+    records = [r.getMessage() for r in caplog.records if r.name == remote.__name__]
+    for action in ("open", "poll", "collect", "store"):
+        assert any(f"util {action}" in line for line in records)
+    assert all(ref in line and dispatch_key in line for line in records)
+
+
+@pytest.mark.parametrize("overrides", [{"version": -1}, {"digest": "other"}, {"sha256": "0" * 64}])
+def test_step_rejects_foreign_or_corrupt_result(stepping, overrides):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    env.status, env.overrides = "done", overrides
+    advance(env, NOW + 1)
+    assert env.db.get(UtilModel, "values") is None
+    assert [f[0] for f in env.failures] == ["collect"]
+    assert list(env.state.tries.values()) == [1]
+    assert env.clears == [] and not remote.in_flight(env.state)
+    assert all(not path.exists() for path in env.paths)
+
+
+def test_step_deploy_refusal_refunds_try_and_retains_mismatch_clock(stepping):
+    env = stepping
+    put_rows(env)
+    env.status, env.error_kind = "failed", "deploy"
+    for offset in (0, 310, 620, 930, 1240, 1550, 1860):
+        advance(env, NOW + offset)
+        advance(env, NOW + offset + 1)
+        assert list(env.state.tries.values()) == [0]
+        advance(env, NOW + offset + 2)
+    assert [f[0] for f in env.failures] == ["digest"]
+    assert len(env.client.sent("open")) == 7
+
+
+def test_step_three_infra_failures_and_gave_up_once(stepping):
+    env = stepping
+    put_rows(env)
+    env.status = "failed"
+    for offset in (0, 310, 620, 930, 1240):
+        advance(env, NOW + offset)
+        advance(env, NOW + offset + 1)
+    assert [f[0] for f in env.failures] == ["run", "run", "run", "gave_up"]
+    assert list(env.state.tries.values()) == [3]
+    assert len(env.client.sent("open")) == 3
+
+
+@pytest.mark.parametrize("status", [WorkerGone("404"), "dead"])
+def test_step_dead_or_forgotten_run_spends_try(stepping, status):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    env.status = status
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["run"]
+    assert list(env.state.tries.values()) == [1]
+
+
+def test_step_running_timeout_starts_when_first_seen_running(stepping):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    advance(env, NOW + 9000)  # queued time never consumes the run limit
+    env.status = "running"
+    advance(env, NOW + 9001)
+    advance(env, NOW + 12601)
+    assert not env.failures
+    advance(env, NOW + 12602)
+    assert [f[0] for f in env.failures] == ["run"]
+
+
+def test_step_open_refusal_and_unreachable_health_record_dispatch(stepping, monkeypatch):
+    env = stepping
+    put_rows(env)
+    def refuse(*a, **kw):
+        raise Unreachable("synthetic refusal")
+    monkeypatch.setattr(env.client, "util_open", refuse)
+    advance(env)
+    assert [f[0] for f in env.failures] == ["dispatch"]
+    monkeypatch.setattr(env.client, "health", refuse)
+    advance(env, NOW + 310)
+    assert [f[0] for f in env.failures] == ["dispatch", "dispatch"]
+
+
+def test_step_store_failure_rolls_back_both_products(stepping, monkeypatch):
+    env = stepping
+    put_rows(env)
+    env.db.query(UtilModel).delete()
+    env.db.commit()
+    advance(env)
+    env.status = "done"
+    def reject(*a):
+        raise RuntimeError("synthetic database refusal")
+    monkeypatch.setattr(util_model, "rebuild_lock", reject)
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["store"]
+    assert env.db.query(UtilModel).count() == 0
+    assert all(not db.in_transaction() for db in env.sessions)
+    assert not env.clears
+
+
+def test_step_new_replay_after_success_opens_new_worker_identity(stepping):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    first = env.state.key
+    first_build = env.state.build_id
+    env.status = "done"
+    advance(env, NOW + 1)
+    add_replay(env.db, 2)
+    env.db.commit()
+    advance(env, NOW + 2)
+    assert len(env.client.sent("open")) == 2
+    assert env.client.sent("open")[-1]["key"] != first
+    assert env.client.sent("open")[-1]["refit"] is True
+    assert env.state.build_id != first_build
+
+
+def test_step_disabled_does_not_contact_worker_or_open_session(stepping, monkeypatch):
+    env = stepping
+    monkeypatch.setattr(remote, "enabled", lambda: False)
+    advance(env)
+    assert env.sessions == [] and env.client.calls == [] and env.polls == 0
+
+
+def test_step_result_fetch_failure_is_collected_as_failure(stepping, monkeypatch):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    env.status = "done"
+    def missing(*a):
+        raise WorkerGone("synthetic missing result")
+    monkeypatch.setattr(env.client, "util_result", missing)
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["collect"]
+    assert list(env.state.tries.values()) == [1]
+    assert env.db.get(UtilModel, "values") is None
+
+
+def test_control_loop_survives_util_error_and_releases_lock_before_poll(stepping, monkeypatch):
+    from app.services import replay_control_remote as control
+    env = stepping
+    put_rows(env)
+    advance(env)
+    stop = SimpleNamespace(wait=lambda *a: len(passes) >= 2, is_set=lambda: True)
+    passes, failures, successes = [], [], []
+    real_cycle = control.cycle
+    # Run the real control cycle with its actual lock session, avoiding unrelated subsystems.
+    for name in ("_collect", "_submit", "_snapshot"):
+        monkeypatch.setattr(control, name, lambda *a, **k: None)
+    monkeypatch.setattr(control.replay_control, "prepare_discovered", lambda *a: None)
+    monkeypatch.setattr(control.replay_heights_remote, "enabled", lambda: False)
+    def counted(*a, **kw):
+        passes.append(1)
+        return real_cycle(*a, **kw)
+    monkeypatch.setattr(control, "cycle", counted)
+    monkeypatch.setattr(remote, "STATE", env.state)
+    original_step = remote.step
+    def sometimes(*a, **kw):
+        if len(passes) == 1:
+            raise RuntimeError("synthetic util failure")
+        original_step(*a, **kw)
+    monkeypatch.setattr(remote, "step", sometimes)
+    monkeypatch.setattr(control.site_health, "loop_failed", lambda name, exc: failures.append(name))
+    monkeypatch.setattr(control.site_health, "loop_ok", successes.append)
+    control.run_forever(env.factory, env.client, stop, every_s=0)
+    assert len(passes) == 2 and env.polls == 1
+    assert failures == ["util_build_step"] and "util_build_step" in successes
