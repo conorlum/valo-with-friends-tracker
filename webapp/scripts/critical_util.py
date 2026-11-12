@@ -149,7 +149,8 @@ def cmd_measure(db) -> int:
         if rid not in ctx:
             continue
         for c in d.get("casts") or ():
-            areas[replay_util.area_of(ctx[rid]["map"], c.get("u"), c.get("v"), c.get("side"))] += 1
+            areas[replay_util.area_of(ctx[rid].get("asset_key", ctx[rid]["map"]), c.get("u"), c.get("v"),
+                                      c.get("side"))] += 1
     print(f"7. casts per area: {dict(areas.most_common())}")
 
     # 2. overlap: per ability, the share of casts with a no-util comparison set at the full level, a fallback, none
