@@ -52,6 +52,10 @@ The player detail page's two heaviest computations (the round-win/kill-order sta
 - `scripts/recompute_player_views.py` — batch recompute for every player (or `--cached-only`); run after a bulk import/crawl, a manual DB fixup, or a schema/calculation version bump: `.\.venv\Scripts\python.exe scripts\recompute_player_views.py`.
 - Both tracker.gg ingest scripts (`ingest_trackergg_player.py`, `refresh_tracked_players.py`) pre-warm the cache for every player whose rows were invalidated, once each, at the end of the run — pass `--no-prewarm` to skip this (a full career recompute is several seconds per affected player).
 
+### Critical Util
+
+Reviewed paint is published by merging it, and Critical Util builds ignore uncommitted areas files.
+
 ### AI coach
 
 - A moment's **Area should be** correction stores the name and selected player (migration `0032`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.

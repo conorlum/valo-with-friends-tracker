@@ -101,11 +101,20 @@ def label_of(kinds) -> str | None:
 # --- areas and economy
 
 
-def area_of(map_name: str, u, v, side: str | None) -> str:
+def area_of(map_name: str, u, v, side: str | None, *, painted_table: dict[str, areas.Painted] | None = None) -> str:
     if u is None or v is None:
         return "unknown"
-    found = areas.area_at(map_name, u, v)
+    if painted_table is None:
+        painted = areas.load_painted(map_name)
+        painted_table = {map_name: painted} if painted is not None else {}
+    found = areas.area_at(map_name, u, v, painted_table=painted_table)
     sup = (found or {}).get("super")
+    if found is None and map_name in painted_table:
+        painted = painted_table[map_name]
+        bands = painted.bands.get(areas.cell_at(u, v), ())
+        supers = {painted.names.get(name_id, {}).get("super") for _, _, name_id in bands}
+        if len(supers) == 1:
+            sup = supers.pop()
     if sup in ("Attacker Side", "Defender Side"):
         own = (sup == "Attacker Side") == (side == "attack")
         return "own half" if own else "enemy half"
@@ -246,7 +255,8 @@ def _replay_context(db, replay_ids):
 NO_LIFT = {"swing": None, "base": None, "base_n": 0, "base_level": None, "lift": None}
 
 
-def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, include_unscored: bool = False
+def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, include_unscored: bool = False,
+               painted_table: dict[str, areas.Painted] | None = None,
                ) -> list[dict]:
     """Every valued cast of one replay, flat, with who threw it and where, and its combo partners. The lift fields
     are empty here: `build_from_rounds` fills them (the v2 baseline), the tab reads them from the stored build. A
@@ -270,7 +280,8 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                 "i": c["i"], "slot": c["by"], "player_id": p.get("player_id"), "agent": c.get("agent") or p.get("agent"),
                 "ability": ability_label(c), "kind": kind_label(c.get("kinds")), "kinds": c.get("kinds"),
                 "label": label_of(c.get("kinds")),
-                "side": c.get("side"), "area": area_of(ctx["map"], c.get("u"), c.get("v"), c.get("side")),
+                "side": c.get("side"), "area": area_of(ctx["map"], c.get("u"), c.get("v"), c.get("side"),
+                                                       painted_table=painted_table),
                 "phase": c.get("phase"), "t": c["t"],
                 "buy": buy_type(n, ctx["loadout"].get((n, team))),
                 "won": (ctx["rounds"].get(n) or {}).get("winner") == c.get("side") if c.get("side") else None,
@@ -329,7 +340,7 @@ def _mark_combos(rows: list[dict], casts: list[dict]) -> None:
 REBUILD_TRIES = 3
 
 
-def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
+def corpus_key(db, rows: list[tuple], model: dict | None, *, painted_table: dict[str, areas.Painted] | None = None) -> str:
     """What a corpus build is made from, as one key: the versions, every current util row it reads (round,
     fingerprint, when computed), each of their replays' match and clock offset, the estimator's key, and any
     reviewed map areas. Computed from the rows a build reads, so the key describes that build's inputs."""
@@ -340,7 +351,9 @@ def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
     friends = hashlib.sha256(",".join(str(p) for p in sorted(friend_players(db))).encode()).hexdigest()
     h = hashlib.sha256(f"{util_values.VERSION}:{PAGE_VERSION}:{(model or {}).get('key')}:{abilities.table_hash()}:"
                        f"{constants.VERSION}:{friends}".encode())
-    areas_hash = areas.table_hash()
+    if painted_table is None:
+        painted_table = areas.load_table(published_only=True)
+    areas_hash = areas.table_hash(painted_table=painted_table)
     if areas_hash is not None:
         h.update(f":areas={areas_hash}".encode())
     for rid, n, fp, at, *_ in sorted(rows, key=lambda r: (r[0], r[1])):
@@ -376,7 +389,8 @@ def _item_of(data: dict, row: dict) -> dict | None:
     return next((h for h in data.get("heals") or () if h.get("t") == row["t"] and h.get("by") == row["slot"]), None)
 
 
-def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()) -> dict:
+def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset(), *,
+                      painted_table: dict[str, areas.Painted] | None = None) -> dict:
     """The corpus build, pure: `stored` is {replay id: {round: data}}, `ctx` the `_replay_context`, `friend_players`
     the players in at least one friendship (they get a Yours baseline). Each match is valued with weights fitted
     without it (util_values.weights_for) and each cast compared with the v2 baseline (util_values: per type, at its
@@ -385,6 +399,8 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
     (`lift_device`, R10). A mode's lift counts toward scores, priors and spread only where the gate passes at the
     cast's L (R2); `lift` is the all-players one for the page and the tab."""
     friend_players = frozenset(friend_players)
+    if painted_table is None:
+        painted_table = areas.load_table(published_only=True)
     stored = {rid: rounds for rid, rounds in stored.items() if rid in ctx}
     prepared: dict[int, dict] = {}
     items, training = [], []
@@ -403,7 +419,8 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
     out_rows = []
     for rid, rounds in stored.items():
         m = ctx[rid]["match_id"]
-        out_rows.extend(_cast_rows(rid, ctx[rid], prepared[rid], model, util_values.weights_for(fit, m)))
+        out_rows.extend(_cast_rows(rid, ctx[rid], prepared[rid], model, util_values.weights_for(fit, m),
+                                   painted_table=painted_table))
 
     lineup_of = lambda r: (r["player_id"], r["ability"], r["map"], r["side"], r["area"])  # noqa: E731
     lineup_matches: dict[tuple, set] = defaultdict(set)
@@ -506,7 +523,8 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
             "estimator": {k: (model or {}).get(k) for k in ("n", "matches", "check", "calibration")}}
 
 
-def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None) -> dict:
+def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None,
+                 painted_table: dict[str, areas.Painted] | None = None) -> dict:
     """The stored build's data (`build_from_rounds`) from `rows` (`current_rows`; read here when not given), the
     estimator `model` (the stored one when not given) and the friendships, with each row's fingerprint added.
     Reads only: `ensure_values` stores it."""
@@ -514,7 +532,7 @@ def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = No
     model = util_model.load(db) if model is None else model
     stored = _stored_rounds(db, rows=rows)
     ctx = _replay_context(db, set(stored))
-    out = build_from_rounds(stored, ctx, model, friend_players(db))
+    out = build_from_rounds(stored, ctx, model, friend_players(db), painted_table=painted_table)
     out["fingerprints"] = {}
     for r in rows:
         out["fingerprints"].setdefault(str(r[0]), {})[str(r[1])] = r[2]
@@ -557,8 +575,9 @@ def ensure_values(db, *, force: bool = False) -> dict:
                 db.commit()                 # ends the transaction, and with it the lock
                 return stored[1]
             rows = current_rows(db)
-            used = corpus_key(db, rows, model)
-            data = build_corpus(db, rows=rows, model=model)
+            painted_table = areas.load_table(published_only=True)
+            used = corpus_key(db, rows, model, painted_table=painted_table)
+            data = build_corpus(db, rows=rows, model=model, painted_table=painted_table)
             _store_values(db, used, data)
         force = False
         if corpus_key(db, current_rows(db, with_data=False), util_model.load(db)) == used:

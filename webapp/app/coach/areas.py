@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -172,6 +173,9 @@ def _validate_bands(bands, ids: set[int], cells: tuple[int, ...], errors: list[s
             continue
         if any(band[2] not in ids for band in bands_at_cell):
             errors.append(f"unknown name id in bands for cell {cell}")
+        if any(a[2] != b[2] and max(a[0], b[0]) <= min(a[1], b[1])
+               for i, a in enumerate(bands_at_cell) for b in bands_at_cell[i + 1:]):
+            errors.append(f"differently named bands overlap for cell {cell}")
         if cells and min(bands_at_cell)[2] != cells[cell]:
             errors.append(f"cell {cell} must match the lowest band's name")
 
@@ -252,8 +256,9 @@ def load_painted(map_name: str, areas_dir: Path | None = None) -> Painted | None
 def area_at(
     map_name: str, u: float, v: float, z: float | None = None, table: dict | None = None,
     areas_dir: Path | None = None,
+    *, painted_table: dict[str, Painted] | None = None,
 ) -> dict | None:
-    painted = load_painted(map_name, areas_dir)
+    painted = load_painted(map_name, areas_dir) if painted_table is None else painted_table.get(map_name)
     if painted is None:
         return _nearest_label(map_name, u, v, table)
     cell = cell_at(u, v)
@@ -292,17 +297,67 @@ def is_painted(map_name: str, areas_dir: Path | None = None) -> bool:
     return load_painted(map_name, areas_dir) is not None
 
 
-def table_hash(areas_dir: Path | None = None) -> str | None:
-    digest = hashlib.sha256()
-    found = False
+@lru_cache(maxsize=1)
+def _git_root() -> Path | None:
+    webapp = Path(__file__).resolve().parents[2]
+    return next((path for path in (webapp, *webapp.parents) if (path / ".git").exists()), None)
+
+
+def _head_bytes(root: Path, path: Path) -> bytes | None:
     try:
-        paths = sorted(_areas_dir(areas_dir).glob(f"*{_SUFFIX}"))
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+        result = subprocess.run(["git", "-C", str(root), "show", f"HEAD:{relative}"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except ValueError:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+@lru_cache(maxsize=None)
+def _warn_unpublished(path: Path) -> None:
+    _LOG.warning("Ignoring unpublished painted areas file %s in Critical Util builds; merge reviewed paint to publish it", path)
+
+
+@lru_cache(maxsize=None)
+def _warn_git_unavailable(root: Path) -> None:
+    _LOG.warning("Cannot read committed painted areas with git in %s; using reviewed working files", root)
+
+
+def load_table(areas_dir: Path | None = None, *, published_only: bool = False) -> dict[str, Painted]:
+    """Capture reviewed paint once. Compare working and HEAD bytes after normalizing CRLF to LF."""
+    table = {}
+    root = _git_root() if published_only else None
+    directory = _areas_dir(areas_dir)
+    try:
+        paths = sorted(directory.glob(f"*{_SUFFIX}"))
     except OSError as exc:
         _LOG.warning("Cannot list painted areas files: %s", exc)
-        return None
+        return table
     for path in paths:
-        painted = load_painted(path.name.removesuffix(_SUFFIX), areas_dir)
+        map_name = path.name.removesuffix(_SUFFIX)
+        painted = load_painted(map_name, areas_dir)
         if painted is not None:
-            found = True
-            digest.update(painted.raw)
-    return digest.hexdigest() if found else None
+            table[map_name] = painted
+    if root is None:
+        return table
+    published = {}
+    try:
+        for map_name, painted in table.items():
+            head = _head_bytes(root, directory / (map_name + _SUFFIX))
+            if head is not None and painted.raw.replace(b"\r\n", b"\n") == head.replace(b"\r\n", b"\n"):
+                published[map_name] = painted
+    except (OSError, subprocess.TimeoutExpired):
+        _warn_git_unavailable(root)
+        return table
+    for map_name in table:
+        if map_name not in published:
+            _warn_unpublished(directory / (map_name + _SUFFIX))
+    return published
+
+
+def table_hash(areas_dir: Path | None = None, *, painted_table: dict[str, Painted] | None = None) -> str | None:
+    table = load_table(areas_dir) if painted_table is None else painted_table
+    digest = hashlib.sha256()
+    for map_name in sorted(table):
+        digest.update(table[map_name].raw.replace(b"\r\n", b"\n"))
+    return digest.hexdigest() if table else None

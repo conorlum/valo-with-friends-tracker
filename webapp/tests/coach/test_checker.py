@@ -469,6 +469,35 @@ def test_a_legacy_where_area_without_a_path_grounds_its_name(toy_areas, snap):
     assert _check(snap, log, "You held A Site.", inst) == []
 
 
+def test_where_grounds_only_the_moment_that_cites_it(painted_snap, tmp_path):
+    query.run(painted_snap, tmp_path, "where", ["5", "19.5"])
+    query.run(painted_snap, tmp_path, "timeline", ["5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    first = {"round": 5, "t": 20.0, "caption": "", "evidence": ["q2"]}
+    second = {"round": 5, "t": 29.0, "caption": "You held Top Mid.", "evidence": ["q1"]}
+    assert "the area Top Mid is not in a cited answer" in _check(painted_snap, log, "Hold the angle.", [first, second])
+    timely = {**first, "caption": "You held Top Mid.", "evidence": ["q1"]}
+    assert _check(painted_snap, log, "You held Top Mid.", [timely, {**second, "caption": "", "evidence": ["q2"]}]) == []
+    # Even a timely citation in another moment cannot support this caption.
+    assert "the area Top Mid is not in a cited answer" in _check(
+        painted_snap, log, "Hold the angle.", [timely, {**second, "evidence": ["q2"]}],
+    )
+
+
+@pytest.mark.parametrize("text, claim", [
+    ("A better trade", False), ("B is open", False),
+    ("A site", True), ("site A", True), ("A-site", True), ("A Site", True), ("SITE A", True),
+])
+def test_single_letter_areas_require_a_site_word(painted_snap, tmp_path, text, claim):
+    names = [{**NAMES[0], "name": "A"}, {**NAMES[2], "name": "B"}]
+    write_paint(tmp_path, painted_object({}, names=names))
+    query.run(painted_snap, tmp_path, "timeline", ["5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    inst = [{"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    found = _check(painted_snap, log, text, inst)
+    assert bool(found) is claim
+
+
 def test_a_mistake_cannot_rest_on_an_enemy_the_side_could_not_see(toy_areas, tmp_path):          # finding 3
     # P5 stands on B Site and is seen from 5 s to 12 s; P6-P9 stand in Mid Courtyard and are never seen.
     places = {**toys.ten(), **{s: (5000, 5000) for s in range(6, 10)}}

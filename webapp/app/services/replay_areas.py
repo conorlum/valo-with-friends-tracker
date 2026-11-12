@@ -38,18 +38,21 @@ def payload(map_name: str) -> dict:
     # Check membership before building any path from the requested map name.
     if map_name not in _maps():
         raise KeyError(map_name)
-    return _payload(map_name, areas.table_hash())
+    painted = areas.load_painted(map_name)
+    return _payload(map_name, painted.raw if painted is not None else None)
 
 
 @lru_cache(maxsize=32)
-def _payload(map_name: str, table_hash: str | None) -> dict:
-    """Cache both painted and approximate data by map and the reviewed files' hash."""
-    painted = areas.load_painted(map_name)
-    if painted is not None:
+def _payload(map_name: str, raw: bytes | None) -> dict:
+    """Cache by the same validated bytes that supply the payload."""
+    if raw is not None:
+        painted = json.loads(raw)
+        names = sorted(painted["names"], key=lambda row: row["id"])
         return {
             "map": map_name, "approximate": False,
-            "names": [{key: row[key] for key in NAME_FIELDS} for row in painted.names.values()],
-            "cells": painted.cell_runs, "bands": painted.bands,
+            "names": [{key: row[key] for key in NAME_FIELDS} for row in names],
+            "cells": tuple(map(tuple, painted["cells"])),
+            "bands": {int(cell): tuple(map(tuple, sorted(rows))) for cell, rows in painted["bands"].items()},
         }
 
     labels = areas.callouts(map_name)

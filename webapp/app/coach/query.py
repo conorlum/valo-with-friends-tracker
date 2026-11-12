@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.coach import control_areas, knowledge
+from app.coach import areas, control_areas, knowledge
 from app.coach.snapshot import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
@@ -154,8 +154,14 @@ def control(snap, n, t0, t1, area) -> dict:
     answer = control_areas.control_over(shares, area, t0, t1)
     if answer is None:
         return _missing("no control ticks in that span")
+    approximate = shares.get("approximate")
+    if approximate is None:
+        approximate = not areas.is_painted(view.map_name)
+    note = "a and b are the round's side groups; shares are fractions of the area's cells over the span"
+    if approximate:
+        note += "; area labels are approximate nearest-callout guesses"
     return {"round": int(n), "t0": t0, "t1": t1, "area": area, "shares": answer,
-            "note": "a and b are the round's side groups; shares are fractions of the area's cells over the span"}
+            "approximate": approximate, "note": note}
 
 
 def timeline(snap, n, t0=None, t1=None) -> dict:

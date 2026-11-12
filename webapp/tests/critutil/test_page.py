@@ -47,6 +47,14 @@ def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
     return base
 
 
+@pytest.mark.parametrize("upper, expected", [(2, "Mid"), (3, "unknown")])
+def test_stacked_floors_share_a_critical_util_region_only_when_all_supers_agree(tmp_path, monkeypatch, upper, expected):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    write_paint(tmp_path, painted_object({0: 1}, bands={"0": [[0, 20, 1], [30, 50, upper]]}))
+    assert areas.area_at("Sunset", 0, 0) is None
+    assert replay_util.area_of("Sunset", 0, 0, "attack") == expected
+
+
 def corpus(rows, personal=None):
     return {"rows": rows, "ability_prior": {"Flashpoint": 0.0}, "spread": 0.01, "fit": {"fitted": False},
             "estimator": {}, "personal": personal or {}}

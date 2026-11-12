@@ -183,11 +183,18 @@ def _area_floors(asset: hc.HeightAsset | None, walk: np.ndarray) -> dict:
             if len(levels) > 1:
                 spans[cell] = levels
     origin = asset.origin_z
-    return {
-        str(cell): [[origin + lo - AREA_FLOOR_PADDING_DM, origin + hi + AREA_FLOOR_PADDING_DM]
-                    for lo, hi in spans[cell]]
-        for cell in sorted(spans)
-    }
+    result = {}
+    for cell in sorted(spans):
+        levels = sorted(spans[cell])
+        bands = [[origin + lo - AREA_FLOOR_PADDING_DM, origin + hi + AREA_FLOOR_PADDING_DM]
+                 for lo, hi in levels]
+        for i in range(1, len(bands)):
+            if bands[i - 1][1] >= bands[i][0]:
+                boundary = origin + (levels[i - 1][1] + levels[i][0]) // 2
+                bands[i - 1][1] = boundary
+                bands[i][0] = boundary + 1
+        result[str(cell)] = bands
+    return result
 
 
 def _existing_areas(name: str, areas_dir: Path | None) -> dict | None:

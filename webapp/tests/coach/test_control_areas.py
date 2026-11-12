@@ -28,6 +28,7 @@ def control_bytes(frames, ticks, knew=None):
 
 def test_each_area_counts_its_cells_by_owner_per_tick():
     shares = control_areas.area_shares(control_bytes([(1, 4), (7, 0)], [0, 160]), "Toy", TABLE)
+    assert shares["approximate"] is True
     assert shares["t"] == [0.0, 10.0]
     assert shares["cells"] == {"A Site": 1, "B Site": 1}
     assert shares["areas"]["A Site"] == [[1, 0, 0], [0, 0, 1]]
@@ -40,6 +41,7 @@ def test_painted_shares_use_ground_floor_and_skip_unpainted_cells(tmp_path, monk
     monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
     write_paint(tmp_path, painted_object({0: 2, 1: 3}, bands={"0": [[0, 30, 2], [60, 90, 3]]}))
     shares = control_areas.area_shares(control_bytes([(1, 4)], [0]), "Sunset")
+    assert shares["approximate"] is False
     assert shares["cells"] == {"Top Mid": 1}
     assert shares["areas"] == {"Top Mid": [[1, 0, 0]]}
 

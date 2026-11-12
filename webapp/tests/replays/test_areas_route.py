@@ -134,3 +134,29 @@ def test_viewers_and_logged_out_get_identical_bodies(get_areas, tmp_path, painte
 
 def test_map_areas_are_classified_as_data():
     assert site_health.PAGE_ROUTES["/replays/areas/{map_name}.json"] == "not_page"
+
+
+def test_payload_and_cache_key_use_one_file_read(get_areas, tmp_path, monkeypatch):
+    path = write_paint(tmp_path, painted_object({0: 3}))
+    original = areas.load_painted
+    calls = []
+
+    def remove_after_read(*args, **kwargs):
+        painted = original(*args, **kwargs)
+        calls.append(True)
+        path.unlink(missing_ok=True)
+        return painted
+
+    monkeypatch.setattr(areas, "load_painted", remove_after_read)
+    assert get_areas()[1]["approximate"] is False
+    assert len(calls) == 1
+    assert get_areas()[1]["approximate"] is True
+
+
+def test_cached_payload_preserves_decoded_cell_and_band_shapes(get_areas, tmp_path):
+    obj = painted_object({0: 1}, bands={"0": [[30, 50, 2], [0, 20, 1]]})
+    write_paint(tmp_path, obj)
+    painted = areas.load_painted("Sunset")
+    body = replay_areas.payload("Sunset")
+    assert body["cells"] == painted.cell_runs
+    assert body["bands"] == painted.bands

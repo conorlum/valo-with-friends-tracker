@@ -118,6 +118,14 @@ def test_export_is_deterministic():
     assert json.loads(areas.dumps(obj)) == obj
 
 
+@pytest.mark.parametrize("upper_lo", [19, 20])
+def test_differently_named_floor_bands_cannot_overlap_inclusively(upper_lo):
+    obj = painted_object({0: 1}, bands={"0": [[0, 20, 1], [upper_lo, 40, 2]]})
+    assert any("overlap" in problem for problem in areas.validate(obj))
+    obj["bands"]["0"][1][0] = 21
+    assert areas.validate(obj) == []
+
+
 def test_validation_reports_bad_tree_and_unknown_cell():
     obj = painted_object({10: 99})
     obj["names"][0]["parent"] = 2
@@ -138,6 +146,16 @@ def test_hash_tracks_reviewed_file_bytes_and_ignores_drafts(tmp_path):
     assert initial is not None
     path.write_text(json.dumps(obj) + "\n", encoding="utf-8")
     assert areas.table_hash(tmp_path) != initial
+
+
+def test_table_hash_normalizes_crlf_to_lf(tmp_path):
+    raw = areas.dumps(painted_object({0: 3})).encode("utf-8")
+    path = tmp_path / "Sunset.areas.json"
+    path.write_bytes(raw)
+    lf_hash = areas.table_hash(tmp_path)
+    assert lf_hash is not None
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert areas.table_hash(tmp_path) == lf_hash
 
 
 class FakeMap:

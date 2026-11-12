@@ -38,6 +38,7 @@ def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
         for name in names:
             per_area[name].append(counts[name])
     return {"t": [tick / header["hz"] for tick in header["ticks"]],
+            "approximate": painted is None,
             "cells": {name: labels.count(name) for name in names}, "areas": per_area,
             "knew": header.get("knew"), "signals": header.get("knowledge_events"),
             "group_side": header.get("group_side")}

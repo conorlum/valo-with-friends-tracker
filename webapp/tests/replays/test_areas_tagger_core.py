@@ -11,6 +11,24 @@ def map_data(grid, walk, *, draft=None, floors=None, existing=None, name="Toy"):
             "existing": existing, "floors": floors or {}}
 
 
+def test_minimum_separation_floor_bands_have_one_boundary_owner():
+    import numpy as np
+    from types import SimpleNamespace
+    from app.control import heights as hc
+    from scripts import control_tagger
+
+    separation = int(hc.FLOOR_SEP_M * 10)
+    floors = np.full((1, hc.MAX_FLOORS), -1, dtype=np.int32)
+    floors[0, :2] = [100, 100 + separation]
+    asset = SimpleNamespace(floors=floors, floor_count=lambda: np.array([2]), fine_cells=None, origin_z=-200)
+    bands = control_tagger._area_floors(asset, np.array([True]))["0"]
+    assert bands[0][1] + 1 == bands[1][0]
+    assert bands[0][0] <= -100 <= bands[0][1]
+    assert bands[1][0] <= -100 + separation <= bands[1][1]
+    obj = painted_object({0: 1}, bands={"0": [bands[0] + [1], bands[1] + [2]]})
+    assert areas.validate(obj) == []
+
+
 def test_paint_erase_and_fill_respect_walls_and_blocked_diagonals():
     walk = {0, 1, 3, 4, 7, 9, 10, 14}
     got = run_node('''function run(p) {

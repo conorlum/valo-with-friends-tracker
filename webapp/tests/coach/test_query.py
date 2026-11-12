@@ -39,6 +39,20 @@ def test_where_lists_every_player_with_side_and_state(snap):
     assert out["players"][1]["alive"] is True and "u" in out["players"][1]
 
 
+@pytest.mark.parametrize("flag, painted, expected", [(True, True, True), (False, False, False),
+                                                  (None, False, True), (None, True, False)])
+def test_control_marks_approximate_shares_and_reads_legacy_shapes(snap, tmp_path, monkeypatch, flag, painted, expected):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    monkeypatch.setattr(areas, "is_painted", lambda map_name: painted)
+    shares = {**SHARES}
+    if flag is not None:
+        shares["approximate"] = flag
+    monkeypatch.setattr(snap, "control", lambda n: shares)
+    out = query.control(snap, 1, 0, 10, "A Site")
+    assert out["approximate"] is expected
+    assert ("approximate" in out["note"]) is expected
+
+
 def test_knew_answers_for_a_side_or_for_a_players_side(snap):
     by_side = query.knew(snap, 1, 15.0, "A")
     assert by_side["side"] == "A" and [e["name"] for e in by_side["enemies"]] == ["P5#T5"]
