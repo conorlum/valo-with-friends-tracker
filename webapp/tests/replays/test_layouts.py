@@ -86,7 +86,9 @@ def test_explicit_empty_registry_uses_fallback():
 
 
 @pytest.mark.parametrize("key, accepted", [("Ascent", True), ("Ascent_13_10", True),
-                                         ("Ascent@13.10", False), ("Ascent.x", False), ("_13_10", False)])
+                                         ("Ascent@13.10", False), ("Ascent.x", False), ("_13_10", False),
+                                         ("A" * 64, True), ("A" * 65, False), ("A" * 58 + "_13_10", True),
+                                         ("A" * 59 + "_13_10", False)])
 def test_asset_key_syntax(key, accepted):
     assert bool(layouts.ASSET_KEY.fullmatch(key)) is accepted
 

@@ -346,6 +346,12 @@ class State:
     warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
     warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
     walls_evaluated: bool = False                      # evaluate existing shares on the first pass too
+    layout_wait: dict = field(default_factory=dict)     # asset key -> when its rounds may go out again (F6)
+
+    def layout_refused(self, asset_key: str, now: float) -> None:
+        """A worker or a run had no assets for the layout (a redraw's deploy gap): its rounds wait BACKOFF_S
+        before they go out again, spending no try."""
+        self.layout_wait[asset_key] = now + BACKOFF_S
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -508,6 +514,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             continue
         del state.in_flight[key]
         if status == 'failed' and job.get('error_code') == 'unknown_layout':
+            state.layout_refused(f.asset_key or f.map_name, now)
             counts['held'] += 1
             continue
         if status == "done":
@@ -517,7 +524,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 counts["dropped_revision"] += 1
                 continue
             if (f.inputs is not None and result.get('geometry') != f.inputs.geometry) or \
-                    (f.inputs is None and not _matches_geometry(result, f.map_name, heights)):
+                    (f.inputs is None and not _matches_geometry(result, f.asset_key or f.map_name, heights)):
                 state.failed(key, now)
                 counts["dropped_geometry"] += 1
                 continue
@@ -637,6 +644,10 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
             if counts is not None:
                 counts['held'] += 1
             continue
+        if state.layout_wait.get(p.asset_key or p.map_name, 0.0) > now:
+            if counts is not None:
+                counts['layout_waiting'] = counts.get('layout_waiting', 0) + 1   # not 'held': the idle throttle may run
+            continue
         key = send_key(p, kind, capable)
         if state.may_try(key, now):
             out.append((key, p))
@@ -724,6 +735,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             counts["busy"] += 1
             return True
         except UnknownLayout:
+            state.layout_refused(p.asset_key or p.map_name, now)
             counts['held'] += 1
             continue
         except (Refused, Conflict, Rejected, ValueError) as refused:

@@ -7,7 +7,8 @@ import re
 from typing import Literal
 
 
-ASSET_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9]*(_\d+_\d+)?$")
+# At most 64 characters: replays.map_name, control_heights.map_name and the share rows' asset_key are String(64).
+ASSET_KEY = re.compile(r"^(?=.{1,64}$)[A-Za-z][A-Za-z0-9]*(_\d+_\d+)?$")
 _PATCH = re.compile(r"release-(\d+)\.(\d+)$")
 _SUFFIX = re.compile(r"_\d+_\d+$")
 _DATA = Path(__file__).resolve().parents[1] / "static" / "data"
