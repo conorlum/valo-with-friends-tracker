@@ -232,5 +232,6 @@ def test_a_utility_locate_is_judged_only_at_its_own_instant():
 
 
 def test_the_engines_own_events_keep_the_r7_rule():
-    for kind in ("kill", "gunfire", "damage", "footsteps", "seen", "plant", "revived"):
+    for kind in ("kill", "gunfire", "damage", "footsteps", "seen", "plant", "revived",
+                 "trip_destroyed", "camera_destroyed"):
         assert judged_against_before(record(6.25, [(5, 6.2, kind)]))["A"] == {5}, kind

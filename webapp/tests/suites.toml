@@ -263,6 +263,7 @@ tests = [
   "tests/replays/test_control_ability_walls.py", "tests/replays/test_control_abyss_barriers.py",
   "tests/replays/test_control_blind.py", "tests/replays/test_control_causality.py", "tests/replays/test_control_collapse.py",
   "tests/replays/test_control_cypher_leer.py", "tests/replays/test_control_engine.py",
+  "tests/replays/test_control_destroyed.py",
   "tests/replays/test_control_figures.py", "tests/replays/test_control_format.py", "tests/replays/test_control_hearing.py",
   "tests/replays/test_control_knew.py", "tests/replays/test_control_knife_skye.py", "tests/replays/test_control_mollies.py",
   "tests/replays/test_control_reasons.py", "tests/replays/test_control_reveals.py", "tests/replays/test_control_stats.py",
