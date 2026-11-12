@@ -163,6 +163,7 @@ def test_a_paired_trip_is_one_event_at_the_midpoint(gone_on, seed):
         random.Random(seed).shuffle(util)
     (e,) = found(util)
     assert (e["t"], e["u"], e["v"], e["z"], e["id"], e["device"]) == (17.219, 200.0, 300.0, 9, 100, "trip")
+    assert e["wire"] == [[100, 200], [300, 400]]
 
 
 def test_a_pair_is_matched_by_end_when_the_main_row_has_one():
@@ -176,6 +177,7 @@ def test_a_pair_is_matched_by_end_when_the_main_row_has_one():
 def test_a_main_row_with_an_end_uses_the_midpoint_of_it_and_the_end():
     (e,) = found([trip(id=100, end=[300, 400], gone=17.2)])
     assert (e["u"], e["v"]) == (200.0, 300.0)
+    assert e["wire"] == [[100, 200], [300, 400]]
 
 
 def test_both_rows_with_gone_take_the_earlier():

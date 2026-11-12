@@ -275,13 +275,37 @@ def util_key(e: dict) -> str:
     return f"{e.get('code')}_{e.get('name')}"
 
 
+def _point_segment_distance(point, a, b) -> float:
+    du, dv = b[0] - a[0], b[1] - a[1]
+    length_sq = du * du + dv * dv
+    along = 0.0
+    if length_sq:
+        along = min(1.0, max(0.0, ((point[0] - a[0]) * du + (point[1] - a[1]) * dv) / length_sq))
+    return math.hypot(point[0] - a[0] - along * du, point[1] - a[1] - along * dv)
+
+
+def _segment_distance(a, b, c, d) -> float:
+    """Minimum 2D distance between finite segments, including crossings and collapsed segments."""
+    du, dv = b[0] - a[0], b[1] - a[1]
+    eu, ev = d[0] - c[0], d[1] - c[1]
+    cross = du * ev - dv * eu
+    if cross:
+        cu, cv = c[0] - a[0], c[1] - a[1]
+        along = (cu * ev - cv * eu) / cross
+        across = (cu * dv - cv * du) / cross
+        if 0.0 <= along <= 1.0 and 0.0 <= across <= 1.0:
+            return 0.0
+    return min(_point_segment_distance(a, c, d), _point_segment_distance(b, c, d),
+               _point_segment_distance(c, a, b), _point_segment_distance(d, a, b))
+
+
 def destroyer(shots, device_uv, gone: float, owner_side: str, side_of: dict[int, str],
-              metres_per_unit: float) -> int | None:
+              metres_per_unit: float, *, wire=None) -> int | None:
     """Select the D8 shooter by its closest segment within 2 m, else the sole enemy shooting in the window.
+    Trips measure against the whole wire when both anchors are known; other devices use their point.
     Equal segment distances choose the lower slot, so row order cannot change the result."""
     shooters = set()
     closest = None
-    u, v = device_uv
     for shot in shots:
         by = shot.get("by")
         if shot.get("k") != "shot" or side_of.get(by) in (None, owner_side) \
@@ -290,12 +314,10 @@ def destroyer(shots, device_uv, gone: float, owner_side: str, side_of: dict[int,
         shooters.add(by)
         if shot.get("u1") is None or shot.get("v1") is None:
             continue
-        du, dv = shot["u1"] - shot["u"], shot["v1"] - shot["v"]
-        length_sq = du * du + dv * dv
-        along = 0.0
-        if length_sq:
-            along = min(1.0, max(0.0, ((u - shot["u"]) * du + (v - shot["v"]) * dv) / length_sq))
-        distance_m = math.hypot(u - shot["u"] - along * du, v - shot["v"] - along * dv) * metres_per_unit
+        start, end = (shot["u"], shot["v"]), (shot["u1"], shot["v1"])
+        distance = _segment_distance(start, end, *wire) if wire is not None \
+            else _point_segment_distance(device_uv, start, end)
+        distance_m = distance * metres_per_unit
         candidate = (distance_m, by)
         if distance_m <= 2.0 and (closest is None or candidate < closest):
             closest = candidate
@@ -632,7 +654,7 @@ class RoundInputs:
             if event["device"] not in ("trip", "camera"):
                 continue
             by = destroyer(shots, (event["u"], event["v"]), event["t"], event["side"], self.team,
-                           1.0 / geo.uv_per_unit / 100)
+                           1.0 / geo.uv_per_unit / 100, wire=event.get("wire"))
             if by is None:
                 self.miss("destroyed device without a shooter", event["owner"])
                 continue

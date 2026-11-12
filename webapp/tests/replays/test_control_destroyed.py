@@ -22,7 +22,8 @@ def test_destroyed_trip_is_encoded_with_header_precision():
     data = _data([])
     rc = ce.compute_round(data, open_hall(), ticks=np.array([0.0]), knowledge=False)
     rc.destroyed = [{"t": 1.23456, "owner": 0, "side": "A", "device": "trip",
-                     "u": 1234.56789, "v": 2345.67891, "z": None, "id": 10}]
+                     "u": 1234.56789, "v": 2345.67891, "z": None, "id": 10,
+                     "wire": [[1234.56789, 1745.67891], [1234.56789, 2945.67891]]}]
     header, _ = cf.unpack_data(encode_data(rc, data))
     assert header["destroyed"] == [[1.235, 0, "trip", 1234.5679, 2345.6789]]
 
@@ -144,6 +145,57 @@ def test_loader_selects_the_nearest_shooter_using_world_metres(monkeypatch):
     assert (GONE, 5, "locate", "trip_destroyed", "") in runner.unknown.reasons["A"]
 
 
+@pytest.mark.parametrize("case,expected", [("anchor", 5), ("middle", 5), ("crossing", 5), ("far", None)])
+@pytest.mark.parametrize("paired", [True, False])
+def test_long_trip_uses_distance_to_the_whole_wire(monkeypatch, case, expected, paired):
+    scale = open_hall().m_per_px
+    x, y = DEVICE_PX
+    util = [toy_ability("Gumshoe", "4_TripWire", x, y - 6 / scale, 0,
+                        t1=GONE, gone=GONE, kind="GameObject", id=10,
+                        end=list(uv(x, y + 6 / scale)))]
+    if paired:
+        util.append(toy_ability("Gumshoe", "4_TripWire_SecondWire", x, y + 6 / scale, 0,
+                                t1=GONE, kind="GameObject", id=11))
+    start, end = {
+        "anchor": ((x - 3 / scale, y + 5.5 / scale), (x + 3 / scale, y + 5.5 / scale)),
+        "middle": ((x + 1 / scale, y - 0.5 / scale), (x + 1 / scale, y + 0.5 / scale)),
+        "crossing": ((x - 4 / scale, y), (x + 4 / scale, y)),
+        "far": ((x + 3 / scale, y - 0.5 / scale), (x + 3 / scale, y + 0.5 / scale)),
+    }[case]
+    shots = [_shot(start=start, end=end),
+             _shot(by=6, start=(x + 10 / scale, y), end=(x + 12 / scale, y))]
+    rnd, _ = _run(_data([*util, *shots], other=(100, 200)), monkeypatch)
+    hits = [(t, by, reason) for t, by, reason in rnd.sounds if reason == "trip_destroyed"]
+    assert hits == ([] if expected is None else [(GONE, expected, "trip_destroyed")])
+    assert rnd.missing["destroyed device without a shooter"] == (expected is None)
+    [event] = rnd.destroyed
+    assert event["wire"] == [list(uv(x, y - 6 / scale)), list(uv(x, y + 6 / scale))]
+
+
+@pytest.mark.parametrize("name", ["4_TripWire", "4_TripWire_SecondWire"])
+@pytest.mark.parametrize("offset,expected", [(1.0, 5), (3.0, None)])
+def test_trip_with_only_one_known_anchor_uses_its_point(monkeypatch, name, offset, expected):
+    scale = open_hall().m_per_px
+    x, y = DEVICE_PX
+    util = [toy_ability("Gumshoe", name, x, y, 0, t1=GONE, gone=GONE, kind="GameObject", id=10),
+            _shot(start=(x - 3 / scale, y + offset / scale), end=(x + 3 / scale, y + offset / scale)),
+            _shot(by=6, start=(x + 10 / scale, y), end=(x + 12 / scale, y))]
+    rnd, _ = _run(_data(util, other=(100, 200)), monkeypatch)
+    assert [(t, by, reason) for t, by, reason in rnd.sounds if reason == "trip_destroyed"] \
+        == ([] if expected is None else [(GONE, expected, "trip_destroyed")])
+    assert "wire" not in rnd.destroyed[0]
+
+
+def test_camera_does_not_use_a_nearby_wire_anchor(monkeypatch):
+    scale = open_hall().m_per_px
+    x, y = DEVICE_PX
+    shots = [_shot(start=(x - 3 / scale, y + 5.5 / scale), end=(x + 3 / scale, y + 5.5 / scale)),
+             _shot(by=6, start=(x + 10 / scale, y), end=(x + 12 / scale, y))]
+    rnd, _ = _run(_data([*_devices("camera"), *shots], other=(100, 200)), monkeypatch)
+    assert not any(reason == "camera_destroyed" for _, _, reason in rnd.sounds)
+    assert rnd.missing["destroyed device without a shooter"] == 1
+
+
 @pytest.mark.parametrize("shots", [[], [_shot(t=GONE - 0.6)]])
 def test_missing_or_old_shot_counts_a_missing_destroyer(monkeypatch, shots):
     rnd, runner = _run(_data([*_devices(), *shots]), monkeypatch)
@@ -256,3 +308,19 @@ def test_zero_length_segment_uses_its_point():
     shot = _segment(5, 0)
     shot["u1"] = shot["u"]
     assert _destroyer([_segment(6, 150), shot]) == 5
+
+
+@pytest.mark.parametrize("wire", [[[1000, 1400], [1000, 2600]], [[1000, 2000], [1000, 2000]]])
+def test_wire_distance_ties_and_degenerate_segments(wire):
+    shot = _segment(5, 0)
+    shot["u1"] = shot["u"]
+    shots = [dict(shot, by=6), shot]
+    for ordered in (shots, shots[::-1]):
+        assert ce.destroyer(ordered, (1000, 2000), GONE, "A", SIDE_OF, 0.01, wire=wire) == 5
+
+
+@pytest.mark.parametrize("offset,expected", [(800, 5), (801, None)])
+def test_wire_distance_includes_two_metres_beyond_an_anchor(offset, expected):
+    assert ce.destroyer([_segment(5, offset), _segment(6, 1000)], (1000, 2000),
+                        GONE, "A", SIDE_OF, 0.01,
+                        wire=[[1000, 1400], [1000, 2600]]) == expected

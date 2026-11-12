@@ -144,7 +144,8 @@ def _touches(devices: list[_Device], util, side_of) -> dict[int, float]:
 def destroyed_devices(util_rows, side_of: dict[int, str], t_decided: float) -> list[dict]:
     """Devices shot before they were set off, by owner: `{"t": gone, "owner": slot, "side", "device", "u", "v", "z",
     "id"}`, sorted by t. `side_of` maps a slot to its side; a device whose owner it doesn't know is skipped. `z` is
-    the row's own, None when it has none. A trip's point is the midpoint of its two anchors."""
+    the row's own, None when it has none. A trip's point is the midpoint of its two anchors; `wire` carries both
+    anchors when known for the shooter's distance test (not part of the stored control header)."""
     util = list(util_rows or ())
     rows = [r for r in util if _is_device_row(r) and r.get("by") in side_of]
     devices = _pair_trips(rows)
@@ -157,17 +158,22 @@ def destroyed_devices(util_rows, side_of: dict[int, str], t_decided: float) -> l
         if fired and min(fired) <= dev.gone:
             continue                    # set off first; a tie is "fired" (critutil's rule)
         main = dev.rows[0]
+        wire = None
         if len(dev.rows) == 2:
             a, b = dev.rows
+            wire = [[a["u"], a["v"]], [b["u"], b["v"]]]
             u, v = (a["u"] + b["u"]) / 2, (a["v"] + b["v"]) / 2
             z = a.get("z") if a.get("z") is not None else b.get("z")
         else:
             end = main.get("end") if main.get("name") == _TRIP else None
             if isinstance(end, list) and len(end) >= 2:
+                wire = [[main["u"], main["v"]], end[:2]]
                 u, v = (main["u"] + end[0]) / 2, (main["v"] + end[1]) / 2
             else:
                 u, v = main.get("u"), main.get("v")
             z = main.get("z")
         out.append({"t": dev.gone, "owner": dev.owner, "side": side_of[dev.owner], "device": dev.device,
                     "u": u, "v": v, "z": z, "id": main.get("id")})
+        if wire is not None:
+            out[-1]["wire"] = wire
     return sorted(out, key=lambda e: (e["t"], e["owner"], e["id"] if e["id"] is not None else -1))
