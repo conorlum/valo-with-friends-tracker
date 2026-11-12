@@ -127,6 +127,7 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
   that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
   feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).
+- A moment's **Area should be** correction stores the name and selected player (migration `0032`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.
 - Opponents' names never appear in the coach or Critical Moments tabs; they are "the enemy <agent>"
   (`app/services/enemy_names.py`). A run's snapshot renames them before the model sees it
   (`snapshot.hide_enemy_names`), the coach page swaps any left in stored text, and the moments payload names the

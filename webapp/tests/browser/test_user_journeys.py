@@ -253,10 +253,22 @@ def test_sending_coach_feedback_keeps_the_page_where_it_is(browser_page, tmp_pat
     scrolled = page.evaluate('window.scrollY')
     point = page.locator('[data-coach-point]').first
     point.locator('textarea[name="note"]').fill('Stays put')
+    area = point.get_by_label('Area should be')
+    player = point.locator('select[name="area_player_0"]')
+    expect(player).to_have_value(str(ids[0]))
+    area.fill('Market')
+    player.select_option(str(ids[5]))
     point.get_by_role('button', name='Send').click()
     expect(page.locator('[data-coach-send-status]').first).to_have_text('Sent')
     assert page.evaluate('window.notReloaded') is True, 'Send reloaded the page'
     assert page.evaluate('window.scrollY') == scrolled
     expect(page.locator('[data-coach-point]').first.locator('textarea[name="note"]')).to_have_value('Stays put')
+    expect(area).to_have_value('Market')
+    expect(player).to_have_value(str(ids[5]))
+    page.reload()
+    expect(area).to_have_value('Market')
+    expect(player).to_have_value(str(ids[5]))
     with factory() as db:
-        assert [row.note for row in db.query(CoachFeedback).all()] == ['Stays put']
+        rows = {row.instance_index: row for row in db.query(CoachFeedback)}
+        assert rows[None].note == 'Stays put'
+        assert (rows[0].area_name, rows[0].area_player_id) == ('Market', ids[5])
