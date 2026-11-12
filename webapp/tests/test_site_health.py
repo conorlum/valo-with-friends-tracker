@@ -930,3 +930,37 @@ def test_the_policy_never_raises(monkeypatch):
     site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": "x"}}, UUID)
     site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": 1}}, UUID)
     site_health.note_trip_lengths(FakeStored("stored"), {}, UUID)
+
+
+@pytest.fixture
+def replay_factory(engine):
+    from app.models.replay import Replay
+    Base.metadata.create_all(engine, tables=[Replay.__table__])
+
+    def current(replay_id):
+        with sessionmaker(bind=engine)() as s:
+            s.query(Replay).delete()
+            s.add(Replay(id=replay_id, match_uuid=UUID, map_name="Sunset", round_count=24, format_version=1,
+                         recipe="r", game_branch="b", source_sha256="0" * 64, source="upload",
+                         link_status="unlinked", link_inputs={}))
+            s.commit()
+    return sessionmaker(bind=engine), current
+
+
+def test_two_replacements_notes_in_reverse_order_leave_the_current_replays_verdict(replay_factory):
+    # replay 7 (long trips) commits and pauses; replay 8 (clean) commits and queues its resolve; then 7's record
+    factory, current = replay_factory
+    current(8)
+    site_health.note_trip_lengths(FakeStored("replaced", 8), {"extras": {}}, UUID)
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {"wires_too_long": 2}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory) == {}
+    # the other way round: 8 is long and current, 7's late clean note never clears it
+    site_health.note_trip_lengths(FakeStored("replaced", 8), {"extras": {"wires_too_long": 1}}, UUID)
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("trip_too_long", UUID)].context["replay_id"] == 8
+    # a later flush: 7's late record alone, after 8's row is stored, still changes nothing
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {"wires_too_long": 5}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("trip_too_long", UUID)].context == {"replay_id": 8, "pairs": 1}

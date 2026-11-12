@@ -211,12 +211,12 @@ def _merge_resolve(entry):
     """Drop an earlier queued resolve of the same kind, key and prefix when no record it would clear came after
     it: the new one clears everything the old one did. Keeps a long outage's queue to its records. Under _lock."""
     match = _match(entry["kind"], entry["key"], entry["prefix"])
-    ident = (entry["kind"], entry["key"], entry["prefix"])
+    ident = (entry["kind"], entry["key"], entry["prefix"], entry.get("replay_id"))
     for i in range(len(_queue) - 1, -1, -1):
         e = _queue[i]
         if e["op"] == "record" and match(e["kind"], e["key"]):
             return
-        if e["op"] == "resolve" and (e["kind"], e["key"], e["prefix"]) == ident:
+        if e["op"] == "resolve" and (e["kind"], e["key"], e["prefix"], e.get("replay_id")) == ident:
             if e["at"] <= entry["at"]:
                 del _queue[i]
             return
@@ -233,16 +233,17 @@ def _push(entry):
             _dropped += 1
 
 
-def record(kind, key, error, context=None, *, at=None, dedupe=None):
+def record(kind, key, error, context=None, *, at=None, dedupe=None, replay_id=None):
     """Queue one occurrence for the next flush. Never touches the database, never raises. `dedupe(seen, this
     context)` returns the new `seen` to keep, or None when `seen` already counts this occurrence (it is skipped):
     decided at flush time against the key's stored mark, under the writers' lock, so two processes reporting the
-    same thing store it once, and a cleared row's mark still knows what it counted."""
+    same thing store it once, and a cleared row's mark still knows what it counted. `replay_id` (the key is a match
+    uuid): written only while that replay is still the match's stored one (`_superseded`)."""
     if _demo():
         return
     try:
         _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": _bounded(error), "context": context,
-               "at": at or _now(), "dedupe": dedupe})
+               "at": at or _now(), "dedupe": dedupe, "replay_id": replay_id})
     except Exception:
         logger.exception("site health: could not queue %s %s", kind, key)
 
@@ -280,7 +281,7 @@ def _match(kind, key, prefix):
     return lambda k, ky: k == kind and (ky.startswith(key) if prefix else ky == key)
 
 
-def _queue_resolve(kind, key, prefix, at):
+def _queue_resolve(kind, key, prefix, at, replay_id=None):
     if _demo():
         return
     try:
@@ -289,15 +290,19 @@ def _queue_resolve(kind, key, prefix, at):
         with _lock:
             for k in [k for k in _counters if match(*k)]:   # counted before the success: superseded by it
                 del _counters[k]
-        _push({"op": "resolve", "kind": kind, "key": _clean_key(key), "prefix": prefix, "at": at})
+        entry = {"op": "resolve", "kind": kind, "key": _clean_key(key), "prefix": prefix, "at": at}
+        if replay_id is not None:
+            entry["replay_id"] = replay_id
+        _push(entry)
     except Exception:
         logger.exception("site health: could not queue a resolve of %s %s", kind, key)
 
 
-def resolve(kind, key, *, at=None):
+def resolve(kind, key, *, at=None, replay_id=None):
     """The job behind `key` succeeded: the next flush deletes its row (if last seen before now). Queued in order
-    with the records, so a failure that happened later stays, and one that happened earlier goes."""
-    _queue_resolve(kind, key, False, at)
+    with the records, so a failure that happened later stays, and one that happened earlier goes. `replay_id`: as
+    `record`'s, applied only while that replay is the match's stored one."""
+    _queue_resolve(kind, key, False, at, replay_id)
 
 
 def resolve_prefix(kind, prefix, *, at=None):
@@ -377,7 +382,7 @@ def _coalesce(queued):
                 out.append({**e, "n": 1, "first": e["at"], "last": e["at"]})
                 continue
             i = last.get(k)
-            if i is None:
+            if i is None or out[i].get("replay_id") != e.get("replay_id"):   # another replay's: checked on its own
                 last[k] = len(out)
                 out.append({**e, "n": 1, "first": e["at"], "last": e["at"]})
             else:
@@ -388,7 +393,9 @@ def _coalesce(queued):
                     o["last"], o["error"], o["context"] = e["at"], e["error"], e["context"]
         else:
             match = _match(e["kind"], e["key"], e["prefix"])
-            for k in [k for k in last if match(*k)]:
+            # a resolve naming a replay drops only that replay's records: another's is decided at its write
+            for k in [k for k in last if match(*k)
+                      and (e.get("replay_id") is None or out[last[k]].get("replay_id") == e["replay_id"])]:
                 out[last.pop(k)] = None
             out.append(e)
     return [o for o in out if o is not None]
@@ -475,7 +482,23 @@ def _joined(c, stored, batch):
     return ((stored if isinstance(stored, list) else []) + batch)[-LAST_ITEMS:]
 
 
+def _superseded(session, op):
+    """An op that names a replay (`replay_id`, its key a match uuid) whose match now stores another replay: a
+    replacement's late notification, never applied (a replace stores a new row, so ids only grow). A resolve still
+    applies when the match has no replay left."""
+    replay_id = op.get("replay_id")
+    if replay_id is None:
+        return False
+    from app.models.replay import Replay     # here, so importing site health stays light
+    current = session.scalars(select(Replay.id).where(Replay.match_uuid == op["key"])).first()
+    if current is None:
+        return op["op"] == "record"
+    return current != replay_id
+
+
 def _write(session, marks, op):
+    if op["op"] in ("record", "resolve") and _superseded(session, op):
+        return
     if op["op"] == "resolve":
         session.execute(_delete_stmt(op["kind"], op["key"], op["prefix"], op["at"]))
         marks.clear(session, op["kind"], op["key"], op["prefix"], op["at"])
@@ -602,11 +625,13 @@ def note_trip_lengths(result, report, match_uuid):
         extras = (report or {}).get("extras") or {}
         count = int(extras.get("wires_too_long") or 0)
         key = str(match_uuid).lower()
+        replay_id = getattr(result, "replay_id", None)
+        # the stored replay's id rides on both, so a superseded replacement's late note is never applied
         if count > 0:
             record(TRIP_KIND, key, f"{count} trip pairs over {TRIP_LIMIT_M} m",
-                   {"replay_id": getattr(result, "replay_id", None), "pairs": count})
+                   {"replay_id": replay_id, "pairs": count}, replay_id=replay_id)
         else:
-            resolve(TRIP_KIND, key)
+            resolve(TRIP_KIND, key, replay_id=replay_id)
     except Exception:
         logger.exception("site health: could not note trip lengths for %s", match_uuid)
 

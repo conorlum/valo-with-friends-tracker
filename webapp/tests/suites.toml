@@ -230,7 +230,7 @@ guards = [
   "app/replays/extras.py", "app/replays/header.py", "app/replays/link.py", "app/replays/causes.py",
   "app/replays/player_state*.py", "app/replays/status_intervals.py", "app/services/replay_impact.py",
   "scripts/make_replay_fixture.py", "scripts/ingest_replay.py", "scripts/reingest_replays.py","scripts/inspect_replay_utility.py",
-  "tests/fixtures/replays/**",
+  "tests/fixtures/replays/**", "tests/fixtures/replay/schema9_rows/**",
 ]
 
 [replay-web]
