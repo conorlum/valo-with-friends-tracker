@@ -1805,7 +1805,319 @@
     runtimeDigest: runtimeDigest, tagCanonicalJson: tagCanonicalJson
   });
 
+  // Areas paints the coarse walk grid. Floor selectors use indices for editing.
+  // Stored overrides use the world-height bounds from the paint.
+  var AREA_REGIONS = ["A", "B", "C", "Mid", "Attacker Side", "Defender Side"];
+
+  function areaDecode(runs, size) {
+    var out = new Array(size), cursor = 0;
+    runs.forEach(function (run) {
+      out.fill(run[0], cursor, cursor + run[1]);
+      cursor += run[1];
+    });
+    return out;
+  }
+
+  function areaEncode(cells) {
+    var out = [];
+    cells.forEach(function (id) {
+      var last = out[out.length - 1];
+      if (last && last[0] === id) last[1]++;
+      else out.push([id, 1]);
+    });
+    return out;
+  }
+
+  function areaBandOrder(a, b) { return a[0] - b[0] || a[1] - b[1] || (a[2] || 0) - (b[2] || 0); }
+
+  function areaRoots(names) {
+    var byId = new Map(names.map(function (row) { return [row.id, row]; })), roots = new Map();
+    for (var row of names) {
+      var root = row, depth = 1;
+      while (root.parent !== null) {
+        root = byId.get(root.parent);
+        if (!root || ++depth > 3) return null;     // missing parent, cycle, or a fourth level
+      }
+      roots.set(row.id, root);
+    }
+    return roots;
+  }
+
+  function AreasModel(data) {
+    var source = data.existing || data.draft, size = data.grid * data.grid;
+    var draftRegions = new Map(data.draft.names.map(function (row) { return [row.id, row.super]; }));
+    this.map = data.map;
+    this.grid = data.grid;
+    this.walk = areaDecode(data.walk, size);
+    this.cells = areaDecode(source.cells, size);
+    this.names = clone(source.names).sort(function (a, b) { return a.id - b.id; });
+    this.bands = clone(source.bands || {});
+    this.floors = clone(data.floors || {});
+    Object.values(this.bands).forEach(function (bands) { bands.sort(areaBandOrder); });
+    this._draftRegions = areaDecode(data.draft.cells, size).map(function (id) { return draftRegions.get(id); });
+    this._nextId = this.names.length ? this.names[this.names.length - 1].id + 1 : 1;
+    this.autoSupers();
+  }
+
+  AreasModel.prototype._row = function (id) {
+    return this.names.find(function (row) { return row.id === id; });
+  };
+
+  AreasModel.prototype.floorBands = function (cell) {
+    var bands = this.bands[cell];
+    return bands ? bands.map(function (row) { return row.slice(0, 2); }) : this.floors[cell] || [];
+  };
+
+  function areaFloorIndex(ranges, band) {
+    if (Array.isArray(band)) return ranges.findIndex(function (range) { return range[0] === band[0] && range[1] === band[1]; });
+    return Number.isInteger(band) && band >= 0 && band < Math.max(1, ranges.length) ? band : -1;
+  }
+
+  AreasModel.prototype.nameAt = function (cell, band) {
+    if (!this.walk[cell]) return null;
+    if (band == null) return this.cells[cell];
+    var index = areaFloorIndex(this.floorBands(cell), band);
+    if (index < 0) return null;
+    return this.bands[cell] ? this.bands[cell][index][2] : this.cells[cell];
+  };
+
+  AreasModel.prototype._saveBands = function (cell, bands) {
+    var ground = bands[0][2];
+    this.cells[cell] = ground;
+    if (bands.some(function (band) { return band[2] !== ground; })) this.bands[cell] = bands;
+    else delete this.bands[cell];
+  };
+
+  AreasModel.prototype.paint = function (cells, nameId, band) {
+    if (nameId !== 0 && !this._row(nameId)) return 0;
+    var changed = 0;
+    for (var cell of cells) {
+      if (!this.walk[cell]) continue;
+      var ranges = this.floorBands(cell), index = band == null ? 0 : areaFloorIndex(ranges, band);
+      if (index < 0) continue;
+      var ground = this.cells[cell], bands = this.bands[cell];
+      if (band == null || !ranges.length) {
+        if (ground === nameId && !bands) continue;
+        this.cells[cell] = nameId;
+        delete this.bands[cell];
+      } else {
+        bands = bands || ranges.map(function (range) { return [range[0], range[1], ground]; });
+        if (bands[index][2] === nameId) continue;
+        bands[index][2] = nameId;
+        this._saveBands(cell, bands);
+      }
+      changed++;
+    }
+    return changed;
+  };
+
+  AreasModel.prototype.erase = function (cells, band) { return this.paint(cells, 0, band); };
+
+  AreasModel.prototype.fill = function (cell, nameId, band) {
+    var from = this.nameAt(cell, band), grid = this.grid;
+    if (from === null || (nameId !== 0 && !this._row(nameId))) return 0;
+    var queue = [cell], seen = new Set(queue);
+    for (var head = 0; head < queue.length; head++) {
+      var here = queue[head], x = here % grid, y = Math.floor(here / grid);
+      for (var yy = Math.max(0, y - 1); yy < Math.min(grid, y + 2); yy++) {
+        for (var xx = Math.max(0, x - 1); xx < Math.min(grid, x + 2); xx++) {
+          var next = yy * grid + xx;
+          if (!seen.has(next) && this.walk[y * grid + xx] && this.walk[yy * grid + x] &&
+              this.nameAt(next, band) === from) {
+            seen.add(next);
+            queue.push(next);
+          }
+        }
+      }
+    }
+    return this.paint(queue, nameId, band);
+  };
+
+  AreasModel.prototype._availableName = function (name, id) {
+    return typeof name === "string" && name.trim() && !this.names.some(function (row) {
+      return row.id !== id && row.name === name.trim();
+    });
+  };
+
+  AreasModel.prototype.addName = function (name, parentId) {
+    if (!this._availableName(name)) return null;
+    var id = this._nextId;
+    var names = this.names.concat({
+      id: id, name: name.trim(), parent: parentId == null ? null : parentId, super: "Mid", super_source: "auto"
+    });
+    if (!areaRoots(names)) return null;
+    this.names = names;
+    this._nextId++;
+    this.autoSupers();
+    return id;
+  };
+
+  AreasModel.prototype.rename = function (id, name) {
+    var row = this._row(id);
+    if (!row || !this._availableName(name, id)) return false;
+    row.name = name.trim();
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.setParent = function (id, parentId) {
+    if (!this._row(id)) return false;
+    var parent = parentId == null ? null : parentId;
+    var names = this.names.map(function (row) {
+      if (row.id !== id) return row;
+      var source = row.parent !== null && parent === null ? "auto" : row.super_source;
+      return Object.assign({}, row, {parent: parent, super_source: source});
+    });
+    if (!areaRoots(names)) return false;
+    this.names = names;
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.merge = function (fromId, intoId) {
+    var from = this._row(fromId), into = this._row(intoId);
+    if (!from || !into || from === into) return false;
+    var ancestor = into;
+    while (ancestor && ancestor !== from) ancestor = this._row(ancestor.parent);
+    var names = this.names.filter(function (row) { return row.id !== fromId; }).map(function (row) {
+      if (ancestor && row.id === intoId) return Object.assign({}, row, {parent: from.parent});
+      if (row.parent === fromId) return Object.assign({}, row, {parent: intoId});
+      return row;
+    });
+    if (!areaRoots(names)) return false;
+    this.names = names;
+    this.cells = this.cells.map(function (id) { return id === fromId ? intoId : id; });
+    Object.keys(this.bands).forEach(function (cell) {
+      this._saveBands(cell, this.bands[cell].map(function (band) {
+        return [band[0], band[1], band[2] === fromId ? intoId : band[2]];
+      }));
+    }, this);
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.autoSupers = function () {
+    var roots = areaRoots(this.names), votes = new Map();
+    this.cells.forEach(function (id, cell) {
+      var region = this._draftRegions[cell];
+      if (!region) return;
+      var covered = new Set();
+      if (id) covered.add(roots.get(id).id);
+      (this.bands[cell] || []).forEach(function (band) {
+        if (band[2]) covered.add(roots.get(band[2]).id);
+      });
+      covered.forEach(function (root) {
+        if (!votes.has(root)) votes.set(root, new Map());
+        var count = votes.get(root);
+        count.set(region, (count.get(region) || 0) + 1);
+      });
+    }, this);
+    this.names.forEach(function (row) {
+      if (row.parent !== null || row.super_source !== "auto") return;
+      var count = votes.get(row.id);
+      if (AREA_REGIONS.indexOf(row.name) !== -1) row.super = row.name;
+      else if (count) {
+        row.super = Array.from(count.keys()).sort().sort(function (a, b) { return count.get(b) - count.get(a); })[0];
+      }
+    });
+    this.names.forEach(function (row) {
+      var root = roots.get(row.id);
+      row.super = root.super;
+      row.super_source = root.super_source;
+    });
+    return this.names;
+  };
+
+  AreasModel.prototype.setSuper = function (id, region) {
+    var root = areaRoots(this.names).get(id);
+    if (!root || AREA_REGIONS.indexOf(region) === -1) return false;
+    root.super = region;
+    root.super_source = "set";
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.confirmSuper = function (id) {
+    this.autoSupers();
+    var row = this._row(id);
+    return row ? this.setSuper(id, row.super) : false;
+  };
+
+  AreasModel.prototype.stillAuto = function () {
+    return this.names.filter(function (row) { return row.super_source === "auto"; }).length;
+  };
+
+  AreasModel.prototype._pinPath = function (pin) {
+    if (pin.map !== this.map || !Number.isFinite(pin.u) || !Number.isFinite(pin.v)) return [];
+    var grid = this.grid;
+    function axis(uv) { return Math.min(grid - 1, Math.max(0, Math.trunc(uv / 10000 * grid))); }
+    var cell = axis(pin.v) * grid + axis(pin.u), id = this.cells[cell], bands = this.bands[cell];
+    if (bands) {
+      var matched = Number.isFinite(pin.z) && bands.find(function (band) { return band[0] <= pin.z && pin.z <= band[1]; });
+      if (matched) id = matched[2];
+      else if (bands.some(function (band) { return band[2] !== id; })) return [];
+    }
+    var path = [];
+    for (var row = this._row(id); row; row = this._row(row.parent)) path.push(row.name);
+    return path.reverse();
+  };
+
+  AreasModel.prototype.pinStatus = function (pins) {
+    return pins.map(function (pin) {
+      return Object.assign({}, pin, {ok: this._pinPath(pin).indexOf(pin.area) !== -1});
+    }, this);
+  };
+
+  AreasModel.prototype.fixtureFromPins = function (pins) {
+    return this.pinStatus(pins).filter(function (pin) { return pin.ok; }).map(function (pin) {
+      return {map: pin.map, u: pin.u, v: pin.v, z: Number.isFinite(pin.z) ? pin.z : null, area: pin.area};
+    });
+  };
+
+  AreasModel.prototype.exportText = function () {
+    var names = this.autoSupers().map(function (row) {
+      return {id: row.id, name: row.name, parent: row.parent, super: row.super, super_source: row.super_source};
+    });
+    return JSON.stringify({version: 1, map: this.map, reviewed: true, names: names,
+                           cells: areaEncode(this.cells), bands: this.bands}, null, 1) + "\n";
+  };
+
+  // Coordinates are [image point, map point] pairs. The matrix maps image coordinates to map coordinates.
+  function solveAreaAlign(pairs) {
+    function point(p) { return Array.isArray(p) && p.length === 2 && p.every(Number.isFinite); }
+    if (!Array.isArray(pairs) || (pairs.length !== 2 && pairs.length !== 3) ||
+        !pairs.every(function (pair) { return Array.isArray(pair) && pair.length === 2 && pair.every(point); })) return null;
+    var x0 = pairs[0][0][0], y0 = pairs[0][0][1], u0 = pairs[0][1][0], v0 = pairs[0][1][1];
+    var x = pairs[1][0][0] - x0, y = pairs[1][0][1] - y0;
+    var u = pairs[1][1][0] - u0, v = pairs[1][1][1] - v0;
+    var a, b, c, d;
+    if (pairs.length === 2) {
+      var length2 = x * x + y * y;
+      if (length2 === 0 || (u === 0 && v === 0)) return null;
+      a = (u * x + v * y) / length2;
+      c = (v * x - u * y) / length2;
+      b = -c;
+      d = a;
+    } else {
+      var xx = pairs[2][0][0] - x0, yy = pairs[2][0][1] - y0;
+      var uu = pairs[2][1][0] - u0, vv = pairs[2][1][1] - v0;
+      var det = x * yy - xx * y;
+      if (det === 0 || u * vv - uu * v === 0) return null;
+      a = (u * yy - uu * y) / det;
+      b = (x * uu - xx * u) / det;
+      c = (v * yy - vv * y) / det;
+      d = (x * vv - xx * v) / det;
+    }
+    return [[a, b, u0 - a * x0 - b * y0], [c, d, v0 - c * x0 - d * y0]];
+  }
+
+  var Areas = {
+    fromData: function (mapData) { return new AreasModel(mapData.areas || mapData); },
+    solveAlign: solveAreaAlign, REGIONS: AREA_REGIONS.slice()
+  };
+
   var api = {
+    Areas: Areas,
     Features: Features,
     PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,
     packPaint: packPaint, compose: compose, linePixels: linePixels, riskOne: riskOne, exportTags: exportTags,

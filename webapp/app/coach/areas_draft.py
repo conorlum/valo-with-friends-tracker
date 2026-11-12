@@ -72,14 +72,23 @@ def draft(map_name: str, walk, labels: list[dict] | None = None, *, grid: int = 
     return {"names": names, "cells": encode_cells(cells)}
 
 
-def auto_super(names: list[dict], cells: list[int], draft_cells: list[str | None]) -> list[dict]:
-    """Resolve regions from the original draft super at each cell. Children vote with their root."""
+def auto_super(
+    names: list[dict], cells: list[int], draft_cells: list[str | None], *,
+    bands: dict[str, list[list[int]]] | None = None,
+) -> list[dict]:
+    """Resolve regions from the original draft super. Each cell votes once per root across floors."""
     by_id = {row["id"]: row for row in names}
     roots = {name_id: areas._ancestors(by_id, name_id)[0] for name_id in by_id}
+    bands = bands or {}
     votes = defaultdict(Counter)
-    for name_id, region in zip(cells, draft_cells, strict=True):
-        if name_id and region:
-            votes[roots[name_id]][region] += 1
+    for cell, (name_id, region) in enumerate(zip(cells, draft_cells, strict=True)):
+        if not region:
+            continue
+        covered = {roots[band_id] for _, _, band_id in bands.get(str(cell), ()) if band_id}
+        if name_id:
+            covered.add(roots[name_id])
+        for root in covered:
+            votes[root][region] += 1
     supers = {}
     for row in names:
         if row["parent"] is not None:
