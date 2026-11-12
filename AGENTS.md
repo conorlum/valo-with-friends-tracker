@@ -52,6 +52,30 @@ The player detail page's two heaviest computations (the round-win/kill-order sta
 - `scripts/recompute_player_views.py` — batch recompute for every player (or `--cached-only`); run after a bulk import/crawl, a manual DB fixup, or a schema/calculation version bump: `.\.venv\Scripts\python.exe scripts\recompute_player_views.py`.
 - Both tracker.gg ingest scripts (`ingest_trackergg_player.py`, `refresh_tracked_players.py`) pre-warm the cache for every player whose rows were invalidated, once each, at the end of the run — pass `--no-prewarm` to skip this (a full career recompute is several seconds per affected player).
 
+### Critical Util
+
+Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
+(`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.
+Requests never build: `/util` and the replay tab read the stored build (`replay_util.page_values`, `match_payload`)
+and show the last build with an "updating" note when it is stale or missing. The build takes minutes.
+
+- The build and the refit run on the replay worker as the `util` Workflow task, not on the site (`UTIL_BUILD_REMOTE`,
+  on in `render.yaml`; `app/services/util_build_remote.py`, DB-free build in `app/critutil/corpus.py`). The control
+  loop decides: the build is stale and util rows have been quiet for 120 s (or the owner asked), it pushes only the
+  rounds and observations the worker lacks, opens the build, follows it, then checks and stores "values" (and "win"
+  after a refit). Up to 3 tries per inputs key. With the switch on, the pages never start the local
+  `util_rebuild` child; with it off that child is the old path. No connection or transaction is held through a
+  build. The owner's `POST /util/build` (`REPLAY_ADMIN_TOKEN`) asks for one. The worker keeps its own util store
+  (`REPLAY_UTIL_DIR`, cap `REPLAY_UTIL_RESERVE`, pruned to the newest build's inputs). A digest over every file the
+  build reads (`app/critutil/build_digest.py`, standard library only) must match between site and worker; the worker's
+  `/health` reports `util.digest`, and a mismatch lasting over 30 min is a Site health row. `replay_worker/server.py`
+  never imports `app.critutil.corpus`, numpy or scipy.
+- The coach only reads the stored build (`snapshot.read`): it waits up to 10 min for a current one, asks for one
+  through the admin route when `REPLAY_ADMIN_TOKEN` is set, refuses at once when this checkout's code digest differs
+  from the site's, and otherwise exits 2 naming the reason (`refused: Critical Util: ...`). It never builds.
+- Failures show in Site health as `util_build_failed` `remote:<dispatch|push|run|collect|store|gave_up|digest>`
+  (`app/services/site_health.py`).
+
 ### Site health
 
 The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`GROUPS`) lists the replay kinds plus

@@ -490,3 +490,31 @@ Read the worker's `/health` from its Render shell:
    tail, and the dashboard shows no runs cancelled by a limit. A worker restart starts every identity over: a
    warm build (fast when its file is still on the disk, but still one Workflow start each, within the pacer's
    starts per minute), then one probe round before the rest start (accepted cost).
+
+### Critical Util builds on Workflows
+
+The Critical Util build (and the refit of its round-win estimator) runs as the `util` task on the replay-tasks
+workflow, plan `pro`, `timeout_seconds` 1800, no retry. Switch: `UTIL_BUILD_REMOTE` on the site in `render.yaml`,
+`value: "true"`, on from the merge. A dashboard change is reset by a Blueprint sync.
+
+| Setting | Where | Default |
+|---|---|---|
+| `REPLAY_UTIL_RUN_TIMEOUT_S` | worker, Workflow runs only | 1500 s (Render's task limit is 300 s above) |
+| `REPLAY_UTIL_DIR` | worker | `<archive>/util`, else `<temp>/util` |
+| `REPLAY_UTIL_RESERVE` | worker | 2 GiB: the most the stored rounds and observations hold |
+
+The worker's util store has its own folder and cap, separate from the control cache, and is pruned to the newest
+build's inputs. `/health` reports `util.digest`: the digest over every file the build reads must equal the site's,
+or no build is opened (a mismatch over 30 min is a Site health row, `remote:digest`). The worker image copies every
+file the digest covers.
+
+**What the merge sets off.** On the restart the control loop sees util rows that are stale for the new code. Once
+util rows have been quiet for 120 s it pushes what the worker lacks and opens the first build; the site then checks
+and stores it. The local `util_rebuild` child no longer starts on the friends site. Expect the first build to take
+minutes (the worker's limit is 1500 s); up to 3 tries per inputs key, and a failure is a `util_build_failed`
+`remote:<step>` row in Site health. The coach waits up to 10 min for a current build, and refuses when its checkout's
+code digest differs from the site's.
+
+Check after the merge: the replay-tasks workflow lists a `util` task and has deployed this commit; `/health` shows
+`util.digest`; a `util` run appears on the Runs page and `util_model` "values" has a new key. To switch it off, set
+`"false"` in `render.yaml` by PR.
