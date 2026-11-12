@@ -56,10 +56,10 @@ def _nearest_label(map_name: str, u: float, v: float, table: dict | None = None)
     return {"name": name, "super": best[1]["super"], "path": [name], "approximate": True}
 
 
-def cell_at(u: float, v: float) -> int:
-    x = min(GRID - 1, max(0, int(u / UV_SCALE * GRID)))
-    y = min(GRID - 1, max(0, int(v / UV_SCALE * GRID)))
-    return y * GRID + x
+def cell_at(u: float, v: float, *, grid: int = GRID) -> int:
+    x = min(grid - 1, max(0, int(u / UV_SCALE * grid)))
+    y = min(grid - 1, max(0, int(v / UV_SCALE * grid)))
+    return y * grid + x
 
 
 def _ancestors(names: dict[int, dict], name_id: int) -> list[int]:

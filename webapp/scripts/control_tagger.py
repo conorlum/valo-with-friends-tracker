@@ -1,6 +1,7 @@
 """The map-control drawing page (docs/replay-map-control-plan.md, Stage 6; R2: a local tool, not a site page).
 
     .venv313\\Scripts\\python.exe scripts\\control_tagger.py [--out <file>] [--tags <tags.json>] [--heights-dir <dir>]
+        [--areas-dir <dir>]
 
 Builds one self-contained page (default `%TEMP%\\valo-control-tagger\\control-tagger.html`, never the repo)
 with every minimap, its candidate shapes (app/control/geometry.py `candidates`, with the map's own detector
@@ -47,9 +48,11 @@ import argparse
 import base64
 import hashlib
 import json
+import logging
 import os
 import sys
 import tempfile
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
@@ -59,8 +62,10 @@ from PIL import Image
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
+from app.coach import areas, areas_draft  # noqa: E402
 from app.control import geometry as cg  # noqa: E402
 from app.control import heights as hc  # noqa: E402
+from app.control.height_motion import coarse_of_fine  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import map_feature_schema as ms  # noqa: E402
 from app.replays import map_feature_inputs as fi  # noqa: E402
@@ -70,6 +75,8 @@ TEMPLATE = HERE / "control_tagger.template.html"
 CORE_JS = HERE / "control_tagger_core.js"
 FEATURES_JS = HERE / "control_tagger_features.js"
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
+AREA_FLOOR_PADDING_DM = 10
+_LOG = logging.getLogger(__name__)
 
 
 def rle(values: np.ndarray) -> list[int]:
@@ -104,20 +111,20 @@ def choke_data(name: str, asset_dir: Path = choke_assets.ASSET_DIR) -> dict:
     return {"chokes": [asdict(c) for c in chokes], "next_id": choke_assets.load_next_id(name, asset_dir)}
 
 
-def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict | None:
-    """Actual asset floor counts and unresolved cells for automatic preview. From `heights_dir` when it
-    holds `<Map>.height.npz` (the active asset, written by `control_heights.py export`: a map's heights live in
-    the database once the replay worker builds them), else the committed asset. None for a map without heights:
-    preview explicitly uses flat placement."""
+def _height_asset(name: str, asset_dir: Path, heights_dir: Path | None) -> hc.HeightAsset | None:
     exported = None if heights_dir is None else Path(heights_dir) / f"{name}.height.npz"
     if exported is not None and exported.is_file():
-        asset = hc.load_asset(exported)
-    else:
-        index_path = asset_dir / "index.json"
-        entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
-        if not entry.get("height_sha"):
-            return {'flat': True, 'height_sha': None}
-        asset = hc.load_asset(asset_dir / f"{name}.height.npz")
+        return hc.load_asset(exported)
+    index_path = asset_dir / "index.json"
+    entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    if entry.get("height_sha"):
+        return hc.load_asset(asset_dir / f"{name}.height.npz")
+    return None
+
+
+def _floor_data(asset: hc.HeightAsset | None) -> dict:
+    if asset is None:
+        return {'flat': True, 'height_sha': None}
     return {"flat": False, "height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
             'mixed_grid': bool(asset.refinement and len(asset.fine_cells)),
             'floor_counts': (np.isfinite(asset.floors) & (asset.floors >= 0)).sum(axis=2).ravel().tolist(),
@@ -125,14 +132,87 @@ def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | No
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
 
 
-def features_data(names: list[str], heights_dir: Path | None = None) -> dict:
+def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict:
+    """Floor counts and unresolved cells for preview, from exported heights if present, else committed heights."""
+    return _floor_data(_height_asset(name, asset_dir, heights_dir))
+
+
+def features_data(
+    names: list[str], heights_dir: Path | None = None, *, assets: dict[str, hc.HeightAsset | None] | None = None,
+) -> dict:
     """What the features panel needs from the Python contract (app/replays/map_feature_schema.py), so the page
     never keeps its own copy: the schema version, the presets and route templates, each map's checklist seed and
     its floor data (from `heights_dir` when given, see floor_data)."""
+    if assets is None:
+        assets = {name: _height_asset(name, cg.ASSET_DIR, heights_dir) for name in names}
     return {"schema_version": ms.SCHEMA_VERSION, "presets": {p: ms.preset(p) for p in ms.PRESETS},
             "routes": {p: ms.route_template(kind) for p, kind in ms.ROUTE_PRESET.items()},
             "seeds": {n: ms.checklist_seed(n) for n in names}, "no_features_note": ms.NO_FEATURES_NOTE,
-            "floors": {n: floor_data(n, heights_dir=heights_dir) for n in names}}
+            "floors": {n: _floor_data(assets[n]) for n in names}}
+
+
+def _area_floors(asset: hc.HeightAsset | None, walk: np.ndarray) -> dict:
+    if asset is None:
+        return {}
+    coarse = asset.floors.reshape(-1, hc.MAX_FLOORS)
+    multiple = np.flatnonzero(walk & (asset.floor_count().ravel() > 1))
+    spans = {int(cell): [[int(z), int(z)] for z in coarse[cell] if z >= 0] for cell in multiple}
+    # Refined assets remove the coarse column at these cells. Project child heights to the paint grid,
+    # grouping nearby heights into one floor so slope differences across children do not add floors.
+    if asset.fine_cells is not None:
+        refined = defaultdict(set)
+        for child, floors in zip(asset.fine_cells, asset.fine_floors):
+            cell = coarse_of_fine(child)
+            if walk[cell]:
+                refined[cell].update(int(z) for z in floors if z >= 0)
+        for cell, heights in refined.items():
+            levels = []
+            for z in sorted(heights):
+                if not levels or z - levels[-1][1] >= hc.FLOOR_SEP_M * 10:
+                    levels.append([z, z])
+                else:
+                    levels[-1][1] = z
+            if len(levels) > 1:
+                spans[cell] = levels
+    origin = asset.origin_z
+    return {
+        str(cell): [[origin + lo - AREA_FLOOR_PADDING_DM, origin + hi + AREA_FLOOR_PADDING_DM]
+                    for lo, hi in spans[cell]]
+        for cell in sorted(spans)
+    }
+
+
+def _existing_areas(name: str, areas_dir: Path | None) -> dict | None:
+    directory = Path(areas_dir) if areas_dir is not None else (
+        Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-areas"
+    )
+    path = directory / f"{name}.areas.json"
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        errors = areas.validate(obj)
+        if errors:
+            raise ValueError(errors[0])
+        if obj["map"] != name:
+            raise ValueError("map does not match the filename")
+        return obj
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError) as exc:
+        _LOG.warning("Ignoring tagger areas file %s: %s", path, exc)
+        return None
+
+
+def _areas_data(name: str, asset: hc.HeightAsset | None, areas_dir: Path | None) -> dict:
+    walk = cg.load_base_geometry(name).walk.ravel()
+    labels = areas.callouts(name)
+    return {"map": name, "grid": cg.GRID, "walk": areas_draft.encode_cells(walk), "labels": labels,
+            "draft": areas_draft.draft(name, walk, labels), "existing": _existing_areas(name, areas_dir),
+            "floors": _area_floors(asset, walk)}
+
+
+def areas_data(name: str, heights_dir: Path | None = None, areas_dir: Path | None = None) -> dict:
+    """The draft, walk grid, world-height bands and any saved file for one map."""
+    return _areas_data(name, _height_asset(name, cg.ASSET_DIR, heights_dir), areas_dir)
 
 
 def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts: dict | None = None) -> dict:
@@ -148,8 +228,12 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
     return maps
 
 
-def render(tags: dict, maps: dict, heights_dir: Path | None = None, diagnostics: dict | None = None) -> str:
-    features = features_data(sorted(maps), heights_dir)
+def render(
+    tags: dict, maps: dict, heights_dir: Path | None = None, diagnostics: dict | None = None, *,
+    areas_dir: Path | None = None,
+) -> str:
+    assets = {name: _height_asset(name, cg.ASSET_DIR, heights_dir) for name in maps}
+    features = features_data(sorted(maps), assets=assets)
     if diagnostics is not None:
         name = diagnostics.get('map')
         if name not in maps or diagnostics.get('editor_entry') != tags.get('maps', {}).get(name):
@@ -162,6 +246,7 @@ def render(tags: dict, maps: dict, heights_dir: Path | None = None, diagnostics:
         if (diagnostics.get('schema'), diagnostics.get('compiler'), diagnostics.get('normalization')) != (ms.SCHEMA_VERSION, fi.FEATURE_COMPILER_VERSION, fi.FEATURE_NORMALIZATION_VERSION):
             raise ValueError('Diagnostic report versions are stale; regenerate it')
         features['diagnostics'] = {name: diagnostics}
+    maps = {name: {**data, "areas": _areas_data(name, assets[name], areas_dir)} for name, data in maps.items()}
     data = json.dumps({"tags": tags, "maps": maps, "features": features},
                       separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
@@ -179,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                                                     "(players at t = 0 stand pressed against the barriers)")
     parser.add_argument("--heights-dir", type=Path, help="read each map's heights from an export of the database's "
                                                          "active asset (control_heights.py export)")
+    parser.add_argument("--areas-dir", type=Path, help="read saved areas files from this directory (default %%TEMP%%\\valo-areas)")
     parser.add_argument('--diagnostics', type=Path, help='attach an exact compiler diagnostic report; identity/height mismatches are refused')
     args = parser.parse_args(argv)
     tags = json.loads(args.tags.read_text(encoding="utf-8"))
@@ -189,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     diagnostics = json.loads(args.diagnostics.read_text(encoding='utf-8')) if args.diagnostics else None
     try:
-        page = render(tags, maps, args.heights_dir, diagnostics)
+        page = render(tags, maps, args.heights_dir, diagnostics, areas_dir=args.areas_dir)
     except ValueError as exc:
         parser.error(str(exc))
     out.write_text(page, encoding="utf-8")

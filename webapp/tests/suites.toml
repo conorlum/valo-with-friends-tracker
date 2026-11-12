@@ -316,7 +316,7 @@ about = "Map control outside the engine: committed assets and barriers, storage 
 tests = [
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
-  "tests/replays/test_control_tagger.py", "tests/replays/test_control_pinned_inputs.py",
+  "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_control_pinned_inputs.py",
   "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
   "tests/replays/test_preview_control_live.py", "tests/replays/test_freshness_memos.py",
   "tests/replays/test_replay_errors*.py", "tests/replays/test_box_conflicts_page.py",
@@ -326,7 +326,7 @@ guards = [
   "app/services/replay_control_views.py", "app/static/js/replay_control.js", "app/static/data/control/**",
   "app/templates/stats/_map_control_table.html", "scripts/build_control_geometry.py", "scripts/place_control_barriers.py",
   "scripts/compute_control.py", "scripts/control_tagger*", "scripts/preview_control_live.py",
-  "scripts/control_reference.py", "app/services/mask_accel.py", "app/services/replay_errors.py",
+  "scripts/control_reference.py", "app/services/mask_accel.py", "app/services/replay_errors.py", "app/coach/areas_draft.py",
 ]
 
 [map-features]
