@@ -188,11 +188,11 @@ guards = ["app/static/js/**", "app/templates/**"]
 
 [coach]
 about = "The AI coach: snapshot, brief, prompt, checker, runner, storage, the coach page and per-moment feedback. No model is called."
-tests = ["tests/coach/test_*.py", "tests/test_coach_journey.py"]
+tests = ["tests/coach/test_*.py", "tests/test_coach_journey.py", "tests/replays/test_destroyed_devices.py"]
 guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
-  "scripts/coach*", "app/replays/control_reasons.py",
+  "scripts/coach*", "app/replays/control_reasons.py", "app/replays/destroyed.py",
 ]
 
 [critical-util]
@@ -206,7 +206,7 @@ guards = [
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
 tests = ["tests/moments/test_*.py", "tests/replays/test_moments_*.py", "tests/replays/test_replay_moments.py"]
-guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/moments.js", "app/replays/control_reasons.py"]
+guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/moments.js", "app/replays/control_reasons.py", "app/replays/destroyed.py"]
 
 # ---------------------------------------------------------------------------------------------------- Replays
 
@@ -275,7 +275,7 @@ guards = [
   "app/control/__init__.py", "app/control/engine.py", "app/control/utility.py", "app/control/utility.json",
   "app/control/hearing.json", "app/control/mollies.py", "app/control/encode.py", "app/control/task.py",
   "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
-  "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
+  "app/replays/destroyed.py", "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
   "tests/fixtures/control/**", "tests/replays/control_toys.py", "tests/replays/conftest.py",
 ]
 

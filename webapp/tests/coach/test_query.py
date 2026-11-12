@@ -182,6 +182,39 @@ def test_a_kill_after_the_round_was_decided_is_marked(tmp_path):
     assert kill["after_decided"] is True
 
 
+def _trip(by, gone, u, v, **kw):
+    return {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": "4_TripWire", "by": by, "t": 1.0,
+            "t1": gone, "gone": gone, "u": u, "v": v, "id": 40 + by, **kw}
+
+
+@pytest.fixture
+def destroyed_snap(tmp_path, monkeypatch):
+    from app.coach import areas
+    monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
+    util = [_trip(1, 17.2, 2100, 2000),                   # side A's, shot untouched
+            _trip(6, 18.0, 8000, 8100),                   # side B's, shot untouched
+            _trip(2, 20.0, 2100, 2100, fx=15.0)]          # side A's, fired first: not destroyed
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {"db": {}, "stats": {}}}}
+    blob = toys.round_blob(toys.ten(), n=1, util=util)
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}), tmp_path)
+    return snapshot.load(tmp_path)
+
+
+def test_timeline_holds_the_destroyed_devices_with_their_area(destroyed_snap):
+    events = [e for e in query.timeline(destroyed_snap, 1)["events"] if e["kind"] == "destroyed"]
+    assert [(e["t"], e["device"], e["owner"], e["area"]["name"]) for e in events] == [
+        (17.2, "trip", "P1#T1", "A Site"), (18.0, "trip", "P6#T6", "B Site")]
+    assert "destroyed" in query.timeline(destroyed_snap, 1)["note"]
+
+
+def test_knew_lists_the_sides_own_devices_destroyed_by_then(destroyed_snap):
+    assert query.knew(destroyed_snap, 1, 17.0, "A")["destroyed"] == []
+    (lost,) = query.knew(destroyed_snap, 1, 17.5, "A")["destroyed"]
+    assert lost == {"t": 17.2, "device": "trip", "owner": "P1#T1", "area": {"name": "A Site", "super": "A"}}
+    assert [d["owner"] for d in query.knew(destroyed_snap, 1, 25.0, "B")["destroyed"]] == ["P6#T6"]
+    assert "destroyed" in query.knew(destroyed_snap, 1, 17.5, "A")["note"]
+
+
 def test_impact_is_the_stored_row(snap):
     assert query.impact(snap, 1, "P0")["impact"] == -250
     assert query.impact(snap, 2, "P0") == {"available": False, "reason": "no Impact row for this round"}
