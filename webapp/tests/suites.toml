@@ -200,7 +200,7 @@ about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, t
 tests = ["tests/critutil/test_*.py"]
 guards = [
   "app/critutil/**", "app/services/util_model.py", "app/services/util_values.py", "app/services/replay_util.py",
-  "app/services/util_rebuild.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
+  "app/services/util_rebuild.py", "app/services/util_build_health.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
 ]
 
 [critical-moments]
