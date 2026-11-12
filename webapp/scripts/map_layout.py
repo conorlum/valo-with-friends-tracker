@@ -1,20 +1,24 @@
 """Map layout tooling. Subcommands (a table, later items add more):
 
     align  --picture <png> --crop x0,y0,x1,y1 --ours <png> --out <dir>
-           fit the picture's floor onto our minimap; writes aligned.png, diff.png, fit.json
-    diff   --ours <png> --aligned-fit <dir>   (reads <dir>/fit.json and the picture it names) -> prints regions
-    build  <Map> <patch, 13.10 form> --picture <aligned png> --regions <mask png> --into <asset dir>
-           [--kill-lines <json>]: the layout's minimap, masks, chokes, tags, callouts, layouts.json and
-           index.json entries and an empty must_block.<key>.json, all under --into (a tree shaped like
-           webapp/app/static; default the real one). The base layout and maps.json are never touched.
+           fit the picture's floor onto our minimap; writes aligned.png, floor.png (the fitted floor mask),
+           diff.png, fit.json. A picture with transparency is read with its transparent pixels as background.
+    diff   --ours <png> --fit <dir>   (reads <dir>/fit.json and the picture it names) -> prints regions
+    build  <Map> <patch, 13.10 form> --floor <align's floor.png> --regions <mask png> [--extra-regions <png>]
+           --into <asset dir> [--kill-lines <json>]: the layout's minimap, masks, chokes, tags, callouts,
+           layouts.json and index.json entries and an empty must_block.<key>.json, all under --into (a tree
+           shaped like webapp/app/static; default the real one). --extra-regions (changes the minimap can't
+           show that move heights) joins the regions file only. The base layout and maps.json are never touched.
+    kill-lines --kills <kill_lines.py out dir> --map <Map> --key <key> [--into <fixture>]
+           Risk 1's qualifying kills of the new patch's exports, as the fixture's endpoints under the key
 
-    overlay --ours <png> --fit <align out dir> --map <Map> --out <scratch dir>
-           overlay.html (self-contained): old, new, replay positions, each region with keep / reject /
-           "minimap can't show", and a button that exports the kept regions as a 1024x1024 mask png
-           (the input of `build --regions`)
+    overlay --ours <png> --fit <align out dir> --map <Map> --patch <13.10> --out <scratch dir>
+           overlay.html (self-contained): old, new, positions of replays on --patch or later, each region with
+           keep / reject / "minimap can't show", and a button that exports the kept regions as a 1024x1024
+           mask png (the input of `build --regions`)
     fetch-minimap <Map> --out <dir>
-           compares valorant-api's minimap with the vendored one: same | differs (image saved to --out) |
-           patched, upstream unchanged. Never writes under app/.
+           compares valorant-api's minimap with the newest layout's: same | same floor as <key> | differs
+           (image saved to --out) | patched, upstream unchanged. Never writes under app/.
     notes <patch, 13.10 form> --map <Map> --out <dir> [--url <page>]
            the patch page's Map Updates section, the map's subsection: notes-<patch>-<Map>.txt and
            notes-<patch>-<Map>.images.txt in --out; exit 1 when the map has no subsection
@@ -39,6 +43,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))   # webapp/, for `app` (layouts, the friends DB)
 import map_layout_fit as fit  # noqa: E402
 import vendor_map_assets  # noqa: E402
 
@@ -52,8 +57,18 @@ def _crop(text: str) -> tuple[int, int, int, int]:
     return parts  # type: ignore[return-value]
 
 
+def _rgb(picture: Path) -> Image.Image:
+    """The picture as RGB with any transparent pixel painted the background colour: a vendored minimap's walls
+    are transparent, and their RGB under the alpha (often black) would read as floor (S6, 2026-11-12)."""
+    raw = Image.open(picture)
+    if raw.mode in ("RGBA", "LA", "PA") or (raw.mode == "P" and "transparency" in raw.info):
+        rgba = raw.convert("RGBA")
+        return Image.alpha_composite(Image.new("RGBA", rgba.size, (*fit.BACKGROUND, 255)), rgba).convert("RGB")
+    return raw.convert("RGB")
+
+
 def _load(picture: Path, crop, ours_path: Path):
-    shot = Image.open(picture).convert("RGB")
+    shot = _rgb(picture)
     if crop:
         shot = shot.crop(crop)
     pic = fit.picture_floor_mask(np.array(shot))
@@ -71,6 +86,9 @@ def cmd_align(args) -> int:
     (out / "fit.json").write_text(json.dumps(res), encoding="utf-8")
     fit.warp(shot, res["rot"], res["scale"], res["tx"], res["ty"], SIZE, Image.BICUBIC).save(out / "aligned.png")
     new = fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
+    # The exact floor mask diff and overlay judge, for build: thresholding aligned.png again read its black
+    # padding and its resampled edges as floor (S6, 2026-11-12).
+    Image.fromarray(new.astype(np.uint8) * 255, "L").save(out / "floor.png")
     Image.fromarray(fit.diff_image(ours, new)).save(out / "diff.png")
     print(f"best IoU {res['iou']:.4f} rot {res['rot'] * 90} CCW scale {res['scale']:.4f} "
           f"at ({res['tx']:.1f}, {res['ty']:.1f})")
@@ -139,12 +157,16 @@ def cmd_build(args) -> int:
         raise SystemExit(f"{key} must start after {previous.display_id}")
     scale = _read_json(into / "data" / "maps.json")[name]["xMultiplier"]
 
-    # The minimap: the aligned picture's floor inside the regions, the previous layout's pixels outside.
+    # The minimap: align's floor mask inside the regions, the previous layout's pixels outside.
     regions = np.array(Image.open(args.regions).convert("L")) > 0
-    shot = np.array(Image.open(args.picture).convert("RGB"))
+    floor = np.array(Image.open(args.floor).convert("L")) > 0
     old_png = img_dir / f"{previous.asset_key}.png"
     old = np.array(Image.open(old_png).convert("RGBA"))
-    new_rgba = fit.layout_minimap(old, fit.picture_floor_mask(shot), regions)
+    new_rgba = fit.layout_minimap(old, floor, regions)
+    # S8: changes the minimap can't show (a raised wall) still change heights there: their hand-drawn mask joins
+    # the regions file, which keeps other layouts' positions out of the heights pool, but not the minimap.
+    if args.extra_regions is not None:
+        regions = regions | (np.array(Image.open(args.extra_regions).convert("L")) > 0)
     png = img_dir / f"{key}.png"
     Image.fromarray(new_rgba, "RGBA").save(png)
 
@@ -214,22 +236,28 @@ def fetch(url: str) -> bytes:
 POSITION_ROUND_CAP = 200
 
 
-def positions(map_name: str) -> list[tuple[int, int]]:
-    """Alive 4 Hz replay positions on `map_name` as minimap pixels (0..1023), from the stored round blobs of at
-    most POSITION_ROUND_CAP rounds. Reads the database through the app's session, so run it under
-    `scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only`. Tests replace this."""
+def positions(map_name: str, patch: tuple[int, int]) -> tuple[list[tuple[int, int]], int]:
+    """(Alive 4 Hz replay positions as minimap pixels (0..1023), how many replays they came from), from the stored
+    round blobs of at most POSITION_ROUND_CAP rounds of `map_name`'s replays played on `patch` or later only:
+    older replays would fill a closed-off area and argue against a correct edit (S7, 2026-11-12). Reads the
+    database through the app's session, so run it under `scripts/with_friends_db.py --expect-database
+    valowithfriendsdb --read-only`. Tests replace this."""
     from app.db import SessionLocal
     from app.models.replay import Replay, ReplayRound
     from app.replays import format as fmt
+    from app.replays import layouts
+    from app.services.layout_walls import on_quarter
 
     out: list[tuple[int, int]] = []
     db = SessionLocal()
     try:
-        rows = (db.query(ReplayRound.data).join(Replay, Replay.id == ReplayRound.replay_id)
-                .filter(Replay.map_name == map_name, ReplayRound.data.isnot(None))
+        ids = [rid for rid, branch in db.query(Replay.id, Replay.game_branch).filter(Replay.map_name == map_name)
+               if (layouts.parse_patch(branch) or (0, 0)) >= patch]
+        rows = (db.query(ReplayRound.replay_id, ReplayRound.data)
+                .filter(ReplayRound.replay_id.in_(ids), ReplayRound.data.isnot(None))
                 .order_by(ReplayRound.replay_id.desc(), ReplayRound.round_number)
-                .limit(POSITION_ROUND_CAP).all())
-        for (data,) in rows:
+                .limit(POSITION_ROUND_CAP).all()) if ids else []
+        for _, data in rows:
             try:
                 blob = fmt.decode_blob(data)
             except Exception:  # noqa: BLE001 - one unreadable round does not stop the tool
@@ -238,13 +266,13 @@ def positions(map_name: str) -> list[tuple[int, int]]:
                 lives = [(t0, float("inf") if t1 is None else t1) for t0, t1, _ in blob.get("alive", {}).get(slot, [])]
                 for segment in segments:
                     for t, u, v, _ in fmt.decode_segment(segment, blob["hz"]):
-                        if abs(round(t * 4) - t * 4) > 1e-6 or not any(t0 <= t < t1 for t0, t1 in lives):
+                        if not on_quarter(t, blob["hz"]) or not any(t0 <= t < t1 for t0, t1 in lives):
                             continue
                         out.append((min(SIZE - 1, int(u / fmt.UV_SCALE * SIZE)),
                                     min(SIZE - 1, int(v / fmt.UV_SCALE * SIZE))))
     finally:
         db.close()
-    return out
+    return out, len({rid for rid, _ in rows})
 
 
 def _data_uri(img: Image.Image) -> str:
@@ -268,6 +296,7 @@ body{font-family:sans-serif;background:#111;color:#ddd;margin:12px}
 table{border-collapse:collapse;margin-top:12px}td,th{border:1px solid #444;padding:3px 8px;text-align:left}
 </style></head><body>
 <h1>__MAP__: old, new, positions</h1>
+<p>__SAMPLE__</p>
 <p><label><input type="checkbox" id="show-old" checked> old (ours)</label>
 <label><input type="checkbox" id="show-new" checked> new (picture)</label>
 <label><input type="checkbox" id="show-pos" checked> positions (__NPOS__)</label>
@@ -368,7 +397,8 @@ def cmd_overlay(args) -> int:
     _, pic, ours = _load(Path(res["picture"]), crop, args.ours)
     new = fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
     regions = fit.diff_regions(ours, new, min_px=args.min_px)
-    spots = [(int(x), int(y)) for x, y in positions(args.map)]
+    found, replays = positions(args.map, _patch(args.patch))
+    spots = [(int(x), int(y)) for x, y in found]
     counts = fit.count_positions(regions, spots)
     rows = []
     for i, (r, n) in enumerate(zip(regions, counts), 1):
@@ -383,6 +413,7 @@ def cmd_overlay(args) -> int:
             f'<td>{i}</td><td>{r["kind"]}</td><td>{r["area"]}</td><td>x {x0}-{x1} y {y0}-{y1}</td>'
             f'<td>{n}</td><td>{radios}</td></tr>')
     page = (OVERLAY_PAGE.replace("__MAP__", html_lib.escape(args.map))
+            .replace("__SAMPLE__", html_lib.escape(f"positions from {replays} replays on {args.patch} or later"))
             .replace("__NPOS__", str(len(spots)))
             .replace("__OLD__", _data_uri(_floor_image(ours))).replace("__NEW__", _data_uri(_floor_image(new)))
             .replace("__ROWS__", "\n".join(rows)).replace("__POSITIONS__", json.dumps([list(s) for s in spots])))
@@ -390,6 +421,9 @@ def cmd_overlay(args) -> int:
     (args.out / "overlay.html").write_text(page, encoding="utf-8")
     print(f"{len(regions)} regions, {len(spots)} positions -> {args.out / 'overlay.html'}")
     return 0
+
+
+SAME_FLOOR_IOU = 0.99     # upstream's floor and the newest layout's: the same picture, re-drawn by build
 
 
 def _sha12(data: bytes) -> str:
@@ -404,7 +438,14 @@ def cmd_fetch_minimap(args) -> int:
     if not found:
         raise SystemExit(f"valorant-api has no playable map called {args.map!r}")
     upstream = fetch(found[0]["displayIcon"])
-    vendored = STATIC / "img" / "maps" / f"{args.map}.png"
+    # S15 (2026-11-12): compare with the newest layout's minimap, not base's: on a second redraw upstream may
+    # still serve the first one, which `build` re-drew in the vendored style (other bytes, the same floor).
+    from app.replays import layouts
+
+    registry_path = STATIC / "data" / "layouts.json"
+    registry = _read_json(registry_path) if registry_path.is_file() else {"maps": {}}
+    latest = layouts.layouts_of(args.map, registry)[-1].asset_key
+    vendored = STATIC / "img" / "maps" / f"{latest}.png"
     patched_from = vendor_map_assets.PATCHED_MINIMAPS.get(args.map)
     new_sha = _sha12(upstream)
     if patched_from is not None and new_sha == patched_from:
@@ -413,6 +454,12 @@ def cmd_fetch_minimap(args) -> int:
     if vendored.is_file() and _sha12(vendored.read_bytes()) == new_sha:
         print("same")
         return 0
+    if vendored.is_file() and latest != args.map:
+        theirs = fit.ours_floor_mask(np.array(Image.open(io.BytesIO(upstream)).convert("RGBA")))
+        ours = fit.ours_floor_mask(np.array(Image.open(vendored).convert("RGBA")))
+        if theirs.shape == ours.shape and fit.iou(theirs, ours) >= SAME_FLOOR_IOU:
+            print(f"same floor as {latest}")
+            return 0
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / f"{args.map}.png").write_bytes(upstream)
     note = " (a hand patch stands; upstream changed under it)" if patched_from is not None else ""
@@ -492,8 +539,11 @@ def map_notes(page: str, map_name: str) -> tuple[list[str], list[str]] | None:
 
 
 def cmd_notes(args) -> int:
-    major, minor = _patch(args.patch)
-    url = args.url or f"https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-{major}-{minor}/"
+    from app.replays import layouts
+
+    # F10: Riot's pages are zero-padded (valorant-patch-notes-13-08), as map_pool_seed.json's urls are.
+    slug = layouts.patch_text(_patch(args.patch)).replace(".", "-")
+    url = args.url or f"https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-{slug}/"
     got = map_notes(fetch(url).decode("utf-8", "replace"), args.map)
     if got is None:
         print(f"no {args.map} subsection under Map Updates in {url}", file=sys.stderr)
@@ -504,6 +554,40 @@ def cmd_notes(args) -> int:
     (args.out / f"{stem}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (args.out / f"{stem}.images.txt").write_text("".join(u + "\n" for u in urls), encoding="utf-8")
     print(f"{len(lines)} lines, {len(urls)} pictures -> {args.out / stem}.txt")
+    return 0
+
+
+def cmd_kill_lines(args) -> int:
+    """S14 (2026-11-12): the qualifying kill lines of kill_lines.py's output (run on the new patch's exports
+    only) as the fixture's [killer x, y, victim x, y] endpoints under the layout key, with Risk 1's own rule
+    for which kills count. build_control_geometry.py then judges them against the key's sight mask."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "control_feasibility"))
+    import build_control_geometry as bcg
+    import risk1
+
+    from app.replays import layouts
+
+    if not layouts.ASSET_KEY.fullmatch(args.key) or layouts.map_of(args.key) != args.map:
+        raise SystemExit(f"{args.key!r} is not a layout key of {args.map}")
+    lines, replays, skipped = [], 0, 0
+    for path in sorted(args.kills.glob("*.json")):
+        data = _read_json(path)
+        if data.get("map") != args.map:
+            continue
+        replays += 1
+        for kill in data.get("kills") or []:
+            if risk1.qualifies(kill) is not None:
+                skipped += 1
+                continue
+            lines.append([*risk1.px(kill["killer_pos"]), *risk1.px(kill["victim_pos"])])
+    if not lines:
+        raise SystemExit(f"no qualifying {args.map} kill lines under {args.kills}; nothing written")
+    target = args.into or bcg.KILL_LINES
+    fixture = _read_json(target)
+    fixture.setdefault("maps", {})[args.key] = lines
+    _write_json(target, fixture, None)
+    print(f"{args.key}: {len(lines)} qualifying kill lines from {replays} replays ({skipped} kills skipped) "
+          f"-> {target}")
     return 0
 
 
@@ -524,8 +608,11 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("build", help="a new layout's assets and registry entries")
     b.add_argument("map")
     b.add_argument("patch", help="the patch the layout starts at, 13.10 form")
-    b.add_argument("--picture", type=Path, required=True, help="the aligned picture (align's aligned.png)")
+    b.add_argument("--floor", type=Path, required=True, help="the fit's floor mask (align's floor.png)")
     b.add_argument("--regions", type=Path, required=True, help="mask png: the changed regions")
+    b.add_argument("--extra-regions", type=Path, default=None,
+                   help="mask png: changes the minimap can't show that move heights (a raised wall); added to the "
+                        "regions file, never to the minimap")
     b.add_argument("--into", type=Path, default=STATIC, help="an asset tree shaped like app/static")
     b.add_argument("--kill-lines", type=Path, default=None, help="kill lines json (default the tests' fixture)")
     b.set_defaults(func=cmd_build)
@@ -533,6 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--ours", type=Path, required=True)
     o.add_argument("--fit", type=Path, required=True, help="the --out dir of an align run")
     o.add_argument("--map", required=True)
+    o.add_argument("--patch", required=True, help="the new layout's patch, 13.10 form: positions from it on only")
     o.add_argument("--out", type=Path, required=True, help="a scratch dir")
     o.add_argument("--min-px", type=int, default=60)
     o.set_defaults(func=cmd_overlay)
@@ -546,6 +634,12 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--out", type=Path, required=True)
     n.add_argument("--url", default=None, help="override the patch page url")
     n.set_defaults(func=cmd_notes)
+    k = sub.add_parser("kill-lines", help="Risk 1 kill lines of the new patch's exports, under the layout key")
+    k.add_argument("--kills", type=Path, required=True, help="kill_lines.py's out dir, from the new patch only")
+    k.add_argument("--map", required=True)
+    k.add_argument("--key", required=True, help="the layout key, e.g. Ascent_13_10")
+    k.add_argument("--into", type=Path, default=None, help="the fixture to write (default the tests' one)")
+    k.set_defaults(func=cmd_kill_lines)
     return p
 
 

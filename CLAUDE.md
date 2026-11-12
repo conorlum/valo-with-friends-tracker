@@ -43,7 +43,7 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 
 ### Map layouts
 
-`app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`. Redrawing a map for a new layout follows `docs/map-layout-redraw.md` with `scripts/map_layout.py` (`notes`, `fetch-minimap`, `align`, `diff`, `overlay`, `build`).
+`app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note; a pending replay still shows its stored control, marked out of date, on the newest earlier layout that has a control layer, while an unknown patch shows none. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`. Redrawing a map for a new layout follows `docs/map-layout-redraw.md` with `scripts/map_layout.py` (`notes`, `fetch-minimap`, `align`, `diff`, `overlay`, `build`, `kill-lines`).
 
 ### Stats page caches
 

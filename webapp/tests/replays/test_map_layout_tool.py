@@ -116,8 +116,9 @@ def _toy_tree(root: Path) -> Path:
 def _inputs(tmp_path: Path):
     arr = np.full((1024, 1024, 3), BACKGROUND, np.uint8)
     arr[200:300, 160:600] = (60, 120, 90)           # the old room plus a new wing to the right
-    picture = tmp_path / "aligned.png"
-    Image.fromarray(arr).save(picture)
+    Image.fromarray(arr).save(tmp_path / "aligned.png")
+    picture = tmp_path / "floor.png"                 # align's floor.png: the fitted floor mask
+    Image.fromarray(fit.picture_floor_mask(arr).astype(np.uint8) * 255, "L").save(picture)
     region = np.zeros((1024, 1024), bool)
     region[150:350, 480:620] = True
     regions = tmp_path / "regions.png"
@@ -133,7 +134,7 @@ def _snapshot(root: Path) -> dict:
 
 def _run(root, tmp_path, *extra, kill_lines=True):
     picture, regions, lines = _inputs(tmp_path)
-    argv = ["build", "Toy", "13.10", "--picture", str(picture), "--regions", str(regions), "--into", str(root)]
+    argv = ["build", "Toy", "13.10", "--floor", str(picture), "--regions", str(regions), "--into", str(root)]
     if kill_lines:
         argv += ["--kill-lines", str(lines)]
     return map_layout.main(argv + list(extra))
@@ -325,7 +326,8 @@ def test_fetch_minimap_same_and_patched_unchanged(tmp_path, monkeypatch, capsys)
 
 
 def test_overlay_has_one_row_per_region_and_exports_a_mask(tmp_path, monkeypatch):
-    picture, _, _ = _inputs(tmp_path)
+    _inputs(tmp_path)
+    picture = tmp_path / "aligned.png"
     ours = tmp_path / "ours.png"
     _toy_minimap().save(ours)
     fit_dir = tmp_path / "fit"
@@ -333,12 +335,14 @@ def test_overlay_has_one_row_per_region_and_exports_a_mask(tmp_path, monkeypatch
     (fit_dir / "fit.json").write_text(json.dumps({"rot": 0, "scale": 1.0, "tx": 0, "ty": 0, "crop": None,
                                                   "picture": str(picture)}), encoding="utf-8")
     asked = []
-    monkeypatch.setattr(map_layout, "positions", lambda name: asked.append(name) or [(500, 250), (520, 260), (50, 50)])
+    monkeypatch.setattr(map_layout, "positions",
+                        lambda name, patch: asked.append((name, patch)) or ([(500, 250), (520, 260), (50, 50)], 3))
     out = tmp_path / "scratch"
     assert map_layout.main(["overlay", "--ours", str(ours), "--fit", str(fit_dir), "--map", "Toy",
-                            "--out", str(out)]) == 0
-    assert asked == ["Toy"]
+                            "--patch", "13.10", "--out", str(out)]) == 0
+    assert asked == [("Toy", (13, 10))]
     html = (out / "overlay.html").read_text(encoding="utf-8")
+    assert "positions from 3 replays on 13.10 or later" in html
     assert html.count('class="region"') == 1
     assert 'data-kind="added"' in html and 'data-positions="2"' in html
     for control in ("keep", "reject", "cant-show"):
@@ -353,3 +357,135 @@ def test_the_geometry_build_takes_a_layout_key_but_not_a_stray_minimap(tmp_path)
     for stem in ("Toy", "Toy_13_10", "Toy_old", "Other", "Toy_13_10_copy"):
         Image.new("RGBA", (4, 4)).save(tmp_path / f"{stem}.png")
     assert bcg.buildable_names(tmp_path, {"Toy": {"xMultiplier": 7e-05}}) == ["Toy", "Toy_13_10"]
+
+
+# ---- review fixes (2026-11-12) ----------------------------------------------------------------------------------
+def test_a_transparent_picture_reads_its_transparent_pixels_as_background(tmp_path):
+    """S6: a vendored minimap's walls are transparent with black RGB underneath: wall, not floor."""
+    px = np.zeros((64, 64, 4), np.uint8)                       # transparent black everywhere
+    px[10:30, 10:30] = (118, 118, 118, 255)                    # one floor room
+    path = tmp_path / "upstream.png"
+    Image.fromarray(px, "RGBA").save(path)
+    floor = fit.picture_floor_mask(np.array(map_layout._rgb(path)))
+    assert floor[20, 20] and not floor[50, 50]
+    assert floor.sum() < 30 * 30
+
+
+def test_align_writes_the_exact_floor_mask_build_reads(tmp_path):
+    """S6: build reads align's floor.png, not a re-threshold of aligned.png's padded, resampled pixels."""
+    ours = tmp_path / "ours.png"
+    _toy_minimap().save(ours)
+    arr = np.full((300, 400, 3), BACKGROUND, np.uint8)
+    arr[50:150, 40:360] = (60, 120, 90)
+    picture = tmp_path / "shot.png"
+    Image.fromarray(arr).save(picture)
+    out = tmp_path / "fit"
+    assert map_layout.main(["align", "--picture", str(picture), "--ours", str(ours), "--out", str(out)]) == 0
+    res = json.loads((out / "fit.json").read_text(encoding="utf-8"))
+    floor = np.array(Image.open(out / "floor.png")) > 0
+    pic = fit.picture_floor_mask(arr)
+    assert (floor == fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], 1024)).all()
+    # aligned.png pads with black, which a re-threshold reads as floor; floor.png has none there.
+    padded = fit.picture_floor_mask(np.array(Image.open(out / "aligned.png").convert("RGB")))
+    assert padded.sum() > floor.sum()
+
+
+def test_extra_regions_join_the_regions_file_but_not_the_minimap(tmp_path):
+    """S8: a raised wall changes heights, not the minimap: its mask goes in the regions file only."""
+    root = _toy_tree(tmp_path / "static")
+    extra = np.zeros((1024, 1024), bool)
+    extra[220:240, 200:220] = True                              # inside the old room, outside --regions
+    path = tmp_path / "extra.png"
+    cg.write_mask_png(path, extra)
+    assert _run(root, tmp_path, "--extra-regions", str(path)) == 0
+    regions = np.array(Image.open(root / "data" / "control" / f"{KEY}.regions.png")) > 0
+    assert regions[230, 210] and regions[250, 550]
+    old = np.array(_toy_minimap())
+    new = np.array(Image.open(root / "img" / "maps" / f"{KEY}.png").convert("RGBA"))
+    assert (new[220:240, 200:220] == old[220:240, 200:220]).all()
+
+
+def test_fetch_minimap_after_a_redraw_compares_with_the_newest_layout(tmp_path, monkeypatch, capsys):
+    """S15: upstream serving the first redraw's picture is not news on the second redraw."""
+    base = _png_bytes((9, 9, 9, 255))
+    root = _fetch_minimap(tmp_path, monkeypatch, b"", base)
+    first = np.zeros((1024, 1024, 4), np.uint8)
+    first[100:400, 100:400] = (118, 118, 118, 255)
+    Image.fromarray(first, "RGBA").save(root / "img" / "maps" / f"{KEY}.png")      # build's re-drawn bytes
+    upstream = first.copy()
+    upstream[100:400, 100:400] = (130, 130, 130, 255)                                # Riot's own colours
+    buf = io.BytesIO()
+    Image.fromarray(upstream, "RGBA").save(buf, "PNG")
+    _w(root / "data" / "layouts.json", {"version": 1, "maps": {"Toy": [
+        {"id": "Toy@base", "key": "Toy", "start": None, "drawn_from": "13.08", "regions": None},
+        {"id": "Toy@13.10", "key": KEY, "start": "13.10", "drawn_from": "13.10", "regions": None}]}})
+    monkeypatch.setattr(map_layout, "fetch",
+                        lambda url: _api("http://i/toy.png") if "v1/maps" in url else buf.getvalue())
+    assert map_layout.main(["fetch-minimap", "Toy", "--out", str(tmp_path / "o")]) == 0
+    assert capsys.readouterr().out.strip() == f"same floor as {KEY}"
+    assert not (tmp_path / "o").exists()
+
+
+def test_notes_url_keeps_the_patchs_zero(tmp_path, monkeypatch):
+    """F10: Riot's page for 13.08 is valorant-patch-notes-13-08."""
+    asked = []
+    monkeypatch.setattr(map_layout, "fetch", lambda url: asked.append(url) or PATCH_PAGE.encode())
+    map_layout.main(["notes", "13.08", "--map", "Toy", "--out", str(tmp_path)])
+    assert asked == ["https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-13-08/"]
+
+
+def test_kill_lines_writes_risk1s_qualifying_endpoints_under_the_key(tmp_path):
+    """S14: kill_lines.py's output becomes the fixture's [kx, ky, vx, vy] lines under the layout key."""
+    def kill(**extra):
+        return {"rpc": "MulticastNotifyDamage_Point", "wall_pen": False, "killer": 1, "victim": 2, "t_ms": 1,
+                "killer_pos": {"u": 5000, "v": 2500, "z": 0, "dt_ms": 0},
+                "victim_pos": {"u": 6000, "v": 2500, "z": 0, "dt_ms": 0}, **extra}
+
+    kills = tmp_path / "kills"
+    _w(kills / "a.json", {"uuid": "a", "map": "Toy", "positions": {},
+                          "kills": [kill(), kill(wall_pen=True), kill(rpc="other")]})
+    _w(kills / "b.json", {"uuid": "b", "map": "Other", "positions": {}, "kills": [kill()]})
+    fixture = tmp_path / "kill_lines.json"
+    fixture.write_bytes(b'{"note": "n", "maps": {"Toy": [[1, 2, 3, 4]]}}\n')
+    assert map_layout.main(["kill-lines", "--kills", str(kills), "--map", "Toy", "--key", KEY,
+                            "--into", str(fixture)]) == 0
+    assert json.loads(fixture.read_text()) == {"note": "n", "maps": {"Toy": [[1, 2, 3, 4]],
+                                                                    KEY: [[512, 256, 614, 256]]}}
+    assert fixture.read_bytes().startswith(b'{"note": "n", "maps": {"Toy": [[1, 2, 3, 4]], ')
+    with pytest.raises(SystemExit):
+        map_layout.main(["kill-lines", "--kills", str(kills), "--map", "Toy", "--key", "Other_13_10",
+                         "--into", str(fixture)])
+
+
+from test_control_store import db, factory  # noqa: E402,F401
+
+
+def test_positions_read_only_the_target_patchs_replays_on_quarter_seconds(db, factory, monkeypatch):
+    """S7 + F3: the overlay's positions come from replays on --patch or later, 4 a second whatever the start."""
+    import app.db
+    from app.models.replay import Replay, ReplayRound
+    from app.replays import format as fmt
+
+    monkeypatch.setattr(app.db, "SessionLocal", factory)
+
+    def add(patch, u, serial):
+        row = Replay(match_uuid=f"00000000-0000-4000-8000-{serial:012d}", map_name="Toy", round_count=1,
+                     format_version=1, recipe="toy", game_branch=f"++Ares-Core+release-{patch}",
+                     source_sha256="0" * 64, source="local", link_status="unlinked", link_inputs={})
+        db.add(row)
+        db.commit()
+        blob = {"v": 1, "round": 1, "map": "Toy", "hz": 16, "t_start": 0.0, "t_decided": 1.0, "t_end": 1.0,
+                "players": [{"slot": 0, "agent": "Jett", "side": "A"}],
+                "tracks": {"0": [fmt.encode_segment(1 / 16, [u] * 16, [5000] * 16, [0] * 16)]},
+                "alive": {"0": [[0.0, None, None]]}, "crouch": {}, "kills": [], "plant": None, "defuse": None,
+                "util": []}
+        db.add(ReplayRound(replay_id=row.id, round_number=1, data=fmt.encode_blob(blob)))
+        db.commit()
+
+    add("13.08", 1000, 1)
+    add("13.10", 5000, 2)
+    add("13.11", 6000, 3)
+    spots, replays = map_layout.positions("Toy", (13, 10))
+    assert replays == 2
+    assert sorted({x for x, _ in spots}) == [512, 614]
+    assert len(spots) == 2 * 4, "a 16-sample segment from 1/16 s keeps its 4 quarter seconds"

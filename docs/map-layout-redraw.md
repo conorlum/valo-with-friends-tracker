@@ -36,9 +36,12 @@ pictures. If `map_layout_walls` fired, note its context.
 python scripts/map_layout.py fetch-minimap Ascent --out ~/rp/ascent-13.10
 ```
 
+It compares upstream with the newest layout's minimap (the base one on a first redraw).
+
 - `differs`: valorant-api already serves the new minimap (saved to `--out`). Use it as the picture.
-- `same` or `patched, upstream unchanged`: upstream hasn't caught up. Ask the owner for a screenshot of the map
-  only, from Valoplant or in game, with no planner drawings. Valoplant has no image URLs to fetch.
+- `same`, `same floor as <key>` (upstream still serves the picture an earlier redraw was built from) or `patched,
+  upstream unchanged`: upstream hasn't caught up. Ask the owner for a screenshot of the map only, from Valoplant or
+  in game, with no planner drawings. Valoplant has no image URLs to fetch.
 
 ## 3. Fit and diff
 
@@ -49,7 +52,9 @@ python scripts/map_layout.py diff --fit ~/rp/ascent-13.10/fit --ours app/static/
 ```
 
 `align` fits the picture's floor onto the previous layout's minimap. It searches rotation (in steps of 90°), scale
-and shift, scores each fit by IoU, and writes `fit.json`, `aligned.png` and `diff.png`. Crop the screenshot to the
+and shift, scores each fit by IoU, and writes `fit.json`, `aligned.png` (to look at), `floor.png` (the fitted floor
+mask that `diff`, the overlay and `build` all use) and `diff.png`. A picture with transparency (a minimap from
+`fetch-minimap`) is read with its transparent pixels as background. Crop the screenshot to the
 map first, since UI around it spoils the fit. For reference, Corrode's 13.08 screenshot (crop `150,15,840,765`) fitted
 the pre-redraw minimap at a 90° CCW rotation, scale 1.34 and IoU 0.907. A fit much below ~0.85 usually means a bad
 crop or a background colour the floor mask doesn't recognise. `diff` lists each changed region with its kind
@@ -60,12 +65,13 @@ crop or a background colour the floor mask doesn't recognise. `diff` lists each 
 ```
 python scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only \
     scripts/map_layout.py overlay --ours app/static/img/maps/<previous key>.png \
-    --fit ~/rp/ascent-13.10/fit --map Ascent --out ~/rp/ascent-13.10/overlay
+    --fit ~/rp/ascent-13.10/fit --map Ascent --patch 13.10 --out ~/rp/ascent-13.10/overlay
 ```
 
 The overlay must read replay positions from the friends DB, so it runs through `with_friends_db.py`, read-only.
-It reads at most 200 stored rounds of the map. Open `overlay.html` from disk next to the patch pictures. Each
-changed region has one row:
+It reads at most 200 stored rounds of the map's replays played on `--patch` or later (older replays would fill an
+area the patch closed off), and says how many replays they came from: with none, the positions can't confirm
+anything yet. Open `overlay.html` from disk next to the patch pictures. Each changed region has one row:
 
 - **keep**: the redraw is right; it goes into the new minimap.
 - **reject**: a fit artefact or a picture defect (the replays contradict it: an "added" region nobody walks, a
@@ -75,11 +81,16 @@ changed region has one row:
 
 "Export kept regions as mask png" saves the changed-region mask, which is `build`'s `--regions` input.
 
+A change that moves heights but not the minimap (a raised wall, a new box) produces no region here. Paint its area
+white on a black 1024 x 1024 png in the minimap's frame and pass it to `build` as `--extra-regions`: it joins the
+regions file, which keeps other layouts' positions out of the new layout's heights there, without touching the
+minimap.
+
 ## 5. Build
 
 ```
-python scripts/map_layout.py build Ascent 13.10 --picture ~/rp/ascent-13.10/fit/aligned.png \
-    --regions ~/rp/ascent-13.10/regions-Ascent.png
+python scripts/map_layout.py build Ascent 13.10 --floor ~/rp/ascent-13.10/fit/floor.png \
+    --regions ~/rp/ascent-13.10/regions-Ascent.png [--extra-regions ~/rp/ascent-13.10/extra-Ascent.png]
 ```
 
 This writes the layout's assets under `app/static`, keyed `Ascent_13_10`:
@@ -97,10 +108,15 @@ It prints the callouts inside a changed region, which need review: move or renam
 **Kill lines.** A key without passing kill lines reads as `no_map` and computes nothing. Without any, `build` writes
 everything else and exits 2. To make them:
 
-1. Run `scripts/control_feasibility/kill_lines.py` on exports of the new patch.
-2. Run `scripts/control_feasibility/risk1.py`.
-3. Add the lines under `"maps"` in `tests/fixtures/control/kill_lines.json`.
-4. Re-run `python scripts/build_control_geometry.py --map Ascent_13_10`.
+1. Run `scripts/control_feasibility/kill_lines.py <export dir> ~/rp/ascent-13.10/kills` on each export of the new
+   patch (only the new patch's: a fresh out dir).
+2. `python scripts/map_layout.py kill-lines --kills ~/rp/ascent-13.10/kills --map Ascent --key Ascent_13_10`
+   keeps Risk 1's qualifying kills (`risk1.qualifies`: non-wallbang bullet hits with both positions known, off the
+   image edge) and writes their `[killer x, y, victim x, y]` endpoints under `"maps"."Ascent_13_10"` in
+   `tests/fixtures/control/kill_lines.json`. (`risk1.py` itself reads the base map's geometry and minimap, so it
+   isn't run for a layout key.)
+3. Re-run `python scripts/build_control_geometry.py --map Ascent_13_10`, which judges those lines against the key's
+   sight mask, and check that the key's `index.json` entry has `kill_lines.passes: true` before opening the PR.
 
 Then:
 
@@ -125,4 +141,5 @@ Open a PR with the overlay decisions, the "can't show" list and the fit's IoU. T
   rebuild without the new patch's positions inside the changed regions. A height build with a regions mask needs a
   worker on heights protocol 1.
 - **Site health.** `map_layout_walls` clears for every patch the new layout's `drawn_from` covers. A false alarm with
-  no redraw is cleared with an entry in `app/data/site_health_resolved.json`.
+  no redraw is cleared with an entry in `app/data/site_health_resolved.json`; it stays cleared until the evidence
+  changes (another replay of that patch, or a recomputed round), when the alarm is judged afresh.
