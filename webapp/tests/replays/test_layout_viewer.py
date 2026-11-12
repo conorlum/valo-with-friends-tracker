@@ -83,13 +83,35 @@ def test_unavailable_layout_explains_why_control_is_hidden(db, toy, layout_asset
     assert note in html
     assert context["asset"] == "Toy"
     assert context["layout"] == {"id": "Toy@13.10" if patch else None, "state": state, "patch": patch}
-    assert context["control"] is None and context["gaps"] is False
-    assert 'data-replay-layer="control"' not in html
-    assert 'data-replay-layer="gaps"' not in html
+    assert context["gaps"] is False and 'data-replay-layer="gaps"' not in html
+    if state == "layout_pending":
+        # D1 (F5/S11, 2026-11-12): stored rounds stay shown, out of date, on the layout they were computed on.
+        assert context["control"] == rc.map_layer("Toy")
+        assert 'data-replay-layer="control"' in html
+    else:
+        assert context["control"] is None
+        assert 'data-replay-layer="control"' not in html
     assert image_urls(html) == ["/static/img/maps/Toy.png",
                                 f"/static/data/control/Toy.bullet.png?v={templates.env.globals['static_version']()}"]
     response = routes.replay_round_gaps(request(), str(toy.match_uuid), 1, db)
     assert response.status_code == 404 and json.loads(response.body) == {"status": state}
+
+
+def test_a_pending_third_layout_is_shown_on_the_layout_before_it_not_on_base(db, toy, layout_assets):
+    """S11: Toy@13.12 is registered but not built: its replays show on Toy_13_10, the newest built layout."""
+    _, _, registry = layout_assets
+    registry["maps"]["Toy"].append({"id": "Toy@13.12", "key": "Toy_13_12", "start": "13.12",
+                                    "drawn_from": "13.12", "regions": None})
+    toy.game_branch = "release-13.12"
+    context = service.page_context(db, toy)["match"]
+    assert context["layout"] == {"id": "Toy@13.12", "state": "layout_pending", "patch": "13.12"}
+    assert context["asset"] == "Toy_13_10"
+    assert context["control"] == rc.map_layer("Toy_13_10")
+
+
+def test_a_layout_patch_under_ten_keeps_its_zero(db, toy, layout_assets):
+    """F12: a layout starting in 13.08 reads 13.08, as Riot writes it."""
+    assert layouts.patch_text((13, 8)) == "13.08" and layouts.patch_text((13, 10)) == "13.10"
 
 
 def test_match_context_keeps_map_scale_and_reads_layout_control(db, toy, layout_assets):

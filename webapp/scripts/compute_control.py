@@ -159,6 +159,12 @@ def store_result(session_factory, planned, result: dict) -> str:
                        require_current=True, planned_inputs=getattr(planned, 'inputs', None))
 
 
+def asset_key(p) -> str:
+    """The layout key a planned round computes on (heights, visibility, the task's map); `map_name` stays the
+    filter and the label (S4, 2026-11-12)."""
+    return p.asset_key or p.map_name
+
+
 def cache_heights(session, maps) -> dict[str, str]:
     """{map: digest} for the maps whose heights are in the database, each asset written to the local control
     cache (app/control/geometry.py `height_cache_path`) when it isn't there yet."""
@@ -190,25 +196,25 @@ def run(planned, args, session_factory) -> int:
 
     todo = [p for p in planned if p.computable]
     reader = session_factory()   # blobs are read as their rounds start, not all up front
-    heights = cache_heights(reader, sorted({p.map_name for p in todo}))
+    heights = cache_heights(reader, sorted({asset_key(p) for p in todo}))
     from app.services import replay_control as rc, control_feature_artifacts
     from app.replays import map_feature_artifacts as fa
     for p in todo:
         pin = p.inputs
         digest = pin.geometry.get('height')
         if digest:
-            path = geometry.height_cache_path(p.map_name, digest)
+            path = geometry.height_cache_path(asset_key(p), digest)
             path.parent.mkdir(parents=True, exist_ok=True)
             height_bytes = control_feature_artifacts.archived_height_bytes(reader, pin.artifact_digest) if pin.artifact_digest \
-                else rc.exact_height_bytes(reader, p.map_name, digest)
+                else rc.exact_height_bytes(reader, asset_key(p), digest)
             path.write_bytes(height_bytes)
         if pin.artifact_digest:
             item = control_feature_artifacts.load_artifact(reader, pin.artifact_digest)
             fa.store_cached_artifact(geometry.cache_dir() / 'features', item, lambda artifact: None)
     reader.rollback()
-    for name in sorted({p.map_name for p in todo}):
+    for name in sorted({asset_key(p) for p in todo}):
         started = time.time()
-        pin = next(p.inputs for p in todo if p.map_name == name)
+        pin = next(p.inputs for p in todo if asset_key(p) == name)
         digest = pin.geometry.get('height')
         cached = geometry.height_cache_path(name, digest) if digest else None
         geo = geometry.visibility(geometry.load_geometry(name, heights=cached, height_mode=pin.height_mode, load_features=False))
@@ -246,7 +252,7 @@ def run(planned, args, session_factory) -> int:
                     print(f"[{done}/{len(todo)}] {p.match_uuid[:8]} r{p.round_number}: skipped, the round is gone "
                           f"(re-ingested?); rerun to pick it up", flush=True)
                     continue
-                task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link,
+                task = {"key": key, "map": asset_key(p), "blob": blob, "link": p.link,
                         "gaps": {"replay_id": p.replay_id, "round": p.round_number, "fingerprint": p.fingerprint},
                         "gaps_only": p.reason == "gaps"}
                 task['height_mode'] = p.inputs.height_mode
@@ -359,12 +365,14 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
             return 0
         if not args.dry_run:
             from app.models.replay import Replay
-            maps_query = session.query(Replay.map_name).distinct()
+            maps_query = session.query(Replay.map_name, Replay.game_branch).distinct()
             if args.map_name:
                 maps_query = maps_query.filter(Replay.map_name == args.map_name)
             if args.match:
                 maps_query = maps_query.filter(Replay.match_uuid == args.match.lower())
-            replay_control.prepare_discovered(session_factory, [name for name, in maps_query], {}, time.time())
+            keys = {selection.layout.asset_key for selection in map(replay_control.layout_of, maps_query)
+                    if selection.state == "ok"}           # as the dispatcher does: each replay's layout key
+            replay_control.prepare_discovered(session_factory, keys, {}, time.time())
         planned = replay_control.plan(session, match_uuid=args.match,
                                       rounds=set(args.rounds) if args.rounds else None,
                                       force=args.force, retry_failed=args.retry_failed)
