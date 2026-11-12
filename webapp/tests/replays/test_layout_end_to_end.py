@@ -178,10 +178,15 @@ def test_a_later_layouts_heights_are_built_stored_activated_and_fingerprinted_un
     base, later = add_toy_replay(db), add_toy_replay(db, "release-13.10")
     # The checks pass against this deploy's own check sets; the asset bytes are a stand-in.
     monkeypatch.setattr(hi, "must_block_sha", lambda path=None, key=None: TEST_CHECK_SHA)
-    monkeypatch.setattr(control_heights, "verify_asset", lambda data, map_name, **kw: {
-        "digest": "c" * 12 if map_name == "Toy_13_10" else "b" * 12, "version": control_format.HEIGHT_VERSION,
-        "supported_cells": 7, "walkable_cells": 10, "ready": True, "not_ready": [],
-        "must_block": good_report()["must_block"]})
+    checked_with = []
+
+    def verify(data, map_name, **kw):
+        checked_with.append((map_name, kw.get("must_block")))
+        return {"digest": "c" * 12 if map_name == "Toy_13_10" else "b" * 12,
+                "version": control_format.HEIGHT_VERSION, "supported_cells": 7, "walkable_cells": 10,
+                "ready": True, "not_ready": [], "must_block": good_report()["must_block"]}
+
+    monkeypatch.setattr(control_heights, "verify_asset", verify)
 
     manifests = hr.current_manifests(db)
     base_manifest, later_manifest = manifests["Toy"][0], manifests["Toy_13_10"][0]
@@ -197,6 +202,9 @@ def test_a_later_layouts_heights_are_built_stored_activated_and_fingerprinted_un
     counts = {}
     held = hr.step(factory, db, client, hr.HeightState(), 0.0, counts)
     assert client.opened == [hi.key(later_manifest)] and counts["heights_live"] == 1
+    # F2/S1 (2026-11-12): the site checks the asset with the layout's own check set, the one the worker built
+    # it against (must_block.<key>.json), not the base file.
+    assert checked_with == [("Toy_13_10", hi.must_block_path("Toy_13_10"))]
     assert held == set(), "the build is stored, so nothing is held"
     db.expire_all()
     active = control_heights.active_digests(db)
