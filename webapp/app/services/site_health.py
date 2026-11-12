@@ -586,6 +586,31 @@ def flush_for(db):
     flush(session_factory=sessionmaker(bind=bind))
 
 
+TRIP_KIND = "trip_too_long"
+TRIP_LIMIT_M = 16  # extras.TRIP_MAX_M, named in the card's label
+
+
+def note_trip_lengths(result, report, match_uuid):
+    """The one policy for `trip_too_long`, called by every path that stores a condensed replay, after its commit
+    succeeded, with the `StoreResult`, the condensed replay's `report` and its match uuid. Only an action that
+    stored the new condense ('stored', 'replaced') counts: it records the match when `report["extras"]
+    ["wires_too_long"]` is above 0 and resolves it when not. 'unchanged', 'kept_existing' and anything else
+    leave the row as it is. Queued in memory like every watched job's write; never raises."""
+    try:
+        if getattr(result, "action", None) not in ("stored", "replaced"):
+            return
+        extras = (report or {}).get("extras") or {}
+        count = int(extras.get("wires_too_long") or 0)
+        key = str(match_uuid).lower()
+        if count > 0:
+            record(TRIP_KIND, key, f"{count} trip pairs over {TRIP_LIMIT_M} m",
+                   {"replay_id": getattr(result, "replay_id", None), "pairs": count})
+        else:
+            resolve(TRIP_KIND, key)
+    except Exception:
+        logger.exception("site health: could not note trip lengths for %s", match_uuid)
+
+
 def _flush_prune(session_factory):
     try:
         with session_factory() as session:
@@ -711,7 +736,7 @@ CACHE_FALLBACK_KEYS = frozenset({
 # Kinds stored in site_events: the only ones a resolved-file entry can clear.
 RECORDED_KINDS = frozenset({
     "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
-    "slow_page", "warm_vanished",
+    "slow_page", "warm_vanished", "trip_too_long",
 })
 KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)

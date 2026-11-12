@@ -124,6 +124,7 @@ def reingest(entries: list[dict], args, session_factory) -> int:
     from app.replays.condense import condense_export_dir
     from app.replays.contract import ContractError, load_manifest
     from app.replays.store import StoreRefused, store_replay
+    from app.services import site_health
     from app.services.replay_impact import refresh_replay_impact
 
     archive = args.archive or default_archive()
@@ -155,12 +156,14 @@ def reingest(entries: list[dict], args, session_factory) -> int:
             continue
         session = session_factory()
         try:
-            result = store_replay(session, condensed, source="local", replace=True)
+            result = store_replay(session, condensed, source="local", replace=True)  # committed here
+            site_health.note_trip_lengths(result, condensed.report, condensed.match_uuid)
         except StoreRefused as refused:  # e.g. a match deleted on request: the rest still run
             print(f"{uuid}: REFUSED at store: {refused}", flush=True)
             problems += 1
             continue
         finally:
+            site_health.flush_for(session)  # a command-line process has no flush thread
             session.close()
         split = refresh_replay_impact(session_factory, result.replay_id) if result.link_status == "linked" else "-"
         print(f"{uuid}: {result.action}, {result.link_status}, per-kill Impact {split}", flush=True)

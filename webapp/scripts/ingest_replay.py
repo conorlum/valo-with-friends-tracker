@@ -314,15 +314,18 @@ def store(replay: CondensedReplay, replace: bool, session_factory) -> int:
     """Store + link (one transaction), then the per-kill split in its own. Exit 0 when stored or
     unchanged, 1 when kept out by the dedupe rule, 3 when refused (demo)."""
     from app.replays.store import StoreRefused, store_replay
+    from app.services import site_health
     from app.services.replay_impact import refresh_replay_impact
 
     session = session_factory()
     try:
-        result = store_replay(session, replay, source="local", replace=replace)
+        result = store_replay(session, replay, source="local", replace=replace)  # committed here
+        site_health.note_trip_lengths(result, replay.report, replay.match_uuid)
     except StoreRefused as refused:
         print(f"REFUSED: {refused}", file=sys.stderr)
         return 3
     finally:
+        site_health.flush_for(session)  # a command-line process has no flush thread
         session.close()
     print(json.dumps({"action": result.action, "replay_id": result.replay_id, "link_status": result.link_status,
                       "report": result.report}, indent=2, default=str))

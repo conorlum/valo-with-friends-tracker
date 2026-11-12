@@ -907,3 +907,75 @@ def test_pg_migration_0018_adds_a_nullable_context_and_drops_only_it(pg):  # noq
     with engine.connect() as connection:
         assert connection.execute(text("SELECT id::text, auto_context FROM replay_uploads")).fetchall() == [
             (ATTEMPT, None)]
+
+
+# -- trip_too_long: each store path hands the policy (site_health.note_trip_lengths) the result, after its commit
+
+TRIPS_LONG = {"extras": {"wires_too_long": 2}}
+
+
+@pytest.fixture
+def noted(monkeypatch):
+    from app.services import site_health
+
+    seen = []
+    monkeypatch.setattr(site_health, "note_trip_lengths",
+                        lambda result, report, match_uuid: seen.append((result.action, report, match_uuid)))
+    return seen
+
+
+def poll(db, condensed, report):  # noqa: F811
+    sent = replace(condensed, report=report)
+    upload = ReplayUpload(id=str(uuid.uuid4()), status="parsing", worker_job_id="job1", session_key="s",
+                          source_sha256=sent.source_sha256, created_at=datetime.now(timezone.utc))
+    db.add(upload)
+    db.commit()
+    return uploads.refresh_job(db, upload, AutoWorker(sent.recipe, result_of(sent)))
+
+
+def test_a_polled_upload_notes_its_result_after_the_commit(db, condensed, monkeypatch):  # noqa: F811
+    from app.services import site_health
+
+    states = []
+    monkeypatch.setattr(site_health, "note_trip_lengths",
+                        lambda result, report, match_uuid: states.append((result.action, report, match_uuid,
+                                                                          db.in_transaction())))
+    assert poll(db, condensed, TRIPS_LONG).status == "stored"
+    assert states == [("stored", TRIPS_LONG, condensed.match_uuid.lower(), False)]
+
+
+def test_a_polled_upload_that_cannot_be_stored_notes_nothing(db, condensed, noted, monkeypatch):  # noqa: F811
+    def refuse(*a, **k):
+        raise store.StoreRefused("this match was deleted on request")
+
+    monkeypatch.setattr(uploads, "store_replay", refuse)
+    assert poll(db, condensed, TRIPS_LONG).status == "failed"
+    assert noted == []
+
+
+def test_an_automatic_replacement_notes_its_result_only_after_the_attempts_commit(db, condensed, stale,  # noqa: F811
+                                                                                monkeypatch):
+    from app.services import site_health
+
+    order = []
+    context = reserve(db, stale, condensed.recipe)
+    worker = AutoWorker(condensed.recipe, result_of(replace(condensed, report=TRIPS_LONG)))
+    worker.receipt = accepted_receipt(context)
+    monkeypatch.setattr(uploads, "_before_settle", lambda row: order.append("before the commit"))
+    monkeypatch.setattr(site_health, "note_trip_lengths",
+                        lambda result, report, match_uuid: order.append((result.action, report, match_uuid)))
+    assert uploads.collect_auto(db, ATTEMPT, worker, datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)) == "finished"
+    assert order == ["before the commit", ("replaced", TRIPS_LONG, condensed.match_uuid.lower())]
+
+
+def test_an_automatic_replacement_whose_commit_fails_notes_nothing(db, condensed, stale, noted, monkeypatch):  # noqa: F811
+    def fail(row):
+        raise RuntimeError("the commit did not happen")
+
+    context = reserve(db, stale, condensed.recipe)
+    worker = AutoWorker(condensed.recipe, result_of(replace(condensed, report=TRIPS_LONG)))
+    worker.receipt = accepted_receipt(context)
+    monkeypatch.setattr(uploads, "_before_settle", fail)
+    with pytest.raises(RuntimeError):
+        uploads.collect_auto(db, ATTEMPT, worker)
+    assert noted == []

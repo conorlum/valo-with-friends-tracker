@@ -873,3 +873,60 @@ def test_join_loops_waits_for_the_registered_threads_only_up_to_its_timeout():
     started = time.monotonic()
     site_health.join_loops(0.3)
     assert time.monotonic() - started < 2
+
+
+# -- trip_too_long: the one policy every store path calls (W4)
+
+UUID = "0a9ab548-718b-41ee-94ce-db25fd430bf8"
+
+
+class FakeStored:
+    def __init__(self, action, replay_id=7):
+        self.action, self.replay_id = action, replay_id
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    seen = []
+    monkeypatch.setattr(site_health, "record", lambda *a, **k: seen.append(("record", a, k)))
+    monkeypatch.setattr(site_health, "resolve", lambda *a, **k: seen.append(("resolve", a, k)))
+    return seen
+
+
+def test_trip_too_long_is_a_recorded_kind():
+    assert "trip_too_long" in site_health.RECORDED_KINDS and "trip_too_long" in site_health.KNOWN_KINDS
+
+
+@pytest.mark.parametrize("action", ["stored", "replaced"])
+def test_a_stored_condense_with_long_trips_records_one_row_keyed_on_the_match(calls, action):
+    site_health.note_trip_lengths(FakeStored(action), {"extras": {"wires_too_long": 2}}, UUID.upper())
+    [(op, args, kwargs)] = calls
+    assert op == "record" and args[0] == "trip_too_long" and args[1] == UUID
+    assert "2 trip pairs over 16 m" in args[2]
+    assert (args[3] if len(args) > 3 else kwargs["context"])["replay_id"] == 7
+
+
+@pytest.mark.parametrize("report", [{"extras": {"wires_paired": 3}}, {"extras": {"wires_too_long": 0}}, {"extras": {}},
+                                    {}, None])
+@pytest.mark.parametrize("action", ["stored", "replaced"])
+def test_a_stored_clean_condense_resolves_and_records_nothing(calls, action, report):
+    site_health.note_trip_lengths(FakeStored(action), report, UUID)
+    assert [(op, args) for op, args, _ in calls] == [("resolve", ("trip_too_long", UUID))]
+
+
+@pytest.mark.parametrize("action", ["unchanged", "kept_existing", "refused", "failed"])
+@pytest.mark.parametrize("report", [{"extras": {"wires_too_long": 2}}, {"extras": {}}])
+def test_an_action_that_stored_nothing_records_and_resolves_nothing(calls, action, report):
+    site_health.note_trip_lengths(FakeStored(action), report, UUID)
+    assert calls == []
+
+
+def test_the_policy_never_raises(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("queue")
+
+    monkeypatch.setattr(site_health, "record", boom)
+    monkeypatch.setattr(site_health, "resolve", boom)
+    site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": "x"}}, UUID)
+    site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": 1}}, UUID)
+    site_health.note_trip_lengths(FakeStored("stored"), {}, UUID)
