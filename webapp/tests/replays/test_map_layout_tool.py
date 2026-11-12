@@ -345,3 +345,11 @@ def test_overlay_has_one_row_per_region_and_exports_a_mask(tmp_path, monkeypatch
         assert f'value="{control}"' in html
     assert "toDataURL" in html and "data:image/png;base64," in html
     assert "http://" not in html and "https://" not in html
+
+
+def test_the_geometry_build_takes_a_layout_key_but_not_a_stray_minimap(tmp_path):
+    import build_control_geometry as bcg
+
+    for stem in ("Toy", "Toy_13_10", "Toy_old", "Other", "Toy_13_10_copy"):
+        Image.new("RGBA", (4, 4)).save(tmp_path / f"{stem}.png")
+    assert bcg.buildable_names(tmp_path, {"Toy": {"xMultiplier": 7e-05}}) == ["Toy", "Toy_13_10"]
