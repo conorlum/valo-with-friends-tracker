@@ -86,6 +86,21 @@ def test_sixteen_hz_keeps_only_four_hz_samples():
     assert walls.round_share(control_data(), blob([100, 100, 10, 100], hz=16, t0=0.125)) == (0, 1)
 
 
+@pytest.mark.parametrize("start", range(6))
+def test_a_segment_starting_on_any_sixteen_hz_index_keeps_its_quarter_seconds(start):
+    """F3 (2026-11-12): t0 is stored to 3 decimals (1/16 s is 0.062), so a test on the time itself dropped
+    every sample of a segment starting on an odd index. Sampling reads the grid index instead."""
+    us = [100] * 160
+    parsed = fmt.decode_blob(fmt.encode_blob(blob(us, hz=16, t0=start / 16)))
+    inside, total = walls.round_share(control_data(), parsed)
+    assert total == 40 and inside == 40
+
+
+@pytest.mark.parametrize("hz", [4, 16, 30])
+def test_on_quarter_keeps_four_samples_a_second(hz):
+    assert sum(walls.on_quarter(round(k / hz, 3), hz) for k in range(1, 10 * hz + 1)) == 40
+
+
 def test_only_alive_samples_count_and_none_end_stays_alive():
     lives = [[0.25, 0.5, "kill"], [0.75, None, None]]
     assert walls.round_share(control_data(), blob(alive=lives)) == (2, 2)
@@ -101,12 +116,23 @@ def test_counts_every_slot_and_segment_but_not_slots_without_alive_intervals():
     assert walls.round_share(control_data(), row) == (4, 6)
 
 
+def current_fingerprint(db, replay, number=1):
+    """The fingerprint control has on the replay's current layout, so its share is filed under that key."""
+    from app.services import control_heights, replay_control as rc
+
+    key = rc.layout_of(replay).layout.asset_key
+    return rc.round_fingerprint(replay, rc.side_groups(db, replay), number, control_heights.active_digests(db),
+                                context=rc.resolve_current_geometry(db, key))
+
+
 def test_changed_fingerprint_recomputes_and_upserts(db, factory, replay):
-    put_round(db, replay)
+    first = current_fingerprint(db, replay)
+    assert first is not None
+    put_round(db, replay, fingerprint=first)
     assert walls.step(factory, NOW, control_in_flight=0) == {"computed": 1}
     db.expire_all()
     share = db.get(ReplayRoundWallShare, (replay.id, 1))
-    assert (share.inside, share.total, share.asset_key, share.control_fingerprint) == (2, 4, "Ascent", "first")
+    assert (share.inside, share.total, share.asset_key, share.control_fingerprint) == (2, 4, "Ascent", first)
     assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW
     assert walls.step(factory, NOW + 1, control_in_flight=0) == {"computed": 0}
     control = db.get(ReplayRoundControl, (replay.id, 1))
@@ -115,7 +141,9 @@ def test_changed_fingerprint_recomputes_and_upserts(db, factory, replay):
     assert walls.step(factory, NOW + 2, control_in_flight=0) == {"computed": 1}
     db.expire_all()
     assert db.query(ReplayRoundWallShare).count() == 1
-    assert (share.inside, share.total, share.control_fingerprint) == (0, 4, "second")
+    # S9: control that isn't current for the replay's layout (computed on an older mask) is never pooled.
+    assert (share.inside, share.total, share.control_fingerprint, share.asset_key) == (0, 4, "second",
+                                                                                      walls.NOT_CURRENT)
     assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW + 2
 
 
@@ -216,13 +244,13 @@ def test_an_unreadable_round_is_stored_as_zero_and_does_not_hold_back_later_roun
     assert walls.step(factory, NOW + 1, control_in_flight=0) == {"computed": 0}
 
 
-def test_a_replay_with_no_layout_is_keyed_by_its_map_name(db, factory, replay, monkeypatch):
-    put_round(db, replay)
+def test_a_replay_with_no_layout_is_filed_as_not_current(db, factory, replay, monkeypatch):
+    put_round(db, replay, fingerprint=current_fingerprint(db, replay))
     monkeypatch.setattr(walls.replay_control, "layout_of",
                         lambda r: walls.replay_control.layouts.Selection("layout_unknown", None))
     assert walls.step(factory, NOW, control_in_flight=0) == {"computed": 1}
     db.expire_all()
-    assert db.get(ReplayRoundWallShare, (replay.id, 1)).asset_key == "Ascent"
+    assert db.get(ReplayRoundWallShare, (replay.id, 1)).asset_key == walls.NOT_CURRENT
     assert walls.step(factory, NOW + 1, control_in_flight=0) == {"computed": 0}
 
 
@@ -265,8 +293,11 @@ def alarm(monkeypatch):
     """A checked base layout, independent of the shipped map registry."""
     layout = layouts.Layout("Ascent@base", "Ascent", None, (13, 9), None)
     monkeypatch.setattr(walls.replay_control, "layout_of", lambda r: layouts.Selection("ok", layout))
+    monkeypatch.setattr(walls, "MIN_BASELINE_REPLAYS", 1)     # its own test below holds the real figure
+    monkeypatch.setattr(walls, "_last_raised", set())
+    monkeypatch.setattr(walls, "_callout_cache", {})
     recorded, resolved = [], []
-    monkeypatch.setattr(site_health, "record", lambda *a: recorded.append(a))
+    monkeypatch.setattr(site_health, "record", lambda *a, **k: recorded.append(a))
     monkeypatch.setattr(site_health, "resolve", lambda *a: resolved.append(a))
     return recorded, resolved
 
@@ -432,6 +463,91 @@ def test_evaluate_top_three_callouts_include_unnamed(db, alarm, monkeypatch):
     walls.evaluate(db)
     assert alarm[0][0][3]["callouts"] == [
         {"name": "Mid", "count": 4}, {"name": "unnamed", "count": 2}, {"name": "A", "count": 1}]
+
+
+def test_a_replay_with_no_measured_position_does_not_count_toward_the_minimum(db, alarm):
+    """S13: three sampled replays and one 0/0 replay are three, not four."""
+    alarm_replay(db, "13.09", inside=100)
+    for _ in range(3):
+        alarm_replay(db)
+    alarm_replay(db, inside=0, total=0)
+    walls.evaluate(db)
+    assert alarm == ([], [])
+
+
+def test_a_baseline_needs_four_replays(db, alarm, monkeypatch):
+    """F8: a baseline from fewer than MIN_BASELINE_REPLAYS replays judges nothing, and says so."""
+    monkeypatch.setattr(walls, "MIN_BASELINE_REPLAYS", 4)
+    for _ in range(3):
+        alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    assert walls.evaluate(db) == {"Ascent": 3}
+    assert alarm == ([], [])
+    alarm_replay(db, "13.09", inside=100)
+    assert walls.evaluate(db) == {}
+    assert [r[1] for r in alarm[0]] == ["Ascent:13.10"]
+
+
+def test_a_standing_alarm_is_recorded_once_per_evidence(db, alarm):
+    """F4: the record carries a dedupe on what was measured, so a PR-cleared false alarm stays cleared until
+    the evidence changes, and the count doesn't climb every pass."""
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    walls.evaluate(db)
+    first = alarm[0][0][3]["evidence"]
+    assert walls._seen_evidence(None, {"evidence": first}) == {"evidence": first}
+    assert walls._seen_evidence({"evidence": first}, {"evidence": first}) is None
+    walls.evaluate(db)
+    assert alarm[0][1][3]["evidence"] == first, "the same measurement is the same evidence"
+    alarm_replay(db)
+    walls.evaluate(db)
+    assert alarm[0][2][3]["evidence"] != first, "a new replay is new evidence"
+
+
+def test_a_dedupe_skips_the_flush_of_a_cleared_alarm_with_the_same_evidence(db, factory):
+    site_health.record("map_layout_walls", "Ascent:13.10", "rose", {"evidence": "e1"},
+                       dedupe=walls._seen_evidence)
+    site_health.flush(session_factory=factory)
+    db.query(SiteEvent).filter(SiteEvent.kind == "map_layout_walls").delete()   # a PR's resolved entry
+    db.commit()
+    site_health.record("map_layout_walls", "Ascent:13.10", "rose", {"evidence": "e1"},
+                       dedupe=walls._seen_evidence)
+    site_health.flush(session_factory=factory)
+    db.expire_all()
+    assert db.get(SiteEvent, ("map_layout_walls", "Ascent:13.10")) is None
+    site_health.record("map_layout_walls", "Ascent:13.10", "rose", {"evidence": "e2"},
+                       dedupe=walls._seen_evidence)
+    site_health.flush(session_factory=factory)
+    db.expire_all()
+    assert db.get(SiteEvent, ("map_layout_walls", "Ascent:13.10")) is not None
+
+
+def test_a_key_raised_last_pass_and_still_queued_is_resolved(db, alarm, monkeypatch):
+    """F11/S10: the previous pass's raise may not be flushed yet; dropping below resolves it all the same."""
+    alarm_replay(db, "13.09", inside=100)
+    later_replays(db)
+    walls.evaluate(db)
+    assert [r[1] for r in alarm[0]] == ["Ascent:13.10"]
+    monkeypatch.setattr(walls, "THRESHOLD_POINTS", 50)
+    walls.evaluate(db)
+    assert alarm[1] == [("map_layout_walls", "Ascent:13.10")]
+
+
+def test_the_cycle_evaluates_a_quiet_site_every_ten_minutes(db, factory, monkeypatch):
+    evaluated = []
+    monkeypatch.setattr(remote, "_collect", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "_reparse", lambda *a, **k: frozenset())
+    monkeypatch.setattr(remote, "_submit", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(remote, "LIVE", None)
+    monkeypatch.setattr(remote.replay_control, "prepare_discovered", lambda *a, **k: None)
+    monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: False)
+    monkeypatch.setattr(walls, "evaluate", lambda session: evaluated.append(True), raising=False)
+    monkeypatch.setattr(walls, "step", lambda *a, **k: {"computed": 0})
+    state = remote.State()
+    for at in (0, 20, walls.EVALUATE_EVERY_S - 1, walls.EVALUATE_EVERY_S, walls.EVALUATE_EVERY_S + 20):
+        remote.cycle(factory, None, state, now=NOW + at)
+    assert len(evaluated) == 2
 
 
 def test_cycle_evaluate_failure_records_loop_key_and_continues(db, factory, monkeypatch):
