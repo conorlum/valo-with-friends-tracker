@@ -4,6 +4,8 @@ disk. The brief, the detectors and the query commands read the file; the model n
 from __future__ import annotations
 
 import json
+import logging
+import time
 from pathlib import Path
 
 from app.coach import control_areas
@@ -13,6 +15,7 @@ from app.services import enemy_names, replay_control, replays
 
 VERSION = 1
 FILE = "snapshot.json"
+log = logging.getLogger(__name__)
 
 
 class SnapshotError(Exception):
@@ -50,13 +53,77 @@ def _groups(context: dict) -> dict[int, str]:
     return {int(slot): p["side"] for slot, p in context["players"].items() if p.get("side") is not None}
 
 
-def read(db, match_uuid: str) -> dict:
+def _wait_util(db, match_uuid, match_id, *, session_factory, util_wait_s, poll_s, ask):
+    """Read a current stored build before loading rounds, releasing every transaction while waiting."""
+    from app.critutil import build_digest
+    from app.db import SessionLocal
+    from app.models.replay import UtilModel
+    from app.services import replay_util, util_model, util_values
+
+    session_factory = SessionLocal if session_factory is None else session_factory
+    deadline = time.monotonic() + max(0, util_wait_s)
+    asked = False
+    first = True
+    while first or time.monotonic() < deadline:
+        first = False
+        db.rollback()
+        try:
+            with session_factory() as poll:
+                stored = poll.query(UtilModel.key, UtilModel.version).filter(UtilModel.name == "values").one_or_none()
+                stored_key = stored.key if stored is not None and stored.version == util_values.VERSION else None
+                # Coverage and the corpus key need only this projection of the estimator, never its fitted cells.
+                win = poll.query(UtilModel.key, UtilModel.version, UtilModel.data["excluded"].label("excluded")) \
+                    .filter(UtilModel.name == "win").one_or_none()
+                model = {"key": win.key, "excluded": win.excluded} \
+                    if win is not None and win.version == util_model.VERSION else None
+                rows = replay_util.current_rows(poll, with_data=False)
+                key = replay_util.corpus_key(poll, rows, model)
+                current = stored_key == key and util_model.covers(model, {match_id})
+            reason = f"the stored build is not current (stored key {stored_key}, current key {key})"
+            if current:
+                replay = replays.find_replay(db, match_uuid)
+                if replay is None:
+                    raise SnapshotError(f"no replay stored for {match_uuid}")
+                payload = replay_util.match_payload(db, replay, read_only=True)
+                if not payload["updating"]:
+                    return replay, payload["rounds"]
+                reason += "; read-only payload is updating"
+        except Exception as error:
+            db.rollback()
+            reason = f"{type(error).__name__}: {error}"
+            log.warning("Critical Util read failed: %s", reason, exc_info=True)
+        db.rollback()
+        if not asked:
+            asked = True
+            if ask is None:
+                log.warning("no REPLAY_ADMIN_TOKEN: waiting for the site's own build")
+            else:
+                answer = None
+                try:
+                    answer = ask()
+                except Exception:
+                    log.warning("Critical Util build request failed", exc_info=True)
+                if answer and answer.get("digest"):
+                    local_digest = build_digest.digest(Path(__file__).resolve().parents[2])
+                    site_digest = answer["digest"]
+                    if local_digest != site_digest:
+                        raise SnapshotError("Critical Util: this checkout's code differs from the site's "
+                                            f"(local digest {local_digest}, site digest {site_digest})")
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(max(poll_s, 0.001), remaining))
+    raise SnapshotError(f"Critical Util: {reason}")
+
+
+def read(db, match_uuid: str, *, session_factory=None, util_wait_s=600, poll_s=15, ask=None) -> dict:
     replay = replays.find_replay(db, match_uuid)
     if replay is None:
         raise SnapshotError(f"no replay stored for {match_uuid}")
     context = replays.page_context(db, replay)
     if not context["match"].get("linked"):
         raise SnapshotError(f"replay {match_uuid} is {context['match'].get('reason') or 'not linked'}: nothing to coach")
+    replay, util = _wait_util(db, match_uuid, replay.match_id, session_factory=session_factory,
+                             util_wait_s=util_wait_s, poll_s=poll_s, ask=ask)
     groups = _groups(context)
     blobs, controls, links = {}, {}, {}
     for n in context["match"]["rounds"]:
@@ -71,12 +138,6 @@ def read(db, match_uuid: str) -> dict:
         answer = replay_control.round_control(db, replay, n)
         shares = control_areas.area_shares(answer.row.data, replay.map_name) if answer.status == "ok" else None
         controls[n] = (answer.status, bool(answer.stale), shares)
-    try:
-        from app.services import replay_util
-
-        util = replay_util.match_payload(db, replay, wait=True)["rounds"]      # cited figures must be current
-    except Exception:  # noqa: BLE001 - Critical Util is extra evidence: without it the run goes on, with the gap named
-        util = {}
     return assemble(context, blobs, controls, links, util)
 
 

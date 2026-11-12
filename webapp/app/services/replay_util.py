@@ -449,14 +449,15 @@ def _ult_table(rows):
 # --- the replay viewer's tab
 
 
-def match_payload(db, replay, *, wait: bool = False) -> dict:
+def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) -> dict:
     """The tab's body for one linked replay: each player's casts with values, best and worst, unused util, harm.
     Opponents named by agent.
 
-    When the stored build (or the estimator) is out of date, `wait` rebuilds it first (the coach, which must cite
-    current figures); otherwise the rebuild starts in the background (util_rebuild) and the body says `updating`,
+    When the stored build (or the estimator) is out of date, `wait` rebuilds it first. With `wait=False`,
+    the rebuild starts in the background (util_rebuild) and the body says `updating`,
     valued meanwhile with the stored estimator and weights. Remote mode always reads the stored products
-    and leaves rebuilding to the control loop, including when `wait` is requested."""
+    and leaves rebuilding to the control loop, including when `wait` is requested. `read_only` uses stored
+    products and reports `updating` when stale, with every build and request disabled."""
     from sqlalchemy import or_
 
     from app.models.friendship import Friendship
@@ -474,8 +475,8 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
     players = tab_players(page, friends)
     ctx = _replay_context(db, {replay.id}).get(replay.id)
     model = util_model.load(db)
-    build_local = not settings.util_build_remote
-    updating = False
+    build_local = not settings.util_build_remote and not read_only
+    updating = read_only and model is None
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
         # this match was in the stored estimator's training: refit it first, or (not waiting) in the background
         if build_local and (wait or model is None):
