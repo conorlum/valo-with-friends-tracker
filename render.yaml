@@ -59,6 +59,8 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: REPLAY_HEIGHTS_AUTO
         value: "true"
+      - key: UTIL_BUILD_REMOTE
+        value: "true"
       # Map pool: a daily check of playvalorant.com patch notes for Competitive pool changes
       # (app/services/map_pool_refresh.py), on from the merge. Without it the committed seed alone is the pool.
       # Never set it on valomaths (demo mode turns it off anyway).

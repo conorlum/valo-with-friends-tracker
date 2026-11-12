@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 
+from app.config import settings
 from app.critutil import abilities, constants
 from app.critutil.corpus import (  # re-export the portable build and its helpers
     COMBO_S, COMBO_UV, EXAMPLES_KEPT, FULL_BUY_THRESHOLD, LABELS, MIN_CASTS, NO_LIFT,
@@ -253,13 +254,15 @@ def values_current(db, stored: tuple[str, dict] | None = None, rows: list[tuple]
 
 def page_values(db) -> tuple[dict | None, bool]:
     """(the stored build or None, whether it is current), for a request: never builds. When it is stale or missing
-    the build is started in the background (app/services/util_rebuild.py) and the caller shows what is stored."""
+    the caller shows what is stored. Local mode starts a background child (app/services/util_rebuild.py).
+    Remote mode leaves dispatch to the control loop."""
     from app.services import util_rebuild
 
     stored = _values_row(db)
     if values_current(db, stored):
         return stored[1], True
-    util_rebuild.request()
+    if not settings.util_build_remote:
+        util_rebuild.request()
     return (stored[1] if stored else None), False
 
 
@@ -452,7 +455,8 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
 
     When the stored build (or the estimator) is out of date, `wait` rebuilds it first (the coach, which must cite
     current figures); otherwise the rebuild starts in the background (util_rebuild) and the body says `updating`,
-    valued meanwhile with the stored estimator and weights."""
+    valued meanwhile with the stored estimator and weights. Remote mode always reads the stored products
+    and leaves rebuilding to the control loop, including when `wait` is requested."""
     from sqlalchemy import or_
 
     from app.models.friendship import Friendship
@@ -470,10 +474,11 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
     players = tab_players(page, friends)
     ctx = _replay_context(db, {replay.id}).get(replay.id)
     model = util_model.load(db)
+    build_local = not settings.util_build_remote
     updating = False
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
         # this match was in the stored estimator's training: refit it first, or (not waiting) in the background
-        if wait or model is None:
+        if build_local and (wait or model is None):
             model = util_model.ensure(db)
         else:
             updating = True
@@ -497,7 +502,7 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
     # the background, once per process at a time
     if updating or any(stored[n].fingerprint != covered.get(str(n)) for n in current) \
             or key != corpus_key(db, current_rows(db, with_data=False), model):
-        if wait:
+        if wait and build_local:
             ensure_values(db)
             corpus = (_values_row(db) or (None, {}))[1]
             model = util_model.load(db)     # the rebuild may have refit it: score with the build's (branch review B14)
@@ -508,7 +513,8 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
         else:
             from app.services import util_rebuild
 
-            util_rebuild.request()
+            if build_local:
+                util_rebuild.request()
             updating = True
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
