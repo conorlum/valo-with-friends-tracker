@@ -196,7 +196,7 @@ guards = [
 ]
 
 [critical-util]
-about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, the round-win estimator, cast values, the tab and /util."
+about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, the round-win estimator, cast values, the portable corpus build and digest, the tab and /util."
 tests = ["tests/critutil/test_*.py"]
 guards = [
   "app/critutil/**", "app/services/util_model.py", "app/services/util_values.py", "app/services/replay_util.py",
