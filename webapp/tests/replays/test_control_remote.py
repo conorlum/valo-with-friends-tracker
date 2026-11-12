@@ -1501,6 +1501,8 @@ def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays(
     assert render["control"] >= env("REPLAY_CONTROL_RUN_TIMEOUT_S") + 300
     assert render["warm"] >= env("REPLAY_WARM_BUILD_TIMEOUT_S") + 300
     assert render["heights"] >= env("REPLAY_HEIGHT_RUN_TIMEOUT_S") + 300
+    from replay_worker.server import Settings
+    assert render["util"] == Settings().util_run_timeout_s + 300
     assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
     assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
     # Local mode: untouched.

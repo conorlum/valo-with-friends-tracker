@@ -68,6 +68,12 @@ async def probe(ctx: TaskContext, runs: int = 10, write_gb: float = 15) -> dict:
     return disk_probe.summarize(answers)
 
 
+@app.task(name="util", plan="pro", timeout_seconds=1800, retry=NO_RETRY)
+def util(ctx: TaskContext, args: dict) -> dict:
+    tasks.util(args, tasks.link_for(args))
+    return {"ok": True}
+
+
 # Later steps add their @app.task blocks HERE, above this line: app.start() registers the tasks defined when it
 # runs (render/workflows/app.py, start), so a block below it would never be registered.
 
