@@ -227,6 +227,50 @@ class ControlClient:
     def build(self, build_id: str) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/heights/build/{build_id}"))
 
+    def util_have(self, rows, obs=(), *, prune=False, ref=None) -> dict:
+        return self._post('/util/have', {"rows": list(rows), "obs": list(obs), "prune": prune, "ref": ref})
+
+    def util_rounds(self, rows, *, ref=None) -> dict:
+        return self._post('/util/rounds', {"rows": rows, "ref": ref})
+
+    def util_obs(self, obs, *, ref=None) -> dict:
+        return self._post('/util/obs', {"obs": obs, "ref": ref})
+
+    def util_open(self, *, key, digest, rows, obs, refit, context, ref=None) -> dict:
+        try:
+            return self._post('/util/build', {"key": key, "digest": digest, "rows": rows, "obs": obs,
+                                               "refit": refit, "context": context, "ref": ref})
+        except Conflict as conflict:
+            return conflict.body
+
+    def util_build(self, build_id: str) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/util/build/{build_id}"))
+
+    def util_result(self, build_id: str, dest_path):
+        """Stream the opaque result to disk; the collector checks its digest before storing it."""
+        import shutil
+        from pathlib import Path
+
+        dest = Path(dest_path)
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{self.base}/util/build/{build_id}/result"),
+                                        timeout=300) as response:
+                try:
+                    with dest.open('wb') as output:
+                        shutil.copyfileobj(response, output, length=1024 * 1024)
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise WorkerGone(str(error.code)) from error
+            if error.code == 503:
+                raise WorkerBusy(str(error.code)) from error
+            raise Unreachable(f"worker answered {error.code}") from error
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise Unreachable("the replay worker result is unreachable") from error
+        return dest
+
     def _call(self, request) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
