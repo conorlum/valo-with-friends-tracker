@@ -31,7 +31,8 @@
         loadRound: function (n) { return json("/replays/" + match.uuid + "/" + n + ".json").then(function (blob) { return withSiteData(n, blob); }); },
         roundWinner: function (n) { var site = data.rounds[String(n)]; return site && site.db && site.db.winner; },
         abilityIcons: abilityIcons,
-        linked: match.linked ? { players: data.players, uvPerUnit: match.uv_per_unit } : null{% if control %},
+        linked: match.linked ? { players: data.players, uvPerUnit: match.uv_per_unit } : null{% if not demo_mode %},
+        loadAreas: function () { return json("/replays/areas/" + match.map + ".json"); }{% endif %}{% if control %},
         // Map control (Stage 4): the round's stored bytes; 202 not ready, 422 failed, 404 no layer.
         control: match.control,
         loadControl: function (n, signal) {

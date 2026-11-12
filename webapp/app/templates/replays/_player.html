@@ -59,6 +59,7 @@
         <label><input type="checkbox" data-replay-layer="projectiles" checked> Projectiles</label>
         <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
         <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+        {% if not demo_mode %}<label><input type="checkbox" data-replay-layer="areas"> Areas</label>{% endif %}
         {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
         {% if control %}
         <label><input type="checkbox" data-replay-layer="control"> Map control</label>
@@ -106,9 +107,10 @@
       </p>
       {% endif %}
       {% endif %}
-      {% if not linked and feature_label %}
+      {% if not linked and (feature_label or not demo_mode) %}
       <fieldset class="replay-layers"><legend>Show</legend>
-        <label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>
+        {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
+        {% if not demo_mode %}<label><input type="checkbox" data-replay-layer="areas"> Areas</label>{% endif %}
       </fieldset>
       {% endif %}
       <p class="replay-legend">
