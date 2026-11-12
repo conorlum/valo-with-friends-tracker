@@ -113,6 +113,25 @@ REPO = Path(__file__).resolve().parents[1]
 WEBAPP = REPO / "webapp"
 
 
+def _app_path() -> None:
+    """The Workflow starts `python -m replay_tasks.main` from /srv with no PYTHONPATH: put webapp/ (for `app`)
+    and the repo root on the path before a task imports either."""
+    for folder in (str(WEBAPP), str(REPO)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+
+
+def _layout_refusal(task: dict) -> dict | None:
+    """The answer for a task whose layout this run's image has no assets for (D6: the site holds it, no try)."""
+    _app_path()
+    from app.replays import layouts
+
+    if task["map"] in layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"):
+        return None
+    return {"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
+            "key": task.get("key"), "error": "layout assets are absent from this run"}
+
+
 def _child_env(cache: Path) -> dict:
     from replay_worker.server import CHILD_THREADS
 
@@ -205,12 +224,10 @@ def control(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
-        from app.replays import layouts
         stdin = link.fetch("task", work / "task.json").read_bytes()
-        task = json.loads(stdin)
-        if task["map"] not in layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"):
-            link.post_result({"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
-                              "key": task.get("key"), "error": "layout assets are absent from this run"})
+        refusal = _layout_refusal(json.loads(stdin))
+        if refusal is not None:
+            link.post_result(refusal)
             return
         missing = _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
         if missing:
@@ -237,9 +254,13 @@ def warm(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        refusal = _layout_refusal(json.loads(stdin))
+        if refusal is not None:
+            link.post_result(refusal)
+            return
         _fetch_inputs(link, args.get("files", []), cache)
         before = _cache_files(cache)
-        stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_WARM_CMD", [sys.executable, "-m", "replay_worker.warm_job"], stdin, cache,
                             what="warm child")
         unsent = _post_caches(link, cache, before, args["map"])
@@ -268,9 +289,7 @@ def _recipe() -> str:
 def parse(args: dict, link: WorkerLink) -> None:
     """One upload or re-parse: the same parse and condense the worker runs locally (replay_worker/parse_job.py)."""
     link.post_started()      # for /health's by_kind only: a parse's deadline is explicit and never moves
-    for folder in (str(WEBAPP), str(REPO)):
-        if folder not in sys.path:
-            sys.path.insert(0, folder)
+    _app_path()
     from app.replays.contract import ContractError
     from replay_worker import parse_job
     from replay_worker.server import Settings
