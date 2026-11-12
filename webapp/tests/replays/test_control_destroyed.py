@@ -7,13 +7,56 @@ import pytest
 
 from app.control import engine as ce
 from app.control import heights as hc
+from app.control.encode import encode_data
 from app.gaps.detect import judged_against_before
+from app.replays import control_format as cf, destroyed
 from tests.replays.control_toys import blob, height_blob, open_hall, toy_ability, toy_heights, uv, z_dm
 from tests.replays.test_gaps_locating import _runner, _step
 
 
 GONE = 17.2
 DEVICE_PX = (300, 200)
+
+
+def test_destroyed_trip_is_encoded_with_header_precision():
+    data = _data([])
+    rc = ce.compute_round(data, open_hall(), ticks=np.array([0.0]), knowledge=False)
+    rc.destroyed = [{"t": 1.23456, "owner": 0, "side": "A", "device": "trip",
+                     "u": 1234.56789, "v": 2345.67891, "z": None, "id": 10}]
+    header, _ = cf.unpack_data(encode_data(rc, data))
+    assert header["destroyed"] == [[1.235, 0, "trip", 1234.5679, 2345.6789]]
+
+
+def test_no_destroyed_devices_omits_the_header_key():
+    data = _data([])
+    rc = ce.compute_round(data, open_hall(), ticks=np.array([0.0]), knowledge=False)
+    assert rc.destroyed == []
+    header, _ = cf.unpack_data(encode_data(rc, data))
+    assert "destroyed" not in header
+
+
+def test_round_reuses_all_destroyed_devices_from_both_sides(monkeypatch):
+    util = [toy_ability(code, name, 300, 200, 0 if i % 2 == 0 else 5,
+                        t1=GONE, gone=GONE, kind="GameObject", id=10 + i)
+            for i, (code, name) in enumerate(destroyed.DESTROYABLE)]
+    data = _data(util)
+    expected = destroyed.destroyed_devices(util, {0: "A", 5: "B"}, data["t_decided"])
+    original = destroyed.destroyed_devices
+    calls = []
+
+    def collect(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(destroyed, "destroyed_devices", collect)
+    rc = ce.compute_round(data, open_hall(), ticks=np.array([0.0]), knowledge=False)
+    assert len(calls) == 1
+    assert rc.destroyed == expected
+    assert {e["device"] for e in rc.destroyed} == set(destroyed.DESTROYABLE.values())
+    assert {e["side"] for e in rc.destroyed} == {"A", "B"}
+    header, _ = cf.unpack_data(encode_data(rc, data))
+    assert header["destroyed"] == [[round(e["t"], 3), e["owner"], e["device"],
+                                    round(e["u"], 4), round(e["v"], 4)] for e in expected]
 
 
 def _shot(by=5, t=GONE, start=None, end=DEVICE_PX):

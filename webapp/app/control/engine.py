@@ -627,7 +627,8 @@ class RoundInputs:
             elif k == "damage":
                 self._damage(e)
         shots = [e for e in util if e.get("k") == "shot"]
-        for event in destroyed.destroyed_devices(util, self.team, self.t_decided):
+        self.destroyed = destroyed.destroyed_devices(util, self.team, self.t_decided)
+        for event in self.destroyed:
             if event["device"] not in ("trip", "camera"):
                 continue
             by = destroyer(shots, (event["u"], event["v"]), event["t"], event["side"], self.team,
@@ -3405,6 +3406,7 @@ class RoundControl:
     map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
     fights: list | None = None         # the round's team fights and what each side lost (app/control/fight_swing.py)
     feet_only: list | None = None      # [frame index, viewer slot, target slot]: head blocked, feet clear
+    destroyed: list = field(default_factory=list)  # both sides' devices destroyed before they fired
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -3662,7 +3664,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
-                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None)
+                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None,
+                        destroyed=rnd.destroyed)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,

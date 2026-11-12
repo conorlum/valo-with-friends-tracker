@@ -131,6 +131,9 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
               "checkpoints": [[t, a, b, c] for t, a, b, c in zip(checkpoints, s_off, v_off, c_off)],
               "states": list(cf.STATE_NAMES), "group_side": rc.group_side, "control_m2": control_m2}
     streams = {"states": states, "coverage": coverage, "control": control}
+    if rc.destroyed:
+        header["destroyed"] = [[round(e["t"], 3), e["owner"], e["device"],
+                                round(e["u"], 4), round(e["v"], 4)] for e in rc.destroyed]
     if rc.map_features:
         header['map_features'] = rc.map_features
     if rc.knew_states:

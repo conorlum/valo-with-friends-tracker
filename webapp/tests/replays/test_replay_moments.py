@@ -102,7 +102,7 @@ def test_info_sight_and_sound_never_become_utility_finds(kind):
                               (13.0, "damage"), (14.0, "kill"))]
     moments = {6: {"status": "ok", "fights": [fight(slot=5, t0=10, t1=14)]}}
     r = player_info(5, {6: ev(*rows)}, moments)
-    assert r == {"found_by_utility": [], "seen": 1,
+    assert r == {"found_by_utility": [], "seen": 1, "destroyed": [],
                  "heard": [{"round": 6, "t": 4.0}],
                  "gunfire_outside": [{"round": 6, "t": 5.0}]}
 
@@ -194,6 +194,23 @@ def test_a_revived_players_two_deaths_in_one_team_fight_list_it_once():
     assert [(r["round"], r["fight_i"]) for r in expensive_fights(3, moments, tfs)] == [(1, 0)]
     tagged = attach_team_fights(moments[1]["fights"], tfs[1])
     assert all("expensive_fight" in f["tags"] for f in tagged), "each personal fight is still tagged"
+
+
+def test_destroyed_devices_belong_to_the_owner_and_work_without_knowledge_events():
+    rows = {3: [[65.0, 2, "trip", 1200.0, 2300.0], [70.0, 7, "turret", 1400.0, 2500.0]],
+            "1": [[5.0, 2, "camera", 1300.0, 2400.0]]}
+    expected = [{"round": 1, "t": 5.0, "device": "camera"},
+                {"round": 3, "t": 65.0, "device": "trip"}]
+    assert player_info("2", {}, {}, destroyed=rows)["destroyed"] == expected
+    assert player_info(7, {}, {}, destroyed=rows)["destroyed"] == [
+        {"round": 3, "t": 70.0, "device": "turret"}]
+    assert player_info(0, {}, {}, destroyed=rows)["destroyed"] == []
+    assert player_info(2, {}, {})["destroyed"] == []
+    payload = build_payload(players={"2": {"agent": "Cypher"}, "7": {"agent": "Killjoy"}},
+                            attack_round1=[2], moments={}, deaths={}, events={}, stale=0, destroyed=rows)
+    assert payload["summary"]["2"]["info"]["destroyed"] == expected
+    assert payload["summary"]["7"]["info"]["destroyed"] == [
+        {"round": 3, "t": 70.0, "device": "turret"}]
 
 
 def test_build_payload():

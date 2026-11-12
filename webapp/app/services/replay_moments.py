@@ -117,7 +117,7 @@ def _merge(times: list[float]) -> list[float]:
     return kept
 
 
-def player_info(slot, events, moments) -> dict:
+def player_info(slot, events, moments, destroyed=None) -> dict:
     slot = _as_int(slot)
     heard, gunfire, seen, util = [], [], [], []
     for n, groups in (events or {}).items():
@@ -149,11 +149,15 @@ def player_info(slot, events, moments) -> dict:
                 else:
                     util.append({"round": rnd, "t": t, "reason": reason, "class": reason_class})
     key = lambda m: (m["round"], m["t"])
+    lost_devices = [{"round": int(n), "t": t, "device": device}
+                    for n, rows in (destroyed or {}).items()
+                    for t, owner, device, u, v in rows if _as_int(owner) == slot]
     return {
         "heard": sorted(heard, key=key),
         "gunfire_outside": sorted(gunfire, key=key),
         "found_by_utility": sorted(util, key=lambda m: (m["round"], m["t"], m["reason"])),
         "seen": len(seen),
+        "destroyed": sorted(lost_devices, key=key),
     }
 
 
@@ -203,7 +207,8 @@ def player_summary(slot, moments, deaths) -> dict:
             "medians": {k: _bucket(v) for k, v in buckets.items()}}
 
 
-def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None) -> dict:
+def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None,
+                  destroyed=None) -> dict:
     """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights).
     `team_fights`: round -> the control summary's team fights (app/control/fight_swing.py), when stored."""
     rounds = {}
@@ -219,7 +224,7 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale, fai
     for slot in players:
         summary[str(slot)] = {**player_summary(slot, moments, deaths),
                               "expensive_fights": expensive_fights(slot, moments, team_fights),
-                              "info": player_info(slot, events, moments)}
+                              "info": player_info(slot, events, moments, destroyed=destroyed)}
     return {"players": players, "attack_round1": attack_round1, "rounds": rounds,
             "summary": summary, "stale": stale, "failed": sorted(int(n) for n in failed)}
 
@@ -287,6 +292,7 @@ def load_moments_payload(db, replay) -> dict:
     team_fights = {int(n): s["fights"] for n, s in loaded.summaries.items() if isinstance(s.get("fights"), list)}
 
     events = {}
+    destroyed = {}
     rows = (db.query(ReplayRoundControl.round_number, ReplayRoundControl.data)
             .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.status == "ok"))
     for n, data in rows:
@@ -294,6 +300,7 @@ def load_moments_payload(db, replay) -> dict:
             header, _ = control_format.unpack_data(data)
         except (control_format.ControlFormatError, ValueError, OSError):
             continue
+        destroyed[n] = header.get("destroyed") or []
         found = header.get("knowledge_events") or {}
         if found:
             events[n] = found
@@ -307,4 +314,4 @@ def load_moments_payload(db, replay) -> dict:
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
-                         events=events, stale=stale, failed=failed, team_fights=team_fights)
+                         events=events, stale=stale, failed=failed, team_fights=team_fights, destroyed=destroyed)
