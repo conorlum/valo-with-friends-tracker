@@ -61,8 +61,10 @@ class CoachFeedback(Base):
     # The moment of the point it is about (its position in the point's `instances`); None: the point as a whole.
     instance_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     author_player_id: Mapped[int] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
-    verdict: Mapped[str | None] = mapped_column(String(12), nullable=True)      # None: a note alone (migration 0025)
+    verdict: Mapped[str | None] = mapped_column(String(12), nullable=True)      # None: a note or area correction alone
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    area_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    area_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
