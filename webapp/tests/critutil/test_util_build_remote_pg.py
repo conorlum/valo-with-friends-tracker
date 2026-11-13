@@ -5,6 +5,7 @@ VALO_TEST_DATABASE_URL (see tests/_postgres.py) and a migrated scratch database 
 skipped without it. Synthetic toy data only.
 """
 
+import base64
 import json
 import threading
 import time
@@ -15,11 +16,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.critutil import build_digest, corpus
+from app.models.kill_event import KillEvent
+from app.models.match import Match, MatchPlayer, MatchSource, Team
+from app.models.player import Player
 from app.models.replay import UtilModel
-from app.services import replay_util, util_model, util_values
+from app.models.round import Round
+from app.services import replay_control_remote, replay_util, util_model, util_values
 from app.services import util_build_remote as remote
 from tests.critutil.test_build import FRIEND, fake_gate, toy_corpus
 from tests.critutil.test_values import MODEL
+from tests.critutil.test_util_build_remote import Client
 from tests.support.postgres import migrated_database, scratch_database  # noqa: F401 - fixtures
 
 pytestmark = pytest.mark.postgres
@@ -96,9 +102,139 @@ class SlowWorker:
 @pytest.fixture
 def remote_on(monkeypatch):
     monkeypatch.setattr(remote, "settings", SimpleNamespace(util_build_remote=True, demo_mode=False))
+    monkeypatch.setattr(replay_control_remote.settings, "replay_control_remote", True)
+    monkeypatch.setattr(replay_control_remote.settings, "replay_worker_url", "https://synthetic.invalid")
+    monkeypatch.setattr(replay_control_remote.settings, "demo_mode", False)
     monkeypatch.setattr(remote.util_build_health, "record", lambda *a: None)
     monkeypatch.setattr(remote.util_build_health, "set_in_flight", lambda value: None)
     monkeypatch.setattr(remote.util_build_health, "clear_all", lambda: None)
+
+
+@pytest.fixture
+def observation_factory(factory):
+    """Migrated PostgreSQL data, inserted out of id order; match 3 has no rounds or kills."""
+    with factory() as db:
+        assert db.get_bind().dialect.name == "postgresql"
+        for mid in (2, 1, 3):
+            db.add(Match(id=mid, external_id=f"synthetic-observations-{mid}", source=MatchSource.SCRAPED))
+        for mid in (2, 1):
+            for slot in (4, 2, 3, 1):
+                pid = mid * 10 + slot
+                db.add(Player(id=pid, display_name=f"synthetic-{pid}"))
+        db.flush()
+        for mid in (2, 1):
+            for slot in (4, 2, 3, 1):
+                pid = mid * 10 + slot
+                db.add(MatchPlayer(id=pid, match_id=mid, player_id=pid, agent="Sage",
+                                   team=Team.TEAM_1 if slot <= 2 else Team.TEAM_2))
+            for n in (2, 1):
+                db.add(Round(id=mid * 100 + n, match_id=mid, round_number=n,
+                             outcome="Team B Defuse Win" if n == 2 else "Team A Elimination Win",
+                             planted=n == 2, plant_time=20.5 if n == 2 else None,
+                             exploded=False, defused=n == 2, defuse_time=36.25 if n == 2 else None))
+        db.flush()
+        for mid in (2, 1):
+            for n in (2, 1):
+                db.add(KillEvent(id=mid * 100 + n, round_id=mid * 100 + n, weapon="Vandal",
+                                 killer_match_player_id=mid * 10 + 1, death_match_player_id=mid * 10 + 3,
+                                 event_time_seconds=25.75 if n == 2 else 8.125))
+        db.commit()
+    return factory
+
+
+def test_pg_observation_keys_include_empty_match_and_are_deterministic(observation_factory):
+    with observation_factory() as db:
+        first = remote._observation_keys(db, set())
+    with observation_factory() as db:
+        second = remote._observation_keys(db, set())
+        observations = util_model.load_observations(db, by_match=True)
+        assert db.query(Round).filter(Round.match_id == 3).count() == 0
+        assert remote._observation_keys(db, {2}) == {key: mid for key, mid in first.items() if mid != 2}
+    assert first == second
+    assert len(first) == 3 and set(first.values()) == {1, 2, 3}
+    assert set(observations) == {1, 2} and all(observations.values())
+    assert any(o[2] and o[4] == 20.5 for obs in observations.values() for o in obs)
+
+
+@pytest.mark.parametrize("model,identity,field,value", [
+    (Round, 101, "outcome", "Team B Elimination Win"),
+    (Round, 102, "plant_time", 21.75),
+    (MatchPlayer, 11, "team", Team.TEAM_2),
+    (KillEvent, 101, "event_time_seconds", 9.625),
+])
+def test_pg_observation_keys_cover_estimator_edits(observation_factory, model, identity, field, value):
+    with observation_factory() as db:
+        before = {mid: key for key, mid in remote._observation_keys(db, set()).items()}
+        setattr(db.get(model, identity), field, value)
+        db.commit()
+    with observation_factory() as db:
+        after = {mid: key for key, mid in remote._observation_keys(db, set()).items()}
+    assert before.keys() == after.keys() == {1, 2, 3}
+    assert {mid for mid in before if before[mid] != after[mid]} == {1}
+
+
+def test_pg_push_loads_shards_in_repeatable_read(observation_factory, remote_on, monkeypatch):
+    with observation_factory() as db:
+        expected = util_model.load_observations(db, by_match=True, match_ids={1, 2, 3})
+    original = util_model.load_observations
+    snapshots = []
+
+    def load(snapshot, *args, **kwargs):
+        assert snapshot.connection().get_isolation_level() == "REPEATABLE READ"
+        actual = original(snapshot, *args, **kwargs)
+        assert actual == expected
+        snapshots.append(snapshot)
+        return actual
+
+    monkeypatch.setattr(util_model, "load_observations", load)
+    state, client = remote.UtilState(), Client()
+    with observation_factory() as db:
+        remote.push(db, client, state, {"util": {"digest": build_digest.digest(remote.WEBAPP)}}, NOW)
+        assert not db.in_transaction()
+    assert len(snapshots) == 1 and not snapshots[0].in_transaction()
+    assert state.phase == "open" and len(client.sent("open")) == 1
+    shards = {mid: obs for body in client.sent("obs") for entry in body["obs"]
+              for mid, obs in json.loads(base64.b64decode(entry["data"]))}
+    assert shards == {mid: json.loads(corpus.encode_output(expected.get(mid, []))) for mid in (1, 2, 3)}
+
+
+def test_pg_concurrent_edit_between_key_check_and_load_abandons(observation_factory, remote_on, monkeypatch):
+    with observation_factory() as db:
+        old_keys = remote._observation_keys(db, set())
+        expected = util_model.load_observations(db, by_match=True, match_ids={1, 2, 3})
+    original = util_model.load_observations
+    snapshots = []
+
+    def edit_then_load(snapshot, *args, **kwargs):
+        assert snapshot.connection().get_isolation_level() == "REPEATABLE READ"
+        reader_pid = snapshot.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        with observation_factory() as writer:
+            assert writer.execute(text("SELECT pg_backend_pid()")).scalar_one() != reader_pid
+            writer.get(KillEvent, 101).event_time_seconds = 9.625
+            writer.commit()
+        # The real key query has established the snapshot before this load. Its rows
+        # must remain the old ones, and the fresh check must then abandon that preparation.
+        actual = original(snapshot, *args, **kwargs)
+        assert actual == expected
+        snapshots.append(snapshot)
+        return actual
+
+    monkeypatch.setattr(util_model, "load_observations", edit_then_load)
+    failures = []
+    monkeypatch.setattr(remote.util_build_health, "record", lambda *args: failures.append(args))
+    state, client = remote.UtilState(), Client()
+    with observation_factory() as db:
+        remote.push(db, client, state, {"util": {"digest": build_digest.digest(remote.WEBAPP)}}, NOW)
+        assert not db.in_transaction()
+    assert len(snapshots) == 1 and not snapshots[0].in_transaction()
+    assert not client.sent("obs") and not client.sent("open")
+    assert state.phase == "idle" and list(state.tries.values()) == [0]
+    assert not failures
+    with observation_factory() as db:
+        new_keys = remote._observation_keys(db, set())
+    assert {key: mid for key, mid in old_keys.items() if mid != 1} == {
+        key: mid for key, mid in new_keys.items() if mid != 1}
+    assert old_keys != new_keys
 
 
 def test_pg_step_stores_both_products_as_jsonb_objects(factory, monkeypatch, remote_on):

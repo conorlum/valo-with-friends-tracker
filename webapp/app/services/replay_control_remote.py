@@ -227,8 +227,9 @@ class ControlClient:
     def build(self, build_id: str) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/heights/build/{build_id}"))
 
-    def util_have(self, rows, obs=(), *, prune=False, ref=None) -> dict:
-        return self._post('/util/have', {"rows": list(rows), "obs": list(obs), "prune": prune, "ref": ref})
+    def util_have(self, rows, obs=None, *, prune=False, ref=None) -> dict:
+        return self._post('/util/have', {"rows": list(rows), "obs": None if obs is None else list(obs),
+                                         "prune": prune, "ref": ref})
 
     def util_rounds(self, rows, *, ref=None) -> dict:
         return self._post('/util/rounds', {"rows": rows, "ref": ref})

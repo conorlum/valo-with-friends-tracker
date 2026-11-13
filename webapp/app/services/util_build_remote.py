@@ -19,13 +19,15 @@ from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
 
-from sqlalchemy import case, func, text, tuple_
+from sqlalchemy import String, case, cast, func, literal, select, text, tuple_
+from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.critutil import build_digest, corpus
 from app.models.friendship import Friendship
 from app.models.kill_event import KillEvent
-from app.models.match import Match
+from app.models.match import Match, MatchPlayer
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
 from app.services import replay_util, util_build_health, util_model, util_values
@@ -100,15 +102,19 @@ STATE = UtilState()
 
 
 def enabled() -> bool:
-    return bool(getattr(settings, "util_build_remote", False) and not settings.demo_mode)
+    from app.services import replay_control_remote
+
+    return bool(getattr(settings, "util_build_remote", False) and not settings.demo_mode
+                and replay_control_remote.enabled())
 
 
 def in_flight(state: UtilState | None = None) -> bool:
     return (STATE if state is None else state).phase != "idle"
 
 
-def obs_key(match_id, count, max_kill_id) -> str:
-    return f"{match_id}-{count}-{max_kill_id}-{OBS_VERSION}"
+def obs_key(match_id, players, rounds, kills) -> str:
+    fingerprint = hashlib.sha256(f"{players}:{rounds}:{kills}".encode()).hexdigest()
+    return f"{match_id}-{fingerprint}-{OBS_VERSION}"
 
 
 def request_now(state: UtilState | None = None) -> None:
@@ -196,13 +202,77 @@ def _abandon(state: UtilState) -> None:
 
 
 def _observation_keys(db, excluded, match_ids=None) -> dict:
-    # One aggregate includes empty matches too, so their empty shard is cached.
-    rows = (db.query(Match.id, func.count(KillEvent.id), func.coalesce(func.max(KillEvent.id), 0))
-            .outerjoin(Round, Round.match_id == Match.id).outerjoin(KillEvent, KillEvent.round_id == Round.id)
-            .filter(Match.id.notin_(excluded)).group_by(Match.id).order_by(Match.id))
+    # Real-data cost assumption: scan all estimator inputs once per preparation, never
+    # per idle cycle. PostgreSQL returns one digest per match per table, not raw rows.
+    # Missing-shard rechecks restrict the same aggregates to that batch's match ids.
+    postgres = db.get_bind().dialect.name == "postgresql"
+
+    def aggregate(match_id, columns, source):
+        fields = []
+        for column in columns:
+            value = cast(column, String)
+            # Length-prefix non-null values so separators and NULL cannot alias data.
+            fields.append(case((column.is_(None), literal("N")),
+                               else_=cast(func.length(value), String) + literal(":") + value))
+        packed = fields[0]
+        for field_value in fields[1:]:
+            packed = packed + literal("|") + field_value
+        query = select(match_id.label("match_id"), columns[0].label("sort_id"),
+                       packed.label("fields")).select_from(source).where(match_id.notin_(excluded))
+        if match_ids is not None:
+            query = query.where(match_id.in_(match_ids))
+        if not postgres:
+            query = query.order_by(match_id, columns[0])
+        rows = query.subquery()
+        fingerprint = (func.md5(func.string_agg(
+            rows.c.fields, aggregate_order_by(literal(","), rows.c.sort_id))) if postgres
+            else func.group_concat(rows.c.fields, ","))
+        return select(rows.c.match_id, fingerprint.label("fingerprint")).group_by(rows.c.match_id).subquery()
+
+    players = aggregate(MatchPlayer.match_id, (MatchPlayer.id, MatchPlayer.team), MatchPlayer)
+    rounds = aggregate(Round.match_id, (Round.id, Round.round_number, Round.outcome, Round.planted,
+                       Round.plant_time, Round.exploded, Round.defused, Round.defuse_time), Round)
+    kills = aggregate(Round.match_id, (KillEvent.id, KillEvent.round_id, KillEvent.killer_match_player_id,
+                      KillEvent.death_match_player_id, KillEvent.event_time_seconds),
+                      KillEvent.__table__.join(Round, KillEvent.round_id == Round.id))
+    query = select(Match.id, players.c.fingerprint, rounds.c.fingerprint, kills.c.fingerprint)
+    for table in (players, rounds, kills):
+        query = query.outerjoin(table, table.c.match_id == Match.id)
+    query = query.where(Match.id.notin_(excluded)).order_by(Match.id)
     if match_ids is not None:
-        rows = rows.filter(Match.id.in_(match_ids))
-    return {obs_key(mid, count, maximum): mid for mid, count, maximum in rows}
+        query = query.where(Match.id.in_(match_ids))
+    empty = hashlib.md5(b"").hexdigest()
+
+    def digest(value):
+        return (value or empty) if postgres else hashlib.md5((value or "").encode()).hexdigest()
+
+    # Include matches with no observations so their empty shard remains cacheable.
+    return {obs_key(mid, *(digest(value) for value in fingerprints)): mid
+            for mid, *fingerprints in db.execute(query)}
+
+
+def _observation_entries(db, state: UtilState, keys) -> list:
+    ids = {state.obs_keys[key] for key in keys}
+    expected = {key: state.obs_keys[key] for key in keys}
+    db.rollback()
+    # A dedicated snapshot pairs keys with precisely the bytes those keys describe.
+    # End it before encoding/sending; the control session holds no connection either.
+    with Session(bind=db.get_bind()) as snapshot:
+        if snapshot.get_bind().dialect.name == "postgresql":
+            snapshot.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        else:
+            # sqlite3's legacy transaction mode does not BEGIN for SELECTs.
+            snapshot.connection().exec_driver_sql("BEGIN")
+        if _observation_keys(snapshot, state.excluded, ids) != expected:
+            raise _Changed("observation match changed while pushing")
+        observations = util_model.load_observations(snapshot, set(state.excluded), by_match=True, match_ids=ids)
+    # The snapshot pairs keys and bytes; a new transaction catches edits committed
+    # during that read so the preparation can be retried before any shard is sent.
+    with Session(bind=db.get_bind()) as current:
+        if _observation_keys(current, state.excluded, ids) != expected:
+            raise _Changed("observation match changed while loading shard")
+    return [{"key": key, "data": base64.b64encode(corpus.encode_obs(
+        [[state.obs_keys[key], observations.get(state.obs_keys[key], [])]])).decode("ascii")} for key in keys]
 
 
 def _prepare(db, state: UtilState, digest: str, now: float) -> bool:
@@ -318,7 +388,8 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
             raise _Changed("prepared signature changed while pushing")
         if state.have_pending:
             db.rollback()  # detached preparation; no connection through worker I/O
-            answer = client.util_have(list(state.row_keys), list(state.obs_keys), prune=True, ref=state.ref)
+            answer = client.util_have(list(state.row_keys), list(state.obs_keys) if state.refit else None,
+                                      prune=True, ref=state.ref)
             _missing(state, answer)
             state.have_pending = False
             log.info("util have key=%s ref=%s rows=%s obs=%s", state.key, state.ref,
@@ -330,13 +401,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
             budget = _send_entries(client, state, "rows", entries, budget)
         if state.missing_obs and budget:
             keys = state.missing_obs[:OBS_MATCHES_PER_CYCLE]
-            ids = {state.obs_keys[key] for key in keys}
-            if _observation_keys(db, state.excluded, ids) != {key: state.obs_keys[key] for key in keys}:
-                raise _Changed("observation match changed while pushing")
-            observations = util_model.load_observations(db, set(state.excluded), by_match=True, match_ids=ids)
-            entries = [{"key": key, "data": base64.b64encode(corpus.encode_obs(
-                [[state.obs_keys[key], observations.get(state.obs_keys[key], [])]])).decode("ascii")} for key in keys]
-            db.rollback()
+            entries = _observation_entries(db, state, keys)
             _send_entries(client, state, "obs", entries, budget)
         if state.missing_rows or state.missing_obs:
             return
@@ -360,6 +425,8 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
         log.info("util open key=%s ref=%s id=%s bytes=0 seconds=0.0", state.key, state.ref, state.build_id)
     except _Changed as error:
         log.info("util abandon key=%s ref=%s reason=%s", state.key, state.ref, error)
+        if state.phase == "pushing" and state.build_id is None:
+            state.tries[state.key] = max(0, state.tries.get(state.key, 0) - 1)
         _abandon(state)
     except Exception as error:
         _failure(state, stage, error, now)

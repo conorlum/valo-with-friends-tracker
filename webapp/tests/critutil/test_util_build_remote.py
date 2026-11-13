@@ -21,7 +21,7 @@ from app.models.match import Match, MatchPlayer, MatchSource
 from app.models.player import Player
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel
 from app.models.round import Round, RoundPlayerStat
-from app.services import replay_util, util_model, util_values
+from app.services import replay_control_remote, replay_util, util_model, util_values
 from app.services import util_build_remote as remote
 from app.services.replay_control_remote import ControlClient, Conflict, Unreachable, WorkerGone
 
@@ -37,12 +37,12 @@ class Client:
         self.failure = None
         self.conflict = None
 
-    def util_have(self, rows, obs=(), *, prune=False, ref=None):
-        self.calls.append(("have", dict(rows=list(rows), obs=list(obs), prune=prune, ref=ref)))
+    def util_have(self, rows, obs=None, *, prune=False, ref=None):
+        self.calls.append(("have", dict(rows=list(rows), obs=None if obs is None else list(obs), prune=prune, ref=ref)))
         if self.failure == "have":
             raise Unreachable("offline")
         return {"missing_rows": list(rows) if self.missing_rows is None else list(self.missing_rows),
-                "missing_obs": list(obs) if self.missing_obs is None else list(self.missing_obs)}
+                "missing_obs": list(obs or []) if self.missing_obs is None else list(self.missing_obs)}
 
     def util_rounds(self, rows, *, ref=None):
         self.calls.append(("rounds", dict(rows=list(rows), ref=ref)))
@@ -71,6 +71,9 @@ def env(monkeypatch):
               Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel)
     Base.metadata.create_all(engine, tables=[m.__table__ for m in tables])
     monkeypatch.setattr(remote, "settings", SimpleNamespace(util_build_remote=True, demo_mode=False))
+    monkeypatch.setattr(replay_control_remote.settings, "replay_control_remote", True)
+    monkeypatch.setattr(replay_control_remote.settings, "replay_worker_url", "https://synthetic.invalid")
+    monkeypatch.setattr(replay_control_remote.settings, "demo_mode", False)
     monkeypatch.setattr(replay_util.Freshness, "preload", lambda *a: None)
     monkeypatch.setattr(replay_util.Freshness, "current", lambda *a: True)
     failures = []
@@ -256,7 +259,7 @@ def non_replay_matches(env, count):
 def test_refit_only_loads_missing_observations_across_cycles(env, monkeypatch):
     put_rows(env)
     non_replay_matches(env, remote.OBS_MATCHES_PER_CYCLE + 2)
-    all_missing = [remote.obs_key(mid, 1, mid) for mid in range(2, remote.OBS_MATCHES_PER_CYCLE + 4)]
+    all_missing = list(remote._observation_keys(env.db, {1}))
     env.client.missing_obs = all_missing[:-1]
     loads = []
     def observations(db, excluded, *, by_match, match_ids):
@@ -295,6 +298,189 @@ def test_retry_backoff_and_three_try_cap(env):
         cycle(env, NOW + offset)
     assert len(env.client.sent("have")) == 3
     assert list(env.state.tries.values()) == [3]
+
+
+def test_three_changed_preparations_do_not_spend_build_tries(env, monkeypatch):
+    put_rows(env)
+    original = remote._round_entries
+
+    def changed(*args):
+        raise remote._Changed("synthetic input moved")
+
+    monkeypatch.setattr(remote, "_round_entries", changed)
+    keys = []
+    for offset in range(3):
+        cycle(env, NOW + offset)
+        keys.append(env.state.key)
+        assert env.state.phase == "idle"
+    assert len(set(keys)) == 1
+    monkeypatch.setattr(remote, "_round_entries", original)
+    cycle(env, NOW + 3)
+    assert len(env.client.sent("open")) == 1
+    assert env.state.tries == {keys[0]: 1}
+    assert not env.state.gave_up and not env.failures
+
+
+def test_values_only_have_leaves_observation_cache_alone(env):
+    put_rows(env)
+    cycle(env)
+    assert env.client.sent("have")[0]["obs"] is None
+    assert env.client.sent("open")[0]["obs"] == []
+
+
+@pytest.mark.parametrize("obs", [None, "omitted"])
+def test_client_have_preserves_unspecified_observations(monkeypatch, obs):
+    client = ControlClient("synthetic.invalid")
+    bodies = []
+    monkeypatch.setattr(client, "_post", lambda route, body: bodies.append(body) or {})
+    if obs == "omitted":
+        client.util_have([], prune=True)
+    else:
+        client.util_have([], None, prune=True)
+    assert bodies[0].get("obs") is None
+
+
+def test_worker_store_have_none_keeps_observation_files(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(remote.WEBAPP.parent))
+    from replay_worker.server import Settings, UtilStore
+
+    store = UtilStore(Settings(temp_root=tmp_path, workflow_slug="synthetic", render_api_key="synthetic"))
+    store.put_round("old", b"{}")
+    store.put_obs("cached", b"[]")
+    assert store.have([], None, prune=True) == {"missing_rows": [], "missing_obs": []}
+    assert (store.root / "obs" / "cached.json").read_bytes() == b"[]"
+    assert not (store.root / "rounds" / "old.json").exists()
+
+
+@pytest.mark.parametrize("model,identity,field,value", [
+    (Round, 101, "outcome", "Team B Elimination Win"),
+    (Round, 102, "plant_time", 21.0),
+    (Round, 101, "round_number", 3),
+    (Round, 101, "planted", True),
+    (Round, 102, "exploded", True),
+    (Round, 102, "defused", False),
+    (Round, 102, "defuse_time", 37.0),
+    (MatchPlayer, 11, "team", "TEAM_2"),
+    (KillEvent, 101, "event_time_seconds", 19.0),
+    (KillEvent, 101, "killer_match_player_id", 12),
+    (KillEvent, 101, "death_match_player_id", 11),
+    (KillEvent, 101, "round_id", 102),
+])
+def test_observation_key_covers_estimator_fields(model, identity, field, value):
+    from tests.critutil.test_util_model_refit import synthetic_db
+
+    db = synthetic_db()
+    engine = db.get_bind()
+    try:
+        before = {mid: key for key, mid in remote._observation_keys(db, {6}).items()}
+        setattr(db.get(model, identity), field, value)
+        db.commit()
+        after = {mid: key for key, mid in remote._observation_keys(db, {6}).items()}
+        assert before.keys() == after.keys()
+        assert {mid for mid in before if before[mid] != after[mid]} == {1}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_shard_changed_between_preparation_and_load_abandons(env, monkeypatch):
+    put_rows(env)
+    non_replay_matches(env, 1)
+    original = env.client.util_have
+    loads = []
+
+    def changed(*args, **kwargs):
+        env.db.get(Round, 2).plant_time = 25.0
+        env.db.commit()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(env.client, "util_have", changed)
+    monkeypatch.setattr(util_model, "load_observations", lambda *a, **kw: loads.append(1) or {})
+    cycle(env)
+    assert not env.client.sent("open") and not env.client.sent("obs")
+    assert not loads and not env.failures
+    assert env.state.phase == "idle"
+    assert all(n == 0 for n in env.state.tries.values())
+
+
+def test_shard_key_and_observations_share_a_separate_snapshot(env, monkeypatch):
+    put_rows(env)
+    non_replay_matches(env, 1)
+    original_keys = remote._observation_keys
+    reads = []
+
+    def keys(db, excluded, match_ids=None):
+        if match_ids is not None:
+            reads.append(("key", db))
+        return original_keys(db, excluded, match_ids)
+
+    def observations(db, *args, **kwargs):
+        assert db is not env.db
+        assert db.in_transaction()
+        assert reads[-1] == ("key", db)
+        reads.append(("obs", db))
+        return {}
+
+    def send(entries, **kwargs):
+        assert not reads[-1][1].in_transaction()
+        assert not env.db.in_transaction()
+        return {}
+
+    monkeypatch.setattr(remote, "_observation_keys", keys)
+    monkeypatch.setattr(util_model, "load_observations", observations)
+    monkeypatch.setattr(env.client, "util_obs", send)
+    cycle(env)
+    assert len(env.client.sent("open")) == 1 and not env.failures
+
+
+def test_postgres_observation_keys_use_three_ordered_sql_aggregates():
+    from sqlalchemy.dialects.postgresql import dialect
+
+    queries = []
+    db = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=dialect()),
+                         execute=lambda query: queries.append(query) or [(1, "players", "rounds", "kills")])
+    assert remote._observation_keys(db, {6}) == {remote.obs_key(1, "players", "rounds", "kills"): 1}
+    assert len(queries) == 1
+    sql = str(queries[0].compile(dialect=dialect(), compile_kwargs={"literal_binds": True})).lower()
+    assert sql.count("md5(string_agg(") == 3
+    assert sql.count("group by") == 3
+    assert sql.count("order by") == 4  # each aggregate, then the matches
+    for field in ("match_players.team", "rounds.outcome", "rounds.plant_time", "rounds.defuse_time",
+                  "kill_events.event_time_seconds", "kill_events.killer_match_player_id",
+                  "kill_events.death_match_player_id"):
+        assert field in sql
+
+
+def test_concurrent_edit_after_key_check_abandons_shard(tmp_path, monkeypatch):
+    from tests.critutil.test_util_model_refit import synthetic_db
+
+    db = synthetic_db("sqlite:///" + (tmp_path / "snapshot.sqlite").as_posix())
+    engine = db.get_bind()
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+        state = remote.UtilState(excluded=frozenset({6}))
+        state.obs_keys = remote._observation_keys(db, state.excluded, {1})
+        expected = util_model.load_observations(db, state.excluded, by_match=True, match_ids={1})
+        db.rollback()
+        original = util_model.load_observations
+
+        def concurrent_edit(snapshot, *args, **kwargs):
+            # A separate connection commits after the key read, before the shard read.
+            with Session(engine) as writer:
+                writer.get(KillEvent, 101).event_time_seconds = 19.0
+                writer.commit()
+            actual = original(snapshot, *args, **kwargs)
+            assert actual == expected
+            return actual
+
+        monkeypatch.setattr(util_model, "load_observations", concurrent_edit)
+        with pytest.raises(remote._Changed, match="observation match changed"):
+            remote._observation_entries(db, state, list(state.obs_keys))
+        assert remote._observation_keys(db, state.excluded, {1}) != state.obs_keys
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_new_replay_without_util_changes_dispatch_identity(env):
@@ -416,7 +602,9 @@ def test_obs_version_is_lf_normalized_site_source_hash():
     for path in ("app/services/util_model.py", "app/services/state_replay.py", "app/scoring/plant_window.py"):
         digest.update((remote.WEBAPP / path).read_bytes().replace(b"\r\n", b"\n"))
     assert remote.OBS_VERSION == digest.hexdigest()[:8]
-    assert remote.obs_key(7, 11, 23) == f"7-11-23-{remote.OBS_VERSION}"
+    key = remote.obs_key(7, "players", "rounds", "kills")
+    assert key == f"7-{hashlib.sha256(b'players:rounds:kills').hexdigest()}-{remote.OBS_VERSION}"
+    assert len(key) <= 120
 
 
 def test_client_routes_and_open_conflict(monkeypatch):

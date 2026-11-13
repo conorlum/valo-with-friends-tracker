@@ -30,7 +30,7 @@ from app.models.match import Match, MatchPlayer, MatchSource  # noqa: E402
 from app.models.player import Player  # noqa: E402
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel  # noqa: E402
 from app.models.round import Round, RoundPlayerStat  # noqa: E402
-from app.services import replay_util, util_model, util_values  # noqa: E402
+from app.services import replay_control_remote, replay_util, util_model, util_values  # noqa: E402
 from app.services import util_build_remote as remote  # noqa: E402
 from app.services.replay_control_remote import ControlClient  # noqa: E402
 from tests.critutil.test_build import FRIEND, fake_gate, toy_corpus  # noqa: E402
@@ -78,6 +78,9 @@ def world(tmp_path, render, monkeypatch):
               Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel)
     Base.metadata.create_all(engine, tables=[m.__table__ for m in models])
     monkeypatch.setattr(remote, "settings", SimpleNamespace(util_build_remote=True, demo_mode=False))
+    monkeypatch.setattr(replay_control_remote.settings, "replay_control_remote", True)
+    monkeypatch.setattr(replay_control_remote.settings, "replay_worker_url", "https://synthetic.invalid")
+    monkeypatch.setattr(replay_control_remote.settings, "demo_mode", False)
     monkeypatch.setattr(replay_util.Freshness, "preload", lambda *a: None)
     monkeypatch.setattr(replay_util.Freshness, "current", lambda *a: True)
     monkeypatch.setattr(replay_util, "_replay_context", lambda db, ids: {m: c for m, c in ctx.items() if m in ids})

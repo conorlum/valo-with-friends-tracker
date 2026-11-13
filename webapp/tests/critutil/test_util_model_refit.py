@@ -20,8 +20,8 @@ from app.services import util_model
 GOLDEN = Path(__file__).with_name("data") / "refit_golden.json"
 
 
-def synthetic_db():
-    engine = create_engine("sqlite://")
+def synthetic_db(url="sqlite://"):
+    engine = create_engine(url)
     Base.metadata.create_all(engine, tables=[model.__table__ for model in
         (Player, Match, MatchPlayer, Round, KillEvent, Replay, UtilModel, Friendship)])
     db = Session(engine)
@@ -71,6 +71,25 @@ def test_pure_refit_matches_original_golden(db):
     excluded = util_model.replay_match_ids(db)
     observations = util_model.load_observations(db, excluded, by_match=True)
     assert util_model.refit_from(observations, excluded) == json.loads(GOLDEN.read_text())
+
+
+def test_compute_refit_with_empty_shard_matches_database_refit(db):
+    from app.critutil import corpus
+    from tests.critutil.test_corpus_codec import parts_for
+
+    db.add(Match(id=7, external_id="synthetic-empty", source=MatchSource.SCRAPED))
+    db.commit()
+    excluded = util_model.replay_match_ids(db)
+    observations = util_model.load_observations(db, excluded, by_match=True)
+    assert 7 not in observations and all(observations.values())
+    context = corpus.decode_context(corpus.encode_context(
+        {}, set(), None, [], excluded, True, parts_for({}, set(), [])))
+    shards = {str(mid): [[mid, obs]] for mid, obs in observations.items()}
+    shards["empty"] = [[7, []]]
+    result = corpus.compute(corpus.Inputs(context, {}, shards))
+    expected = util_model.refit_from(observations, excluded)
+    assert result["win"] == expected
+    assert result["values_key"] == corpus.values_key(context["key_parts"], expected["key"])
 
 
 @pytest.mark.parametrize("match_ids", [{1, 3}, set()])

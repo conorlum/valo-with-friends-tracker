@@ -29,6 +29,38 @@ WEBAPP = Path(__file__).resolve().parents[2]
 PATH = "/admin/replays/util/build"
 
 
+@pytest.fixture(autouse=True)
+def dispatcher_on(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    monkeypatch.setattr(settings, "replay_worker_url", "https://synthetic.invalid")
+
+
+@pytest.mark.parametrize("setting,value", [("replay_control_remote", False), ("replay_worker_url", None)])
+def test_dispatcher_off_restores_local_page_and_hides_admin(admin_site, monkeypatch, setting, value):
+    monkeypatch.setattr(settings, setting, value)
+    assert util_build_remote.enabled() is False
+    assert post(admin_site[0], "synthetic-admin-token") == (404, {"detail": "Not Found"})
+    calls = []
+    monkeypatch.setattr(replay_util, "_values_row", lambda db: None)
+    monkeypatch.setattr(replay_util, "values_current", lambda *a: False)
+    monkeypatch.setattr(util_rebuild, "request", lambda: calls.append(1))
+    assert replay_util.page_values(None) == (None, False)
+    assert calls == [1]
+
+
+def test_dispatcher_off_restores_local_tab(db, linked, monkeypatch):
+    monkeypatch.setattr(settings, "util_build_remote", True)
+    monkeypatch.setattr(settings, "replay_control_remote", False)
+    put_util(db, linked, 1)
+    calls = []
+    monkeypatch.setattr(util_model, "ensure", lambda db: calls.append("ensure") or {
+        "key": "synthetic-win", "excluded": [linked.match_id], "cells": {}})
+    monkeypatch.setattr(util_rebuild, "request", lambda: calls.append("request"))
+    assert replay_util.match_payload(db, linked)["updating"] is True
+    assert calls == ["ensure", "request"]
+
+
 def test_setting_defaults_off_and_reads_environment(monkeypatch):
     monkeypatch.delenv("UTIL_BUILD_REMOTE", raising=False)
     assert Settings(_env_file=None).util_build_remote is False

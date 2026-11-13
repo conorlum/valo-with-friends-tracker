@@ -256,12 +256,12 @@ def page_values(db) -> tuple[dict | None, bool]:
     """(the stored build or None, whether it is current), for a request: never builds. When it is stale or missing
     the caller shows what is stored. Local mode starts a background child (app/services/util_rebuild.py).
     Remote mode leaves dispatch to the control loop."""
-    from app.services import util_rebuild
+    from app.services import util_build_remote, util_rebuild
 
     stored = _values_row(db)
     if values_current(db, stored):
         return stored[1], True
-    if not settings.util_build_remote:
+    if not util_build_remote.enabled():
         util_rebuild.request()
     return (stored[1] if stored else None), False
 
@@ -463,6 +463,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
     from app.models.friendship import Friendship
     from app.models.replay import ReplayRoundUtil
     from app.services import replays as replay_service
+    from app.services import util_build_remote
     from app.services.replay_moments import tab_players
 
     rows = db.query(ReplayRoundUtil).filter(ReplayRoundUtil.replay_id == replay.id).all()
@@ -475,7 +476,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
     players = tab_players(page, friends)
     ctx = _replay_context(db, {replay.id}).get(replay.id)
     model = util_model.load(db)
-    build_local = not settings.util_build_remote and not read_only
+    build_local = not util_build_remote.enabled() and not read_only
     updating = read_only and model is None
     if ctx is not None and not util_model.covers(model, {ctx["match_id"]}):
         # this match was in the stored estimator's training: refit it first, or (not waiting) in the background

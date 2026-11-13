@@ -505,11 +505,15 @@ def compute(inputs: Inputs) -> dict:
     win = c["model"]
     if c["refit"]:
         by_match = {}
+        seen = set()
         for entries in inputs.obs.values():
             for match_id, observations in entries:
-                if match_id in by_match:
+                if match_id in seen:
                     raise ValueError("duplicate observation match")
-                by_match[match_id] = [tuple(o) for o in observations]
+                seen.add(match_id)
+                # Empty shards are cached, but the legacy loader omits empty matches.
+                if observations:
+                    by_match[match_id] = [tuple(o) for o in observations]
         win = util_model.refit_from(by_match, c["excluded"])
     stored = defaultdict(dict)
     for row in c["rows"]:
