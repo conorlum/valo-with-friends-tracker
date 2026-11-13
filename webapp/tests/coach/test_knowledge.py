@@ -84,6 +84,61 @@ def test_a_round_that_stores_no_events_has_no_signals_answer():
     assert knowledge.signals(None, "A", 20.0, toys.NAMES) is None
 
 
+@pytest.mark.parametrize("reason", ["trip_destroyed", "camera_destroyed"])
+@pytest.mark.parametrize("gun, mate, heard", [
+    ("Phantom", (8000, 5900), True),   # 30 m from the shooter
+    ("Phantom", (8000, 4500), False),  # 50 m: beyond the silenced gun's range
+    ("Vandal", (8000, 4500), True),
+    ("unknown", (8000, 4500), True),
+    (None, (8000, 4500), True),
+])
+def test_destroyed_signal_has_a_rough_place_only_if_the_shot_was_heard(reason, gun, mate, heard):
+    shot = {"k": "shot", "t": 10.0, "by": 5, "gun": gun}
+    v = view(toys.round_blob({**toys.ten(), 1: mate}, util=[shot]))
+    (signal,) = knowledge.signals({"A": [[10.0, 5, reason, "locate"]]}, "A", 10.0,
+                                 toys.NAMES, v)["signals"]
+    assert signal["class"] == "found" and signal["reason"] == reason
+    assert ("rough_place" in signal) is heard
+
+
+@pytest.mark.parametrize("change, heard", [
+    ({"t": 9.5}, True), ({"t": 10.05}, True),
+    ({"t": 9.49}, False), ({"t": 10.06}, False),
+    ({"by": 6}, False), ({"k": "cast"}, False),
+])
+def test_destroyed_signal_uses_only_the_destroyers_shot_in_the_window(change, heard):
+    shot = {"k": "shot", "t": 10.0, "by": 5, "gun": "Vandal", **change}
+    v = view(toys.round_blob(toys.ten(), util=[shot]))
+    (signal,) = knowledge.signals({"A": [[10.0, 5, "camera_destroyed", "locate"]]}, "A", 10.0,
+                                 toys.NAMES, v)["signals"]
+    assert ("rough_place" in signal) is heard
+
+
+@pytest.mark.parametrize("dead", [False, True])
+def test_destroyed_signal_without_a_hearing_living_teammate_never_requests_a_place(dead, monkeypatch):
+    shot = {"k": "shot", "t": 10.0, "by": 5, "gun": "Phantom"}
+    kills = [{"t": 9.0, "killer": 5, "victim": 1}] if dead else []
+    v = view(toys.round_blob({**toys.ten(), 1: (8000, 5900)}, kills=kills, util=[shot] if dead else []))
+
+    def no_rough_place(*args):
+        pytest.fail("an unheard destroying shot must not request a rough place")
+
+    monkeypatch.setattr(knowledge, "rough_place", no_rough_place)
+    (signal,) = knowledge.signals({"A": [[10.0, 5, "trip_destroyed", "locate"]]}, "A", 10.0,
+                                 toys.NAMES, v)["signals"]
+    assert "rough_place" not in signal
+
+
+def test_destroyed_signal_checks_hearing_at_the_shot_time():
+    shot = {"k": "shot", "t": 9.5, "by": 5, "gun": "Phantom"}
+    # The only listener within range dies between the shot and the destroyed-device event.
+    v = view(toys.round_blob({**toys.ten(), 1: (8000, 5900)},
+                            kills=[{"t": 9.75, "killer": 5, "victim": 1}], util=[shot]))
+    (signal,) = knowledge.signals({"A": [[10.0, 5, "camera_destroyed", "locate"]]}, "A", 10.0,
+                                 toys.NAMES, v)["signals"]
+    assert "rough_place" in signal
+
+
 @pytest.mark.parametrize("with_kind", [False, True])
 def test_round_6_haunt_exclusions_never_request_or_return_a_place(with_kind, monkeypatch):
     events = {"A": [[10.0, s, "haunt", "exclude"] if with_kind else [10.0, s, "haunt"]
@@ -109,11 +164,11 @@ def test_round_21_haunt_locates_have_places_but_the_exclusion_does_not():
 
 @pytest.mark.parametrize("reason, code, device", [
     ("haunt", "BountyHunter", "E_LoSReveal_Source_Reactivate"),
-    ("recon", "Hunter", "Q_SonarBolt"),
+    ("recon", "Hunter", "Q_SonarPing"),
 ])
 @pytest.mark.parametrize("with_kind", [False, True])
-def test_ruled_out_pulse_area_comes_from_its_own_active_device(reason, code, device, with_kind, monkeypatch):
-    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": code, "name": device,
+def test_ruled_out_pulse_area_comes_from_its_emitting_row(reason, code, device, with_kind, monkeypatch):
+    pulse = {"k": "ability", "t": 10.0, "t1": 12.0, "by": 0, "code": code, "name": device,
              "u": 2000, "v": 2000}
     # Enemy 5 is on B Site; expired, future and enemy-side devices are there too.
     util = [{**pulse, "t": 1.0, "t1": 7.0, "u": 8000, "v": 8000}, pulse,
@@ -135,11 +190,11 @@ def test_ruled_out_pulse_area_comes_from_its_own_active_device(reason, code, dev
     assert out["ruled_out"][0]["area"] != enemy_area
 
 
-@pytest.mark.parametrize("change", [None, {"t": 11.0}, {"t1": 9.0}, {"gone": 9.0},
+@pytest.mark.parametrize("change", [None, {"t": 11.0}, {"t": 9.0}, {"t": None},
                                     {"by": 5}, {"by": None}, {"u": None}, {"v": None},
                                     {"k": "cast"}, {"name": "Q_TetherGrenade"}])
-def test_ruled_out_pulse_without_a_usable_device_omits_area(change):
-    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
+def test_ruled_out_pulse_without_a_usable_source_omits_area(change):
+    pulse = {"k": "ability", "t": 10.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
              "name": "E_LoSReveal_Source_Reactivate", "u": 2000, "v": 2000}
     util = [] if change is None else [{**pulse, **change}]
     out = knowledge.signals({"A": [[10.0, 5, "haunt", "exclude"]]}, "A", 10.0, toys.NAMES,
@@ -147,12 +202,41 @@ def test_ruled_out_pulse_without_a_usable_device_omits_area(change):
     assert out["ruled_out"] == [{"t": 10.0, "name": toys.NAMES[5], "reason": "haunt"}]
 
 
-def test_ruled_out_pulse_with_ambiguous_devices_omits_area():
-    pulse = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
+def test_ruled_out_pulse_with_ambiguous_sources_omits_area():
+    pulse = {"k": "ability", "t": 10.0, "t1": 12.0, "by": 0, "code": "BountyHunter",
              "name": "E_LoSReveal_Source_Reactivate", "u": 2000, "v": 2000}
     v = view(toys.round_blob(toys.ten(), util=[pulse, {**pulse, "by": 1, "u": 8000, "v": 8000}]))
     out = knowledge.signals({"A": [[10.0, 5, "haunt", "exclude"]]}, "A", 10.0, toys.NAMES, v)
     assert "area" not in out["ruled_out"][0]
+
+
+def test_ruled_out_pulses_in_the_same_area_agree():
+    pulse = {"k": "ability", "t": 10.0, "by": 0, "code": "Hunter", "name": "Q_SonarPing",
+             "u": 2000, "v": 2000}
+    v = view(toys.round_blob(toys.ten(), util=[pulse, {**pulse, "by": 1, "u": 2100}]))
+    (signal,) = knowledge.signals({"A": [[10.0, 5, "recon", "exclude"]]}, "A", 10.0,
+                                 toys.NAMES, v)["ruled_out"]
+    assert signal["area"]["name"] == "A Site"
+
+
+@pytest.mark.parametrize("reason, code, source, device", [
+    ("recon", "Hunter", "Q_SonarPing", "Q_SonarBolt"),
+    ("haunt", "BountyHunter", "E_LoSReveal_Source_Reactivate", "E_Divebomb"),
+])
+@pytest.mark.parametrize("with_kind", [False, True])
+@pytest.mark.parametrize("pulse_time", [None, 9.99, 9.999, 10.001, 10.01])
+def test_pulse_area_uses_the_ping_instead_of_a_live_device(reason, code, source, device, with_kind, pulse_time):
+    bolt = {"k": "ability", "t": 8.0, "t1": 12.0, "by": 0, "code": code, "name": device,
+            "u": 8000, "v": 8000}
+    ping = {"k": "ability", "t": pulse_time, "t1": 10.5, "by": 0, "code": code, "name": source,
+            "u": 2000, "v": 2000}
+    v = view(toys.round_blob(toys.ten(), util=[bolt] + ([ping] if pulse_time is not None else [])))
+    row = [10.0, 5, reason] + (["exclude"] if with_kind else [])
+    (signal,) = knowledge.signals({"A": [row]}, "A", 10.0, toys.NAMES, v)["ruled_out"]
+    if pulse_time in (9.999, 10.001):
+        assert signal["area"]["name"] == "A Site"
+    else:
+        assert "area" not in signal
 
 
 def test_restricted_knife_is_roughly_placed_and_other_and_future_events_are_dropped():

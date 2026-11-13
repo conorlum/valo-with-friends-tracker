@@ -1,21 +1,53 @@
 """What a side knew of each enemy by a time, from map control's stored rows: `header["knew"]` (sightings, each
 with a place) and `header["knowledge_events"]` (time, slot, reason, and optionally kind). Only found and
 roughly_placed events are signals with a rough place: a quarter direction and a distance band from the nearest
-teammate. Ruled-out pulses may name the device's area, never the enemy's place. Lost-track events have no place;
+teammate, with destroyed devices requiring a heard shot. Ruled-out pulses may name the emitting source's area,
+never the enemy's place. Lost-track events have no place;
 other events are dropped.
 The spec's "knowable": team knowledge, perfect comms."""
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
+from app.control.utility import PULSE_SOURCES
 from app.replays import control_reasons
-from app.replays.destroyed import DESTROYABLE
 
 # How closely a signal places an enemy (the owner, 2026-10-12): a sound tells you the direction to within a 90
 # degree quarter and the distance to within 5 m, so the answer is a piece of a ring around the teammate, never
 # a spot or a named area. The quarters and the bands are fixed, so neither gives the exact value away.
 ROUGH_BAND_M = 10.0         # the band's width: its middle is within 5 m of any distance in it
+# Read the engine's own ranges without importing the control engine into the coach.
+_HEARING = json.loads((Path(__file__).parents[1] / "control" / "hearing.json").read_text(encoding="utf-8"))
+
+
+def _heard_destroying_shot(view, side: str, enemy: int, t: float) -> bool:
+    """A shot by the destroyer in the engine's destruction window, heard by a living teammate.
+
+    RoundView has no nearsight/deafening state; this uses the recorded positions and gun range.
+    """
+    for shot in view.blob.get("util") or []:
+        if shot.get("k") != "shot" or shot.get("by") != enemy or shot.get("t") is None:
+            continue
+        when = float(shot["t"])
+        if not t - 0.5 <= when <= t + 0.05:
+            continue
+        there = view.position(enemy, when)
+        if there.get("u") is None or there.get("v") is None:
+            continue
+        gun = shot.get("gun")
+        ranges, default = _HEARING["guns"], _HEARING["default_gun_m"]
+        reach = max(ranges.values(), default=default) if gun is None else ranges.get(gun, default)
+        for mate in view.living(side, when):
+            here = view.position(mate, when)
+            if here.get("u") is None or here.get("v") is None:
+                continue
+            distance = view.metres(math.hypot(there["u"] - here["u"], there["v"] - here["v"]))
+            if distance <= reach:
+                return True
+    return False
 
 
 def rough_place(view, side: str, enemy: int, t: float) -> dict | None:
@@ -46,26 +78,25 @@ def rough_place(view, side: str, enemy: int, t: float) -> dict | None:
 
 
 def _pulse_area(view, side: str, reason: str, t: float) -> dict | None:
-    """The active own-side device's callout, without reading any player's position.
+    """The own-side emitting pulse's callout, without reading any player's position.
 
-    Events store no source id. If concurrent devices leave more than one possible position, omit the area.
+    Events store no source id and round times to milliseconds. If matching sources disagree, omit the area.
     """
-    positions = set()
-    for device in view.blob.get("util") or []:
-        if device.get("k") != "ability" or DESTROYABLE.get((device.get("code"), device.get("name"))) != reason:
+    areas = []
+    for source in view.blob.get("util") or []:
+        if source.get("k") != "ability" or PULSE_SOURCES.get(f"{source.get('code')}_{source.get('name')}") != reason:
             continue
-        owner = device.get("by")
+        owner = source.get("by")
         if owner not in view.slots or view.side(owner) != side:
             continue
-        start = device.get("t")
-        ends = [device[key] for key in ("t1", "gone") if device.get(key) is not None]
-        if start is None or not float(start) <= t <= min(ends, default=view.t_end):
+        start = source.get("t")
+        if start is None or abs(float(start) - t) > 0.002:
             continue
-        if device.get("u") is not None and device.get("v") is not None:
-            positions.add((device["u"], device["v"]))
-    if len(positions) != 1:
+        if source.get("u") is not None and source.get("v") is not None:
+            areas.append(view.area(source["u"], source["v"]))
+    if not areas or any(area != areas[0] for area in areas):
         return None
-    return view.area(*next(iter(positions)))
+    return areas[0]
 
 
 def signals(events: dict | None, side: str, t: float, names: dict[int, str], view=None) -> dict | None:
@@ -87,7 +118,9 @@ def signals(events: dict | None, side: str, t: float, names: dict[int, str], vie
             out[event_class].append(signal)
             continue
         signal["class"] = event_class
-        rough = rough_place(view, side, int(row[1]), float(row[0])) if view is not None else None
+        placeable = view is not None and (row[2] not in ("trip_destroyed", "camera_destroyed")
+                                         or _heard_destroying_shot(view, side, int(row[1]), float(row[0])))
+        rough = rough_place(view, side, int(row[1]), float(row[0])) if placeable else None
         if rough is not None:
             signal["rough_place"] = rough
         out["signals"].append(signal)
