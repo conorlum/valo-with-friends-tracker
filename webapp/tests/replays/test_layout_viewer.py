@@ -107,6 +107,11 @@ def test_a_pending_third_layout_is_shown_on_the_layout_before_it_not_on_base(db,
     assert context["layout"] == {"id": "Toy@13.12", "state": "layout_pending", "patch": "13.12"}
     assert context["asset"] == "Toy_13_10"
     assert context["control"] == rc.map_layer("Toy_13_10")
+    viewer = routes.viewer_context(request(), db, toy)
+    # R2-5: the stale round overlay stays; the match-level panels, whose routes 404 a pending layout, don't.
+    assert viewer["control"] and not viewer["panels"]
+    toy.game_branch = "release-13.10"
+    assert routes.viewer_context(request(), db, toy)["panels"] is True
 
 
 def test_a_layout_patch_under_ten_keeps_its_zero(db, toy, layout_assets):

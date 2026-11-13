@@ -2,7 +2,7 @@
 
 import hashlib
 import logging
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, namedtuple
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from math import inf
@@ -11,12 +11,12 @@ from sqlalchemy import and_, func, or_
 
 from app.coach import areas
 from app.config import settings
-from app.models.replay import Replay, ReplayRound, ReplayRoundControl, ReplayRoundWallShare
+from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayRoundWallShare
 from app.models.site_events import SiteEvent
 from app.replays import control_format as cf
 from app.replays import format as fmt
 from app.replays import layouts
-from app.services import control_heights, replay_control, replay_reparse_auto, site_health
+from app.services import replay_control, replay_reparse_auto, site_health
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ STEP_ROWS = 20  # ~0.55 s a round over the external DB: ~11 s a pass (W14)
 MIN_REPLAYS = 4  # D12
 MIN_BASELINE_REPLAYS = MIN_REPLAYS  # F8: a baseline from one replay judges nothing
 THRESHOLD_POINTS = 0.5  # D12
+RECHECK_S = 3600  # R2-4: how often a NOT_CURRENT share's key is looked at again
 EVALUATE_EVERY_S = 600  # evaluate on a quiet site too: a deleted replay can drop a pool below its alarm (S10)
 
 
@@ -77,30 +78,37 @@ def round_share(control_data: bytes, round_blob: dict) -> tuple[int, int]:
 NOT_CURRENT = ""   # a share measured on control that isn't current for the replay's layout: never counted
 
 
+_Measured = namedtuple("_Measured", "round_number fingerprint")   # what _Keys reads of a control row
+
+
 class _Keys:
     """Per step: the asset key a control row's share is filed under. The replay's layout key when the row's
     fingerprint is that layout's current one, else NOT_CURRENT (S9, 2026-11-12): a row computed before a redraw
     measured the old walk mask, so it is never pooled under the new layout. Recomputed control gets a new
     fingerprint, and its share is then measured again."""
 
-    def __init__(self, session):
+    def __init__(self, session, replays):
+        """`replays`: the batch's replays. Their side groups are read in one query (R2-10: one query per replay
+        cost ~65 ms each over the external DB); the pinned geometry carries the heights, so no digest read."""
         self.session = session
-        self.heights = None
-        self.groups, self.contexts = {}, {}
+        self.contexts = {}
+        self.groups = {replay.id: {} for replay in replays}
+        if self.groups:
+            for rid, slot, group in (session.query(ReplayPlayer.replay_id, ReplayPlayer.slot,
+                                                   ReplayPlayer.side_group)
+                                     .filter(ReplayPlayer.replay_id.in_(list(self.groups)))):
+                if group:
+                    self.groups[rid][slot] = group
 
     def __call__(self, replay, control) -> str:
         selection = replay_control.layout_of(replay)
         if selection.state != "ok" or selection.layout is None:
             return NOT_CURRENT
         key = selection.layout.asset_key
-        if self.heights is None:
-            self.heights = control_heights.active_digests(self.session)
-        if replay.id not in self.groups:
-            self.groups[replay.id] = replay_control.side_groups(self.session, replay)
         if key not in self.contexts:
             self.contexts[key] = replay_control.resolve_current_geometry(self.session, key)
         current = replay_control.round_fingerprint(replay, self.groups[replay.id], control.round_number,
-                                                   self.heights, context=self.contexts[key])
+                                                   context=self.contexts[key])
         return key if current is not None and current == control.fingerprint else NOT_CURRENT
 
 
@@ -219,7 +227,7 @@ def evaluate(db) -> dict:
             site_health.record("map_layout_walls", key,
                                f"{map_name} patch {patch_name}: positions inside walls rose {rise:.3f} points "
                                f"over {asset_key}'s baseline across {len(pool.replays)} replays", context,
-                               dedupe=_seen_evidence)
+                               dedupe=_seen_evidence, refresh=True)
             raised.add(key)
     stored = {key for (key,) in db.query(SiteEvent.key).filter(SiteEvent.kind == "map_layout_walls")}
     for key in sorted((stored | _last_raised) - raised):
@@ -253,7 +261,30 @@ def step(session_factory, now, *, control_in_flight: int) -> dict:
                 .order_by(ReplayRoundControl.replay_id, ReplayRoundControl.round_number)
                 .limit(STEP_ROWS).all())
         computed_at = datetime.fromtimestamp(now, timezone.utc)
-        key_of = _Keys(session)
+        # R2-4 (2026-11-12): a share filed NOT_CURRENT while its layout was pending can become current with the
+        # same control fingerprint (a redraw that leaves control's inputs as they were). Its measurement is still
+        # right, so only its key is looked at again: at most once every RECHECK_S per row, oldest first, with
+        # whatever room the batch has left, so rows that stay ineligible never crowd out new work.
+        recheck = []
+        if len(rows) < STEP_ROWS:
+            recheck = (session.query(ReplayRoundWallShare, Replay)
+                       .join(ReplayRoundControl,
+                             and_(ReplayRoundControl.replay_id == ReplayRoundWallShare.replay_id,
+                                  ReplayRoundControl.round_number == ReplayRoundWallShare.round_number,
+                                  ReplayRoundControl.fingerprint == ReplayRoundWallShare.control_fingerprint))
+                       .join(Replay, Replay.id == ReplayRoundWallShare.replay_id)
+                       .filter(ReplayRoundControl.status == "ok", ReplayRoundWallShare.asset_key == NOT_CURRENT,
+                               ReplayRoundWallShare.computed_at
+                               <= datetime.fromtimestamp(now - RECHECK_S, timezone.utc))
+                       .order_by(ReplayRoundWallShare.computed_at, ReplayRoundWallShare.replay_id,
+                                 ReplayRoundWallShare.round_number)
+                       .limit(STEP_ROWS - len(rows)).all())
+        key_of = _Keys(session, {replay for _, replay, _ in rows} | {replay for _, replay in recheck})
+        refiled = 0
+        for share, replay in recheck:
+            key = key_of(replay, _Measured(share.round_number, share.control_fingerprint))
+            refiled += key != share.asset_key
+            share.asset_key, share.computed_at = key, computed_at
         for control, replay, data in rows:
             try:
                 inside, total = round_share(control.data, fmt.decode_blob(data)) if data is not None else (0, 0)
@@ -266,6 +297,6 @@ def step(session_factory, now, *, control_in_flight: int) -> dict:
                 asset_key=key_of(replay, control),
                 control_fingerprint=control.fingerprint, inside=inside, total=total, computed_at=computed_at))
         session.commit()
-        return {"computed": len(rows)}
+        return {"computed": len(rows) + refiled}
     finally:
         session.close()

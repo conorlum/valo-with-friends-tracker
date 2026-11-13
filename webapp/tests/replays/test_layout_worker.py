@@ -324,3 +324,21 @@ def test_unknown_layout_waits_before_the_round_is_sent_again(factory, db, linked
     remote.cycle(factory, worker, state, now=1 + remote.BACKOFF_S + 1)
     assert sent() == 2
     assert not state.tries
+
+
+def test_a_refused_layout_holds_the_rest_of_the_same_batch(factory, db, linked, monkeypatch):
+    """R2-9 (2026-11-12): the refusal of a batch's first round holds that layout's other rounds in the same cycle."""
+    planned = rc.plan(db, rounds={1, 2})
+    assert len(planned) == 2
+    monkeypatch.setattr(rc, 'plan', lambda *a, **kw: list(planned))
+    worker, state = FakeWorker(), remote.State()
+    refused = []
+
+    def refuse(task):
+        refused.append(task['key'])
+        raise remote.UnknownLayout(task['map'])
+    worker.submit = refuse
+    counts = remote.cycle(factory, worker, state, now=0)
+    assert len(refused) == 1
+    assert counts['layout_waiting'] == 1
+    assert not state.tries

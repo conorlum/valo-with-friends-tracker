@@ -52,6 +52,11 @@ def run(task: dict) -> dict:
                 for _, from_key in theirs["regions"]["pool"]:
                     if from_key not in known:
                         raise ValueError(f"layout {from_key} is absent from this worker")
+                # R2-2 (2026-11-12): the manifest lists every layout's mask, so an image one redraw behind knows
+                # the target and the pool yet lacks the newest mask: that is deploy skew, not a try to spend.
+                for mask_key, _ in theirs["regions"].get("masks", []):
+                    if mask_key not in known:
+                        raise ValueError(f"layout {mask_key} is absent from this worker")
                 regions = hi.regions_for(name, theirs["regions"]["pool"])
                 if regions is None:
                     raise ValueError(f"layout regions for {name} are absent from this worker")

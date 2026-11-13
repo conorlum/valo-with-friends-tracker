@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy.orm import load_only
 
 from app.models.replay import ReplayGap, ReplayRoundControl, ReplayRoundGapRun
-from app.replays import choke_assets
+from app.replays import choke_assets, layouts
 from app.replays import control_format as cf
 from app.services import control_heights, replay_control
 
@@ -64,7 +64,13 @@ def gap_fingerprint(control_fingerprint: str, asset_key: str, *, chokes=_UNSET, 
         chokes = choke_assets.asset_hash(asset_key)
     if hearing is _UNSET:
         hearing = hearing_hash()
-    return _hex16(f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}")
+    text = f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}"
+    if layouts.map_of(asset_key) != asset_key:
+        # R2-3 (2026-11-12): a later layout's gap rows are stored under its own key, so its run must differ from
+        # an earlier layout's even when the control inputs and the chokes are the same (a bullet-only redraw).
+        # Base keys add nothing: their fingerprints stay byte-identical.
+        text += f"|{asset_key}"
+    return _hex16(text)
 
 
 class Freshness:
