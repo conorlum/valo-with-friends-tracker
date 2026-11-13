@@ -135,6 +135,49 @@ def test_changed_fingerprint_recomputes_and_upserts(db, factory, replay):
     assert (share.inside, share.total, share.asset_key, share.control_fingerprint) == (2, 4, "Ascent", first)
     assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW
     assert walls.step(factory, NOW + 1, control_in_flight=0) == {"computed": 0}
+
+
+def test_a_not_current_share_is_refiled_when_its_layout_becomes_current_with_the_same_control(
+        db, factory, replay, monkeypatch):
+    """R2-4 (2026-11-12): filed NOT_CURRENT while pending; the redraw lands and control's fingerprint is the same
+    (its inputs didn't change). The share is refiled under the key, no sooner than RECHECK_S, without re-measuring."""
+    fingerprint = current_fingerprint(db, replay)
+    put_round(db, replay, fingerprint=fingerprint)
+    real = walls.replay_control.layout_of
+    monkeypatch.setattr(walls.replay_control, "layout_of",
+                        lambda r: walls.replay_control.layouts.Selection("layout_pending", None))
+    assert walls.step(factory, NOW, control_in_flight=0) == {"computed": 1}
+    monkeypatch.setattr(walls.replay_control, "layout_of", real)
+    monkeypatch.setattr(walls, "round_share", lambda *a: pytest.fail("a refile never re-measures"))
+    assert walls.step(factory, NOW + walls.RECHECK_S - 1, control_in_flight=0) == {"computed": 0}
+    db.expire_all()
+    assert db.get(ReplayRoundWallShare, (replay.id, 1)).asset_key == walls.NOT_CURRENT
+    assert walls.step(factory, NOW + walls.RECHECK_S, control_in_flight=0) == {"computed": 1}
+    db.expire_all()
+    share = db.get(ReplayRoundWallShare, (replay.id, 1))
+    assert (share.asset_key, share.inside, share.total) == ("Ascent", 2, 4)
+
+
+def test_a_still_ineligible_share_moves_to_the_back_of_the_recheck(db, factory, replay, monkeypatch):
+    put_round(db, replay, fingerprint=current_fingerprint(db, replay))
+    monkeypatch.setattr(walls.replay_control, "layout_of",
+                        lambda r: walls.replay_control.layouts.Selection("layout_unknown", None))
+    walls.step(factory, NOW, control_in_flight=0)
+    assert walls.step(factory, NOW + walls.RECHECK_S, control_in_flight=0) == {"computed": 0}
+    db.expire_all()
+    share = db.get(ReplayRoundWallShare, (replay.id, 1))
+    assert share.asset_key == walls.NOT_CURRENT
+    assert share.computed_at.replace(tzinfo=timezone.utc) == datetime.fromtimestamp(NOW + walls.RECHECK_S,
+                                                                                    timezone.utc)
+
+
+def test_a_batch_reads_side_groups_in_one_query(db, factory, replay, monkeypatch):
+    """R2-10 (2026-11-12): no per-replay side-group or height-digest read inside the dispatcher's pass."""
+    put_round(db, replay, fingerprint=current_fingerprint(db, replay))
+    monkeypatch.setattr(walls.replay_control, "side_groups", lambda *a: pytest.fail("read per replay"))
+    assert walls.step(factory, NOW, control_in_flight=0) == {"computed": 1}
+    db.expire_all()
+    assert db.get(ReplayRoundWallShare, (replay.id, 1)).asset_key == "Ascent"
     control = db.get(ReplayRoundControl, (replay.id, 1))
     control.fingerprint, control.data = "second", control_data((0, 1))
     db.commit()
@@ -511,15 +554,38 @@ def test_a_dedupe_skips_the_flush_of_a_cleared_alarm_with_the_same_evidence(db, 
     db.query(SiteEvent).filter(SiteEvent.kind == "map_layout_walls").delete()   # a PR's resolved entry
     db.commit()
     site_health.record("map_layout_walls", "Ascent:13.10", "rose", {"evidence": "e1"},
-                       dedupe=walls._seen_evidence)
+                       dedupe=walls._seen_evidence, refresh=True)
     site_health.flush(session_factory=factory)
     db.expire_all()
-    assert db.get(SiteEvent, ("map_layout_walls", "Ascent:13.10")) is None
+    assert db.get(SiteEvent, ("map_layout_walls", "Ascent:13.10")) is None, "a refresh never brings a row back"
     site_health.record("map_layout_walls", "Ascent:13.10", "rose", {"evidence": "e2"},
                        dedupe=walls._seen_evidence)
     site_health.flush(session_factory=factory)
     db.expire_all()
     assert db.get(SiteEvent, ("map_layout_walls", "Ascent:13.10")) is not None
+
+
+def test_a_standing_alarm_and_its_mark_outlive_retention_while_the_evidence_stands(db, factory, monkeypatch):
+    """R2-8 (2026-11-12): the same evidence, reported again, moves last_seen and the mark forward without
+    counting, so retention (KEEP_DAYS) drops neither the alarm nor the mark that keeps a cleared one cleared."""
+    from datetime import timedelta
+
+    from app.models.site_events import SiteEventMark
+
+    key = ("map_layout_walls", "Ascent:13.10")
+    start = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    clock = {"now": start}
+    monkeypatch.setattr(site_health, "_now", lambda: clock["now"])
+    for day in range(0, 2 * site_health.KEEP_DAYS, 7):
+        clock["now"] = start + timedelta(days=day)
+        site_health.record(*key, "rose", {"evidence": "e1"}, dedupe=walls._seen_evidence, refresh=True)
+        site_health.flush(session_factory=factory)
+    db.expire_all()
+    row = db.get(SiteEvent, key)
+    assert row is not None and row.count == 1
+    assert site_health._aware(row.last_seen) == clock["now"]
+    mark = db.query(SiteEventMark).filter(SiteEventMark.kind == key[0], SiteEventMark.key == key[1]).one()
+    assert site_health._aware(mark.updated_at) == clock["now"]
 
 
 def test_a_key_raised_last_pass_and_still_queued_is_resolved(db, alarm, monkeypatch):
@@ -597,4 +663,5 @@ def test_cycle_evaluates_first_pass_and_after_computation(db, factory, monkeypat
     state = remote.State()
     for i in range(4):
         remote.cycle(factory, None, state, now=NOW + i)
-        assert len(evaluated) == [1, 1, 2, 2][i]
+        # R2-11: a pass the backfill skipped (an upload, control in flight) never evaluates, not even the first
+        assert len(evaluated) == [0, 1, 2, 2][i]

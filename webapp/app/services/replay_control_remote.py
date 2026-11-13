@@ -947,8 +947,10 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
             counts["walls_computed"] = walls.get("computed", 0)
             counts["walls_skipped"] = int("skipped" in walls)
-            if walls.get("computed") or state.walls_evaluated_at is None \
-                    or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S:
+            # R2-11 (2026-11-12): evaluation (which may decode callout rounds) runs only on a pass the backfill
+            # found quiet: never during an upload or with control in flight, on the dispatcher's own time.
+            if "skipped" not in walls and (walls.get("computed") or state.walls_evaluated_at is None
+                                           or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S):
                 evaluation = session_factory()
                 try:
                     unjudged = layout_walls.evaluate(evaluation)
