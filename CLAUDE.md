@@ -167,8 +167,8 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   minutes. `scripts/critical_util.py fit-win | refresh | measure | show` (through `with_friends_db.py`; `measure` is
   read-only).
 - The build and the refit run on the replay worker as the `util` Workflow task, not on the site (`UTIL_BUILD_REMOTE`,
-  on in `render.yaml`; `app/services/util_build_remote.py`, DB-free build in `app/critutil/corpus.py`). The control
-  loop decides: the build is stale and util rows have been quiet for 120 s (or the owner asked), it pushes only the
+  on in `render.yaml`; `app/services/util_build_remote.py`, DB-free build in `app/critutil/corpus.py`). Its own `util-build`
+  loop thread (on only with the map-control dispatcher) decides: the build is stale and util rows have been quiet for 120 s (or the owner asked), it pushes only the
   rounds and observations the worker lacks, opens the build, follows it, then checks and stores "values" (and "win"
   after a refit). Up to 3 tries per inputs key. With the switch on, the pages never start the local
   `util_rebuild` child; with it off that child is the old path. No connection or transaction is held through a

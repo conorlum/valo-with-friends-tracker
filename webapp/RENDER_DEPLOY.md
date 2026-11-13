@@ -508,7 +508,7 @@ build's inputs. `/health` reports `util.digest`: the digest over every file the 
 or no build is opened (a mismatch over 30 min is a Site health row, `remote:digest`). The worker image copies every
 file the digest covers.
 
-**What the merge sets off.** On the restart the control loop sees util rows that are stale for the new code. Once
+**What the merge sets off.** On the restart the util-build loop sees util rows that are stale for the new code. Once
 util rows have been quiet for 120 s it pushes what the worker lacks and opens the first build; the site then checks
 and stores it. The local `util_rebuild` child no longer starts on the friends site. Expect the first build to take
 minutes (the worker's limit is 1500 s); up to 3 tries per inputs key, and a failure is a `util_build_failed`

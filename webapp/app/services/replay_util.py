@@ -255,7 +255,7 @@ def values_current(db, stored: tuple[str, dict] | None = None, rows: list[tuple]
 def page_values(db) -> tuple[dict | None, bool]:
     """(the stored build or None, whether it is current), for a request: never builds. When it is stale or missing
     the caller shows what is stored. Local mode starts a background child (app/services/util_rebuild.py).
-    Remote mode leaves dispatch to the control loop."""
+    Remote mode leaves dispatch to the util-build loop."""
     from app.services import util_build_remote, util_rebuild
 
     stored = _values_row(db)
@@ -456,7 +456,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
     When the stored build (or the estimator) is out of date, `wait` rebuilds it first. With `wait=False`,
     the rebuild starts in the background (util_rebuild) and the body says `updating`,
     valued meanwhile with the stored estimator and weights. Remote mode always reads the stored products
-    and leaves rebuilding to the control loop, including when `wait` is requested. `read_only` uses stored
+    and leaves rebuilding to the util-build loop, including when `wait` is requested. `read_only` uses stored
     products and reports `updating` when stale, with every build and request disabled."""
     from sqlalchemy import or_
 
