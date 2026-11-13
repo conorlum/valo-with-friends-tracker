@@ -455,7 +455,9 @@ def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | 
             upload.status, upload.error = HELD, note
             db.commit()
         return upload
-    if now - created > (QUEUED_STUCK_AFTER if status == "queued" else STUCK_AFTER):
+    from app.services import deploy_drain
+    elapsed = now - created - deploy_drain.drained(db, created, now, now)
+    if elapsed > (QUEUED_STUCK_AFTER if status == "queued" else STUCK_AFTER):
         return _finish(db, upload, "failed", "failed: please re-upload")
     return upload
 
@@ -495,7 +497,9 @@ def collect_unfinished(session_factory, worker: WorkerClient, now: datetime | No
             if upload.worker_job_id is None:
                 created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(
                     tzinfo=timezone.utc)
-                if now - created > STUCK_AFTER:
+                from app.services import deploy_drain
+                elapsed = now - created - deploy_drain.drained(session, created, now, now)
+                if elapsed > STUCK_AFTER:
                     _finish(session, upload, "failed", "failed: please re-upload")
                     finished += 1
                 session.rollback()

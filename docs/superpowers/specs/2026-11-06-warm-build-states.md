@@ -56,6 +56,11 @@ again whenever it is released.
 
 ## The site
 
+While a drain is active the site sends no round (`_submit` and each `_send`); in-flight rounds are still
+collected; a round answered `drain` is resent later with no try. Tests in `test_drain_pause.py`:
+`test_submit_pause`, `test_send_stops_mid_batch`, `test_collect_during_pause`, and
+`test_control_drain_failure_is_free`.
+
 A round's running backstop comes from the worker's admission answer (`runner`: `workflow` or `local`), never from a
 `/health` read (`_admitted_stale_s`; `test_a_rounds_backstop_comes_from_the_workers_admission_answer_whatever_health_says`).
 The D3 alarm compares `vanished` counts within one worker `boot` and keeps earlier boots' counts for the errors page.

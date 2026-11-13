@@ -75,6 +75,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 
@@ -85,7 +86,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import map_feature_artifacts as fa
 from app.services import control_feature_artifacts
-from app.services import control_heights, layout_walls, replay_control, replay_gaps
+from app.services import control_heights, deploy_drain, layout_walls, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
@@ -211,9 +212,22 @@ class ControlClient:
     def health(self) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/health"))
 
-    def _post(self, path: str, body: dict) -> dict:
+    def drain_hold(self, drain_id: int, until: float) -> dict:
+        return self._post('/drain/hold', {'drain_id': drain_id, 'until': until}, timeout=30)
+
+    def drain_release(self, drain_id: int) -> dict:
+        return self._post('/drain/release', {'drain_id': drain_id}, timeout=30)
+
+    def drain_cancel(self, drain_id: int) -> dict:
+        return self._post('/drain/cancel', {'drain_id': drain_id}, timeout=30)
+
+    def ping(self, timeout=330) -> dict:
+        return self._post('/runs/ping', {}, timeout=timeout)
+
+    def _post(self, path: str, body: dict, *, timeout=None) -> dict:
         return self._call(urllib.request.Request(f"{self.base}{path}", data=json.dumps(body).encode("utf-8"),
-                                                 method="POST", headers={"Content-Type": "application/json"}))
+                                                 method="POST", headers={"Content-Type": "application/json"}),
+                          **({'timeout': timeout} if timeout is not None else {}))
 
     def open_build(self, key: str, map_name: str, rounds: int, manifest: dict, *, diagnostic=None) -> dict:
         body = {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest}
@@ -278,9 +292,9 @@ class ControlClient:
             raise Unreachable("the replay worker result is unreachable") from error
         return dest
 
-    def _call(self, request) -> dict:
+    def _call(self, request, *, timeout=None) -> dict:
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout if timeout is None else timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             if error.code in (400, 409, 413):
@@ -330,9 +344,12 @@ class Live:
 
 
 LIVE: Live | None = None
+_OPEN_HEIGHT_BUILDS = 0
 
 
 def _snapshot(state, at: float) -> Live:
+    global _OPEN_HEIGHT_BUILDS
+    _OPEN_HEIGHT_BUILDS = sum(build.job_id is not None for build in state.heights.builds.values())
     given_up = []
     for key, (count, _) in state.tries.items():
         if count >= MAX_TRIES:
@@ -559,6 +576,8 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 counts["timed_out"] += 1
             continue
         del state.in_flight[key]
+        if status == 'failed' and job.get('error_kind') == 'drain':
+            continue
         if status == 'failed' and job.get('error_code') == 'unknown_layout':
             state.layout_refused(f.asset_key or f.map_name, now)
             counts['held'] += 1
@@ -719,7 +738,8 @@ def remote_control(health) -> bool:
     return isinstance(runners, dict) and runners.get("control") == "workflow"
 
 
-def _send(session, client, state: State, now: float, counts: dict, todo: list, *, kind: str, features_capable=False) -> bool:
+def _send(session, client, state: State, now: float, counts: dict, todo: list, *, kind: str, features_capable=False,
+          session_factory=None) -> bool:
     """Submits `todo` (from `_sendable`) in D2's order until the pool is full or the worker stops taking
     tasks. Returns whether sendable work was left."""
     keys = {(p.replay_id, p.round_number): key for key, p in todo}
@@ -764,6 +784,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             pushed = set()
             for _ in range(3):
                 try:
+                    if _paused(session_factory, now):
+                        return True
                     answer = client.submit(task)
                     break
                 except NeedsHeight as missing:
@@ -771,13 +793,18 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                         raise Refused('worker requested an unplanned or repeated height')
                     height_bytes = control_feature_artifacts.archived_height_bytes(session, features) if features \
                         else replay_control.exact_height_bytes(session, asset_key, digest)
+                    if _paused(session_factory, now):
+                        return True
                     client.push_height(asset_key, digest, height_bytes)
                     pushed.add('height')
                     counts['pushed'] += 1
                 except NeedsFeatures as missing:
                     if missing.digest != features or 'features' in pushed:
                         raise Refused('worker requested an unplanned or repeated artifact')
-                    client.push_features(control_feature_artifacts.load_artifact(session, features))
+                    artifact = control_feature_artifacts.load_artifact(session, features)
+                    if _paused(session_factory, now):
+                        return True
+                    client.push_features(artifact)
                     pushed.add('features')
             else:
                 raise Refused('worker inputs remain unavailable after bounded pushes')
@@ -877,14 +904,14 @@ def _note_warm_vanished(state: State, health, now: float) -> None:
     state.warm_vanished = merged
 
 
-def _poll_alarms(client, state: State, now: float) -> None:
+def _poll_alarms(client, state: State, now: float, health=None) -> None:
     """A pass that sends nothing still reads /health, at most every ALARM_POLL_S: a full dispatcher must not hide
     a D3 loss for the hours a warm build can take, nor keep a stale runner reading (a failed read left it local,
     and the local cap then stops every pass before the read). A failed read here changes nothing."""
     if state.alarms_read_at is not None and now - state.alarms_read_at < ALARM_POLL_S:
         return
     try:
-        health = client.health()
+        health = client.health() if health is None else health
     except (WorkerGone, WorkerBusy, Unreachable):
         state.alarms_read_at = now
         return
@@ -893,20 +920,47 @@ def _poll_alarms(client, state: State, now: float) -> None:
     _note_warm_vanished(state, health, now)
 
 
+def _paused(session_factory, now: float) -> bool:
+    if session_factory is None:
+        return deploy_drain.paused_now()
+    with session_factory() as db:
+        return deploy_drain.paused(db, datetime.fromtimestamp(now, timezone.utc))
+
+
+def _sync_hold(client, session_factory, now: float, health=None):
+    """Read a detached drain, then synchronize the worker's fenced hold without a DB connection."""
+    with session_factory() as db:
+        row = deploy_drain.active(db, datetime.fromtimestamp(now, timezone.utc))
+        current = (row.id, deploy_drain._utc(row.expires_at).timestamp()) if row is not None else None
+    health = client.health() if health is None else health
+    worker = health.get('drain') or {}
+    if current is not None:
+        drain_id, until = current
+        held_until = worker.get('hold_until')
+        if worker.get('drain_id') != drain_id or held_until is None or abs(held_until - until) > 60:
+            client.drain_hold(drain_id, until)
+    elif worker.get('hold') or worker.get('starts_blocked'):
+        client.drain_release(worker.get('drain_id'))
+    return health
+
+
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
-            held_maps: frozenset = frozenset(), *, session_factory) -> None:
+            held_maps: frozenset = frozenset(), *, session_factory, health=None) -> None:
+    if _paused(session_factory, now):
+        _poll_alarms(client, state, now, health)
+        return
     if len(state.in_flight) >= in_flight_cap(state):     # the last health's cap; read afresh below
-        _poll_alarms(client, state, now)
+        _poll_alarms(client, state, now, health)
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
-        _poll_alarms(client, state, now)
+        _poll_alarms(client, state, now, health)
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
     todo = [p for p in planned if (p.asset_key or p.map_name) not in held_maps]   # wait for this layout's heights
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
     try:
-        health = client.health()
+        health = client.health() if health is None else health
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     state.remote_control = remote_control(health)       # a worker that can't be asked gets the local limits
@@ -918,7 +972,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     state.last_found = _send(session, client, state, now, counts,
                              _sendable(state, now, todo, kind="control", capable=capable, held=held,
                                        health=health, counts=counts),
-                             kind="control", features_capable=features_capable)
+                             kind="control", features_capable=features_capable, session_factory=session_factory)
     # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
     if not state.last_found and capable:
         # As the local command does: every round with its current fingerprint, then those whose control is ok and
@@ -928,7 +982,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         state.last_found = _send(session, client, state, now, counts,
                                  _sendable(state, now, wanted, kind="gaps", held=held,
                                            health=health, counts=counts), kind="gaps",
-                                 features_capable=features_capable)
+                                 features_capable=features_capable, session_factory=session_factory)
     if held_maps or counts['held']:
         state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
@@ -977,6 +1031,13 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
         finally:
             collect.rollback()
             collect.close()
+        health = {}
+        try:
+            health = client.health()
+            _sync_hold(client, session_factory, now, health)
+            site_health.loop_ok("drain_hold_sync")
+        except Exception as exc:  # a hold failure must never stop collection or the rest of the cycle
+            site_health.loop_failed("drain_hold_sync", exc)
         held = _reparse(session_factory, worker, state, now, counts)
         held_maps: frozenset = frozenset()
         if replay_heights_remote.enabled():
@@ -1020,7 +1081,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
                 if selection.state == "ok":
                     asset_keys.add(selection.layout.asset_key)
             replay_control.prepare_discovered(session_factory, asset_keys, state.feature_retry_after, now)
-            _submit(session, client, state, now, counts, held, held_maps, session_factory=session_factory)
+            _submit(session, client, state, now, counts, held, held_maps, session_factory=session_factory, health=health)
         finally:
             session.rollback()
             session.close()

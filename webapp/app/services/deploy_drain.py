@@ -144,6 +144,18 @@ def paused(db: Session, now: datetime) -> bool:
         return False
 
 
+def paused_now() -> bool:
+    """Uncached admission boundary for callers without a database session."""
+    from app.db import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            return paused(db, datetime.now(timezone.utc))
+    except Exception as error:
+        log.warning("deploy drain state unavailable (%s)", type(error).__name__)
+        return False
+
+
 def last_outcome(db: Session) -> DeployDrain | None:
     return db.scalars(select(DeployDrain).where(DeployDrain.ended_at.is_not(None),
                       DeployDrain.outcome.in_(("ok", "failed")))

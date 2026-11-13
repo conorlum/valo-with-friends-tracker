@@ -188,6 +188,9 @@ def request() -> bool:
     """Start a background build unless this process's last one is still running. True when one was started.
     Never raises: a build that cannot start leaves the stored one in place, and the next visit tries again."""
     global _child, _child_started, _pending
+    from app.services import deploy_drain
+    if deploy_drain.paused_now():
+        return False
     with _lock:
         if _child is not None and _child.poll() is None:
             return False
@@ -195,6 +198,8 @@ def request() -> bool:
             finished, _child = _child, None      # each finished child is read once
             _settle(finished, _child_started)
         try:
+            if deploy_drain.paused_now():
+                return False
             _child = _spawn(list(_pending) or None)
             _child_started = time.monotonic()
         except OSError:

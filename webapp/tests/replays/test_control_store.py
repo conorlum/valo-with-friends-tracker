@@ -37,6 +37,7 @@ from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundC
 from app.models.impact_score import ImpactScore  # noqa: E402
 from app.models.map_pool import MapPoolPatchNotes  # noqa: E402
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution  # noqa: E402
+from app.models.deploy_drain import DeployDrain
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -46,7 +47,8 @@ from app.services import replays as service  # noqa: E402
 
 CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
                                   ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__, UtilModel.__table__,
-                                  ImpactScore.__table__, MapPoolPatchNotes.__table__, ReplayRoundWallShare.__table__]
+                                  ImpactScore.__table__, MapPoolPatchNotes.__table__, ReplayRoundWallShare.__table__,
+                                  DeployDrain.__table__]
 
 
 def feature_free_source(monkeypatch):
