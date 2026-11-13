@@ -446,7 +446,12 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
-        "gaps": bool(linked and context["match"].get("gaps"))}
+        "gaps": bool(linked and context["match"].get("gaps")),
+        # R2-5 (2026-11-12): the match-level panels (Control tables, heatmap, Critical Moments, Critical Util)
+        # read routes that 404 a pending layout, so they show only when the layout is current; a pending
+        # replay keeps the round overlay (stale) alone.
+        "panels": bool(linked and context["match"]["control"]
+                       and (context["match"].get("layout") or {}).get("state", "ok") == "ok")}
 
 
 @router.get("/replays")
