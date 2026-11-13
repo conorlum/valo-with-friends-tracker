@@ -44,6 +44,7 @@ library and the DB only; the asset is opened by a child process.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -54,6 +55,7 @@ from app.models.replay import Replay, ReplayRound
 from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.replays import height_inputs as hi
+from app.replays import layouts
 from app.services import control_heights, replay_control
 
 log = logging.getLogger(__name__)
@@ -84,6 +86,10 @@ class BuildFailed(Exception):
 
 class _Stale(Exception):
     """The map's inputs are no longer the build's: drop the build, at no cost."""
+
+
+class _UnknownLayout(Exception):
+    """The worker needs a newer layout image before this build can run."""
 
 
 @dataclass
@@ -122,6 +128,7 @@ class HeightState:
     builds: dict = field(default_factory=dict)     # manifest key -> Build, one per map, at most MAX_BUILDS
     tries: dict = field(default_factory=dict)       # manifest key -> (failures, last)
     out_of_tries: frozenset = frozenset()
+    waiting: dict = field(default_factory=dict)     # manifest key -> earliest next open after a layout refusal
 
     @property
     def build(self) -> Build | None:
@@ -140,32 +147,40 @@ class HeightState:
         return self.tries.get(key, (0, 0.0))[0] >= MAX_TRIES
 
 
-def current_manifests(db) -> dict[str, tuple[dict, list]]:
-    """{map: (its input manifest now, [(replay id, match uuid, round count)])} for every map with geometry and at
-    least one valid replay new enough to carry heights."""
+def current_manifests(db, *, registry=None, index=None) -> dict[str, tuple[dict, list]]:
+    """{asset key: (manifest, [(replay id, match uuid, round count)])} for each played layout with geometry.
+    Each build borrows the other layouts' valid replays from the same map."""
+    registry = layouts.load_registry() if registry is None else registry
+    if index is None:
+        index = json.loads((hi.CONTROL_DIR / "index.json").read_text(encoding="utf-8"))
     replays = db.query(Replay).options(load_only(
         Replay.id, Replay.match_uuid, Replay.map_name, Replay.recipe, Replay.source_sha256, Replay.round_count,
-        Replay.format_version)).order_by(Replay.id).all()
+        Replay.format_version, Replay.game_branch)).order_by(Replay.id).all()
     valid = replay_control._valid_ids(db, replays)
-    by_map: dict[str, list] = {}
+    by_map: dict[str, dict[str, list]] = {}
     for replay in replays:
         if replay.id in valid and (replay_control.condense_revision(replay.recipe) or 0) >= hi.MIN_CONDENSE_REVISION:
-            by_map.setdefault(replay.map_name, []).append(replay)
-    must_block = hi.must_block_sha()
+            selected = layouts.layout_for(replay.map_name, replay.game_branch, registry=registry, index=index)
+            if selected.state == "ok":
+                by_map.setdefault(replay.map_name, {}).setdefault(selected.layout.asset_key, []).append(replay)
     histories = {}
     for row in control_heights.rows(db):
         receipt = (row.report or {}).get('refinement')
         if receipt is not None and row.map_name not in histories:
             histories[row.map_name] = hi.refinement_history(row.map_name, receipt['history'])
     out = {}
-    for name, rows in by_map.items():
-        geometry = hi.geometry_identity(name)
-        if geometry is None:
-            continue
-        uuids = [str(r.match_uuid).lower() for r in rows]
-        out[name] = (hi.manifest(name, [[u, r.recipe, r.source_sha256, r.round_count] for u, r in zip(uuids, rows)],
-                                 geometry, must_block, history=histories.get(name)),
-                     [(r.id, u, r.round_count) for u, r in zip(uuids, rows)])
+    for groups in by_map.values():
+        for key, own in groups.items():
+            geometry = hi.geometry_identity(key)
+            if geometry is None:
+                continue
+            borrowed = [(r, other_key) for other_key, rows in groups.items() if other_key != key for r in rows]
+            rows = own + [r for r, _ in borrowed]
+            regions = hi.regions_for(key, [(r.match_uuid, other_key) for r, other_key in borrowed], registry=registry)
+            uuids = [str(r.match_uuid).lower() for r in rows]
+            out[key] = (hi.manifest(key, [[u, r.recipe, r.source_sha256, r.round_count] for u, r in zip(uuids, rows)],
+                                    geometry, hi.must_block_sha(key=key), history=histories.get(key), regions=regions),
+                        [(r.id, u, r.round_count) for u, r in zip(uuids, rows)])
     return out
 
 
@@ -189,12 +204,14 @@ def plan_maps(db) -> Plan:
                 plan.off.append(name)          # the rebuild after a deletion was rejected: the old heights go
         else:
             moved = hi.changes(row.inputs, manifest)
+            pool = {uuid for uuid, _ in manifest.get("regions", {}).get("pool", [])}
+            own_added = len(set(moved["added"]) - pool)
             if moved["gone"] or gone:
                 plan.due.append(Due(name, manifest, replays, "its evidence changed"))
             elif moved["other"]:
                 plan.due.append(Due(name, manifest, replays, "its inputs changed"))
-            elif len(moved["added"]) >= HEIGHT_REBUILD_EVERY:
-                plan.due.append(Due(name, manifest, replays, f"{len(moved['added'])} new matches"))
+            elif own_added >= HEIGHT_REBUILD_EVERY:
+                plan.due.append(Due(name, manifest, replays, f"{own_added} new matches"))
     plan.due.sort(key=lambda d: (d.why != "its evidence changed", d.map_name))
     return plan
 
@@ -277,7 +294,9 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         asset = base64.b64decode(result["asset"], validate=True)
     except (KeyError, TypeError, ValueError) as error:              # binascii.Error is a ValueError
         raise BuildFailed(f"the worker's result can't be used: {error}") from error
-    why = control_heights.integrity(digest, report, control_heights.verify_asset(asset, build.map_name), hi.must_block_sha())
+    # The layout's own check set, the one the worker built against (F2/S1, 2026-11-12).
+    verified = control_heights.verify_asset(asset, build.map_name, must_block=hi.must_block_path(build.map_name))
+    why = control_heights.integrity(digest, report, verified, hi.must_block_sha(key=build.map_name))
     if why:
         raise BuildFailed("the worker's result can't be trusted: " + "; ".join(why))
     current = current_manifests(session).get(build.map_name)
@@ -323,6 +342,12 @@ def _resend(build: Build, why: str) -> None:
         raise BuildFailed(why)
 
 
+def _supports_regions(health: dict) -> bool:
+    heights = health.get("heights") if isinstance(health, dict) else None
+    protocol = heights.get("protocol") if isinstance(heights, dict) else None
+    return isinstance(protocol, int) and protocol >= 1
+
+
 def _advance(session_factory, session, client, build: Build, now: float, counts: dict) -> bool:
     """Asks the worker what state the build is in and does the one thing that state allows. True when the build
     is over (its result stored)."""
@@ -335,6 +360,8 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
             from app.services import control_feature_artifacts
             options = {}
             health = client.health()
+            if "regions" in build.manifest and not _supports_regions(health):
+                return False
             if (health.get('heights') or {}).get('diagnostics_protocol') == 1:
                 options['diagnostic'] = control_feature_artifacts.diagnostic_snapshot(session, build.map_name)
             state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest, **options)
@@ -399,6 +426,8 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if status == "done":
             _finish(session_factory, session, build, state if "result" in state else client.build(build.job_id), counts)
             return True
+        if status == "failed" and state.get("error_code") == "unknown_layout":
+            raise _UnknownLayout(str(state.get("error") or "worker layout unavailable"))
         raise BuildFailed(str(state.get("error") or f"the worker says the build is {status!r}"))
     except WorkerGone:
         # Includes 404 while opening, before there is a job id. Reopening after this 404 is already charged;
@@ -422,6 +451,10 @@ def _try_build(session_factory, session, client, hstate: HeightState, build: Bui
             held.discard(build.map_name)
     except (Unreachable, WorkerBusy):
         counts["unreachable"] = counts.get("unreachable", 0) + 1
+    except _UnknownLayout as refused:
+        log.info("heights: %s build waiting for worker layout: %s", build.map_name, refused)
+        hstate.builds.pop(build.key, None)
+        hstate.waiting[build.key] = now + BACKOFF_S
     except _Stale as stale:
         log.info("heights: %s build dropped: %s", build.map_name, stale)
         _cancel(client, build)
@@ -454,6 +487,7 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             counts["heights_off"] += 1
             log.info("heights: %s off: what its heights were built from is gone", name)
     due = {hi.key(d.manifest): d for d in plan.due}
+    hstate.waiting = {key: until for key, until in hstate.waiting.items() if key in due and now < until}
     hstate.out_of_tries = frozenset(d.map_name for key, d in due.items() if hstate.spent(key))
     for key, d in due.items():
         if hstate.spent(key):
@@ -473,13 +507,18 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     building = {b.map_name for b in hstate.builds.values()}
     ready = [d for key, d in due.items()
              if key not in attempted and key not in hstate.builds and d.map_name not in building
-             and hstate.may_try(key, now)]
+             and key not in hstate.waiting and hstate.may_try(key, now)]
     if not ready or len(hstate.builds) >= MAX_BUILDS:
         return held
     try:
         answer = client.health()
         if _other_deploy(answer):
-            return {b.map_name for b in hstate.builds.values()}   # the deploy gap: open nothing, hold only what runs
+            return ({b.map_name for b in hstate.builds.values()}
+                    | {d.map_name for key, d in due.items() if "regions" in d.manifest and not hstate.spent(key)})
+        ready = [d for d in ready if "regions" not in d.manifest or
+                 _supports_regions(answer)]
+        if not ready:
+            return held
         if not _idle(client, answer):
             return held
         # A worker whose heights runner is local runs one build at a time; the rest would only sit queued.

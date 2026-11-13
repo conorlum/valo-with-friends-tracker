@@ -858,7 +858,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
-    todo = [p for p in planned if p.map_name not in held_maps]   # a map whose heights are being rebuilt waits for them
+    todo = [p for p in planned if (p.asset_key or p.map_name) not in held_maps]   # wait for this layout's heights
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
     try:
         health = client.health()
@@ -879,7 +879,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         # As the local command does: every round with its current fingerprint, then those whose control is ok and
         # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
         wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
-        wanted = [p for p in wanted if p.map_name not in held_maps]
+        wanted = [p for p in wanted if (p.asset_key or p.map_name) not in held_maps]
         state.last_found = _send(session, client, state, now, counts,
                                  _sendable(state, now, wanted, kind="gaps", held=held,
                                            health=health, counts=counts), kind="gaps",

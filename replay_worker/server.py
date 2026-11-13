@@ -20,7 +20,7 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
                        "idle" (a height build may start: no parse
                        running or waiting, or builds run as Workflow runs),
-                       "heights": {"collecting", "queued", "running" (map names), "spool_bytes"}}
+                       "heights": {"protocol": 1, "collecting", "queued", "running" (map names), "spool_bytes"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 409 {error, height} when the task
@@ -2107,7 +2107,8 @@ class HeightBuilds:
                 state = self._state(build)
                 if state in out:
                     out[state].append(build["map"])
-            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled(), 'diagnostics_protocol': 1}
+            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled(),
+                    "protocol": 1, 'diagnostics_protocol': 1}
 
     # ---- housekeeping
 
@@ -2166,6 +2167,8 @@ class HeightBuilds:
         elif job is not None:
             if job.error:
                 body["error"] = job.error
+                if job.error_code:      # a refusal the web app must not count as a try (unknown_layout)
+                    body.update({"error_kind": job.error_kind, "error_code": job.error_code})
             if job.result is not None:
                 body["result"] = job.result
         return body
@@ -2426,7 +2429,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 remote_builds = runs_table is not None and worker.settings.heights_runner == "workflow"
                 body["idle"] = True if remote_builds else worker.idle()
                 body["heights"] = heights.status() if heights else {"collecting": [], "queued": [], "running": [],
-                                                                    "spool_bytes": 0}
+                                                                    "spool_bytes": 0, "protocol": 1}
                 body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
                                    "heights": worker.settings.heights_runner}
                 body["workflow"] = runs_table.status() if runs_table is not None else None

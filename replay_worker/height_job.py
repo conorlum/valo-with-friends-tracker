@@ -34,6 +34,7 @@ def run(task: dict) -> dict:
     try:
         from app.control import geometry, height_job
         from app.replays import height_inputs as hi
+        from app.replays import layouts
 
         theirs = task.get("manifest")
         name = str(task.get("map"))
@@ -42,7 +43,30 @@ def run(task: dict) -> dict:
                     "key": task.get("key")}
         if 'refinement_history' not in theirs:
             return {'status': 'failed', 'error_kind': 'inputs', 'error': 'explicit refinement history missing', 'key': task.get('key')}
-        mine = hi.manifest(name, theirs["replays"], hi.geometry_identity(name) or {}, hi.must_block_sha(), history=theirs['refinement_history'])
+        try:
+            regions = None
+            if "regions" in theirs:
+                known = {layout.asset_key for layout in layouts.layouts_of(layouts.map_of(name))}
+                if name not in known:
+                    raise ValueError(f"layout {name} is absent from this worker")
+                for _, from_key in theirs["regions"]["pool"]:
+                    if from_key not in known:
+                        raise ValueError(f"layout {from_key} is absent from this worker")
+                # R2-2 (2026-11-12): the manifest lists every layout's mask, so an image one redraw behind knows
+                # the target and the pool yet lacks the newest mask: that is deploy skew, not a try to spend.
+                for mask_key, _ in theirs["regions"].get("masks", []):
+                    if mask_key not in known:
+                        raise ValueError(f"layout {mask_key} is absent from this worker")
+                regions = hi.regions_for(name, theirs["regions"]["pool"])
+                if regions is None:
+                    raise ValueError(f"layout regions for {name} are absent from this worker")
+            mine = hi.manifest(name, theirs["replays"], hi.geometry_identity(name) or {}, hi.must_block_sha(key=name),
+                               history=theirs['refinement_history'], regions=regions)
+        except (hi.CheckSetError, ValueError, KeyError) as error:
+            if "regions" not in theirs:
+                raise
+            return {"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
+                    "key": task.get("key"), "error": str(error)}
         if hi.digest(mine) != hi.digest(theirs):
             differ = sorted(k for k in mine if mine[k] != theirs.get(k))
             return {"status": "failed", "error_kind": "inputs", "key": task.get("key"),
@@ -51,12 +75,18 @@ def run(task: dict) -> dict:
         if not folder.is_dir():
             return {"status": "failed", "error_kind": "inputs", "error": f"no rounds at {folder}",
                     "key": task.get("key")}
-        source = height_job.BlobDir(folder, name)
+        try:
+            source = height_job.BlobDir(folder, name, pool=(regions or {}).get("pool", []))
+        except (hi.CheckSetError, ValueError, KeyError) as error:
+            if regions is None:
+                raise
+            return {"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
+                    "key": task.get("key"), "error": str(error)}
         previous = geometry.height_cache_path(name, task["previous"]) if task.get("previous") else None
         from app.replays.map_feature_diagnostics import diagnostic_error
         diagnostic = task.get('diagnostic') or diagnostic_error(name, 'worker diagnostic snapshot unavailable', code='diagnostic_unavailable')
         result = height_job.run(name, source, previous=previous, diagnostic=diagnostic,
-                               refinement_history=mine['refinement_history'])
+                               refinement_history=mine['refinement_history'], must_block=hi.must_block_path(name))
         expected = {row[0]: int(row[3]) for row in theirs["replays"]}
         if source.per_match() != expected:
             return {"status": "failed", "error_kind": "inputs", "key": task.get("key"),
