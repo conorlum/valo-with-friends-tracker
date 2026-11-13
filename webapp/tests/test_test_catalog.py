@@ -87,3 +87,17 @@ def test_lanes_follow_the_markers_most_restrictive_first():
     assert tc.lane_of({"browser", "slow"}) == "browser"
     assert tc.lane_of({"geometry", "slow"}) == "slow"
     assert tc.lane_of({"geometry"}) == "default"
+
+
+@pytest.mark.parametrize("lane, flags", [
+    ("default", ["--require-node", "--require-fixtures"]),
+    ("slow", ["--require-node", "--require-fixtures"]),
+    ("postgres", ["--require-postgres"]),
+    ("postgres+slow", ["--require-postgres"]),
+    ("browser", ["--require-browser", "--require-fixtures"]),
+])
+def test_every_lane_command_carries_its_require_flags(lane, flags):
+    p = {"by_lane": {lane: [("tests/test_x.py::test_a", None, None)]}}
+    cmd = tc.command(p, lane, tc.EXPR[lane])
+    assert cmd[cmd.index("-m", 3) + 2:-1] == flags
+    assert cmd[-1] == "tests/test_x.py"

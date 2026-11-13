@@ -323,9 +323,19 @@ def lane_files(p: dict, lane: str) -> list[str]:
     return sorted({nid.split("::", 1)[0] for nid, _, _ in p["by_lane"][lane]})
 
 
+# Each lane's --require-* flags, as in CLAUDE.md's lane table: a missing prerequisite fails the lane instead of
+# skipping its tests, and --require-postgres gives each legacy case its own migrated database.
+REQUIRE = {
+    "default": ["--require-node", "--require-fixtures"],
+    "slow": ["--require-node", "--require-fixtures"],
+    "postgres": ["--require-postgres"],
+    "postgres+slow": ["--require-postgres"],
+    "browser": ["--require-browser", "--require-fixtures"],
+}
+
+
 def command(p: dict, lane: str, expr: str) -> list[str]:
-    extra = ["--require-browser"] if lane == "browser" else []
-    return [sys.executable, "-m", "pytest", "-n", "0", "-m", expr, *extra, *lane_files(p, lane)]
+    return [sys.executable, "-m", "pytest", "-n", "0", "-m", expr, *REQUIRE.get(lane, []), *lane_files(p, lane)]
 
 
 def show_cmd(cmd: list[str]) -> str:
