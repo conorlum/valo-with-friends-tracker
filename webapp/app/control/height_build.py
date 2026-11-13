@@ -840,7 +840,9 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
 def kill_line_check(rounds: list, geo: Geometry) -> dict:
     """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
     have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
-    clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill line is
+    clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill where either
+    player is below the map (FELL_BELOW_M: a fall, credited to the last damager wherever they stood) has no
+    sight line and is excluded. A kill line is
     blocked only if the killer's eye sees neither the victim's head nor their feet. `geo` has the
     heights; excluded kills are counted by reason."""
     from app.control import engine
@@ -873,6 +875,9 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 excluded["no position with z near the kill"] += 1
                 continue
             (kx, ky, kz), (vx, vy, vz) = ends
+            if min(kz, vz) < -hc.FELL_BELOW_M:     # z is above the map's lowest floor: off the map, no sight line
+                excluded["fell off the map"] += 1
+                continue
             if geo.unresolved_at_px(kx, ky) or geo.unresolved_at_px(vx, vy):
                 excluded["on an unresolved cell"] += 1
                 continue

@@ -644,6 +644,21 @@ def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_head
 
 
 @pytest.mark.slow
+def test_a_fall_off_the_map_is_not_a_kill_line():
+    # Abyss: whoever last damaged a player who then falls off the map gets the kill, wherever they stand, so
+    # there is no sight line to check. Without the rule this kill is blocked (the victim is under the ledge).
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    fallen = standing(x + 3 * M_PX, 204, -hc.FELL_BELOW_M - 0.5, "B")
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(x, 204, 4.0), 5: fallen})], geo)
+    assert result["qualifying"] == 0 and result["excluded"] == {"fell off the map": 1}
+    # just above the threshold it is an ordinary kill line again
+    low = standing(x + 3 * M_PX, 204, -hc.FELL_BELOW_M + 0.5, "B")
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(x, 204, 4.0), 5: low})], geo)
+    assert result["qualifying"] == 1 and "fell off the map" not in result["excluded"]
+
+
+@pytest.mark.slow
 def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
     from tests.replays.control_toys import toy_heights
 
