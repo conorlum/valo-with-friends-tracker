@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/michel-giehl/ValorantReplayParser.git",
-  "commit": "04dcbd92806cbb3005323ec987e4fa7c95ab6a1f",
+  "commit": "fbf24b62c5a8b8b7a64df71b4cbaaf0a651ce5b8",
   "sdk": {
     "global_json_version": "10.0.301",
     "installed_tested": "10.0.401"
@@ -22,7 +22,8 @@
   "supported_replay_builds": [
     "++Ares-Core+release-13.06",
     "++Ares-Core+release-13.08",
-    "++Ares-Core+release-13.09"
+    "++Ares-Core+release-13.09",
+    "++Ares-Core+release-13.10"
   ],
-  "notes": "supported_replay_builds: 13.06 from the archive README's recorded game branch for the test replay (PROVISIONAL(D2)); 13.08 and 13.09 from the pinned parser's ValorantSeededTransform13_08/13_09.SupportedReplayVersions (04dcbd9). Schema 9 writes object references as {net_guid, path}; contract.loads_row reads them as the bare GUID."
+  "notes": "supported_replay_builds: 13.06 from the archive README's recorded game branch for the test replay (PROVISIONAL(D2)); 13.08, 13.09 and 13.10 from the pinned parser's ValorantSeededTransform13_08/13_09/13_10.SupportedReplayVersions (fbf24b6). Schema 9 writes object references as {net_guid, path}; contract.loads_row reads them as the bare GUID."
 }
