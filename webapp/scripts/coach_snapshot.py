@@ -7,6 +7,7 @@ Read-only. The snapshot holds player names: keep <dir> outside the repository. E
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -24,10 +25,13 @@ def main() -> int:
         return 2
     from app.coach import snapshot
     from app.db import SessionLocal
+    from scripts import _admin_client
 
     with SessionLocal() as db:
         try:
-            data = snapshot.read(db, args.match_uuid.lower())
+            ask = (lambda: _admin_client.request_util_build(_admin_client.DEFAULT_SITE)) \
+                if os.environ.get("REPLAY_ADMIN_TOKEN", "").strip() else None
+            data = snapshot.read(db, args.match_uuid.lower(), ask=ask)
         except snapshot.SnapshotError as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2

@@ -765,10 +765,34 @@ def totals(per_match: dict, leave_out=(), typed: bool = True) -> dict:
     return out
 
 
-def lift_v2(totals_table: dict, per_match: dict, typ: str, keys: list, L: int, swing: float, leave_out=()):
+def _minus(per_match: dict, leave_out, typ: str, keys: list, expanded: dict | None) -> dict:
+    """`totals` of the left-out matches, for the one type and the keys baseline_v2 reads: the same arrays summed
+    over the same matches in the same order, so the same values. `expanded`: {match: _expand_typed(cells)} kept
+    by the caller across casts of one table, filled here as matches are first left out."""
+    leave_out = set(leave_out)
+    wanted = set(keys)
+    out: dict = {}
+    for m, v in per_match.items():
+        if m not in leave_out:
+            continue
+        e = expanded.get(m) if expanded is not None else None
+        if e is None:
+            e = _expand_typed(v)
+            if expanded is not None:
+                expanded[m] = e
+        for key, arr in (e.get(typ) or {}).items():
+            if key in wanted:
+                out[key] = out[key] + arr if key in out else 1.0 * arr
+    return {typ: out}
+
+
+def lift_v2(totals_table: dict, per_match: dict, typ: str, keys: list, L: int, swing: float, leave_out=(),
+            expanded: dict | None = None):
     """A cast's lift against `totals_table` minus the expanded cells of every match in leave_out (Yours leaves out
-    all of a lineup's matches), through the levels and BASE_MIN_N like baseline_v2. None without a baseline."""
-    minus = totals({m: v for m, v in per_match.items() if m in set(leave_out)})
+    all of a lineup's matches), through the levels and BASE_MIN_N like baseline_v2. None without a baseline.
+    `expanded`: one dict per `per_match` table, passed on every call for it, so each match is expanded once per
+    build instead of once per cast (the build spent most of its time re-expanding)."""
+    minus = _minus(per_match, leave_out, typ, keys, expanded)
     base = baseline_v2(totals_table, typ, keys, L, minus)
     if base is None:
         return None

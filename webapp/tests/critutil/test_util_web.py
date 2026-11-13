@@ -188,24 +188,64 @@ def test_a_build_that_raced_new_evidence_is_stored_under_its_own_inputs_and_buil
 
     put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
     put_util(db, linked, 1)
-    real = replay_util.build_corpus
-    builds = []
+    real = replay_util.corpus_from_inputs
+    builds, stores = [], []
 
-    def racing(session, **kw):
-        out = real(session, **kw)
+    def racing(inputs, rows, model):
+        out = real(inputs, rows, model)
         builds.append(len(out["rows"]))
         if len(builds) == 1:
             put_util(db, linked, 2)          # the worker stores another round while this build runs
         return out
 
-    monkeypatch.setattr(replay_util, "build_corpus", racing)
+    real_store = replay_util._store_values
+    monkeypatch.setattr(replay_util, "corpus_from_inputs", racing)
+    monkeypatch.setattr(replay_util, "_store_values",
+                        lambda session, key, data: stores.append(key) or real_store(session, key, data))
     data = replay_util.ensure_values(db)
     assert builds == [1, 2] and len(data["rows"]) == 2, "it saw the rows change and built again"
+    assert len(stores) == 2 and stores[0] != stores[1], "the superseded build is stored too, under its own key (D6)"
     key, stored = replay_util._values_row(db)
     rows = replay_util.current_rows(db, with_data=False)
     assert key == replay_util.corpus_key(db, rows, util_model.load(db)) and len(stored["rows"]) == 2
     replay_util.ensure_values(db)
     assert builds == [1, 2], "the stored build is current: no third"
+
+
+def test_no_session_is_in_a_transaction_while_a_build_computes(db, linked, monkeypatch):
+    # R3: neither the refit nor the corpus holds a connection or a transaction through its minutes of compute
+    from sqlalchemy import select
+
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), set())       # fitted before this match had a replay: refit due
+    put_util(db, linked, 1)
+    db.execute(select(1)).all()          # a transaction is open when ensure_values is called
+    seen = []
+    real_refit, real_corpus = util_model.refit_from, replay_util.corpus_from_inputs
+
+    def refit(*a, **k):
+        seen.append(("refit", db.in_transaction()))
+        return real_refit(*a, **k)
+
+    def corpus(inputs, rows, model):
+        seen.append(("corpus", db.in_transaction()))
+        return real_corpus(inputs, rows, model)
+
+    monkeypatch.setattr(util_model, "refit_from", refit)
+    monkeypatch.setattr(replay_util, "corpus_from_inputs", corpus)
+    replay_util.ensure_values(db)
+    assert seen == [("refit", False), ("corpus", False)]
+
+
+def test_build_corpus_ends_the_callers_transaction_before_computing(db, linked, monkeypatch):
+    put_util(db, linked, 1)
+    seen = []
+    real = replay_util.corpus_from_inputs
+    monkeypatch.setattr(replay_util, "corpus_from_inputs",
+                        lambda *a: seen.append(db.in_transaction()) or real(*a))
+    replay_util.build_corpus(db)
+    assert seen == [False]
 
 
 def test_the_corpus_key_follows_the_ability_table_the_extractor_version_and_the_friendships(db, linked, monkeypatch):

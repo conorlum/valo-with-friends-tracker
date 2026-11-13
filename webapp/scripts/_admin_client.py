@@ -77,3 +77,8 @@ def call(site: str, method: str, path: str, body: dict | None = None, timeout: f
 def download(site: str, path: str, timeout: float = 60) -> HTTPResponse:
     """Open an authenticated GET stream; the caller must close the response."""
     return _open(site, "GET", path, None, timeout)
+
+
+def request_util_build(site: str) -> dict:
+    """Ask the site's remote Critical Util loop to check for a build now."""
+    return call(site, "POST", "/admin/replays/util/build")

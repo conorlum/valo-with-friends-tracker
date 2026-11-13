@@ -6,8 +6,9 @@ the no-util baseline) takes minutes of CPU. A page or tab that finds the stored 
 the last build meanwhile. A separate process keeps the build's CPU off the web server's interpreter lock, so the
 rest of the site stays quick while it runs.
 
-One build at a time: each process starts at most one child while its last is still running, and a child that
-cannot take LOCK_KEY (a Postgres session lock: another process's child is building) exits at once. Waiting callers
+Each process starts at most one child while its last is still running. No lock spans a build and no connection
+is held through its compute (R3): each store takes its own short advisory lock, and a result is stored under the
+key of the inputs it was built from. Waiting callers
 (the coach, scripts/critical_util.py) still call ensure_values directly.
 
 Site health: the child records its own failure, or clears the stored one after a build, at once (it exits). A child
@@ -36,10 +37,10 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 WEBAPP = Path(__file__).resolve().parents[2]
-LOCK_KEY = 0x7574696C03         # "util" + 3, beside util_model.LOCK_IDS
 NICENESS = 10
 
 _lock = threading.Lock()
+_failure_lock = threading.Lock()    # the watcher and _settle both read a child's failure: once, one id
 _child: subprocess.Popen | None = None
 _child_started = 0.0
 _pending: list = []     # failures handed to a child that hasn't confirmed storing them
@@ -64,8 +65,11 @@ def _spawn(previous: list | None = None) -> subprocess.Popen:
     return subprocess.Popen(args, cwd=WEBAPP, **kwargs)
 
 
-def _watch(child) -> None:
-    """Note when the child exits (monotonic and UTC), so its failure is timed then, not when it is read."""
+def _watch(child, started: float | None = None) -> None:
+    """Note when the child exits (monotonic and UTC), so its failure is timed then, not when it is read, and
+    queue its failure at once (kept on `child.failure`)."""
+    if started is None:
+        started = time.monotonic()
     def run():
         try:
             child.wait()
@@ -73,7 +77,16 @@ def _watch(child) -> None:
 
             child.exited = (time.monotonic(), datetime.now(timezone.utc))
         except Exception:
-            pass
+            return
+        try:
+            with _failure_lock:             # computed once: _settle reuses it, so the id is the same
+                if not hasattr(child, "failure"):
+                    child.failure = _read_finished(child, started)
+                failure = child.failure
+            if failure is not None:
+                _queue_failure(failure)     # reaches Site health without another visit
+        except Exception:
+            log.exception("could not queue the Critical Util build's failure")
 
     threading.Thread(target=run, name="util-rebuild-watch", daemon=True).start()
 
@@ -152,7 +165,18 @@ def _settle(child, started) -> None:
             site_health.resolve("util_build_failed", "build", at=_exited(child)[1])
         except Exception:
             log.exception("could not queue the Critical Util build's clear")
-    failure = _read_finished(child, started)
+    with _failure_lock:
+        if not hasattr(child, "failure"):
+            try:
+                child.failure = _read_finished(child, started)
+            except AttributeError:          # a child object that takes no attributes
+                return _settle_failure(_read_finished(child, started))
+        failure = child.failure
+    _settle_failure(failure)
+
+
+def _settle_failure(failure) -> None:
+    global _pending
     if failure is not None:
         _pending.append(failure)
     if len(_pending) > PENDING_MAX:
@@ -180,7 +204,7 @@ def request() -> bool:
                 _queue_failure(failure)
             _pending = []
             return False
-        _watch(_child)
+        _watch(_child, _child_started)
         log.info("started the Critical Util build (pid %s)", _child.pid)
         return True
 
@@ -201,9 +225,7 @@ def _previous(argv) -> list:
 def main(argv=None) -> int:
     from datetime import datetime
 
-    from sqlalchemy import text
-
-    from app.db import SessionLocal, engine
+    from app.db import SessionLocal
     from app.services import mask_accel, replay_util, site_health
 
     # before anything else: a clear this build makes must come after them; nothing is built until they are stored
@@ -214,35 +236,18 @@ def main(argv=None) -> int:
             return EXIT_PREVIOUS_UNSTORED
     mask_accel.register()
 
-    holder = None
-    if engine.dialect.name == "postgresql":
-        # a session-level lock on a connection of its own, held for the whole build across the build's commits
-        holder = engine.connect()
-        got = holder.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY}).scalar()
-        holder.commit()
-        if not got:
-            holder.close()
-            print("[util_rebuild] another process is building; nothing to do", flush=True)
-            return 0
+    # no process-wide lock and no connection held through the build (R3): each store takes its own short lock
     try:
-        try:
-            code = _build(SessionLocal, replay_util)
-        except Exception as exc:
-            log.exception("the Critical Util build failed")
-            tb = traceback.format_exc().splitlines()[-15:]
-            recorded = site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
-                                              {"traceback": tb}, session_factory=SessionLocal)
-            return EXIT_RECORDED if recorded else EXIT_UNRECORDED     # not stored: the parent records the exit
-        if not site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal):
-            return EXIT_UNCLEARED
-        return code
-    finally:
-        if holder is not None:      # close() only returns it to the pool: unlock first (the exit would too)
-            try:
-                holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LOCK_KEY})
-                holder.commit()
-            finally:
-                holder.close()
+        code = _build(SessionLocal, replay_util)
+    except Exception as exc:
+        log.exception("the Critical Util build failed")
+        tb = traceback.format_exc().splitlines()[-15:]
+        recorded = site_health.record_now("util_build_failed", "build", f"{type(exc).__name__}: {exc}",
+                                          {"traceback": tb}, session_factory=SessionLocal)
+        return EXIT_RECORDED if recorded else EXIT_UNRECORDED     # not stored: the parent records the exit
+    if not site_health.resolve_now("util_build_failed", "build", session_factory=SessionLocal):
+        return EXIT_UNCLEARED
+    return code
 
 
 def _build(SessionLocal, replay_util) -> int:

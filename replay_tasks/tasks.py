@@ -361,4 +361,59 @@ def heights(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}
+def util(args: dict, link: WorkerLink) -> None:
+    """One Critical Util build: the portable compute (app/critutil/corpus.py) over the inputs the site packed, its
+    output streamed to the worker as a file, then a small envelope naming it (replay_worker/server.py)."""
+    link.post_started()
+    for folder in (str(WEBAPP), str(REPO)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+    work = Path(tempfile.mkdtemp(prefix="util-"))
+    ref = args.get("ref")
+    try:
+        try:
+            from app.critutil import build_digest
+            mine = build_digest.digest(WEBAPP)
+            # As parse's recipe check: a mismatch is the deploy's fault, refused before any input is fetched.
+            if args.get("digest") is not None and mine != args["digest"]:
+                link.post_result({"status": "failed", "error_kind": "deploy",
+                                  "error": f"this run has digest {mine}, the site {args['digest']}"})
+                return
+            from app.critutil import corpus
+            from app.services import util_values
+            tar = link.fetch("inputs", work / "inputs.tar")
+            started = time.monotonic()
+            inputs = corpus.unpack_inputs(tar)
+            refit = bool(inputs.context["refit"])
+            sys.stderr.write(f"util: ref={ref} key={args.get('key')} job={args.get('job_id')} "
+                             f"input_bytes={tar.stat().st_size} rows={len(inputs.context['rows'])} "
+                             f"refit={'yes' if refit else 'no'}\n")
+            result = corpus.compute(inputs)
+            computed = time.monotonic()
+            out = work / "output.json"
+            out.write_bytes(corpus.encode_output({"win": result["win"], "values": result["values"]}))
+            link.post_file("output", out)
+            answer = {"status": "ok", "key": args.get("key"), "values_key": result["values_key"], "digest": mine,
+                      "version": util_values.VERSION, "refit": refit, "bytes": out.stat().st_size,
+                      "sha256": _sha256(out)}
+            sys.stderr.write(f"util: ref={ref} job={args.get('job_id')} compute_s={computed - started:.1f} "
+                             f"output_bytes={answer['bytes']} peak_rss_mb={_peak_rss_mb()}\n")
+        except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
+            answer = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
+        if ref is not None:
+            answer["ref"] = ref
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _peak_rss_mb():
+    try:
+        import resource
+    except ImportError:      # POSIX only
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (1 << 20 if sys.platform == "darwin" else 1 << 10), 1)
+
+
+TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm, "util": util}

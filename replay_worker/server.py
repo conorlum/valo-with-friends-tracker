@@ -35,7 +35,16 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /runs/{job}/result         (header X-Run-Token) the run's JSON answer: 200 taken, 409 refused (wrong
                                     token, unknown or already settled run), 413, 400.
     POST /runs/{job}/started        (header X-Run-Token) an attempt has begun: its limit counts from now. 200; 409.
+    POST /runs/{job}/output         (header X-Run-Token, util runs only) the run's output, streamed to disk:
+                                    200 {"bytes", "sha256"}, 409 refused, 413 past util_result_max.
     POST /runs/ping                 starts a ping run and waits for it: {"ok", "answer", "seconds"}.
+
+    POST /util/build                {key, digest, rows, obs, refit, context (base64), ref?}: 202 the build
+                                    {"id", "key", "values_key", "status" (queued | running | done | failed), "digest",
+                                    "version", "refit", "bytes", "sha256", "error"?, "error_kind"?} (the same build
+                                    for a key it has, unless it failed); 409 {"missing_rows", "missing_obs"}; 400.
+    GET  /util/build/{id}           the build; 404.
+    GET  /util/build/{id}/result    exactly the bytes the run streamed; 404 until the build is done.
 These exist only when RENDER_API_KEY and REPLAY_WORKFLOW_SLUG are set (replay_worker/runs.py).
 
 Height builds (HeightBuilds; docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): a map's heights
@@ -148,6 +157,7 @@ Configuration (environment, all optional):
                              the archive leaves them free.
     REPLAY_HEIGHT_CMD        JSON list: the height-build child (default this Python, -m replay_worker.height_job)
     REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
+    REPLAY_UTIL_RUN_TIMEOUT_S  a Critical Util build's limit on Workflows (default 1500)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
     REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
     REPLAY_PARSE_RUNNER / REPLAY_CONTROL_RUNNER / REPLAY_HEIGHTS_RUNNER   "local" (default) or "workflow"
@@ -161,6 +171,7 @@ from __future__ import annotations
 import base64
 import collections
 import hashlib
+import io
 import json
 import os
 import queue
@@ -170,6 +181,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -185,6 +197,7 @@ WEBAPP = Path(__file__).resolve().parents[1] / "webapp"
 if str(WEBAPP) not in sys.path:
     sys.path.insert(0, str(WEBAPP))
 
+from app.critutil import build_digest  # noqa: E402 - standard library only; never app.critutil.corpus (numpy)
 from app.replays.condense import condense_export_dir  # noqa: E402
 from app.replays.contract import ContractError, current_recipe, load_pin  # noqa: E402
 from app.replays.header import game_build  # noqa: E402
@@ -297,6 +310,19 @@ class Settings:
     render_api_base: str = runs_mod.API
     task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 256 * 1024 ** 2   # a parse result, decoded in memory once (spec D18)
+    # The Critical Util input store (UtilStore): None keeps `<archive_dir>/util`, else `<temp_root>/util`.
+    util_dir: Path | None = None                  # REPLAY_UTIL_DIR
+    util_reserve: int = 2 * 1024 ** 3             # REPLAY_UTIL_RESERVE: the most the stored rounds + observations hold
+    util_run_timeout_s: float = 1500.0            # REPLAY_UTIL_RUN_TIMEOUT_S: one util build on Workflows
+
+    @property
+    def util_result_max(self) -> int:
+        return self.run_result_max_bytes
+
+    def util_root(self) -> Path:
+        if self.util_dir is not None:
+            return self.util_dir
+        return (self.archive_dir if self.archive_dir is not None else self.temp_root) / "util"
 
     def workflow_wanted(self) -> bool:
         return "workflow" in (self.parse_runner, self.control_runner, self.heights_runner)
@@ -344,6 +370,10 @@ class Settings:
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
+        if env.get("REPLAY_UTIL_DIR"):
+            settings.util_dir = Path(env["REPLAY_UTIL_DIR"])
+        settings.util_reserve = int(env.get("REPLAY_UTIL_RESERVE", settings.util_reserve))
+        settings.util_run_timeout_s = float(env.get("REPLAY_UTIL_RUN_TIMEOUT_S", settings.util_run_timeout_s))
         for name in ("parse", "control", "heights"):
             value = env.get(f"REPLAY_{name.upper()}_RUNNER", "local")
             if value not in ("local", "workflow"):
@@ -368,7 +398,17 @@ def make_runs(settings: Settings):
                          settings.temp_root / "runs")
 
 
-LOCAL_QUEUE_SIZE = 5        # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
+def reserve_util(settings: Settings, runs_table) -> None:
+    """The archive leaves room for the util store's folders (rounds + observations, their packed tars, and results)
+    only when the store lives under the archive and Workflows are on, as heights reserve their spool."""
+    if runs_table is None or settings.archive_dir is None:
+        return
+    root, archive = settings.util_root().resolve(), settings.archive_dir.resolve()
+    if root.is_relative_to(archive) and root != archive:
+        settings.archive_extra_reserve += 2 * settings.util_reserve + 4 * settings.util_result_max
+
+
+LOCAL_QUEUE_SIZE = 5       # the image's REPLAY_QUEUE_SIZE before Workflows (replay_worker/Dockerfile)
 LOCAL_SPOOL_BYTES = 512 * 1024 * 1024      # Settings.height_spool_bytes' default before Workflows
 
 
@@ -2186,11 +2226,366 @@ class _JobFailed(Exception):
         self.reason = reason
 
 
+class UtilKeyError(ValueError):
+    """A key (or a body) the util store refuses: a 400."""
+
+
+class UtilFull(Exception):
+    """A put that would pass `util_reserve`: a 507."""
+
+
+class UtilStore:
+    """The Critical Util inputs the site has sent: `rounds/<row_key>.json` and `obs/<obs_key>.json` under
+    `settings.util_root()`, so a build reads them from disk and the site sends each only once. `runs/` (packed
+    tars) and `results/` are scratch for builds and are cleared at every start, as heights clear their leftovers.
+
+    - A file is written to a temp name and renamed; other bytes under the same key overwrite (the DB is authoritative).
+    - A key not matching `build_digest.KEY_RE` is refused before anything is written.
+    - `have(rows, obs, prune=True)` first deletes what the new corpus doesn't name, so a corpus that fits once the
+      old files are replaced never gets stuck at a 507. Files named by a held build (`hold`, until `release`: one
+      still queued or running) are never deleted.
+    - The folders together stay under `util_reserve`."""
+
+    KINDS = ("rounds", "obs")
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.root = settings.util_root()
+        self.reserve = settings.util_reserve
+        for scratch in ("runs", "results"):
+            shutil.rmtree(self.root / scratch, ignore_errors=True)
+        for folder in (*self.KINDS, "runs", "results"):
+            (self.root / folder).mkdir(parents=True, exist_ok=True)
+        for kind in self.KINDS:                     # a write a crash cut short
+            for leftover in (self.root / kind).glob("*.tmp-*"):
+                leftover.unlink(missing_ok=True)
+        self.lock = threading.Lock()
+        self._held: dict[str, tuple[frozenset, frozenset]] = {}
+        try:
+            self.digest = build_digest.digest(WEBAPP)
+        except OSError:                             # a source this image doesn't carry: never dispatched to
+            self.digest = None
+
+    # ---- keys
+
+    @staticmethod
+    def check_key(key) -> str:
+        if not isinstance(key, str) or re.fullmatch(build_digest.KEY_RE, key) is None:
+            raise UtilKeyError("not a valid key")
+        return key
+
+    def _path(self, kind: str, key: str) -> Path:
+        return self.root / kind / f"{key}.json"
+
+    def _keys(self, kind: str) -> list[str]:
+        return [p.name[:-len(".json")] for p in (self.root / kind).iterdir() if p.name.endswith(".json")]
+
+    # ---- what the site asks
+
+    def have(self, rows, obs=None, prune: bool = False) -> dict:
+        rows = [self.check_key(k) for k in rows]
+        obs_keys = None if obs is None else [self.check_key(k) for k in obs]
+        with self.lock:
+            if prune:
+                self._prune(rows, obs_keys)
+            return {"missing_rows": self._missing("rounds", rows),
+                    "missing_obs": self._missing("obs", obs_keys or [])}
+
+    def _missing(self, kind: str, keys) -> list[str]:
+        seen, missing = set(), []
+        for key in keys:
+            if key not in seen and not self._path(kind, key).is_file():
+                missing.append(key)
+            seen.add(key)
+        return missing
+
+    def put(self, kind: str, items: dict[str, bytes]) -> int:
+        """Store the batch, or none of it (a bad key, or past the reserve)."""
+        for key in items:
+            self.check_key(key)
+        with self.lock:
+            delta = 0
+            for key, data in items.items():
+                path = self._path(kind, key)
+                delta += len(data) - (path.stat().st_size if path.is_file() else 0)
+            if delta > 0 and self._usage() + delta > self.reserve:
+                raise UtilFull("the util store is at its reserve")
+            for key, data in items.items():
+                path = self._path(kind, key)
+                temp = path.with_name(f"{key}.json.tmp-{uuid.uuid4().hex}")
+                temp.write_bytes(data)
+                os.replace(temp, path)
+        return len(items)
+
+    def put_round(self, key: str, data: bytes) -> None:
+        self.put("rounds", {key: data})
+
+    def put_obs(self, key: str, data: bytes) -> None:
+        self.put("obs", {key: data})
+
+    def prune(self, keep_rows, keep_obs=None) -> int:
+        """Delete every round file not named and, only when `keep_obs` is given, every observation file not named."""
+        with self.lock:
+            return self._prune([self.check_key(k) for k in keep_rows],
+                               None if keep_obs is None else [self.check_key(k) for k in keep_obs])
+
+    def _prune(self, keep_rows, keep_obs) -> int:
+        held_rows = set().union(*(rows for rows, _ in self._held.values())) if self._held else set()
+        held_obs = set().union(*(obs for _, obs in self._held.values())) if self._held else set()
+        removed = 0
+        for kind, keep, held in (("rounds", keep_rows, held_rows), ("obs", keep_obs, held_obs)):
+            if keep is None:
+                continue
+            keep = set(keep) | held
+            for key in self._keys(kind):
+                if key not in keep:
+                    self._path(kind, key).unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
+    def hold(self, ref: str, rows, obs) -> None:
+        """A build is queued or running on these files: no prune deletes them until `release`."""
+        with self.lock:
+            self._held[ref] = (frozenset(rows), frozenset(obs))
+
+    def release(self, ref: str) -> None:
+        with self.lock:
+            self._held.pop(ref, None)
+
+    def _usage(self) -> int:
+        total = 0
+        for kind in self.KINDS:
+            for path in (self.root / kind).iterdir():
+                if path.name.endswith(".json"):
+                    try:
+                        total += path.stat().st_size
+                    except OSError:
+                        pass
+        return total
+
+    def usage(self) -> int:
+        """Bytes of `rounds` + `obs`."""
+        with self.lock:
+            return self._usage()
+
+
+UTIL_BUILDS_KEPT = 4             # ended util builds whose result stays readable (the newest)
+UTIL_BUILD_BODY_MAX = 64 * 1024 * 1024   # POST /util/build: the frozen context travels in the open
+
+
+class UtilMissing(Exception):
+    """A build named rows or observations the store doesn't hold: a 409 naming them."""
+
+    def __init__(self, rows: list, obs: list):
+        super().__init__("inputs are missing")
+        self.rows, self.obs = rows, obs
+
+
+class UtilBuilds:
+    """Critical Util builds as the web app drives them (module docstring): open one, ask after it, read its result.
+    Each build is one Workflow run (`util`): the worker packs the stored rounds and observations into a tar, the
+    run downloads it, computes, streams its output to `POST /runs/{job}/output` and posts a small envelope to
+    `/runs/{job}/result`. The envelope must describe the streamed file (size and sha256) or the build failed.
+
+    - **One build per key** (the key includes the refit state): opening a key again answers the build there is, in
+      whatever state; only a failed one is replaced by a fresh one.
+    - **One build runs at a time**; the rest wait queued, in the order they were opened.
+    - A build **holds** its files (`UtilStore.hold`) from open until it settles, so no prune deletes them; at open
+      the store is pruned to the build's rows, and to its observations only when it refits.
+    - The newest UTIL_BUILDS_KEPT ended builds keep their result file; older ones go with it."""
+
+    def __init__(self, settings: Settings, util: UtilStore, runs_table):
+        self.settings, self.util, self.runs = settings, util, runs_table
+        self.lock = threading.Lock()
+        # id -> {id, key, ref, digest, refit, rows, obs, context, status, answer, error, error_kind, output, ended}
+        self.builds: dict[str, dict] = {}
+        self._queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._work, name="util-builds", daemon=True).start()
+
+    # ---- what the web app asks for
+
+    def open(self, key, digest, rows, obs, context, refit, ref=None) -> dict:
+        key = self.util.check_key(key)
+        if not isinstance(digest, str) or not digest or not isinstance(rows, list) or not isinstance(obs, list) \
+                or not isinstance(refit, bool) or not isinstance(context, str):
+            raise UtilKeyError("not a util build")
+        rows, obs = [self.util.check_key(k) for k in rows], [self.util.check_key(k) for k in obs]
+        try:
+            context_bytes = base64.b64decode(context, validate=True)
+        except ValueError as error:                 # binascii.Error is one
+            raise UtilKeyError("the context is not base64") from error
+        ref = str(ref)[:64] if ref else None
+        with self.lock:
+            for old in list(self.builds.values()):
+                if old["key"] == key:
+                    if old["status"] != "failed":
+                        return self._public(old)    # still going, or done: the same build and its answer
+                    self._drop(old)                 # it failed: the web app is trying again, from nothing
+            have = self.util.have(rows, obs)
+            if have["missing_rows"] or have["missing_obs"]:
+                raise UtilMissing(have["missing_rows"], have["missing_obs"])
+            build = {"id": uuid.uuid4().hex, "key": key, "ref": ref, "digest": digest, "refit": refit,
+                     "rows": rows, "obs": obs, "context": context_bytes, "status": "queued", "answer": None,
+                     "error": None, "error_kind": None, "output": None, "ended": None}
+            self.util.hold(build["id"], rows, obs)
+            self.util.prune(rows, obs if refit else None)
+            self.builds[build["id"]] = build
+            self._log(build)
+            made = self._public(build)
+        self._queue.put(build["id"])
+        return made
+
+    def get(self, build_id: str) -> dict | None:
+        with self.lock:
+            build = self.builds.get(build_id)
+            return None if build is None else self._public(build)
+
+    def result_path(self, build_id: str) -> Path | None:
+        """The streamed bytes of a done build; None until then."""
+        with self.lock:
+            build = self.builds.get(build_id)
+            if build is None or build["status"] != "done":
+                return None
+            return self._result_file(build_id)
+
+    # ---- what a run's output route reports
+
+    def owns(self, build_id: str) -> bool:
+        with self.lock:
+            build = self.builds.get(build_id)
+            return build is not None and build["status"] in ("queued", "running")
+
+    def result_file(self, build_id: str) -> Path:
+        return self._result_file(build_id)
+
+    def record_output(self, build_id: str, size: int, sha256: str) -> None:
+        with self.lock:
+            build = self.builds.get(build_id)
+            if build is not None:
+                build["output"] = (size, sha256)
+
+    # ---- the worker thread
+
+    def _work(self) -> None:
+        while True:
+            build_id = self._queue.get()
+            with self.lock:
+                build = self.builds.get(build_id)
+                if build is None or build["status"] != "queued":
+                    continue
+                build["status"] = "running"
+                self._log(build)
+            try:
+                answer = self._execute(build)
+            except Exception as error:  # noqa: BLE001 - one build's trouble never stops the thread
+                traceback.print_exc()
+                answer = runs_mod.failure("infra", f"the build could not run: {error}")
+            self._settle(build, answer)
+
+    def _execute(self, build: dict) -> dict:
+        timeout = self.settings.util_run_timeout_s
+        tar_path = self.util.root / "runs" / f"{build['id']}.tar"
+        try:
+            try:
+                self._pack(build, tar_path)
+            except FileNotFoundError as error:
+                return runs_mod.failure("inputs", f"a stored input went missing: {error.filename}")
+            run = self.runs.open("util", build["id"], {"inputs": tar_path}, timeout)
+            try:
+                args = {"key": build["key"], "digest": build["digest"]}
+                if build["ref"]:
+                    args["ref"] = build["ref"]
+                self.runs.start(run, args)
+                answer = self.runs.wait(run)
+            except BaseException:
+                self.runs.close(run)          # wait closes it itself; a failure before that must not leak it
+                raise
+        finally:
+            tar_path.unlink(missing_ok=True)
+        if answer.get("error_kind") == "timeout":
+            answer = {**answer, "error_kind": "infra", "error": f"util build timed out after {timeout:g} s"}
+        return answer
+
+    def _pack(self, build: dict, tar_path: Path) -> None:
+        """The tar `corpus.unpack_inputs` reads: `context.json`, `rounds/<key>.json`, `obs/<key>.json`. Written with
+        the standard library, member by member, so no round is held in memory beside its tar entry."""
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_path, "w") as archive:
+            member = tarfile.TarInfo("context.json")
+            member.size = len(build["context"])
+            archive.addfile(member, io.BytesIO(build["context"]))
+            for folder, kind, keys in (("rounds", "rounds", build["rows"]), ("obs", "obs", build["obs"])):
+                for key in dict.fromkeys(keys):
+                    source = self.util._path(kind, key)
+                    with source.open("rb") as handle:
+                        member = tarfile.TarInfo(f"{folder}/{key}.json")
+                        member.size = os.fstat(handle.fileno()).st_size
+                        archive.addfile(member, handle)
+
+    def _settle(self, build: dict, answer: dict) -> None:
+        with self.lock:
+            problem = None
+            output = build["output"]
+            if answer.get("status") in ("ok", "done"):
+                path = self._result_file(build["id"])
+                if output is None or not path.is_file():
+                    problem = "the run posted a result but streamed no output"
+                elif answer.get("sha256") != output[1] or answer.get("bytes") != output[0]:
+                    problem = "the result's size or sha256 differs from the streamed output"
+                if problem is None:
+                    build.update(status="done", answer=answer)
+            else:
+                kind = answer.get("error_kind")
+                build["error_kind"] = kind if isinstance(kind, str) and kind else "infra"
+                build["error"] = str(answer.get("error") or "the run failed")
+            if build["status"] != "done":
+                build["status"] = "failed"
+                if problem is not None:
+                    build["error_kind"], build["error"] = "inputs", problem
+                self._result_file(build["id"]).unlink(missing_ok=True)
+            build["ended"], build["context"] = time.time(), b""
+            self.util.release(build["id"])
+            self._log(build)
+            ended = sorted((b for b in self.builds.values() if b["ended"] is not None), key=lambda b: b["ended"])
+            for old in ended[:-UTIL_BUILDS_KEPT]:
+                self._drop(old)
+
+    # ---- under the lock
+
+    def _result_file(self, build_id: str) -> Path:
+        return self.util.root / "results" / f"{build_id}.json"
+
+    def _drop(self, build: dict) -> None:
+        self.builds.pop(build["id"], None)
+        self.util.release(build["id"])
+        self._result_file(build["id"]).unlink(missing_ok=True)
+
+    def _log(self, build: dict) -> None:
+        extra = f" error_kind={build['error_kind']}" if build["status"] == "failed" else ""
+        ref = f" ref={build['ref']}" if build["ref"] else ""
+        _log(f"util build {build['status']} key={build['key']} id={build['id']}{ref}{extra}")
+
+    def _public(self, build: dict) -> dict:
+        done = build["status"] == "done"
+        answer = build["answer"] or {}
+        body = {"id": build["id"], "key": build["key"], "values_key": answer.get("values_key") if done else None,
+                "status": build["status"], "digest": answer.get("digest", build["digest"]) if done else build["digest"],
+                "version": answer.get("version") if done else None,
+                "refit": answer.get("refit", build["refit"]) if done else build["refit"],
+                "bytes": build["output"][0] if done else None, "sha256": build["output"][1] if done else None}
+        if build["status"] == "failed":
+            body["error"], body["error_kind"] = build["error"], build["error_kind"]
+        return body
+
+
 # ---------------------------------------------------------------- HTTP
+
+UTIL_BODY_MAX = 4 * 1024 * 1024
+UTIL_PROTOCOL = 1
 
 
 def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None,
-                 runs_table=None):
+                 runs_table=None, util: "UtilStore | None" = None, util_builds: "UtilBuilds | None" = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "replay-worker"
 
@@ -2351,6 +2746,160 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             finally:
                 incoming.unlink(missing_ok=True)
 
+        def _util_off(self):
+            # Drain an admitted-size body first: closing with it unread can reset the client before the 404.
+            try:
+                remaining = int(self.headers.get("Content-Length", "0"))
+                if 0 <= remaining <= UTIL_BODY_MAX:
+                    self.rfile.read(remaining)
+                else:
+                    self.close_connection = True
+            except (ValueError, OSError):
+                self.close_connection = True
+            return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+        def _util(self):
+            """POST /util/have | /util/rounds | /util/obs. Each logs one line: `util <what> ref=<build_ref> counts`."""
+            what = self.path[len("/util/"):]
+            if what not in ("have", "rounds", "obs"):
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            if util is None or runs_table is None:
+                return self._util_off()
+            size = self._length(1, UTIL_BODY_MAX)
+            if size is None:
+                return None
+            try:
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a JSON object"})
+            ref = body.get("ref")
+            ref = ref if isinstance(ref, str) and re.fullmatch(r"[0-9A-Za-z._-]{1,64}", ref) else "-"
+            try:
+                if what == "have":
+                    rows, obs = body.get("rows", []), body.get("obs")
+                    if not isinstance(rows, list) or not (obs is None or isinstance(obs, list)):
+                        raise UtilKeyError("rows and obs are lists of keys")
+                    prune = body.get("prune") is True
+                    answer = util.have(rows, obs, prune=prune)
+                    _log(f"util have ref={ref} rows={len(rows)} obs={len(obs or [])} prune={int(prune)} "
+                         f"missing_rows={len(answer['missing_rows'])} missing_obs={len(answer['missing_obs'])}")
+                    return self._send(HTTPStatus.OK, answer)
+                kind, field_name = ("rounds", "rows") if what == "rounds" else ("obs", "obs")
+                entries = body.get(field_name)
+                if not isinstance(entries, list):
+                    raise UtilKeyError(f"{field_name} is a list of {{key, data}}")
+                items = {}
+                for entry in entries:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("data"), str):
+                        raise UtilKeyError("an entry is {key, data (base64)}")
+                    try:
+                        items[util.check_key(entry.get("key"))] = base64.b64decode(entry["data"], validate=True)
+                    except ValueError as error:
+                        if isinstance(error, UtilKeyError):
+                            raise
+                        raise UtilKeyError("data is not base64") from None
+                stored = util.put(kind, items)
+            except UtilKeyError as error:
+                _log(f"util {what} ref={ref} refused: {error}")
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            except UtilFull as error:
+                _log(f"util {what} ref={ref} refused: at the reserve")
+                return self._send(HTTPStatus.INSUFFICIENT_STORAGE, {"error": str(error)})
+            _log(f"util {what} ref={ref} {field_name}={len(entries)} stored={stored}")
+            return self._send(HTTPStatus.OK, {"stored": stored})
+
+        def _util_build(self):
+            """POST /util/build: open a build (or answer the one a key already has)."""
+            if util is None or util_builds is None or runs_table is None:
+                return self._util_off()
+            body = self._json(limit=UTIL_BUILD_BODY_MAX)
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON, or too large"})
+            try:
+                made = util_builds.open(body["key"], body["digest"], body["rows"], body["obs"], body["context"],
+                                        body["refit"], body.get("ref"))
+            except UtilMissing as missing:
+                return self._send(HTTPStatus.CONFLICT, {"missing_rows": missing.rows, "missing_obs": missing.obs})
+            except (KeyError, TypeError, ValueError):       # UtilKeyError is a ValueError
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a util build"})
+            return self._send(HTTPStatus.ACCEPTED, made)
+
+        def _util_build_get(self):
+            """GET /util/build/{id} and /util/build/{id}/result."""
+            if util is None or util_builds is None or runs_table is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            parts = self.path[len("/util/build/"):].split("/")
+            if len(parts) == 1:
+                found = util_builds.get(parts[0])
+                if found is None:
+                    return self._send(HTTPStatus.NOT_FOUND, {"error": "no such util build"})
+                return self._send(HTTPStatus.OK, found)
+            path = util_builds.result_path(parts[0]) if len(parts) == 2 and parts[1] == "result" else None
+            try:
+                source = path.open("rb") if path is not None else None
+            except OSError:
+                source = None
+            if source is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "no result"})
+            with source:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.end_headers()
+                shutil.copyfileobj(source, self.wfile, runs_mod.CHUNK)
+
+        def _run_output(self):
+            """POST /runs/{job}/output: a util run's output, streamed to `results/<build id>.json` (job = build id)."""
+            parts = self.path.split("/")          # ["", "runs", job, "output"]
+            token = self.headers.get("X-Run-Token")
+            run = runs_table.accepts(parts[2], token) if len(parts) == 4 else None
+            limit = worker.settings.util_result_max
+            try:
+                declared = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                declared = 0
+            if run is None or run.kind != "util" or util_builds is None or not util_builds.owns(parts[2]) \
+                    or declared > limit:
+                refused = run is None or run.kind != "util" or util_builds is None or not util_builds.owns(parts[2])
+                self.close_connection = True
+                # A small refused body is read first: closing with it unread can reset the client's connection
+                # before it sees the answer. A large one is not read (the connection is closed on it).
+                try:
+                    if 0 < declared <= runs_mod.CHUNK:
+                        self.rfile.read(declared)
+                except OSError:
+                    pass
+                if refused:
+                    return self._send(HTTPStatus.CONFLICT, {"error": "no open util run takes this output"})
+                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "the output is too large"})
+            size = self._length(1, limit)
+            if size is None:
+                return None
+            target = util_builds.result_file(parts[2])
+            partial = target.with_name(f"{target.name}.part-{uuid.uuid4().hex}")
+            digest, remaining = hashlib.sha256(), size
+            try:
+                with partial.open("wb") as sink:
+                    while remaining:
+                        chunk = self.rfile.read(min(runs_mod.CHUNK, remaining))
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        sink.write(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    return self._send(HTTPStatus.BAD_REQUEST, {"error": "output cut short"})
+                if not util_builds.owns(parts[2]):         # settled while it streamed
+                    return self._send(HTTPStatus.CONFLICT, {"error": "no open util run takes this output"})
+                os.replace(partial, target)
+                util_builds.record_output(parts[2], size, digest.hexdigest())
+            finally:
+                partial.unlink(missing_ok=True)
+            sys.stderr.write(f"run output {parts[2]} util {size} bytes\n")
+            return self._send(HTTPStatus.OK, {"bytes": size, "sha256": digest.hexdigest()})
+
         def _run_started(self):
             parts = self.path.split("/")          # ["", "runs", job, "started"]
             ok = len(parts) == 4 and runs_table.started(parts[2], self.headers.get("X-Run-Token"))
@@ -2433,6 +2982,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["runners"] = {"parse": worker.settings.parse_runner, "control": worker.settings.control_runner,
                                    "heights": worker.settings.heights_runner}
                 body["workflow"] = runs_table.status() if runs_table is not None else None
+                on = util is not None and runs_table is not None
+                body["util"] = {"enabled": on, "digest": util.digest if on else None, "protocol": UTIL_PROTOCOL,
+                                "bytes": util.usage() if on else 0, "reserve": worker.settings.util_reserve}
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -2447,6 +2999,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                                                   "status": worker.archive.status()})
             if self.path.startswith("/archive/files/"):
                 return self._archive_file()
+            if self.path.startswith("/util/build/"):
+                return self._util_build_get()
             if self.path.startswith("/heights/build/"):
                 found = heights.get(self.path[len("/heights/build/"):]) if heights else None
                 if found is None:
@@ -2465,9 +3019,15 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if self.path == "/util/build":
+                return self._util_build()
+            if self.path.startswith("/util/"):
+                return self._util()
             if runs_table is not None and self.path.startswith("/runs/"):
                 if self.path == "/runs/ping":
                     return self._run_ping()
+                if self.path.endswith("/output"):
+                    return self._run_output()
                 if "/cache/" in self.path:
                     return self._run_cache()
                 if self.path.endswith("/result"):
@@ -2711,8 +3271,13 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
                 control: ControlRunner | None = None, heights: HeightBuilds | None = None,
-                runs_table=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table))
+                runs_table=None, util: "UtilStore | None" = None,
+                util_builds: "UtilBuilds | None" = None) -> ThreadingHTTPServer:
+    if util_builds is None and util is not None and runs_table is not None:
+        util_builds = UtilBuilds(worker.settings, util, runs_table)
+    httpd = ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table, util, util_builds))
+    httpd.util_builds = util_builds
+    return httpd
 
 
 def main() -> None:
@@ -2729,7 +3294,9 @@ def main() -> None:
     if settings.archive_dir is not None and settings.height_spool_dir is not None and \
             settings.height_spool_dir.resolve().is_relative_to(settings.archive_dir.resolve()):
         settings.archive_extra_reserve += 2 * settings.height_spool_bytes    # the spool, and its tars (D16)
+    reserve_util(settings, runs_table)
     control_cache.clear_incoming(settings.control_cache_dir)
+    util = UtilStore(settings) if runs_table is not None else None
     control = ControlRunner(settings, runs_table=runs_table) if settings.control_enabled else None
     # Preemption follows where parsing runs (spec D17): a local parse protects the CPU for local children;
     # ControlRunner.preempt itself never touches a Workflow run.
@@ -2743,7 +3310,7 @@ def main() -> None:
     heights = HeightBuilds(settings, control) if control is not None else None
     server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
                          int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights,
-                         runs_table=runs_table)
+                         runs_table=runs_table, **({"util": util} if util is not None else {}))
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)
     server.serve_forever()

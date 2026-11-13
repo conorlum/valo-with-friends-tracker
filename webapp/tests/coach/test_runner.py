@@ -246,7 +246,7 @@ def _wire(monkeypatch, tmp_path, argv, data):
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
     monkeypatch.setattr(playbook, "load", lambda: BOOK)
     monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 100))
-    monkeypatch.setattr(snapshot, "read", lambda db, uuid: data)
+    monkeypatch.setattr(snapshot, "read", lambda db, uuid, **kw: data)
     monkeypatch.setattr(coach, "active_notes", lambda db, kind: ["Plain words."])
     monkeypatch.setattr(coach_report.tempfile, "gettempdir", lambda: str(tmp_path))
 

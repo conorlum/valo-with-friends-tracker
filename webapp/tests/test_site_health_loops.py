@@ -14,6 +14,7 @@ from app.models.map_pool import MapPoolPatchNotes
 from app.models.replay import Replay, ReplayRound, ReplayRoundControl, ReplayRoundWallShare, ReplayUpload
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.services import map_pool_refresh, replay_archive_sync, replay_match_states, site_health, replay_upload
+from app.services import util_build_remote as util
 from app.services import replay_control_remote as remote
 
 
@@ -70,6 +71,9 @@ def loops_under_test(monkeypatch, factory):
     monkeypatch.setattr(map_pool_refresh, "_last_check", None)
     monkeypatch.setattr(map_pool_refresh, "MIN_GAP_S", 0)
     return {
+        "util": ("util-build",
+                 lambda stop: util.run_forever(factory, None, stop, every_s=0),
+                 lambda f: monkeypatch.setattr(util, "step", f)),
         "control": ("control-dispatch",
                     lambda stop: remote.run_forever(factory, None, stop, every_s=0),
                     lambda f: monkeypatch.setattr(remote, "cycle", f)),
@@ -85,7 +89,7 @@ def loops_under_test(monkeypatch, factory):
     }
 
 
-@pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
+@pytest.mark.parametrize("which", ["control", "archive", "states", "pool", "util"])
 def test_failed_pass_recorded_and_next_clean_pass_resolves(which, factory, monkeypatch):
     name, run, patch = loops_under_test(monkeypatch, factory)[which]
     seen = drive(factory, name, run, patch, [False, True])
@@ -101,7 +105,7 @@ def test_a_locked_out_pass_is_not_a_success(which, factory, monkeypatch):
     assert set(keys(factory)) == {name}
 
 
-@pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
+@pytest.mark.parametrize("which", ["control", "archive", "states", "pool", "util"])
 def test_failed_pass_stays_while_failing_and_has_traceback(which, factory, monkeypatch):
     name, run, patch = loops_under_test(monkeypatch, factory)[which]
     drive(factory, name, run, patch, [False, False])
@@ -110,7 +114,7 @@ def test_failed_pass_stays_while_failing_and_has_traceback(which, factory, monke
     assert 0 < len(row.context["traceback"]) <= 15
 
 
-@pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
+@pytest.mark.parametrize("which", ["control", "archive", "states", "pool", "util"])
 def test_registered_while_running_and_unregistered_on_exit(which, factory, monkeypatch):
     name, run, patch = loops_under_test(monkeypatch, factory)[which]
     during = []
@@ -134,12 +138,13 @@ class BadStop:
         return False
 
 
-@pytest.mark.parametrize("which", ["control", "archive", "states", "pool"])
+@pytest.mark.parametrize("which", ["control", "archive", "states", "pool", "util"])
 def test_a_loop_that_dies_on_its_own_stays_registered_and_goes_quiet(which, factory, monkeypatch):
     # B15: nothing restarts a dead thread; keeping its registration is what puts it on the card as quiet.
     name, _, patch = loops_under_test(monkeypatch, factory)[which]
     patch(lambda *a, **k: {"written": 0, "deleted": 0, "unchanged": 0, "seconds": 0.0, "errors": 0})
     runs = {
+        "util": lambda: util.run_forever(factory, None, BadStop(), every_s=0),
         "control": lambda: remote.run_forever(factory, None, BadStop(), every_s=0),
         "archive": lambda: replay_archive_sync.run_forever(factory, None, BadStop(), every_s=0),
         "states": lambda: replay_match_states.run_forever(factory, BadStop(), every_s=0),
@@ -202,6 +207,28 @@ def test_height_rebuild_step_key(cycle_env, factory, monkeypatch):
     monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: True)
     monkeypatch.setattr(remote.replay_heights_remote, "step", lambda *a, **k: frozenset())
     run_cycle(factory, None)
+    assert keys(factory) == {}
+
+
+def test_util_loop_beats_on_failure_and_continues(factory, monkeypatch):
+    stop = threading.Event()
+    beats = []
+    original = site_health.beat
+
+    def beat(name, phase):
+        beats.append((name, phase))
+        original(name, phase)
+
+    def step(*args):
+        if len(beats) == 1:
+            raise Boom("util")
+        assert set(keys(factory)) == {"util-build"}
+        stop.set()
+
+    monkeypatch.setattr(site_health, "beat", beat)
+    monkeypatch.setattr(util, "step", step)
+    util.run_forever(factory, object(), stop, every_s=0)
+    assert beats == [("util-build", phase) for phase in ("start", "end", "start", "end")]
     assert keys(factory) == {}
 
 

@@ -99,6 +99,7 @@ def main() -> int:
     from app.coach import playbook, prompt, runner, snapshot
     from app.db import SessionLocal
     from app.services import coach
+    from scripts import _admin_client
     from scripts.coach_store_report import resolve
 
     try:
@@ -110,7 +111,9 @@ def main() -> int:
         try:
             book = playbook.load()
             match_id, player_id = resolve(db, uuid, args.player)
-            data = snapshot.hide_enemy_names(snapshot.read(db, uuid), player_id)
+            ask = (lambda: _admin_client.request_util_build(_admin_client.DEFAULT_SITE)) \
+                if os.environ.get("REPLAY_ADMIN_TOKEN", "").strip() else None
+            data = snapshot.hide_enemy_names(snapshot.read(db, uuid, ask=ask), player_id)
         except (ValueError, snapshot.SnapshotError) as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2

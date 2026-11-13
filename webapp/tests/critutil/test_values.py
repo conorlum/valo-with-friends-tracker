@@ -384,6 +384,35 @@ def test_yours_leaves_out_every_match_given():
     assert util_values.lift_v2(totals, per_match, "flash", keys, 4, 0.5, leave_out=set(range(1, 8))) is None
 
 
+def _old_lift_v2(totals_table, per_match, typ, keys, L, swing, leave_out=()):
+    """lift_v2 before the expansion cache: every left-out match expanded in full, every call."""
+    minus = util_values.totals({m: v for m, v in per_match.items() if m in set(leave_out)})
+    base = util_values.baseline_v2(totals_table, typ, keys, L, minus)
+    return None if base is None else {**base, "lift": swing - base["mean"]}
+
+
+def test_the_expansion_cache_gives_the_very_same_lift():
+    """Bit for bit: the cache only skips re-expanding, the sums run over the same matches in the same order."""
+    items = corpus(8, with_flash=(1, 3, 5))
+    per_match = util_values.match_tables(items, MODEL)["all"]
+    totals = util_values.totals(per_match)
+    expanded: dict = {}
+    calls = 0
+    for it in items:
+        for t in (1.0, 2.0, 6.0, 15.0):
+            for side in ("attack", "defense"):
+                keys = util_values.levels(it["data"], side, t)
+                for typ in util_values.TYPES:
+                    for L in (1, 4, 10):
+                        for leave in ({it["match"]}, {it["match"], 2}, set(range(1, 8)), ()):
+                            want = _old_lift_v2(totals, per_match, typ, keys, L, 0.25, leave)
+                            got = util_values.lift_v2(totals, per_match, typ, keys, L, 0.25, leave, expanded=expanded)
+                            assert got == want
+                            calls += want is not None
+    assert calls, "some lifts had a baseline"
+    assert set(expanded) <= set(per_match), "one expansion per match, kept for the next cast"
+
+
 def test_a_device_table_holds_the_other_rounds_of_its_map_only():
     plac = {"i": 0, "by": 1, "side": "attack", "t": 8.0, "type": "placeable", "ability_id": "Sage/Barrier",
             "kinds": ["wall"], "effects": [], "signals": {}}
