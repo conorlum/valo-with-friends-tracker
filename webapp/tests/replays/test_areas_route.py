@@ -94,6 +94,19 @@ def test_reviewed_paint_passes_through_ground_and_height_bands(get_areas, tmp_pa
     assert body["bands"] == obj["bands"]
 
 
+@pytest.mark.parametrize("shipped,status", [(True, 200), (False, 404)])
+def test_a_later_layouts_asset_key_serves_its_own_paint(get_areas, tmp_path, monkeypatch, shipped, status):
+    # The viewer asks by the replay's layout asset key; a later layout is in control/index.json, never maps.json.
+    keys = ["Sunset", "Sunset_13_10"] if shipped else ["Sunset"]
+    monkeypatch.setattr(replay_areas.layouts, "control_layouts", lambda path: keys)
+    write_paint(tmp_path, painted_object({0: 1}) | {"map": "Sunset_13_10"}, "Sunset_13_10")
+    got_status, body = get_areas("Sunset_13_10")
+    assert got_status == status
+    if shipped:
+        assert body["map"] == "Sunset_13_10" and body["approximate"] is False
+    assert get_areas("Nowhere_13_10")[0] == 404      # a layout key of a map that does not exist
+
+
 def test_unreviewed_paint_stays_approximate(get_areas, tmp_path):
     write_paint(tmp_path, painted_object({0: 1}) | {"reviewed": False})
     assert get_areas()[1]["approximate"] is True

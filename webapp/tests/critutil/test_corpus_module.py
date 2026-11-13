@@ -80,9 +80,13 @@ def test_corpus_from_inputs_keeps_fingerprints(monkeypatch):
 
     stored, ctx, friends, model = {}, {}, {1}, {"cells": {}}
     calls = []
-    monkeypatch.setattr(corpus, "build_from_rounds", lambda *args: calls.append(args) or {"rows": []})
-    out = corpus.corpus_from_inputs((stored, ctx, friends), [(7, 2, "fp-a"), (7, 3, "fp-b")], model)
-    assert calls == [(stored, ctx, model, friends)]
+    table = {}
+    monkeypatch.setattr(corpus, "build_from_rounds",
+                        lambda *args, **kw: calls.append((args, kw)) or {"rows": []})
+    out = corpus.corpus_from_inputs((stored, ctx, friends), [(7, 2, "fp-a"), (7, 3, "fp-b")], model,
+                                    painted_table=table)
+    assert calls == [((stored, ctx, model, friends), {"painted_table": table})]
+    assert calls[0][1]["painted_table"] is table
     assert out == {"rows": [], "fingerprints": {"7": {"2": "fp-a", "3": "fp-b"}}}
 
 
@@ -104,8 +108,39 @@ def test_digest_covers_all_build_sources():
     expected.update({
         "app/critutil/abilities.json", "app/services/util_values.py", "app/services/util_model.py",
         "app/static/js/replay.js", "app/static/data/callouts.json", "app/coach/__init__.py", "app/coach/areas.py",
+        "app/replays/__init__.py", "app/replays/control_format.py", "app/replays/format.py",
+        "app/replays/player_state.py",
     })
     assert set(build_digest.SOURCES) == expected
+
+
+# Package markers with no build logic: shipped in the worker image, never part of what the build computes.
+_UNDIGESTED = {"app/__init__.py", "app/services/__init__.py"}
+
+
+def test_digest_covers_every_webapp_module_the_build_imports():
+    """The hand list above can't notice a new import; this walks the build's real import closure (a fresh
+    process: corpus, an area lookup and a refit, with no site modules preloaded)."""
+    import subprocess
+    import sys
+
+    from app.critutil import build_digest
+
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "root = Path.cwd().resolve()\n"
+        "from app.critutil import corpus\n"
+        "corpus.area_of('Ascent', 0.5, 0.5, None, painted_table={})\n"
+        "print(json.dumps(sorted(Path(m.__file__).resolve().relative_to(root).as_posix()\n"
+        "      for m in list(sys.modules.values())\n"
+        "      if getattr(m, '__file__', None) and Path(m.__file__).resolve().is_relative_to(root))))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=WEBAPP_ROOT, capture_output=True, text=True,
+                         check=True, env={**__import__("os").environ, "PYTHONPATH": str(WEBAPP_ROOT)})
+    imported = set(__import__("json").loads(out.stdout))
+    assert "app/critutil/corpus.py" in imported
+    assert imported - _UNDIGESTED <= set(build_digest.SOURCES), imported - _UNDIGESTED - set(build_digest.SOURCES)
 
 
 def test_digest_uses_sorted_posix_paths_and_bytes(digest_tree):

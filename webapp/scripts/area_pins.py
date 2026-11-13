@@ -67,7 +67,7 @@ def _rows(db) -> list[dict]:
             .where(ReplayPlayer.replay_id == Replay.id, ReplayPlayer.match_player_id == MatchPlayer.id)
             .having(func.count() == 1).correlate(Replay, MatchPlayer).scalar_subquery())
     rows = (db.query(CoachFeedback.area_name, CoachFeedback.instance_index, CoachPoint.instances,
-                     Replay.match_uuid, Replay.map_name, slot)
+                     Replay.match_uuid, Replay.map_name, Replay.game_branch, slot)
             .select_from(CoachFeedback)
             .join(CoachPoint, CoachPoint.id == CoachFeedback.point_id)
             .join(CoachReport, CoachReport.id == CoachPoint.report_id)
@@ -76,11 +76,16 @@ def _rows(db) -> list[dict]:
                                          MatchPlayer.player_id == CoachFeedback.area_player_id))
             .filter(CoachFeedback.area_name.is_not(None)).order_by(CoachFeedback.id).all())
     out = []
-    for area, index, instances, match, map_name, player_slot in rows:
+    from app.replays import layouts
+
+    for area, index, instances, match, map_name, branch, player_slot in rows:
         moment = instances[index] if isinstance(instances, list) and index is not None and 0 <= index < len(instances) else {}
         if not isinstance(moment, dict):
             moment = {}
-        out.append({"area_name": area, "match": str(match).lower() if match else None, "map": map_name,
+        # A pin belongs to the paint of the replay's layout; a pending or unknown layout has none (skipped).
+        selection = layouts.layout_for(map_name, branch) if map_name else None
+        key = selection.layout.asset_key if selection is not None and selection.state == "ok" else None
+        out.append({"area_name": area, "match": str(match).lower() if match else None, "map": key,
                     "round": moment.get("round"), "t": moment.get("t"), "slot": player_slot})
     return out
 

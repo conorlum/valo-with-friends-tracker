@@ -106,10 +106,12 @@ def test_areas_start_off_and_load_once_when_enabled():
 def test_replay_page_offers_areas_only_outside_demo(demo, linked, map_name):
     env = Environment(loader=FileSystemLoader(str(WEBAPP / "app" / "templates")))
     page = env.get_template("replays/replay.html").render(
-        replay={"map_name": map_name}, replay_data={}, linked=linked, control=None, gaps=False,
+        replay={"map_name": map_name, "asset": map_name}, replay_data={"match": {"layout": {"state": "ok"}}},
+        linked=linked, control=None, gaps=False,
         demo_mode=demo, start_round=1, start_t=None, static_version=lambda: "test")
     assert page.count('data-replay-layer="areas"') == (0 if demo else 1)
-    assert ('loadAreas: function () { return json("/replays/areas/" + match.map + ".json"); }' in page) is (not demo)
+    # areas belong to the replay's layout, like its map image (the layout's asset key)
+    assert ('loadAreas: function () { return json("/replays/areas/" + match.asset + ".json"); }' in page) is (not demo)
     assert 'data-replay-layer="areas" checked' not in page
 
 

@@ -93,7 +93,7 @@ def _pulse_area(view, side: str, reason: str, t: float) -> dict | None:
         if start is None or abs(float(start) - t) > 0.002:
             continue
         if source.get("u") is not None and source.get("v") is not None:
-            areas.append(view.area(source["u"], source["v"]))
+            areas.append(view.area(source["u"], source["v"], source.get("z")))
     if not areas or any(area != areas[0] for area in areas):
         return None
     return areas[0]

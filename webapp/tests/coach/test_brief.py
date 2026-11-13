@@ -68,6 +68,7 @@ def test_brief_lists_the_reviewed_tree_or_approximate_callouts(tmp_path, monkeyp
     monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
     match = snap(tmp_path, {1: 10})
     match.context["match"]["map"] = "Sunset"
+    match.asset_key = "Sunset"              # areas follow the layout's asset key, set when the snapshot loads
     assert brief.build(match, 0)["areas"] == [
         {"name": c["name"], "super": c["super"], "parent": None, "approximate": True}
         for c in sorted(areas.callouts("Sunset"), key=lambda c: c["name"])

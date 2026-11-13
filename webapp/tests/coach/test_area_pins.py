@@ -30,7 +30,7 @@ def test_pins_use_the_nearest_height_sample_and_omit_player_details():
                     {**base, "u": 310, "v": 410, "z": 60}]
 
 
-def test_main_keeps_the_previous_file_if_migration_0032_is_missing(tmp_path, monkeypatch, capsys):
+def test_main_keeps_the_previous_file_if_migration_0033_is_missing(tmp_path, monkeypatch, capsys):
     class Unmigrated:
         def query(self, *columns):
             raise RuntimeError("column area_name does not exist")

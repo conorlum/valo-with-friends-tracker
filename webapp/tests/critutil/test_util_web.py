@@ -191,8 +191,8 @@ def test_a_build_that_raced_new_evidence_is_stored_under_its_own_inputs_and_buil
     real = replay_util.corpus_from_inputs
     builds, stores = [], []
 
-    def racing(inputs, rows, model):
-        out = real(inputs, rows, model)
+    def racing(inputs, rows, model, **kw):
+        out = real(inputs, rows, model, **kw)
         builds.append(len(out["rows"]))
         if len(builds) == 1:
             put_util(db, linked, 2)          # the worker stores another round while this build runs
@@ -228,9 +228,9 @@ def test_no_session_is_in_a_transaction_while_a_build_computes(db, linked, monke
         seen.append(("refit", db.in_transaction()))
         return real_refit(*a, **k)
 
-    def corpus(inputs, rows, model):
+    def corpus(inputs, rows, model, **kw):
         seen.append(("corpus", db.in_transaction()))
-        return real_corpus(inputs, rows, model)
+        return real_corpus(inputs, rows, model, **kw)
 
     monkeypatch.setattr(util_model, "refit_from", refit)
     monkeypatch.setattr(replay_util, "corpus_from_inputs", corpus)
@@ -243,7 +243,7 @@ def test_build_corpus_ends_the_callers_transaction_before_computing(db, linked, 
     seen = []
     real = replay_util.corpus_from_inputs
     monkeypatch.setattr(replay_util, "corpus_from_inputs",
-                        lambda *a: seen.append(db.in_transaction()) or real(*a))
+                        lambda *a, **kw: seen.append(db.in_transaction()) or real(*a, **kw))
     replay_util.build_corpus(db)
     assert seen == [False]
 

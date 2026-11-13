@@ -7,6 +7,7 @@ from app.coach import areas
 from app.coach.areas_draft import encode_cells
 from app.replays import control_format as cf
 from app.replays import format as fmt
+from app.replays import layouts
 from app.replays.map_feature_sources import png_mask
 
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
@@ -17,6 +18,18 @@ NAME_FIELDS = ("id", "name", "parent", "super")
 @lru_cache(maxsize=1)
 def _maps():
     return json.loads(MAPS_JSON.read_text(encoding="utf-8"))
+
+
+def _known_keys() -> set[str]:
+    """Every key the viewer may ask for: the maps, and every layout asset key with control assets (a later layout
+    such as Corrode_13_10 is in control/index.json, never in maps.json)."""
+    keys = set(_maps())
+    try:
+        keys.update(key for key in layouts.control_layouts(CONTROL_DIR / "index.json")
+                    if layouts.ASSET_KEY.match(key) and layouts.map_of(key) in keys)
+    except (OSError, ValueError, KeyError):
+        pass
+    return keys
 
 
 @lru_cache(maxsize=32)
@@ -35,8 +48,9 @@ def _walk_cells(map_name):
 
 
 def payload(map_name: str) -> dict:
-    # Check membership before building any path from the requested map name.
-    if map_name not in _maps():
+    """The areas of one layout, by its asset key (the base layout's key is its map name)."""
+    # Check membership before building any path from the requested key.
+    if map_name not in _known_keys():
         raise KeyError(map_name)
     painted = areas.load_painted(map_name)
     return _payload(map_name, painted.raw if painted is not None else None)

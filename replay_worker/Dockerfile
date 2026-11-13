@@ -40,6 +40,7 @@ COPY webapp/app/gaps /srv/webapp/app/gaps
 COPY webapp/app/moments /srv/webapp/app/moments
 COPY webapp/app/critutil /srv/webapp/app/critutil
 # Every other file the util build reads (app/critutil/build_digest.py SOURCES): a missing one is an error.
+# (Its app/replays sources, the grid and minimap scale behind every area lookup, come with app/replays above.)
 COPY webapp/app/services/__init__.py /srv/webapp/app/services/__init__.py
 COPY webapp/app/services/util_values.py /srv/webapp/app/services/util_values.py
 COPY webapp/app/services/util_model.py /srv/webapp/app/services/util_model.py

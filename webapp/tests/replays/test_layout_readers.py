@@ -59,7 +59,8 @@ def test_util_cast_areas_follow_replay_layout(util_db, linked, layout_assets, ca
 ])
 def test_snapshot_shares_roundview_and_brief_follow_layout(monkeypatch, layout_assets, callout_table,
                                                          branch, key, name):
-    replay = SimpleNamespace(map_name="Toy", game_branch=branch)
+    replay = SimpleNamespace(id=1, recipe="recipe-1", source_sha256="synthetic-source", map_name="Toy",
+                             game_branch=branch)
     context = {"match": {"uuid": "synthetic", "map": "Toy", "rounds": [1], "linked": True,
                           "uv_per_unit": toys.UV_PER_UNIT},
                "players": {"0": {"slot": 0, "name": "Player", "agent": "Jett", "team": "team1",
@@ -72,14 +73,18 @@ def test_snapshot_shares_roundview_and_brief_follow_layout(monkeypatch, layout_a
     monkeypatch.setattr(rc, "round_link", lambda *args: {})
     monkeypatch.setattr(rc, "round_control", lambda *args: rc.RoundControlAnswer(
         "ok", SimpleNamespace(data=control_bytes([(1, 4)], [0]))))
-    monkeypatch.setattr(replay_util, "match_payload", lambda *args, **kwargs: {"rounds": {}})
-    snap = snapshot.Snapshot(snapshot.read(None, "synthetic"))
+    # the stored Critical Util build is current and empty (the wait itself is tests/coach/test_util_read.py's)
+    monkeypatch.setattr(snapshot, "_wait_util",
+                        lambda *args, **kwargs: (snapshot._replay_identity(replay), {}))
+    snap = snapshot.Snapshot(snapshot.read(SimpleNamespace(rollback=lambda: None), "synthetic"))
     assert snap.control(1)["cells"] == {name: 2}
     assert snap.view(1).area(2000, 2000)["name"] == name
     assert snap.view(1).area_names() == [name]
     assert snap.context["match"]["asset_key"] == key
     report = brief.build(snap, 0)
-    assert report["areas"] == [name]
+    # no paint for either layout: the brief lists the layout's callouts, marked approximate
+    assert [area["name"] for area in report["areas"]] == [name]
+    assert all(area["approximate"] for area in report["areas"])
     assert report["match"]["map"] == snap.map == "Toy"
 
 

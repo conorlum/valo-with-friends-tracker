@@ -56,8 +56,8 @@ def test_control_marks_approximate_shares_and_reads_legacy_shapes(snap, tmp_path
 def test_legacy_control_stays_approximate_with_reviewed_paint(snap, tmp_path, monkeypatch):
     monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
     view = query._view(snap, 1)
-    write_paint(tmp_path, painted_object({0: 3}) | {"map": view.map_name}, view.map_name)
-    assert areas.is_painted(view.map_name)
+    write_paint(tmp_path, painted_object({0: 3}) | {"map": view.asset_key}, view.asset_key)
+    assert areas.is_painted(view.asset_key)
     assert "approximate" not in snap.control(1)
     assert query.control(snap, 1, 0, 10, "A Site")["approximate"] is True
 
@@ -122,7 +122,7 @@ def test_knew_round_6_exclusions_have_no_place(snap, monkeypatch, with_kind):
 @pytest.mark.parametrize("with_kind", [False, True])
 def test_knew_serves_the_emitting_pulse_area(snap, monkeypatch, with_kind):
     view = snap.view(1)
-    monkeypatch.setattr(view, "_table", {view.map_name: toys.CALLOUTS["Toy"]})
+    monkeypatch.setattr(view, "_table", {view.asset_key: toys.CALLOUTS["Toy"]})
     monkeypatch.setattr(snap, "view", lambda n: view)
     view.blob["util"].append({"k": "ability", "t": 10.0, "t1": 12.0, "by": 0,
                              "code": "BountyHunter", "name": "E_LoSReveal_Source_Reactivate",
@@ -281,9 +281,24 @@ def test_timeline_holds_the_destroyed_devices_with_their_area(destroyed_snap):
 def test_knew_lists_the_sides_own_devices_destroyed_by_then(destroyed_snap):
     assert query.knew(destroyed_snap, 1, 17.0, "A")["destroyed"] == []
     (lost,) = query.knew(destroyed_snap, 1, 17.5, "A")["destroyed"]
-    assert lost == {"t": 17.2, "device": "trip", "owner": "P1#T1", "area": {"name": "A Site", "super": "A"}}
+    assert lost == {"t": 17.2, "device": "trip", "owner": "P1#T1",
+                    "area": {"name": "A Site", "super": "A", "path": ["A Site"], "approximate": True}}
     assert [d["owner"] for d in query.knew(destroyed_snap, 1, 25.0, "B")["destroyed"]] == ["P6#T6"]
     assert "destroyed" in query.knew(destroyed_snap, 1, 17.5, "A")["note"]
+
+
+@pytest.mark.parametrize("z,name", [(-10, "Top Mid"), (20, "A Site"), (None, None)])
+def test_a_destroyed_devices_area_uses_its_height_on_a_banded_cell(z, name):
+    # A painted cell with two floors names an area only with the row's height (decimetres, like the bands).
+    paint = areas.from_raw("Sunset", __import__("json").dumps(
+        painted_object({0: 2}, bands={"0": [[-20, 0, 2], [10, 30, 3]]})).encode())
+
+    class View:
+        def area(self, u, v, z=None):
+            return areas.area_at("Sunset", u, v, z, painted_table={"Sunset": paint})
+
+    got = query._device_area(View(), {"u": 0, "v": 0, "z": z})
+    assert (got or {}).get("name") == name
 
 
 def test_impact_is_the_stored_row(snap):

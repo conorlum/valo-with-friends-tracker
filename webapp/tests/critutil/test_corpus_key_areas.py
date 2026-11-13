@@ -156,19 +156,34 @@ def test_ensure_values_passes_the_key_snapshot_to_the_build(tmp_path, monkeypatc
     monkeypatch.setattr(replay_util.util_model, "load", lambda db: {})
     monkeypatch.setattr(replay_util.util_model, "rebuild_lock", lambda *args: nullcontext())
     path = write_paint(tmp_path, painted_object({0: 3}))
-    stored = []
+    tables, stored = [], []
+    real_key = replay_util.corpus_key
 
-    def build(db, *, rows, model, painted_table=None):
-        assert painted_table is not None
-        key = replay_util.corpus_key(db, rows, model, painted_table=painted_table)
-        path.unlink(missing_ok=True)
-        return {"key": key, "area": replay_util.area_of("Sunset", 0, 0, "attack", painted_table=painted_table)}
+    def key(db, rows, model, *, painted_table=None):
+        tables.append(("key", painted_table))
+        return real_key(db, rows, model, painted_table=painted_table)
 
-    monkeypatch.setattr(replay_util, "build_corpus", build)
+    def inputs(db, rows):
+        path.unlink(missing_ok=True)        # the paint changes after the key was taken
+        return ({}, {}, set())
+
+    def build(inputs, rows, model, *, painted_table=None):
+        tables.append(("build", painted_table))
+        return {"area": replay_util.area_of("Sunset", 0, 0, "attack", painted_table=painted_table)}
+
+    monkeypatch.setattr(replay_util, "corpus_key", key)
+    monkeypatch.setattr(replay_util, "corpus_inputs", inputs)
+    monkeypatch.setattr(replay_util, "corpus_from_inputs", build)
     monkeypatch.setattr(replay_util, "_store_values", lambda db, key, data: stored.append((key, data)))
-    replay_util.ensure_values(SimpleNamespace(expire_all=lambda: None))
-    assert stored[0][0] == stored[0][1]["key"]
+    replay_util.ensure_values(SimpleNamespace(expire_all=lambda: None, commit=lambda: None))
+    # The first build uses the very table its key was taken with, though the paint went before it computed.
+    snapshot = next(table for kind, table in tables if kind == "key" and table is not None)
+    assert next(table for kind, table in tables if kind == "build") is snapshot
+    assert stored[0][0] == real_key(None, [], {}, painted_table=snapshot)
     assert stored[0][1]["area"] == "A"
+    # The paint changed under it, so the stored key is no longer current: it builds again on the new paint.
+    assert len(stored) == 2 and stored[1][0] == real_key(None, [], {}, painted_table={})
+    assert stored[1][1]["area"] != "A"
 
 
 def test_snapshot_reaches_cast_classification_through_the_corpus_builder(tmp_path, monkeypatch):
@@ -189,7 +204,10 @@ def test_snapshot_reaches_cast_classification_through_the_corpus_builder(tmp_pat
     monkeypatch.setattr(replay_util, "_stored_rounds", lambda db, **kwargs: stored)
     monkeypatch.setattr(replay_util, "_replay_context", lambda db, ids: ctx)
     monkeypatch.setattr(replay_util, "friend_players", lambda db: set())
-    built = replay_util.build_corpus(None, rows=[], model=MODEL, painted_table=table)
+    from types import SimpleNamespace
+
+    built = replay_util.build_corpus(SimpleNamespace(commit=lambda: None), rows=[], model=MODEL,
+                                     painted_table=table)
     assert built["rows"]
     assert {row["area"] for row in built["rows"]} == {"A"}
 

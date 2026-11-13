@@ -74,7 +74,7 @@ def test_full_build_round_trip_preserves_types_order_and_values(tmp_path, monkey
     with tarfile.open(path) as archive:
         assert set(archive.getnames()) == {"context.json", *(f"rounds/{key}.json" for key in blobs)}
     inputs = corpus.unpack_inputs(path)
-    expected = corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, model)
+    expected = corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, model, painted_table={})
     result = corpus.compute(inputs)
     assert result["values"] == expected
     assert json.dumps(result["values"], sort_keys=True) == json.dumps(expected, sort_keys=True)
@@ -82,11 +82,64 @@ def test_full_build_round_trip_preserves_types_order_and_values(tmp_path, monkey
     assert result["values_key"] == corpus.values_key(parts, model["key"])
     # Check accumulation order directly, independently of numerical coincidence.
     calls = []
-    monkeypatch.setattr(corpus, "corpus_from_inputs", lambda *args: calls.append(args) or {})
+    monkeypatch.setattr(corpus, "corpus_from_inputs", lambda *args, **kw: calls.append(args) or {})
     corpus.compute(inputs)
     rebuilt = calls[0][0][0]
     assert list(rebuilt) == list(stored)
     assert [list(v) for v in rebuilt.values()] == [list(v) for v in stored.values()]
+
+
+def test_published_paint_travels_in_the_context_and_keys_the_build(tmp_path, monkeypatch):
+    """The worker has no git checkout and no paint file: the site's paint reaches it in context.json, places every
+    cast, and is in the values_key exactly as the site's corpus_key puts it."""
+    from app.coach import areas
+    from tests.coach.test_areas import painted_object, write_paint
+
+    monkeypatch.setattr(util_values, "gate_all_modes", fake_gate(True))
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path / "paint")
+    monkeypatch.setattr(areas, "_git_root", lambda: None)
+    (tmp_path / "paint").mkdir()
+    path = write_paint(tmp_path / "paint", painted_object({0: 3}))      # cell 0 is "A Site" (super "A")
+    table = areas.load_table(published_only=True)
+    path.unlink()                                                     # nothing on the worker's disk
+    assert set(table) == {"Sunset"}
+
+    stored, ctx, rows = original_inputs()
+    for rid, c in ctx.items():
+        c["map"] = "Sunset"
+        for data in stored[rid].values():
+            for cast in data["casts"]:
+                cast.update(u=0, v=0)
+    rows = [(rid, n, fp, at, stored[rid][n]) for rid, n, fp, at, _ in rows]
+    model = {**MODEL, "key": "original-win"}
+    monkeypatch.setattr(replay_util, "friend_players", lambda db: {FRIEND})
+    site_hash = replay_util.corpus_key_parts(None, [], painted_table=table)["areas_hash"]
+    assert site_hash == areas.table_hash(painted_table=table) is not None
+    parts = parts_for(ctx, {FRIEND}, rows) | {"areas_hash": site_hash}
+
+    encoded = corpus.encode_context(ctx, {FRIEND}, model, rows, set(), False, parts, table)
+    decoded = corpus.decode_context(encoded)
+    assert set(decoded["areas"]) == {"Sunset"} and decoded["areas"]["Sunset"].raw == table["Sunset"].raw
+    archive = tmp_path / "inputs.tar"
+    corpus.pack_inputs(encoded, {corpus.row_key(*r[:4]): corpus.encode_round(r[4]) for r in rows}, {}, archive)
+    result = corpus.compute(corpus.unpack_inputs(archive))
+
+    casts = [row for row in result["values"]["rows"] if row["kind"] != "heal"]
+    assert casts and {row["area"] for row in casts} == {"A"}
+    assert result["values_key"] == corpus.values_key(parts, model["key"])
+    assert result["values_key"] != corpus.values_key({**parts, "areas_hash": None}, model["key"])
+    # No paint at all keeps the pre-paint key, and a context with no paint places casts by callouts alone.
+    assert corpus.values_key({**parts, "areas_hash": None}, model["key"]) == \
+        corpus.values_key({k: v for k, v in parts.items() if k != "areas_hash"}, model["key"])
+    assert corpus.decode_context(corpus.encode_context(ctx, {FRIEND}, model, rows, set(), False, parts))["areas"] == {}
+
+
+def test_a_corrupt_paint_member_refuses_the_build(monkeypatch):
+    stored, ctx, rows = original_inputs()
+    wire = json.loads(corpus.encode_context(ctx, {FRIEND}, MODEL, rows, set(), False, parts_for(ctx, {FRIEND}, rows)))
+    wire["areas"] = [["Sunset", "{not json"]]
+    with pytest.raises(ValueError, match="invalid painted areas for 'Sunset'"):
+        corpus.decode_context(json.dumps(wire).encode())
 
 
 def test_row_keys_normalize_utc_without_losing_microseconds():
@@ -143,7 +196,7 @@ def test_compute_refit_uses_payload_match_ids_and_the_resulting_estimator_key(tm
     result = corpus.compute(corpus.unpack_inputs(path))
     win = util_model.refit_from(obs, excluded) if refit else None
     assert result["win"] == win
-    assert result["values"] == corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, win)
+    assert result["values"] == corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, win, painted_table={})
     assert result["values_key"] == corpus.values_key(parts, (win or {}).get("key"))
     if refit:
         assert result["values_key"] != corpus.values_key(parts, None)

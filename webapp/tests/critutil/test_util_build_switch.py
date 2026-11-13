@@ -223,8 +223,11 @@ def test_admin_asks_and_reports_current_inputs(admin_site, phase, current):
     status, body = post(app, "synthetic-admin-token")
     assert status == 200
     assert util_build_remote.STATE.asked is True
+    from app.coach import areas
+
     assert body == {"stale": not current, "in_flight": phase != "idle", "key": key,
-                    "stored_key": stored_key, "digest": build_digest.digest(WEBAPP)}
+                    "stored_key": stored_key, "digest": build_digest.digest(WEBAPP),
+                    "areas_hash": areas.table_hash(painted_table=areas.load_table(published_only=True))}
 
 
 def test_admin_reports_missing_products(admin_site):

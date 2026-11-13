@@ -115,6 +115,15 @@ def _wait_util(db, match_uuid, *, session_factory, deadline, poll_s, ask):
                     if local_digest != site_digest:
                         raise SnapshotError("Critical Util: this checkout's code differs from the site's "
                                             f"(local digest {local_digest}, site digest {site_digest})")
+                if answer and "areas_hash" in answer:       # a site from before painted areas sends none
+                    from app.coach import areas
+
+                    local_areas = areas.table_hash(painted_table=areas.load_table(published_only=True))
+                    if local_areas != answer["areas_hash"]:
+                        raise SnapshotError(
+                            "Critical Util: this checkout's published map paint (origin/main) differs from the "
+                            f"site's (local {local_areas}, site {answer['areas_hash']}): the build keys can never "
+                            "match. Fetch origin/main, or wait for the site to deploy the paint, then run again")
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(max(poll_s, 0.001), remaining))

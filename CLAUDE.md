@@ -140,7 +140,11 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 
 ### Critical Util
 
-Critical Util builds read reviewed paint from origin/main; merge it to publish.
+- Reviewed map paint (`app/static/data/control/<asset key>.areas.json`) is published by merging it: the site
+  reads origin/main's paint once per build, keys the build with its hash (`corpus_key_parts["areas_hash"]`)
+  and sends the paint to the worker in the build's `context.json`; the worker never reads git or a paint
+  file. The coach's local key uses this checkout's origin/main, so it refuses at once, naming the paint,
+  when that differs from the site's (`areas_hash` from `POST /admin/replays/util/build`).
 
 Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
 (`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.
@@ -199,7 +203,8 @@ The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`
 stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
 (`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
 loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost,
-`map_layout_walls` (maps whose replays put players inside walls after a patch); and checked
+`map_layout_walls` (maps whose replays put players inside walls after a patch), `trip_too_long` (replays with trip
+pairs longer than `site_health.TRIP_LIMIT_M`); and checked
 kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs
 never wait on the database for it: `record`, `resolve` and `count` queue in memory, in the order they happen, and
 the flush thread writes them every 60 s (a resolve deletes rows last seen before it; one entry the database refuses

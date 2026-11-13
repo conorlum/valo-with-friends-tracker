@@ -23,6 +23,11 @@ SOURCES = tuple(sorted(
         "app/static/data/callouts.json",
         "app/coach/__init__.py",
         "app/coach/areas.py",
+        # areas.py's grid (control_format.GRID) and minimap scale (format.UV_SCALE) place every cast's area
+        "app/replays/__init__.py",
+        "app/replays/control_format.py",
+        "app/replays/format.py",
+        "app/replays/player_state.py",
     ]
 ))
 

@@ -234,12 +234,16 @@ def render_player(**context):
 
 
 def test_the_tab_and_panel_render_only_for_linked_with_control():
-    html = render_player(linked=True, control={"cover_reviewed": True})
+    # `panels` is the route's linked-with-control-on-a-current-layout flag (routers/replays.viewer_context)
+    html = render_player(linked=True, control={"cover_reviewed": True}, panels=True)
     for hook in ('data-replay-tab="moments"', 'data-replay-panel="moments"', "data-replay-moments", "Critical Moments",
                  "Measurements, not verdicts."):
         assert hook in html, hook
     assert html.index('data-replay-tab="analysis"') < html.index('data-replay-tab="moments"')
-    for context in ({"linked": False, "control": {"cover_reviewed": True}}, {"linked": True}, {"linked": False}):
+    for context in ({"linked": False, "control": {"cover_reviewed": True}, "panels": False},
+                    {"linked": True, "panels": False}, {"linked": False, "panels": False},
+                    # a pending layout: control stays on (the stale round overlay) but the match panels go
+                    {"linked": True, "control": {"cover_reviewed": True}, "panels": False}):
         html = render_player(**context)
         assert 'data-replay-tab="moments"' not in html and 'data-replay-panel="moments"' not in html
 

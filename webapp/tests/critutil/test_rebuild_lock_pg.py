@@ -57,7 +57,7 @@ def test_pg_no_connection_idles_in_a_transaction_or_holds_a_lock_through_a_compu
     watcher = postgres_session_or_skip()
     seen = {}
 
-    def slow(inputs, rows, model):
+    def slow(inputs, rows, model, **kw):
         pid = pid_of[0]
         seen["state"] = watcher.execute(text("SELECT state FROM pg_stat_activity WHERE pid = :p"), {"p": pid}).scalar()
         seen["locks"] = watcher.execute(text("SELECT count(*) FROM pg_locks WHERE pid = :p AND locktype = 'advisory'"),

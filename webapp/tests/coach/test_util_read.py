@@ -32,7 +32,8 @@ def reader(monkeypatch):
     caller = factory()
     state = SimpleNamespace(now=0.0, polls=[], sleeps=[], payloads=0, events=[], on_sleep=lambda: None,
                             caller=caller, factory=factory, engine=engine)
-    replay = SimpleNamespace(id=1, recipe="recipe-1", source_sha256="synthetic-source", match_id=7, map_name="Toy", round_count=1)
+    replay = SimpleNamespace(id=1, recipe="recipe-1", source_sha256="synthetic-source", match_id=7, map_name="Toy", round_count=1,
+                             game_branch="release-13.08")
     context = {"match": {"linked": True, "rounds": [1]}, "players": {}}
 
     def find(db, uuid):
@@ -219,6 +220,36 @@ def test_different_corpus_key_with_same_digest_keeps_waiting(reader):
     assert reader.read(ask=ask)["rounds"] and len(reader.sleeps) == 1
 
 
+def _same_code():
+    return build_digest.digest(Path(snapshot.__file__).resolve().parents[2])
+
+
+def test_different_published_paint_refuses_immediately_naming_it(reader, monkeypatch):
+    from app.coach import areas
+
+    reader.set_key("old")
+    monkeypatch.setattr(areas, "load_table", lambda *a, **kw: {})
+    monkeypatch.setattr(areas, "table_hash", lambda *a, **kw: None)       # this checkout has no paint yet
+    ask = Mock(return_value={"stale": True, "in_flight": False, "key": "with-paint", "stored_key": "with-paint",
+                             "digest": _same_code(), "areas_hash": "site-paint"})
+    with pytest.raises(snapshot.SnapshotError, match=r"map paint.*local None, site site-paint.*Fetch origin/main"):
+        reader.read(ask=ask)
+    assert reader.sleeps == []
+
+
+@pytest.mark.parametrize("answer_paint", [{"areas_hash": None}, {}])     # {}: a site from before painted areas
+def test_same_or_unsent_paint_keeps_waiting(reader, monkeypatch, answer_paint):
+    from app.coach import areas
+
+    reader.set_key("old")
+    reader.on_sleep = lambda: reader.set_key("current")
+    monkeypatch.setattr(areas, "load_table", lambda *a, **kw: {})
+    monkeypatch.setattr(areas, "table_hash", lambda *a, **kw: None)
+    ask = Mock(return_value={"stale": True, "in_flight": True, "key": "different-evidence",
+                             "stored_key": "old", "digest": _same_code(), **answer_paint})
+    assert reader.read(ask=ask)["rounds"] and len(reader.sleeps) == 1
+
+
 def test_updating_payload_reenters_wait(reader, monkeypatch):
     original = replay_util.match_payload
     calls = []
@@ -281,7 +312,8 @@ def replacing_reader(reader, monkeypatch):
 
     def replacement(generation, *, row_id=1):
         return SimpleNamespace(id=row_id, recipe=f"recipe-{generation}", source_sha256="synthetic-source",
-                               match_id=7, map_name="Toy", round_count=1, generation=generation)
+                               match_id=7, map_name="Toy", round_count=1, generation=generation,
+                               game_branch="release-13.08")
 
     state.replacement = replacement
     state.active = replacement(1)

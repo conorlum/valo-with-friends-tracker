@@ -176,7 +176,7 @@ def control(snap, n, t0, t1, area) -> dict:
 
 
 def _device_area(view, d: dict) -> dict | None:
-    return None if d["u"] is None or d["v"] is None else view.area(d["u"], d["v"])
+    return None if d["u"] is None or d["v"] is None else view.area(d["u"], d["v"], d.get("z"))
 
 
 def timeline(snap, n, t0=None, t1=None) -> dict:
