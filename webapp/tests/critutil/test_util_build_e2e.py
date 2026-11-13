@@ -30,7 +30,7 @@ from app.models.match import Match, MatchPlayer, MatchSource  # noqa: E402
 from app.models.player import Player  # noqa: E402
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel  # noqa: E402
 from app.models.round import Round, RoundPlayerStat  # noqa: E402
-from app.services import replay_control_remote, replay_util, util_model, util_values  # noqa: E402
+from app.services import replay_control_remote, replay_util, util_model, util_store, util_values  # noqa: E402
 from app.services import util_build_remote as remote  # noqa: E402
 from app.services.replay_control_remote import ControlClient  # noqa: E402
 from tests.critutil.test_build import FRIEND, fake_gate, toy_corpus  # noqa: E402
@@ -159,7 +159,9 @@ def test_a_build_runs_across_site_worker_and_task_and_is_stored(world):
     with box.maker() as db:
         stored = db.get(UtilModel, "values")
         assert stored.version == util_values.VERSION
-        assert stored.data == expected_values(box, {**FIRST_PLAIN_MODEL, "excluded": sorted(box.ctx)})
+        assert stored.data is None
+        assert util_store.decode_values(stored.blob) == expected_values(
+            box, {**FIRST_PLAIN_MODEL, "excluded": sorted(box.ctx)})
         # Keyed by what it was built from, the stored estimator included (R5).
         assert stored.key == replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False),
                                                     util_model.load(db))
@@ -181,7 +183,8 @@ def test_a_refit_due_stores_the_refitted_estimator_and_nothing_is_built_twice(wo
         assert win.data == json.loads(corpus.encode_output(refit))
         assert win.key == refit["key"] and win.version == util_model.VERSION
         values = db.get(UtilModel, "values")
-        assert values.data == expected_values(box, refit)
+        assert values.data is None
+        assert util_store.decode_values(values.blob) == expected_values(box, refit)
         # The stored key is the refitted estimator's, not the dispatch key (R5), and it is current now.
         assert values.key == replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), refit)
         assert values.key != box.state.key

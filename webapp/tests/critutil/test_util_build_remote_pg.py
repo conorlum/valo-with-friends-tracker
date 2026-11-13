@@ -1,6 +1,7 @@
 """The remote Critical Util build's store and the coach's wait on a real PostgreSQL (W14). SQLite cannot show that
-the stored products are JSONB objects (the `CAST(:data AS JSONB) -> 'values'` upsert in util_build_remote._store),
-nor that no backend idles in a transaction while the loop polls a slow worker or the coach waits. Needs
+the values build is stored as a compressed blob with NULL `data` (no JSON sent to the server, no JSONB cast) while
+"win" stays a JSONB object, nor that no backend idles in a transaction while the loop polls a slow worker or the
+coach waits. Needs
 VALO_TEST_DATABASE_URL (see tests/_postgres.py) and a migrated scratch database from tests/support/postgres.py;
 skipped without it. Synthetic toy data only.
 """
@@ -21,7 +22,7 @@ from app.models.match import Match, MatchPlayer, MatchSource, Team
 from app.models.player import Player
 from app.models.replay import UtilModel
 from app.models.round import Round
-from app.services import replay_control_remote, replay_util, util_model, util_values
+from app.services import replay_control_remote, replay_util, util_model, util_store, util_values
 from app.services import util_build_remote as remote
 from tests.critutil.test_build import FRIEND, fake_gate, toy_corpus
 from tests.critutil.test_values import MODEL
@@ -237,7 +238,7 @@ def test_pg_concurrent_edit_between_key_check_and_load_abandons(observation_fact
     assert old_keys != new_keys
 
 
-def test_pg_step_stores_both_products_as_jsonb_objects(factory, monkeypatch, remote_on):
+def test_pg_step_stores_values_as_blob_and_win_as_jsonb(factory, monkeypatch, remote_on):
     data, values = toy_output(monkeypatch)
     state = open_state()
     worker = SlowWorker(data, state, delay=0)
@@ -245,13 +246,80 @@ def test_pg_step_stores_both_products_as_jsonb_objects(factory, monkeypatch, rem
     remote.step(factory, worker, state, NOW + 1)       # done: collected and stored
     assert state.phase == "idle"
     with factory() as db:
-        rows = db.execute(text("SELECT name, jsonb_typeof(data), key, version, "
+        rows = db.execute(text("SELECT name, data IS NULL AND blob IS NOT NULL, "
+                               "jsonb_typeof(data), key, version, "
                                "computed_at > now() - interval '1 minute' FROM util_model ORDER BY name")).all()
-    assert rows == [("values", "object", "stored-key", util_values.VERSION, True),
-                    ("win", "object", "toy-win", util_model.VERSION, True)]
+    assert rows == [("values", True, None, "stored-key", util_values.VERSION, True),
+                    ("win", False, "object", "toy-win", util_model.VERSION, True)]
     with factory() as db:
-        assert db.get(UtilModel, "values").data == json.loads(corpus.encode_output(values))
+        assert util_store.decode_values(db.get(UtilModel, "values").blob) == json.loads(corpus.encode_output(values))
         assert db.get(UtilModel, "win").data == json.loads(corpus.encode_output(WIN))
+
+
+def test_pg_store_sends_no_json_to_the_server(factory, monkeypatch, remote_on):
+    from sqlalchemy import event
+
+    data, _ = toy_output(monkeypatch)
+    captured = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        captured.append((statement, parameters))
+
+    engine = factory.kw["bind"]
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        state = open_state()
+        worker = SlowWorker(data, state, delay=0)
+        remote.step(factory, worker, state, NOW)
+        remote.step(factory, worker, state, NOW + 1)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert state.phase == "idle" and captured
+    assert not [s for s, _ in captured if "JSONB" in s.upper() or "CAST(" in s.upper()], captured
+
+    def values_of(parameters):
+        if isinstance(parameters, dict):
+            return list(parameters.values())
+        return list(parameters)
+
+    def flat(parameters):
+        out = []
+        for item in values_of(parameters):
+            out.extend(values_of(item) if isinstance(item, (list, tuple, dict)) else [item])
+        return out
+
+    writes = [(s, p) for s, p in captured if "INSERT INTO util_model" in s or "UPDATE util_model" in s]
+    assert writes
+    blob_writes = 0
+    for statement, parameters in writes:
+        params = flat(parameters)
+        is_win = "toy-win" in params
+        if not is_win:
+            blobs = [p for p in params if isinstance(p, (bytes, bytearray, memoryview)) or type(p).__name__ == "Binary"]
+            assert blobs, "the values write binds its build as bytes"
+            blob_writes += 1
+            assert not [p for p in params if isinstance(p, str) and len(p) > 1000]
+    assert blob_writes >= 1
+
+
+def test_pg_read_values_reads_blob_and_legacy_jsonb(factory):
+    legacy = {"rows": [1, 2]}
+    util_store.clear_cache()
+    with factory() as db:
+        assert util_store.read_values(db) is None
+        db.add(UtilModel(name="values", version=util_values.VERSION, key="legacy-key", data=legacy, blob=None))
+        db.commit()
+    with factory() as db:
+        assert util_store.read_values(db) == ("legacy-key", legacy)
+    with factory() as db:
+        built = {"rows": [3, 4, 5], "matches": {}}
+        util_store.store_values(db, "blob-key", built)
+        db.commit()
+        row = db.get(UtilModel, "values")
+        assert row.data is None and row.blob is not None
+    with factory() as db:
+        assert util_store.read_values(db) == ("blob-key", built)
+    util_store.clear_cache()
 
 
 def test_pg_a_stored_value_is_replaced_not_nested(factory, monkeypatch, remote_on):
@@ -263,8 +331,8 @@ def test_pg_a_stored_value_is_replaced_not_nested(factory, monkeypatch, remote_o
         remote.step(factory, worker, state, NOW + 1)
     with factory() as db:
         assert db.execute(text("SELECT count(*) FROM util_model")).scalar() == 2
-        assert db.execute(text("SELECT key, jsonb_typeof(data) FROM util_model WHERE name = 'values'")).one() \
-            == ("key-1", "object")
+        assert db.execute(text("SELECT key, data IS NULL AND blob IS NOT NULL FROM util_model "
+                               "WHERE name = 'values'")).one() == ("key-1", True)
 
 
 def test_pg_no_backend_idles_in_a_transaction_while_the_loop_polls_and_downloads(factory, watcher, monkeypatch,
@@ -304,8 +372,8 @@ def test_pg_no_backend_idles_in_a_transaction_while_the_loop_polls_and_downloads
     assert len(passes) == worker.polls == 2 and state.phase == "idle"
     assert seen == [], seen
     with factory() as db:
-        assert db.execute(text("SELECT jsonb_typeof(data) FROM util_model WHERE name = 'values'")).scalar() \
-            == "object"
+        assert db.execute(text("SELECT data IS NULL AND blob IS NOT NULL FROM util_model "
+                               "WHERE name = 'values'")).scalar() is True
 
 
 def test_pg_the_coachs_wait_holds_no_transaction_and_then_reads_the_stored_build(factory, watcher, monkeypatch,
@@ -349,5 +417,5 @@ def test_pg_the_coachs_wait_holds_no_transaction_and_then_reads_the_stored_build
         assert identity == (1, "synthetic-recipe", "f" * 64) and rounds == {"1": {"casts": []}}
     assert len(sleeps) == 2 and idle == [], idle
     with factory() as db:
-        assert db.execute(text("SELECT jsonb_typeof(data) FROM util_model WHERE name = 'values'")
-                          ).scalar() == "object"
+        assert db.execute(text("SELECT data IS NULL AND blob IS NOT NULL FROM util_model "
+                               "WHERE name = 'values'")).scalar() is True
