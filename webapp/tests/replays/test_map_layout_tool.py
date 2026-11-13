@@ -235,6 +235,24 @@ def test_build_without_kill_lines_writes_the_rest_then_refuses(tmp_path, capsys)
     assert "kill_lines.py" in err and "risk1.py" in err and KEY in err
 
 
+def test_build_completes_a_pending_entry_registered_without_assets(tmp_path):
+    """R2-7 (2026-11-12): the design lets the owner register a layout before its redraw (layout_pending); build
+    then completes that entry rather than refusing the key."""
+    root = _toy_tree(tmp_path / "static")
+    registry = json.loads((root / "data" / "layouts.json").read_text(encoding="utf-8"))
+    registry["maps"]["Toy"] = [{"id": "Toy@base", "key": "Toy", "start": None, "drawn_from": "13.08",
+                                "regions": None},
+                               {"id": "Toy@13.10", "key": KEY, "start": "13.10", "drawn_from": "13.10",
+                                "regions": None}]
+    _w(root / "data" / "layouts.json", registry)
+    assert _run(root, tmp_path) == 0
+    rows = json.loads((root / "data" / "layouts.json").read_text(encoding="utf-8"))["maps"]["Toy"]
+    assert [row["key"] for row in rows] == ["Toy", KEY]
+    assert rows[1]["regions"] == f"{KEY}.regions.png"
+    with pytest.raises(SystemExit):
+        _run(root, tmp_path)
+
+
 def test_build_refuses_a_key_that_already_exists(tmp_path):
     root = _toy_tree(tmp_path / "static")
     assert _run(root, tmp_path) == 0
@@ -424,6 +442,13 @@ def test_fetch_minimap_after_a_redraw_compares_with_the_newest_layout(tmp_path, 
     assert map_layout.main(["fetch-minimap", "Toy", "--out", str(tmp_path / "o")]) == 0
     assert capsys.readouterr().out.strip() == f"same floor as {KEY}"
     assert not (tmp_path / "o").exists()
+    # R2-6: a 20 x 20 closure keeps the overall IoU over 0.99, but it is a change to look at
+    upstream[200:220, 200:220] = (0, 0, 0, 0)
+    buf.seek(0), buf.truncate()
+    Image.fromarray(upstream, "RGBA").save(buf, "PNG")
+    assert map_layout.main(["fetch-minimap", "Toy", "--out", str(tmp_path / "o")]) == 0
+    assert capsys.readouterr().out.startswith("differs")
+    assert (tmp_path / "o" / "Toy.png").is_file()
 
 
 def test_notes_url_keeps_the_patchs_zero(tmp_path, monkeypatch):
@@ -455,6 +480,11 @@ def test_kill_lines_writes_risk1s_qualifying_endpoints_under_the_key(tmp_path):
     with pytest.raises(SystemExit):
         map_layout.main(["kill-lines", "--kills", str(kills), "--map", "Toy", "--key", "Other_13_10",
                          "--into", str(fixture)])
+    before = fixture.read_bytes()
+    with pytest.raises(SystemExit):     # R2-13: the base key's lines are the base map's, never replaced here
+        map_layout.main(["kill-lines", "--kills", str(kills), "--map", "Toy", "--key", "Toy",
+                         "--into", str(fixture)])
+    assert fixture.read_bytes() == before
 
 
 from test_control_store import db, factory  # noqa: E402,F401

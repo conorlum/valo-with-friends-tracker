@@ -96,11 +96,20 @@ def cmd_align(args) -> int:
     return 0
 
 
+def _fitted_floor(fit_dir: Path, pic, res) -> np.ndarray:
+    """align's floor.png, the mask build reads too (R2, 2026-11-12: diff and the overlay re-warped the picture
+    instead, so a hand-edited floor.png reached build alone); the warp again for a fit from before floor.png."""
+    floor = fit_dir / "floor.png"
+    if floor.is_file():
+        return np.array(Image.open(floor).convert("L")) > 0
+    return fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
+
+
 def cmd_diff(args) -> int:
     res = json.loads((args.fit / "fit.json").read_text(encoding="utf-8"))
     crop = tuple(res["crop"]) if res.get("crop") else None
     _, pic, ours = _load(Path(res["picture"]), crop, args.ours)
-    new = fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
+    new = _fitted_floor(args.fit, pic, res)
     for r in fit.diff_regions(ours, new, min_px=args.min_px):
         x0, y0, x1, y1 = r["bbox"]
         print(f"  {r['kind']:7s} px {r['area']:5d}  box x {x0}-{x1} y {y0}-{y1}")
@@ -150,9 +159,16 @@ def cmd_build(args) -> int:
     control, img_dir = into / "data" / "control", into / "img" / "maps"
     registry = _read_json(into / "data" / "layouts.json")
     existing = layouts.layouts_of(name, registry)
-    if any(row.asset_key == key for row in existing) or (control / f"{key}.sight.png").exists():
+    # R2-7 (2026-11-12): a pending entry (registered without assets, the design's one-line PR while a redraw
+    # waits) is completed in place; a key with assets is refused.
+    pending = next((row for row in existing if row.asset_key == key), None)
+    built = key in (_read_json(control / "index.json").get("maps") or {})
+    if built or (control / f"{key}.sight.png").exists():
         raise SystemExit(f"{key} already exists under {into}; nothing written")
-    previous = existing[-1]
+    earlier = [row for row in existing if row.asset_key != key]
+    if pending is not None and earlier and existing[-1].asset_key != key:
+        raise SystemExit(f"{key} is pending but not the newest layout of {name}; nothing written")
+    previous = earlier[-1]
     if previous.start is not None and previous.start >= patch:
         raise SystemExit(f"{key} must start after {previous.display_id}")
     scale = _read_json(into / "data" / "maps.json")[name]["xMultiplier"]
@@ -200,6 +216,7 @@ def cmd_build(args) -> int:
     _write_json(control / "index.json", index, 1)
     rows = list(registry["maps"].get(name) or [
         {"id": f"{name}@base", "key": name, "start": None, "drawn_from": "13.08", "regions": None}])
+    rows = [row for row in rows if row["key"] != key]      # a pending entry is replaced by the built one
     rows.append({"id": f"{name}@{args.patch}", "key": key, "start": args.patch,
                  "drawn_from": args.patch, "regions": regions_name})
     registry["maps"][name] = rows
@@ -395,7 +412,7 @@ def cmd_overlay(args) -> int:
     res = json.loads((args.fit / "fit.json").read_text(encoding="utf-8"))
     crop = tuple(res["crop"]) if res.get("crop") else None
     _, pic, ours = _load(Path(res["picture"]), crop, args.ours)
-    new = fit.warp_mask(pic, res["rot"], res["scale"], res["tx"], res["ty"], SIZE)
+    new = _fitted_floor(args.fit, pic, res)
     regions = fit.diff_regions(ours, new, min_px=args.min_px)
     found, replays = positions(args.map, _patch(args.patch))
     spots = [(int(x), int(y)) for x, y in found]
@@ -424,6 +441,7 @@ def cmd_overlay(args) -> int:
 
 
 SAME_FLOOR_IOU = 0.99     # upstream's floor and the newest layout's: the same picture, re-drawn by build
+MIN_REGION_PX = 60        # diff's and overlay's --min-px default: a region this size is a change to look at
 
 
 def _sha12(data: bytes) -> str:
@@ -457,7 +475,9 @@ def cmd_fetch_minimap(args) -> int:
     if vendored.is_file() and latest != args.map:
         theirs = fit.ours_floor_mask(np.array(Image.open(io.BytesIO(upstream)).convert("RGBA")))
         ours = fit.ours_floor_mask(np.array(Image.open(vendored).convert("RGBA")))
-        if theirs.shape == ours.shape and fit.iou(theirs, ours) >= SAME_FLOOR_IOU:
+        # R2-6 (2026-11-12): a high overall IoU can hide a small closure; any region diff would list counts too
+        if theirs.shape == ours.shape and fit.iou(theirs, ours) >= SAME_FLOOR_IOU \
+                and not fit.diff_regions(ours, theirs, min_px=MIN_REGION_PX):
             print(f"same floor as {latest}")
             return 0
     args.out.mkdir(parents=True, exist_ok=True)
@@ -567,7 +587,8 @@ def cmd_kill_lines(args) -> int:
 
     from app.replays import layouts
 
-    if not layouts.ASSET_KEY.fullmatch(args.key) or layouts.map_of(args.key) != args.map:
+    # R2-13: a later layout's key only; the base key's lines judge the base map and stay as they are
+    if not layouts.ASSET_KEY.fullmatch(args.key) or layouts.map_of(args.key) != args.map or args.key == args.map:
         raise SystemExit(f"{args.key!r} is not a layout key of {args.map}")
     lines, replays, skipped = [], 0, 0
     for path in sorted(args.kills.glob("*.json")):
@@ -603,7 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("diff", help="list the changed regions of a fit")
     d.add_argument("--fit", type=Path, required=True, help="the --out dir of an align run")
     d.add_argument("--ours", type=Path, required=True)
-    d.add_argument("--min-px", type=int, default=60)
+    d.add_argument("--min-px", type=int, default=MIN_REGION_PX)
     d.set_defaults(func=cmd_diff)
     b = sub.add_parser("build", help="a new layout's assets and registry entries")
     b.add_argument("map")
@@ -622,7 +643,7 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--map", required=True)
     o.add_argument("--patch", required=True, help="the new layout's patch, 13.10 form: positions from it on only")
     o.add_argument("--out", type=Path, required=True, help="a scratch dir")
-    o.add_argument("--min-px", type=int, default=60)
+    o.add_argument("--min-px", type=int, default=MIN_REGION_PX)
     o.set_defaults(func=cmd_overlay)
     f = sub.add_parser("fetch-minimap", help="compare valorant-api's minimap with the vendored one")
     f.add_argument("map")

@@ -102,6 +102,9 @@ This writes the layout's assets under `app/static`, keyed `Ascent_13_10`:
 - the entries for the key in `index.json`, `tags.json` (copied from the previous layout), `callouts.json` (copied)
   and `layouts.json`.
 
+If the layout is already in `layouts.json` as a pending entry (a one-line PR that registered `Ascent@13.10` while
+the redraw waited), `build` completes that entry in place; a key that already has assets is refused.
+
 It prints the callouts inside a changed region, which need review: move or rename them in `callouts.json[key]`.
 `maps.json` and every base entry stay byte-identical.
 
