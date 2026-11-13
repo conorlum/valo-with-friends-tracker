@@ -67,13 +67,14 @@ def test_errors_require_the_upload_gate(monkeypatch, name, gate, status):
 def test_json_keeps_all_kinds_and_counts_but_limits_display_rows(monkeypatch, result):
     cached = Mock(return_value=result)
     monkeypatch.setattr(replay_errors, "cached", cached)
+    monkeypatch.setattr(routes, "_deploy_banner", lambda db: None)   # the banner reads deploy_drains; not under test here
     db = Mock()
     response = routes.upload_errors(request({"replay_upload_ok": True}), db)
     body = json.loads(response.body)
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.headers["cache-control"] == "no-store"
-    assert body == replay_errors.page(result)
+    assert body == {**replay_errors.page(result), "deploy": None}
     assert [entry["key"] for entry in body["kinds"]] == [key for key, _ in replay_errors.KINDS]
     assert all(entry["count"] == 51 and len(entry["rows"]) == 50 for entry in body["kinds"])
     assert all(len(entry["rows"]) == 51 for entry in result["kinds"])
@@ -173,7 +174,7 @@ function descendants(parent, tag) {
 const panel = new Element("details"), status = new Element("p"), body = new Element("div"), all = new Element("button");
 all.textContent = "Copy prompt"; all.disabled = true; body.hidden = true; panel.open = false;
 panel.appendChild(status); panel.appendChild(all); panel.appendChild(body);
-panel.querySelector = selector => ({"[data-errors-status]": status, "[data-errors-body]": body, "[data-errors-copy]": all}[selector]);
+panel.querySelector = selector => ({"[data-errors-deploy]": new Element("p"), "[data-errors-status]": status, "[data-errors-body]": body, "[data-errors-copy]": all}[selector]);
 const requests = [], copied = [], timers = [];
 const navigator = input.clipboard === "missing" ? {} : {clipboard: {writeText(text) {
   if (input.clipboard === "reject") return Promise.reject(Error("denied"));
@@ -262,7 +263,7 @@ function descendants(parent, tag) {
 }
 const panel = new Element("details"), status = new Element("p"), body = new Element("div"), all = new Element("button");
 panel.appendChild(status); panel.appendChild(all); panel.appendChild(body);
-panel.querySelector = selector => ({"[data-errors-status]": status, "[data-errors-body]": body, "[data-errors-copy]": all}[selector]);
+panel.querySelector = selector => ({"[data-errors-deploy]": new Element("p"), "[data-errors-status]": status, "[data-errors-body]": body, "[data-errors-copy]": all}[selector]);
 vm.runInNewContext(input.script, {
   document: {querySelector: () => panel, createElement: tag => new Element(tag)}, navigator: {},
   setTimeout: () => 0,

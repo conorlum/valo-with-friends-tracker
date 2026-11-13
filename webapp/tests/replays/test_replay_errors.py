@@ -31,7 +31,7 @@ from app.services.replay_progress import uploads, cf, replay_control, replay_gap
 from app.services.replay_util import Freshness
 
 STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
-KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
+KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "forced_deploy", "util_build_failed", "util_build_stale",
         "worker_overrun", "worker_refused", "warm_vanished", "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls",
         "cache_fallback", "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed",
         "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
@@ -307,7 +307,7 @@ def test_event_rows_are_grouped_sorted_and_read_once(stored_events, db):
     assert older["context"] == {}
     assert [entry["key"] for entry in body["kinds"][1:]] == [
         key for key in KEYS if key not in {"page_error", "slow_page"}]
-    background = ("loop_", "util_build_", "worker_", "warm_")
+    background = ("loop_", "util_build_", "worker_", "warm_", "forced_")
     data = ("unscored_", "kill_impact_", "map_pool_", "map_layout_", "cache_")
     assert all(entry["shape"] == "replay" and entry["group"] == "Replays"
                for entry in body["kinds"][1:] if not entry["key"].startswith(background + data + ("trip_",)))
@@ -788,7 +788,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     assert set(collected) == set(KEYS)
     assert all(rows for key, rows in collected.items()
                if key not in {"heights_out_of_tries", "warm_vanished", "given_up", "held", "feature_failed", "page_error", "slow_page",
-                          "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale", "unscored_match",
+                          "loop_failed", "loop_quiet", "forced_deploy", "util_build_failed", "util_build_stale", "unscored_match",
                           "kill_impact_missing", "map_pool_note", "map_layout_walls", "worker_overrun", "worker_refused", "cache_fallback", "trip_too_long"}), \
         "stored kinds"
     for key, rows in collected.items():

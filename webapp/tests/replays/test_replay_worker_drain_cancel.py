@@ -219,7 +219,9 @@ def test_the_answer_is_immediate_while_render_cancels_slowly_and_health_counts_t
     again = rig.cancel()[1]                                           # a second cancel meanwhile: the same list
     assert again == body
     until(lambda: rig.health()["cancelling"] == 0, what="the Render cancels done")
-    assert len(rig.render.cancelled) == 3 and all(j.status == "queued" for j in jobs)
+    assert len(rig.render.cancelled) == 3
+    # Each job's own thread puts it back in the queue once its run settles, a moment after `cancelling` drops.
+    until(lambda: all(j.status == "queued" for j in jobs), what="the cancelled jobs queued again")
 
 
 def test_a_cancel_naming_another_drain_is_ignored(rig):
