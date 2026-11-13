@@ -135,6 +135,16 @@ def test_changed_fingerprint_recomputes_and_upserts(db, factory, replay):
     assert (share.inside, share.total, share.asset_key, share.control_fingerprint) == (2, 4, "Ascent", first)
     assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW
     assert walls.step(factory, NOW + 1, control_in_flight=0) == {"computed": 0}
+    control = db.get(ReplayRoundControl, (replay.id, 1))
+    control.fingerprint, control.data = "second", control_data((0, 1))
+    db.commit()
+    assert walls.step(factory, NOW + 2, control_in_flight=0) == {"computed": 1}
+    db.expire_all()
+    assert db.query(ReplayRoundWallShare).count() == 1
+    # S9: control that isn't current for the replay's layout (computed on an older mask) is never pooled.
+    assert (share.inside, share.total, share.control_fingerprint, share.asset_key) == (0, 4, "second",
+                                                                                      walls.NOT_CURRENT)
+    assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW + 2
 
 
 def test_a_not_current_share_is_refiled_when_its_layout_becomes_current_with_the_same_control(
@@ -178,16 +188,6 @@ def test_a_batch_reads_side_groups_in_one_query(db, factory, replay, monkeypatch
     assert walls.step(factory, NOW, control_in_flight=0) == {"computed": 1}
     db.expire_all()
     assert db.get(ReplayRoundWallShare, (replay.id, 1)).asset_key == "Ascent"
-    control = db.get(ReplayRoundControl, (replay.id, 1))
-    control.fingerprint, control.data = "second", control_data((0, 1))
-    db.commit()
-    assert walls.step(factory, NOW + 2, control_in_flight=0) == {"computed": 1}
-    db.expire_all()
-    assert db.query(ReplayRoundWallShare).count() == 1
-    # S9: control that isn't current for the replay's layout (computed on an older mask) is never pooled.
-    assert (share.inside, share.total, share.control_fingerprint, share.asset_key) == (0, 4, "second",
-                                                                                      walls.NOT_CURRENT)
-    assert share.computed_at.replace(tzinfo=timezone.utc).timestamp() == NOW + 2
 
 
 def test_missing_blob_is_stored_as_zero_and_not_picked_again(db, factory, replay):
