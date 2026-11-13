@@ -269,18 +269,26 @@ def test_pg_a_stored_value_is_replaced_not_nested(factory, monkeypatch, remote_o
 
 def test_pg_no_backend_idles_in_a_transaction_while_the_loop_polls_and_downloads(factory, watcher, monkeypatch,
                                                                                  remote_on):
-    from app.services import replay_control_remote as control
-
     data, _ = toy_output(monkeypatch)
     state = open_state()
     worker = SlowWorker(data, state, delay=0.3)
     monkeypatch.setattr(remote, "STATE", state)
     passes = []
-    stop = SimpleNamespace(wait=lambda *a: len(passes) >= 2, is_set=lambda: True)
-    monkeypatch.setattr(control, "cycle", lambda *a, **k: passes.append(1) or {})
+    stop = threading.Event()
+    original_step = remote.step
+
+    def counted_step(*args, **kwargs):
+        try:
+            original_step(*args, **kwargs)
+        finally:
+            passes.append(1)
+            if len(passes) == 2:
+                stop.set()
+
+    monkeypatch.setattr(remote, "step", counted_step)
     for name in ("register", "unregister", "beat", "loop_ok", "loop_failed"):
-        monkeypatch.setattr(control.site_health, name, lambda *a, **k: None)
-    thread = threading.Thread(target=control.run_forever, args=(factory, worker, stop), kwargs={"every_s": 0})
+        monkeypatch.setattr(remote.site_health, name, lambda *a, **k: None)
+    thread = threading.Thread(target=remote.run_forever, args=(factory, worker, stop), kwargs={"every_s": 0})
     seen = []
     thread.start()
     first_seen = {}
@@ -293,7 +301,7 @@ def test_pg_no_backend_idles_in_a_transaction_while_the_loop_polls_and_downloads
         seen.extend((pid, idle[pid]) for pid, since in first_seen.items() if now - since >= 0.2)
         time.sleep(0.02)
     thread.join()
-    assert worker.polls == 2 and state.phase == "idle"
+    assert len(passes) == worker.polls == 2 and state.phase == "idle"
     assert seen == [], seen
     with factory() as db:
         assert db.execute(text("SELECT jsonb_typeof(data) FROM util_model WHERE name = 'values'")).scalar() \
@@ -311,6 +319,7 @@ def test_pg_the_coachs_wait_holds_no_transaction_and_then_reads_the_stored_build
     sleeps, idle = [], []
 
     def sleep(seconds):
+        assert not caller.in_transaction()
         idle.extend(watcher())                           # asleep: the caller's connection must be released
         sleeps.append(seconds)
         if len(sleeps) == 2:                             # the site's loop stores the build meanwhile
@@ -321,14 +330,23 @@ def test_pg_the_coachs_wait_holds_no_transaction_and_then_reads_the_stored_build
 
     monkeypatch.setattr(snapshot, "time", SimpleNamespace(monotonic=lambda: len(sleeps) * 1.0, sleep=sleep),
                         raising=False)
-    sentinel = SimpleNamespace(match_id=7)
-    monkeypatch.setattr(replays, "find_replay", lambda db, uuid: sentinel)
-    monkeypatch.setattr(replay_util, "match_payload",
-                        lambda db, replay, read_only=False: {"rounds": {"1": {"casts": []}}, "updating": False})
+    sentinel = SimpleNamespace(id=1, recipe="synthetic-recipe", source_sha256="f" * 64, match_id=7)
+
+    def find_replay(db, uuid):
+        db.execute(text("SELECT 1"))  # exercise the caller's transaction release before every sleep
+        return sentinel
+
+    monkeypatch.setattr(replays, "find_replay", find_replay)
+
+    def match_payload(db, replay, *, read_only=False):
+        assert replay is sentinel and read_only
+        return {"rounds": {"1": {"casts": []}}, "updating": False}
+
+    monkeypatch.setattr(replay_util, "match_payload", match_payload)
     with factory() as caller:
-        replay, rounds = snapshot._wait_util(caller, "u", 7, session_factory=factory, util_wait_s=100,
-                                             poll_s=1, ask=lambda: {})
-        assert replay is sentinel and rounds == {"1": {"casts": []}}
+        identity, rounds = snapshot._wait_util(caller, "u", session_factory=factory,
+                                               deadline=snapshot.time.monotonic() + 100, poll_s=1, ask=lambda: {})
+        assert identity == (1, "synthetic-recipe", "f" * 64) and rounds == {"1": {"casts": []}}
     assert len(sleeps) == 2 and idle == [], idle
     with factory() as db:
         assert db.execute(text("SELECT jsonb_typeof(data) FROM util_model WHERE name = 'values'")

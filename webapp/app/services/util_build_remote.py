@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timezone
@@ -30,10 +31,11 @@ from app.models.kill_event import KillEvent
 from app.models.match import Match, MatchPlayer
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
-from app.services import replay_util, util_build_health, util_model, util_values
+from app.services import replay_util, site_health, util_build_health, util_model, util_values
 
 
 log = logging.getLogger(__name__)
+LOOP_NAME = "util-build"
 WEBAPP = Path(__file__).resolve().parents[2]
 OBS_VERSION = hashlib.sha256(b"".join(
     (WEBAPP / path).read_bytes().replace(b"\r\n", b"\n") for path in (
@@ -522,7 +524,7 @@ def _follow(session_factory, client, state: UtilState, now: float) -> None:
 
 
 def step(session_factory, client, state: UtilState | None = None, now: float | None = None) -> None:
-    """Advance one build after the control cycle has released its transaction and lock."""
+    """Advance one build on its own loop; release sessions before worker I/O."""
     if not enabled():
         return
     state = STATE if state is None else state
@@ -537,3 +539,35 @@ def step(session_factory, client, state: UtilState | None = None, now: float | N
         return
     with session_factory() as db:
         push(db, client, state, health, now)
+
+
+def run_forever(session_factory, client, stop: threading.Event, every_s: float = 20) -> None:
+    """Run worker I/O independently of control dispatch; step owns its short sessions."""
+    site_health.register(LOOP_NAME, every_s)
+    try:
+        while not stop.wait(every_s):
+            site_health.beat(LOOP_NAME, "start")
+            try:
+                step(session_factory, client)
+            except Exception as exc:  # a failed pass must not kill the loop
+                log.exception("util build step failed")
+                site_health.loop_failed(LOOP_NAME, exc)
+            else:
+                site_health.loop_ok(LOOP_NAME)
+            finally:
+                site_health.beat(LOOP_NAME, "end")
+    finally:
+        if stop.is_set():  # keep a dead thread registered so quiet-loop checks can report it
+            site_health.unregister(LOOP_NAME)
+
+
+def start(session_factory) -> threading.Event | None:
+    """Start the util dispatcher only when remote util and control are enabled, never in demo."""
+    if not enabled():
+        return None
+    from app.services.replay_control_remote import CYCLE_S, ControlClient
+
+    stop = threading.Event()
+    threading.Thread(target=run_forever, args=(session_factory, ControlClient(settings.replay_worker_url), stop),
+                     kwargs={"every_s": CYCLE_S}, name=LOOP_NAME, daemon=True).start()
+    return stop

@@ -53,7 +53,13 @@ def _groups(context: dict) -> dict[int, str]:
     return {int(slot): p["side"] for slot, p in context["players"].items() if p.get("side") is not None}
 
 
-def _wait_util(db, match_uuid, match_id, *, session_factory, util_wait_s, poll_s, ask):
+def _replay_identity(replay):
+    # store._store deletes and inserts on re-parse. The recipe/source also distinguish
+    # replacements when a database reuses an integer id.
+    return None if replay is None else (replay.id, replay.recipe, replay.source_sha256)
+
+
+def _wait_util(db, match_uuid, *, session_factory, deadline, poll_s, ask):
     """Read a current stored build before loading rounds, releasing every transaction while waiting."""
     from app.critutil import build_digest
     from app.db import SessionLocal
@@ -61,7 +67,6 @@ def _wait_util(db, match_uuid, match_id, *, session_factory, util_wait_s, poll_s
     from app.services import replay_util, util_model, util_values
 
     session_factory = SessionLocal if session_factory is None else session_factory
-    deadline = time.monotonic() + max(0, util_wait_s)
     asked = False
     first = True
     while first or time.monotonic() < deadline:
@@ -78,15 +83,16 @@ def _wait_util(db, match_uuid, match_id, *, session_factory, util_wait_s, poll_s
                     if win is not None and win.version == util_model.VERSION else None
                 rows = replay_util.current_rows(poll, with_data=False)
                 key = replay_util.corpus_key(poll, rows, model)
-                current = stored_key == key and util_model.covers(model, {match_id})
+            replay = replays.find_replay(db, match_uuid)
+            if replay is None:
+                raise SnapshotError(f"no replay stored for {match_uuid}")
+            identity = _replay_identity(replay)
+            current = stored_key == key and util_model.covers(model, {replay.match_id})
             reason = f"the stored build is not current (stored key {stored_key}, current key {key})"
             if current:
-                replay = replays.find_replay(db, match_uuid)
-                if replay is None:
-                    raise SnapshotError(f"no replay stored for {match_uuid}")
                 payload = replay_util.match_payload(db, replay, read_only=True)
                 if not payload["updating"]:
-                    return replay, payload["rounds"]
+                    return identity, payload["rounds"]
                 reason += "; read-only payload is updating"
         except Exception as error:
             db.rollback()
@@ -115,15 +121,64 @@ def _wait_util(db, match_uuid, match_id, *, session_factory, util_wait_s, poll_s
     raise SnapshotError(f"Critical Util: {reason}")
 
 
-def read(db, match_uuid: str, *, session_factory=None, util_wait_s=600, poll_s=15, ask=None) -> dict:
-    replay = replays.find_replay(db, match_uuid)
-    if replay is None:
-        raise SnapshotError(f"no replay stored for {match_uuid}")
+def _linked_context(db, replay, match_uuid):
     context = replays.page_context(db, replay)
     if not context["match"].get("linked"):
         raise SnapshotError(f"replay {match_uuid} is {context['match'].get('reason') or 'not linked'}: nothing to coach")
-    replay, util = _wait_util(db, match_uuid, replay.match_id, session_factory=session_factory,
-                             util_wait_s=util_wait_s, poll_s=poll_s, ask=ask)
+    return context
+
+
+def read(db, match_uuid: str, *, session_factory=None, util_wait_s=600, poll_s=15, ask=None) -> dict:
+    deadline = time.monotonic() + max(0, util_wait_s)
+    replay = replays.find_replay(db, match_uuid)
+    if replay is None:
+        raise SnapshotError(f"no replay stored for {match_uuid}")
+    # Preserve the early unlinked refusal (including callers without a database).
+    # All context used in the snapshot is loaded again after the util wait.
+    _linked_context(db, replay, match_uuid)
+    asked = False
+
+    def ask_once():
+        nonlocal asked
+        if not asked:
+            asked = True
+            return ask()
+        return None
+
+    while True:
+        identity, util = _wait_util(db, match_uuid, session_factory=session_factory,
+                                   deadline=deadline, poll_s=poll_s, ask=ask_once if ask else None)
+        db.rollback()  # expire the ORM identity map before checking the confirmed replay
+        replay = replays.find_replay(db, match_uuid)
+        current = _replay_identity(replay)
+        if current == identity:
+            try:
+                context = _linked_context(db, replay, match_uuid)
+                data = _read_rounds(db, replay, context, util)
+            except Exception:
+                # A replacement may remove blobs while they are being read. Retry only
+                # when it actually changed; ordinary read errors keep their traceback.
+                db.rollback()
+                current = _replay_identity(replays.find_replay(db, match_uuid))
+                if current == identity:
+                    raise
+            else:
+                db.rollback()
+                current = _replay_identity(replays.find_replay(db, match_uuid))
+                if current == identity:
+                    return data
+        db.rollback()
+        remaining = deadline - time.monotonic()
+        reason = (f"Critical Util: replay identity changed from {identity} to {current} "
+                  "before the snapshot could be read")
+        if remaining <= 0:
+            raise SnapshotError(reason)
+        time.sleep(min(max(poll_s, 0.001), remaining))
+        if time.monotonic() >= deadline:
+            raise SnapshotError(reason)
+
+
+def _read_rounds(db, replay, context, util):
     groups = _groups(context)
     blobs, controls, links = {}, {}, {}
     for n in context["match"]["rounds"]:

@@ -32,7 +32,7 @@ def reader(monkeypatch):
     caller = factory()
     state = SimpleNamespace(now=0.0, polls=[], sleeps=[], payloads=0, events=[], on_sleep=lambda: None,
                             caller=caller, factory=factory, engine=engine)
-    replay = SimpleNamespace(id=1, match_id=7, map_name="Toy", round_count=1)
+    replay = SimpleNamespace(id=1, recipe="recipe-1", source_sha256="synthetic-source", match_id=7, map_name="Toy", round_count=1)
     context = {"match": {"linked": True, "rounds": [1]}, "players": {}}
 
     def find(db, uuid):
@@ -93,7 +93,7 @@ def test_current_returns_before_rounds_without_asking(reader):
     assert reader.read(ask=ask)["rounds"]["1"]["util"] == {"casts": []}
     ask.assert_not_called()
     assert not reader.sleeps and len(reader.polls) == 1
-    assert reader.events == ["replay", "replay", "util", "round"]
+    assert reader.events == ["replay", "replay", "util", "replay", "round", "replay"]
 
 
 def test_stale_then_current_on_third_poll_asks_once(reader):
@@ -273,3 +273,99 @@ def test_commands_exit_two_on_util_refusal(monkeypatch, tmp_path, capsys, script
     assert script.main() == 2
     assert "Critical Util" in capsys.readouterr().err
     assert ask.call_args_list == ([((_admin_client.DEFAULT_SITE,), {})] if token else [])
+
+
+@pytest.fixture
+def replacing_reader(reader, monkeypatch):
+    state = SimpleNamespace(active=None, payloads=0, on_payload=lambda: None, on_round=lambda: None)
+
+    def replacement(generation, *, row_id=1):
+        return SimpleNamespace(id=row_id, recipe=f"recipe-{generation}", source_sha256="synthetic-source",
+                               match_id=7, map_name="Toy", round_count=1, generation=generation)
+
+    state.replacement = replacement
+    state.active = replacement(1)
+
+    def find(db, uuid):
+        db.query(UtilModel.key).first()
+        return state.active
+
+    def context(db, replay):
+        n = replay.generation
+        return {"match": {"linked": True, "rounds": [n], "recipe": replay.recipe},
+                "players": {str(n): {"side": "A"}}, "rounds": {str(n): {}}}
+
+    def blob(db, replay, n):
+        assert n == replay.generation
+        state.on_round()
+        return {"players": [{"slot": n, "side": "A"}], "recipe": replay.recipe}
+
+    def payload(db, replay, *, read_only=False):
+        assert read_only
+        state.payloads += 1
+        result = {"updating": False, "rounds": {str(replay.generation): {
+            "casts": [], "unused": [], "avail": [], "recipe": replay.recipe}}}
+        state.on_payload()
+        return result
+
+    monkeypatch.setattr(snapshot.replays, "find_replay", find)
+    monkeypatch.setattr(snapshot.replays, "page_context", context)
+    monkeypatch.setattr(snapshot.replays, "round_blob", blob)
+    monkeypatch.setattr(snapshot.fmt, "decode_blob", lambda value: value)
+    monkeypatch.setattr(snapshot.replay_control, "round_link",
+                        lambda replay, groups, n: {"sides": {str(n): groups[n]}})
+    monkeypatch.setattr(replay_util, "match_payload", payload)
+    state.payload = payload
+    return state
+
+
+def assert_replacement_snapshot(data):
+    assert data["context"]["match"]["recipe"] == "recipe-2"
+    assert set(data["context"]["players"]) == {"2"}
+    assert set(data["rounds"]) == {"2"}
+    entry = data["rounds"]["2"]
+    assert entry["blob"]["recipe"] == entry["util"]["recipe"] == "recipe-2"
+    assert entry["link"]["sides"] == {"2": "A"}
+
+
+@pytest.mark.parametrize("row_id", [1, 2])
+def test_replacement_during_util_wait_uses_new_context_rounds_and_util(reader, replacing_reader, monkeypatch, row_id):
+    state = replacing_reader
+    def payload(*a, **kw):
+        if len(reader.polls) == 1:
+            return {"updating": True}
+        state.active = state.replacement(2, row_id=row_id)
+        # The replay was replaced before this poll's lookup, as it would be on the site.
+        return state.payload(a[0], state.active, **kw)
+    original_find = snapshot.replays.find_replay
+    def find(*a):
+        if len(reader.polls) == 2:
+            state.active = state.replacement(2, row_id=row_id)
+        return original_find(*a)
+    monkeypatch.setattr(snapshot.replays, "find_replay", find)
+    monkeypatch.setattr(replay_util, "match_payload", payload)
+    assert_replacement_snapshot(reader.read())
+    assert len(reader.polls) == 2
+
+
+@pytest.mark.parametrize("when", ["confirmation", "rounds"])
+def test_replacement_after_util_confirmation_restarts_once(reader, replacing_reader, when):
+    state = replacing_reader
+    def replace_once():
+        state.active = state.replacement(2)
+        state.on_payload = state.on_round = lambda: None
+    if when == "confirmation":
+        state.on_payload = replace_once
+    else:
+        state.on_round = replace_once
+    assert_replacement_snapshot(reader.read())
+    assert state.payloads == 2
+
+
+def test_replacements_that_never_settle_share_one_deadline(reader, replacing_reader):
+    state = replacing_reader
+    state.on_payload = lambda: setattr(state, "active", state.replacement(state.active.generation + 1))
+    with pytest.raises(snapshot.SnapshotError, match="Critical Util: replay identity changed"):
+        reader.read()
+    assert reader.now == pytest.approx(0.05)
+    assert state.payloads >= 2

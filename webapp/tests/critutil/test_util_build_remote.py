@@ -921,32 +921,25 @@ def test_step_result_fetch_failure_is_collected_as_failure(stepping, monkeypatch
     assert env.db.get(UtilModel, "values") is None
 
 
-def test_control_loop_survives_util_error_and_releases_lock_before_poll(stepping, monkeypatch):
-    from app.services import replay_control_remote as control
+def test_util_loop_survives_error_and_holds_no_transaction_while_polling(stepping, monkeypatch):
     env = stepping
     put_rows(env)
     advance(env)
     stop = SimpleNamespace(wait=lambda *a: len(passes) >= 2, is_set=lambda: True)
     passes, failures, successes = [], [], []
-    real_cycle = control.cycle
-    # Run the real control cycle with its actual lock session, avoiding unrelated subsystems.
-    for name in ("_collect", "_submit", "_snapshot"):
-        monkeypatch.setattr(control, name, lambda *a, **k: None)
-    monkeypatch.setattr(control.replay_control, "prepare_discovered", lambda *a: None)
-    monkeypatch.setattr(control.replay_heights_remote, "enabled", lambda: False)
-    def counted(*a, **kw):
-        passes.append(1)
-        return real_cycle(*a, **kw)
-    monkeypatch.setattr(control, "cycle", counted)
     monkeypatch.setattr(remote, "STATE", env.state)
     original_step = remote.step
+
     def sometimes(*a, **kw):
+        passes.append(1)
         if len(passes) == 1:
             raise RuntimeError("synthetic util failure")
+        # The stepping fixture checks every session is out of transaction at worker I/O.
         original_step(*a, **kw)
+
     monkeypatch.setattr(remote, "step", sometimes)
-    monkeypatch.setattr(control.site_health, "loop_failed", lambda name, exc: failures.append(name))
-    monkeypatch.setattr(control.site_health, "loop_ok", successes.append)
-    control.run_forever(env.factory, env.client, stop, every_s=0)
+    monkeypatch.setattr(remote.site_health, "loop_failed", lambda name, exc: failures.append(name))
+    monkeypatch.setattr(remote.site_health, "loop_ok", successes.append)
+    remote.run_forever(env.factory, env.client, stop, every_s=0)
     assert len(passes) == 2 and env.polls == 1
-    assert failures == ["util_build_step"] and "util_build_step" in successes
+    assert failures == [remote.LOOP_NAME] and successes == [remote.LOOP_NAME]
