@@ -685,6 +685,10 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True                      # sendable work is left: plan again next cycle
         if not room_for(state, p.replay_id):
             continue                         # another match is in flight: this one waits its turn
+        if state.layout_wait.get(p.asset_key or p.map_name, 0.0) > now:
+            # R2-9: an earlier round of this batch was just refused for its layout; the rest wait with it.
+            counts['layout_waiting'] = counts.get('layout_waiting', 0) + 1
+            continue
         key = keys[p.replay_id, p.round_number]
         gaps_only = kind == "gaps"
         expect_gaps = gaps_only or key != task_key(p.replay_id, p.round_number, p.fingerprint)
@@ -947,8 +951,10 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
             counts["walls_computed"] = walls.get("computed", 0)
             counts["walls_skipped"] = int("skipped" in walls)
-            if walls.get("computed") or state.walls_evaluated_at is None \
-                    or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S:
+            # R2-11 (2026-11-12): evaluation (which may decode callout rounds) runs only on a pass the backfill
+            # found quiet: never during an upload or with control in flight, on the dispatcher's own time.
+            if "skipped" not in walls and (walls.get("computed") or state.walls_evaluated_at is None
+                                           or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S):
                 evaluation = session_factory()
                 try:
                     unjudged = layout_walls.evaluate(evaluation)

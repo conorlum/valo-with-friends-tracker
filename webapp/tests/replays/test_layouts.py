@@ -111,11 +111,16 @@ def test_default_registry_is_complete():
     index = json.loads((DATA / "control" / "index.json").read_text(encoding="utf-8"))
     assert registry["version"] == 1
     assert len(registry["maps"]) == 13
-    assert registry["maps"].keys() == index["maps"].keys()
+    # R2-12: a redraw adds <Map>_<NN>_<NN> keys to the index and rows to a map's history; the base keys and each
+    # map's base row stay as they are.
+    assert registry["maps"].keys() == {key for key in index["maps"] if layouts.map_of(key) == key}
     assert list(registry["maps"]) == sorted(registry["maps"])
     for name, rows in registry["maps"].items():
-        assert rows == [{"id": f"{name}@base", "key": name, "start": None,
-                         "drawn_from": "13.08", "regions": None}]
+        assert rows[0] == {"id": f"{name}@base", "key": name, "start": None,
+                           "drawn_from": "13.08", "regions": None}
+        for row in rows[1:]:
+            start = layouts.parse_patch(f"release-{row['start']}")
+            assert row["key"] == layouts.key_for(name, start) and row["key"] in index["maps"]
         first = layouts.layouts_of(name)[0]
         assert first.asset_key == name
         assert first.start is None
@@ -136,3 +141,14 @@ def test_value_objects_are_frozen():
     selected = layouts.Selection("ok", base)
     with pytest.raises(FrozenInstanceError):
         selected.state = "layout_pending"
+
+
+def test_a_later_layout_gap_run_differs_even_with_the_same_chokes():
+    """R2-3 (2026-11-12): a bullet-only redraw keeps control inputs and chokes; its gap rows go under its own key,
+    so the run must differ. A base key's fingerprint is the pre-layout text (the golden pins the real values)."""
+    from app.services import replay_gaps
+
+    same = {"chokes": "c" * 16, "hearing": "h" * 16}
+    base = replay_gaps.gap_fingerprint("f" * 16, "Ascent", **same)
+    assert base == replay_gaps._hex16(f"{'f' * 16}|{replay_gaps.GAPS_REVISION}|{'c' * 16}|{'h' * 16}")
+    assert replay_gaps.gap_fingerprint("f" * 16, "Ascent_13_10", **same) != base

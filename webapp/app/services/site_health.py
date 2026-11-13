@@ -233,16 +233,18 @@ def _push(entry):
             _dropped += 1
 
 
-def record(kind, key, error, context=None, *, at=None, dedupe=None):
+def record(kind, key, error, context=None, *, at=None, dedupe=None, refresh=False):
     """Queue one occurrence for the next flush. Never touches the database, never raises. `dedupe(seen, this
     context)` returns the new `seen` to keep, or None when `seen` already counts this occurrence (it is skipped):
     decided at flush time against the key's stored mark, under the writers' lock, so two processes reporting the
-    same thing store it once, and a cleared row's mark still knows what it counted."""
+    same thing store it once, and a cleared row's mark still knows what it counted. With `refresh`, a skipped
+    occurrence still says the condition stands: an open row's last_seen and the mark move forward (no count, no
+    new row), so retention never drops a standing alarm, nor the mark that keeps a cleared one cleared (R2-8)."""
     if _demo():
         return
     try:
         _push({"op": "record", "kind": kind, "key": _clean_key(key), "error": _bounded(error), "context": context,
-               "at": at or _now(), "dedupe": dedupe})
+               "at": at or _now(), "dedupe": dedupe, "refresh": refresh})
     except Exception:
         logger.exception("site health: could not queue %s %s", kind, key)
 
@@ -481,8 +483,14 @@ def _write(session, marks, op):
         marks.clear(session, op["kind"], op["key"], op["prefix"], op["at"])
     elif op["op"] == "record":
         if op.get("dedupe") is not None:
-            seen = op["dedupe"](marks.seen(op["kind"], op["key"]), op["context"])
+            stored_seen = marks.seen(op["kind"], op["key"])
+            seen = op["dedupe"](stored_seen, op["context"])
             if seen is None:
+                if op.get("refresh"):
+                    marks.set_seen(session, op["kind"], op["key"], stored_seen)
+                    t = SiteEvent.__table__
+                    session.execute(t.update().where(t.c.kind == op["kind"], t.c.key == op["key"],
+                                                     t.c.last_seen < op["last"]).values(last_seen=op["last"]))
                 return
             marks.set_seen(session, op["kind"], op["key"], seen)
         _upsert(session, op["kind"], op["key"], error=_clean_error(op["error"]), context=_scrub_value(op["context"]),
