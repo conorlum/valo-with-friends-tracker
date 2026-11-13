@@ -1145,6 +1145,7 @@ class Worker:
             job = self._next()
             self._parse_coming()
             status, error, result = "failed", REASON_PARSE, None
+            drained = False
             try:
                 job.status = "parsing"
                 self._save(job)
@@ -1153,6 +1154,8 @@ class Worker:
                         raise _JobFailed("this match was deleted on request")
                     self.archive.evict()
                 result, status, error = self._process(job), "done", None
+            except _Drained:
+                drained = True
             except _JobFailed as failed:
                 error = failed.reason
                 # Upload only (a held reparse would look "pending" to the automatic queue forever, blocking
@@ -1188,7 +1191,19 @@ class Worker:
             except Exception:  # noqa: BLE001 - one bad file must not stop the worker
                 traceback.print_exc()
             finally:
-                if status == "held":
+                owes_task_done = not job.released      # this take came from a queue (read before a requeue marks it)
+                if drained:
+                    # A forced deploy cancelled the run: nothing finished, nothing failed. The input stays (the
+                    # folder, the upload.vrf, no settle), the run's identity goes, and the job waits at the front
+                    # of the line, where the hold keeps it until the release. Marked `released` first: queued
+                    # again outside the queue, its next take owes no task_done (another thread may take it at once).
+                    job.run_id = job.run_token = job.run_deadline = None
+                    job.status, job.error, job.finished, job.released = "queued", None, None, True
+                    self._save(job)
+                    with self.hold_lock:
+                        self.returned.appendleft(job)
+                    self.wake.set()
+                elif status == "held":
                     # The file stays, same as a build the pin file never listed (above). The status write
                     # itself already happened under the lock, above; here, only finish the rest of the held
                     # state the same way, and only if this job is still "held" -- a concurrent _sweep (60-day
@@ -1217,7 +1232,7 @@ class Worker:
                         job.detail = job.parser_pin = None
                     self._save(job)
                 self._forget_old()
-                if not job.released:
+                if owes_task_done:
                     (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
                 self._parse_ended()
 
@@ -1284,6 +1299,8 @@ class Worker:
             if answer.get("status") == "ok":
                 job.parse_seconds = answer.get("parse_seconds")
                 return self._accept_result(job, answer["result"])
+            if kind == "drain":
+                raise _Drained()
             if kind == "deploy":
                 # This run's image has another recipe: nothing was parsed. Wait, then a fresh run, within the
                 # deadline (the loop's first check ends it).
@@ -1789,6 +1806,8 @@ class ControlRunner:
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
+        if self.runs is not None and self.runs.starts_blocked():
+            return None                              # a forced deploy: no launch, no warm build asked (state row 27)
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights" and self.remote(job):
@@ -1965,6 +1984,20 @@ class ControlRunner:
                 self.preempted.discard(job.id)
                 self.preempted_total += 1
                 job.status = "queued"
+                self.pending.insert(0, job.id)
+            elif kind == "drain" and job.kind in ("control", "warm"):
+                # A forced deploy cancelled the run (state rows 25 and 26): back to the front, nothing counted (no
+                # failure, no miss), the probe slot freed, the lease dropped (the next release leases again). A warm
+                # build whose tracked file isn't on this disk is untracked, uncounted.
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                if job.kind == "warm":
+                    tracked = self.warm_names.get(job.warm_id)
+                    if tracked is not None and not (self.settings.control_cache_dir / tracked).is_file():
+                        self.warm_names.pop(job.warm_id, None)
+                        self.warm_read.discard(job.warm_id)
+                        self._withdraw(job.warm_id)
                 self.pending.insert(0, job.id)
             elif kind == "rewarm":
                 # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
@@ -2381,6 +2414,10 @@ class _JobFailed(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class _Drained(Exception):
+    """A forced deploy cancelled this Workflow parse: the job goes back to the front of its line, input kept."""
 
 
 class UtilKeyError(ValueError):
@@ -3151,8 +3188,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 body["commit"] = os.environ.get("RENDER_GIT_COMMIT")
                 hold = worker.hold_state()
                 body["drain"] = {**hold,
-                                 "starts_blocked": False,      # the start barrier arrives with W4
-                                 "cancelling": 0,              # likewise
+                                 "starts_blocked": runs_table.starts_blocked() if runs_table is not None else False,
+                                 "cancelling": runs_table.cancelling if runs_table is not None else 0,
                                  "uploads": worker.upload_counts(),
                                  "parses": worker.drain_counts(),
                                  "util": {"building": util_builds.building() if util_builds is not None else 0},
@@ -3224,6 +3261,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 return self._drain_hold()
             if self.path == "/drain/release":
                 return self._drain_release()
+            if self.path == "/drain/cancel":
+                return self._drain_cancel()
             if self.path != "/jobs":
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
             size = self._length(len(VRF_MAGIC), worker.settings.max_bytes)
@@ -3248,11 +3287,45 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
         def _drain_release(self):
             body = self._json()
             drain_id = (body or {}).get("drain_id")
-            if not isinstance(drain_id, int) or isinstance(drain_id, bool):
-                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a release: drain_id (int)"})
+            # null is the site's release of a worker that reported only `starts_blocked` (no hold): it lifts the
+            # barrier and never ends another drain's hold.
+            if body is None or (drain_id is not None and (not isinstance(drain_id, int) or isinstance(drain_id, bool))):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a release: drain_id (int or null)"})
             if not worker.release(drain_id):
                 return self._send(HTTPStatus.OK, {"ignored": True})
+            if runs_table is not None:
+                runs_table.unblock_starts()      # also when no hold was held: the barrier alone is lifted
+            if control is not None:
+                control.wake.set()
             return self._send(HTTPStatus.OK, {"hold": False})
+
+        def _drain_cancel(self):
+            """A forced deploy (R9). Fenced like a release: ignored unless the hold names this drain id. The answer
+            comes at once with the runs claimed; Render's cancels run on a thread (`Runs.cancel_all`)."""
+            body = self._json()
+            drain_id = (body or {}).get("drain_id")
+            if not isinstance(drain_id, int) or isinstance(drain_id, bool):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cancel: drain_id (int)"})
+            state = worker.hold_state()
+            if not state["hold"] or state["drain_id"] != drain_id:
+                return self._send(HTTPStatus.OK, {"ignored": True, "cancelled": []})
+            claimed = runs_table.cancel_all() if runs_table is not None else []
+            return self._send(HTTPStatus.OK, {"cancelled": [{"kind": c["kind"], "key": self._cancel_key(c)}
+                                                            for c in claimed]})
+
+        def _cancel_key(self, claimed: dict) -> str:
+            """The name a cancelled run goes by: a round's key, a warm or height build's map, a util build's key, an
+            upload's id; the job id when the owner has already forgotten it."""
+            job_id = claimed["job_id"]
+            job = control.get(job_id) if control is not None else None
+            if job is not None:
+                return job.key if job.kind == "control" else job.map
+            if claimed["kind"] == "util" and util_builds is not None:
+                with util_builds.lock:
+                    build = util_builds.builds.get(job_id)
+                    if build is not None:
+                        return build["key"]
+            return job_id
 
         def _upload(self, size: int):
             try:
@@ -3479,6 +3552,12 @@ def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
         util_builds = UtilBuilds(worker.settings, util, runs_table)
     httpd = ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table, util, util_builds))
     httpd.util_builds = util_builds
+    if runs_table is not None:
+        # A hold that ends (released or expired) lifts the start barrier a forced deploy raised, and wakes the
+        # control scheduler (R5). The parse thread is woken by the Worker itself.
+        worker.on_release.append(runs_table.unblock_starts)
+        if control is not None:
+            worker.on_release.append(control.wake.set)
     return httpd
 
 

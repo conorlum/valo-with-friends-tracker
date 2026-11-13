@@ -128,8 +128,12 @@ class Pacer:
 
 
 def failure(kind: str, error: str) -> dict:
-    """A run's answer when it didn't produce one: kind is "infra", "timeout" or "deploy"."""
+    """A run's answer when it didn't produce one: kind is "infra", "timeout", "deploy" or "drain" (a forced deploy
+    cancelled it: nothing is counted against anything, and the job goes back to its queue)."""
     return {"status": "failed", "error_kind": kind, "error": error}
+
+
+DRAIN_REASON = "cancelled by a deploy drain"
 
 
 @dataclass
@@ -149,6 +153,8 @@ class Run:
     extend_on_start: bool = False   # False for a run opened with an explicit deadline (a parse): it never moves
     started_at: float | None = None  # the latest attempt's start, as the run reported it
     timing_out: bool = False        # wait() has claimed the timeout: a late start is refused
+    cancelled: bool = False         # a forced deploy's cancel_all claimed it: it never starts, and only `drain` settles it
+    cancel_reason: str = DRAIN_REASON
 
 
 class Runs:
@@ -160,6 +166,57 @@ class Runs:
         self.lock = threading.Lock()
         self.last_reconcile: float | None = None
         self.last_error: str | None = None
+        self.blocked = False                  # the start barrier of a forced deploy (R9): no new run starts, ping excepted
+        self.cancelling = 0                   # Render cancels begun by cancel_all and not yet finished
+        self._cancel_list: list[dict] = []    # what cancel_all claimed while `cancelling` is above zero
+
+    def block_starts(self) -> None:
+        with self.lock:
+            self.blocked = True
+
+    def unblock_starts(self) -> None:
+        with self.lock:
+            self.blocked = False
+
+    def starts_blocked(self) -> bool:
+        with self.lock:
+            return self.blocked
+
+    def cancel_all(self, reason: str = DRAIN_REASON) -> list[dict]:
+        """A forced deploy: raise the start barrier and claim every open run that hasn't settled (`cancelled`, and
+        `timing_out` as wait()'s timeout claims it), all under the lock, and answer at once with what was claimed.
+        A thread per run then cancels it at Render (a RenderError is kept in `last_error`) and settles it `drain`;
+        `cancelling` counts the cancels not yet finished. A second call while cancels run returns the same list
+        (plus any run that opened since)."""
+        with self.lock:
+            self.blocked = True
+            victims = [r for r in self.open_runs.values() if not r.done.is_set() and not r.cancelled]
+            for run in victims:
+                run.cancelled = run.timing_out = True
+                run.cancel_reason = reason
+            if not self.cancelling:
+                self._cancel_list = []
+            self._cancel_list += [{"kind": r.kind, "job_id": r.job_id} for r in victims]
+            self.cancelling += len(victims)
+            listing = [dict(item) for item in self._cancel_list]
+        for run in victims:
+            threading.Thread(target=self._cancel_one, args=(run, reason), name=f"drain-cancel-{run.job_id[:8]}",
+                             daemon=True).start()
+        return listing
+
+    def _cancel_one(self, run: Run, reason: str) -> None:
+        try:
+            with self.lock:
+                render_id = run.render_id
+            if render_id:
+                try:
+                    self.api.cancel(render_id)
+                except Exception as error:  # noqa: BLE001 - the run must settle whatever Render said
+                    self.last_error = f"cancel {render_id}: {error}"
+            self._settle(run, failure("drain", reason))
+        finally:
+            with self.lock:
+                self.cancelling = max(0, self.cancelling - 1)
 
     def open(self, kind: str, job_id: str, files: dict, timeout_s: float, *, token: str | None = None,
              render_id: str | None = None, deadline: float | None = None) -> Run:
@@ -183,13 +240,21 @@ class Runs:
 
     def start(self, run: Run, args: dict, on_started=None) -> None:
         """Starts the run, pacing starts and waiting out 429s until its deadline. `on_started(render_id)` runs
-        before this returns. A start that can't happen settles the run as `infra`."""
+        before this returns. A start that can't happen settles the run as `infra`; one a forced deploy cancelled
+        (before pacing, after it, or while Render was taking the start) or that the start barrier refuses settles as
+        `drain`, and a start Render took after the cancel is cancelled there with the id it returned."""
         payload = {**args, "job_id": run.job_id, "token": run.token}
         past = lambda: self.clock() >= run.deadline  # noqa: E731
         while True:
+            if self._drained(run):
+                return
             # Checked again after the wait for a slot: a run is never started past its deadline (D10).
             if past() or not self.pacer.take(stop=past) or past():
+                if self._drained(run):
+                    return
                 self._settle(run, failure("infra", "the run could not start before its deadline"))
+                return
+            if self._drained(run):
                 return
             try:
                 answer = self.api.start(f"{self.slug}/{run.kind}", payload)
@@ -200,9 +265,29 @@ class Runs:
                 self.last_error = str(error)
                 self._settle(run, failure("infra", f"the run could not start: {error}"))
                 return
-        run.render_id = answer.get("id")
+        with self.lock:
+            run.render_id = answer.get("id")
+            cancelled = run.cancelled
+        if cancelled:
+            # Render took the start after the cancel: it must not run, whatever the barrier says by now.
+            if run.render_id:
+                try:
+                    self.api.cancel(run.render_id)
+                except Exception as error:  # noqa: BLE001
+                    self.last_error = f"cancel {run.render_id}: {error}"
+            self._settle(run, failure("drain", run.cancel_reason))
+            return
         if on_started is not None:
             on_started(run.render_id)
+
+    def _drained(self, run: Run) -> bool:
+        """True (the run settled `drain`) when the run was cancelled, or a new run meets the start barrier."""
+        with self.lock:
+            if not (run.cancelled or (self.blocked and run.kind != "ping")):
+                return False
+            reason = run.cancel_reason if run.cancelled else "starts are blocked by a deploy drain"
+        self._settle(run, failure("drain", reason))
+        return True
 
     def wait(self, run: Run) -> dict:
         """Blocks until the run settles or its deadline passes, closes it, and returns its answer. The timeout is
@@ -228,7 +313,7 @@ class Runs:
             run = self.open_runs.get(job_id)
         # As bytes: compare_digest raises TypeError on a non-ASCII str, and a header can carry one.
         offered = (token or "").encode("utf-8", "surrogateescape")
-        if run is None or run.done.is_set() or not secrets.compare_digest(run.token.encode("ascii"), offered):
+        if run is None or run.done.is_set() or run.cancelled or not secrets.compare_digest(run.token.encode("ascii"), offered):
             return None
         return run
 
@@ -343,6 +428,8 @@ class Runs:
         with self.lock:
             if run.done.is_set():
                 return False
+            if run.cancelled and result.get("error_kind") != "drain":
+                result = failure("drain", run.cancel_reason)      # cancel wins: no other answer settles it
             run.result = result
             run.done.set()
             return True

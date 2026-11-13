@@ -106,7 +106,8 @@ def link_for(args: dict) -> WorkerLink:
 
 
 def ping(args: dict, link: WorkerLink) -> None:
-    link.post_result({"status": "ok", "echo": link.fetch_text("ping")})
+    # `commit` is what this service is running: the deploy drain's "live" check for replay-tasks (C3).
+    link.post_result({"status": "ok", "echo": link.fetch_text("ping"), "commit": os.environ.get("RENDER_GIT_COMMIT")})
 
 
 REPO = Path(__file__).resolve().parents[1]
