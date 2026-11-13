@@ -6,7 +6,7 @@ import json
 
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
-./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), other signals (a rough direction and distance only)
+./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out (time, name, reason, optional pulse-device area), lost_track (time, name, reason)
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
@@ -45,9 +45,13 @@ the round after it, in percentage points) has an "id" you may cite too. Evidence
 recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
-a clock time, 0:41); each must be in an answer you cite for that instance. A named area must be in a cited
-answer too. In a point to improve, an enemy's distance or place counts only while the player's side could see
-them; otherwise use the last sighting or the rough place that `knew` gives.
+a clock time, 0:41); each must be in an answer you cite for that instance. Ground a named area with a cited
+`where` answer in the same round, asked from one second before the moment starts through its end, or with a
+cited `knew` answer. Any name in the answer's `area.path` counts. In a point to improve, an enemy's distance
+or place counts only while the player's side could see them; otherwise use the last sighting or the rough
+place that `knew` gives for found or roughly_placed signals.
+`ruled_out` says utility showed where an enemy was NOT, and `lost_track` says the team lost where an enemy was.
+For Haunt and Recon, `area` is where the pulse looked and found nobody of that name; neither list gives the enemy's position.
 
 # The brief
 
@@ -107,9 +111,15 @@ def _report_lines(report: dict, level: str) -> tuple[list[str], int]:
             if f.get("handled"):
                 continue
             open_count += 1
-            verdict = f.get("verdict") or ("overall note" if moment is None else "note")
+            area, player = f.get("area_name"), f.get("area_player_name")
+            verdict = f.get("verdict") or ("area correction" if area else "overall note" if moment is None else "note")
             out += [f'<feedback point="{point["id"]}"{where} author="{_quote(f["author"])}" '
-                    f'verdict="{_quote(verdict)}">', _quote(f["note"] or "(no note)"), "</feedback>"]
+                    f'verdict="{_quote(verdict)}">']
+            if f.get("note") or not area:
+                out.append(_quote(f.get("note") or "(no note)"))
+            if area:
+                out.append(_quote(f"area should be {area}" + (f" for {player}" if player else "")))
+            out.append("</feedback>")
         return out
 
     for side, heading in (("good", "Did well"), ("improve", "To improve")):

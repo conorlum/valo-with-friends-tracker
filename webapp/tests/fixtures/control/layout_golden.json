@@ -1,0 +1,444 @@
+{
+ "assets_revision": "9965d90c51ea4b49c669c19e1e7ab6df8c916e943f3c311eecd8317fb87385ba",
+ "hearing_hash": "be0be70126b64db9",
+ "maps": {
+  "Abyss": {
+   "callouts_sha256": "79d785f87833e8096730e608a6daf2d589d71b8cb3fc7b3a021416648ae44c23",
+   "choke_asset_hash": "52137509cc9e968e",
+   "control_fingerprint": "4f0937a6c82f075c",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Abyss",
+     "tags_digest": "909f901f1ac2f29a577ffa135029ebb05578784aba9dcdb59fa5ab0e6d87d092"
+    },
+    "geometry": {
+     "barrier": "06d022399053",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 8.1e-05,
+     "sight": "8342f6714685",
+     "specials": [],
+     "walk": "42d1d3f29a3c"
+    },
+    "state": "ready"
+   },
+   "engine_key": "d5de0b08c8360c5f",
+   "gap_fingerprint": "cc8846699a952abd",
+   "geometry_inputs": {
+    "barrier": "06d022399053",
+    "scale": 8.1e-05,
+    "sight": "8342f6714685",
+    "specials": [],
+    "walk": "42d1d3f29a3c"
+   },
+   "height_geometry_identity": {
+    "scale": 8.1e-05,
+    "sight": "8342f6714685",
+    "walk": "42d1d3f29a3c"
+   },
+   "height_manifest_digest": "d9bae5b3eb533d11",
+   "map_layer_sha256": "428d46d7e20fc5076736434f3ca5a25f27f52ce00f21d63d939c68c2d53081a0"
+  },
+  "Ascent": {
+   "callouts_sha256": "0fd802b1658c27441a8fb623aff4a7c7566ba2bcff83f7ebbc7290efc53295f9",
+   "choke_asset_hash": "6dcf88e6769966f4",
+   "control_fingerprint": "064827e053ef68a1",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Ascent",
+     "tags_digest": "a06d75610560346ce73a89b59ec679f03091a93ec7b5972b2834930d2977f8a8"
+    },
+    "geometry": {
+     "barrier": "77b049460968",
+     "cover": "48afd9eee5e9",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 7e-05,
+     "sight": "06147e83b898",
+     "specials": [],
+     "walk": "12861b1023d3"
+    },
+    "state": "ready"
+   },
+   "engine_key": "a98ae2b284695957",
+   "gap_fingerprint": "dbb6d468415d0263",
+   "geometry_inputs": {
+    "barrier": "77b049460968",
+    "cover": "48afd9eee5e9",
+    "scale": 7e-05,
+    "sight": "06147e83b898",
+    "specials": [],
+    "walk": "12861b1023d3"
+   },
+   "height_geometry_identity": {
+    "cover": "48afd9eee5e9",
+    "scale": 7e-05,
+    "sight": "06147e83b898",
+    "walk": "12861b1023d3"
+   },
+   "height_manifest_digest": "84aa758d1fe434fb",
+   "map_layer_sha256": "1ce07436d429fbc1c418c73689ac423b27c4be7a19fc2e82737e77210e1b3a44"
+  },
+  "Bind": {
+   "callouts_sha256": "cfafdf8d2f343d10169e2e0b04cc123d6a3c435b4df954af19dd4e5c8ddc92bd",
+   "choke_asset_hash": "cf12930d2890cc67",
+   "control_fingerprint": "248f3df8d40bb6dd",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": {
+     "barrier": "17f178122d9f",
+     "scale": 5.9e-05,
+     "sight": "8e9f1fc13fec",
+     "specials": [],
+     "walk": "59c0154fc89d"
+    },
+    "state": "ready"
+   },
+   "engine_key": "6848a70b96c5e137",
+   "gap_fingerprint": "5df4db657a72a1ad",
+   "geometry_inputs": {
+    "barrier": "17f178122d9f",
+    "scale": 5.9e-05,
+    "sight": "8e9f1fc13fec",
+    "specials": [],
+    "walk": "59c0154fc89d"
+   },
+   "height_geometry_identity": {
+    "scale": 5.9e-05,
+    "sight": "8e9f1fc13fec",
+    "walk": "59c0154fc89d"
+   },
+   "height_manifest_digest": "a77880dffcc8e756",
+   "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
+  },
+  "Breeze": {
+   "callouts_sha256": "c445f5a1630cb4d623a1b652313574c52d850ef524aee2fb8a96cb0f9f118635",
+   "choke_asset_hash": "d1623f65967fa8a8",
+   "control_fingerprint": "c10594a6defb218f",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": null,
+    "state": "no_map"
+   },
+   "engine_key": "93f9db250293050c",
+   "gap_fingerprint": "e66888ceccd59708",
+   "geometry_inputs": {
+    "barrier": "72fcdd722d37",
+    "scale": 7e-05,
+    "sight": "a112074736d2",
+    "specials": [],
+    "walk": "439038d9b82b"
+   },
+   "height_geometry_identity": {
+    "scale": 7e-05,
+    "sight": "a112074736d2",
+    "walk": "439038d9b82b"
+   },
+   "height_manifest_digest": "965babe16ca6cfee",
+   "map_layer_sha256": null
+  },
+  "Corrode": {
+   "callouts_sha256": "8de928289051ba7425149e68463c28f576159a74641811595dad6e6b0c53b98f",
+   "choke_asset_hash": "3a802b5bc10d4881",
+   "control_fingerprint": "933aff1420a076bf",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": {
+     "barrier": "2b9ac9333692",
+     "scale": 7e-05,
+     "sight": "b25b161d4a72",
+     "specials": [],
+     "walk": "683601dd7bf6"
+    },
+    "state": "ready"
+   },
+   "engine_key": "e6ead2fd61099a8a",
+   "gap_fingerprint": "49682bf86f473f7c",
+   "geometry_inputs": {
+    "barrier": "2b9ac9333692",
+    "scale": 7e-05,
+    "sight": "b25b161d4a72",
+    "specials": [],
+    "walk": "683601dd7bf6"
+   },
+   "height_geometry_identity": {
+    "scale": 7e-05,
+    "sight": "b25b161d4a72",
+    "walk": "683601dd7bf6"
+   },
+   "height_manifest_digest": "6a3871ca65df74ac",
+   "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
+  },
+  "Fracture": {
+   "callouts_sha256": "ef550f63ca2a5ebf4967173ae8f5b818750d650cdf42cdc700bd05afd29aa5e5",
+   "choke_asset_hash": "cf29f40eb951fd24",
+   "control_fingerprint": "bf771a241eafc249",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": null,
+    "state": "no_map"
+   },
+   "engine_key": "e8b5542908ea699d",
+   "gap_fingerprint": "f19eb57518edfa16",
+   "geometry_inputs": {
+    "barrier": "a2716b8b2641",
+    "scale": 7.8e-05,
+    "sight": "c4d5aa47ca61",
+    "specials": [],
+    "walk": "61afa6aa6628"
+   },
+   "height_geometry_identity": {
+    "scale": 7.8e-05,
+    "sight": "c4d5aa47ca61",
+    "walk": "61afa6aa6628"
+   },
+   "height_manifest_digest": "21dcd6cd47f11fc1",
+   "map_layer_sha256": null
+  },
+  "Haven": {
+   "callouts_sha256": "609752f70ef84394750d776e14aa688daf890cf3e17bf7684bea269e8058a0d4",
+   "choke_asset_hash": "cd42d00d68e45418",
+   "control_fingerprint": "237f8005bfa03369",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": {
+     "barrier": "531ebcdcc30b",
+     "scale": 7.5e-05,
+     "sight": "4b33f5f8746f",
+     "specials": [],
+     "walk": "456ddf172cf3"
+    },
+    "state": "ready"
+   },
+   "engine_key": "c250798d1d094b0b",
+   "gap_fingerprint": "5f806bdd52e16802",
+   "geometry_inputs": {
+    "barrier": "531ebcdcc30b",
+    "scale": 7.5e-05,
+    "sight": "4b33f5f8746f",
+    "specials": [],
+    "walk": "456ddf172cf3"
+   },
+   "height_geometry_identity": {
+    "scale": 7.5e-05,
+    "sight": "4b33f5f8746f",
+    "walk": "456ddf172cf3"
+   },
+   "height_manifest_digest": "1112c1eb5a28cdef",
+   "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
+  },
+  "Icebox": {
+   "callouts_sha256": "c888805efea70eae80dcfab08694cab77024638d77aff5fbdb7854e747304a59",
+   "choke_asset_hash": "22d54e50e75e6ba3",
+   "control_fingerprint": "4fc47f7919ba76e4",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": null,
+    "state": "no_map"
+   },
+   "engine_key": "1d5f4cbd8026d41e",
+   "gap_fingerprint": "dd61a90910f8a9cd",
+   "geometry_inputs": {
+    "barrier": "1458d8224f08",
+    "scale": 7.2e-05,
+    "sight": "748966afbe52",
+    "specials": [],
+    "walk": "87ebfd069462"
+   },
+   "height_geometry_identity": {
+    "scale": 7.2e-05,
+    "sight": "748966afbe52",
+    "walk": "87ebfd069462"
+   },
+   "height_manifest_digest": "5211c73e9bae5a54",
+   "map_layer_sha256": null
+  },
+  "Lotus": {
+   "callouts_sha256": "00f80f2113009dddc2c89ee056569ab8da21b2c269b854bba6a601458406227c",
+   "choke_asset_hash": "07eda3d5eedce617",
+   "control_fingerprint": "39377089f1541c50",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Lotus",
+     "tags_digest": "f79f3947d6dbd0583b5d0d93141f20ecd07a42b61ca86d4ce905490459d39676"
+    },
+    "geometry": {
+     "barrier": "0799f99c0abb",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 7.2e-05,
+     "sight": "39a88a11dd2f",
+     "specials": [],
+     "walk": "1bbf00db2ac5"
+    },
+    "state": "ready"
+   },
+   "engine_key": "4e8d65d09fea4b37",
+   "gap_fingerprint": "4b32fdc9ec1a69a8",
+   "geometry_inputs": {
+    "barrier": "0799f99c0abb",
+    "scale": 7.2e-05,
+    "sight": "39a88a11dd2f",
+    "specials": [],
+    "walk": "1bbf00db2ac5"
+   },
+   "height_geometry_identity": {
+    "scale": 7.2e-05,
+    "sight": "39a88a11dd2f",
+    "walk": "1bbf00db2ac5"
+   },
+   "height_manifest_digest": "cd973471cc9ff386",
+   "map_layer_sha256": "5dec69e4c506949408e48c732c8d581381de069374ef9913f80e0976835fe805"
+  },
+  "Pearl": {
+   "callouts_sha256": "4a5dc93d8bdbc27f77764ec8221f7c05a391f267638b730450ca863b3b6e623c",
+   "choke_asset_hash": "ec6233dff419dc5c",
+   "control_fingerprint": "0f9912f230495ba8",
+   "current_geometry": {
+    "feature_key": null,
+    "geometry": null,
+    "state": "no_map"
+   },
+   "engine_key": "558ff0e575b40095",
+   "gap_fingerprint": "a42682602d4b95f2",
+   "geometry_inputs": {
+    "barrier": "5f42c32c5c72",
+    "scale": 7.8e-05,
+    "sight": "68e221537cb1",
+    "specials": [],
+    "walk": "21d5594157a5"
+   },
+   "height_geometry_identity": {
+    "scale": 7.8e-05,
+    "sight": "68e221537cb1",
+    "walk": "21d5594157a5"
+   },
+   "height_manifest_digest": "541a889904bbe3d9",
+   "map_layer_sha256": null
+  },
+  "Split": {
+   "callouts_sha256": "31bfb4050e35d9b6265fa28a4a970bf76e246cec48f8e73702f6fc5bd74a897a",
+   "choke_asset_hash": "fe6f881e51e009e7",
+   "control_fingerprint": "2dc9ab7c95d7d9f6",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Split",
+     "tags_digest": "9f8a4b9608a505c1c5ff4586a014f7a3af911d919073ce5732dd52ec6b2517a4"
+    },
+    "geometry": {
+     "barrier": "22e3b2d9539a",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 7.8e-05,
+     "sight": "f6b62d344ccd",
+     "specials": [],
+     "walk": "87c9ddfd6702"
+    },
+    "state": "ready"
+   },
+   "engine_key": "f402ebb571e21879",
+   "gap_fingerprint": "e5e391b134c26733",
+   "geometry_inputs": {
+    "barrier": "22e3b2d9539a",
+    "scale": 7.8e-05,
+    "sight": "f6b62d344ccd",
+    "specials": [],
+    "walk": "87c9ddfd6702"
+   },
+   "height_geometry_identity": {
+    "scale": 7.8e-05,
+    "sight": "f6b62d344ccd",
+    "walk": "87c9ddfd6702"
+   },
+   "height_manifest_digest": "d8de591b8a1f4926",
+   "map_layer_sha256": "ebd384fcfbf105668931599831df54f27ec854b6515e91523bcf442c32855d50"
+  },
+  "Summit": {
+   "callouts_sha256": "3745f525b9b30ef0ef65a05d0a09cda63b2cf8b9e9992e191146c8e32eecab3a",
+   "choke_asset_hash": "2934fc8174d06a42",
+   "control_fingerprint": "7cffbdfa164eddd1",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Summit",
+     "tags_digest": "9551c607b0db4123ceb64bc392a8f4f94e8cd244e207e9b669c7229031585095"
+    },
+    "geometry": {
+     "barrier": "6e8a726dd39b",
+     "cover": "4ca7d497b029",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 7.5e-05,
+     "sight": "a8686d5a1bbd",
+     "specials": [],
+     "walk": "3f2a7cec58c7"
+    },
+    "state": "ready"
+   },
+   "engine_key": "6c51f106674a72ab",
+   "gap_fingerprint": "afbccc6c94176b88",
+   "geometry_inputs": {
+    "barrier": "6e8a726dd39b",
+    "cover": "4ca7d497b029",
+    "scale": 7.5e-05,
+    "sight": "a8686d5a1bbd",
+    "specials": [],
+    "walk": "3f2a7cec58c7"
+   },
+   "height_geometry_identity": {
+    "cover": "4ca7d497b029",
+    "scale": 7.5e-05,
+    "sight": "a8686d5a1bbd",
+    "walk": "3f2a7cec58c7"
+   },
+   "height_manifest_digest": "9a6ea9acbfa14b72",
+   "map_layer_sha256": "12e12fa22657ce259abe6086254a5c69643f2b1f0d69ad9094716fbdcbcfc1b5"
+  },
+  "Sunset": {
+   "callouts_sha256": "d5b735c7838aecb8abb012beecf75bd680105de40497503f17a65225398da6e1",
+   "choke_asset_hash": "1df00ac42172e82c",
+   "control_fingerprint": "8dcaaa09e98ffacf",
+   "current_geometry": {
+    "feature_key": {
+     "compiler_version": 19,
+     "height_digest": "flat",
+     "map_name": "Sunset",
+     "tags_digest": "a63670d2664b20936e8a4ca60c75290c002dc23042e8c8d18a6900ebcd497462"
+    },
+    "geometry": {
+     "barrier": "02adc35320f7",
+     "cover": "ca4caf841b49",
+     "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "scale": 7.8e-05,
+     "sight": "e608a189a789",
+     "specials": [],
+     "walk": "ba2802b67c05"
+    },
+    "state": "ready"
+   },
+   "engine_key": "c0474304309c9654",
+   "gap_fingerprint": "02d778b7ee6e278d",
+   "geometry_inputs": {
+    "barrier": "02adc35320f7",
+    "cover": "ca4caf841b49",
+    "scale": 7.8e-05,
+    "sight": "e608a189a789",
+    "specials": [],
+    "walk": "ba2802b67c05"
+   },
+   "height_geometry_identity": {
+    "cover": "ca4caf841b49",
+    "scale": 7.8e-05,
+    "sight": "e608a189a789",
+    "walk": "ba2802b67c05"
+   },
+   "height_manifest_digest": "69a51bf6e72d835b",
+   "map_layer_sha256": "f0c524ab395cca8437a2f6428bd6678694a8c49c15797ee34aec4b2277be6e62"
+  }
+ },
+ "must_block_sha_lf": "8059be361342"
+}

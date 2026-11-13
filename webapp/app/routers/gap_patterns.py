@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.replay import Replay
+from app.replays import layouts
 from app.services import gap_patterns
 from app.services import replay_control as control_service
 from app.services import replays as replay_service
@@ -49,17 +51,22 @@ def _enabled_or_404() -> None:
         raise HTTPException(status_code=404)
 
 
-def _map_or_404(map_name: str) -> str:
+def _map_or_404(map_name: str, asset_key: str | None = None) -> str:
     _enabled_or_404()
-    if control_service.map_layer(map_name) is None:
+    available = gap_patterns.available_layouts(map_name)
+    if map_name != layouts.map_of(map_name) or not available:
         raise HTTPException(status_code=404)
-    return map_name
+    if asset_key is None:
+        return available[-1].asset_key
+    if asset_key not in {layout.asset_key for layout in available}:
+        raise HTTPException(status_code=404)
+    return asset_key
 
 
 def control_maps() -> list[str]:
     """Every map with the control layer, by name."""
     index = control_service._assets()[0]
-    return sorted(name for name in index if control_service.map_layer(name) is not None)
+    return sorted({layouts.map_of(key) for key in index if control_service.map_layer(key) is not None})
 
 
 def parse_seq(value: str | None) -> list[int] | None:
@@ -91,7 +98,7 @@ def gaps_index(request: Request, db: Session = Depends(get_db)):
     for name in control_maps():
         counted = replays = 0
         if name in with_replays:
-            eligible = gap_patterns.eligible_rounds(db, name)
+            eligible = gap_patterns.eligible_rounds(db, gap_patterns.default_layout(name))
             counted, replays = len(eligible.rounds), len({rid for rid, _ in eligible.rounds})
         maps.append({"name": name, "rounds": counted, "replays": replays})
     return templates.TemplateResponse(request, "gaps/index.html", {"maps": maps, "thin_data_note": THIN_DATA_NOTE})
@@ -100,6 +107,13 @@ def gaps_index(request: Request, db: Session = Depends(get_db)):
 def page_context(data: dict, logged_in: bool) -> dict:
     """The template's context: the service's page data plus display labels."""
     chokes = data["chokes"]
+    layout_links = []
+    for layout in data["layouts"]:
+        params = {k: v for k, v in data["params"].items() if k != "layout"}
+        if layout["key"] != data["layouts"][-1]["key"]:
+            params["layout"] = layout["key"]
+        url = "/gaps/" + quote(data["map"], safe="")
+        layout_links.append({**layout, "url": url + ("?" + urlencode(params) if params else "")})
     patterns = [dict(p, label=route_label(p["choke_seq"], chokes)) for p in data["patterns"]]
     shapes = []
     for side in ("attack", "defense", "none"):
@@ -113,18 +127,18 @@ def page_context(data: dict, logged_in: bool) -> dict:
             # Without a map scale there are no shape groups: the empty sequence stays one pattern.
             "no_choke": next((p for p in patterns if not p["choke_seq"]), None) if data["shapes"] is None else None,
             "shapes": shapes, "cause_words": CAUSE_WORDS, "friends_login_note": FRIENDS_LOGIN_NOTE,
-            "thin_data_note": THIN_DATA_NOTE,
-            "drawing": {"map": data["map"], "chokes": chokes, "params": data["params"],
+            "thin_data_note": THIN_DATA_NOTE, "layout_links": layout_links,
+            "drawing": {"map": data["map"], "asset": data["layout"], "chokes": chokes, "params": data["params"],
                         "shapes": {f"{s['side']}-{g['index']}": g["rounds"] for s in shapes for g in s["groups"]}}}
 
 
 @router.get("/{map_name}")
 def gaps_map(request: Request, map_name: str, db: Session = Depends(get_db)):
-    _map_or_404(map_name)
+    asset_key = _map_or_404(map_name, request.query_params.get("layout"))
     viewer = get_current_player(request, db)
     filters = gap_patterns.Filters.parse(request.query_params)
     started = time.perf_counter()
-    data = gap_patterns.page_data(db, map_name, filters, viewer.id if viewer is not None else None)
+    data = gap_patterns.page_data(db, asset_key, filters, viewer.id if viewer is not None else None)
     logger.info("gaps page %s: page_data took %.0f ms (%d counted rounds, %d rows, %d patterns, population %s)",
                 map_name, (time.perf_counter() - started) * 1000, data["rounds"]["counted"], data["rows"]["total"],
                 len(data["patterns"]), data["population"])
@@ -135,11 +149,11 @@ def gaps_map(request: Request, map_name: str, db: Session = Depends(get_db)):
 def gaps_routes(request: Request, map_name: str, db: Session = Depends(get_db)):
     """One pattern's routes under the page's filters and population: [{match_uuid, round, seq, t_open, kind,
     route}], in the page's fixed order."""
-    _map_or_404(map_name)
+    asset_key = _map_or_404(map_name, request.query_params.get("layout"))
     seq = parse_seq(request.query_params.get("seq"))
     if seq is None:
         return JSONResponse({"status": "bad_seq"}, status_code=400)
     viewer = get_current_player(request, db)
     filters = gap_patterns.Filters.parse(request.query_params)
-    rows = gap_patterns.pattern_routes(db, map_name, seq, filters, viewer.id if viewer is not None else None)
+    rows = gap_patterns.pattern_routes(db, asset_key, seq, filters, viewer.id if viewer is not None else None)
     return JSONResponse({"map": map_name, "choke_seq": seq, "rows": rows}, headers={"Cache-Control": "no-store"})

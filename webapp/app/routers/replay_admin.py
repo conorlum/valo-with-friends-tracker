@@ -30,7 +30,7 @@ from starlette.responses import StreamingResponse
 
 from app.config import settings
 from app.db import get_db
-from app.models.replay import Replay, ReplayDeletion, ReplayUpload
+from app.models.replay import Replay, ReplayDeletion, ReplayUpload, UtilModel
 from app.replays import db as replay_db
 from app.replays import store
 from app.services import replay_reparse_auto as reparse_auto
@@ -49,6 +49,29 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=404)
     if not hmac.compare_digest(given[len("Bearer "):].encode("utf-8"), token.encode("utf-8")):
         raise HTTPException(status_code=404)
+
+
+@router.post("/util/build", dependencies=[Depends(require_admin)])
+def request_util_build(db: Session = Depends(get_db)):
+    from app.coach import areas
+    from app.critutil import build_digest
+    from app.services import replay_util, util_build_remote, util_model, util_values
+
+    if not util_build_remote.enabled():
+        raise HTTPException(status_code=404)
+    stored = db.query(UtilModel.key, UtilModel.version).filter(UtilModel.name == "values").one_or_none()
+    stored_key = stored.key if stored is not None and stored.version == util_values.VERSION else None
+    rows = replay_util.current_rows(db, with_data=False)
+    model = util_model.load(db)
+    painted_table = areas.load_table(published_only=True)
+    key = replay_util.corpus_key(db, rows, model, painted_table=painted_table)
+    stale = stored_key != key or not util_model.covers(model, util_model.replay_match_ids(db))
+    util_build_remote.request_now()
+    # The paint is the one key input in neither the database nor the code digest: the coach compares this hash
+    # with its own checkout's before it waits (coach/snapshot._wait_util).
+    return {"stale": stale, "in_flight": util_build_remote.in_flight(), "key": key,
+            "stored_key": stored_key, "digest": build_digest.digest(util_build_remote.WEBAPP),
+            "areas_hash": areas.table_hash(painted_table=painted_table)}
 
 
 def _match_uuid(body: dict) -> str:

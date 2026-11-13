@@ -7,9 +7,30 @@ from pathlib import Path
 
 import pytest
 
+from app.coach import areas
 from app.services import replay_util
+from tests.coach.test_areas import painted_object, write_paint
 
 JS = Path(__file__).resolve().parents[2] / "app" / "static" / "js" / "critutil.js"
+
+
+def test_area_of_uses_the_painted_root_region(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    names = [
+        {"id": 1, "name": "A Site", "parent": None, "super": "A", "super_source": "set"},
+        {"id": 2, "name": "Default", "parent": 1, "super": "A", "super_source": "auto"},
+        {"id": 3, "name": "Spawn", "parent": None, "super": "Attacker Side", "super_source": "auto"},
+        {"id": 4, "name": "Lobby", "parent": None, "super": "Defender Side", "super_source": "auto"},
+    ]
+    points = [(3475, 4892), (8627, 4063), (1000, 1000)]
+    paint = painted_object({areas.cell_at(*uv): name_id for uv, name_id in zip(points, (2, 3, 4))}, names=names)
+    assert replay_util.area_of("Sunset", *points[0], "attack") == "Mid"
+    write_paint(tmp_path, paint)
+    assert replay_util.area_of("Sunset", *points[0], "attack") == "A"
+    assert replay_util.area_of("Sunset", *points[1], "attack") == "own half"
+    assert replay_util.area_of("Sunset", *points[1], "defense") == "enemy half"
+    assert replay_util.area_of("Sunset", *points[2], "attack") == "enemy half"
+    assert replay_util.area_of("Sunset", *points[2], "defense") == "own half"
 
 
 def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
@@ -24,6 +45,14 @@ def row(pid, value, i, match=1, rnd=1, ability="Flashpoint", area="A", **kw):
         base.setdefault(lk, base["lift"])
         base.setdefault(gk, base[lk] is not None)
     return base
+
+
+@pytest.mark.parametrize("upper, expected", [(2, "Mid"), (3, "unknown")])
+def test_stacked_floors_share_a_critical_util_region_only_when_all_supers_agree(tmp_path, monkeypatch, upper, expected):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    write_paint(tmp_path, painted_object({0: 1}, bands={"0": [[0, 20, 1], [30, 50, upper]]}))
+    assert areas.area_at("Sunset", 0, 0) is None
+    assert replay_util.area_of("Sunset", 0, 0, "attack") == expected
 
 
 def corpus(rows, personal=None):

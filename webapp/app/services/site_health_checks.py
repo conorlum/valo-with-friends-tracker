@@ -1,6 +1,6 @@
 """Live checks for the site-health card: conditions read when the card is computed, never stored.
 
-Light imports only (stdlib, SQLAlchemy, models, replay_gaps for its revision, util_rebuild for its lock key): the card
+Light imports only (stdlib, SQLAlchemy, models, replay_gaps for its revision, util_build_health for the in-flight flag): the card
 must not pull in the Critical Util engine or numpy.
 """
 
@@ -9,14 +9,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from app.models.impact_score import ImpactScore
 from app.models.map_pool import MapPoolPatchNotes
 from app.models.match import Match
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
-from app.services import replay_gaps, util_rebuild
+from app.services import replay_gaps, util_build_health
 
 log = logging.getLogger(__name__)
 
@@ -37,16 +37,6 @@ def _iso(moment):
     return moment.isoformat() if moment is not None else "none"
 
 
-def _build_lock_held(db) -> bool:
-    if db.bind is None or db.bind.dialect.name != "postgresql":
-        return False
-    key = util_rebuild.LOCK_KEY
-    return db.execute(
-        text("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = :hi AND objid = :lo "
-             "AND objsubid = 1 LIMIT 1"),
-        {"hi": key >> 32, "lo": key & 0xFFFFFFFF}).first() is not None
-
-
 def util_build_stale(db, now: datetime) -> list[dict]:
     """The stored Critical Util build is older than util rows that arrived over UTIL_STALE_S ago. 0 or 1 item."""
     try:
@@ -60,7 +50,7 @@ def util_build_stale(db, now: datetime) -> list[dict]:
         oldest = _aware(db.execute(query).scalar())
         if oldest is None or (_aware(now) - oldest).total_seconds() <= UTIL_STALE_S:
             return []
-        if _build_lock_held(db):
+        if util_build_health.in_flight():
             return []
         return [{
             "key": "values", "first_seen": oldest,

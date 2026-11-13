@@ -9,7 +9,7 @@
     --bg: #15171b; --panel: #1f2228; --text: #e6e8eb; --muted: #9aa1ab; --line: #333842;
     --cover: #e5484d; --seeover: #f5a524; --walkable: #30a46c; --glyph: #8b8d98; --seeacross: #be6eff;
     --untagged: #3aa0ff; --cantwalk: #ffd166; --uncertain: #2cd5c4; --barrier: #ff7ad9; --good: #30a46c; --critical: #e5484d;
-    --choke: #ff9f43; --chokesel: #ffffff; --chokenew: #7ee787;
+    --choke: #ff9f43; --chokesel: #ffffff; --chokenew: #7ee787; --areas: #82b1ff;
   }
   input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; flex: 1; }
   .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
@@ -56,6 +56,26 @@
   .issue-error { color: var(--critical); } .issue-warn { color: var(--seeover); }
   .saved-ok { color: var(--good); } .saved-dirty { color: var(--seeover); } .saved-error { color: var(--critical); }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; max-width: 560px; }
+  #areasCanvas { display: none; touch-action: none; cursor: crosshair; }
+  .stage.areas #areasCanvas { display: block; }
+  .stage.areas :is(#tint, #overlay, #feat, #featLabels) { visibility: hidden; }
+  .areas-mode :is(header label, header button, #legacyBrush, [data-legacy-card]) { display: none; }
+  #areasCard section + section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+  #areasCard h3 { font-size: 13px; margin: 0 0 6px; }
+  #areasCard p { margin: 6px 0 0; }
+  #areasCard select { max-width: 100%; }
+  #areasSource { float: right; text-transform: none; color: var(--areas); letter-spacing: 0; }
+  #areasTree { max-height: 188px; overflow: auto; display: grid; gap: 2px; margin: 6px 0; }
+  #areasTree button { text-align: left; display: flex; align-items: center; gap: 5px; padding-block: 3px; }
+  #areasTree button[aria-pressed=true] { border-color: var(--areas); }
+  #areasTree .sw { flex: none; margin-right: 0; }
+  #areasTree .name { flex: 1; overflow-wrap: anywhere; }
+  .area-badge { font-size: 11px; white-space: nowrap; }
+  .area-editor { display: grid; grid-template-columns: 1fr auto; gap: 5px; align-items: center; }
+  #areasCard input[type=file] { width: 100%; color: var(--muted); }
+  #areasReferencePreview { width: 100%; max-width: 320px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; margin-top: 6px; }
+  #areasReferencePreview.aligning { cursor: crosshair; outline: 1px solid var(--areas); }
+  #areasFloorHint { margin-left: 5px; }
 </style>
 </head>
 <body>
@@ -84,6 +104,7 @@
       <canvas id="tint" width="1024" height="1024"></canvas>
       <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
       <canvas id="feat" width="1024" height="1024" aria-label="Map features: draw, select and link features"></canvas>
+      <canvas id="areasCanvas" width="1024" height="1024" aria-label="Map areas: paint, erase or fill walk cells"></canvas>
     </div>
     <canvas id="featLabels" width="1024" height="1024" style="pointer-events:none" aria-hidden="true"></canvas>
   </div>
@@ -101,7 +122,9 @@
         <button data-mode="chokes"><span class="sw" style="background:var(--choke)"></span>Chokes <kbd>K</kbd></button>
         <button data-mode="choke_paint"><span class="sw" style="background:var(--chokenew)"></span>Paint new choke <kbd>A</kbd></button>
         <button data-mode="features"><span class="sw" style="background:var(--feat)"></span>Map features <kbd>F</kbd></button>
+        <button data-mode="areas"><span class="sw" style="background:var(--areas)"></span>Areas <kbd>M</kbd></button>
       </div>
+      <div id="legacyBrush">
       <p style="margin:8px 0 0"><label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label></p>
       <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
         <b>See-across</b>: black you can see over (drops, gaps). <b>Cover</b>: blocks sight and walking.
@@ -109,6 +132,67 @@
         flat map may be wrong; it changes nothing. <b>Barrier</b>: the buy-phase barrier lines. Press, drag and
         release to draw one straight, thin line right across each gap, touching the walls at both ends; when
         they drop, each team holds its side of them. Sight and walking are unchanged.</p>
+      </div>
+    </div>
+    <div class="card" id="areasCard" hidden>
+      <h2>Areas <span id="areasSource"></span></h2>
+      <section>
+        <div class="row" role="toolbar" aria-label="Area tools">
+          <button data-area-tool="brush">Brush</button>
+          <button data-area-tool="fill">Fill</button>
+          <button data-area-tool="erase">Erase</button>
+          <button data-area-tool="pick">Pick area</button>
+        </div>
+        <p><label>Brush size <input type="range" id="areasBrushSize" min="1" max="17" step="2" value="5">
+          <output id="areasBrushSizeText" for="areasBrushSize">5 cells</output></label></p>
+        <p id="areasFloorRow" hidden><label>Floor <select id="areasFloor"></select></label>
+          <span id="areasFloorHint" class="note"></span></p>
+        <p class="note" id="areasMessage" role="status"></p>
+      </section>
+      <section>
+        <h3>Names and regions</h3>
+        <div id="areasTree" aria-label="Area names"></div>
+        <div class="area-editor">
+          <input type="text" id="areasName" aria-label="Selected area name"><button id="areasRename">Rename</button>
+          <label for="areasParent">Parent</label><select id="areasParent"></select>
+          <label for="areasRegion">Region</label><select id="areasRegion"></select>
+          <span id="areasRegionStatus" class="note"></span><button id="areasConfirmRegion">Confirm region</button>
+          <select id="areasMergeTarget" aria-label="Merge into"></select><button id="areasMerge">Merge</button>
+          <input type="text" id="areasNewName" placeholder="New area name" aria-label="New area name"><button id="areasAdd">Add name</button>
+        </div>
+        <p><label><input type="checkbox" id="areasAddChild"> Add as child of selected area</label></p>
+      </section>
+      <section>
+        <h3><label for="areasPinsFile">Correction pins</label></h3>
+        <input type="file" id="areasPinsFile" accept=".json,application/json">
+        <p class="note" id="areasPinStatus" role="status">No pins loaded</p>
+      </section>
+      <section>
+        <h3><label for="areasReferenceFile">Reference image</label></h3>
+        <input type="file" id="areasReferenceFile" accept="image/*">
+        <canvas id="areasReferencePreview" width="320" height="180" aria-label="Reference image alignment preview" hidden></canvas>
+        <div class="row">
+          <select id="areasAlignPairs" aria-label="Alignment point pairs">
+            <option value="2">2 pairs · rotate and scale</option>
+            <option value="3">3 pairs · affine</option>
+          </select>
+          <button id="areasAlign" disabled>Align image</button>
+          <button id="areasReferenceClear" disabled>Clear</button>
+        </div>
+        <p><label>Opacity <input type="range" id="areasOpacity" min="0" max="100" value="45">
+          <output id="areasOpacityText" for="areasOpacity">45%</output></label></p>
+        <p class="note" id="areasReferenceStatus" role="status"></p>
+      </section>
+      <section class="areas-exports">
+        <div class="row">
+          <button id="areasExport">Export areas file</button>
+          <button id="areasExportFixture" disabled>Export fixture</button>
+        </div>
+        <p id="areasAuto" class="note"></p>
+        <p class="note">Export reviewed paint before closing the page. Copy <code>&lt;Map&gt;.areas.json</code> to
+          <code>app/static/data/control/</code> when the map is ready.
+          Critical Util builds read reviewed paint from origin/main; merge it to publish.</p>
+      </section>
     </div>
     <div class="card" id="featCard" hidden>
       <h2>Map features <span id="featSaved" class="saved-ok" style="float:right;text-transform:none">saved</span></h2>
@@ -198,12 +282,12 @@
         <button id="featImportCopy">Download a copy of the file</button>
         <button id="featImportCancel">Cancel</button>
       </div></dialog>
-    <div class="card">
+    <div class="card" data-legacy-card>
       <h2>Kill-line test (bar 2%)</h2>
       <div id="stat" class="big">–</div>
       <div id="statNote" class="note"></div>
     </div>
-    <div class="card">
+    <div class="card" data-legacy-card>
       <h2>Selected shape</h2>
       <div id="sel" class="note">Click a shape on the map (Select tool).</div>
       <div class="grid" style="margin-top:8px">
@@ -216,7 +300,7 @@
         <button id="next">Next untagged <kbd>N</kbd></button>
       </div>
     </div>
-    <div class="card" id="chokeCard">
+    <div class="card" id="chokeCard" data-legacy-card>
       <h2>Chokes</h2>
       <div id="chokeSel" class="note">Chokes tool: click a choke on the map to select it.</div>
       <div class="row">
@@ -239,13 +323,13 @@
         place, until <code>scripts/compute_control.py</code> recomputes them (from the tick cache, quickly, when
         it is there).</p>
     </div>
-    <div class="card">
+    <div class="card" data-legacy-card>
       <h2>This map</h2>
       <p style="margin:0 0 8px"><label><input type="checkbox" id="reviewed"> Cover reviewed (clears the site's
         "cover not reviewed" badge)</label></p>
       <table id="counts"></table>
     </div>
-    <div class="card note">
+    <div class="card note" data-legacy-card>
       Walls (transparent pixels) always block sight. A shape blocks only once tagged <b>cover</b>. Edits stay in
       this browser until you export. Then copy the file over <code>app/static/data/control/tags.json</code> and run
       <code>scripts/build_control_geometry.py</code>; changed maps' stored rounds go stale until
@@ -376,6 +460,7 @@
     });
     recompute();
     if (window.taggerFeatures) window.taggerFeatures.onMap(name);
+    if (window.taggerAreas) window.taggerAreas.onMap(name);
   }
 
   function recompute() {
@@ -593,8 +678,9 @@
 
   function setMode(mode) {
     state.mode = mode;
-    if (mode !== "select" && mode !== "erase" && !CHOKE_MODES[mode] && mode !== "features") { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
+    if (mode in PAINT_NAMES) { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
     if (window.taggerFeatures) window.taggerFeatures.onMode(mode);
+    if (window.taggerAreas) window.taggerAreas.onMode(mode);
     Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-mode") === mode);
     });
@@ -632,7 +718,7 @@
 
   var stroke = null, chokeStroke = null;
   $("overlay").addEventListener("pointerdown", function (e) {
-    if (state.mode === "select" || state.mode === "chokes" || state.mode === "features") return;
+    if (state.mode === "select" || state.mode === "chokes" || state.mode === "features" || state.mode === "areas") return;
     if (state.mode === "choke_paint") {
       chokeStroke = toMap(e); chokeDab(chokeStroke[0], chokeStroke[1]); paintOverlay();
       $("overlay").setPointerCapture(e.pointerId);
@@ -713,18 +799,28 @@
   $("reviewed").addEventListener("change", function () { beforeChange(); mapEdits().cover_reviewed = this.checked; changed(); });
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
-    if (state.mode === "features") { if (e.key === "Escape") setMode("select"); return; }   // the features script has the keys
+    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
+                  k: "chokes", a: "choke_paint", f: "features", m: "areas" };
+    var modeKey = !e.ctrlKey && !e.metaKey && !e.altKey && modes[e.key.toLowerCase()];
+    if (state.mode === "features") {
+      if (e.key === "Escape") setMode("select");
+      else if (modeKey === "areas") setMode("areas");
+      return;
+    }
+    if (state.mode === "areas") {
+      if (e.key === "Escape" && !window.taggerAreas.cancelAlignment()) setMode("select");
+      else if (modeKey) setMode(modeKey);
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
-    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
-                  k: "chokes", a: "choke_paint", f: "features" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
     if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
     if (CHOKE_MODES[state.mode] && (e.key in keys || e.key === "n" || e.key === "N")) return;   // shape tags need the Select tool
     if (e.key in keys) setTag(keys[e.key]);
     else if (e.key === "n" || e.key === "N") nextUntagged();
-    else if (e.key.toLowerCase() in modes) setMode(modes[e.key.toLowerCase()]);
+    else if (modeKey) setMode(modeKey);
   });
   ["showCandidates", "showPaint", "showSight", "showWalk"].forEach(function (id) { $(id).addEventListener("change", paintTint); });
   $("showLines").addEventListener("change", paintOverlay);
@@ -803,6 +899,9 @@
 </script>
 <script>
 /*FEATURES_UI*/
+</script>
+<script>
+/*AREAS_UI*/
 </script>
 </body>
 </html>

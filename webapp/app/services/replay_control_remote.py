@@ -85,7 +85,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import map_feature_artifacts as fa
 from app.services import control_feature_artifacts
-from app.services import control_heights, replay_control, replay_gaps
+from app.services import control_heights, layout_walls, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
@@ -127,6 +127,10 @@ class WorkerGone(Exception):
 
 class WorkerBusy(Exception):
     """The worker's control queue is full (503)."""
+
+
+class UnknownLayout(Exception):
+    """This worker image lacks the layout; hold the round without spending a try."""
 
 
 class Unreachable(Exception):
@@ -183,6 +187,8 @@ class ControlClient:
             return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
                                                      headers={"Content-Type": "application/json"}))
         except Conflict as conflict:
+            if conflict.body.get('code') == 'unknown_layout':
+                raise UnknownLayout(task['map']) from conflict
             if conflict.body.get('code') == 'needs_features':
                 raise NeedsFeatures(conflict.body.get('digest')) from conflict
             if conflict.body.get("height"):
@@ -227,6 +233,51 @@ class ControlClient:
     def build(self, build_id: str) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/heights/build/{build_id}"))
 
+    def util_have(self, rows, obs=None, *, prune=False, ref=None) -> dict:
+        return self._post('/util/have', {"rows": list(rows), "obs": None if obs is None else list(obs),
+                                         "prune": prune, "ref": ref})
+
+    def util_rounds(self, rows, *, ref=None) -> dict:
+        return self._post('/util/rounds', {"rows": rows, "ref": ref})
+
+    def util_obs(self, obs, *, ref=None) -> dict:
+        return self._post('/util/obs', {"obs": obs, "ref": ref})
+
+    def util_open(self, *, key, digest, rows, obs, refit, context, ref=None) -> dict:
+        try:
+            return self._post('/util/build', {"key": key, "digest": digest, "rows": rows, "obs": obs,
+                                               "refit": refit, "context": context, "ref": ref})
+        except Conflict as conflict:
+            return conflict.body
+
+    def util_build(self, build_id: str) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/util/build/{build_id}"))
+
+    def util_result(self, build_id: str, dest_path):
+        """Stream the opaque result to disk; the collector checks its digest before storing it."""
+        import shutil
+        from pathlib import Path
+
+        dest = Path(dest_path)
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{self.base}/util/build/{build_id}/result"),
+                                        timeout=300) as response:
+                try:
+                    with dest.open('wb') as output:
+                        shutil.copyfileobj(response, output, length=1024 * 1024)
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise WorkerGone(str(error.code)) from error
+            if error.code == 503:
+                raise WorkerBusy(str(error.code)) from error
+            raise Unreachable(f"worker answered {error.code}") from error
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise Unreachable("the replay worker result is unreachable") from error
+        return dest
+
     def _call(self, request) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -264,6 +315,7 @@ class InFlight:
     inputs: object = None
     stale_s: float = STALE_JOB_S         # its running backstop, fixed at admission from the worker's own `runner`
                                          # (_admitted_stale_s): no /health read, failed or not, changes it
+    asset_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +390,14 @@ class State:
     warm_boot: str | None = None                        # the worker process warm_vanished_boot came from
     warm_vanished_boot: dict = field(default_factory=dict)     # that process's own counts, as /health gives them
     warm_vanished_earlier: dict = field(default_factory=dict)  # earlier worker processes' counts, kept
+    walls_evaluated_at: float | None = None            # last wall evaluation: on the first pass, after new shares,
+                                                       # and every layout_walls.EVALUATE_EVERY_S on a quiet site
+    layout_wait: dict = field(default_factory=dict)     # asset key -> when its rounds may go out again (F6)
+
+    def layout_refused(self, asset_key: str, now: float) -> None:
+        """A worker or a run had no assets for the layout (a redraw's deploy gap): its rounds wait BACKOFF_S
+        before they go out again, spending no try."""
+        self.layout_wait[asset_key] = now + BACKOFF_S
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -385,6 +445,16 @@ def supports_gaps(health) -> bool:
     return control.get("enabled") is True and type(protocol) is int and protocol == GAPS_PROTOCOL
 
 
+def supports_layout(health, key: str) -> bool:
+    """Base assets remain compatible with workers predating layout advertisement."""
+    from app.replays import layouts
+    if layouts.map_of(key) == key:
+        return True
+    control = health.get('control') if isinstance(health, dict) else None
+    keys = control.get('layouts') if isinstance(control, dict) else None
+    return isinstance(keys, list) and key in keys
+
+
 def _gaps_capable(client) -> bool:
     try:
         return supports_gaps(client.health())
@@ -415,9 +485,10 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     if not isinstance(util, dict) or util.get("status") not in ("ok", "failed") \
             or (util["status"] == "ok" and not isinstance(util.get("data"), dict)):
         return None
-    if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, f.map_name) \
+    asset_key = f.asset_key or f.map_name
+    if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, asset_key) \
             or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
-            or run.get("chokes_hash") != choke_assets.asset_hash(f.map_name):
+            or run.get("chokes_hash") != choke_assets.asset_hash(asset_key):
         return None
     return gaps
 
@@ -488,6 +559,10 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 counts["timed_out"] += 1
             continue
         del state.in_flight[key]
+        if status == 'failed' and job.get('error_code') == 'unknown_layout':
+            state.layout_refused(f.asset_key or f.map_name, now)
+            counts['held'] += 1
+            continue
         if status == "done":
             result = job.get("result") or {}
             if result.get("revision") != cf.CONTROL_REVISION or result.get("data_version") != cf.DATA_VERSION:
@@ -495,7 +570,7 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 counts["dropped_revision"] += 1
                 continue
             if (f.inputs is not None and result.get('geometry') != f.inputs.geometry) or \
-                    (f.inputs is None and not _matches_geometry(result, f.map_name, heights)):
+                    (f.inputs is None and not _matches_geometry(result, f.asset_key or f.map_name, heights)):
                 state.failed(key, now)
                 counts["dropped_geometry"] += 1
                 continue
@@ -520,9 +595,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             # Source qualification fails before calculation. Keep its diagnostic under
             # the planned gap inputs, without replacing the already stored control.
             failure = {'gaps': {'run': {'status': 'failed',
-                'fingerprint': replay_gaps.gap_fingerprint(f.fingerprint, f.map_name),
+                'fingerprint': replay_gaps.gap_fingerprint(f.fingerprint, f.asset_key or f.map_name),
                 'gaps_revision': replay_gaps.GAPS_REVISION,
-                'chokes_hash': choke_assets.asset_hash(f.map_name),
+                'chokes_hash': choke_assets.asset_hash(f.asset_key or f.map_name),
                 'notes': {job.get('error_code') or 'source_unavailable': 1},
                 'error': job.get('error') or 'round source unavailable'}, 'rows': [],
                 'moments': {'status': 'failed', 'fights': [],
@@ -592,15 +667,16 @@ def _order(session, todo: list) -> list:
 def send_key(p, kind: str, capable: bool) -> str:
     """The worker key a planned round goes out under: a gaps-only task (`kind` "gaps"), a control task with a gaps
     block (`capable`), or a plain one."""
+    asset_key = p.asset_key or p.map_name
     if kind == "gaps":
-        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        return gaps_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, asset_key))
     if capable:
-        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        return full_key(p.replay_id, p.round_number, p.fingerprint, replay_gaps.gap_fingerprint(p.fingerprint, asset_key))
     return task_key(p.replay_id, p.round_number, p.fingerprint)
 
 
 def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: bool = False,
-              held: frozenset = frozenset()) -> list:
+              held: frozenset = frozenset(), health=None, counts=None) -> list:
     """Of the planned `rounds`, those that may be sent now, each with its worker key: not held back, no job
     for the round in flight (whatever its kind, so a change of capability never makes a second one), and
     tries left for that key. `kind` is "control" (with `capable` the task will carry a gaps block) or
@@ -609,6 +685,14 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     out = []
     for p in rounds:
         if p.replay_id in held or (p.replay_id, p.round_number) in flying:
+            continue
+        if not supports_layout(health, p.asset_key or p.map_name):
+            if counts is not None:
+                counts['held'] += 1
+            continue
+        if state.layout_wait.get(p.asset_key or p.map_name, 0.0) > now:
+            if counts is not None:
+                counts['layout_waiting'] = counts.get('layout_waiting', 0) + 1   # not 'held': the idle throttle may run
             continue
         key = send_key(p, kind, capable)
         if state.may_try(key, now):
@@ -646,13 +730,18 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True                      # sendable work is left: plan again next cycle
         if not room_for(state, p.replay_id):
             continue                         # another match is in flight: this one waits its turn
+        if state.layout_wait.get(p.asset_key or p.map_name, 0.0) > now:
+            # R2-9: an earlier round of this batch was just refused for its layout; the rest wait with it.
+            counts['layout_waiting'] = counts.get('layout_waiting', 0) + 1
+            continue
         key = keys[p.replay_id, p.round_number]
         gaps_only = kind == "gaps"
         expect_gaps = gaps_only or key != task_key(p.replay_id, p.round_number, p.fingerprint)
         row = session.get(ReplayRound, (p.replay_id, p.round_number))
         if row is None:
             continue
-        task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
+        asset_key = p.asset_key or p.map_name
+        task = {"key": key, "map": asset_key, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
         pin = p.inputs
         task['height_mode'] = pin.height_mode
@@ -665,7 +754,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             task['inputs'] = pin.envelope
             task['geometry'] = pin.geometry
         if expect_gaps:
-            task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
+            task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, asset_key)
         if gaps_only:
             task["gaps_only"] = True
         digest = pin.geometry.get('height')
@@ -681,8 +770,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                     if missing.digest != digest or 'height' in pushed:
                         raise Refused('worker requested an unplanned or repeated height')
                     height_bytes = control_feature_artifacts.archived_height_bytes(session, features) if features \
-                        else replay_control.exact_height_bytes(session, p.map_name, digest)
-                    client.push_height(p.map_name, digest, height_bytes)
+                        else replay_control.exact_height_bytes(session, asset_key, digest)
+                    client.push_height(asset_key, digest, height_bytes)
                     pushed.add('height')
                     counts['pushed'] += 1
                 except NeedsFeatures as missing:
@@ -695,6 +784,10 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
         except WorkerBusy:
             counts["busy"] += 1
             return True
+        except UnknownLayout:
+            state.layout_refused(p.asset_key or p.map_name, now)
+            counts['held'] += 1
+            continue
         except (Refused, Conflict, Rejected, ValueError) as refused:
             # This round's own trouble (the worker turned it or a push down; its artifact or height can't be
             # read here: FeatureArtifactError and FeatureInputsError are ValueErrors). It spends a try and the
@@ -711,7 +804,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
                                         expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin,
-                                        stale_s=_admitted_stale_s(answer, state))
+                                        stale_s=_admitted_stale_s(answer, state), asset_key=asset_key)
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
@@ -810,7 +903,7 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
-    todo = [p for p in planned if p.map_name not in held_maps]   # a map whose heights are being rebuilt waits for them
+    todo = [p for p in planned if (p.asset_key or p.map_name) not in held_maps]   # wait for this layout's heights
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
     try:
         health = client.health()
@@ -823,18 +916,20 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, todo, kind="control", capable=capable, held=held),
+                             _sendable(state, now, todo, kind="control", capable=capable, held=held,
+                                       health=health, counts=counts),
                              kind="control", features_capable=features_capable)
     # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
     if not state.last_found and capable:
         # As the local command does: every round with its current fingerprint, then those whose control is ok and
         # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
         wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
-        wanted = [p for p in wanted if p.map_name not in held_maps]
+        wanted = [p for p in wanted if (p.asset_key or p.map_name) not in held_maps]
         state.last_found = _send(session, client, state, now, counts,
-                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps",
+                                 _sendable(state, now, wanted, kind="gaps", held=held,
+                                           health=health, counts=counts), kind="gaps",
                                  features_capable=features_capable)
-    if held_maps:
+    if held_maps or counts['held']:
         state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
 
@@ -866,8 +961,9 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "refused", "pushed", "gaps_sent", "gaps_stored",
+                                             "busy", "unreachable", "refused", "held", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
+                                             "walls_computed", "walls_skipped", "walls_error",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else
     try:
@@ -896,10 +992,34 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             finally:
                 rebuild.rollback()
                 rebuild.close()
+        try:
+            walls = layout_walls.step(session_factory, now, control_in_flight=len(state.in_flight))
+            counts["walls_computed"] = walls.get("computed", 0)
+            counts["walls_skipped"] = int("skipped" in walls)
+            # R2-11 (2026-11-12): evaluation (which may decode callout rounds) runs only on a pass the backfill
+            # found quiet: never during an upload or with control in flight, on the dispatcher's own time.
+            if "skipped" not in walls and (walls.get("computed") or state.walls_evaluated_at is None
+                                           or now - state.walls_evaluated_at >= layout_walls.EVALUATE_EVERY_S):
+                evaluation = session_factory()
+                try:
+                    unjudged = layout_walls.evaluate(evaluation)
+                    counts["walls_unjudged"] = len(unjudged or {})
+                    state.walls_evaluated_at = now
+                finally:
+                    evaluation.close()
+            site_health.loop_ok("layout_walls_step")
+        except Exception as exc:  # noqa: BLE001 - wall shares must never stop map control
+            log.exception("layout wall-share step failed")
+            counts["walls_error"] = 1
+            site_health.loop_failed("layout_walls_step", exc)
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
-            names = [name for name, in session.query(Replay.map_name).distinct()]
-            replay_control.prepare_discovered(session_factory, names, state.feature_retry_after, now)
+            asset_keys = set()
+            for replay in session.query(Replay.map_name, Replay.game_branch).distinct():
+                selection = replay_control.layout_of(replay)
+                if selection.state == "ok":
+                    asset_keys.add(selection.layout.asset_key)
+            replay_control.prepare_discovered(session_factory, asset_keys, state.feature_retry_after, now)
             _submit(session, client, state, now, counts, held, held_maps, session_factory=session_factory)
         finally:
             session.rollback()

@@ -9,6 +9,7 @@ import statistics
 
 from app.moments.constants import (DEATH_MATCH_S, EXPENSIVE_FIGHT_M2, EXPENSIVE_FIGHTS_SHOWN, INFO_MERGE_S,
                                    MEDIAN_MIN_CLEAN)
+from app.replays.control_reasons import SIGHT_SOUND, classify
 from app.services import enemy_names
 
 
@@ -116,23 +117,28 @@ def _merge(times: list[float]) -> list[float]:
     return kept
 
 
-def player_info(slot, events, moments) -> dict:
+def player_info(slot, events, moments, destroyed=None) -> dict:
     slot = _as_int(slot)
     heard, gunfire, seen, util = [], [], [], []
     for n, groups in (events or {}).items():
         rnd = int(n)
         fights = _fights_of(slot, (moments or {}).get(n, (moments or {}).get(rnd)))
-        by_reason: dict[str, list[float]] = {}
+        by_reason: dict[tuple[str, str], list[float]] = {}
         for side in (groups or {}).values():
-            for t, s, reason in side:
+            for row in side:
+                t, s, reason = row[:3]
+                kind = row[3] if len(row) > 3 else None
                 if _as_int(s) != slot:
                     continue
-                if reason in ("damage", "kill"):
+                reason_class = classify(reason, kind)
+                if reason not in SIGHT_SOUND and reason_class not in ("found", "roughly_placed"):
+                    continue
+                if reason in ("damage", "kill", "tap", "orb"):
                     continue
                 if reason == "gunfire" and any(f["t0"] <= t <= f["t1"] for f in fights):
                     continue
-                by_reason.setdefault(reason, []).append(t)
-        for reason, ts in by_reason.items():
+                by_reason.setdefault((reason, reason_class), []).append(t)
+        for (reason, reason_class), ts in by_reason.items():
             for t in _merge(ts):
                 if reason == "footsteps":
                     heard.append({"round": rnd, "t": t})
@@ -141,13 +147,17 @@ def player_info(slot, events, moments) -> dict:
                 elif reason == "seen":
                     seen.append(t)
                 else:
-                    util.append({"round": rnd, "t": t, "reason": reason})
+                    util.append({"round": rnd, "t": t, "reason": reason, "class": reason_class})
     key = lambda m: (m["round"], m["t"])
+    lost_devices = [{"round": int(n), "t": t, "device": device}
+                    for n, rows in (destroyed or {}).items()
+                    for t, owner, device, u, v in rows if _as_int(owner) == slot]
     return {
         "heard": sorted(heard, key=key),
         "gunfire_outside": sorted(gunfire, key=key),
         "found_by_utility": sorted(util, key=lambda m: (m["round"], m["t"], m["reason"])),
         "seen": len(seen),
+        "destroyed": sorted(lost_devices, key=key),
     }
 
 
@@ -197,7 +207,8 @@ def player_summary(slot, moments, deaths) -> dict:
             "medians": {k: _bucket(v) for k, v in buckets.items()}}
 
 
-def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None) -> dict:
+def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None,
+                  destroyed=None) -> dict:
     """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights).
     `team_fights`: round -> the control summary's team fights (app/control/fight_swing.py), when stored."""
     rounds = {}
@@ -213,7 +224,7 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale, fai
     for slot in players:
         summary[str(slot)] = {**player_summary(slot, moments, deaths),
                               "expensive_fights": expensive_fights(slot, moments, team_fights),
-                              "info": player_info(slot, events, moments)}
+                              "info": player_info(slot, events, moments, destroyed=destroyed)}
     return {"players": players, "attack_round1": attack_round1, "rounds": rounds,
             "summary": summary, "stale": stale, "failed": sorted(int(n) for n in failed)}
 
@@ -257,7 +268,7 @@ def load_moments_payload(db, replay) -> dict:
         stored[row.round_number] = row
 
     groups = replay_control.side_groups(db, replay)
-    context = replay_control.resolve_current_geometry(db, replay.map_name)
+    freshness = replay_gaps.Freshness(db)
     stale = 0
     failed = []
     for n in range(1, replay.round_count + 1):
@@ -265,8 +276,7 @@ def load_moments_payload(db, replay) -> dict:
         if row is None or row.gaps_revision != replay_gaps.GAPS_REVISION:
             stale += 1
             continue
-        control = replay_control.round_fingerprint(replay, groups, n, context=context)
-        current = None if control is None else replay_gaps.gap_fingerprint(control, replay.map_name)
+        current = freshness.expected(replay, n)
         if current is None or row.fingerprint != current:
             stale += 1
         elif row.status != "ok":
@@ -281,6 +291,7 @@ def load_moments_payload(db, replay) -> dict:
     team_fights = {int(n): s["fights"] for n, s in loaded.summaries.items() if isinstance(s.get("fights"), list)}
 
     events = {}
+    destroyed = {}
     rows = (db.query(ReplayRoundControl.round_number, ReplayRoundControl.data)
             .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.status == "ok"))
     for n, data in rows:
@@ -288,6 +299,7 @@ def load_moments_payload(db, replay) -> dict:
             header, _ = control_format.unpack_data(data)
         except (control_format.ControlFormatError, ValueError, OSError):
             continue
+        destroyed[n] = header.get("destroyed") or []
         found = header.get("knowledge_events") or {}
         if found:
             events[n] = found
@@ -301,4 +313,4 @@ def load_moments_payload(db, replay) -> dict:
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
-                         events=events, stale=stale, failed=failed, team_fights=team_fights)
+                         events=events, stale=stale, failed=failed, team_fights=team_fights, destroyed=destroyed)

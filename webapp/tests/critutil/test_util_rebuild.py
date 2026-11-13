@@ -129,36 +129,28 @@ def test_a_handed_failure_is_written_before_the_build_and_its_success_clears_it(
     assert stored(health) == {}
 
 
-def test_a_handed_failure_stays_when_another_process_is_building(health, monkeypatch):
-    import app.db
+class NoHolderEngine:
+    """A PostgreSQL engine that fails the test if anything connects: the child holds no session lock (R3)."""
 
-    class Result:
-        def scalar(self):
-            return False
-
-    class Holder:
-        def execute(self, *a, **k):
-            return Result()
-
-        def commit(self):
-            pass
-
-        def close(self):
-            pass
-
-    class Dialect:
+    class dialect:
         name = "postgresql"
 
-    class FakeEngine:
-        dialect = Dialect()
+    def connect(self):
+        raise AssertionError("the child must not take a connection of its own to hold a lock")
 
-        def connect(self):
-            return Holder()
 
-    monkeypatch.setattr(app.db, "engine", FakeEngine())
+def test_a_handed_failure_is_stored_and_the_build_runs_with_no_lock_holder(health, monkeypatch):
+    import app.db
+    from app.services import replay_util
+
+    built = []
+    monkeypatch.setattr(replay_util, "ensure_values", lambda db: built.append(1) or {"rows": []})
+    monkeypatch.setattr(app.db, "engine", NoHolderEngine())
     previous = {"error": "the build exited with code 9", "context": {"exit_code": 9},
                 "at": "2026-11-06T00:00:00+00:00"}
+    monkeypatch.setattr(site_health, "resolve_now", lambda *a, **k: True)     # keep the stored failure to look at
     assert util_rebuild.main(["--previous", json.dumps(previous)]) == 0
+    assert built == [1]
     assert stored(health)[("util_build_failed", "build")].error == "the build exited with code 9"
 
 
@@ -184,38 +176,26 @@ def test_a_good_build_clears_a_stored_failure(health, monkeypatch):
     assert stored(health) == {}
 
 
-def test_the_lock_held_exit_records_and_resolves_nothing(health, monkeypatch, capsys):
+def test_a_second_child_builds_too_and_each_stores_under_its_own_key(health, monkeypatch, capsys):
+    # R3: no process-wide lock, so a second child builds; each result is stored under the key of its own inputs (D6)
     import app.db
+    from app.services import replay_util
 
-    site_health.record_now("util_build_failed", "build", "RuntimeError: old", session_factory=health)
+    stored_keys, keys = [], iter(["key-one", "key-two"])
 
-    class Result:
-        def scalar(self):
-            return False
+    def build(db):
+        key = next(keys)
+        stored_keys.append(key)         # what ensure_values does: store under the key it built from
+        return {"rows": [key]}
 
-    class Holder:
-        def execute(self, *a, **k):
-            return Result()
-
-        def commit(self):
-            pass
-
-        def close(self):
-            pass
-
-    class Dialect:
-        name = "postgresql"
-
-    class FakeEngine:
-        dialect = Dialect()
-
-        def connect(self):
-            return Holder()
-
-    monkeypatch.setattr(app.db, "engine", FakeEngine())
+    monkeypatch.setattr(app.db, "engine", NoHolderEngine())
+    monkeypatch.setattr(replay_util, "ensure_values", build)
     assert util_rebuild.main([]) == 0
-    assert "another process is building" in capsys.readouterr().out
-    assert ("util_build_failed", "build") in stored(health), "the failure stays until a build succeeds"
+    assert util_rebuild.main([]) == 0
+    assert stored_keys == ["key-one", "key-two"]
+    out = capsys.readouterr().out
+    assert "another process is building" not in out and out.count("stored 1 valued casts") == 2
+    assert not hasattr(util_rebuild, "LOCK_KEY")
 
 
 class Done:
@@ -377,3 +357,71 @@ def test_the_watcher_notes_the_exit_time():
             break
         threading.Event().wait(0.01)
     assert child.exited[1].tzinfo is not None
+
+
+# ---- a failed child reaches Site health without another visit (R3) -----------------------------------------------
+
+
+@pytest.mark.parametrize("code", [-9, util_rebuild.EXIT_UNRECORDED])
+def test_a_child_that_died_is_queued_when_the_watcher_sees_it_exit_and_handed_on_with_the_same_id(
+        monkeypatch, health, code):
+    import threading
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+
+    class Killed:
+        pid = 55
+
+        def __init__(self):
+            self.gone = threading.Event()
+
+        def wait(self):
+            self.gone.set()
+
+        def poll(self):
+            return code if self.gone.is_set() else None
+
+    spawned, given = [Killed(), Child()], []
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: given.append(previous) or spawned.pop(0))
+    assert util_rebuild.request() is True
+    queued = []
+    for _ in range(300):
+        queued = [e for e in site_health._queue if e["kind"] == "util_build_failed" and e["op"] == "record"]
+        if queued:
+            break
+        threading.Event().wait(0.01)
+    assert len(queued) == 1, "one queued failure, with no later request()"
+    entry = queued[0]
+    assert str(code) in entry["error"] and entry["context"]["exit_code"] == code
+    assert util_rebuild.request() is True
+    [previous] = given[1]
+    assert previous["id"] == entry["context"]["failure_id"], "the later request hands on the id that was queued"
+    assert len([e for e in site_health._queue if e["kind"] == "util_build_failed"]) == 1, "and queues nothing more"
+    site_health.flush(session_factory=health)
+    assert stored(health)[("util_build_failed", "build")].count == 1
+    assert site_health.record_now("util_build_failed", "build", previous["error"], util_rebuild._context(previous),
+                                  session_factory=health, dedupe=util_rebuild._seen_ids)
+    assert stored(health)[("util_build_failed", "build")].count == 1, "the same id is stored once"
+
+
+# ---- no transaction through a compute (R3) -----------------------------------------------------------------------
+
+
+def test_a_clean_exit_queues_no_failure(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+
+    class Fine:
+        pid = 1
+
+        def wait(self):
+            pass
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(util_rebuild, "_spawn", lambda previous=None: Fine())
+    util_rebuild.request()
+    threading.Event().wait(0.2)
+    assert not [e for e in site_health._queue if e["kind"] == "util_build_failed"]

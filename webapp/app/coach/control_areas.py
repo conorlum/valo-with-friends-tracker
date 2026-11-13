@@ -13,14 +13,18 @@ from app.replays import format as fmt
 _OWNER = (None, 0, 0, 0, 1, 1, 1, 2, 2)
 
 
-def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
+def area_shares(data: bytes, asset_key: str, table: dict | None = None) -> dict:
     header, streams = cf.unpack_data(data)
     walk = cf.walk_bitmap(header)
+    painted = areas.load_painted(asset_key)
     labels = []
     for cell in walk:
-        u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
-        v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
-        area = areas.area_at(map_name, u, v, table)
+        if painted is not None:
+            area = painted.names.get(painted.cells[cell])
+        else:
+            u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
+            v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
+            area = areas._nearest_label(asset_key, u, v, table)
         labels.append(area["name"] if area else None)
     names = sorted({name for name in labels if name})
     frames = cf.decode_states(streams["states"], len(header["ticks"]), len(walk))
@@ -34,6 +38,7 @@ def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
         for name in names:
             per_area[name].append(counts[name])
     return {"t": [tick / header["hz"] for tick in header["ticks"]],
+            "approximate": painted is None,
             "cells": {name: labels.count(name) for name in names}, "areas": per_area,
             "knew": header.get("knew"), "signals": header.get("knowledge_events"),
             "group_side": header.get("group_side")}

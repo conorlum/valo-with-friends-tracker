@@ -224,6 +224,15 @@ def parses_on_workflows(health) -> bool:
     return isinstance(runners, dict) and runners.get("parse") == "workflow"
 
 
+def ordinary_upload_unfinished(session) -> bool:
+    """Whether an ordinary upload is queued or parsing (automatic re-parses do not count)."""
+    return (session.query(ReplayUpload.id)
+            .filter(ReplayUpload.status.in_(uploads.UNFINISHED),
+                    or_(ReplayUpload.session_key.is_(None),
+                        not_(ReplayUpload.session_key.startswith(uploads.AUTO_PREFIX, autoescape=True))))
+            .first()) is not None
+
+
 def busy_reason(session, health: dict, control_in_flight) -> str | None:
     """Why no parse may be asked for right now though everything is switched on; None when all is quiet.
     A re-parse on the worker's own CPU goes behind every upload and waits for map control to drain: a parse stops a
@@ -231,12 +240,7 @@ def busy_reason(session, health: dict, control_in_flight) -> str | None:
     REPLAY_PARSE_PARALLEL others), so then nothing here holds it back: the owner's choice, 2026-11-08."""
     if parses_on_workflows(health):
         return None
-    ordinary = (session.query(ReplayUpload.id)
-                .filter(ReplayUpload.status.in_(uploads.UNFINISHED),
-                        or_(ReplayUpload.session_key.is_(None),
-                            not_(ReplayUpload.session_key.startswith(uploads.AUTO_PREFIX, autoescape=True))))
-                .first())
-    if ordinary is not None:
+    if ordinary_upload_unfinished(session):
         return "an upload is unfinished"
     if type(health.get("queued")) is not int or health["queued"]:
         return "the worker has uploads queued"

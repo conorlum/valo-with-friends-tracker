@@ -1321,3 +1321,286 @@ def test_an_interceptor_never_set_off_has_no_active_time(tmp_path):
     [interceptor] = [a for a in out.rounds[1]["abilities"] if a["name"] == "E_RadEater"]
     assert "active" not in interceptor and "intercepts" not in interceptor
     assert out.report["interceptors_never_active"] == 1
+
+
+# ---------------------------------------------------------------- trip length mark, carried pairs, pair history
+
+TRIP_FIRST = "Default__GameObject_Gumshoe_4_TripWire_C"
+TRIP_SECOND = "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C"
+TRIP_EQUIP = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500])]
+
+
+def placement9(t_ms, equip, listed):
+    """A schema 9 placement: `Actors` is a list of `{"NetGuid": {...}}` (the shape the real export has)."""
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": equip, "is_actor": False,
+            "payload": {"Actors": [{"NetGuid": {"net_guid": g, "path": None}} for g in listed]}}
+
+
+def trip_rows(t_ms, first, second, x, y, dx, dy, claim=True, equip=500):
+    rows = [spawned(t_ms, first, TRIP_FIRST, x, y, z=100.0), spawned(t_ms, second, TRIP_SECOND, x + dx, y + dy, z=100.0)]
+    return rows + ([placement9(t_ms, equip, [second])] if claim else [])
+
+
+def run_trips(tmp_path, rows):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return build_extras(path, two_cyphers(), WINDOWS, GAME_MAP, AGENTS5, lambda t_ms: {})
+
+
+def firsts(extras, n):
+    return [a for a in extras.rounds.get(n, {"abilities": []})["abilities"] if a["name"] == "4_TripWire"]
+
+
+def test_a_14_m_pair_has_its_end_and_no_long_mark(tmp_path):
+    extras = run_trips(tmp_path, [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400)])
+    [wire] = firsts(extras, 1)
+    assert wire["end"] == [round((1400 * 1e-4 + 0.5) * 10_000), round((1000 * 1e-4 + 0.5) * 10_000)]
+    assert "long" not in wire
+    assert extras.report["wires_paired"] == 1 and extras.report.get("wires_too_long", 0) == 0
+
+
+def test_a_16_5_m_pair_keeps_its_end_and_is_marked_long(tmp_path):
+    extras = run_trips(tmp_path, [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1650)])
+    [wire] = firsts(extras, 1)
+    assert wire["end"] is not None and wire["long"] is True
+    assert extras.report["wires_paired"] == 1 and extras.report["wires_too_long"] == 1
+
+
+def test_exactly_16_m_is_not_long(tmp_path):
+    # a 3-4-5 pair: 960 by 1280 world units is exactly 1600 = 16.0 m
+    extras = run_trips(tmp_path, [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 960, 1280)])
+    [wire] = firsts(extras, 1)
+    assert wire["end"] is not None and "long" not in wire
+    assert extras.report.get("wires_too_long", 0) == 0
+
+
+def test_a_carried_pair_whose_round_1_pair_was_long_is_long_too(tmp_path):
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1700), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 700, 701, 1000, 0, 0, 1700, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    [first], [second] = firsts(extras, 1), firsts(extras, 2)
+    assert first["long"] is True and second["long"] is True and second["end"] == first["end"]
+    assert extras.report["wires_carried"] == 1 and extras.report["wires_too_long"] == 2
+
+
+def test_the_same_anchors_at_round_start_with_no_claim_take_the_previous_pair(tmp_path):
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 700, 701, 1000, 0, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    [first], [second] = firsts(extras, 1), firsts(extras, 2)
+    assert second["end"] == first["end"] and "long" not in second
+    assert second["t0"] == 0.0
+    assert extras.report["wires_carried"] == 1 and extras.report["wires_paired"] == 1
+
+
+def test_two_carried_pairs_with_a_tie_each_keep_their_own_partner(tmp_path):
+    one = [*trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), *trip_rows(8_400, 710, 711, 3000, 0, 0, 1000)]
+    closes = [closed(59_000, g) for g in (700, 701, 710, 711)]
+    # round 2: the second pair's anchors come first, all four on one tick, no claims
+    again = [*trip_rows(65_000, 710, 711, 3000, 0, 0, 1000, claim=False),
+             *trip_rows(65_000, 700, 701, 1000, 0, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, [*TRIP_EQUIP, *one, *closes, *again])
+    by_place = {(a["u"], a["v"]): a["end"] for a in firsts(extras, 2)}
+    was = {(a["u"], a["v"]): a["end"] for a in firsts(extras, 1)}
+    assert len(by_place) == 2 and by_place == was
+    assert extras.report["wires_carried"] == 2
+
+
+def test_carried_anchors_whose_partner_is_not_known_get_no_end(tmp_path):
+    # round 1's first anchor was never paired; round 2 re-spawns it
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400, claim=False), closed(59_000, 700),
+            closed(59_000, 701), *trip_rows(65_000, 700, 701, 1000, 0, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    assert all("end" not in a for a in firsts(extras, 2)) and extras.report.get("wires_carried", 0) == 0
+    # round 1 had a pair, but round 2's anchors are other guids somewhere else
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 800, 801, -4000, 500, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    assert all("end" not in a for a in firsts(extras, 2)) and extras.report.get("wires_carried", 0) == 0
+
+
+def test_new_guids_at_the_same_positions_are_paired_by_position(tmp_path):
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 800, 801, 1001, 0.8, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    [first], [second] = firsts(extras, 1), firsts(extras, 2)
+    # the end is round 2's own second anchor (801, 0.8 units on), never round 1's copied over
+    assert second["id"] == 800 and second["end"] == list(GAME_MAP.to_uv(1001, 1400.8)) != first["end"]
+    assert extras.report["wires_carried"] == 1
+
+
+def test_a_reused_anchor_guid_leaves_round_1s_pair_in_round_1_with_its_own_facts(tmp_path):
+    # round 2's wire is the other Cypher's (slot 6), placed with their own equippable (600)
+    rows = [*TRIP_EQUIP, spawned(1_000, 600, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            effect(2_100, 106, 2, [600]),
+            *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), instigated(8_000, 700, 101),
+            damage(30_000, 701, 999, lethal=True), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 700, 701, -2000, 300, 0, 1200, equip=600), instigated(65_000, 700, 106)]
+    extras = run_trips(tmp_path, rows)
+    [first], [second] = firsts(extras, 1), firsts(extras, 2)
+    assert (first["slot"], first["owner_by"], first["t1"], first["gone"]) == (1, "instigator", 49.0, 20.0)
+    assert (second["slot"], second["owner_by"], second["t1"]) == (6, "instigator", None)
+    assert "gone" not in second
+    assert first["end"] != second["end"]
+    # the same with no close rows at all: a later spawn ends the earlier life
+    rows = [r for r in rows if r["type"] != "actor_closed"]
+    extras = run_trips(tmp_path, rows)
+    assert len(firsts(extras, 1)) == 1 and len(firsts(extras, 2)) == 1
+
+
+def test_a_trip_alive_across_the_round_boundary_is_in_both_rounds_still_paired(tmp_path):
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400)]      # no close, no round 2 spawn rows
+    extras = run_trips(tmp_path, rows)
+    [first], [second] = firsts(extras, 1), firsts(extras, 2)
+    assert second["end"] == first["end"] and second["t0"] == 0.0 and second["t1"] is None
+    assert second["slot"] == first["slot"] == 1
+    assert {a["name"] for a in extras.rounds[2]["abilities"]} == {"4_TripWire", "4_TripWire_SecondWire"}
+    # closed in round 1: it does not reach round 2
+    extras = run_trips(tmp_path, [*rows, closed(59_000, 700), closed(59_000, 701)])
+    assert not firsts(extras, 2)
+
+
+# ---------------------------------------------------------------- branch review 2 (R1-R4)
+
+def test_a_reused_first_guid_somewhere_else_is_not_carried_and_a_lone_first_respawn_gets_no_end(tmp_path):
+    # R1: round 1's 14 m wire is closed; round 2 reuses its first anchor's guid 40 m away for the other Cypher
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            spawned(65_000, 700, TRIP_FIRST, -3000, 0, z=100.0), instigated(65_000, 700, 106),
+            spawned(65_000, 720, TRIP_SECOND, -3000, 1000, z=100.0)]
+    extras = run_trips(tmp_path, rows)
+    [wire] = firsts(extras, 2)
+    assert "end" not in wire and "long" not in wire
+    assert extras.report.get("wires_carried", 0) == 0 and extras.report.get("wires_too_long", 0) == 0
+    # the first anchor alone re-spawns in place: no second anchor corroborates it, so no stored old endpoint
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            spawned(65_000, 700, TRIP_FIRST, 1000, 0, z=100.0)]
+    [wire] = firsts(run_trips(tmp_path, rows), 2)
+    assert "end" not in wire
+
+
+def test_a_carried_anchor_of_another_owner_never_takes_the_pair(tmp_path):
+    # both anchors re-spawn in place, but the first one's Instigator is the other Cypher (slot 6)
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 700, 701, 1000, 0, 0, 1400, claim=False), instigated(65_000, 700, 106)]
+    extras = run_trips(tmp_path, rows)
+    assert all("end" not in a for a in firsts(extras, 2)) and extras.report.get("wires_carried", 0) == 0
+
+
+def test_two_cyphers_placing_in_the_same_tick_each_keep_their_end(tmp_path):
+    # R2: two schema 9 placements 10 ms apart, one per Cypher; each first anchor names its owner by Instigator
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(1_000, 600, "Default__Ability_Gumshoe_4_TripWire_C", 9000, 9000),
+            effect(2_000, 101, 1, [500]), effect(2_100, 106, 2, [600]),
+            *trip_rows(8_000, 700, 701, 1000, 0, 0, 1000, equip=500), instigated(8_000, 700, 101),
+            *trip_rows(8_010, 710, 711, 3000, 0, 0, 1200, equip=600), instigated(8_010, 710, 106)]
+    extras = run_trips(tmp_path, rows)
+    got = {a["id"]: (a["slot"], a.get("end")) for a in firsts(extras, 1)}
+    assert got == {700: (1, list(GAME_MAP.to_uv(1000, 1000))), 710: (6, list(GAME_MAP.to_uv(3000, 1200)))}
+    assert extras.report["wires_paired"] == 2
+
+
+def test_a_wire_ends_when_either_anchor_closes_or_its_guid_is_reused(tmp_path):
+    # R3: the far anchor closes before round 2; the first stays open. No round 2 wire.
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 701)]
+    extras = run_trips(tmp_path, rows)
+    [wire] = firsts(extras, 1)
+    assert wire["t1"] == 49.0 and not firsts(extras, 2)
+    # the first guid reused 5 s into round 2: the carried row ends there, not open-ended
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400),
+            spawned(75_000, 700, TRIP_FIRST, -3000, 0, z=100.0)]
+    extras = run_trips(tmp_path, rows)
+    carried = [a for a in firsts(extras, 2) if a.get("end") == list(GAME_MAP.to_uv(1000, 1400))]
+    assert [a["t1"] for a in carried] == [5.0]
+    [second] = [a for a in extras.rounds[2]["abilities"] if a["name"] == "4_TripWire_SecondWire"]
+    assert second["t1"] is None       # the far anchor's own row keeps its own life (never closed, never reused)
+
+
+def test_a_round_1_trip_going_off_keeps_its_reveal_after_round_2_reuses_its_guid(tmp_path):
+    # R4: the tether-and-concuss case, then a later spawn under the first anchor's guid
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500]),
+            spawned(8_000, 60, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(8_000, 61, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 0, 400), placement(8_000, 500, [61]),
+            effect(22_840, 104, 5, [60], container=4895), stop(23_540, 104, 5),
+            oneshot(23_540, 104, [60], 5173), closed(59_000, 60), closed(59_000, 61),
+            spawned(80_000, 60, "Default__GameObject_Gumshoe_4_TripWire_C", 5000, 5000), instigated(80_000, 60, 102)]
+    extras = run7(tmp_path, rows)
+    assert [(r["t0"], r["slot"], r["target"]) for r in extras.rounds[1]["reveals"]] == [(13.54, 1, 4)]
+    assert {(st["status"], st["slot"]) for st in extras.rounds[1]["statuses"]} == {("tethered", 1), ("concussed", 1)}
+
+
+# ---------------------------------------------------------------- branch review 3 (R1-R5)
+
+def test_a_first_anchor_never_takes_another_owners_lone_placement(tmp_path):
+    # R1: two wires 10 ms apart with explicit Instigators; only Cypher 1's placement context is in the export
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(1_000, 600, "Default__Ability_Gumshoe_4_TripWire_C", 9000, 9000),
+            effect(2_000, 101, 1, [500]), effect(2_100, 106, 2, [600]),
+            *trip_rows(8_000, 700, 701, 1000, 0, 0, 1000, equip=500), instigated(8_000, 700, 101),
+            *trip_rows(8_010, 710, 711, -3000, 0, 0, 1200, claim=False), instigated(8_010, 710, 106)]
+    extras = run_trips(tmp_path, rows)
+    got = {a["id"]: (a["slot"], a.get("end")) for a in firsts(extras, 1)}
+    assert got == {700: (1, list(GAME_MAP.to_uv(1000, 1000))), 710: (6, None)}
+    assert extras.report["wires_paired"] == 1 and extras.report.get("wires_too_long", 0) == 0
+
+
+def test_two_ownerless_first_anchors_claiming_one_placement_pair_neither(tmp_path):
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1000),
+            spawned(8_010, 710, TRIP_FIRST, -3000, 0, z=100.0)]
+    extras = run_trips(tmp_path, rows)
+    assert all("end" not in a for a in firsts(extras, 1))
+    assert extras.report["wires_placement_shared"] == 2 and extras.report.get("wires_paired", 0) == 0
+
+
+def test_a_spycam_reusing_the_far_anchors_guid_ends_the_wire(tmp_path):
+    # R2: no close row for the far anchor; a camera spawns under its guid in round 2's buy phase
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400),
+            spawned(65_000, 701, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 4000, 4000), instigated(65_000, 701, 101)]
+    extras = run_trips(tmp_path, rows)
+    [wire] = firsts(extras, 1)
+    assert wire["t1"] == 50.0 and not firsts(extras, 2)
+    assert not [a for a in extras.rounds[2]["abilities"] if a["name"] == "4_TripWire_SecondWire"]
+
+
+def test_an_ability_reusing_a_closed_trips_guid_keeps_its_status_and_the_trip_keeps_its_trigger(tmp_path):
+    # R3: round 1's wire goes off, closes; round 2 reuses the first anchor's guid for a slow field
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500]),
+            spawned(8_000, 60, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(8_000, 61, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 0, 400), placement(8_000, 500, [61]),
+            effect(22_840, 104, 5, [60], container=4895), stop(23_540, 104, 5),
+            oneshot(23_540, 104, [60], 5173), closed(59_000, 60), closed(59_000, 61),
+            spawned(80_000, 60, "Default__GameObject_Thorne_4_SlowField_Production_C", 5000, 5000),
+            instigated(80_000, 60, 103), effect(85_000, 104, 9, [60], container=7000), stop(87_000, 104, 9)]
+    # without Sage's code the field is an unknown actor and is dropped: the earlier trip must survive that too
+    extras = run7(tmp_path, rows)
+    assert [(r["t0"], r["slot"], r["target"]) for r in extras.rounds[1]["reveals"]] == [(13.54, 1, 4)]
+    assert "statuses" not in extras.rounds.get(2, {})
+    extras = build_extras_rows(tmp_path, rows, {**AGENTS7, "Thorne": "Sage"})
+    assert [(r["t0"], r["slot"], r["target"]) for r in extras.rounds[1]["reveals"]] == [(13.54, 1, 4)]
+    assert [(st["status"], st["slot"], st["target"], st["t0"]) for st in extras.rounds[2]["statuses"]] == [
+        ("slowed", 3, 4, 15.0)]
+
+
+def test_a_carried_wire_with_fresh_guids_and_no_instigators_keeps_round_1s_owner(tmp_path):
+    # R4: round 1's owner came from its placement; round 2's anchors re-spawn in place, no Instigator rows
+    rows = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701),
+            *trip_rows(65_000, 800, 801, 1000, 0, 0, 1400, claim=False)]
+    extras = run_trips(tmp_path, rows)
+    [first] = firsts(extras, 1)
+    [wire] = firsts(extras, 2)
+    [far] = [a for a in extras.rounds[2]["abilities"] if a["name"] == "4_TripWire_SecondWire"]
+    assert first["slot"] == 1 and (wire["slot"], wire["owner_by"]) == (1, "carried")
+    assert far["slot"] == 1 and wire["end"] == first["end"]
+
+
+def test_an_anchor_closed_in_the_buy_phase_never_takes_the_carry_from_the_live_one(tmp_path):
+    # R5: the old first anchor re-spawns in place and closes before round 2 starts; the live wire has fresh guids
+    base = [*TRIP_EQUIP, *trip_rows(8_000, 700, 701, 1000, 0, 0, 1400), closed(59_000, 700), closed(59_000, 701)]
+    live = trip_rows(65_000, 800, 801, 1000, 0, 0, 1400, claim=False)
+    extras = run_trips(tmp_path, [*base, spawned(62_000, 700, TRIP_FIRST, 1000, 0, z=100.0), closed(63_000, 700), *live])
+    [wire] = firsts(extras, 2)
+    assert wire["id"] == 800 and wire["end"] == list(GAME_MAP.to_uv(1000, 1400))
+    # the same on the far anchor: the closed one is never attached, so the live wire does not end at 0.0
+    extras = run_trips(tmp_path, [*base, spawned(62_000, 701, TRIP_SECOND, 1000, 1400, z=100.0), closed(63_000, 701),
+                                  *live])
+    [wire] = firsts(extras, 2)
+    assert wire["end"] == list(GAME_MAP.to_uv(1000, 1400)) and wire["t1"] is None

@@ -11,10 +11,18 @@ def test_the_run_prompt_carries_the_playbook_brief_and_the_command():
     assert "Trade your teammate." in text and '"Owner#1"' in text
     assert "./q where" in text and "./q knew" in text and "trading, rotation" in text
     assert '"points"' in text and '"evidence"' in text
+    assert "one second before the moment" in text and "area.path" in text
 
 
 def test_the_run_prompt_asks_for_no_voice():
     assert "voice" not in prompt.run_prompt(BOOK, BRIEF).lower()
+
+
+def test_the_run_prompt_explains_the_ruled_out_pulse_area():
+    text = prompt.run_prompt(BOOK, BRIEF)
+    assert "`area` is where the pulse looked and found nobody of that name" in text
+    assert "Neither gives a place" not in text
+    assert "time, name, reason only; no place" not in prompt.COMMANDS
 
 
 def test_the_repair_prompt_lists_each_failed_point_with_its_problems():

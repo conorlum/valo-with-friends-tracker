@@ -1,7 +1,9 @@
 import pytest
 
+from app.coach import areas
 from app.coach.roundview import RoundView
 from tests.coach import toys
+from tests.coach.test_areas import painted_object, write_paint
 
 
 def view(blob):
@@ -17,7 +19,8 @@ def test_sides_teammates_and_enemies():
 def test_position_of_a_living_player_carries_its_area():
     v = view(toys.round_blob(toys.ten()))
     assert v.position(0, 10.0) == {"alive": True, "u": 2000, "v": 2000, "yaw": 0,
-                                   "area": {"name": "A Site", "super": "A"}}
+                                   "area": {"name": "A Site", "super": "A", "path": ["A Site"],
+                                            "approximate": True}}
 
 
 def test_position_follows_a_moving_track():
@@ -30,7 +33,8 @@ def test_a_dead_player_reads_as_dead_with_where_they_died():
     v = view(toys.round_blob(toys.ten(), kills=[{"t": 20.0, "killer": 5, "victim": 0}]))
     assert v.alive(0, 19.9) and not v.alive(0, 20.0)
     assert v.position(0, 30.0) == {"alive": False, "died_at": 20.0, "u": 2000, "v": 2000,
-                                   "area": {"name": "A Site", "super": "A"}}
+                                   "area": {"name": "A Site", "super": "A", "path": ["A Site"],
+                                            "approximate": True}}
     assert v.living("A", 30.0) == [1, 2, 3, 4]
 
 
@@ -39,6 +43,22 @@ def test_distance_is_in_metres_and_needs_both_alive():
     v = view(toys.round_blob(pos, kills=[{"t": 20.0, "killer": 5, "victim": 1}]))
     assert v.distance_m(0, 1, 10.0) == pytest.approx(10.0)
     assert v.distance_m(0, 1, 25.0) is None
+
+
+def test_positions_use_the_sample_height_and_names_use_the_painted_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    cell = areas.cell_at(2000, 2000)
+    write_paint(tmp_path, painted_object({cell: 1}, bands={str(cell): [[0, 30, 1], [60, 90, 2]]}) |
+                {"map": "Toy"}, "Toy")
+    blob = toys.round_blob(toys.ten(), tracks={0: toys.stand(2000, 2000, t1=20, z=75)},
+                           kills=[{"t": 20.0, "killer": 5, "victim": 0}])
+    v = view(blob)
+    assert v.area_names() == ["Top Mid", "A Site", "Mid"]
+    for t in (10.0, 25.0):
+        assert v.position(0, t)["area"] == {
+            "name": "Top Mid", "super": "Mid", "path": ["Mid", "Top Mid"], "approximate": False,
+        }
+    assert v.position(1, 10.0)["area"] is None
 
 
 def test_a_map_without_callouts_gives_no_area():

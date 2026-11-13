@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # request, reparsing from the .vrf archive). Unset: those routes 404. Set in the Render dashboard
     # only (`sync: false`), never in the repo, and never the friends' upload code.
     replay_admin_token: str | None = None
+    # Critical Util builds on the replay worker; requests read the stored products.
+    util_build_remote: bool = False
 
     @field_validator("database_url")
     @classmethod

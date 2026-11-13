@@ -1,5 +1,6 @@
-from app.coach import brief, snapshot
+from app.coach import areas, brief, snapshot
 from tests.coach import toys
+from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT, SHARES
 
 
@@ -61,3 +62,20 @@ def test_gaps_are_listed_per_round_and_only_where_they_exist(tmp_path):
 def test_a_map_without_callouts_lists_no_areas_and_says_so(tmp_path):
     b = brief.build(snap(tmp_path, {1: 10}), 0)           # "Toy" is not in the real callouts file
     assert b["areas"] == [] and b["data_gaps"] == {"match": ["areas"]}
+
+
+def test_brief_lists_the_reviewed_tree_or_approximate_callouts(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    match = snap(tmp_path, {1: 10})
+    match.context["match"]["map"] = "Sunset"
+    match.asset_key = "Sunset"              # areas follow the layout's asset key, set when the snapshot loads
+    assert brief.build(match, 0)["areas"] == [
+        {"name": c["name"], "super": c["super"], "parent": None, "approximate": True}
+        for c in sorted(areas.callouts("Sunset"), key=lambda c: c["name"])
+    ]
+    write_paint(tmp_path, painted_object({0: 2}))
+    assert brief.build(match, 0)["areas"] == [
+        {"name": "Mid", "parent": None, "super": "Mid"},
+        {"name": "Top Mid", "parent": "Mid", "super": "Mid"},
+        {"name": "A Site", "parent": None, "super": "A"},
+    ]

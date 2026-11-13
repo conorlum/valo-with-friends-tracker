@@ -34,13 +34,13 @@ def test_a_continuous_sighting_is_one_reason_but_every_tick_of_locating_history(
     # A looks straight at B5 for the whole round
     b = blob({0: ("A", [(0.0, 120, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180)])}, t_end=6.0)
     rc, header, events = run(b)
-    assert [e for e in header["knowledge_events"]["A"] if e[2] == "seen"] == [[0.0, 5, "seen"]]
+    assert [e for e in header["knowledge_events"]["A"] if e[2] == "seen"] == [[0.0, 5, "seen", "locate"]]
     assert len([e for e in events if e[3] == "seen"]) == len(rc.ticks), "the gap detector still gets every tick"
 
 
 def test_a_sighting_that_stops_and_starts_again_is_listed_twice():
     rows = [(t, 5, "locate", "seen", "") for t in (1.0, 1.5, 2.0, 5.0, 5.5)]
-    assert knowledge_events({"A": rows, "B": []})["A"] == [[1.0, 5, "seen"], [5.0, 5, "seen"]]
+    assert knowledge_events({"A": rows, "B": []})["A"] == [[1.0, 5, "seen", "locate"], [5.0, 5, "seen", "locate"]]
     assert REASON_REPEAT_S == 1.0
 
 
@@ -49,8 +49,22 @@ def test_two_enemies_at_one_time_are_both_kept_and_a_channels_end_is_not_listed(
             (4.0, 5, "pause", "omen_channel", "y"), (7.5, 5, "resume", "omen_channel", "y"),
             (8.0, 5, "cleanup", "hypothesis_cleared", "z")]
     assert knowledge_events({"A": rows, "B": []}) == {
-        "A": [[3.0, 5, "neural_theft"], [3.0, 6, "neural_theft"], [4.0, 5, "omen_channel"], [8.0, 5, "hypothesis_cleared"]],
+        "A": [[3.0, 5, "neural_theft", "locate"], [3.0, 6, "neural_theft", "locate"],
+              [4.0, 5, "omen_channel", "pause"], [8.0, 5, "hypothesis_cleared", "cleanup"]],
         "B": []}
+
+
+@pytest.mark.parametrize("reason", ["haunt", "recon"])
+def test_locating_and_excluding_the_same_slot_are_separate_runs(reason):
+    rows = [(1.0, 5, "locate", reason, ""), (1.5, 5, "exclude", reason, ""),
+            (2.0, 5, "locate", reason, ""), (2.5, 5, "exclude", reason, "")]
+    listed = knowledge_events({"A": rows})["A"]
+    assert listed == [[1.0, 5, reason, "locate"], [1.5, 5, reason, "exclude"]]
+    assert all(len(row) == 4 for row in listed)
+
+
+def test_knowledge_event_kinds_use_control_revision_24():
+    assert cf.CONTROL_REVISION == 24
 
 
 def test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence():
@@ -59,7 +73,7 @@ def test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locati
              ut.Info(6.21, "A", 5, "hypothesis", "yoru_beacon", x=300, y=250, source="b1")]
     rc, header, events = run(b, infos)
     listed = header["knowledge_events"]["A"]
-    assert [6.2, 5, "omen_unheard"] in listed and [6.21, 5, "yoru_beacon"] in listed
+    assert [6.2, 5, "omen_unheard", "broaden"] in listed and [6.21, 5, "yoru_beacon", "hypothesis"] in listed
     assert 6.2 * header["hz"] != round(6.2 * header["hz"]), "6.2 s is not on the frame grid"
     assert not [e for e in events if e[3] in ("omen_unheard", "yoru_beacon")], "neither resets the last-located time"
 
@@ -99,12 +113,41 @@ def test_the_panel_lists_only_what_was_known_by_now_newest_first():
     assert got["old"] == {"status": "unavailable", "rows": []} and got["none"] == "unavailable"
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_panel_uses_kind_specific_words_and_keeps_old_rows_readable():
+    script = """
+      const C = require(process.argv[1]);
+      const events = [
+        [1.0, 5, "haunt", "exclude"], [1.5, 5, "recon", "exclude"],
+        [2.0, 5, "haunt", "locate"], [2.5, 5, "recon", "locate"],
+        [3.0, 5, "haunt"], [3.5, 5, "recon"],
+        [4.0, 5, "trip_destroyed", "locate"], [4.5, 5, "camera_destroyed", "locate"]
+      ];
+      process.stdout.write(JSON.stringify({
+        text: C.reasonsAt({knowledge_events: {A: events}}, 5, 10, 12).rows.map(r => r.text),
+        by_kind: C.REASON_TEXT_BY_KIND
+      }));"""
+    done = subprocess.run([NODE, "-e", script, str(CONTROL_JS)], capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+    assert got["text"] == [
+        "destroyed your camera: in its sight", "destroyed your trip: near it",
+        "Recon Bolt: sight pulse", "Haunt: sight pulse",
+        "Recon Bolt saw the area", "Haunt saw the area",
+        "Recon Bolt: not in its sight", "Haunt: not in its sight",
+    ]
+    assert got["by_kind"] == {
+        "haunt|exclude": "Haunt: not in its sight",
+        "recon|exclude": "Recon Bolt: not in its sight",
+    }
+
+
 def test_every_reason_the_engine_can_emit_has_words_in_the_panel():
     source = CONTROL_JS.read_text(encoding="utf-8")
     reasons = {"seen", "kill", "plant", "damage", "gunfire", "footsteps", "tap", "orb", "revived", "died", "hypothesis_cleared",
                *ut.REVEAL_REASONS.values(), "reveal", *ut.PULSE_SOURCES.values(), *ut.KNIFE_REASONS,
                "skye_no_cue", "leer_seen", "omen_channel", "omen_unheard", "omen_seen", "waylay_recall", "yoru_beacon",
-               "yoru_drift_unheard"}
+               "yoru_drift_unheard", "trip_destroyed", "camera_destroyed"}
     for reason in sorted(reasons):
         assert f"{reason}:" in source, reason
 

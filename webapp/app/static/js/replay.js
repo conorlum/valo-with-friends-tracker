@@ -27,12 +27,17 @@
 
   function decodeSegment(segment, hz) {
     var out = [];
-    var u = 0, v = 0, yaw = 0;
+    var u = 0, v = 0, yaw = 0, z = 0;
+    if (segment.z && segment.z.length !== segment.u.length) throw new Error("segment arrays differ in length");
     for (var i = 0; i < segment.u.length; i++) {
       u = i ? u + segment.u[i] : segment.u[0];
       v = i ? v + segment.v[i] : segment.v[0];
       yaw = i ? yaw + segment.yaw[i] : segment.yaw[0];
       out.push({ t: Math.round((segment.t0 + i / hz) * 1e6) / 1e6, u: u, v: v, yaw: ((yaw % 360) + 360) % 360 });
+      if (segment.z) {
+        z = i ? z + segment.z[i] : segment.z[0];
+        out[out.length - 1].z = z;
+      }
     }
     return out;
   }
@@ -773,23 +778,6 @@
     return out;
   }
 
-  // Trapwire: each first anchor pairs with the unpaired second anchor of the same owner
-  // spawned closest in time (within 1 s). Returns {index of first: second ability}.
-  function pairWires(abilities) {
-    var pairs = {}, used = {};
-    (abilities || []).forEach(function (a, i) {
-      if (a.name !== "4_TripWire") return;
-      var best = -1, bestDt = 1.0;
-      abilities.forEach(function (b, j) {
-        if (used[j] || b.name !== "4_TripWire_SecondWire" || b.slot !== a.slot) return;
-        var dt = Math.abs(b.t0 - a.t0);
-        if (dt <= bestDt) { best = j; bestDt = dt; }
-      });
-      if (best >= 0) { used[best] = true; pairs[i] = abilities[best]; }
-    });
-    return pairs;
-  }
-
   // A signed number with an explicit sign (U+2212 for minus), never colour alone.
   function signed(value) {
     if (value === null || value === undefined || isNaN(value)) return "";
@@ -1413,9 +1401,63 @@
     return out;
   }
 
+  // ------------------------------------------------------------ painted areas (pure; tested in node)
+
+  function decodeAreaCells(rle, grid) {
+    var cells = new Uint32Array(grid * grid), at = 0;
+    rle.forEach(function (run) {
+      if (!Number.isInteger(run[0]) || run[0] < 0 || !Number.isInteger(run[1]) || run[1] <= 0 ||
+          at + run[1] > cells.length) throw new Error("invalid area cells");
+      cells.fill(run[0], at, at + run[1]);
+      at += run[1];
+    });
+    if (at !== cells.length) throw new Error("area cells differ from grid size");
+    return cells;
+  }
+
+  // One label per occupied name, in replay UV units, at the mean of its cell centres.
+  function areaLabelPoints(cells, names, grid) {
+    var sums = {};
+    cells.forEach(function (id, cell) {
+      if (!id) return;
+      var sum = sums[id] || (sums[id] = { x: 0, y: 0, n: 0 });
+      sum.x += cell % grid + 0.5; sum.y += Math.floor(cell / grid) + 0.5; sum.n++;
+    });
+    return names.filter(function (name) { return !!sums[name.id]; }).map(function (name) {
+      var sum = sums[name.id];
+      return { id: name.id, name: name.name, u: sum.x / sum.n / grid * UV, v: sum.y / sum.n / grid * UV };
+    });
+  }
+
+  // Heights are world decimetres. Interpolate only within a recorded segment, never across a gap.
+  function zAt(samples, t) {
+    if (!samples || !samples.length || t < samples[0].t || t > samples[samples.length - 1].t) return null;
+    var lo = 0, hi = samples.length - 1;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (samples[mid].t <= t) lo = mid; else hi = mid;
+    }
+    var a = samples[lo], b = samples[hi];
+    if (t === a.t) return Number.isFinite(a.z) ? a.z : null;
+    if (t === b.t) return Number.isFinite(b.z) ? b.z : null;
+    return Number.isFinite(a.z) && Number.isFinite(b.z) ? a.z + (b.z - a.z) * (t - a.t) / (b.t - a.t) : null;
+  }
+
+  function bandName(bands, cell, z) {
+    if (!Number.isFinite(z)) return null;
+    var rows = bands[String(cell)] || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i][0] <= z && z <= rows[i][1]) return rows[i][2];
+    }
+    return null;
+  }
+
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "gaps", "features"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "areas", "gaps", "features"];
+  var AREA_GRID = 128;     // control_format.GRID; area payload cells cover the full grid
+  var AREA_COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4",
+                     "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
   var CONTROL_STATUS = {
@@ -1458,7 +1500,10 @@
     this.current = null;
     this.icons = {};
     this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
-                    gaps: false, features: true };
+                    gaps: false, features: true, areas: false };
+    this.areas = null;
+    this.areasPromise = null;
+    this.areasPaint = null;
     // Timing gaps: off by default; the page sets options.gaps when it offers the layer.
     this.gaps = !!(options.gaps && options.loadGaps && gapsApi());
     this.gapsCache = {};                           // round -> Promise of {status, stale, rows, chokes}
@@ -1648,7 +1693,7 @@
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
-        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities),
+        return { blob: blob, tracks: decodeRound(blob), extras: extras,
                  traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
       });
     }
@@ -1882,12 +1927,15 @@
         self.layers[name] = box.checked;
         try { global.localStorage.setItem("replay-layer-" + name, box.checked ? "1" : "0"); } catch (err) { /* ignore */ }
         if (name === "control") self.refreshControl();
+        if (name === "areas") self.refreshAreas();
         if (name === "gaps") self.refreshGaps();
         self.draw();
       });
     });
     if (!this.control) this.layers.control = false;
     if (!this.gaps) this.layers.gaps = false;
+    if (!this.options.loadAreas) this.layers.areas = false;
+    this.refreshAreas();
     this.bindGaps();
     this.controlView = "true";
     this.ui.controlView = q("[data-replay-control-view]");
@@ -2666,11 +2714,13 @@
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
-          // The far end: the second anchor its placement listed (`end`), else a same-owner pairing.
-          var other = a.end ? { u: a.end[0], v: a.end[1] } : self.current.wires[all.indexOf(a)];
+          // The far end comes only from the placement's stored endpoint.
+          var other = a.end ? { u: a.end[0], v: a.end[1] } : null;
           ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4.5);
           if (other) {
+            if (a.long === true) ctx.setLineDash([r / 3, r / 4]);
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(other.u * s, other.v * s); ctx.stroke();
+            ctx.setLineDash([]);
             ctx.fillStyle = color; ctx.beginPath(); ctx.arc(other.u * s, other.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
           }
           if (typeof a.gone === "number" && t >= a.gone && other) {
@@ -3314,6 +3364,74 @@
     });
   };
 
+  // ------------------------------------------------------------ painted area layer
+
+  ReplayViewer.prototype.refreshAreas = function () {
+    if (!this.layers.areas || !this.options.loadAreas) return Promise.resolve(null);
+    if (!this.areasPromise) {
+      var self = this;
+      this.areasPromise = Promise.resolve().then(function () { return self.options.loadAreas(); }).then(function (data) {
+        self.areas = { approximate: !!data.approximate, names: data.names, bands: data.bands || {},
+                       cells: decodeAreaCells(data.cells, AREA_GRID) };
+        self.areasPaint = null;
+        self.draw();
+        return self.areas;
+      }).catch(function () { self.areasPromise = null; return null; }); // retry on the next enable
+    }
+    return this.areasPromise;
+  };
+
+  ReplayViewer.prototype.drawAreas = function (ctx, size) {
+    if (!this.layers.areas || !this.areas) return;
+    var data = this.areas, z = null;
+    if (this.highlight !== null && this.highlight !== undefined) {
+      var segments = this.current.tracks[String(this.highlight)] || [];
+      for (var s = 0; s < segments.length; s++) {
+        z = zAt(segments[s], this.t);
+        if (z !== null) break;
+      }
+    }
+    var bandCells = Object.keys(data.bands), chosen = bandCells.map(function (cell) { return bandName(data.bands, cell, z); });
+    var key = [data.approximate, chosen.join(":")].join("/");
+    if (!this.areasPaint || this.areasPaint.key !== key) {
+      var canvas = document.createElement("canvas");
+      canvas.width = canvas.height = CONTROL_PX;
+      var paint = canvas.getContext("2d"), cells = data.cells.slice(), step = CONTROL_PX / AREA_GRID;
+      bandCells.forEach(function (cell, i) { cells[Number(cell)] = chosen[i] === null ? 0 : chosen[i]; });
+      paint.globalAlpha = data.approximate ? 0.15 : 0.35;
+      cells.forEach(function (id, cell) {
+        if (!id) return;
+        paint.fillStyle = AREA_COLORS[(id - 1) % AREA_COLORS.length];
+        paint.fillRect(cell % AREA_GRID * step, Math.floor(cell / AREA_GRID) * step, step, step);
+      });
+      paint.strokeStyle = "#d5dce7"; paint.lineWidth = 1;
+      paint.beginPath();
+      bandCells.forEach(function (cell, i) {
+        if (chosen[i] !== null) return;
+        var x = Number(cell) % AREA_GRID * step, y = Math.floor(Number(cell) / AREA_GRID) * step;
+        paint.moveTo(x, y + step); paint.lineTo(x + step, y);
+      });
+      paint.stroke();
+      this.areasPaint = { key: key, canvas: canvas, labels: areaLabelPoints(cells, data.names, AREA_GRID) };
+    }
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.areasPaint.canvas, 0, 0, size, size);
+    ctx.font = "bold " + (12 / Math.sqrt(this.view.k)) + "px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3 / Math.sqrt(this.view.k); ctx.strokeStyle = "#111"; ctx.fillStyle = "#fff";
+    this.areasPaint.labels.forEach(function (label) {
+      var x = label.u / UV * size, y = label.v / UV * size;
+      ctx.strokeText(label.name, x, y); ctx.fillText(label.name, x, y);
+    });
+    if (data.approximate) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.font = "bold 12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.lineWidth = 3;
+      ctx.strokeText("approximate", 8, 8); ctx.fillText("approximate", 8, 8);
+    }
+    ctx.restore();
+  };
+
   // ------------------------------------------------------------ map control (Stage 4)
 
   ReplayViewer.prototype.setControlStatus = function (text) {
@@ -3477,7 +3595,7 @@
   // A click on a player (their dot on the map, or their row in the Control tab) highlights them;
   // the same click again clears it.
   ReplayViewer.prototype.setHighlight = function (slot) {
-    if (!this.control) return;
+    if (!this.control && !this.options.loadAreas) return;
     this.highlight = slot === null || slot === this.highlight ? null : slot;
     this.controlPaint = null;
     this.refreshControl();
@@ -3486,7 +3604,7 @@
   };
 
   ReplayViewer.prototype.onCanvasClick = function (e) {
-    if (!this.control || !this.hits) return;
+    if ((!this.control && !this.options.loadAreas) || !this.hits) return;
     var rect = this.canvas.getBoundingClientRect(), scale = this.canvas.width / rect.width, v = this.view;
     var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
     var best = null;
@@ -3562,6 +3680,7 @@
     this.layers[name] = on;
     try { global.localStorage.setItem("replay-layer-" + name, on ? "1" : "0"); } catch (err) { /* ignore */ }
     if (name === "gaps") this.refreshGaps();
+    if (name === "areas") this.refreshAreas();
     this.draw();
   };
 
@@ -4115,6 +4234,7 @@
     var hits = [];
 
     this.drawControl(ctx, size, hits);   // map control: under everything else
+    this.drawAreas(ctx, size);          // named walk cells, under utility and players
     this.drawGaps(ctx, size, hits);      // timing gaps: over control, under utility and players
 
     if (this.layers.abilities) {
@@ -4299,9 +4419,10 @@
   }
 
   var api = {
+    decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,

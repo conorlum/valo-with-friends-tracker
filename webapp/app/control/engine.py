@@ -109,7 +109,7 @@ from app.control import utility
 from app.control import stance
 from app.control.stance import Stance, stance_at
 from app.control.routes import RouteLog
-from app.replays import choke_assets
+from app.replays import choke_assets, destroyed
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
@@ -163,6 +163,10 @@ HEARING = {"footstep_range_m": float(_HEARING_FILE["footstep_range_m"]),
            "guns": {str(k): float(v) for k, v in _HEARING_FILE["guns"].items()}}
 FOOTSTEP_RANGE_M = HEARING["footstep_range_m"]
 SOUND_RANGE_M = {"tap": HEARING["spike_tap_range_m"], "orb": HEARING["orb_pickup_range_m"]}
+# D9 uses p90 shooter-to-device distances measured on N=44 trips (15.2 m) and N=61 cameras (30.4 m),
+# rounded up to 5 m, with trips capped at 20 m.
+TRIP_DESTROY_REACH_M = 20.0
+CAMERA_DESTROY_REACH_M = 35.0
 SOUND_AREA_M = 5.0           # a tap is at the spike, an orb taken at the orb: the enemy stands right there
 ORB_CAPTURE_S = 2.0          # capturing an ult orb is a 2 s channel (wiki): its start is heard too
 GUN_HEARING_M = dict(HEARING["guns"])
@@ -269,6 +273,78 @@ def _span(a: float, b: float) -> tuple[float, float]:
 
 def util_key(e: dict) -> str:
     return f"{e.get('code')}_{e.get('name')}"
+
+
+def _point_segment_distance(point, a, b) -> float:
+    du, dv = b[0] - a[0], b[1] - a[1]
+    length_sq = du * du + dv * dv
+    along = 0.0
+    if length_sq:
+        along = min(1.0, max(0.0, ((point[0] - a[0]) * du + (point[1] - a[1]) * dv) / length_sq))
+    return math.hypot(point[0] - a[0] - along * du, point[1] - a[1] - along * dv)
+
+
+def _segment_distance(a, b, c, d) -> float:
+    """Minimum 2D distance between finite segments, including crossings and collapsed segments."""
+    du, dv = b[0] - a[0], b[1] - a[1]
+    eu, ev = d[0] - c[0], d[1] - c[1]
+    cross = du * ev - dv * eu
+    if cross:
+        cu, cv = c[0] - a[0], c[1] - a[1]
+        along = (cu * ev - cv * eu) / cross
+        across = (cu * dv - cv * du) / cross
+        if 0.0 <= along <= 1.0 and 0.0 <= across <= 1.0:
+            return 0.0
+    return min(_point_segment_distance(a, c, d), _point_segment_distance(b, c, d),
+               _point_segment_distance(c, a, b), _point_segment_distance(d, a, b))
+
+
+def destroyer(shots, device_uv, gone: float, owner_side: str, side_of: dict[int, str],
+              metres_per_unit: float, *, wire=None, reach_m: float = CAMERA_DESTROY_REACH_M) -> int | None:
+    """Select the D8 shooter by its closest forward ray within 2 m, bounded by the device's reach.
+    Trips measure against the whole wire when both anchors are known; other devices use their point.
+    Equal distances choose the lower slot. The sole-shooter fallback requires no usable shot line or
+    an aimed shot from within reach_m of the device; clear misses cannot identify a destroyer."""
+    aim_tolerance_m = 2.0
+    shooters = set()
+    lined = set()
+    closest = None
+    for shot in shots:
+        by = shot.get("by")
+        if shot.get("k") != "shot" or side_of.get(by) in (None, owner_side) \
+                or not gone - 0.5 <= shot["t"] <= gone + 0.05:
+            continue
+        shooters.add(by)
+        if shot.get("u1") is None or shot.get("v1") is None:
+            continue
+        start, end = (shot["u"], shot["v"]), (shot["u1"], shot["v1"])
+        du, dv = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(du, dv)
+        if length:
+            lined.add(by)
+        origin_distance = _point_segment_distance(start, *wire) if wire is not None else math.dist(start, device_uv)
+        if origin_distance * metres_per_unit > reach_m:
+            continue
+        if length:
+            # u1/v1 cap the display tracer at 25 m, not the bullet's travel.
+            # Extend past every possible projection onto the device/wire, independently of origin reach.
+            targets = wire if wire is not None else (device_uv,)
+            ray_length = max(reach_m / metres_per_unit, *(math.dist(start, p) for p in targets))
+            scale = (ray_length + aim_tolerance_m / metres_per_unit) / length
+            end = (start[0] + du * scale, start[1] + dv * scale)
+        distance = _segment_distance(start, end, *wire) if wire is not None \
+            else _point_segment_distance(device_uv, start, end)
+        distance_m = distance * metres_per_unit
+        candidate = (distance_m, by)
+        if distance_m <= aim_tolerance_m and (closest is None or candidate < closest):
+            closest = candidate
+    if closest is not None:
+        return closest[1]
+    if len(shooters) == 1:
+        by = next(iter(shooters))
+        if by not in lined:
+            return by
+    return None
 
 
 def _decode(arr) -> np.ndarray:
@@ -402,6 +478,8 @@ class RoundInputs:
         # Anonymous sounds of revision 18 (2026-10-18): a defuse attempt starting ("tap", from the planted spike's
         # `defuses`) and an ult orb taken ("orb", player_state `orbs`, condenser revision 19). (t, by, kind).
         self.sounds: list[tuple[float, int, str]] = []
+        # Revision 24 also gathers anonymous device destructions; their area starts at the device.
+        self.destroyed_places: dict[tuple[float, int, str], tuple[int | tuple[int, ...], float, float]] = {}
         self.gun_runs: list[tuple[float, float, int, int, bool]] = []       # (t, t1, by, target, wall), enemies only
         self.kills = [(float(k["t"]), int(k["killer"]), int(k["victim"])) for k in blob.get("kills") or []
                       if k.get("killer") is not None and k.get("victim") is not None]
@@ -589,6 +667,29 @@ class RoundInputs:
                         self.miss("shot without a gun (longest hearing range used)", int(e["by"]))
             elif k == "damage":
                 self._damage(e)
+        shots = [e for e in util if e.get("k") == "shot"]
+        self.destroyed = destroyed.destroyed_devices(util, self.team, self.t_decided)
+        for event in self.destroyed:
+            if event["device"] not in ("trip", "camera"):
+                continue
+            reach_m = TRIP_DESTROY_REACH_M if event["device"] == "trip" else CAMERA_DESTROY_REACH_M
+            by = destroyer(shots, (event["u"], event["v"]), event["t"], event["side"], self.team,
+                           1.0 / geo.uv_per_unit / 100, wire=event.get("wire"),
+                           reach_m=reach_m)
+            if by is None:
+                self.miss("destroyed device without a shooter", event["owner"])
+                continue
+            key = (event["t"], by, event["device"] + "_destroyed")
+            x, y = event["u"] * px_per_uv, event["v"] * px_per_uv
+            z = self._device_z(event["z"])
+            node = geo.node_at_px(x, y, None if z is None else z + hc.STAND_M)
+            # The shooter may stand on any floor within reach, including an offset platform.
+            r_px = reach_m / geo.m_per_px
+            near = (geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2 <= r_px ** 2
+            seeds = np.flatnonzero(geo.walk_n & near)
+            nodes = tuple(dict.fromkeys([node, *map(int, seeds)]))
+            self.destroyed_places[key] = (nodes if len(nodes) > 1 else node, x, y)
+            self.sounds.append(key)
         state = self.blob.get("player_state")
         for orb in (state.get("orbs") if isinstance(state, dict) else None) or []:
             if not isinstance(orb, dict):
@@ -699,7 +800,8 @@ class RoundInputs:
 
     def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
         """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
-        `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun), `tap` and `orb` (None)."""
+        `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun), `tap`, `orb`,
+        `trip_destroyed` and `camera_destroyed` (None, with device places keyed by time, slot, kind)."""
         if self._by_slot is None:
             rows: dict[int, list[tuple]] = defaultdict(list)
             for te, killer, victim in self.kills:
@@ -2733,7 +2835,9 @@ class Unknown:
                     reached = np.full(n, np.inf)
                     reached[area] = te
                     before = np.full(n, np.inf)     # every route starts again from the area's centre
-                    sources = {centre: te}
+                    seeds = np.atleast_1d(centre).tolist()
+                    sources = {seed: te for seed in seeds if area[seed]}
+                    centre = seeds[0]     # the device node remains the log's primary centre
                     self.seen[side].pop(slot, None)
                     self._seen_entry[side].pop(slot, None)
                     self._pending[side].discard(slot)
@@ -2909,17 +3013,25 @@ class Unknown:
         return not others or others <= spotted
 
     def _locating(self, rnd, side: str, slot: int, since: float, t: float, spotted: set = frozenset()
-                  ) -> list[tuple[float, str, float, int, float, float]]:
+                  ) -> list[tuple[float, str, float, int | tuple[int, ...], float, float]]:
         """Every event in (since, t] that locates enemy `slot` for `side` (R8), as (time, kind, area radius
         m, node, x px, y px) at the event's own time and the enemy's position then: a kill of one of the
         team, the plant, gun damage to one of the team (heard or not), gunfire within that gun's hearing of
         a live player of the team, and, at t, moving faster than AUDIBLE_MPS within FOOTSTEP_RANGE_M of one.
         Heard footsteps and gunfire name the enemy only when `_attributable` (R1/R2); otherwise they locate
-        no one and add nothing. An event without a position for the enemy locates nothing and is counted (R20)."""
+        no one and add nothing. A destroyed trip or camera also needs attribution and locates around its
+        device's position on every floor within reach. Other events without a position for the enemy
+        locate nothing and are counted (R20)."""
         out = []
         times, rows = rnd.locating_rows(slot)
         for te, kind, detail in rows[bisect.bisect_right(times, since):bisect.bisect_right(times, t)]:
             if kind in ("kill", "damage") and rnd.team.get(detail) != side:
+                continue
+            if kind in ("trip_destroyed", "camera_destroyed"):
+                if self._attributable(rnd, side, slot, te, spotted):
+                    node, x, y = rnd.destroyed_places[(te, slot, kind)]
+                    radius = TRIP_DESTROY_REACH_M if kind == "trip_destroyed" else CAMERA_DESTROY_REACH_M
+                    out.append((te, kind, radius, node, x, y))
                 continue
             p = rnd.pos(slot, te)
             if p is None:
@@ -2954,13 +3066,16 @@ class Unknown:
                 out.append((t, "footsteps", FOOTSTEP_AREA_M, rnd.node(slot, t, p[0], p[1]), p[0], p[1]))
         return out
 
-    def _area(self, node: int, x: float, y: float, radius_m: float, room: np.ndarray,
+    def _area(self, node: int | tuple[int, ...], x: float, y: float, radius_m: float, room: np.ndarray,
               solid: np.ndarray | None = None) -> np.ndarray:
         """Nodes within radius_m of (x, y) px reached by walking from `node` through `room` (the unobserved
-        walkable nodes), plus `node` itself; no diagonal step past a `solid` node (the team's trips), as in
-        the spread."""
+        walkable nodes), plus the primary seed. Destruction locates seed unobserved nodes on all floors
+        within device reach; only the first seed (the device's node) is forced in outside `room`.
+        No diagonal step past a `solid` node (the team's trips), as in the spread."""
         seed = np.zeros(self.geo.n, bool)
-        seed[node] = True
+        nodes = np.atleast_1d(node)
+        seed[nodes] = room[nodes]
+        seed[nodes[0]] = True
         if radius_m <= 0:
             return seed
         within = room | seed
@@ -3344,6 +3459,7 @@ class RoundControl:
     map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
     fights: list | None = None         # the round's team fights and what each side lost (app/control/fight_swing.py)
     feet_only: list | None = None      # [frame index, viewer slot, target slot]: head blocked, feet clear
+    destroyed: list = field(default_factory=list)  # both sides' devices destroyed before they fired
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -3601,7 +3717,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
-                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None)
+                                        for side, kn in know.items()} or None, fights=fights, feet_only=feet_only or None,
+                        destroyed=rnd.destroyed)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,

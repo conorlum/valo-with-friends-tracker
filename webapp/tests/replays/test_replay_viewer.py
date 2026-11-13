@@ -25,6 +25,132 @@ REPLAY_JS = WEBAPP / "app" / "static" / "js" / "replay.js"
 NODE = shutil.which("node")
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_area_cells_and_labels_use_row_major_cell_centres():
+    from app.coach.areas_draft import encode_cells
+
+    cells = [1, 1, 0, 2, 0, 2, 0, 0, 0]
+    payload = {"map": "Split", "approximate": False,
+               "names": [{"id": 1, "name": "Lower", "parent": "Site", "super": "A"},
+                         {"id": 2, "name": "Upper", "parent": "Site", "super": "A"}],
+               "cells": encode_cells(cells), "bands": {"1": [[0, 20, 1], [21, 40, 2]]}}
+    got = run_node("""
+      const R = require(process.argv[1]);
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const p = JSON.parse(input), cells = R.decodeAreaCells(p.cells, 3);
+        process.stdout.write(JSON.stringify({cells: Array.from(cells), labels: R.areaLabelPoints(cells, p.names, 3)}));
+      });""", payload)
+    assert got["cells"] == cells
+    assert got["labels"] == [
+        {"id": 1, "name": "Lower", "u": pytest.approx(10000 / 3), "v": pytest.approx(10000 / 6)},
+        {"id": 2, "name": "Upper", "u": pytest.approx(5000), "v": pytest.approx(5000)},
+    ]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_segment_heights_and_band_choice_follow_current_recorded_height():
+    segment = {"t0": 2, "u": [100, 10, -5], "v": [200, -10, 5], "yaw": [350, 20, -30],
+               "z": [30, -20, 10]}
+    expected = [dict(zip(("t", "u", "v", "yaw", "z"), row)) for row in fmt.decode_segment_z(segment, 2)]
+    got = run_node("""
+      const R = require(process.argv[1]);
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const segment = JSON.parse(input), samples = R.decodeSegment(segment, 2);
+        delete segment.z;
+        const bands = {'1': [[0, 20, 1], [21, 40, 2]]};
+        process.stdout.write(JSON.stringify({samples, old: R.decodeSegment(segment, 2),
+          z: [2, 2.25, 2.5, 1, 4].map(t => R.zAt(samples, t)),
+          missing: R.zAt(R.decodeSegment(segment, 2), 2),
+          names: [R.zAt(samples, 2), R.zAt(samples, 2.5), null, 50].map(z => R.bandName(bands, 1, z))}));
+      });""", segment)
+    assert got["samples"] == expected
+    assert got["old"] == [{k: v for k, v in row.items() if k != "z"} for row in expected]
+    assert got["z"] == [30, 20, 10, None, None]
+    assert got["missing"] is None
+    assert got["names"] == [2, 1, None, None]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_areas_start_off_and_load_once_when_enabled():
+    got = run_node("""
+      const R = require(process.argv[1]);
+      global.Image = function () {};
+      global.requestAnimationFrame = () => {};
+      const proto = R.ReplayViewer.prototype;
+      for (const key of ['loadBulletMask', 'bindControls', 'bindHeatmap']) proto[key] = () => {};
+      const canvas = {getContext: () => ({})};
+      const root = {querySelector: () => canvas, classList: {contains: () => false}};
+      let calls = 0, draws = 0;
+      const v = new R.ReplayViewer(root, {rounds: [], loadAreas: () => {
+        calls++; return Promise.resolve({map: 'Split', approximate: false, names: [], cells: [[0, 16384]], bands: {}});
+      }});
+      v.draw = () => {draws++;};
+      (async () => {
+        await v.refreshAreas();
+        const off = {enabled: v.layers.areas, calls};
+        v.layers.areas = true;
+        await Promise.all([v.refreshAreas(), v.refreshAreas()]);
+        v.layers.areas = false; await v.refreshAreas();
+        v.layers.areas = true; await v.refreshAreas();
+        process.stdout.write(JSON.stringify({off, calls, draws, ready: !!v.areas, layers: R.LAYERS}));
+      })().catch(e => {console.error(e); process.exitCode = 1;});
+    """, None)
+    assert got["off"] == {"enabled": False, "calls": 0}
+    assert got["calls"] == 1 and got["draws"] >= 1 and got["ready"]
+    assert "areas" in got["layers"]
+
+
+@pytest.mark.parametrize("demo", [False, True])
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("map_name", ["Split", "Haven"])
+def test_replay_page_offers_areas_only_outside_demo(demo, linked, map_name):
+    env = Environment(loader=FileSystemLoader(str(WEBAPP / "app" / "templates")))
+    page = env.get_template("replays/replay.html").render(
+        replay={"map_name": map_name, "asset": map_name}, replay_data={"match": {"layout": {"state": "ok"}}},
+        linked=linked, control=None, gaps=False,
+        demo_mode=demo, start_round=1, start_t=None, static_version=lambda: "test")
+    assert page.count('data-replay-layer="areas"') == (0 if demo else 1)
+    # areas belong to the replay's layout, like its map image (the layout's asset key)
+    assert ('loadAreas: function () { return json("/replays/areas/" + match.asset + ".json"); }' in page) is (not demo)
+    assert 'data-replay-layer="areas" checked' not in page
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_area_drawing_changes_floors_hatches_unknown_and_fades_guesses():
+    got = run_node("""
+      const R = require(process.argv[1]);
+      let fills = [], hatchLines = 0, labels = [];
+      const ctx = {save() {}, restore() {}, setTransform() {}, drawImage() {},
+        fillRect(x, y, w, h) { fills.push([x, y, this.fillStyle, this.globalAlpha]); },
+        beginPath() {}, moveTo() {}, lineTo() {hatchLines++;}, stroke() {},
+        strokeText() {}, fillText(text) {labels.push(text);} };
+      global.document = {createElement: () => ({getContext: () => ctx})};
+      const v = Object.create(R.ReplayViewer.prototype);
+      Object.assign(v, {layers: {areas: true}, options: {loadAreas() {}}, highlight: 0,
+        view: {k: 1}, canvas: {width: 512}, t: 0,
+        current: {tracks: {'0': [[{t: 0, z: 30}, {t: 1, z: 10}], [{t: 3, z: 30}]]}},
+        areas: {approximate: false, cells: R.decodeAreaCells([[1, 2], [0, 16382]], 128),
+          names: [{id: 1, name: 'Lower'}, {id: 2, name: 'Upper'}],
+          bands: {'1': [[0, 20, 1], [21, 40, 2]]}}});
+      const frame = () => { fills = []; hatchLines = 0; labels = []; v.drawAreas(ctx, 512);
+        return {fills, hatchLines, labels}; };
+      const upper = frame(); v.t = 1; const lower = frame();
+      v.t = 2; const gap = frame(); v.t = 0; v.highlight = null; v.areasPaint = null; const none = frame();
+      v.areas.approximate = true; const guess = frame();
+      process.stdout.write(JSON.stringify({upper, lower, gap, none, guess}));
+    """, None)
+    assert got["upper"]["labels"] == ["Lower", "Upper"]
+    assert got["lower"]["labels"] == ["Lower"]
+    assert got["upper"]["fills"][1][2] != got["lower"]["fills"][1][2]
+    assert all(row[3] == 0.35 for row in got["upper"]["fills"])
+    assert got["upper"]["hatchLines"] == got["lower"]["hatchLines"] == 0
+    assert got["gap"]["hatchLines"] == got["none"]["hatchLines"] == 1
+    assert got["none"]["labels"] == ["Lower"]
+    assert "approximate" in got["guess"]["labels"]
+    assert got["guess"]["fills"]
+    assert all(row[3] == 0.15 for row in got["guess"]["fills"])
+
+
 @pytest.fixture(scope="module")
 def condensed(tmp_path_factory):
     kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
@@ -241,13 +367,12 @@ def test_the_linked_mode_helpers():
           {kind: "Bomb", code: "", name: "Spike", slot: 2, t0: 40, t1: null},
           {kind: "GameObject", code: "Newagent", name: "Q_Thing", slot: 0, t0: 1, t1: 2}
         ];
-        const pairs = R.pairWires(abilities);
         process.stdout.write(JSON.stringify({
           styles: abilities.map(a => R.abilityStyle(a).shape),
           label: R.abilityStyle(abilities[6]).label,
           at10: R.abilitiesAt(abilities, 10, 90).length, at95: R.abilitiesAt(abilities, 95, 90).length,
           open: R.abilitiesAt(abilities, 89, 90).length,
-          pairs: Object.keys(pairs).map(k => [Number(k), abilities.indexOf(pairs[k])]),
+          timePairing: typeof R.pairWires,
           signed: [R.signed(12.4), R.signed(-3.6), R.signed(0), R.signed(null)],
           tally: R.tallyAt([{t: 1, killer: 0, victim: 5}, {t: 2, killer: 5, victim: 5}, {t: 9, killer: 1, victim: 6}], 5)
         }));
@@ -257,7 +382,7 @@ def test_the_linked_mode_helpers():
     assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "projectile", "spike", "badge"]
     assert got["label"] == "Q Thing"
     assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
-    assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
+    assert got["timePairing"] == "undefined", "trapwire endpoints come from stored rows"
     assert got["signed"] == ["+12", "\u22124", "0", ""]
     assert got["tally"] == {"0": {"k": 1, "d": 0, "a": 0}, "5": {"k": 0, "d": 2, "a": 0}}
 

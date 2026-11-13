@@ -32,6 +32,8 @@ STEPS = (
     ("reparse_local", "Needs a re-ingest (older condenser, local file)", False),
     ("incomplete", "Replay incomplete or in an unsupported format", False),
     ("no_map", "Map has no control layer", False),
+    ("layout_pending", "Map changed in this patch; redraw pending", False),
+    ("layout_unknown", "Patch unknown on a map with several layouts", False),
     ("old_blob", "Replay too old for map control", False),
     ("features_pending", "Waiting for the map's features to compile", True),
     ("source_error", "The map's features failed to compile", False),
@@ -92,9 +94,10 @@ def round_states(db) -> dict:
         p, run = gaps[key], runs.get(key)
         if run is None:
             return "gaps_missing"
-        if (p.fingerprint, p.map_name) not in wanted:
-            wanted[p.fingerprint, p.map_name] = replay_gaps.gap_fingerprint(p.fingerprint, p.map_name)
-        if run.fingerprint == wanted[p.fingerprint, p.map_name]:
+        asset_key = p.asset_key or p.map_name
+        if (p.fingerprint, asset_key) not in wanted:
+            wanted[p.fingerprint, asset_key] = replay_gaps.gap_fingerprint(p.fingerprint, asset_key)
+        if run.fingerprint == wanted[p.fingerprint, asset_key]:
             return "gaps_failed" if run.status == "failed" else "gaps_stale"
         return "gaps_stale"
 

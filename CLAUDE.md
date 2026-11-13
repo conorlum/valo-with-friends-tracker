@@ -35,11 +35,15 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 - `alembic/versions/` — schema migrations; `0001_initial_schema.py` creates all 7 tables, `0002_friendships.py` adds `friendships`, `0003_player_view_cache.py` adds `player_view_cache`.
 - `docker-compose.yml` — local Postgres 18 for development. The data volume holds a Postgres 18 cluster and is mounted at `/var/lib/postgresql` (the 18 image keeps its data under `18/docker`).
 - `render.yaml` (repo root) — the Render Blueprint for the `valowithfriendstracker` web service only: it runs `alembic upgrade head` on build, and it declares no databases. A Blueprint sync applies its `plan:` over the dashboard's setting. The `valomaths` service isn't in it (see above).
-- `control_heights` (migration 0019): a map's height assets, built on the replay worker and activated behind a gate (`app/replays/height_inputs.py`, `app/services/control_heights.py`, `app/services/replay_heights_remote.py`; `REPLAY_HEIGHTS_AUTO`, on in `render.yaml`; `scripts/control_heights.py list | activate | off | export`). The demo never has any. See `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`.
+- `control_heights` (migration 0019): a map's height assets, keyed by asset key (one row set per layout: `<Map>` for the base layout, `<Map>_<major>_<minor>` for a later one; a layout's build pools its own replays plus other layouts' outside the regions that changed, `app/replays/height_inputs.py`), built on the replay worker and activated behind a gate (`app/replays/height_inputs.py`, `app/services/control_heights.py`, `app/services/replay_heights_remote.py`; `REPLAY_HEIGHTS_AUTO`, on in `render.yaml`; `scripts/control_heights.py list | activate | off | export`). The demo never has any. See `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`.
 - Warm builds (a cold map's visibility cache built as its own run, confirmed by one probe round, then the rest of its rounds run at once) exist and are behind `REPLAY_WARM_BUILDS` (on in `render.yaml`). The Workflow time limits (`REPLAY_CONTROL_RUN_TIMEOUT_S`, `REPLAY_WARM_BUILD_TIMEOUT_S`, `REPLAY_HEIGHT_RUN_TIMEOUT_S`) apply to Workflow runs only; local runs keep their own (1800 s control, 3600 s heights). Read `webapp/RENDER_DEPLOY.md` ("Warm builds, time limits and the concurrency ramp") before changing either; any scheduler change updates the state table `docs/superpowers/specs/2026-11-06-warm-build-states.md` first, with a test per row.
 - `map_pool_changes` / `map_pool_patch_notes` (migration 0023): the Competitive map pool's history, from the committed seed `app/data/map_pool_seed.json` (`scripts/build_map_pool_seed.py`) plus pages read from playvalorant.com's patch notes once a day (`app/services/map_pool_refresh.py`; `MAP_POOL_AUTO`, on in `render.yaml`, always off in demo mode). `app/services/map_pool.py` reads it (`load_pool_history`); map streaks use it. `scripts/map_pool.py show [--at ISO] | refresh | seed`.
 - `scripts/seed_demo_matches.py` / `scripts/ingest_demo_match.py` — one-off scripts to bulk- or single-ingest match JSONs from `MatchHTMLJsons/` into the DB via the adapter above. Not part of the deploy path.
 - `seed_data/demo_matches.sql` — the public ValoMaths demo's sample data (six matches plus a fixed sample friend group), a data-only dump at the schema head. `scripts/load_seed_data.py` loads it and `scripts/dump_seed_data.py` regenerates it. Every command against the demo DB goes through `scripts/with_demo_db.py`, which reads `webapp/.env.demo-remote` and refuses to run unless it is connected to `valomaths_demo`. See `load_seed_data.py`'s docstring for the rebuild order.
+
+### Map layouts
+
+`app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note; a pending replay still shows its stored control, marked out of date, on the newest earlier layout that has a control layer, while an unknown patch shows none. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`. Redrawing a map for a new layout follows `docs/map-layout-redraw.md` with `scripts/map_layout.py` (`notes`, `fetch-minimap`, `align`, `diff`, `overlay`, `build`, `kill-lines`).
 
 ### Stats page caches
 
@@ -127,6 +131,7 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
   that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
   feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).
+- A moment's **Area should be** correction stores the name and selected player (migration `0033`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.
 - Opponents' names never appear in the coach or Critical Moments tabs; they are "the enemy <agent>"
   (`app/services/enemy_names.py`). A run's snapshot renames them before the model sees it
   (`snapshot.hide_enemy_names`), the coach page swaps any left in stored text, and the moments payload names the
@@ -134,6 +139,12 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 - Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
 
 ### Critical Util
+
+- Reviewed map paint (`app/static/data/control/<asset key>.areas.json`) is published by merging it: the site
+  reads origin/main's paint once per build, keys the build with its hash (`corpus_key_parts["areas_hash"]`)
+  and sends the paint to the worker in the build's `context.json`; the worker never reads git or a paint
+  file. The coach's local key uses this checkout's origin/main, so it refuses at once, naming the paint,
+  when that differs from the site's (`areas_hash` from `POST /admin/replays/util/build`).
 
 Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
 (`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.
@@ -163,10 +174,25 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   Products in `util_model` ("win", "values"), rebuilt when what they were built from changes (`corpus_key`,
   computed from the rows a build read; `replay_util.ensure_values`, one rebuild at a time under a Postgres advisory
   lock). Requests never build: `/util` and the replay tab read the stored build (`replay_util.page_values`,
-  `match_payload`) and, when it is stale or missing, start `python -m app.services.util_rebuild` as a lower-priority
-  child process (one per process at a time, one builder overall under a Postgres session lock) and show the last
-  build with an "updating" note. The build takes minutes. The coach waits for a current build (`wait=True`). `scripts/critical_util.py fit-win | refresh |
-  measure | show` (through `with_friends_db.py`; `measure` is read-only).
+  `match_payload`) and show the last build with an "updating" note when it is stale or missing. The build takes
+  minutes. `scripts/critical_util.py fit-win | refresh | measure | show` (through `with_friends_db.py`; `measure` is
+  read-only).
+- The build and the refit run on the replay worker as the `util` Workflow task, not on the site (`UTIL_BUILD_REMOTE`,
+  on in `render.yaml`; `app/services/util_build_remote.py`, DB-free build in `app/critutil/corpus.py`). Its own `util-build`
+  loop thread (on only with the map-control dispatcher) decides: the build is stale and util rows have been quiet for 120 s (or the owner asked), it pushes only the
+  rounds and observations the worker lacks, opens the build, follows it, then checks and stores "values" (and "win"
+  after a refit). Up to 3 tries per inputs key. With the switch on, the pages never start the local
+  `util_rebuild` child; with it off that child is the old path. No connection or transaction is held through a
+  build. The owner's `POST /util/build` (`REPLAY_ADMIN_TOKEN`) asks for one. The worker keeps its own util store
+  (`REPLAY_UTIL_DIR`, cap `REPLAY_UTIL_RESERVE`, pruned to the newest build's inputs). A digest over every file the
+  build reads (`app/critutil/build_digest.py`, standard library only) must match between site and worker; the worker's
+  `/health` reports `util.digest`, and a mismatch lasting over 30 min is a Site health row. `replay_worker/server.py`
+  never imports `app.critutil.corpus`, numpy or scipy.
+- The coach only reads the stored build (`snapshot.read`): it waits up to 10 min for a current one, asks for one
+  through the admin route when `REPLAY_ADMIN_TOKEN` is set, refuses at once when this checkout's code digest differs
+  from the site's, and otherwise exits 2 naming the reason (`refused: Critical Util: ...`). It never builds.
+- Failures show in Site health as `util_build_failed` `remote:<dispatch|push|run|collect|store|gave_up|digest>`
+  (`app/services/site_health.py`).
 - The tab is `replays/_player.html` "Critical Util" (`app/static/js/critutil.js`, `/replays/<uuid>/util.json`); the
   page is `/util` (`app/routers/util_page.py`), the viewer's circle only (`app/services/circle.py`). The coach
   brief's `util_facts` are logged with ids the checker trusts (`app/coach/runner.py`).
@@ -176,7 +202,9 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
 The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`GROUPS`) lists the replay kinds plus
 stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
 (`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
-loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost; and checked
+loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost,
+`map_layout_walls` (maps whose replays put players inside walls after a patch), `trip_too_long` (replays with trip
+pairs longer than `site_health.TRIP_LIMIT_M`); and checked
 kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs
 never wait on the database for it: `record`, `resolve` and `count` queue in memory, in the order they happen, and
 the flush thread writes them every 60 s (a resolve deletes rows last seen before it; one entry the database refuses

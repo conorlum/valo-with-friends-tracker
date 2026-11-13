@@ -4,6 +4,7 @@ exporting an unchanged page gives back the loaded tags.json. The JS checks need 
 
 import base64
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -179,6 +180,23 @@ def test_the_page_builds_with_every_map(tmp_path):
     data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
     assert sorted(data["maps"]) == ["Abyss", "Breeze"] and data["tags"] == TAGS
     assert data["maps"]["Breeze"]["lines"] == [] and len(data["maps"]["Abyss"]["lines"]) == 200
+
+
+def test_the_page_includes_areas_data_panel_and_distinct_mode_keys(tmp_path):
+    out = tmp_path / "tagger.html"
+    assert control_tagger.main(["--out", str(out), "--map", "Sunset", "--areas-dir", str(tmp_path)]) == 0
+    page = out.read_text(encoding="utf-8")
+    assert "/*AREAS_UI*/" not in page and "window.taggerAreas" in page
+    for element in ("areasCard", "areasCanvas", "areasFloor", "areasPinsFile", "areasReferenceFile", "areasExport",
+                    "areasExportFixture"):
+        assert f'id="{element}"' in page
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])["maps"]["Sunset"]["areas"]
+    assert data["map"] == "Sunset" and len(data["labels"]) == 17 and data["draft"]["cells"]
+    mode_keys = re.search(r"var modes = \{([^}]+)\}", page)
+    pairs = re.findall(r'(\w+)\s*:\s*"([^"]+)"', mode_keys.group(1))
+    assert len({key for key, _ in pairs}) == len(pairs)
+    assert {"k": "chokes", "a": "choke_paint", "f": "features", "m": "areas"}.items() <= set(pairs)
+    assert all(f'data-mode="{mode}"' in page for _, mode in pairs)
 
 
 # ---- Choke mode (timing-gaps spec section 2: add, delete, move, rename; hand edits survive re-detection) ----

@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy.orm import load_only
 
 from app.models.replay import ReplayGap, ReplayRoundControl, ReplayRoundGapRun
-from app.replays import choke_assets
+from app.replays import choke_assets, layouts
 from app.replays import control_format as cf
 from app.services import control_heights, replay_control
 
@@ -47,24 +47,30 @@ def hearing_hash(path: Path | None = None) -> str:
     return _hex16(json.dumps(view, sort_keys=True))
 
 
-def engine_key(control_fingerprint: str, map_name: str) -> str:
+def engine_key(control_fingerprint: str, asset_key: str) -> str:
     """The tick cache's key (R5): everything the engine's unknown depends on, so an edit to any of them misses
     the cache. GAPS_REVISION is deliberately left out: re-running the detector alone is the cache's point."""
-    return _hex16(f"{control_fingerprint}|{choke_assets.asset_hash(map_name)}|{hearing_hash()}")
+    return _hex16(f"{control_fingerprint}|{choke_assets.asset_hash(asset_key)}|{hearing_hash()}")
 
 
 _UNSET = object()
 
 
-def gap_fingerprint(control_fingerprint: str, map_name: str, *, chokes=_UNSET, hearing=_UNSET) -> str:
-    """A round's gap run is current while this matches: the control fingerprint, GAPS_REVISION, the map's choke
+def gap_fingerprint(control_fingerprint: str, asset_key: str, *, chokes=_UNSET, hearing=_UNSET) -> str:
+    """A round's gap run is current while this matches: the control fingerprint, GAPS_REVISION, the layout's choke
     asset hash and the hearing table's hash (section 7, "Freshness"). A caller fingerprinting many rounds passes
-    `chokes` (asset_hash(map_name), which may be None) and `hearing` (hearing_hash()) once (the pattern page)."""
+    `chokes` (asset_hash(asset_key), which may be None) and `hearing` (hearing_hash()) once (the pattern page)."""
     if chokes is _UNSET:
-        chokes = choke_assets.asset_hash(map_name)
+        chokes = choke_assets.asset_hash(asset_key)
     if hearing is _UNSET:
         hearing = hearing_hash()
-    return _hex16(f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}")
+    text = f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}"
+    if layouts.map_of(asset_key) != asset_key:
+        # R2-3 (2026-11-12): a later layout's gap rows are stored under its own key, so its run must differ from
+        # an earlier layout's even when the control inputs and the chokes are the same (a bullet-only redraw).
+        # Base keys add nothing: their fingerprints stay byte-identical.
+        text += f"|{asset_key}"
+    return _hex16(text)
 
 
 class Freshness:
@@ -98,16 +104,20 @@ class Freshness:
         from app.replays import choke_assets
         from app.services import replay_control, replay_gaps
 
-        if replay.map_name not in self.maps:
-            self.maps[replay.map_name] = (replay_control.resolve_current_geometry(self.db, replay.map_name),
-                                          choke_assets.asset_hash(replay.map_name))
-        context, chokes = self.maps[replay.map_name]
+        selection = replay_control.layout_of(replay)
+        if selection.state != "ok":
+            return None
+        key = selection.layout.asset_key
+        if key not in self.maps:
+            self.maps[key] = (replay_control.resolve_current_geometry(self.db, key),
+                              choke_assets.asset_hash(key))
+        context, chokes = self.maps[key]
         if replay.id not in self.groups:
             self.groups[replay.id] = replay_control.side_groups(self.db, replay)
         control = replay_control.round_fingerprint(replay, self.groups[replay.id], n, context=context)
         if control is None:
             return None
-        return replay_gaps.gap_fingerprint(control, replay.map_name, chokes=chokes, hearing=self.hearing)
+        return replay_gaps.gap_fingerprint(control, key, chokes=chokes, hearing=self.hearing)
 
     def current(self, replay, n: int, revision: int, fingerprint: str) -> bool:
         from app.services import replay_gaps
@@ -130,9 +140,7 @@ def round_gaps(db, replay, n: int) -> tuple[str, list]:
         return "failed", []
     rows = (db.query(ReplayGap).filter(ReplayGap.replay_id == replay.id, ReplayGap.round_number == n)
             .order_by(ReplayGap.seq).all())
-    control = replay_control.round_fingerprint(replay, replay_control.side_groups(db, replay), n,
-                                               context=replay_control.resolve_current_geometry(db, replay.map_name))
-    current = None if control is None else gap_fingerprint(control, replay.map_name)
+    current = Freshness(db).expected(replay, n)
     return ("ok" if run.fingerprint == current else "stale"), rows
 
 
@@ -157,10 +165,11 @@ def plan_gaps(db, planned_control: list, every: list, retry_failed: bool = False
         row = control.get(key)
         if row is None or row.status != "ok" or row.fingerprint != p.fingerprint:
             continue
-        if (p.fingerprint, p.map_name) not in wanted:
-            wanted[p.fingerprint, p.map_name] = gap_fingerprint(p.fingerprint, p.map_name)
+        asset_key = p.asset_key or p.map_name
+        if (p.fingerprint, asset_key) not in wanted:
+            wanted[p.fingerprint, asset_key] = gap_fingerprint(p.fingerprint, asset_key)
         run = runs.get(key)
-        if run is not None and run.fingerprint == wanted[p.fingerprint, p.map_name]:
+        if run is not None and run.fingerprint == wanted[p.fingerprint, asset_key]:
             if run.status == "ok" or not retry_failed:
                 continue
         out.append(replace(p, reason="gaps"))

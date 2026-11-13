@@ -33,7 +33,7 @@ import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil,
-                                ControlFeatureArtifact, UtilModel)  # noqa: E402
+                                ControlFeatureArtifact, UtilModel, ReplayRoundWallShare, ReplayUpload)  # noqa: E402
 from app.models.impact_score import ImpactScore  # noqa: E402
 from app.models.map_pool import MapPoolPatchNotes  # noqa: E402
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution  # noqa: E402
@@ -46,7 +46,7 @@ from app.services import replays as service  # noqa: E402
 
 CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
                                   ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__, UtilModel.__table__,
-                                  ImpactScore.__table__, MapPoolPatchNotes.__table__]
+                                  ImpactScore.__table__, MapPoolPatchNotes.__table__, ReplayRoundWallShare.__table__]
 
 
 def feature_free_source(monkeypatch):
@@ -68,7 +68,7 @@ def factory(monkeypatch):
     feature_free_source(monkeypatch)
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=CONTROL_TABLES)
+    Base.metadata.create_all(engine, tables=[*CONTROL_TABLES, ReplayUpload.__table__])
     return sessionmaker(bind=engine)
 
 

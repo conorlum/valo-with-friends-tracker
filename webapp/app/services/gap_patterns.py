@@ -27,7 +27,7 @@ from sqlalchemy.orm import load_only
 
 from app.models import Match, MatchPlayer
 from app.models.replay import Replay, ReplayGap, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun
-from app.replays import choke_assets
+from app.replays import choke_assets, layouts
 from app.replays import db as replay_db
 from app.services import replay_control, replay_gaps
 from app.services.circle import circle_ids
@@ -125,20 +125,38 @@ def _aware(value: datetime | None) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def eligible_rounds(db, map_name: str) -> Eligible:
-    """The counted rounds of valid replays of this map: the gap run is `ok` and its fingerprint equals
-    `gap_fingerprint(<the round's stored ok control row's fingerprint>, map)` (review amendment 6); the choke and
+def available_layouts(map_name: str) -> list[layouts.Layout]:
+    """The map's layouts with control assets, oldest first."""
+    return [layout for layout in layouts.layouts_of(map_name)
+            if replay_control.map_layer(layout.asset_key) is not None]
+
+
+def default_layout(map_name: str) -> str | None:
+    available = available_layouts(map_name)
+    return available[-1].asset_key if available else None
+
+
+def eligible_rounds(db, asset_key: str) -> Eligible:
+    """The counted rounds of valid replays of this layout: the gap run is `ok` and its fingerprint equals
+    `gap_fingerprint(<the round's stored ok control row's fingerprint>, key)` (review amendment 6); the choke and
     hearing hashes are computed once. A round of an `old_blob` replay can never be computed, so it is counted
     apart, not as "not computed"."""
     out = Eligible()
     replays = (db.query(Replay)
                .options(load_only(Replay.id, Replay.match_uuid, Replay.match_id, Replay.map_name, Replay.round_count,
-                                  Replay.format_version, Replay.recipe, Replay.link_status, Replay.created_at))
-               .filter(Replay.map_name == map_name).all())
+                                  Replay.format_version, Replay.recipe, Replay.link_status, Replay.created_at,
+                                  Replay.game_branch))
+               .filter(Replay.map_name == layouts.map_of(asset_key)).all())
     if not replays:
         return out
     valid = replay_control._valid_ids(db, replays)
-    replays = [r for r in replays if r.id in valid]
+    selected = []
+    for replay in replays:
+        if replay.id in valid:
+            selection = replay_control.layout_of(replay)
+            if selection.state == "ok" and selection.layout.asset_key == asset_key:
+                selected.append(replay)
+    replays = selected
     match_ids = [r.match_id for r in replays if r.match_id is not None]
     played = dict(db.query(Match.id, Match.played_at).filter(Match.id.in_(match_ids))) if match_ids else {}
     ids = [r.id for r in replays]
@@ -148,7 +166,7 @@ def eligible_rounds(db, map_name: str) -> Eligible:
     runs = {(rid, n): (status, fp) for rid, n, status, fp in db.query(
         ReplayRoundGapRun.replay_id, ReplayRoundGapRun.round_number, ReplayRoundGapRun.status,
         ReplayRoundGapRun.fingerprint).filter(ReplayRoundGapRun.replay_id.in_(ids))} if ids else {}
-    chokes, hearing = choke_assets.asset_hash(map_name), replay_gaps.hearing_hash()
+    chokes, hearing = choke_assets.asset_hash(asset_key), replay_gaps.hearing_hash()
     wanted: dict[str, str] = {}
     for replay in replays:
         out.replays[replay.id] = ReplayInfo(
@@ -168,7 +186,7 @@ def eligible_rounds(db, map_name: str) -> Eligible:
             row = control.get((replay.id, n))
             if row is not None and row[0] == "ok":
                 if row[1] not in wanted:
-                    wanted[row[1]] = replay_gaps.gap_fingerprint(row[1], map_name, chokes=chokes, hearing=hearing)
+                    wanted[row[1]] = replay_gaps.gap_fingerprint(row[1], asset_key, chokes=chokes, hearing=hearing)
                 if run[1] == wanted[row[1]]:
                     out.rounds.add((replay.id, n))
                     continue
@@ -209,7 +227,7 @@ def _keep(row: dict, f: Filters) -> bool:
     return True
 
 
-def load_rows(db, map_name: str, eligible: Eligible, filters: Filters, with_routes: bool = False) -> list[dict]:
+def load_rows(db, asset_key: str, eligible: Eligible, filters: Filters, with_routes: bool = False) -> list[dict]:
     """The rows of counted rounds that pass the filters (population aside), as dicts with the replay's
     `match_uuid` and `sort_date` added; `route` is selected only when `with_routes`."""
     ids = sorted({rid for rid, _ in eligible.rounds})
@@ -217,7 +235,8 @@ def load_rows(db, map_name: str, eligible: Eligible, filters: Filters, with_rout
         return []
     names = _COLUMNS + (("route",) if with_routes else ())
     query = (db.query(*(getattr(ReplayGap, c) for c in names))
-             .filter(ReplayGap.map == map_name, ReplayGap.replay_id.in_(ids))
+             # The detector stores geo.name, the layout's asset key, in this column.
+             .filter(ReplayGap.map == asset_key, ReplayGap.replay_id.in_(ids))
              .order_by(ReplayGap.replay_id, ReplayGap.round_number, ReplayGap.seq))
     out = []
     for values in query:
@@ -461,9 +480,9 @@ def shape_groups(rows: list[dict], m_per_px: float, cut: dict[str, bool] | None 
     return out
 
 
-def m_per_px(map_name: str) -> float | None:
+def m_per_px(asset_key: str) -> float | None:
     """Metres per minimap pixel, as app.control.geometry derives it from maps.json's xMultiplier (not imported)."""
-    inputs = replay_control.geometry_inputs(map_name, heights=None)     # only the scale is read
+    inputs = replay_control.geometry_inputs(layouts.map_of(asset_key), heights=None)     # map-level scale
     scale = (inputs or {}).get("scale")
     return 1.0 / (float(scale) * PX * 100) if scale else None
 
@@ -471,27 +490,34 @@ def m_per_px(map_name: str) -> float | None:
 # ---------------------------------------------------------------- the page
 
 
-def _population_rows(db, map_name, filters, viewer_player_id, with_routes=False):
-    eligible = eligible_rounds(db, map_name)
-    rows = load_rows(db, map_name, eligible, filters, with_routes=with_routes)
+def _population_rows(db, asset_key, filters, viewer_player_id, with_routes=False):
+    eligible = eligible_rounds(db, asset_key)
+    rows = load_rows(db, asset_key, eligible, filters, with_routes=with_routes)
     rows, population = apply_population(db, rows, eligible, filters, viewer_player_id)
     return eligible, rows, population
 
 
-def page_data(db, map_name: str, filters: Filters, viewer_player_id: int | None) -> dict:
+def page_data(db, asset_key: str, filters: Filters, viewer_player_id: int | None) -> dict:
     """Everything the pattern page shows. Routes are read only for the empty sequence's rows (route shape); a
     selected pattern's routes come from `pattern_routes`."""
-    eligible, rows, population = _population_rows(db, map_name, filters, viewer_player_id)
+    map_name = layouts.map_of(asset_key)
+    available = available_layouts(map_name)
+    params = filters.as_params()
+    if available and asset_key != available[-1].asset_key:
+        params["layout"] = asset_key
+    eligible, rows, population = _population_rows(db, asset_key, filters, viewer_player_id)
     grouped = group_patterns(rows)
-    scale = m_per_px(map_name)
+    scale = m_per_px(asset_key)
     shapes = None
     if scale is not None:
         chosen, cut = shape_selection(rows)
         shapes = shape_groups(load_routes(db, [r for side in chosen.values() for r in side]), scale, cut)
     return {
         "map": map_name,
+        "layout": asset_key,
+        "layouts": [{"key": layout.asset_key, "id": layout.display_id} for layout in available],
         "filters": asdict(filters),
-        "params": filters.as_params(),
+        "params": params,
         "population": population,
         "direction": filters.dir if population == "friends" else None,
         "friends_available": viewer_player_id is not None,
@@ -503,15 +529,15 @@ def page_data(db, map_name: str, filters: Filters, viewer_player_id: int | None)
         "shapes": shapes,
         "shape_threshold_m": SHAPE_THRESHOLD_M,
         "shape_cap": SHAPE_CAP,
-        "chokes": choke_points(map_name),
+        "chokes": choke_points(asset_key),
     }
 
 
-def pattern_routes(db, map_name: str, choke_seq, filters: Filters, viewer_player_id: int | None) -> list[dict]:
+def pattern_routes(db, asset_key: str, choke_seq, filters: Filters, viewer_player_id: int | None) -> list[dict]:
     """The routes of one pattern (its full choke sequence) under the same filters and population: each row's
     viewer link plus its stored `route` (pieces of [t, x, y], minimap pixels)."""
     want = [int(c) for c in choke_seq]
-    _, rows, _ = _population_rows(db, map_name, filters, viewer_player_id)
+    _, rows, _ = _population_rows(db, asset_key, filters, viewer_player_id)
     rows = [r for r in rows if r["choke_seq"] is not None and [int(c) for c in r["choke_seq"]] == want]
     rows.sort(key=_order)
     return [{**_ref(r), "route": r["route"]} for r in load_routes(db, rows)]

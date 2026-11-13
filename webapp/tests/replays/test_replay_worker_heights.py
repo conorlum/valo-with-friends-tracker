@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +38,38 @@ else:
 """
 UUID = "0f452716-1e90-4782-afba-29229fdab922"
 MANIFEST = {"sha": "m" * 16}
+
+
+@pytest.mark.parametrize("with_runner", [False, True])
+def test_health_advertises_heights_protocol_without_network(tmp_path, with_runner):
+    builds = None
+    if with_runner:
+        builds = object.__new__(server.HeightBuilds)
+        builds.lock = threading.Lock()
+        builds.builds = {}
+        builds._spooled = lambda: 0
+    worker = SimpleNamespace(settings=server.Settings(temp_root=tmp_path),
+                             queue=SimpleNamespace(qsize=lambda: 0), memory_cap=0,
+                             archive_status=lambda: {}, recipe=None, idle=lambda: True)
+    handler_type = server.make_handler(worker, heights=builds)
+    handler = object.__new__(handler_type)
+    handler.path = "/health"
+    handler._send = lambda status, body: body
+    assert handler.do_GET()["heights"]["protocol"] == 1
+
+
+def test_height_status_preserves_unknown_layout_refusal():
+    job = server.ControlJob("synthetic", "synthetic-key", "Toy_13_10", b"{}", kind="heights",
+                            status="failed", error="layout is unavailable", error_kind="compat",
+                            error_code="unknown_layout")
+    builds = object.__new__(server.HeightBuilds)
+    builds.lock = threading.Lock()
+    builds.control = SimpleNamespace(get=lambda job_id: job)
+    builds.builds = {"build": {"id": "build", "key": job.key, "map": job.map,
+                               "job": job.id, "received": {}, "ended": None, "expected": 1}}
+    answer = builds.get("build")
+    assert (answer["status"], answer.get("error_kind"), answer.get("error_code")) == (
+        "failed", "compat", "unknown_layout")
 
 
 @pytest.fixture
@@ -280,6 +313,7 @@ def test_the_http_answers_each_state_and_health(worker):
     path = f"/heights/build/{job['id']}"
     assert http(base, f"{path}/rounds", {"rounds": rounds(1)}) == (200, {"received": 1})
     health = http(base, "/health")[1]
+    assert health["heights"]["protocol"] == 1
     assert health["heights"]["collecting"] == ["Sunset"] and health["heights"]["spool_bytes"] == 5 and health["idle"] is True
     code, body = http(base, f"{path}/start", {})
     assert code == 409 and body == {"error": "rounds are missing", "received": 1, "expected": 2}

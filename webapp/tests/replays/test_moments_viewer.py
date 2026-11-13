@@ -106,8 +106,8 @@ def test_groups_for_puts_a_two_tag_fight_in_both_groups_in_order():
               labels: g.map(x => x.label), tags: M.GROUPS.map(x => x.tag)};
     }""", payload(rounds))
     assert got["labels"][:3] == ["Moving while firing", "Alone", "With a teammate"]
-    assert got["labels"][-2:] == ["Heard", "Found by utility"]
-    assert len(got["keys"]) == 22 and got["counts"][0] == 0
+    assert got["labels"][-3:] == ["Heard", "Found by utility", "Utility destroyed"]
+    assert len(got["keys"]) == 23 and got["counts"][0] == 0
     assert got["alone"] == [[1, 30], [2, 10]]
     by_key = dict(zip(got["keys"], got["counts"]))
     assert by_key["died_not_traded"] == 1 and by_key["util_on_them"] == 1 and by_key["alone"] == 3 - 1 + 0
@@ -173,6 +173,29 @@ def test_expensive_fight_text_carries_its_sign():
 
 
 @needs_node
+def test_utility_destroyed_group_renders_device_clock_and_summary_count():
+    p = payload()
+    p["summary"]["0"]["info"]["destroyed"] = [{"round": 4, "t": 65, "device": "trip"}]
+    got = run_node("""function run(p) {
+      global.document = {createElement: () => ({children: [], setAttribute() {}, addEventListener() {},
+        appendChild(child) {this.children.push(child);}})};
+      const panel = document.createElement("div");
+      M.render(panel, p, 0, {});
+      function texts(node) {return [node.textContent || "", ...node.children.flatMap(texts)];}
+      const group = M.groupsFor(p, 0).find(g => g.key === "destroyed");
+      return {texts: texts(panel), group, jump: M.jumpFor(group.rows[0]),
+        summary: M.summaryLine(p.summary["0"]), empty: M.groupsFor(p, 1).find(g => g.key === "destroyed")};
+    }""", p)
+    assert got["group"]["label"] == "Utility destroyed"
+    assert got["group"]["rows"] == [{"round": 4, "t": 65, "device": "trip"}]
+    assert "Utility destroyed (1)" in got["texts"]
+    assert "R4 1:05 trip" in got["texts"]
+    assert "utility destroyed 1" in got["summary"]
+    assert got["jump"] == [4, 65]
+    assert got["empty"]["rows"] == []
+
+
+@needs_node
 def test_summary_line():
     s = payload()["summary"]["0"]
     s["medians"]["all"] = {"ttk_shot": 0.42, "ttk_spot": None, "spot_to_shot": 0.3, "n": 12}
@@ -183,7 +206,7 @@ def test_summary_line():
     assert "TTK from first shot: all 0.42 s (n 12)" in got and "on – (n 0)" in got
     assert "TTK from spot: all 0.80 s (n 12), on – (n 0)" in got
     assert got.index("TTK from first shot") < got.index("TTK from spot")
-    assert got.endswith("heard 2, gunfire outside fights 1, found by utility 0, seen 4")
+    assert got.endswith("heard 2, gunfire outside fights 1, found by utility 0, seen 4, utility destroyed 0")
 
 
 @needs_node
@@ -211,12 +234,16 @@ def render_player(**context):
 
 
 def test_the_tab_and_panel_render_only_for_linked_with_control():
-    html = render_player(linked=True, control={"cover_reviewed": True})
+    # `panels` is the route's linked-with-control-on-a-current-layout flag (routers/replays.viewer_context)
+    html = render_player(linked=True, control={"cover_reviewed": True}, panels=True)
     for hook in ('data-replay-tab="moments"', 'data-replay-panel="moments"', "data-replay-moments", "Critical Moments",
                  "Measurements, not verdicts."):
         assert hook in html, hook
     assert html.index('data-replay-tab="analysis"') < html.index('data-replay-tab="moments"')
-    for context in ({"linked": False, "control": {"cover_reviewed": True}}, {"linked": True}, {"linked": False}):
+    for context in ({"linked": False, "control": {"cover_reviewed": True}, "panels": False},
+                    {"linked": True, "panels": False}, {"linked": False, "panels": False},
+                    # a pending layout: control stays on (the stale round overlay) but the match panels go
+                    {"linked": True, "control": {"cover_reviewed": True}, "panels": False}):
         html = render_player(**context)
         assert 'data-replay-tab="moments"' not in html and 'data-replay-panel="moments"' not in html
 

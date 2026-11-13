@@ -60,7 +60,9 @@ from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import gap_patterns
 from app.services import replay_errors
+from app.services import replay_areas
 from app.services import replay_moments
 from app.services import replay_util
 from app.services import replay_progress as progress
@@ -282,6 +284,19 @@ def upload_errors_prompt(request: Request, db: Session = Depends(get_db), kind: 
 # ---------------------------------------------------------------- replay pages
 
 
+# Before the generic round JSON route, which would parse the map name as a round.
+@router.get("/replays/areas/{map_name}.json")
+def replay_areas_json(map_name: str):
+    """The same reviewed paint (or approximate callouts) for every viewer."""
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    try:
+        body = replay_areas.payload(map_name)
+    except (KeyError, FileNotFoundError):
+        raise HTTPException(status_code=404) from None
+    return JSONResponse(body, headers={"Cache-Control": "no-cache"})
+
+
 # Declared before /{round_number}.json: routes match in order, and that one would take "moments" as a round
 # number and answer 422.
 @router.get("/replays/{match_uuid}/moments.json")
@@ -335,7 +350,7 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
     if not 1 <= round_number <= replay.round_count:
         raise HTTPException(status_code=404)
     answer = control_service.round_control(db, replay, round_number)
-    if answer.status in ("no_map", "old_blob"):
+    if answer.status in ("no_map", "old_blob", "layout_pending", "layout_unknown"):
         return JSONResponse({"status": answer.status}, status_code=404)
     if answer.status == "not_ready":
         return JSONResponse({"status": "not_ready"}, status_code=202,
@@ -351,7 +366,10 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
 def _control_replay_or_404(db: Session, match_uuid: str):
     """The replay, when its map has the layer and its blob can have control; else a 404 that says why."""
     replay = _replay_or_404(db, match_uuid)
-    if control_service.map_layer(replay.map_name) is None:
+    selection = control_service.layout_of(replay)
+    if selection.state != 'ok':
+        return replay, JSONResponse({"status": selection.state}, status_code=404)
+    if control_service.map_layer(selection.layout.asset_key) is None:
         return replay, JSONResponse({"status": "no_map"}, status_code=404)
     if control_service.blob_too_old(replay):
         return replay, JSONResponse({"status": "old_blob"}, status_code=404)
@@ -395,7 +413,8 @@ def replay_round_gaps(request: Request, match_uuid: str, round_number: int, db: 
     if not 1 <= round_number <= replay.round_count:
         raise HTTPException(status_code=404)
     status, rows = gaps_service.round_gaps(db, replay, round_number)
-    view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], replay.map_name)
+    key = control_service.layout_of(replay).layout.asset_key
+    view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], key)
     body = {"status": status, "stale": status == "stale", "revision": gaps_service.GAPS_REVISION,
             "rows": view["rows"], "chokes": view["chokes"]}
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -429,16 +448,24 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     viewer = get_current_player(request, db) if "session" in request.scope else None
     viewer_slot = next((p["slot"] for p in context["players"].values()
                         if viewer is not None and p.get("player_id") == viewer.id), None)
+    asset = context["match"]["asset"]
+    gaps_layout = asset if context["match"].get("gaps") and asset != gap_patterns.default_layout(replay.map_name) else None
     return {
-        "viewer_slot": viewer_slot,
+        "viewer_slot": viewer_slot, "gaps_layout": gaps_layout,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
+                   "asset": context["match"]["asset"],
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
-        "gaps": bool(linked and context["match"].get("gaps"))}
+        "gaps": bool(linked and context["match"].get("gaps")),
+        # R2-5 (2026-11-12): the match-level panels (Control tables, heatmap, Critical Moments, Critical Util)
+        # read routes that 404 a pending layout, so they show only when the layout is current; a pending
+        # replay keeps the round overlay (stale) alone.
+        "panels": bool(linked and context["match"]["control"]
+                       and (context["match"].get("layout") or {}).get("state", "ok") == "ok")}
 
 
 @router.get("/replays")

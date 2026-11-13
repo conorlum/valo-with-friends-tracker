@@ -113,6 +113,25 @@ REPO = Path(__file__).resolve().parents[1]
 WEBAPP = REPO / "webapp"
 
 
+def _app_path() -> None:
+    """The Workflow starts `python -m replay_tasks.main` from /srv with no PYTHONPATH: put webapp/ (for `app`)
+    and the repo root on the path before a task imports either."""
+    for folder in (str(WEBAPP), str(REPO)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+
+
+def _layout_refusal(task: dict) -> dict | None:
+    """The answer for a task whose layout this run's image has no assets for (D6: the site holds it, no try)."""
+    _app_path()
+    from app.replays import layouts
+
+    if task["map"] in layouts.control_layouts(WEBAPP / "app/static/data/control/index.json"):
+        return None
+    return {"status": "failed", "error_kind": "compat", "error_code": "unknown_layout",
+            "key": task.get("key"), "error": "layout assets are absent from this run"}
+
+
 def _child_env(cache: Path) -> dict:
     from replay_worker.server import CHILD_THREADS
 
@@ -205,6 +224,11 @@ def control(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        refusal = _layout_refusal(json.loads(stdin))
+        if refusal is not None:
+            link.post_result(refusal)
+            return
         missing = _fetch_inputs(link, args.get("files", []), cache, required=args.get("visibility"))
         if missing:
             # Building it here would be the very rebuild the lease exists to avoid, possibly in every round released
@@ -213,7 +237,6 @@ def control(args: dict, link: WorkerLink) -> None:
             link.post_result({"status": "failed", "error_kind": "cache_input", "error": missing})
             return
         before = _cache_files(cache)
-        stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_CONTROL_CMD", [sys.executable, "-m", "replay_worker.control_job"], stdin, cache)
         unsent = _post_caches(link, cache, before, args["map"])
         if unsent:
@@ -231,9 +254,13 @@ def warm(args: dict, link: WorkerLink) -> None:
     try:
         cache = work / "cache"
         cache.mkdir()
+        stdin = link.fetch("task", work / "task.json").read_bytes()
+        refusal = _layout_refusal(json.loads(stdin))
+        if refusal is not None:
+            link.post_result(refusal)
+            return
         _fetch_inputs(link, args.get("files", []), cache)
         before = _cache_files(cache)
-        stdin = link.fetch("task", work / "task.json").read_bytes()
         answer = _run_child("REPLAY_WARM_CMD", [sys.executable, "-m", "replay_worker.warm_job"], stdin, cache,
                             what="warm child")
         unsent = _post_caches(link, cache, before, args["map"])
@@ -262,9 +289,7 @@ def _recipe() -> str:
 def parse(args: dict, link: WorkerLink) -> None:
     """One upload or re-parse: the same parse and condense the worker runs locally (replay_worker/parse_job.py)."""
     link.post_started()      # for /health's by_kind only: a parse's deadline is explicit and never moves
-    for folder in (str(WEBAPP), str(REPO)):
-        if folder not in sys.path:
-            sys.path.insert(0, folder)
+    _app_path()
     from app.replays.contract import ContractError
     from replay_worker import parse_job
     from replay_worker.server import Settings
@@ -336,4 +361,59 @@ def heights(args: dict, link: WorkerLink) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm}
+def util(args: dict, link: WorkerLink) -> None:
+    """One Critical Util build: the portable compute (app/critutil/corpus.py) over the inputs the site packed, its
+    output streamed to the worker as a file, then a small envelope naming it (replay_worker/server.py)."""
+    link.post_started()
+    for folder in (str(WEBAPP), str(REPO)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+    work = Path(tempfile.mkdtemp(prefix="util-"))
+    ref = args.get("ref")
+    try:
+        try:
+            from app.critutil import build_digest
+            mine = build_digest.digest(WEBAPP)
+            # As parse's recipe check: a mismatch is the deploy's fault, refused before any input is fetched.
+            if args.get("digest") is not None and mine != args["digest"]:
+                link.post_result({"status": "failed", "error_kind": "deploy",
+                                  "error": f"this run has digest {mine}, the site {args['digest']}"})
+                return
+            from app.critutil import corpus
+            from app.services import util_values
+            tar = link.fetch("inputs", work / "inputs.tar")
+            started = time.monotonic()
+            inputs = corpus.unpack_inputs(tar)
+            refit = bool(inputs.context["refit"])
+            sys.stderr.write(f"util: ref={ref} key={args.get('key')} job={args.get('job_id')} "
+                             f"input_bytes={tar.stat().st_size} rows={len(inputs.context['rows'])} "
+                             f"refit={'yes' if refit else 'no'}\n")
+            result = corpus.compute(inputs)
+            computed = time.monotonic()
+            out = work / "output.json"
+            out.write_bytes(corpus.encode_output({"win": result["win"], "values": result["values"]}))
+            link.post_file("output", out)
+            answer = {"status": "ok", "key": args.get("key"), "values_key": result["values_key"], "digest": mine,
+                      "version": util_values.VERSION, "refit": refit, "bytes": out.stat().st_size,
+                      "sha256": _sha256(out)}
+            sys.stderr.write(f"util: ref={ref} job={args.get('job_id')} compute_s={computed - started:.1f} "
+                             f"output_bytes={answer['bytes']} peak_rss_mb={_peak_rss_mb()}\n")
+        except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
+            answer = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
+        if ref is not None:
+            answer["ref"] = ref
+        link.post_result(answer)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _peak_rss_mb():
+    try:
+        import resource
+    except ImportError:      # POSIX only
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (1 << 20 if sys.platform == "darwin" else 1 << 10), 1)
+
+
+TASKS = {"ping": ping, "control": control, "parse": parse, "heights": heights, "warm": warm, "util": util}

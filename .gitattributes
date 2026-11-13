@@ -3,3 +3,5 @@
 *.sh text eol=lf
 # Applied with `git apply` to the parser checkout, which is eol=lf: a CRLF copy matches no line.
 *.patch text eol=lf
+# The layout registry is LF everywhere, so the redraw tool's output and a Windows checkout agree byte for byte.
+webapp/app/static/data/layouts.json text eol=lf

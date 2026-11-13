@@ -11,9 +11,9 @@ CALLOUTS = {"Toy": [{"name": "A Site", "super": "A", "u": 2000, "v": 2000},
                     {"name": "Mid Courtyard", "super": "Mid", "u": 5000, "v": 5000}]}
 
 
-def stand(u, v, t0=0.0, t1=60.0, yaw=0):
+def stand(u, v, t0=0.0, t1=60.0, yaw=0, z=None):
     n = int((t1 - t0) * HZ) + 1
-    return [fmt.encode_segment(t0, [u] * n, [v] * n, [yaw] * n)]
+    return [fmt.encode_segment(t0, [u] * n, [v] * n, [yaw] * n, None if z is None else [z] * n)]
 
 
 def walk(u0, v0, u1, v1, t0, t1):

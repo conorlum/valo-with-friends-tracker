@@ -1,7 +1,8 @@
 import pytest
 
-from app.coach import query, snapshot
+from app.coach import areas, query, snapshot
 from tests.coach import toys
+from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT
 
 KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
@@ -38,11 +39,64 @@ def test_where_lists_every_player_with_side_and_state(snap):
     assert out["players"][1]["alive"] is True and "u" in out["players"][1]
 
 
+@pytest.mark.parametrize("flag, painted, expected", [(True, True, True), (False, False, False),
+                                                  (None, False, True), (None, True, True)])
+def test_control_marks_approximate_shares_and_reads_legacy_shapes(snap, tmp_path, monkeypatch, flag, painted, expected):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    monkeypatch.setattr(areas, "is_painted", lambda map_name: painted)
+    shares = {**SHARES}
+    if flag is not None:
+        shares["approximate"] = flag
+    monkeypatch.setattr(snap, "control", lambda n: shares)
+    out = query.control(snap, 1, 0, 10, "A Site")
+    assert out["approximate"] is expected
+    assert ("approximate" in out["note"]) is expected
+
+
+def test_legacy_control_stays_approximate_with_reviewed_paint(snap, tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    view = query._view(snap, 1)
+    write_paint(tmp_path, painted_object({0: 3}) | {"map": view.asset_key}, view.asset_key)
+    assert areas.is_painted(view.asset_key)
+    assert "approximate" not in snap.control(1)
+    assert query.control(snap, 1, 0, 10, "A Site")["approximate"] is True
+
+
 def test_knew_answers_for_a_side_or_for_a_players_side(snap):
     by_side = query.knew(snap, 1, 15.0, "A")
     assert by_side["side"] == "A" and [e["name"] for e in by_side["enemies"]] == ["P5#T5"]
     assert query.knew(snap, 1, 15.0, "P2")["side"] == "A"
     assert query.knew(snap, 1, 15.0, "B")["enemies"] == []
+
+
+def test_where_knew_and_spike_label_approximate_areas_until_painted(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "map": "Sunset", "rounds": [1]},
+               "rounds": {"1": {"db": {}, "stats": {}}}}
+    upper = toys.stand(8000, 8000, t1=8.0, z=75)
+    lower = toys.stand(8000, 8000, t0=8.25, z=10)
+    bomb = {"k": "ability", "kind": "Bomb", "t": 6.0, "u": 8000, "v": 8000, "z": 75}
+    blob = toys.round_blob(toys.ten(), tracks={5: upper + lower}, util=[bomb])
+    snap = snapshot.Snapshot(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}))
+    note = "areas marked approximate are a nearest-label guess, not a painted area"
+    for response, row in ((query.where(snap, 1, 6), "players"), (query.knew(snap, 1, 6, "A"), "enemies"),
+                          (query.timeline(snap, 1), "events")):
+        assert any(item.get("area", {}).get("approximate") is True for item in response[row] if item.get("area"))
+        assert note in response["note"]
+
+    cell = areas.cell_at(8000, 8000)
+    write_paint(tmp_path, painted_object({cell: 1}, bands={str(cell): [[0, 30, 1], [60, 90, 2]]}))
+    expected = {"name": "Top Mid", "super": "Mid", "path": ["Mid", "Top Mid"], "approximate": False}
+    out = query.where(snap, 1, 6)
+    assert out["players"][5]["area"] == expected and note not in out["note"]
+    assert query.where(snap, 1, 15)["players"][5]["area"]["name"] == "Mid"
+    for t, in_view in ((6, True), (15, False)):
+        out = query.knew(snap, 1, t, "A")
+        (enemy,) = out["enemies"]
+        assert enemy["in_view"] is in_view and enemy["area"] == expected and note not in out["note"]
+    timeline = query.timeline(snap, 1)
+    assert next(event for event in timeline["events"] if event["kind"] == "plant")["area"] == expected
+    assert note not in timeline.get("note", "")
 
 
 def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
@@ -52,6 +106,57 @@ def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
     # heard, so placed only roughly: a quarter direction and a 10 m band from the nearest teammate (121.2 m away)
     assert signal["rough_place"] == {"from": "P0#T0", "direction": "right", "metres_min": 120.0, "metres_max": 130.0}
     assert "never a spot or a named area" in out["note"]
+    assert signal["class"] == "found"
+    assert out["ruled_out"] == out["lost_track"] == []
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_round_6_exclusions_have_no_place(snap, monkeypatch, with_kind):
+    rows = [[10.0, s, "haunt", "exclude"] if with_kind else [10.0, s, "haunt"] for s in range(5, 10)]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert out["signals"] == out["lost_track"] == []
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[s], "reason": "haunt"} for s in range(5, 10)]
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_serves_the_emitting_pulse_area(snap, monkeypatch, with_kind):
+    view = snap.view(1)
+    monkeypatch.setattr(view, "_table", {view.asset_key: toys.CALLOUTS["Toy"]})
+    monkeypatch.setattr(snap, "view", lambda n: view)
+    view.blob["util"].append({"k": "ability", "t": 10.0, "t1": 12.0, "by": 0,
+                             "code": "BountyHunter", "name": "E_LoSReveal_Source_Reactivate",
+                             "u": 2000, "v": 2000})
+    row = [10.0, 5, "haunt"] + (["exclude"] if with_kind else [])
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": [row]}})
+    out = query.knew(snap, 1, 15.0, "A")
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[5], "reason": "haunt",
+                                 "area": view.area(2000, 2000)}]
+    assert out["ruled_out"][0]["area"] != view.area(8000, 8000)
+    assert "area is where the pulse looked" in out["note"]
+
+
+def test_knew_separates_found_roughly_placed_and_non_finds(snap, monkeypatch):
+    rows = [[10.0, s, "haunt", "locate"] for s in (5, 6, 7, 9)] + [
+        [10.0, 8, "haunt", "exclude"], [10.0, 5, "knife_hit", "restrict"],
+        [10.0, 6, "omen_unheard"], [10.0, 7, "died"], [11.0, 8, "haunt", "locate"]]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert [e["class"] for e in out["signals"]] == ["found"] * 4 + ["roughly_placed"]
+    assert all("rough_place" in e for e in out["signals"])
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[8], "reason": "haunt"}]
+    assert out["lost_track"] == [{"t": 10.0, "name": snap.names[6], "reason": "omen_unheard"}]
+    assert "found or roughly placed" in out["note"]
+    assert "ruled_out" in out["note"] and "NOT" in out["note"] and "no place" in out["note"]
+    assert "lost_track" in out["note"]
+
+
+@pytest.mark.parametrize("events", [None, {}])
+def test_knew_distinguishes_missing_events_from_empty_events(snap, monkeypatch, events):
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": events})
+    out = query.knew(snap, 1, 10.0, "A")
+    for key in ("signals", "ruled_out", "lost_track"):
+        assert out[key] == (None if events is None else [])
 
 
 def test_where_gives_health_as_a_word_after_the_last_recorded_hit(snap):
@@ -146,6 +251,54 @@ def test_a_kill_after_the_round_was_decided_is_marked(tmp_path):
     snapshot.save(snapshot.assemble(context, {1: blob}, {}), tmp_path)
     (kill,) = query.timeline(snapshot.load(tmp_path), 1)["events"]
     assert kill["after_decided"] is True
+
+
+def _trip(by, gone, u, v, **kw):
+    return {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": "4_TripWire", "by": by, "t": 1.0,
+            "t1": gone, "gone": gone, "u": u, "v": v, "id": 40 + by, **kw}
+
+
+@pytest.fixture
+def destroyed_snap(tmp_path, monkeypatch):
+    from app.coach import areas
+    monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
+    util = [_trip(1, 17.2, 2100, 2000),                   # side A's, shot untouched
+            _trip(6, 18.0, 8000, 8100),                   # side B's, shot untouched
+            _trip(2, 20.0, 2100, 2100, fx=15.0)]          # side A's, fired first: not destroyed
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {"db": {}, "stats": {}}}}
+    blob = toys.round_blob(toys.ten(), n=1, util=util)
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}), tmp_path)
+    return snapshot.load(tmp_path)
+
+
+def test_timeline_holds_the_destroyed_devices_with_their_area(destroyed_snap):
+    events = [e for e in query.timeline(destroyed_snap, 1)["events"] if e["kind"] == "destroyed"]
+    assert [(e["t"], e["device"], e["owner"], e["area"]["name"]) for e in events] == [
+        (17.2, "trip", "P1#T1", "A Site"), (18.0, "trip", "P6#T6", "B Site")]
+    assert "destroyed" in query.timeline(destroyed_snap, 1)["note"]
+
+
+def test_knew_lists_the_sides_own_devices_destroyed_by_then(destroyed_snap):
+    assert query.knew(destroyed_snap, 1, 17.0, "A")["destroyed"] == []
+    (lost,) = query.knew(destroyed_snap, 1, 17.5, "A")["destroyed"]
+    assert lost == {"t": 17.2, "device": "trip", "owner": "P1#T1",
+                    "area": {"name": "A Site", "super": "A", "path": ["A Site"], "approximate": True}}
+    assert [d["owner"] for d in query.knew(destroyed_snap, 1, 25.0, "B")["destroyed"]] == ["P6#T6"]
+    assert "destroyed" in query.knew(destroyed_snap, 1, 17.5, "A")["note"]
+
+
+@pytest.mark.parametrize("z,name", [(-10, "Top Mid"), (20, "A Site"), (None, None)])
+def test_a_destroyed_devices_area_uses_its_height_on_a_banded_cell(z, name):
+    # A painted cell with two floors names an area only with the row's height (decimetres, like the bands).
+    paint = areas.from_raw("Sunset", __import__("json").dumps(
+        painted_object({0: 2}, bands={"0": [[-20, 0, 2], [10, 30, 3]]})).encode())
+
+    class View:
+        def area(self, u, v, z=None):
+            return areas.area_at("Sunset", u, v, z, painted_table={"Sunset": paint})
+
+    got = query._device_area(View(), {"u": 0, "v": 0, "z": z})
+    assert (got or {}).get("name") == name
 
 
 def test_impact_is_the_stored_row(snap):

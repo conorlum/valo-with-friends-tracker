@@ -80,7 +80,11 @@ class Busy(Exception):
 
 
 def lock_name(map_name: str) -> str:
-    return f"control-heights:{map_name}"
+    """One lock per map, whatever the layout: heights writers lock by asset key (Ascent_13_10) and the round
+    stores by the replay's map name (Ascent), and both must exclude each other (F7/S12, 2026-11-12)."""
+    from app.replays import layouts
+
+    return f"control-heights:{layouts.map_of(map_name)}"
 
 
 def _usable(rules: dict | None) -> bool:

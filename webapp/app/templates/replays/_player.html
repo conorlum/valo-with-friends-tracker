@@ -33,7 +33,9 @@
                 aria-label="Minimap"></canvas>
         <div class="replay-tip" data-replay-tip hidden></div>
         <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>
-      </div>
+      </div>{% if replay_data is defined and replay_data.match.layout is defined %}{% if replay_data.match.layout.state == "layout_pending" %}
+      <p class="replay-note">The map changed in {{ replay_data.match.layout.patch }}; this replay's map control is out of date until it is redrawn</p>{% elif replay_data.match.layout.state == "layout_unknown" %}
+      <p class="replay-note">This replay's patch is unknown and the map has several layouts; map control is not shown</p>{% endif %}{% endif %}
       <div class="replay-controls">
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
         <button type="button" class="replay-button" data-replay-prevkill title="Jump to 1 s before the previous kill (B)">Previous kill</button>
@@ -59,6 +61,7 @@
         <label><input type="checkbox" data-replay-layer="projectiles" checked> Projectiles</label>
         <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
         <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+        {% if not demo_mode %}<label><input type="checkbox" data-replay-layer="areas"> Areas</label>{% endif %}
         {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
         {% if control %}
         <label><input type="checkbox" data-replay-layer="control"> Map control</label>
@@ -106,9 +109,10 @@
       </p>
       {% endif %}
       {% endif %}
-      {% if not linked and feature_label %}
+      {% if not linked and (feature_label or not demo_mode) %}
       <fieldset class="replay-layers"><legend>Show</legend>
-        <label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>
+        {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
+        {% if not demo_mode %}<label><input type="checkbox" data-replay-layer="areas"> Areas</label>{% endif %}
       </fieldset>
       {% endif %}
       <p class="replay-legend">
@@ -142,11 +146,11 @@
         <button type="button" role="tab" class="replay-tab{% if not coach_tabs %} is-active{% endif %}" data-replay-tab="feed" aria-selected="{{ 'false' if coach_tabs else 'true' }}">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
-        {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="moments" aria-selected="false">Critical Moments</button>
+        {% if panels %}<button type="button" role="tab" class="replay-tab" data-replay-tab="moments" aria-selected="false">Critical Moments</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="critutil" aria-selected="false">Critical Util</button>{% endif %}
         {% endif %}
         {% if feature_label %}<button type="button" role="tab" class="replay-tab{% if not linked %} is-active{% endif %}" data-replay-tab="features" aria-selected="{{ 'false' if linked else 'true' }}">{{ feature_label }}</button>{% endif %}
-        {% if linked and control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
+        {% if panels %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
         {% if linked and gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
       </div>
       {% if linked %}
@@ -168,7 +172,7 @@
         <ol class="replay-feed" data-replay-features-events></ol>
       </div>
       {% endif %}
-      {% if linked and control %}
+      {% if panels %}
       <div data-replay-panel="control" role="tabpanel" hidden>
         <div class="replay-control-switch" role="group" aria-label="Control table scope">
           <button type="button" class="replay-button is-active" data-replay-control-scope="round" aria-pressed="true">This round</button>
@@ -180,7 +184,7 @@
         <ol class="replay-feed" data-replay-control-reasons></ol>
       </div>
       {% endif %}
-      {% if linked and control %}
+      {% if panels %}
       <div data-replay-panel="moments" role="tabpanel" hidden>
         <p class="replay-side-note">Every fight this player was in, grouped by what was measured: speed, teammates, utility, sight, trades. Measurements, not verdicts.</p>
         <div data-replay-moments></div>
@@ -193,7 +197,7 @@
       {% if linked and gaps %}
       <div data-replay-panel="gaps" role="tabpanel" hidden>
         <p class="replay-side-note">Moments a player's back was open to an enemy who could have got there unseen, and real shots from behind. Click one to jump to when it opened; hover one to see it on the map.</p>
-        <p class="replay-gaps-patterns-link"><a href="/gaps/{{ replay.map_name | urlencode }}" data-replay-gaps-patterns>Patterns on this map</a></p>
+        <p class="replay-gaps-patterns-link"><a href="/gaps/{{ replay.map_name | urlencode }}{% if gaps_layout %}?layout={{ gaps_layout | urlencode }}{% endif %}" data-replay-gaps-patterns>Patterns on this map</a></p>
         <p class="replay-side-note replay-gaps-status" data-replay-gaps-status aria-live="polite"></p>
         <label class="replay-gaps-flickers"><input type="checkbox" data-replay-gaps-flickers> Show flickers (open under 1 s)</label>
         <div class="replay-gaps-list" data-replay-gaps-list></div>
@@ -208,7 +212,7 @@
     </aside>
     {% endif %}
   </div>
-  {% if linked and control %}
+  {% if panels %}
   <details class="replay-heatmap" data-replay-heatmap>
     <summary>Match heatmap: who held each part of the map</summary>
     <div class="replay-heatmap-controls">

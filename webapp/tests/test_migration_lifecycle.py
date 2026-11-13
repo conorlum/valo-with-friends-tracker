@@ -83,6 +83,34 @@ def test_site_events_upgrade_downgrade_upgrade(scratch_database):
     finally: engine.dispose()
 
 
+def test_wall_shares_upgrade_downgrade_upgrade(scratch_database):
+    command(scratch_database, '-m', 'alembic', 'upgrade', '0031')
+    command(scratch_database, '-m', 'alembic', 'upgrade', 'head')
+    engine = create_engine(scratch_database)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO site_events (kind, key, error, context, count, first_seen, last_seen) "
+                              "VALUES ('replay_error', 'k2', 'boom', NULL, 1, now(), now())"))
+        with engine.connect() as conn:
+            insp = inspect(conn)
+            assert 'replay_round_wall_shares' in insp.get_table_names()
+            assert insp.get_pk_constraint('replay_round_wall_shares')['constrained_columns'] == ['replay_id', 'round_number']
+            assert insp.get_foreign_keys('replay_round_wall_shares') == []
+            cols = {c['name']: c for c in insp.get_columns('replay_round_wall_shares')}
+            assert set(cols) == {'replay_id', 'round_number', 'asset_key', 'control_fingerprint', 'inside', 'total',
+                                 'computed_at'}
+            assert not any(c['nullable'] for c in cols.values())
+        command(scratch_database, '-m', 'alembic', 'downgrade', '0031')
+        with engine.connect() as conn:
+            assert 'replay_round_wall_shares' not in set(inspect(conn).get_table_names())
+            assert conn.execute(text("SELECT count(*) FROM site_events WHERE key = 'k2'")).scalar_one() == 1
+        command(scratch_database, '-m', 'alembic', 'upgrade', 'head')
+        with engine.connect() as conn:
+            assert conn.execute(text('SELECT count(*) FROM replay_round_wall_shares')).scalar_one() == 0
+            assert conn.execute(text("SELECT count(*) FROM site_events WHERE key = 'k2'")).scalar_one() == 1
+    finally: engine.dispose()
+
+
 def test_real_migration_lock_timeout_leaves_revision_and_data_unchanged(scratch_database):
     command(scratch_database, '-m', 'alembic', 'upgrade', '0027')
     engine = create_engine(scratch_database)

@@ -52,12 +52,15 @@ def load_round_summaries(db, replay: Replay) -> RoundSummaries:
             .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.status == "ok")
             .order_by(ReplayRoundControl.round_number).all())
     groups = replay_control.side_groups(db, replay)
-    context = replay_control.resolve_current_geometry(db, replay.map_name)
+    selection = replay_control.layout_of(replay)
+    context = (replay_control.resolve_current_geometry(db, selection.layout.asset_key)
+               if selection.state == "ok" else None)
     out = RoundSummaries()
     tag = hashlib.sha256(f"views{VIEWS_VERSION};".encode("utf-8"))
     for row in rows:
         n = row.round_number
-        stale = row.fingerprint != replay_control.round_fingerprint(replay, groups, n, context=context)
+        stale = selection.state != "ok" or row.fingerprint != replay_control.round_fingerprint(
+            replay, groups, n, context=context)
         # The stale flag is in the tag too: a geometry or link change makes rows stale without touching them.
         tag.update(f"{n}:{row.fingerprint}:{row.computed_at}:{int(stale)};".encode("utf-8"))
         try:

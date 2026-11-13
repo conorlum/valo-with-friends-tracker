@@ -37,6 +37,8 @@ def old_limits(monkeypatch):
     """These tests were written for 8 rounds from any replays; the match limit has its own tests below."""
     monkeypatch.setattr(remote, "IN_FLIGHT", 8)
     monkeypatch.setattr(remote, "MAX_MATCHES", 1000)
+    # Legacy dispatcher rows contain dummy control bytes; real wall-share counting has its own tests.
+    monkeypatch.setattr(remote.layout_walls, "step", lambda *a, **k: {"computed": 0})
 
 
 GAP_ROW = {"seq": 0, "kind": "predicted", "map": "Toy", "victim_slot": 0, "victim_side": None, "t_open": 1.0,
@@ -52,13 +54,14 @@ class FakeWorker:
     `gaps` is the `control.gaps_protocol` its health names: None is a worker image from before timing gaps
     (the default, so every older test here is also the old-worker regression), 1 a capable one."""
 
-    def __init__(self, answer=None, busy_after=None, gaps=None, features=None):
+    def __init__(self, answer=None, busy_after=None, gaps=None, features=None, layouts=None):
         self.tasks, self.jobs, self.busy_after = {}, {}, busy_after
         self.answer = answer or self.ok
         self.forget = set()
         self.heights, self.pushed = set(), []
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
         self.features = features
+        self.layouts = layouts
         self.runners = None             # {"control": "workflow"}: the worker's control is on Workflows
         self.warm_builds = None         # the worker's control.warm_builds block (REPLAY_WARM_BUILDS on)
 
@@ -71,6 +74,8 @@ class FakeWorker:
             control["gaps_protocol"] = self.gaps
         if self.features is not None:
             control['features'] = self.features
+        if self.layouts is not None:
+            control['layouts'] = self.layouts
         if self.warm_builds is not None:
             control["warm_builds"] = self.warm_builds
         return {"ok": True, "queued": 0, "control": control,
@@ -1501,8 +1506,12 @@ def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays(
     assert render["control"] >= env("REPLAY_CONTROL_RUN_TIMEOUT_S") + 300
     assert render["warm"] >= env("REPLAY_WARM_BUILD_TIMEOUT_S") + 300
     assert render["heights"] >= env("REPLAY_HEIGHT_RUN_TIMEOUT_S") + 300
+    from replay_worker.server import Settings
+    assert render["util"] == Settings().util_run_timeout_s + 300
     assert remote.STALE_RUN_S > 2 * env("REPLAY_CONTROL_RUN_TIMEOUT_S")
     assert heights.STALE_BUILD_RUN_S > 2 * env("REPLAY_HEIGHT_RUN_TIMEOUT_S")
+    from app.services import util_build_remote as util
+    assert util.STALE_BUILD_S == 3600 and util.STALE_BUILD_S > 2 * Settings().util_run_timeout_s
     # Local mode: untouched.
     assert remote.STALE_JOB_S == 1800 and heights.STALE_BUILD_S == 7200
     assert "REPLAY_CONTROL_TIMEOUT_S" not in yaml_text and "REPLAY_HEIGHT_TIMEOUT_S" not in yaml_text
@@ -1512,3 +1521,42 @@ def test_every_workflow_limit_outlasts_the_one_inside_it_and_local_keeps_todays(
 def test_the_stale_backstop_depends_on_where_control_runs():
     assert remote._job_stale_s(True) == remote.STALE_RUN_S
     assert remote._job_stale_s(False) == remote.STALE_JOB_S
+
+
+def test_blocked_util_step_does_not_hold_control_dispatch(monkeypatch):
+    import threading
+    from app.services import util_build_remote as util
+    entered, release, progressed = (threading.Event() for _ in range(3))
+    util_stop, control_stop = threading.Event(), threading.Event()
+    monkeypatch.setattr(util, "enabled", lambda: True)
+
+    def step(*args):
+        entered.set()
+        assert release.wait(5), "test did not release the util step"
+        util_stop.set()
+
+    cycles = []
+    def cycle(*args, **kwargs):
+        cycles.append(1)
+        if len(cycles) == 2:
+            progressed.set()
+            control_stop.set()
+        return {}
+
+    monkeypatch.setattr(util, "step", step)
+    monkeypatch.setattr(remote, "cycle", cycle)
+    util_thread = threading.Thread(target=lambda: util.run_forever(None, object(), util_stop, every_s=0))
+    control_thread = threading.Thread(target=lambda: remote.run_forever(None, object(), control_stop, every_s=0))
+    try:
+        util_thread.start()
+        assert entered.wait(5), "util loop did not enter its step"
+        control_thread.start()
+        assert progressed.wait(5), "blocked util step delayed the next control cycle"
+    finally:
+        release.set()
+        util_stop.set()
+        control_stop.set()
+        util_thread.join(5)
+        if control_thread.ident is not None:
+            control_thread.join(5)
+    assert not util_thread.is_alive() and not control_thread.is_alive()

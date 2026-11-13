@@ -114,13 +114,16 @@ def render_player(**context):
 @pytest.mark.parametrize("records", [[], [RECORD]])
 def test_partial_never_has_box_heights(linked, records):
     html = render_player(linked=linked, control={"cover_reviewed": True}, box_conflicts=records,
-                         replay_data={"players": {"1": {"agent": "Omen"}}})
+                         replay_data={"players": {"1": {"agent": "Omen"}},
+                                      "match": {"asset": "Summit",
+                                                "layout": {"id": "Summit@base", "state": "ok", "patch": None}}})
     assert "data-replay-box-heights" not in html
     assert "Box heights" not in html
 
 
 def context(monkeypatch, linked, control, demo=False):
-    page = {"match": {"rounds": [1], "linked": linked, "external_id": MATCH, "control": control, "gaps": False},
+    page = {"match": {"rounds": [1], "linked": linked, "external_id": MATCH, "control": control, "gaps": False,
+                      "asset": "Summit"},
             "players": {}}
     monkeypatch.setattr(router.replay_service, "page_context", lambda db, replay: page)
     monkeypatch.setattr(router.settings, "demo_mode", demo, raising=False)

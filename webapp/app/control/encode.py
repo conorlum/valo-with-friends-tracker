@@ -86,27 +86,28 @@ def _grid_units(t: float) -> int:
 
 
 # Why an enemy's unknown changed, for the Control panel (W21). A reason that repeats for the same enemy within
-# REASON_REPEAT_S of its last occurrence is one run, listed once at its start (a sighting refreshes every tick).
+# REASON_REPEAT_S of its last occurrence with the same kind is one run, listed once at its start
+# (a sighting refreshes every tick).
 # This is presentation only: the engine's locating history, which the gap detector reads, keeps every tick.
 REASON_REPEAT_S = 1.0
 REASON_SKIP = frozenset({"resume"})        # a channel's end is not news; its start (`pause`) is listed
 
 
 def knowledge_events(reasons: dict | None) -> dict:
-    """{side group: [[t, enemy slot, reason], ...]} in time order, t in round seconds at the event's own time (three
-    decimals: not the frame grid), runs of one reason collapsed to their first."""
+    """{side group: [[t, enemy slot, reason, kind], ...]} in time order, t in round seconds at the event's own
+    time (three decimals), runs of one slot, reason and kind collapsed to their first."""
     out = {}
     for side in ("A", "B"):
         rows, last = [], {}
         for t, slot, kind, reason, _ in sorted((reasons or {}).get(side) or [], key=lambda r: (r[0], r[1], r[3])):
             if kind in REASON_SKIP:
                 continue
-            key = (int(slot), str(reason))
+            key = (int(slot), str(reason), str(kind))
             seen_before = last.get(key)
             last[key] = float(t)
             if seen_before is not None and float(t) - seen_before <= REASON_REPEAT_S:
                 continue
-            rows.append([round(float(t), 3), int(slot), str(reason)])
+            rows.append([round(float(t), 3), int(slot), str(reason), str(kind)])
         out[side] = rows
     return out
 
@@ -130,6 +131,9 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
               "checkpoints": [[t, a, b, c] for t, a, b, c in zip(checkpoints, s_off, v_off, c_off)],
               "states": list(cf.STATE_NAMES), "group_side": rc.group_side, "control_m2": control_m2}
     streams = {"states": states, "coverage": coverage, "control": control}
+    if rc.destroyed:
+        header["destroyed"] = [[round(e["t"], 3), e["owner"], e["device"],
+                                round(e["u"], 4), round(e["v"], 4)] for e in rc.destroyed]
     if rc.map_features:
         header['map_features'] = rc.map_features
     if rc.knew_states:
@@ -153,6 +157,7 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
                                          zip(checkpoints, offsets["unknown_a"], offsets["unknown_b"])]
     if getattr(rc, "reasons", None) is not None:
         # Optional (W21): a row stored before this has no list, and the panel says so instead of guessing.
+        # {A: [[t, slot, reason, kind], ...], B: ...}, t at the event's own time in round seconds.
         header["knowledge_events"] = knowledge_events(rc.reasons)
     if getattr(rc, "feet_only", None):
         # Optional feet-only sightings ([frame, viewer, target], head blocked and feet clear), for

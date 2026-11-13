@@ -111,11 +111,11 @@ def test_apply_resolved_twice_deletes_and_does_not_raise(pg_factory):
     assert len(rows) == 1 and rows[0].applied_at is not None
 
 
-def test_util_build_stale_is_silent_while_the_build_lock_is_held(pg_factory):
+def test_util_build_stale_is_silent_while_a_build_is_in_flight(pg_factory):
     from datetime import timedelta
     from sqlalchemy import text
     from app.models.replay import ReplayRoundUtil, Replay  # noqa: F401
-    from app.services import replay_gaps, site_health_checks, util_rebuild
+    from app.services import replay_gaps, site_health_checks, util_build_health
 
     old = T0 - timedelta(hours=6)
     with pg_factory() as s:
@@ -126,19 +126,14 @@ def test_util_build_stale_is_silent_while_the_build_lock_is_held(pg_factory):
         s.commit()
     with pg_factory() as s:
         assert len(site_health_checks.util_build_stale(s, T0)) == 1
-    holder = pg_factory.kw["bind"].connect()
+    util_build_health.set_in_flight(True)
     try:
-        holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": util_rebuild.LOCK_KEY})
-        holder.commit()
         with pg_factory() as s:
             assert site_health_checks.util_build_stale(s, T0) == []
     finally:
-        holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": util_rebuild.LOCK_KEY})
-        holder.commit()
-        holder.close()
+        util_build_health.set_in_flight(False)
     with pg_factory() as s:
         assert len(site_health_checks.util_build_stale(s, T0)) == 1
-
 
 
 def _holder(pg_factory):

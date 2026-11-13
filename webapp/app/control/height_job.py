@@ -32,10 +32,11 @@ import numpy as np
 
 from app.control import geometry as cg
 from app.control import height_build as hb
+from app.control import height_motion as hm
 from app.control import heights as hc
 from app.control.task import peak_memory
 from app.replays import format as fmt
-from app.replays import height_inputs
+from app.replays import height_inputs, layouts
 
 MOVED_M = 0.5                                       # a cell whose ground moved more than this is reported
 
@@ -43,8 +44,23 @@ MOVED_M = 0.5                                       # a cell whose ground moved 
 class BlobDir:
     """A map's rounds in `<directory>/<match>/<n>.json.gz`, in match then round order, decoded as they are read."""
 
-    def __init__(self, directory: Path, map_name: str):
+    def __init__(self, directory: Path, map_name: str, *, pool=()):
         self.map_name = map_name
+        self.pool = {str(match).lower(): from_key for match, from_key in pool}
+        self.masks = {}
+        if self.pool:
+            registry = layouts.load_registry()
+            by_key = {layout.asset_key: layout for layout in layouts.layouts_of(layouts.map_of(map_name), registry)}
+            for from_key in set(self.pool.values()):
+                union = None
+                for key in height_inputs.changed_between(layouts.map_of(map_name), from_key, map_name, registry):
+                    path = height_inputs.CONTROL_DIR / by_key[key].region_mask
+                    try:
+                        mask = cg.read_mask_png(path)
+                    except OSError as error:
+                        raise height_inputs.CheckSetError(f"{path} is missing or unreadable: {error}") from error
+                    union = mask if union is None else union | mask
+                self.masks[from_key] = union
         self.paths = sorted(Path(directory).glob("*/*.json.gz"),
                             key=lambda p: (p.parent.name, int(p.name.split(".")[0])))
         self.skipped = 0
@@ -57,15 +73,65 @@ class BlobDir:
         self.skipped, self.read = 0, []
         for path in self.paths:
             blob = fmt.decode_blob(path.read_bytes())
-            if blob.get("map") != self.map_name:
+            if blob.get("map") != layouts.map_of(self.map_name):
                 self.skipped += 1
                 continue
             self.read.append(path)
+            mask = self.masks.get(self.pool.get(path.parent.name.lower()))
+            if mask is not None:
+                blob = _mask_blob(blob, mask)
             yield path.parent.name, int(path.name.split(".")[0]), blob
 
     def per_match(self) -> dict:
         """{match: how many of its rounds were this map's}, from the last pass over the folder."""
         return dict(Counter(path.parent.name for path in self.read))
+
+
+def _inside(mask, u, v):
+    """Whether stored minimap coordinates fall on a changed pixel, keeping off-grid positions outside."""
+    x = np.floor(np.asarray(u) * cg.PX / 10000).astype(int)
+    y = np.floor(np.asarray(v) * cg.PX / 10000).astype(int)
+    height, width = mask.shape
+    return ((x >= 0) & (x < width) & (y >= 0) & (y < height)
+            & mask[np.clip(y, 0, height - 1), np.clip(x, 0, width - 1)])
+
+
+def _mask_blob(blob: dict, mask: np.ndarray) -> dict:
+    """Remove borrowed positions and kill endpoints in changed regions, preserving each remaining segment."""
+    tracks, positions = {}, {}
+    for slot, segments in (blob.get("tracks") or {}).items():
+        pieces, times, removed = [], [], []
+        for segment in segments:
+            inside = _inside(mask, np.cumsum(segment["u"]), np.cumsum(segment["v"]))
+            times.append(segment["t0"] + np.arange(len(inside)) / blob["hz"])
+            removed.append(inside)
+            for first, end in hm._runs_of(~inside):
+                piece = {**segment, "t0": segment["t0"] + first / blob["hz"]}
+                for field in ("u", "v", "yaw", "z"):
+                    if field in segment:
+                        absolute = int(sum(segment[field][:first + 1]))
+                        if field == "yaw":
+                            absolute %= 360
+                        piece[field] = [absolute, *segment[field][first + 1:end]]
+                pieces.append(piece)
+        tracks[slot] = pieces
+        if times:
+            positions[int(slot)] = (np.concatenate(times), np.concatenate(removed))
+
+    def blocked(kill):
+        if kill.get("u") is not None and kill.get("v") is not None and _inside(mask, kill["u"], kill["v"]):
+            return True
+        if kill.get("t") is None:
+            return False
+        for slot in (kill.get("killer"), kill.get("victim")):
+            ts, inside = positions.get(slot, ((), ()))
+            if len(ts):
+                nearest = int(np.argmin(np.abs(ts - kill["t"])))
+                if abs(ts[nearest] - kill["t"]) <= hc.KILL_SAMPLE_S and inside[nearest]:
+                    return True
+        return False
+
+    return {**blob, "tracks": tracks, "kills": [kill for kill in blob.get("kills") or [] if not blocked(kill)]}
 
 
 def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds, must_block: Path | None = None) -> dict:

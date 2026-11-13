@@ -572,6 +572,8 @@ def test_check_resolved():
     assert check([entry(kind="nope")])
     assert check([entry(kind="unscored_match")])           # checked live: nothing stored to clear
     assert check([entry(kind="control_failed")])           # a replay kind: nothing stored to clear
+    assert check([entry(kind="map_layout_walls")]) == []
+    assert "map_layout_walls" in site_health.RECORDED_KINDS
     assert check([{"kind": "page_error", "key": "/a"}])
     assert check([entry(fixed_by="")])
     assert check([entry(key=5)])
@@ -873,3 +875,94 @@ def test_join_loops_waits_for_the_registered_threads_only_up_to_its_timeout():
     started = time.monotonic()
     site_health.join_loops(0.3)
     assert time.monotonic() - started < 2
+
+
+# -- trip_too_long: the one policy every store path calls (W4)
+
+UUID = "0a9ab548-718b-41ee-94ce-db25fd430bf8"
+
+
+class FakeStored:
+    def __init__(self, action, replay_id=7):
+        self.action, self.replay_id = action, replay_id
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    seen = []
+    monkeypatch.setattr(site_health, "record", lambda *a, **k: seen.append(("record", a, k)))
+    monkeypatch.setattr(site_health, "resolve", lambda *a, **k: seen.append(("resolve", a, k)))
+    return seen
+
+
+def test_trip_too_long_is_a_recorded_kind():
+    assert "trip_too_long" in site_health.RECORDED_KINDS and "trip_too_long" in site_health.KNOWN_KINDS
+
+
+@pytest.mark.parametrize("action", ["stored", "replaced"])
+def test_a_stored_condense_with_long_trips_records_one_row_keyed_on_the_match(calls, action):
+    site_health.note_trip_lengths(FakeStored(action), {"extras": {"wires_too_long": 2}}, UUID.upper())
+    [(op, args, kwargs)] = calls
+    assert op == "record" and args[0] == "trip_too_long" and args[1] == UUID
+    assert "2 trip pairs over 16 m" in args[2]
+    assert (args[3] if len(args) > 3 else kwargs["context"])["replay_id"] == 7
+
+
+@pytest.mark.parametrize("report", [{"extras": {"wires_paired": 3}}, {"extras": {"wires_too_long": 0}}, {"extras": {}},
+                                    {}, None])
+@pytest.mark.parametrize("action", ["stored", "replaced"])
+def test_a_stored_clean_condense_resolves_and_records_nothing(calls, action, report):
+    site_health.note_trip_lengths(FakeStored(action), report, UUID)
+    assert [(op, args) for op, args, _ in calls] == [("resolve", ("trip_too_long", UUID))]
+
+
+@pytest.mark.parametrize("action", ["unchanged", "kept_existing", "refused", "failed"])
+@pytest.mark.parametrize("report", [{"extras": {"wires_too_long": 2}}, {"extras": {}}])
+def test_an_action_that_stored_nothing_records_and_resolves_nothing(calls, action, report):
+    site_health.note_trip_lengths(FakeStored(action), report, UUID)
+    assert calls == []
+
+
+def test_the_policy_never_raises(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("queue")
+
+    monkeypatch.setattr(site_health, "record", boom)
+    monkeypatch.setattr(site_health, "resolve", boom)
+    site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": "x"}}, UUID)
+    site_health.note_trip_lengths(FakeStored("stored"), {"extras": {"wires_too_long": 1}}, UUID)
+    site_health.note_trip_lengths(FakeStored("stored"), {}, UUID)
+
+
+@pytest.fixture
+def replay_factory(engine):
+    from app.models.replay import Replay
+    Base.metadata.create_all(engine, tables=[Replay.__table__])
+
+    def current(replay_id):
+        with sessionmaker(bind=engine)() as s:
+            s.query(Replay).delete()
+            s.add(Replay(id=replay_id, match_uuid=UUID, map_name="Sunset", round_count=24, format_version=1,
+                         recipe="r", game_branch="b", source_sha256="0" * 64, source="upload",
+                         link_status="unlinked", link_inputs={}))
+            s.commit()
+    return sessionmaker(bind=engine), current
+
+
+def test_two_replacements_notes_in_reverse_order_leave_the_current_replays_verdict(replay_factory):
+    # replay 7 (long trips) commits and pauses; replay 8 (clean) commits and queues its resolve; then 7's record
+    factory, current = replay_factory
+    current(8)
+    site_health.note_trip_lengths(FakeStored("replaced", 8), {"extras": {}}, UUID)
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {"wires_too_long": 2}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory) == {}
+    # the other way round: 8 is long and current, 7's late clean note never clears it
+    site_health.note_trip_lengths(FakeStored("replaced", 8), {"extras": {"wires_too_long": 1}}, UUID)
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("trip_too_long", UUID)].context["replay_id"] == 8
+    # a later flush: 7's late record alone, after 8's row is stored, still changes nothing
+    site_health.note_trip_lengths(FakeStored("replaced", 7), {"extras": {"wires_too_long": 5}}, UUID)
+    site_health.flush(session_factory=factory)
+    assert rows(factory)[("trip_too_long", UUID)].context == {"replay_id": 8, "pairs": 1}

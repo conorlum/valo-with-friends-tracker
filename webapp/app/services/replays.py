@@ -29,6 +29,7 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.models.replay import Replay, ReplayPlayer, ReplayRound
 from app.replays import db as replay_db
 from app.replays import format as fmt
+from app.replays import layouts
 from app.replays import link as lk
 from app.services import replay_control, replay_view
 
@@ -111,16 +112,39 @@ def _team(value) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
+def _shown_before(map_name: str, pending) -> str:
+    """The newest layout before `pending` that has a control layer here; base's key when none has."""
+    earlier = [row for row in layouts.layouts_of(map_name)
+               if pending is None or row.start is None or (pending.start is not None and row.start < pending.start)]
+    for row in reversed(earlier):
+        if replay_control.map_layer(row.asset_key) is not None:
+            return row.asset_key
+    return map_name
+
+
 def page_context(db, replay: Replay) -> dict:
     """The page's data beside the blobs: JSON-ready, no Subjects."""
     uuid = str(replay.match_uuid).lower()
+    selection = replay_control.layout_of(replay)
+    layout = selection.layout
+    if selection.state == "ok":
+        asset = layout.asset_key
+    elif selection.state == "layout_pending":
+        # D1: a pending redraw keeps the replay's stored rounds, shown out of date, on the newest earlier layout
+        # whose assets are here (the one they were computed on), not on base.
+        asset = _shown_before(replay.map_name, layout)
+    else:
+        asset = replay.map_name
     base = {"uuid": uuid, "map": replay.map_name, "rounds": list(range(1, replay.round_count + 1)),
+            "asset": asset,
+            "layout": {"id": layout.display_id if layout else None, "state": selection.state,
+                       "patch": layouts.patch_text(layout.start) if layout and layout.start else None},
             "source_sha256": replay.source_sha256, "uv_per_unit": _uv_per_unit().get(replay.map_name),
             "linked": replay_db.is_linked(replay), "status": replay.link_status,
-            "control": replay_control.map_layer(replay.map_name)}
+            "control": replay_control.map_layer(asset) if selection.state in ("ok", "layout_pending") else None}
     # Timing gaps: offered beside control, linked only (names and sides come from the link; gaps.json 404s
-    # an unlinked replay).
-    base["gaps"] = bool(base["linked"] and base["control"])
+    # an unlinked replay, and a replay whose layout is pending).
+    base["gaps"] = bool(base["linked"] and base["control"] and selection.state == "ok")
     if not base["linked"]:
         report = replay.link_report or {}
         base["reason"] = ("not linked to a match on this site" if replay.link_status == "unlinked"

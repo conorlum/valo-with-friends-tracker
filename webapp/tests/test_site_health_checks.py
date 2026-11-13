@@ -62,6 +62,17 @@ def test_a_build_older_than_a_newer_util_row_by_over_three_hours_is_stale(db):
     assert item["context"]["build_computed_at"] and item["context"]["oldest_newer_row"]
 
 
+def test_a_build_in_flight_silences_the_stale_item(db, monkeypatch):
+    from app.services import util_build_health
+
+    build(db, T)
+    util_row(db, T + timedelta(hours=1))
+    monkeypatch.setattr(util_build_health, "in_flight", lambda: True)
+    assert site_health_checks.util_build_stale(db, T + timedelta(hours=5)) == []
+    monkeypatch.setattr(util_build_health, "in_flight", lambda: False)
+    assert len(site_health_checks.util_build_stale(db, T + timedelta(hours=5))) == 1
+
+
 def test_two_hours_is_not_stale(db):
     build(db, T)
     util_row(db, T + timedelta(hours=1))

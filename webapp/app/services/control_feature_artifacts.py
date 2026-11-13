@@ -11,6 +11,7 @@ from pathlib import Path
 from sqlalchemy.exc import IntegrityError
 
 from app.models.replay import ControlFeatureArtifact, ControlHeight
+from app.replays.layouts import map_of
 from app.replays.map_feature_inputs import FeatureKey, canonical_json
 from app.replays.map_feature_artifacts import (
     FeatureArtifact, FeatureArtifactRef, FeatureArtifactError, FeatureArtifactMissing,
@@ -191,7 +192,7 @@ def refresh_feature_report(db, map_name, height_digest=None, *, height_bytes=Non
         source = capture_source_snapshot(map_name, raw)
         source_sha = source.raw_sha256
         entry = read_json(source.map_entry_bytes)
-        base = base_snapshot(map_name, replay_control.CONTROL_DIR, entry, maps[map_name]['xMultiplier'])
+        base = base_snapshot(map_name, replay_control.CONTROL_DIR, entry, maps[map_of(map_name)]['xMultiplier'])
         if height_digest and height_bytes is None:
             height_bytes = replay_control.exact_height_bytes(db, map_name, height_digest)
         envelope = diagnostic_envelope(map_name, raw, previous, bounded=False)

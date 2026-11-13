@@ -1,7 +1,8 @@
 """A map without a height asset gives the reference engine's bytes
 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, "No height asset"): the toy rounds
 of control_toys.reference_rounds() against the digests recorded before the per-floor work, with only the
-revision in the header normalised. Real rounds are compared locally by scripts/control_reference.py.
+revision and additive revision-24 header fields normalised. Real rounds are compared locally by
+scripts/control_reference.py.
 Re-recorded 2026-10-02 for CONTROL_REVISION 5 (the timing-gaps locating events). Re-recorded 2026-10-04 for
 CONTROL_REVISION 6 (D5: contested needs a live claim; an enemy's live view ends remembered ground).
 Re-recorded 2026-10-05 for CONTROL_REVISION 7 (the utility-review run, D8): every round's data digest moved with
@@ -42,11 +43,9 @@ def test_the_fixture_names_every_reference_round():
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
-def test_a_flat_round_is_byte_identical_to_the_reference(name, monkeypatch):
-    from app.replays import control_format
-    # The revision-9 cache header intentionally changes. Preserve the captured revision while checking
-    # every computation/output byte against the unchanged reference; do not regenerate it from new code.
-    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 8)
+def test_a_flat_round_is_byte_identical_to_the_reference(name):
+    # digest_round normalises revisions and additive header metadata while checking every computed byte
+    # against the unchanged reference; do not regenerate it from new code.
     geo, blob, link = reference_rounds()[name]
     rc = ce.compute_round(blob, geo, link)
     assert ref.digest_round(rc, blob) == REFERENCE[name], (

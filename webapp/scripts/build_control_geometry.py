@@ -34,14 +34,17 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.control import geometry as cg  # noqa: E402
+from app.replays import layouts  # noqa: E402
 
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
 RISK1_BAR = cg._RISK1_BAR
 kill_line_result = cg.kill_line_result     # one rule for the build and the tests (lines on cover aren't judged)
 
 
-def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> dict:
-    png = cg.MINIMAP_DIR / f"{name}.png"
+def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path, *, png: Path | None = None,
+              scale: float | None = None) -> dict:
+    """`png` and `scale` default to the base map's minimap and maps.json scale; a layout key passes its own."""
+    png = png or cg.MINIMAP_DIR / f"{name}.png"
     image_sha = hashlib.sha256(png.read_bytes()).hexdigest()[:12]
     if entry.get("image_sha") and entry["image_sha"] != image_sha:
         raise cg.GeometryError(f"{name}'s minimap changed since it was tagged ({entry['image_sha']} -> {image_sha})")
@@ -52,7 +55,8 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     # The tracer's obstacles (the viewer's; not a control input, so no round's fingerprint moves).
     bullet = cg.bullet_mask(rgba, entry)
     cg.write_mask_png(asset_dir / f"{name}.bullet.png", bullet)
-    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
+    if scale is None:
+        scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     geo = cg.geometry_from_masks(name, m.sight, m.walk, scale)
     row = {"image_sha": image_sha,
            "sight_sha": hashlib.sha256(np.packbits(m.sight).tobytes()).hexdigest()[:12],
@@ -100,6 +104,13 @@ def keep_heights(name: str, row: dict, previous: dict) -> list[str]:
     return []
 
 
+def buildable_names(minimap_dir: Path, maps_table: dict) -> list[str]:
+    """Every minimap that is a map in maps.json or a later layout's key of one (`Ascent_13_10`, from
+    scripts/map_layout.py build); its scale is the map's."""
+    return sorted(p.stem for p in minimap_dir.glob("*.png")
+                  if layouts.map_of(p.stem) in maps_table)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--map", action="append", help="only this map (repeatable); the index keeps the others")
@@ -109,7 +120,7 @@ def main() -> None:
     tags = cg.load_tags(asset_dir)
     lines = json.loads(KILL_LINES.read_text(encoding="utf-8"))["maps"] if KILL_LINES.is_file() else {}
     maps_table = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))
-    names = sorted(p.stem for p in cg.MINIMAP_DIR.glob("*.png") if p.stem in maps_table)
+    names = buildable_names(cg.MINIMAP_DIR, maps_table)
     wanted = args.map or names
     unknown = sorted(set(wanted) - set(names))
     if unknown:
@@ -118,7 +129,8 @@ def main() -> None:
     index = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {"maps": {}}
     index.update({"version": 1, "geometry_version": cg.GEOMETRY_VERSION, "grid": cg.GRID, "px": cg.PX})
     for name in wanted:
-        row = build_map(name, tags.get("maps", {}).get(name, {}), lines.get(name), asset_dir)
+        row = build_map(name, tags.get("maps", {}).get(name, {}), lines.get(name), asset_dir,
+                        scale=maps_table[layouts.map_of(name)]["xMultiplier"])
         for warning in keep_heights(name, row, index["maps"].get(name) or {}):
             print(warning, flush=True)
         index["maps"][name] = row

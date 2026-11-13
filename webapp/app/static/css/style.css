@@ -2221,7 +2221,10 @@ main:has(.replay.is-linked) { max-width: none; }
 .coach-panel .coach-point:first-child { border-top: 0; padding-top: 0; }
 .coach-moment { margin: 0 0 0.5rem; }
 .coach-moment-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; margin: 0.2rem 0 0 0.75rem; font-size: 0.9em; }
-.coach-moment-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.coach-moment-form > input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.coach-area-correction { display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+.coach-area-correction label { display: flex; flex: 1 1 8rem; flex-direction: column; min-width: 0; }
+.coach-area-correction :is(input, select) { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
 .coach-overall { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; }
 .coach-overall textarea { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
 /* Beside Send: "Sending…", "Sent" or why it wasn't sent (coach.js). */

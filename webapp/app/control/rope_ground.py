@@ -10,6 +10,8 @@ import numpy as np
 from app.control import geometry as cg, heights as hc, height_refinement as hr
 from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
 
+from app.replays import layouts
+
 FIELDS = {'v', 'box', 'walk_sha', 'source_height_sha', 'parents', 'coarse', 'fine', 'edges'}
 MAX_ROWS = 4096
 
@@ -135,7 +137,7 @@ def prepare(geo, mf):
     domains = domains_for(mf)
     if not domains or (geo.heights is not None and not geo.movement_only):
         return geo
-    if geo.name != 'Abyss':
+    if layouts.map_of(geo.name) != 'Abyss':
         _fail('fallback is only supported on Abyss')
     if len(domains) > 4:
         _fail('at most four bounded Abyss rope domains are supported')

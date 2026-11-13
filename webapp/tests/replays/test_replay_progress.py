@@ -25,6 +25,18 @@ def steps(body) -> dict:
     return {s["key"]: s["rounds"] for s in body["steps"]}
 
 
+def test_step_registry_includes_layout_blockers():
+    assert [key for key, _, _ in progress.STEPS] == [
+        "reparse", "reparse_local", "incomplete", "no_map", "layout_pending", "layout_unknown",
+        "old_blob", "features_pending", "source_error", "control_missing", "control_stale", "control_unsupported", "control_failed",
+        "gaps_missing", "gaps_stale", "gaps_failed",
+    ]
+    assert dict((key, (label, automatic)) for key, label, automatic in progress.STEPS)["layout_pending"] == (
+        "Map changed in this patch; redraw pending", False)
+    assert dict((key, (label, automatic)) for key, label, automatic in progress.STEPS)["layout_unknown"] == (
+        "Patch unknown on a map with several layouts", False)
+
+
 def test_nothing_computed_is_all_control_missing(db, linked):
     body = progress.compute(db)
     n = linked.round_count

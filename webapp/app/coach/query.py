@@ -11,12 +11,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.coach import control_areas, knowledge
+from app.coach import areas, control_areas, knowledge
 from app.coach.snapshot import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
 
 LOG = "log.jsonl"
+_APPROXIMATE_AREAS = "areas marked approximate are a nearest-label guess, not a painted area"
 
 
 class QueryError(Exception):
@@ -43,6 +44,10 @@ def _slot(snap, token) -> int:
 
 def _missing(reason: str) -> dict:
     return {"available": False, "reason": reason}
+
+
+def _has_approximate_area(rows: list[dict]) -> bool:
+    return any((row.get("area") or {}).get("approximate") is True for row in rows)
 
 
 def _groups_disagree(snap, n: int, view, shares: dict) -> bool:
@@ -79,10 +84,12 @@ def where(snap, n, t) -> dict:
         if row["alive"]:
             row["health"] = _health(view, s, t)
         players.append(row)
-    return {"round": int(n), "t": t, "players": players,
-            "note": "health is a word (healthy, hurt, low) after the player's last recorded hit; null means no hit "
-                    "is recorded so far, not full health; heals are not recorded; a living player with no u/v has "
-                    "no usable position at that time"}
+    note = ("health is a word (healthy, hurt, low) after the player's last recorded hit; null means no hit "
+            "is recorded so far, not full health; heals are not recorded; a living player with no u/v has "
+            "no usable position at that time")
+    if _has_approximate_area(players):
+        note += ". " + _APPROXIMATE_AREAS
+    return {"round": int(n), "t": t, "players": players, "note": note}
 
 
 def knew(snap, n, t, side) -> dict:
@@ -94,15 +101,29 @@ def knew(snap, n, t, side) -> dict:
         return _missing("team_knowledge")
     if _groups_disagree(snap, int(n), view, control):
         return _missing("side_groups_disagree")
-    return {"round": int(n), "t": t, "side": side,
-            "enemies": knowledge.known_enemies(control["knew"], side, t, view),
-            "signals": knowledge.signals(control.get("signals"), side, t, snap.names, view),
-            "note": "team knowledge, assuming everything any teammate learned was called. enemies: those the team "
-                    "had seen, with the place and time of the last sighting. signals: every stored event that "
-                    "located an enemy for the team (sight, sound, damage, a kill), with its time and reason and "
-                    "only a rough_place: from the nearest teammate, a minimap direction (up, down, left, right: "
-                    "a 90 degree quarter) and a distance band in metres. It is never a spot or a named area; "
-                    "signals is null when this round stores none"}
+    events = knowledge.signals(control.get("signals"), side, t, snap.names, view)
+    if events is None:
+        events = {"signals": None, "ruled_out": None, "lost_track": None}
+    lost = [{"t": d["t"], "device": d["device"], "owner": snap.names.get(d["owner"]), "area": _device_area(view, d)}
+            for d in view.destroyed() if d["side"] == side and d["t"] <= t]
+    enemies = knowledge.known_enemies(control["knew"], side, t, view)
+    note = ("team knowledge, assuming everything any teammate learned was called. enemies: those the team "
+            "had seen, with the place and time of the last sighting. signals: events that found or roughly "
+            "placed an enemy, with class found or roughly_placed, time, reason and only a rough_place "
+            "when positions are available: from the nearest teammate, a minimap direction (up, down, left, right: "
+            "a 90 degree quarter) and a distance band in metres. It is never a spot or a named area; "
+            "ruled_out: utility showed where an enemy was NOT, with time, name and reason; for Haunt and "
+            "Recon, area is where the pulse looked and found nobody of that name, when the device's "
+            "position is available. It never gives the enemy's position. lost_track: the team lost "
+            "where an enemy was (no place given), with only time, name and reason. "
+            "All three lists are null when this round stores no knowledge events. destroyed: this side's own "
+            "devices (trip, camera, alarmbot, turret, sound sensor, haunt, recon) shot by the enemy by this "
+            "time before anything set them off, with time, device, owner and the area the device stood in; "
+            "the shooter is not recorded and a destroyed device tells nothing about where an enemy was")
+    if _has_approximate_area(enemies + lost + list(events.get("ruled_out") or ())):
+        note += ". " + _APPROXIMATE_AREAS
+    return {"round": int(n), "t": t, "side": side, "enemies": enemies,
+            **events, "destroyed": lost, "note": note}
 
 
 def distance(snap, n, t, a, b) -> dict:
@@ -144,8 +165,18 @@ def control(snap, n, t0, t1, area) -> dict:
     answer = control_areas.control_over(shares, area, t0, t1)
     if answer is None:
         return _missing("no control ticks in that span")
+    approximate = shares.get("approximate")
+    if approximate is None:
+        approximate = True
+    note = "a and b are the round's side groups; shares are fractions of the area's cells over the span"
+    if approximate:
+        note += "; area labels are approximate nearest-callout guesses"
     return {"round": int(n), "t0": t0, "t1": t1, "area": area, "shares": answer,
-            "note": "a and b are the round's side groups; shares are fractions of the area's cells over the span"}
+            "approximate": approximate, "note": note}
+
+
+def _device_area(view, d: dict) -> dict | None:
+    return None if d["u"] is None or d["v"] is None else view.area(d["u"], d["v"], d.get("z"))
 
 
 def timeline(snap, n, t0=None, t1=None) -> dict:
@@ -156,13 +187,15 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     events = [{"t": k["t"], "kind": "kill", "killer": name(k.get("killer")), "victim": name(k["victim"]),
                "after_decided": k["t"] > view.t_decided} for k in view.kills]
     events += view.utility(spike=False) + view.damage()
+    events += [{"t": d["t"], "kind": "destroyed", "device": d["device"], "owner": name(d["owner"]),
+                "area": _device_area(view, d)} for d in view.destroyed()]
     db = snap.site(int(n)).get("db") or {}                  # the site's times, already on the replay clock
     bomb = view.spike()
     tries = view.defuse_attempts()
     events += tries
     if bomb is not None and bomb.get("t") is not None:
         proven = bomb.get("owner_by") in PROVEN_PLANTER     # else the planter is a guess: not named
-        where = None if bomb.get("u") is None or bomb.get("v") is None else view.area(bomb["u"], bomb["v"])
+        where = None if bomb.get("u") is None or bomb.get("v") is None else view.area(bomb["u"], bomb["v"], bomb.get("z"))
         events.append({"t": round(float(bomb["t"]), 3), "kind": "plant",
                        "by": name(bomb.get("by")) if proven else None, "area": where})
     elif db.get("plant") is not None:
@@ -170,7 +203,13 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     if db.get("defuse") is not None and not any(a["result"] == "defused" for a in tries):
         events.append({"t": db["defuse"], "kind": "defuse"})
     events = sorted((e for e in events if lo <= e["t"] <= hi), key=lambda e: (e["t"], e["kind"]))
-    return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events}
+    note = ("a destroyed event is a device (trip, camera, alarmbot, turret, sound sensor, haunt, recon) shot "
+            "before anything set it off: time, device, owner and the area it stood in. The shooter is not "
+            "recorded")
+    if _has_approximate_area(events):
+        note += ". " + _APPROXIMATE_AREAS
+    return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events,
+            "note": note}
 
 
 def impact(snap, n, player) -> dict:

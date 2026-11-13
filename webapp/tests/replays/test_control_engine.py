@@ -331,6 +331,28 @@ def test_a_trip_watches_its_line_until_its_owner_dies():
     assert at(geo, after.compose()["state"], 300, 200) not in A_OWN, "placed utility dies with its owner"
 
 
+def test_a_long_trip_has_the_same_watcher_coverage_without_its_flag():
+    geo = open_hall()
+    trip = ability("Gumshoe", "4_TripWire", 300, 120, 0, kind="GameObject",
+                   end=list(uv(300, 120 + 17 / geo.m_per_px)))
+    players = {0: still("A", 150, 200, 180), 1: still("A", 110, 110, 180), 5: still("B", 400, 200, 0)}
+    plain = ce.RoundInputs(blob(players, util=[trip], deaths={0: 1.5}), geo)
+    marked = ce.RoundInputs(blob(players, util=[dict(trip, long=True)], deaths={0: 1.5}), geo)
+    (plain_watcher,), (marked_watcher,) = plain.watchers, marked.watchers
+    assert plain_watcher.kind == marked_watcher.kind == "trip"
+    assert len(plain_watcher.cells) > 1
+    np.testing.assert_array_equal(marked_watcher.cells, plain_watcher.cells)
+
+    cell = geo.cell_of_px(300, 200)
+    for t in (1.0, 2.0):
+        plain_tick, marked_tick = ce.Tick(plain, t), ce.Tick(marked, t)
+        assert plain_tick.holders.keys() == marked_tick.holders.keys()
+        for slot in plain_tick.holders:
+            np.testing.assert_array_equal(marked_tick.holders[slot].watch, plain_tick.holders[slot].watch)
+        np.testing.assert_array_equal(marked_tick.compose()["state"], plain_tick.compose()["state"])
+        assert any(h.watch[cell] for h in marked_tick.holders.values()) == (t < 1.5)
+
+
 def test_the_turret_watches_a_cone_along_its_yaw():
     geo = open_hall()
     turret = ability("Killjoy", "E_Turret", 250, 200, 0, kind="Pawn", yaw=0, yaws=[[0.0, 0], [2.0, 180]])

@@ -1,6 +1,6 @@
 """The control engine's output as digests, to prove a change left flat maps alone
 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4: a map without a height asset is
-byte-identical to the reference engine, after only the revision number in the header is normalised).
+byte-identical to the reference engine, after the revision and additive header metadata are normalised).
 
     .\\.venv\\Scripts\\python.exe scripts\\control_reference.py --toys --write         # the committed fixture
     .\\.venv\\Scripts\\python.exe scripts\\control_reference.py --toys                 # compare with it
@@ -14,8 +14,9 @@ real rounds, so their digests are written wherever `--write` says and never comm
 
 A digest is the sha256 of a round's stored bytes, decompressed, with the header's and the summary's
 `revision` set to 0 and the summary's `fights` left out (revision 20: derived from the states and removal masks
-the data digest already covers; tests/replays/test_fight_swing.py tests it). Rewrite the fixture only for a
-change that is meant to move flat maps.
+the data digest already covers; tests/replays/test_fight_swing.py tests it). From revision 24, omit the
+additive knowledge-event kind and destroyed-device header too; all computed streams stay covered.
+Rewrite the fixture only for a change that is meant to move flat maps.
 """
 
 from __future__ import annotations
@@ -33,11 +34,18 @@ FIXTURE = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "reference_flat.json"
 
 
 def digest_round(rc, blob: dict) -> dict:
-    """{"data", "summary"}: 16 hex each, over the decompressed bytes with the revision normalised."""
+    """{"data", "summary"}: 16 hex each, with revisions and additive header metadata normalised."""
     from app.control.encode import encode_data, encode_summary
     from app.replays import control_format as cf
 
     header, streams = cf.unpack_data(encode_data(rc, blob))
+    if header["revision"] >= 24:
+        # Compare revision 24's computed bytes to the unchanged pre-24 flat reference.
+        # Only additive header metadata is excluded, never a state/coverage/control stream.
+        if "knowledge_events" in header:
+            header["knowledge_events"] = {side: [row[:3] for row in rows]
+                                          for side, rows in header["knowledge_events"].items()}
+        header.pop("destroyed", None)
     header["revision"] = 0
     data = hashlib.sha256(json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     for name in sorted(streams):
