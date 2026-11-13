@@ -200,6 +200,7 @@ guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
   "scripts/coach*", "app/replays/control_reasons.py", "app/replays/destroyed.py",
+  "scripts/area_pins.py", "tests/coach/data/area_cases.json", "alembic/versions/0033_coach_feedback_area.py",
 ]
 
 [critical-util]
@@ -207,6 +208,7 @@ about = "Critical Util: per-cast evidence, up-time windows, the unknown probe, t
 tests = ["tests/critutil/test_*.py"]
 guards = [
   "app/critutil/**", "app/services/util_model.py", "app/services/util_values.py", "app/services/replay_util.py",
+  "app/coach/areas.py",
   "app/services/util_rebuild.py", "app/services/util_build_health.py", "app/services/util_build_remote.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
 ]
 
@@ -242,6 +244,7 @@ guards = [
 [replay-web]
 about = "Replays on the site: upload and held uploads, storage and links, routes, re-parse queue, match states, the viewer and its JS."
 tests = [
+  "tests/replays/test_areas_route.py",
   "tests/replays/test_replay_store.py", "tests/replays/test_replay_routes.py", "tests/replays/test_replay_upload.py",
   "tests/replays/test_replay_upload_held.py", "tests/replays/test_replay_progress.py",
   "tests/replays/test_replay_reparse_auto.py", "tests/replays/test_replay_match_states.py",
@@ -249,6 +252,7 @@ tests = [
   "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py", "tests/test_fetch_archived_replay.py",
 ]
 guards = [
+  "app/services/replay_areas.py",
   "app/replays/store.py", "app/replays/db.py", "app/routers/replays.py", "app/routers/replay_admin.py",
   "app/services/replays.py", "app/services/replay_upload.py", "app/services/replay_progress.py",
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
@@ -324,7 +328,8 @@ about = "Map control outside the engine: committed assets and barriers, storage 
 tests = [
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
-  "tests/replays/test_control_tagger.py", "tests/replays/test_control_pinned_inputs.py",
+  "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_areas_tagger_core.py",
+  "tests/replays/test_control_pinned_inputs.py",
   "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
   "tests/replays/test_preview_control_live.py", "tests/replays/test_freshness_memos.py",
   "tests/replays/test_replay_errors*.py", "tests/replays/test_box_conflicts_page.py",
@@ -334,7 +339,7 @@ guards = [
   "app/services/replay_control_views.py", "app/static/js/replay_control.js", "app/static/data/control/**",
   "app/templates/stats/_map_control_table.html", "scripts/build_control_geometry.py", "scripts/place_control_barriers.py",
   "scripts/compute_control.py", "scripts/control_tagger*", "scripts/preview_control_live.py",
-  "scripts/control_reference.py", "app/services/mask_accel.py", "app/services/replay_errors.py",
+  "scripts/control_reference.py", "app/services/mask_accel.py", "app/services/replay_errors.py", "app/coach/areas_draft.py",
 ]
 
 [map-features]

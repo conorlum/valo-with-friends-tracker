@@ -79,6 +79,11 @@ and show the last build with an "updating" note when it is stale or missing. The
   from the site's, and otherwise exits 2 naming the reason (`refused: Critical Util: ...`). It never builds.
 - Failures show in Site health as `util_build_failed` `remote:<dispatch|push|run|collect|store|gave_up|digest>`
   (`app/services/site_health.py`).
+Critical Util builds read reviewed paint from origin/main; merge it to publish.
+
+### AI coach
+
+- A moment's **Area should be** correction stores the name and selected player (migration `0033`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.
 
 ### Site health
 

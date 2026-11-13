@@ -19,6 +19,7 @@ POLARITIES = ("good", "improve")
 VERDICTS = ("right", "wrong", "correction", "badly_put")      # badly_put: point-level rows from before 0025
 MOMENT_VERDICTS = ("right", "wrong", "correction")
 FEEDBACK_SHOWN = 30         # rows per point on the page and in "Prompt out": anyone can pick any name to post under
+FeedbackMoment = tuple[str | None, str | None, str | None, int | None]
 
 
 class ReportError(ValueError):
@@ -121,15 +122,11 @@ def _instance(index: int, raw: dict, feedback: list[dict]) -> dict:
             "caption": str(raw.get("caption") or ""), "feedback": [f for f in feedback if f["instance"] == index]}
 
 
-def opponent_swaps(db, match_id: int, player_id: int) -> dict[str, str]:
-    """The names of this player's opponents in the match, each to "the enemy <agent>" (app/services/enemy_names.py):
-    reports written before runs hid them still name them."""
+def _match_players(db, match_id: int) -> dict:
     rows = db.query(MatchPlayer.player_id, MatchPlayer.team, MatchPlayer.agent, Player.display_name).join(
         Player, Player.id == MatchPlayer.player_id).filter(MatchPlayer.match_id == match_id).all()
-    team = next((t for pid, t, _, _ in rows if pid == player_id), None)
-    if team is None:
-        return {}
-    return enemy_names.replacements((name, agent) for _, t, agent, name in rows if t != team)
+    return {pid: {"player_id": pid, "team": team, "agent": agent, "name": name}
+            for pid, team, agent, name in rows}
 
 
 def _point(point: CoachPoint, feedback: list[dict], viewer_id: int | None = None, swaps: dict | None = None) -> dict:
@@ -157,6 +154,7 @@ def _feedback_by_point(db, point_ids: list[int]) -> dict[int, list[dict]]:
     for row, author in rows:
         out[row.point_id].append({"author": author, "author_id": row.author_player_id, "verdict": row.verdict,
                                   "note": row.note or "", "instance": row.instance_index,
+                                  "area_name": row.area_name, "area_player_id": row.area_player_id,
                                   "handled": row.handled_at is not None})
     return {pid: found[-FEEDBACK_SHOWN:] for pid, found in out.items()}      # the newest, oldest first
 
@@ -171,13 +169,22 @@ def page_data(db, replay, player_id: int | None, version: int | None, viewer_id:
     report = get_report(db, replay.match_id, chosen, version)
     rows = points(db, report.id)
     feedback = _feedback_by_point(db, [p.id for p in rows])
-    swaps = opponent_swaps(db, replay.match_id, chosen)
+    roster = _match_players(db, replay.match_id)
+    team = roster.get(chosen, {}).get("team")
+    swaps = enemy_names.replacements((p["name"], p["agent"]) for p in roster.values() if p["team"] != team)
+    visible = enemy_names.hide_in(roster, team)
+    choices = sorted(visible.values(), key=lambda p: (
+        p["player_id"] != chosen, p["team"] != team, p["name"].casefold(), p["player_id"]))
+    for found in feedback.values():
+        for row in found:
+            row["area_player_name"] = visible.get(row["area_player_id"], {}).get("name")
     shown = [(p.polarity, _point(p, feedback[p.id], viewer_id, swaps)) for p in rows]
     data["report"] = {
         "id": report.id, "version": report.version, "versions": versions(db, replay.match_id, chosen),
         "playbook_version": report.playbook_version, "model": report.model,
         "created": report.created_at.strftime("%Y-%m-%d") if report.created_at else "",
         "player_id": chosen, "player_name": dict(coached)[chosen],
+        "area_players": [{"player_id": p["player_id"], "name": p["name"]} for p in choices],
         "data_gaps": report.data_gaps or {}, "dropped_points": report.dropped_points,
         "good": [p for polarity, p in shown if polarity == "good"],
         "improve": [p for polarity, p in shown if polarity == "improve"]}
@@ -250,18 +257,18 @@ def _open_row(db, point_id: int, author_player_id: int, instance: int | None) ->
 
 
 def _put(db, point_id: int, author_player_id: int, instance: int | None, verdict: str | None, note: str | None,
-         keep_verdict: bool = False) -> CoachFeedback:
+         area_name: str | None = None, area_player_id: int | None = None, *, keep_verdict: bool = False) -> CoachFeedback:
     # One open row per author per point and moment: login has no password, so a second post replaces the first
     # instead of piling up on the page and in "Prompt out" (PR 132 review, finding 7). Handled rows are history.
     row = _open_row(db, point_id, author_player_id, instance)
     if row is None:
-        row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, instance_index=instance,
-                            verdict=verdict, note=note)
+        row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, instance_index=instance)
         db.add(row)
-    else:
-        row.note = note
-        if not keep_verdict:
-            row.verdict = verdict
+    row.note = note
+    row.area_name = area_name
+    row.area_player_id = area_player_id
+    if not keep_verdict:
+        row.verdict = verdict
     return row
 
 
@@ -282,27 +289,38 @@ def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdic
 
 
 def save_point_feedback(db, match_id: int, point_id: int, author_player_id: int,
-                        moments: dict[int, tuple[str | None, str | None]], overall: str | None) -> None:
-    """The coach panel's form for one point, in one go: a verdict and note per moment, and an overall note. The
-    form shows the author's open rows filled in, so a moment (or the overall note) sent blank removes their open
-    row for it. An overall row from before migration 0025 keeps its verdict."""
+                        moments: dict[int, FeedbackMoment], overall: str | None) -> None:
+    """Save one point's verdicts, notes and area corrections. A blank submission clears that open row.
+
+    An overall row from before migration 0025 keeps its verdict.
+    """
     point = _point_of_match(db, match_id, point_id)
     cleaned = {}
-    for instance, (verdict, note) in moments.items():
+    eligible_players = None
+    for instance, (verdict, note, area_name, area_player_id) in moments.items():
         _check_moment(point, instance)
         if verdict is not None and verdict not in MOMENT_VERDICTS:
             raise ReportError(f"verdict must be one of {MOMENT_VERDICTS}")
-        cleaned[instance] = (verdict, _clean_note(note))
-    entries = [*cleaned.items(), (None, (None, _clean_note(overall)))]
-    for instance, (verdict, note) in entries:
-        if verdict is None and note is None:
+        area_name = (area_name or "").strip() or None
+        if area_name is not None:
+            area_name = _text(area_name, "area name", 64)
+        if area_player_id is not None:
+            if eligible_players is None:
+                eligible_players = {pid for (pid,) in db.query(MatchPlayer.player_id).filter_by(match_id=match_id)}
+            if type(area_player_id) is not int or area_player_id not in eligible_players:
+                raise ReportError("choose a player in this match for the area correction")
+        cleaned[instance] = (verdict, _clean_note(note), area_name, area_player_id if area_name is not None else None)
+    entries = [*cleaned.items(), (None, (None, _clean_note(overall), None, None))]
+    for instance, (verdict, note, area_name, area_player_id) in entries:
+        if verdict is None and note is None and area_name is None:
             row = _open_row(db, point_id, author_player_id, instance)
             if row is not None and instance is None and row.verdict is not None:
                 row.note = None                         # an old overall row: its verdict is not on the form
             elif row is not None:
                 db.delete(row)
         else:
-            _put(db, point_id, author_player_id, instance, verdict, note, keep_verdict=instance is None)
+            _put(db, point_id, author_player_id, instance, verdict, note, area_name, area_player_id,
+                 keep_verdict=instance is None)
     db.commit()
 
 

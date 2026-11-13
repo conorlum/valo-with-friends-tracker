@@ -131,6 +131,7 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
   that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
   feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).
+- A moment's **Area should be** correction stores the name and selected player (migration `0033`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.
 - Opponents' names never appear in the coach or Critical Moments tabs; they are "the enemy <agent>"
   (`app/services/enemy_names.py`). A run's snapshot renames them before the model sees it
   (`snapshot.hide_enemy_names`), the coach page swaps any left in stored text, and the moments payload names the
@@ -138,6 +139,8 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 - Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
 
 ### Critical Util
+
+Critical Util builds read reviewed paint from origin/main; merge it to publish.
 
 Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
 (`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.

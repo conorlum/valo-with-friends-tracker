@@ -14,6 +14,7 @@ from app.services.agent_roles import role_of
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
+AREA_WHERE_WINDOW_S = 1.0   # a where answer can place players up to one second before a moment
 SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
 BODY_MAX = 4000             # longer text is refused before the regexes run
 TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
@@ -211,12 +212,13 @@ class _Cited:
         self.metres: list[float] = []
         self.seconds: list[float] = []
         self.pairs: set[tuple[int, int]] = set()
-        self.areas: set[str] = set()
+        self.areas: set[tuple[tuple[str, ...], str, int, float | None, int]] = set()
+        self.moments: dict[int, tuple[int, float, float]] = {}
         self.rounds: set[int] = set()
         self.tallies: set[int] = set()
 
 
-def _collect(value, key, cited: _Cited, hidden: frozenset = frozenset()) -> None:
+def _collect(value, key, cited: _Cited, source: tuple[str, int, float | None, int], hidden: frozenset) -> None:
     """`hidden`: players whose place this answer may not ground (an enemy the side could not see)."""
     if isinstance(value, bool):
         return
@@ -233,18 +235,20 @@ def _collect(value, key, cited: _Cited, hidden: frozenset = frozenset()) -> None
             cited.seconds.append(float(value))
     elif isinstance(value, str):
         if key == "area":
-            cited.areas.add(value)
+            cited.areas.add(((value,), *source))
     elif isinstance(value, dict):
         if key == "area" and isinstance(value.get("name"), str):
-            cited.areas.add(value["name"])
+            path = value.get("path")
+            names = tuple(name for name in path if isinstance(name, str)) if isinstance(path, list) else ()
+            cited.areas.add((names or (value["name"],), *source))
             return
         place_hidden = value.get("alive") is True and value.get("name") in hidden
         for k, item in value.items():
             if not (place_hidden and k == "area"):
-                _collect(item, k, cited, hidden)
+                _collect(item, k, cited, source, hidden)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _collect(item, key, cited, hidden)
+            _collect(item, key, cited, source, hidden)
 
 
 def _unseen_enemy(snap, n: int, side: str, name, t: float) -> bool:
@@ -322,13 +326,43 @@ def _near(x: float, pool: list[float]) -> bool:
     return any(abs(x - abs(y)) < 0.051 or (float(x).is_integer() and round(abs(y)) == x) for y in pool)
 
 
-def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
+def _grounded_areas(cited: _Cited, moment_index: int | None = None) -> set[str]:
+    names = set()
+    for path, cmd, n, asked, index in cited.areas:
+        if moment_index is not None and index != moment_index:
+            continue
+        round_number, start, end = cited.moments[index]
+        timely_where = (cmd == "where" and asked is not None and n == round_number
+                        and start - AREA_WHERE_WINDOW_S <= asked <= end)
+        if cmd == "knew" or timely_where:
+            names.update(path)
+    return names
+
+
+def _area_problems(text: str, grounded: set[str], area_names, improve: bool) -> list[str]:
     problems = []
+    if area_names:
+        # The view lists longer names first. One mention of Top Mid does not also mention Mid.
+        patterns = []
+        for area in area_names:
+            escaped = re.escape(area)
+            if re.fullmatch(r"[ABC](?: site)?", area, flags=re.IGNORECASE):
+                site = re.escape(area[0])
+                escaped = rf"(?i:{site}[ -]site|site[ -]{site})"
+            patterns.append("(" + escaped + ")")
+        mentioned = {area_names[match.lastindex - 1] for match in re.finditer(
+            r"(?<![\w-])(?:" + "|".join(patterns) + r")(?![\w-])", text,
+        )}
+        for area in area_names:
+            if area in mentioned and area not in grounded:
+                problems.append(f"the area {area} is not in a cited answer"
+                                + (" (an enemy's place counts only while your side could see them)" if improve else ""))
+    return problems
+
+
+def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
+    problems = _area_problems(text, _grounded_areas(cited), area_names, improve)
     numbers, shares, times, pairs = cited.numbers, cited.shares, cited.times, cited.pairs
-    for area in area_names:                       # as the brief spells them, so "a site" in prose is not an area
-        if area not in cited.areas and re.search(r"(?<![\w-])" + re.escape(area) + r"(?![\w-])", text):
-            problems.append(f"the area {area} is not in a cited answer"
-                            + (" (an enemy's place counts only while your side could see them)" if improve else ""))
     text = _strip_names(text, names)
     for token in _TAGGED.findall(text):
         problems.append(f"{token} is not a player of this match")
@@ -468,6 +502,7 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
             problems.append(f"{label}: t1 must be within {SPAN_MAX_S:g} s after t")
             continue
         cited.rounds.add(n)
+        cited.moments[i] = (n, t, spans[-1])
         cited.tallies.add(len(cited.rounds))
         cited.times.extend(float(v) for v in spans)          # "0:20"
         cited.seconds.extend(float(v) for v in spans)        # "at 20 s", "from 20 to 25 s": never a bare number
@@ -506,7 +541,9 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 if guarded and entry["cmd"] == "where":
                     hidden = frozenset(p.get("name") for p in result.get("players") or [] if isinstance(p, dict)
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
-                _collect(result, None, cited, hidden)
+                asked = result.get("t")
+                source = (entry["cmd"], n, asked if type(asked) in (int, float) else None, i)
+                _collect(result, None, cited, source, hidden)
                 cited.pairs |= _pairs(entry)
         round_evidence.setdefault(n, []).extend(entries)
         moments.append((label, n, t, inst.get("t1"), side, captions[-1], entries))
@@ -540,4 +577,10 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 problems.append(f"{label}: says {ability} located enemies in round {n}, "
                                 "but no cited knew signal shows it")
     area_names = snap.view(snap.round_numbers[0]).area_names() if snap.round_numbers else []
-    return problems + _text_problems(text, cited, snap.names, area_names, polarity == "improve")
+    improve = polarity == "improve"
+    point_text = " ".join(str(point.get(key) or "") for key in ("title", "body"))
+    problems += _area_problems(point_text, _grounded_areas(cited), area_names, improve)
+    for i, inst in enumerate(instances):
+        if isinstance(inst, dict):
+            problems += _area_problems(str(inst.get("caption") or ""), _grounded_areas(cited, i), area_names, improve)
+    return problems + _text_problems(text, cited, snap.names)

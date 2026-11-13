@@ -1,6 +1,7 @@
-from app.coach import detectors
+from app.coach import areas, detectors
 from app.coach.roundview import RoundView
 from tests.coach import toys
+from tests.coach.test_areas import painted_object, write_paint
 
 
 def run(blob, slot=0, knew=None, role=None):
@@ -121,6 +122,20 @@ def test_four_enemies_seen_on_the_other_site_while_the_player_stays_is_flagged()
 def test_a_stack_flag_without_a_known_role_says_so():
     (flag,) = [f for f in run(stack_blob(), knew=STACK) if f["kind"] == "stack_seen_elsewhere"]
     assert flag["values"]["role"] is None
+
+
+def test_stack_flags_use_the_painted_names_and_root_site(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    names = [
+        {"id": 1, "name": "B Tower", "parent": None, "super": "B", "super_source": "set"},
+        {"id": 2, "name": "Tower Stairs", "parent": 1, "super": "B", "super_source": "set"},
+        {"id": 3, "name": "Long", "parent": None, "super": "A", "super_source": "set"},
+    ]
+    paint = painted_object({areas.cell_at(8000, 8000): 2, areas.cell_at(2000, 2000): 3}, names=names)
+    write_paint(tmp_path, paint | {"map": "Toy"}, "Toy")
+    (flag,) = [f for f in run(stack_blob(), knew=STACK) if f["kind"] == "stack_seen_elsewhere"]
+    assert flag["values"]["site"] == "A"
+    assert flag["values"]["player_area_then"] == "Tower Stairs"
 
 
 def test_a_player_who_leaves_within_the_hold_is_not_flagged():

@@ -18,6 +18,7 @@ import hashlib
 from collections import defaultdict
 
 from app.config import settings
+from app.coach import areas
 from app.critutil import abilities, constants
 from app.critutil.corpus import (  # re-export the portable build and its helpers
     COMBO_S, COMBO_UV, EXAMPLES_KEPT, FULL_BUY_THRESHOLD, LABELS, MIN_CASTS, NO_LIFT,
@@ -151,15 +152,17 @@ def _replay_context(db, replay_ids):
 REBUILD_TRIES = 3
 
 
-def corpus_key(db, rows: list[tuple], model: dict | None) -> str:
+def corpus_key(db, rows: list[tuple], model: dict | None, *, painted_table: dict[str, areas.Painted] | None = None) -> str:
     """What a corpus build is made from, as one key: the versions, every current util row it reads (round,
-    fingerprint, when computed), each of their replays' match and clock offset, and the estimator's key. Computed
-    from the very rows a build reads, so the key stored with a build always describes that build's inputs."""
-    return values_key(corpus_key_parts(db, rows), (model or {}).get("key"))
+    fingerprint, when computed), each of their replays' match and clock offset, the estimator's key, and the
+    reviewed map areas. Computed from the very rows a build reads, so the key stored with a build always describes
+    that build's inputs."""
+    return values_key(corpus_key_parts(db, rows, painted_table=painted_table), (model or {}).get("key"))
 
 
-def corpus_key_parts(db, rows: list[tuple]) -> dict:
-    """Freeze the metadata hashed by corpus_key, apart from the estimator's key.
+def corpus_key_parts(db, rows: list[tuple], *, painted_table: dict[str, areas.Painted] | None = None) -> dict:
+    """Freeze the metadata hashed by corpus_key, apart from the estimator's key. `painted_table` is the published
+    paint (read here when not given); only its hash is kept.
 
     Timestamp text retains the original key's timezone/naive spelling; the wire rows separately carry UTC
     microseconds. Neither requires loading the util blobs.
@@ -172,7 +175,9 @@ def corpus_key_parts(db, rows: list[tuple]) -> dict:
     return {"values_version": util_values.VERSION, "page_version": PAGE_VERSION,
             "abilities_hash": abilities.table_hash(), "constants_version": constants.VERSION,
             "friends_hash": friends, "rows": [[rid, n, fp, str(at)] for rid, n, fp, at, *_ in rows],
-            "replays": [list(r) for r in replays]}
+            "replays": [list(r) for r in replays],
+            "areas_hash": areas.table_hash(painted_table=areas.load_table(published_only=True)
+                                           if painted_table is None else painted_table)}
 
 
 def friend_players(db) -> set[int]:
@@ -182,16 +187,19 @@ def friend_players(db) -> set[int]:
     return {pid for pair in db.query(Friendship.owner_player_id, Friendship.friend_player_id) for pid in pair}
 
 
-def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None) -> dict:
+def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = None,
+                 painted_table: dict[str, areas.Painted] | None = None) -> dict:
     """The stored build's data (`build_from_rounds`) from `rows` (`current_rows`; read here when not given), the
     estimator `model` (the stored one when not given) and the friendships, with each row's fingerprint added.
     Reads only: `ensure_values` stores it. Ends the caller's transaction (commit) before computing, so no
     connection is held through the build."""
     rows = current_rows(db) if rows is None else rows
     model = util_model.load(db) if model is None else model
+    if painted_table is None:
+        painted_table = areas.load_table(published_only=True)
     inputs = corpus_inputs(db, rows)
     db.commit()
-    return corpus_from_inputs(inputs, rows, model)
+    return corpus_from_inputs(inputs, rows, model, painted_table=painted_table)
 
 
 def corpus_inputs(db, rows: list[tuple]) -> tuple[dict, dict, set]:
@@ -231,10 +239,11 @@ def ensure_values(db, *, force: bool = False) -> dict:
         if not force and stored is not None and stored[0] == key:
             return stored[1]
         rows = current_rows(db)
-        used = corpus_key(db, rows, model)
+        painted_table = areas.load_table(published_only=True)
+        used = corpus_key(db, rows, model, painted_table=painted_table)
         inputs = corpus_inputs(db, rows)
         db.commit()                         # nothing is held through the compute (R3)
-        data = corpus_from_inputs(inputs, rows, model)
+        data = corpus_from_inputs(inputs, rows, model, painted_table=painted_table)
         with util_model.rebuild_lock(db, "values"):     # a short transaction: the lock, the row, the commit
             _store_values(db, used, data)   # stored even if superseded (D6)
         force = False
@@ -523,12 +532,13 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
             updating = True
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
-    flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True) if ctx else []
+    flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True,
+                      painted_table=areas.load_table(published_only=True)) if ctx else []
     for r in flat:          # the lift comes from the stored build (the same cast there), when it has one
         b = built.get((r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None,
                        r["t"] if r["i"] is None else None))
         if b is not None:
-            r.update(lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
+            r.update(area=b.get("area"), lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
             r.update({k: b.get(k) for k in ("type", "L", "lift_all", "lift_yours", "yours_level", "yours_n", "gate_all",
                                             "gate_yours", "lift_device", "device_level", "device_n", "gate_device")})
     by_round: dict[int, list] = defaultdict(list)

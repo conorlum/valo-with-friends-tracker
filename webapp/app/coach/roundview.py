@@ -4,7 +4,7 @@ decoded blob (app/replays/format.py); every later module reads rounds through th
 from __future__ import annotations
 
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 
 from app.coach import areas
 from app.replays import format as fmt
@@ -85,28 +85,37 @@ class RoundView:
         if slot not in self._samples:
             out = []
             for segment in self.blob.get("tracks", {}).get(str(slot), []):
-                out.extend(fmt.decode_segment(segment, self.blob["hz"]))
-            self._samples[slot] = sorted(out)
+                out.extend(fmt.decode_segment_z(segment, self.blob["hz"]))
+            self._samples[slot] = sorted(out, key=lambda sample: sample[:4])
         return self._samples[slot]
 
     def _sample_at(self, slot: int, t: float):
         samples = self.samples(slot)
-        i = bisect_right(samples, (t + 0.5 / self.blob["hz"], math.inf, math.inf, math.inf)) - 1
+        i = bisect_right(samples, (t + 0.5 / self.blob["hz"], math.inf)) - 1
         return samples[i] if i >= 0 else None
 
-    def area(self, u: float, v: float) -> dict | None:
-        return areas.area_at(self.asset_key, u, v, self._table)
+    def sighting_height(self, slot: int, t: float) -> int | None:
+        """Use the control engine's closest-sample rule for the tick that stored the sighting."""
+        samples = self.samples(slot)
+        i = bisect_left(samples, t, key=lambda sample: sample[0])
+        nearest = min(samples[max(0, i - 1):i + 1], key=lambda sample: abs(sample[0] - t), default=None)
+        if nearest is None or abs(nearest[0] - t) > 1.5 / self.blob["hz"]:
+            return None
+        return nearest[4]
+
+    def area(self, u: float, v: float, z: float | None = None) -> dict | None:
+        return areas.area_at(self.asset_key, u, v, z, table=self._table)
 
     def area_names(self) -> list[str]:
         """Every named area of this layout, longest first."""
-        return sorted({c["name"] for c in areas.callouts(self.asset_key, self._table)}, key=lambda a: (-len(a), a))
+        return sorted(set(areas.all_names(self.asset_key, table=self._table)), key=lambda a: (-len(a), a))
 
     def position(self, slot: int, t: float) -> dict:
         if self.alive(slot, t):
             sample = self._sample_at(slot, t)
             if sample is not None and t - sample[0] <= STALE_SAMPLE_S:
-                _, u, v, yaw = sample
-                return {"alive": True, "u": u, "v": v, "yaw": yaw, "area": self.area(u, v)}
+                _, u, v, yaw, z = sample
+                return {"alive": True, "u": u, "v": v, "yaw": yaw, "area": self.area(u, v, z)}
             # alive but not placeable (no sample yet, or a gap in the track): never read as dead
             return {"alive": True, "u": None, "v": None, "area": None, "position": "unknown"}
         ended = [t1 for _, t1 in self._intervals(slot) if t1 <= t]
@@ -114,8 +123,8 @@ class RoundView:
         if not ended or not samples:
             return {"alive": False, "died_at": None}
         died = max(ended)
-        _, u, v, _ = self._sample_at(slot, died) or samples[-1]
-        return {"alive": False, "died_at": died, "u": u, "v": v, "area": self.area(u, v)}
+        _, u, v, _, z = self._sample_at(slot, died) or samples[-1]
+        return {"alive": False, "died_at": died, "u": u, "v": v, "area": self.area(u, v, z)}
 
     def metres(self, uv_distance: float) -> float:
         return uv_distance / self.uv_per_unit / 100.0

@@ -87,13 +87,24 @@ def label_of(kinds) -> str | None:
     return None
 
 
-def area_of(asset_key: str | None, u, v, side: str | None) -> str:
+def area_of(asset_key: str | None, u, v, side: str | None, *, painted_table: dict | None = None) -> str:
+    """The cast's half or site group. `painted_table` is the published paint ({asset key: areas.Painted}); without
+    it the layout's working paint file is read."""
     from app.coach import areas
 
     if u is None or v is None:
         return "unknown"
-    found = areas.area_at(asset_key, u, v)
+    if painted_table is None:
+        painted = areas.load_painted(asset_key)
+        painted_table = {asset_key: painted} if painted is not None else {}
+    found = areas.area_at(asset_key, u, v, painted_table=painted_table)
     sup = (found or {}).get("super")
+    if found is None and asset_key in painted_table:
+        painted = painted_table[asset_key]
+        bands = painted.bands.get(areas.cell_at(u, v), ())
+        supers = {painted.names.get(name_id, {}).get("super") for _, _, name_id in bands}
+        if len(supers) == 1:
+            sup = supers.pop()
     if sup in ("Attacker Side", "Defender Side"):
         own = (sup == "Attacker Side") == (side == "attack")
         return "own half" if own else "enemy half"
@@ -122,8 +133,8 @@ def _round_data(data: dict, ctx: dict) -> dict:
 NO_LIFT = {"swing": None, "base": None, "base_n": 0, "base_level": None, "lift": None}
 
 
-def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, include_unscored: bool = False
-               ) -> list[dict]:
+def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, include_unscored: bool = False,
+               painted_table: dict | None = None) -> list[dict]:
     """Every valued cast of one replay, flat, with who threw it and where, and its combo partners. The lift fields
     are empty here: `build_from_rounds` fills them (the v2 baseline), the tab reads them from the stored build. A
     cast after the round was decided is never scored (spec, "The cast"): it is left out, or with `include_unscored`
@@ -147,7 +158,8 @@ def _cast_rows(replay_id: int, ctx: dict, rounds: dict, model, weights, *, inclu
                 "ability": ability_label(c), "kind": kind_label(c.get("kinds")), "kinds": c.get("kinds"),
                 "label": label_of(c.get("kinds")),
                 "side": c.get("side"), "area": area_of(ctx.get("asset_key", ctx["map"]),
-                                                       c.get("u"), c.get("v"), c.get("side")),
+                                                       c.get("u"), c.get("v"), c.get("side"),
+                                                       painted_table=painted_table),
                 "phase": c.get("phase"), "t": c["t"],
                 "buy": buy_type(n, ctx["loadout"].get((n, team))),
                 "won": (ctx["rounds"].get(n) or {}).get("winner") == c.get("side") if c.get("side") else None,
@@ -219,15 +231,21 @@ def _item_of(data: dict, row: dict) -> dict | None:
     return next((h for h in data.get("heals") or () if h.get("t") == row["t"] and h.get("by") == row["slot"]), None)
 
 
-def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()) -> dict:
+def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset(), *,
+                      painted_table: dict | None = None) -> dict:
     """The corpus build, pure: `stored` is {replay id: {round: data}}, `ctx` the `_replay_context`, `friend_players`
     the players in at least one friendship (they get a Yours baseline). Each match is valued with weights fitted
     without it (util_values.weights_for) and each cast compared with the v2 baseline (util_values: per type, at its
     own length L): the other matches' moments (`lift_all`, R1), the caster's own moments with every match of the
     cast's lineup left out (`lift_yours`, R3), and for a placeable the same map and side without that device
     (`lift_device`, R10). A mode's lift counts toward scores, priors and spread only where the gate passes at the
-    cast's L (R2); `lift` is the all-players one for the page and the tab."""
+    cast's L (R2); `lift` is the all-players one for the page and the tab. `painted_table` is the published paint
+    the build's key was made with; the site passes it, and the worker gets it in the build's context."""
+    from app.coach import areas
+
     friend_players = frozenset(friend_players)
+    if painted_table is None:
+        painted_table = areas.load_table(published_only=True)
     stored = {rid: rounds for rid, rounds in stored.items() if rid in ctx}
     prepared: dict[int, dict] = {}
     items, training = [], []
@@ -246,7 +264,8 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
     out_rows = []
     for rid, rounds in stored.items():
         m = ctx[rid]["match_id"]
-        out_rows.extend(_cast_rows(rid, ctx[rid], prepared[rid], model, util_values.weights_for(fit, m)))
+        out_rows.extend(_cast_rows(rid, ctx[rid], prepared[rid], model, util_values.weights_for(fit, m),
+                                   painted_table=painted_table))
 
     lineup_of = lambda r: (r["player_id"], r["ability"], r["map"], r["side"], r["area"])  # noqa: E731
     lineup_matches: dict[tuple, set] = defaultdict(set)
@@ -354,10 +373,11 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
             "estimator": {k: (model or {}).get(k) for k in ("n", "matches", "check", "calibration")}}
 
 
-def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model) -> dict:
+def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model, *,
+                       painted_table: dict | None = None) -> dict:
     """build_corpus's computing, with no database: `inputs` from corpus_inputs on the same `rows`."""
     stored, ctx, friends = inputs
-    out = build_from_rounds(stored, ctx, model, friends)
+    out = build_from_rounds(stored, ctx, model, friends, painted_table=painted_table)
     out["fingerprints"] = {}
     for r in rows:
         out["fingerprints"].setdefault(str(r[0]), {})[str(r[1])] = r[2]
@@ -417,6 +437,8 @@ def values_key(key_parts, model_key) -> str:
     p = key_parts
     h = hashlib.sha256(f"{p['values_version']}:{p['page_version']}:{model_key}:{p['abilities_hash']}:"
                        f"{p['constants_version']}:{p['friends_hash']}".encode())
+    if p.get("areas_hash") is not None:     # absent or None: no reviewed paint, the key is the pre-paint key
+        h.update(f":areas={p['areas_hash']}".encode())
     for rid, n, fp, at in sorted(p["rows"], key=lambda r: (r[0], r[1])):
         h.update(f"|{rid}:{n}:{fp}:{at}".encode())
     for rid, match_id, offset in sorted(p["replays"]):
@@ -424,7 +446,8 @@ def values_key(key_parts, model_key) -> str:
     return h.hexdigest()[:32]
 
 
-def encode_context(ctx, friends, model_or_None, rows, excluded, refit, key_parts) -> bytes:
+def encode_context(ctx, friends, model_or_None, rows, excluded, refit, key_parts,
+                   painted_table: dict | None = None) -> bytes:
     """Freeze replay context and ordered row metadata without loading their blobs.
 
     Pair lists keep integer keys, tuple loadout keys, and insertion order without JSON object-key coercion.
@@ -437,7 +460,10 @@ def encode_context(ctx, friends, model_or_None, rows, excluded, refit, key_parts
                               "loadout": [[n, team, value] for (n, team), value in c["loadout"].items()]}])
     return encode_output({"ctx": replays, "friends": sorted(friends), "model": model_or_None,
                           "rows": [[rid, n, fp, _at_us(at)] for rid, n, fp, at, *_ in rows],
-                          "excluded": sorted(excluded), "refit": bool(refit), "key_parts": key_parts})
+                          "excluded": sorted(excluded), "refit": bool(refit), "key_parts": key_parts,
+                          # the published paint itself: the worker has no git checkout to read it from
+                          "areas": [[name, painted.raw.decode("utf-8")]
+                                    for name, painted in sorted((painted_table or {}).items())]})
 
 
 def decode_context(data: bytes) -> dict:
@@ -450,7 +476,20 @@ def decode_context(data: bytes) -> dict:
     context["excluded"] = set(context["excluded"])
     context["rows"] = [(rid, n, fp, _EPOCH + timedelta(microseconds=at))
                        for rid, n, fp, at in context["rows"]]
+    context["areas"] = _painted_table(context.get("areas") or [])
     return context
+
+
+def _painted_table(pairs) -> dict:
+    from app.coach import areas
+
+    table = {}
+    for name, text in pairs:
+        painted = areas.from_raw(name, text.encode("utf-8"))
+        if painted is None:
+            raise ValueError(f"invalid painted areas for {name!r} in the build context")
+        table[name] = painted
+    return table
 
 
 @dataclass(frozen=True)
@@ -521,5 +560,5 @@ def compute(inputs: Inputs) -> dict:
         data = inputs.rounds[row_key(*row)]
         if data:
             stored[row[0]][row[1]] = data
-    values = corpus_from_inputs((stored, c["ctx"], c["friends"]), c["rows"], win)
+    values = corpus_from_inputs((stored, c["ctx"], c["friends"]), c["rows"], win, painted_table=c["areas"])
     return {"win": win, "values": values, "values_key": values_key(c["key_parts"], (win or {}).get("key"))}

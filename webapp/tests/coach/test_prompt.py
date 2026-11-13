@@ -11,6 +11,7 @@ def test_the_run_prompt_carries_the_playbook_brief_and_the_command():
     assert "Trade your teammate." in text and '"Owner#1"' in text
     assert "./q where" in text and "./q knew" in text and "trading, rotation" in text
     assert '"points"' in text and '"evidence"' in text
+    assert "one second before the moment" in text and "area.path" in text
 
 
 def test_the_run_prompt_asks_for_no_voice():

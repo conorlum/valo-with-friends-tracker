@@ -21,7 +21,12 @@ router = APIRouter(tags=["coach"])
 
 
 def _whole(value) -> int | None:
-    return int(value) if isinstance(value, str) and value.isdigit() else None
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def linked_replay_or_404(db: Session, match_uuid: str):
@@ -63,13 +68,20 @@ async def feedback_form(request: Request) -> dict[str, str]:
     return {key: value for key, value in (await request.form()).items() if isinstance(value, str)}
 
 
-def parse_feedback_form(form: dict[str, str]) -> tuple[dict[int, tuple[str | None, str]], str]:
-    """`verdict_<i>` and `note_<i>` for each moment i of the point, `note` for the point as a whole."""
-    moments: dict[int, tuple[str | None, str]] = {}
+def parse_feedback_form(form: dict[str, str]) -> tuple[dict[int, coach_service.FeedbackMoment], str]:
+    """The verdict, note and area correction for each moment, plus the overall note."""
+    moments: dict[int, coach_service.FeedbackMoment] = {}
     for key in form:
-        name, _, index = key.partition("_")
-        if name in ("verdict", "note") and index.isdigit():
-            moments[int(index)] = (form.get(f"verdict_{index}") or None, form.get(f"note_{index}", ""))
+        name, _, index = key.rpartition("_")
+        instance = _whole(index)
+        if name not in ("verdict", "note", "area", "area_player") or instance is None or instance in moments:
+            continue
+        raw_player = form.get(f"area_player_{index}")
+        player_id = _whole(raw_player)
+        if raw_player and player_id is None:
+            raise coach_service.ReportError("choose a player in this match for the area correction")
+        moments[instance] = (form.get(f"verdict_{index}") or None, form.get(f"note_{index}", ""),
+                             form.get(f"area_{index}", ""), player_id)
     return moments, form.get("note", "")
 
 
@@ -80,8 +92,8 @@ def post_feedback(request: Request, match_uuid: str, point_id: int, form: dict =
     viewer = get_current_player(request, db)
     if viewer is None:
         raise HTTPException(status_code=403, detail="Log in to give feedback")
-    moments, overall = parse_feedback_form(form)
     try:
+        moments, overall = parse_feedback_form(form)
         coach_service.save_point_feedback(db, replay.match_id, point_id, viewer.id, moments, overall)
     except LookupError:
         raise HTTPException(status_code=404) from None

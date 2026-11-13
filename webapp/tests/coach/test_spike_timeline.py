@@ -126,7 +126,8 @@ def test_a_start_in_no_alive_interval_runs_to_the_cap(tmp_path):
 def test_the_plant_carries_the_planter_and_the_bombs_own_place(tmp_path):
     snap = make(tmp_path, bomb(t=10.0, by=1))
     (plant,) = [e for e in query.timeline(snap, 1)["events"] if e["kind"] == "plant"]
-    assert plant == {"t": 10.0, "kind": "plant", "by": "P1#T1", "area": {"name": "B Site", "super": "B"}}
+    assert plant == {"t": 10.0, "kind": "plant", "by": "P1#T1",
+                     "area": {"name": "B Site", "super": "B", "path": ["B Site"], "approximate": True}}
 
 
 def test_a_guessed_planter_is_not_named(tmp_path):

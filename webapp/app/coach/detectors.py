@@ -96,7 +96,8 @@ def _flashes(view, slot):
 
 
 def _site_of(area: dict | None) -> str | None:
-    return area["super"] if area and area["super"] in areas.SITES else None
+    region = area["super"] if area else None
+    return region if region in areas.SITES else None
 
 
 def _stack(view, slot, knew, role):

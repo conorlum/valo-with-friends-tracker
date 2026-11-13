@@ -1,7 +1,8 @@
 import pytest
 
-from app.coach import checker, query, snapshot
+from app.coach import areas, checker, query, snapshot
 from tests.coach import toys
+from tests.coach.test_areas import NAMES, painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT
 
 THEMES = ("trading", "rotation")
@@ -383,7 +384,6 @@ def test_the_points_own_figures_pass_in_their_own_form(snap, log):              
 @pytest.fixture
 def toy_areas(monkeypatch):
     """The toy map's named areas, as callouts.json would hold them for a real map."""
-    from app.coach import areas
     monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
 
 
@@ -391,11 +391,111 @@ def test_a_named_area_must_be_in_a_cited_answer(toy_areas, snap, tmp_path):     
     query.run(snap, tmp_path, "distance", ["1", "10", "P0", "P5"])      # q1: no place in it
     query.run(snap, tmp_path, "where", ["1", "10"])                     # q2: A Site and B Site
     log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    assert log["q2"]["result"]["players"][0]["area"]["approximate"] is True
     found = _check(snap, log, "You held Mid Courtyard.", GOOD_ONE)
     assert any("the area Mid Courtyard" in p for p in found), found
     where = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q2"]}]
     assert _check(snap, log, "You held A Site, they held B Site.", where) == []
     assert any("Mid Courtyard" in p for p in _check(snap, log, "You held Mid Courtyard.", where))
+
+
+@pytest.fixture
+def painted_snap(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    match = {**CONTEXT["match"], "map": "Sunset", "rounds": [5, 9]}
+    context = {**CONTEXT, "match": match, "rounds": {str(n): {"db": {}, "stats": {}} for n in match["rounds"]}}
+    blobs = {n: toys.round_blob(toys.ten(), n=n) for n in match["rounds"]}
+    controls = {n: ("ok", False, SHARES) for n in match["rounds"]}
+    write_paint(tmp_path, painted_object({areas.cell_at(8000, 8000): 2}))
+    return snapshot.Snapshot(snapshot.assemble(context, blobs, controls))
+
+
+@pytest.mark.parametrize("asked, end, area, accepted", [
+    (19.5, None, "Top Mid", True),
+    (19.5, None, "Mid", True),
+    (19.0, None, "Top Mid", True),
+    (18.9, None, "Top Mid", False),
+    (14.0, None, "Top Mid", False),
+    (20.1, None, "Top Mid", False),
+    (23.0, 24.0, "Top Mid", True),
+])
+def test_a_where_path_grounds_its_names_in_the_moments_time_window(painted_snap, tmp_path, asked, end, area, accepted):
+    query.run(painted_snap, tmp_path, "where", ["5", str(asked)])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    inst = [{"round": 5, "t": 20.0, "t1": end, "caption": "", "evidence": ["q1"]}]
+    found = _check(painted_snap, log, f"You held {area}.", inst)
+    if accepted:
+        assert found == []
+    else:
+        assert f"the area {area} is not in a cited answer" in found
+
+
+def test_a_where_area_matches_the_time_of_a_moment_in_its_own_round(painted_snap, tmp_path):
+    query.run(painted_snap, tmp_path, "timeline", ["5"])
+    query.run(painted_snap, tmp_path, "where", ["9", "19.5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    first = {"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}
+    second = {"round": 9, "t": 24.0, "caption": "", "evidence": ["q2"]}
+    assert "the area Top Mid is not in a cited answer" in _check(
+        painted_snap, log, "You held Top Mid.", [first, second],
+    )
+    assert _check(painted_snap, log, "You held Top Mid.", [first, {**second, "t": 20.0}]) == []
+
+
+def test_a_knew_path_grounds_the_enemy_area_at_its_own_sighting_time(painted_snap, tmp_path):
+    query.run(painted_snap, tmp_path, "knew", ["5", "15", "A"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    inst = [{"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    assert _check(painted_snap, log, "The enemy was last seen in Top Mid.", inst) == []
+    assert _check(painted_snap, log, "The enemy was last seen in Mid.", inst) == []
+
+
+def test_a_longer_area_match_does_not_imply_a_separate_shorter_name(painted_snap, tmp_path):
+    names = [NAMES[0], {**NAMES[1], "parent": 3, "super": "A"}, NAMES[2]]
+    write_paint(tmp_path, painted_object({areas.cell_at(8000, 8000): 2}, names=names))
+    query.run(painted_snap, tmp_path, "where", ["5", "19.5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    inst = [{"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    assert _check(painted_snap, log, "You held Top Mid.", inst) == []
+    assert _check(painted_snap, log, "You held Top Mid, then moved to Mid.", inst) == [
+        "the area Mid is not in a cited answer",
+    ]
+
+
+def test_a_legacy_where_area_without_a_path_grounds_its_name(toy_areas, snap):
+    log = {"q1": {"cmd": "where", "args": [1, 19.5],
+                  "result": {"t": 19.5, "players": [{"area": {"name": "A Site", "super": "A"}}]}}}
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    assert _check(snap, log, "You held A Site.", inst) == []
+
+
+def test_where_grounds_only_the_moment_that_cites_it(painted_snap, tmp_path):
+    query.run(painted_snap, tmp_path, "where", ["5", "19.5"])
+    query.run(painted_snap, tmp_path, "timeline", ["5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    first = {"round": 5, "t": 20.0, "caption": "", "evidence": ["q2"]}
+    second = {"round": 5, "t": 29.0, "caption": "You held Top Mid.", "evidence": ["q1"]}
+    assert "the area Top Mid is not in a cited answer" in _check(painted_snap, log, "Hold the angle.", [first, second])
+    timely = {**first, "caption": "You held Top Mid.", "evidence": ["q1"]}
+    assert _check(painted_snap, log, "You held Top Mid.", [timely, {**second, "caption": "", "evidence": ["q2"]}]) == []
+    # Even a timely citation in another moment cannot support this caption.
+    assert "the area Top Mid is not in a cited answer" in _check(
+        painted_snap, log, "Hold the angle.", [timely, {**second, "evidence": ["q2"]}],
+    )
+
+
+@pytest.mark.parametrize("text, claim", [
+    ("A better trade", False), ("B is open", False),
+    ("A site", True), ("site A", True), ("A-site", True), ("A Site", True), ("SITE A", True),
+])
+def test_single_letter_areas_require_a_site_word(painted_snap, tmp_path, text, claim):
+    names = [{**NAMES[0], "name": "A"}, {**NAMES[2], "name": "B"}]
+    write_paint(tmp_path, painted_object({}, names=names))
+    query.run(painted_snap, tmp_path, "timeline", ["5"])
+    log = checker.trusted_log(query.read_log(tmp_path), painted_snap, {})
+    inst = [{"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    found = _check(painted_snap, log, text, inst)
+    assert bool(found) is claim
 
 
 def test_a_mistake_cannot_rest_on_an_enemy_the_side_could_not_see(toy_areas, tmp_path):          # finding 3
@@ -462,11 +562,17 @@ def spike_log(toy_areas, tmp_path):
 SPIKE_INST = [{"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}]
 
 
-@pytest.mark.parametrize("body", ["The spike was planted on B Site.", "You made a 1.9 s tap.",
-                                  "You tapped with 15 s on the spike."])
-def test_a_cited_spike_area_attempt_length_and_time_left_pass(spike_log, body):
+@pytest.mark.parametrize("body", ["You made a 1.9 s tap.", "You tapped with 15 s on the spike."])
+def test_a_cited_attempt_length_and_time_left_pass(spike_log, body):
     snap, log = spike_log
     assert _check(snap, log, body, SPIKE_INST) == []
+
+
+def test_a_timeline_spike_area_alone_does_not_ground_a_named_area(spike_log):
+    snap, log = spike_log
+    assert _check(snap, log, "The spike was planted on B Site.", SPIKE_INST) == [
+        "the area B Site is not in a cited answer",
+    ]
 
 
 def test_an_attempt_length_not_in_the_answer_fails(spike_log):
@@ -705,3 +811,10 @@ def test_caption_does_not_weaken_body_ability_count_or_target(ability_snap, body
     errors = _check_ability_targets(ability_snap, "Haunt revealed an enemy.", ["the enemy Jett"],
                                   body=body)
     assert any("no cited knew signal" in e for e in errors)
+@pytest.mark.parametrize("area", ["A", "A Site", "B", "B Site", "C", "C Site"])
+@pytest.mark.parametrize("spelling", ["{s} site", "{s_lower} site", "site {s}", "{s}-site"])
+def test_site_spellings_count_as_area_mentions(area, spelling):
+    text = spelling.format(s=area[0], s_lower=area[0].lower())
+    assert checker._area_problems(text, set(), [area], False)
+    assert checker._area_problems(text, {area}, [area], False) == []
+    assert checker._area_problems("A better trade", set(), [area], False) == []

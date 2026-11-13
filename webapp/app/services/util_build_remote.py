@@ -24,6 +24,7 @@ from sqlalchemy import String, case, cast, func, literal, select, text, tuple_
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
+from app.coach import areas
 from app.config import settings
 from app.critutil import build_digest, corpus
 from app.models.friendship import Friendship
@@ -293,14 +294,16 @@ def _prepare(db, state: UtilState, digest: str, now: float) -> bool:
     state.obs_keys = observations
     state.digest = digest
     state.prepared_signature = state.last_signature
-    parts = replay_util.corpus_key_parts(db, state.rows)
+    painted_table = areas.load_table(published_only=True)
+    parts = replay_util.corpus_key_parts(db, state.rows, painted_table=painted_table)
     model = None if state.refit else util_model.load(db)
     if not state.refit and (model or {}).get("key") != state.win_key:
         raise _Changed("estimator changed while preparing")
     ctx = replay_util._replay_context(db, {r[0] for r in state.rows})
     friends = replay_util.friend_players(db)
     # Bytes detach every nested context value from the session and future DB edits.
-    state.context = corpus.encode_context(ctx, friends, model, state.rows, state.excluded, state.refit, parts)
+    state.context = corpus.encode_context(ctx, friends, model, state.rows, state.excluded, state.refit, parts,
+                                          painted_table)
     state.have_pending = True
     state.resends = 0
     state.build_id = None
