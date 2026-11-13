@@ -238,7 +238,7 @@ the controller times probe_w4 once and writes `<s per probe> x 7 runs = total` i
   round's 4 Hz alive player positions (the blob's tracks as `app/coach/roundview.py:103` reads them) mapped to the
   stored row's walk bitmap (`cf.unpack_data`, `cf.walk_bitmap`, `app/replays/control_format.py:209`; cell from uv as
   in `app/coach/control_areas.py:18-22`), `inside` = positions on non-walk cells; `step(session_factory, now,
-  budget)`: up to `STEP_ROWS = 20` (`PROVISIONAL(D<n>)` until W14 times one replay) ok control rows whose share row is
+  budget)`: up to `STEP_ROWS = 20` (D12: kept after W14 timed one replay) ok control rows whose share row is
   missing or has another fingerprint, oldest first; idle only (no upload parse running, no control in flight).
   Hooked in the dispatcher loop beside the heights step (`app/services/replay_control_remote.py:889`), wrapped as
   that step is (`:888-898`: try/except, `loop_ok` / `loop_failed`): a failure never stops map control. Never in
@@ -264,7 +264,7 @@ the controller times probe_w4 once and writes `<s per probe> x 7 runs = total` i
 - Expected: today's Corrode shares near zero (unit: positions; variant: current assets); pre-#197 Corrode clearly
   higher; every map's 13.06 and 13.08 shares similar. A picture: Corrode's positions on non-walk cells over the old
   mask (PNG in the run folder) for the card.
-- Output: the threshold (PROVISIONAL): the share above which a patch's replays alarm, and a minimum replay count,
+- Output: the threshold (D12, approved: a rise of 0.5 points over the baseline, at least 4 replays; was a flat share): the share above which a patch's replays alarm, and a minimum replay count,
   each with its arithmetic from the table. A tier 2 `D` entry with the table and the picture.
 
 ### W15: the `map_layout_walls` Site health error
@@ -272,7 +272,7 @@ the controller times probe_w4 once and writes `<s per probe> x 7 runs = total` i
 - Files: `app/services/layout_walls.py` `evaluate(db)`: reads share rows joined to current ok control rows only
   (same replay, round and `control_fingerprint`), so a deleted or recomputed replay's rows count nothing. Per map,
   per layout: baseline = share over replays whose patch ≤ `drawn_from`; for each later patch with ≥ `MIN_REPLAYS`
-  replays, share > `THRESHOLD` (both `PROVISIONAL(D<n>)`) → `site_health.record("map_layout_walls",
+  replays, share > `THRESHOLD` (both D12, approved) → `site_health.record("map_layout_walls",
   f"{map}:{patch}", …)` with map, patch, replay count, share, baseline and the top 3 callouts where positions land.
   Every open `map_layout_walls` key this pass didn't raise is resolved (a redraw moves a patch's replays to a layout
   whose `drawn_from` covers it, so that patch is never evaluated again). Run after each `step` batch.
