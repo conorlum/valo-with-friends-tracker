@@ -45,6 +45,7 @@ PAGE_ROUTES = {
     "//riot.txt": "not_page",
     "/accounts": "page",
     "/accounts/search": "not_page",
+    "/admin/deploy/status": "not_page",
     "/admin/replays/archive": "not_page",
     "/admin/replays/reparse/status": "not_page",
     "/admin/replays/uploads/{upload_id}": "not_page",
@@ -771,7 +772,7 @@ CACHE_FALLBACK_KEYS = frozenset({
 # Kinds stored in site_events: the only ones a resolved-file entry can clear.
 RECORDED_KINDS = frozenset({
     "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
-    "slow_page", "warm_vanished", "map_layout_walls", "trip_too_long",
+    "slow_page", "warm_vanished", "map_layout_walls", "trip_too_long", "forced_deploy",
 })
 KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)

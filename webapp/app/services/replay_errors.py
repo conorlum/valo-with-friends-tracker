@@ -52,6 +52,7 @@ KINDS = (
     ("slow_page", "Slow page loads"),
     ("loop_failed", "Background loops that failed"),
     ("loop_quiet", "Background loops gone quiet"),
+    ("forced_deploy", "Deploy forced after 60 min"),
     ("util_build_failed", "Critical Util build failed"),
     ("util_build_stale", "Critical Util build out of date"),
     ("worker_overrun", "Worker jobs that ran over"),
@@ -65,13 +66,13 @@ KINDS = (
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
 GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_page": "Pages",
-          "loop_failed": "Background work", "loop_quiet": "Background work",
+          "loop_failed": "Background work", "loop_quiet": "Background work", "forced_deploy": "Background work",
           "util_build_failed": "Background work", "util_build_stale": "Background work",
           "worker_overrun": "Background work", "worker_refused": "Background work", "warm_vanished": "Background work",
           "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data", "cache_fallback": "Data",
           "map_layout_walls": "Data"}
 EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
-                         "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback",
+                         "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback", "forced_deploy",
                          "trip_too_long", "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events
