@@ -120,11 +120,29 @@ def _packed_in(raw: int, size: int) -> int:
     return _Bits(raw.to_bytes((size + 7) // 8, "little"), size).packed()
 
 
+def _plain_life_changes(items: list) -> list[dict] | None:
+    """Schema 9's `LifeChangeEvents`: a plain list of {ChangedComponent (a GUID after `loads_row`), LifeResult,
+    DeltaLife, AliveAfterChange}, the field names `MulticastNotifyHeal.LifeChanges` uses. `alive` is 0/1 as the
+    packed form stores it, None when absent. None when any item can't be read."""
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        guid, res, delta, alive = (item.get("ChangedComponent"), _number(item.get("LifeResult")),
+                                   _number(item.get("DeltaLife")), item.get("AliveAfterChange"))
+        if isinstance(guid, bool) or not isinstance(guid, int) or res is None or delta is None:
+            return None
+        out.append({"g": guid, "res": res, "d": delta, "alive": int(alive) if isinstance(alive, bool) else None})
+    return out
+
+
 def decode_life_changes(blob) -> list[dict] | None:
     """The sections of a damage notify's `LifeChangeEvents` ({BitCount, Data}): [{g, res, d, alive}], `alive`
     None when the section doesn't carry it, or None when the blob can't be read whole. Bits are LSB-first; an
     intpacked count, then per element an intpacked index and (intpacked handle, intpacked size, size bits)
     fields until handle 0."""
+    if isinstance(blob, list):
+        return _plain_life_changes(blob)
     if not isinstance(blob, dict) or not isinstance(blob.get("Data"), str):
         return None
     count = blob.get("BitCount")

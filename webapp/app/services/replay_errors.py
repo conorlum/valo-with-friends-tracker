@@ -47,6 +47,7 @@ KINDS = (
     ("unlinked", "Replays unlinked"),
     ("needs_a_person", "Needs a person"),
     ("feature_failed", "Map features failed to verify"),
+    ("trip_too_long", "Cypher trips longer than 16 m"),
     ("page_error", "Pages that crashed"),
     ("slow_page", "Slow page loads"),
     ("loop_failed", "Background loops that failed"),
@@ -71,7 +72,7 @@ GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_p
           "map_layout_walls": "Data"}
 EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
                          "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback",
-                         "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls"})
+                         "trip_too_long", "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events
 KILL_IMPACT_RECHECK_S = 600  # How often the background pass compares stored per-kill fingerprints

@@ -778,23 +778,6 @@
     return out;
   }
 
-  // Trapwire: each first anchor pairs with the unpaired second anchor of the same owner
-  // spawned closest in time (within 1 s). Returns {index of first: second ability}.
-  function pairWires(abilities) {
-    var pairs = {}, used = {};
-    (abilities || []).forEach(function (a, i) {
-      if (a.name !== "4_TripWire") return;
-      var best = -1, bestDt = 1.0;
-      abilities.forEach(function (b, j) {
-        if (used[j] || b.name !== "4_TripWire_SecondWire" || b.slot !== a.slot) return;
-        var dt = Math.abs(b.t0 - a.t0);
-        if (dt <= bestDt) { best = j; bestDt = dt; }
-      });
-      if (best >= 0) { used[best] = true; pairs[i] = abilities[best]; }
-    });
-    return pairs;
-  }
-
   // A signed number with an explicit sign (U+2212 for minus), never colour alone.
   function signed(value) {
     if (value === null || value === undefined || isNaN(value)) return "";
@@ -1710,7 +1693,7 @@
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
-        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities),
+        return { blob: blob, tracks: decodeRound(blob), extras: extras,
                  traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
       });
     }
@@ -2731,11 +2714,13 @@
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
-          // The far end: the second anchor its placement listed (`end`), else a same-owner pairing.
-          var other = a.end ? { u: a.end[0], v: a.end[1] } : self.current.wires[all.indexOf(a)];
+          // The far end comes only from the placement's stored endpoint.
+          var other = a.end ? { u: a.end[0], v: a.end[1] } : null;
           ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4.5);
           if (other) {
+            if (a.long === true) ctx.setLineDash([r / 3, r / 4]);
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(other.u * s, other.v * s); ctx.stroke();
+            ctx.setLineDash([]);
             ctx.fillStyle = color; ctx.beginPath(); ctx.arc(other.u * s, other.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
           }
           if (typeof a.gone === "number" && t >= a.gone && other) {
@@ -4437,7 +4422,7 @@
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,

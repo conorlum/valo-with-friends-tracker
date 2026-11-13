@@ -217,3 +217,78 @@ def test_a_refused_scoring_preflight_stops_the_store_before_the_condense(export,
     args = ["--export-dir", str(export["dir"]), "--vrf", str(export["vrf"]), "--parser-dir", str(export["parser"])]
     assert ingest_replay.main(args, store_factory=refuse) == 3
     assert "REFUSED: the scoring ingest preflight: the gate is open" in capsys.readouterr().err
+
+
+
+# -- trip_too_long: the local store paths note the stored condense, then flush before the process exits
+
+
+class _Session:
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _local_store_fakes(monkeypatch, action, order):
+    from types import SimpleNamespace
+
+    from app.replays import store as store_module
+    from app.services import site_health
+
+    session = _Session()
+    result = SimpleNamespace(action=action, replay_id=5, link_status="unlinked", report={})
+    monkeypatch.setattr(store_module, "store_replay", lambda *a, **k: order.append("store") or result)
+    monkeypatch.setattr(site_health, "note_trip_lengths",
+                        lambda r, report, match_uuid: order.append(("note", r.action, report, match_uuid)))
+    monkeypatch.setattr(site_health, "flush_for", lambda db: order.append(("flush", db is session)))
+    return session, result
+
+
+@pytest.mark.parametrize("action", ["stored", "unchanged", "kept_existing"])
+def test_the_local_ingest_notes_the_result_then_flushes(monkeypatch, action, capsys):
+    from types import SimpleNamespace
+
+    order = []
+    session, _ = _local_store_fakes(monkeypatch, action, order)
+    replay = SimpleNamespace(match_uuid=MATCH_UUID.upper(), report={"extras": {"wires_too_long": 3}})
+    ingest_replay.store(replay, False, lambda: session)
+    assert order == ["store", ("note", action, replay.report, replay.match_uuid), ("flush", True)]  # the helper lowers it
+    assert session.closed
+
+
+def test_the_local_ingest_that_is_refused_notes_nothing_and_still_flushes(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.replays import store as store_module
+    from app.services import site_health
+
+    order = []
+    monkeypatch.setattr(store_module, "store_replay",
+                        lambda *a, **k: (_ for _ in ()).throw(store_module.StoreRefused("deleted on request")))
+    monkeypatch.setattr(site_health, "note_trip_lengths", lambda *a: order.append("note"))
+    monkeypatch.setattr(site_health, "flush_for", lambda db: order.append("flush"))
+    replay = SimpleNamespace(match_uuid=MATCH_UUID, report={})
+    assert ingest_replay.store(replay, False, lambda: _Session()) == 3
+    assert order == ["flush"]
+
+
+def test_reingest_replays_notes_each_stored_result_then_flushes(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import reingest_replays
+    from app.replays import condense, contract
+
+    order = []
+    session, _ = _local_store_fakes(monkeypatch, "replaced", order)
+    condensed = SimpleNamespace(match_uuid=MATCH_UUID, report={"extras": {"wires_too_long": 1}})
+    monkeypatch.setattr(contract, "load_manifest", lambda d: None)
+    monkeypatch.setattr(condense, "condense_export_dir", lambda *a, **k: condensed)
+    monkeypatch.setattr(reingest_replays, "_sha256", lambda p: "0" * 64)
+    parser = tmp_path / "parser"
+    (parser / "bin").mkdir(parents=True)
+    (parser / "bin" / "BUILD.json").write_text("{}")
+    args = SimpleNamespace(archive=tmp_path, export_root=tmp_path, parser_dir=parser)
+    entries = [{"match_uuid": MATCH_UUID, "action": "re-ingest from the archive"}]
+    assert reingest_replays.reingest(entries, args, lambda: session) == 0
+    assert order == ["store", ("note", "replaced", condensed.report, MATCH_UUID), ("flush", True)]

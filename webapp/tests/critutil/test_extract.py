@@ -123,6 +123,23 @@ def test_two_buy_phase_trips_condensed_to_zero_are_two_casts_each_with_its_own_a
         assert sorted(sorted(c.ids) for c in casts) == [[7884, 7912], [7948, 7976]]
 
 
+@pytest.mark.parametrize("long_marked", [False, True])
+def test_a_long_trips_second_anchor_belongs_to_its_cast(long_marked):
+    end_y = 120 + px(17)
+    wire = toy_ability("Gumshoe", "4_TripWire", 300, 120, 1, t=0.0, t1=28.0,
+                       kind="GameObject", id=101, end=list(uv(300, end_y)),
+                       **({"long": True} if long_marked else {}))
+    anchor = toy_ability("Gumshoe", "4_TripWire_SecondWire", 300, end_y, 1, t=0.0, t1=28.0,
+                         kind="GameObject", id=102)
+    rnd, data = round_of(players(), util=[wire], geo=GEO)
+    (cast,) = extract.build_casts(rnd, data)
+    assert extract._anchored([cast], anchor) is cast
+
+    rnd, data = round_of(players(), util=[wire, anchor], geo=GEO)
+    (cast,) = extract.build_casts(rnd, data)
+    assert sorted(cast.ids) == [101, 102]
+
+
 def test_one_use_whose_same_pieces_land_at_two_places_mid_round_stays_one_cast():
     # Skye's ult: three seekers of one name at once, mid-round. Only the buy phase's clamp splits by place.
     util = [toy_ability("Guide", "X_Pack", 200 + 30 * i, 200, 1, t=20.0 + 0.1 * i, t1=26.0, kind="Pawn", id=40 + i)

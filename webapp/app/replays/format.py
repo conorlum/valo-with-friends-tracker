@@ -32,6 +32,9 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 `thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
 `path` point, `[t, u, v, z]`.
 
+A tripwire's first anchor with an `end` also has `"long": true` when its anchors are more than 16 m apart
+(app/replays/extras.py TRIP_MAX_M); the key is left out otherwise, and the viewer reads it, never measures.
+
 Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b): `util` has
 `{"k": "cast", "t", "by", "code", "name"}` per use of a movement ability (app/replays/extras.py
 MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser
@@ -116,7 +119,9 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 28
+CONDENSE_REVISION = 29
+# 29: schema 9 placement contexts and DamageOrigin read again; trips over 16 m marked long; carried trips
+                         #     paired; ground fragment deltas and LifeChangeEvents read again;
 # 28: Ascent doors read opening/open (the shared door-evidence rule), so a reopened door is no longer
                          #     unverified (replays of match 6f12db3e r18 and a5549826 r8, 2026-11-09);
                          # 27: link_inputs "match_end": how the game state ended the match

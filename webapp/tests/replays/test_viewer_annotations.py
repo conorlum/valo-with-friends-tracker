@@ -36,11 +36,12 @@ DRAW = r"""
   const R = require(process.argv[1]);
   function mockCtx(log) {
     const keys = ["fillStyle", "strokeStyle", "globalAlpha", "font", "lineWidth", "textAlign", "textBaseline",
-                  "lineDashOffset", "globalCompositeOperation", "lineCap", "lineJoin"];
+                  "lineDashOffset", "globalCompositeOperation", "lineCap", "lineJoin", "dash"];
     let path = [], stack = [], tf = [1, 0, 0, 1, 0, 0];
     const c = {fillStyle: "#000", strokeStyle: "#000", globalAlpha: 1, font: "10px sans-serif", lineWidth: 1,
-               textAlign: "start", textBaseline: "alphabetic", lineDashOffset: 0};
-    const snap = () => ({fill: c.fillStyle, stroke: c.strokeStyle, alpha: c.globalAlpha, font: c.font, tf: tf.slice()});
+               textAlign: "start", textBaseline: "alphabetic", lineDashOffset: 0, dash: []};
+    const snap = () => ({fill: c.fillStyle, stroke: c.strokeStyle, alpha: c.globalAlpha, font: c.font,
+                        tf: tf.slice(), dash: c.dash.slice()});
     const rec = (op) => {
       const pts = path.filter(p => p[0] === "M" || p[0] === "L");
       const arcs = path.filter(p => p[0] === "A");
@@ -66,7 +67,7 @@ DRAW = r"""
         const m = /(\d+(?:\.\d+)?)px/.exec(c.font); const px = m ? parseFloat(m[1]) : 10;
         return {width: String(text).length * px * 0.6};
       },
-      setLineDash() {}, getLineDash() { return []; }, clip() {}, clearRect() {},
+      setLineDash(dash) { c.dash = dash.slice(); }, getLineDash() { return c.dash.slice(); }, clip() {}, clearRect() {},
       drawImage() { log.push({op: "drawImage"}); }
     });
     return new Proxy(c, {get: (o, k) => (k in o ? o[k] : () => {})});
@@ -83,7 +84,7 @@ DRAW = r"""
                              control: false, gaps: false}, p.layers || {}),
       view: p.view || {k: 1, ox: 0, oy: 0}, canvas: {width: 1024, setAttribute() {}}, map: {complete: false},
       ui: {state: {}, hud: {hidden: true, innerHTML: ""}}, controlCache: null, control: null,
-      current: {blob: blob, tracks: R.decodeRound(blob), extras: extras, wires: R.pairWires(extras.abilities),
+      current: {blob: blob, tracks: R.decodeRound(blob), extras: extras,
                 state: R.indexRoundState(blob, extras.abilities)}
     });
     v.ctx = mockCtx(log);
@@ -154,6 +155,46 @@ def spike_round(extra_util=(), **kw):
 
 def draw(blob, t, **kw):
     return run_node(DRAW, dict({"blob": blob, "t": t, "linked": LINKED}, **kw))
+
+
+@needs_node
+def test_trapwire_anchors_without_stored_ends_stay_alone():
+    util = [
+        {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": name,
+         "by": 1, "t": 0, "t1": None, "u": u, "v": v}
+        for name, u, v in [
+            ("4_TripWire", 1000, 2000), ("4_TripWire", 3000, 4000),
+            ("4_TripWire_SecondWire", 5000, 6000), ("4_TripWire_SecondWire", 7000, 8000),
+        ]
+    ]
+    out = draw(round_blob([], util=util), 5.0)
+    lines = [row for row in out["log"] if row["op"] == "stroke"
+             and [p[0] for p in row["path"]] == ["M", "L"]]
+    assert lines == [], "simultaneous anchors cannot identify the far ends"
+    anchors = [h for h in out["hits"] if "Trapwire" in h["text"]]
+    assert [(h["x"], h["y"]) for h in anchors] == [
+        (1000 * out["s"], 2000 * out["s"]), (3000 * out["s"], 4000 * out["s"]),
+    ]
+
+
+@needs_node
+@pytest.mark.parametrize("long", [False, True])
+@pytest.mark.parametrize("linked", [LINKED, None], ids=["linked", "unlinked"])
+def test_trapwire_uses_stored_end_and_long_flag(long, linked):
+    anchor = {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": "4_TripWire",
+              "by": 1, "t": 0, "t1": None, "u": 1000, "v": 2000, "end": [9000, 8000], "end_z": 300}
+    if long:
+        anchor["long"] = True
+    second = {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": "4_TripWire_SecondWire",
+              "by": 1, "t": 0, "t1": None, "u": 4000, "v": 5000}
+    out = draw(round_blob([], util=[anchor, second]), 5.0, linked=linked)
+    lines = [row for row in out["log"] if row["op"] == "stroke"
+             and [p[0] for p in row["path"]] == ["M", "L"]]
+    [wire] = lines
+    assert wire["path"] == [["M", 1000 * out["s"], 2000 * out["s"]],
+                            ["L", 9000 * out["s"], 8000 * out["s"]]]
+    assert bool(wire["dash"]) is long
+    assert all(row["dash"] == [] for row in out["log"][out["log"].index(wire) + 1:]), "reset after the wire"
 
 
 def spikes(out):
