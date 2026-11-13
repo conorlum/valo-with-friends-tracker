@@ -394,7 +394,7 @@ def test_child_recomputes_regions_and_uses_layout_checks(height_layouts, monkeyp
     assert seen[0][2]["must_block"] == hi.must_block_path(key)
 
 
-@pytest.mark.parametrize("missing", ["target", "mask", "map", "pool"])
+@pytest.mark.parametrize("missing", ["target", "mask", "map", "pool", "newer mask"])
 def test_child_refuses_unavailable_regions_as_unknown_layout(height_layouts, monkeypatch, height_child, missing):
     folder, registry = height_layouts
     key = "Toy_13_10"
@@ -406,6 +406,9 @@ def test_child_refuses_unavailable_regions_as_unknown_layout(height_layouts, mon
         registry["maps"].pop("Toy")
     elif missing == "pool":
         manifest["regions"]["pool"] = [[str(UUID(int=104)), "Toy_13_12"]]
+    elif missing == "newer mask":
+        # R2-2: an image one redraw behind knows the target and the pool, but not the newest layout's mask
+        manifest["regions"]["masks"].append(["Toy_13_12", "0" * 64])
     else:
         (folder / "regions/Toy_13_10.png").unlink()
     monkeypatch.setattr(height_job, "run", lambda *a, **k: pytest.fail("an incompatible build ran"))
