@@ -8,6 +8,8 @@ import json
 import re
 
 from app.coach import knowledge, query
+from app.coach.snapshot import SnapshotError
+from app.services.agent_roles import role_of
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
@@ -61,6 +63,112 @@ _NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|
 _WORD_UNIT = re.compile(
     r"(?<!\w)(?:" + _NUMBER_WORDS + r")\s+(?:metres?|meters?|m|seconds?|secs?|s)(?!\w)", re.IGNORECASE)
 _TAGGED = re.compile(r"[^\s,;:()\"'#]+#\w+")          # a name before the #: "#1 job" is not a player
+
+# R11: compounds must win over their tokens; a trailing underscore denotes a reason prefix.
+_ABILITY_REASONS = {
+    "recon dart": ("recon",),
+    "recon bolt": ("recon",),
+    "camera dart": ("camera_dart",),
+    "drone dart": ("drone_dart",),
+    "haunt": ("haunt",),
+    "recon": ("recon",),
+    "knife": ("knife_",),
+    "flash": ("skye_",),
+    "drone": ("drone_dart", "tejo_drone"),
+    "dart": ("drone_dart", "camera_dart"),
+}
+_ABILITY = re.compile(r"\b(?:" + "|".join(map(re.escape, _ABILITY_REASONS)) + r")\b", re.IGNORECASE)
+_LOCATING = r"\b(?:locat\w*|reveal\w*|found|scann\w*|spotted)\b"
+_ACTIVE_LOCATING = re.compile(_LOCATING, re.IGNORECASE)
+_PASSIVE_LOCATING = re.compile(_LOCATING + r"\s+by\s+(?:(?:the|your|a)\s+)?$", re.IGNORECASE)
+_PASSIVE_AUXILIARY = re.compile(r"\b(?:was|were|is|are|been|being)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+_ENEMY_OBJECT = re.compile(
+    r"\s+(?P<articles>(?:(?:an?|the|your|whole|entire|other)\s+)*)"
+    r"(?:(?P<count>one|two|three|four|five|\d+|both|all)\s+(?:of\s+)?(?:the\s+)?)?"
+    r"(?P<object>(?:enemy\s+)?team|enem(?:y|ies)|players?|opponents?|someone|anyone|them|people|everyone|both|all)\b",
+    re.IGNORECASE)
+_AGENT_OBJECT = re.compile(r"\s+the\s+([\w/]+)\b", re.IGNORECASE)
+_CLAUSE = re.compile(r"[.!?;,\n]+|\b(?:but|yet|however)\b|\s+(?:and|then)\s+", re.IGNORECASE)
+_NEGATED = re.compile(r"\b(?:not|never|no\s+one|nobody|nothing|none|without|no\s+enem(?:y|ies))\b|n['\u2019]t\b",
+                      re.IGNORECASE)
+
+
+def _ability_object(text: str) -> tuple[int | None, str | None] | None:
+    """The minimum count or named agent asserted by a locating verb's object."""
+    enemy = _ENEMY_OBJECT.match(text)
+    if enemy:
+        count, obj = enemy["count"], enemy["object"].lower()
+        if count:
+            minimum = int(count) if count.isdigit() else {**_COUNT_WORDS, "both": 2, "all": 5}[count.lower()]
+        elif (obj in ("team", "enemy team", "everyone", "all")
+              or re.search(r"\b(?:whole|entire)\b", enemy["articles"], re.IGNORECASE)):
+            minimum = 5
+        elif obj in ("enemies", "players", "opponents", "people", "both"):
+            minimum = 2
+        else:
+            minimum = None if obj == "them" else 1
+        return minimum, None
+    agent = _AGENT_OBJECT.match(text)
+    if agent and (role_of(agent[1].title()) or role_of(agent[1].upper())):
+        return None, agent[1].casefold()
+    return None
+
+
+def _ability_claims(text: str) -> dict[str, list[tuple[int | None, str | None]]]:
+    """An ability locating enemies, retaining every count/target and local negation."""
+    claims = {}
+    for clause in _CLAUSE.split(text):
+        for match in _ABILITY.finditer(clause):
+            for verb in _ACTIVE_LOCATING.finditer(clause, match.end()):
+                before = " ".join(clause[:verb.start()].split()[-3:])
+                after = clause[verb.end():]
+                obj = _ability_object(after)
+                if not _NEGATED.search(before) and obj is not None:
+                    claims.setdefault(match.group().lower(), []).append(obj)
+            verb = _PASSIVE_LOCATING.search(clause[:match.start()])
+            if (verb and _PASSIVE_AUXILIARY.search(clause[:verb.start()])
+                    and not _NEGATED.search(" ".join(clause[:verb.start()].split()[-3:]))):
+                claims.setdefault(match.group().lower(), []).append((None, None))
+    return claims
+
+
+def _has_ability_signal(entries: list[dict], ability: str, side: str, t: float, t1=None) -> list[dict]:
+    """Cited location signals for this ability, side and moment (never exclusions)."""
+    signals = []
+    for entry in entries:
+        if entry["cmd"] != "knew" or entry["result"].get("side") != side or not _in_moment(entry, t, t1):
+            continue
+        for signal in entry["result"].get("signals") or []:
+            if signal.get("class") not in ("found", "roughly_placed"):
+                continue
+            when = signal.get("t")
+            if (isinstance(when, bool) or not isinstance(when, (int, float))
+                    or not t - KNEW_WINDOW_S <= when <= float(t1 if t1 is not None else t)):
+                continue
+            asked = entry["result"].get("t")
+            if isinstance(asked, (int, float)) and when > asked:
+                continue
+            reason = signal.get("reason", "")
+            if any(reason.startswith(r) if r.endswith("_") else reason == r for r in _ABILITY_REASONS[ability]):
+                signals.append(signal)
+    return signals
+
+
+def _supports_ability_claim(signals: list[dict], claim: tuple[int | None, str | None], snap) -> bool:
+    count, target = claim
+    names = {s["name"] for s in signals if isinstance(s.get("name"), str) and s["name"].strip()}
+    if not signals or (count is not None and len(names) < count):
+        return False
+    if target is None:
+        return True
+    for name in names:
+        try:
+            slot = snap.slot_of(name)
+        except SnapshotError:
+            continue
+        if str(snap.context["players"][str(slot)].get("agent", "")).casefold() == target:
+            return True
+    return False
 
 
 def _plain(value):
@@ -336,6 +444,8 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     cited = _Cited()
     cited.tallies.add(len(instances))
     captions = []
+    round_evidence = {}
+    moments = []
     for i, inst in enumerate(instances):
         label = f"instance {i + 1}"
         if not isinstance(inst, dict):
@@ -398,6 +508,8 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
                 _collect(result, None, cited, hidden)
                 cited.pairs |= _pairs(entry)
+        round_evidence.setdefault(n, []).extend(entries)
+        moments.append((label, n, t, inst.get("t1"), side, captions[-1], entries))
         if polarity == "improve":
             if "team_knowledge" in snap.gaps(n):
                 if NO_KNOWLEDGE_NOTE not in captions[-1].lower():
@@ -411,5 +523,21 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
     if len(text) > BODY_MAX:
         return problems + [f"the text is over {BODY_MAX} characters"]
+    # Title/body claims apply to each moment; captions apply only to their own instance.
+    claims = _ability_claims("\n".join([str(point.get("title") or ""), str(point.get("body") or "")]))
+    for label, n, t, t1, side, caption, entries in moments:
+        caption_claims = _ability_claims(caption)
+        for ability in sorted(claims.keys() | caption_claims.keys()):
+            supported = True
+            for requirements, evidence in ((claims.get(ability, []), round_evidence[n]),
+                                            (caption_claims.get(ability, []), entries)):
+                if requirements:
+                    signals = _has_ability_signal(evidence, ability, side, t, t1)
+                    if not all(_supports_ability_claim(signals, claim, snap) for claim in requirements):
+                        supported = False
+                        break
+            if not supported:
+                problems.append(f"{label}: says {ability} located enemies in round {n}, "
+                                "but no cited knew signal shows it")
     area_names = snap.view(snap.round_numbers[0]).area_names() if snap.round_numbers else []
     return problems + _text_problems(text, cited, snap.names, area_names, polarity == "improve")

@@ -29,7 +29,8 @@
     { key: "through_smoke", tag: "through_smoke", label: "Through smoke" },
     { key: "other", tag: null, label: "Other fights" },   // every fight no group above shows, so none is lost
     { key: "heard", tag: null, label: "Heard" },
-    { key: "found_by_utility", tag: null, label: "Found by utility" }
+    { key: "found_by_utility", tag: null, label: "Found by utility" },
+    { key: "destroyed", tag: null, label: "Utility destroyed" }
   ];
 
   var BANDS = ["all", "on", "near", "off"];
@@ -175,6 +176,7 @@
 
   function rowText(row, group, players) {
     var key = typeof group === "string" ? group : group.key;
+    if (key === "destroyed") return "R" + row.round + " " + clock(row.t) + " " + row.device;
     if (key === "heard" || key === "found_by_utility") {
       return "R" + row.round + " " + clock(row.t) + (key === "found_by_utility" && row.reason ? " " + row.reason : "");
     }
@@ -205,7 +207,8 @@
     var info = (summary && summary.info) || {};
     var count = function (k) { return (info[k] || []).length; };
     return "TTK from first shot: " + bandsOf("ttk_shot") + ". TTK from spot: " + bandsOf("ttk_spot") + ". heard " + count("heard") + ", gunfire outside fights " + count("gunfire_outside") +
-      ", found by utility " + count("found_by_utility") + ", seen " + (info.seen || 0);
+      ", found by utility " + count("found_by_utility") + ", seen " + (info.seen || 0) +
+      ", utility destroyed " + count("destroyed");
   }
 
   // [round, t] to show for a row: three seconds before a fight starts, the moment itself for deaths and info.

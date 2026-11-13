@@ -91,7 +91,10 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           22: "712c484f6a0ae747",
           # 23 (2026-11-02): a sight line's ground follows the floor it travels over (geometry.GROUND_RULE 2), and a
           # box's floor is learnt side by side (box_tops, not digested).
-          23: "49528e8ce780fc80"}
+          23: "49528e8ce780fc80",
+          # 24 (2026-11-11): stored knowledge kind, destroyed trip/camera locates and the destroyed header.
+          # The new reach constants move this digest; replay-only reasons/destroyed modules are not hashed.
+          24: "f71e8017809269db"}
 
 
 def _constants_digest() -> str:
@@ -126,7 +129,18 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
 
 
+def _without_the_destroyed_reach(monkeypatch):
+    for name in ("TRIP_DESTROY_REACH_M", "CAMERA_DESTROY_REACH_M"):
+        monkeypatch.delattr(ce, name)
+
+
+def test_without_the_destroyed_reach_the_revision_23_digest_is_unchanged(monkeypatch):
+    _without_the_destroyed_reach(monkeypatch)
+    assert _constants_digest() == PINNED[23]
+
+
 def _without_the_ground_rule(monkeypatch):
+    _without_the_destroyed_reach(monkeypatch)         # every older digest predates revision 24's constants
     monkeypatch.delattr(cg, "GROUND_RULE")
 
 

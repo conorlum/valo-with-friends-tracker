@@ -8,6 +8,7 @@ from bisect import bisect_right
 
 from app.coach import areas
 from app.replays import format as fmt
+from app.replays.destroyed import destroyed_devices
 
 
 SAME_DEATH_S = 1.0      # app/control/engine.py's: a site death this close to the replay's own is the same death
@@ -183,6 +184,11 @@ class RoundView:
                 row["hits_complete"] = bool(proof.get("state") == "completed" and proof.get("targets_complete"))
             out.append(row)
         return out
+
+    def destroyed(self) -> list[dict]:
+        """Devices shot before anything set them off (app/replays/destroyed.py), sorted by time: t, owner slot, side,
+        device, u, v, z, id. Only devices that were gone before the round was decided."""
+        return destroyed_devices(self.blob.get("util") or (), self._side, self.t_decided)
 
     def damage(self) -> list[dict]:
         return [{"t": e["t"], "kind": "damage", "by": self.names.get(e.get("by")),

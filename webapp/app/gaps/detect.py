@@ -48,7 +48,9 @@ TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
 # Control revision 18 adds two: a spike tap ("tap") and an ult orb taken ("orb").
-LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "tap", "orb", "seen", "revived"})
+# Control revision 24 adds two: a trip destroyed and a camera destroyed.
+LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "tap", "orb", "seen", "revived",
+                           "trip_destroyed", "camera_destroyed"})
 REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other", "map_feature_closed")
 _CODE = {r: i for i, r in enumerate(REASONS)}
 FULL_CIRCLE = np.arange(0.0, 360.0, RAY_STEP_DEG)

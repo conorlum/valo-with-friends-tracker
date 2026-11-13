@@ -52,6 +52,57 @@ def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
     # heard, so placed only roughly: a quarter direction and a 10 m band from the nearest teammate (121.2 m away)
     assert signal["rough_place"] == {"from": "P0#T0", "direction": "right", "metres_min": 120.0, "metres_max": 130.0}
     assert "never a spot or a named area" in out["note"]
+    assert signal["class"] == "found"
+    assert out["ruled_out"] == out["lost_track"] == []
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_round_6_exclusions_have_no_place(snap, monkeypatch, with_kind):
+    rows = [[10.0, s, "haunt", "exclude"] if with_kind else [10.0, s, "haunt"] for s in range(5, 10)]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert out["signals"] == out["lost_track"] == []
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[s], "reason": "haunt"} for s in range(5, 10)]
+
+
+@pytest.mark.parametrize("with_kind", [False, True])
+def test_knew_serves_the_emitting_pulse_area(snap, monkeypatch, with_kind):
+    view = snap.view(1)
+    monkeypatch.setattr(view, "_table", {view.map_name: toys.CALLOUTS["Toy"]})
+    monkeypatch.setattr(snap, "view", lambda n: view)
+    view.blob["util"].append({"k": "ability", "t": 10.0, "t1": 12.0, "by": 0,
+                             "code": "BountyHunter", "name": "E_LoSReveal_Source_Reactivate",
+                             "u": 2000, "v": 2000})
+    row = [10.0, 5, "haunt"] + (["exclude"] if with_kind else [])
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": [row]}})
+    out = query.knew(snap, 1, 15.0, "A")
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[5], "reason": "haunt",
+                                 "area": view.area(2000, 2000)}]
+    assert out["ruled_out"][0]["area"] != view.area(8000, 8000)
+    assert "area is where the pulse looked" in out["note"]
+
+
+def test_knew_separates_found_roughly_placed_and_non_finds(snap, monkeypatch):
+    rows = [[10.0, s, "haunt", "locate"] for s in (5, 6, 7, 9)] + [
+        [10.0, 8, "haunt", "exclude"], [10.0, 5, "knife_hit", "restrict"],
+        [10.0, 6, "omen_unheard"], [10.0, 7, "died"], [11.0, 8, "haunt", "locate"]]
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": {"A": rows}})
+    out = query.knew(snap, 1, 10.0, "A")
+    assert [e["class"] for e in out["signals"]] == ["found"] * 4 + ["roughly_placed"]
+    assert all("rough_place" in e for e in out["signals"])
+    assert out["ruled_out"] == [{"t": 10.0, "name": snap.names[8], "reason": "haunt"}]
+    assert out["lost_track"] == [{"t": 10.0, "name": snap.names[6], "reason": "omen_unheard"}]
+    assert "found or roughly placed" in out["note"]
+    assert "ruled_out" in out["note"] and "NOT" in out["note"] and "no place" in out["note"]
+    assert "lost_track" in out["note"]
+
+
+@pytest.mark.parametrize("events", [None, {}])
+def test_knew_distinguishes_missing_events_from_empty_events(snap, monkeypatch, events):
+    monkeypatch.setattr(snap, "control", lambda n: {**SHARES, "signals": events})
+    out = query.knew(snap, 1, 10.0, "A")
+    for key in ("signals", "ruled_out", "lost_track"):
+        assert out[key] == (None if events is None else [])
 
 
 def test_where_gives_health_as_a_word_after_the_last_recorded_hit(snap):
@@ -146,6 +197,39 @@ def test_a_kill_after_the_round_was_decided_is_marked(tmp_path):
     snapshot.save(snapshot.assemble(context, {1: blob}, {}), tmp_path)
     (kill,) = query.timeline(snapshot.load(tmp_path), 1)["events"]
     assert kill["after_decided"] is True
+
+
+def _trip(by, gone, u, v, **kw):
+    return {"k": "ability", "kind": "GameObject", "code": "Gumshoe", "name": "4_TripWire", "by": by, "t": 1.0,
+            "t1": gone, "gone": gone, "u": u, "v": v, "id": 40 + by, **kw}
+
+
+@pytest.fixture
+def destroyed_snap(tmp_path, monkeypatch):
+    from app.coach import areas
+    monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
+    util = [_trip(1, 17.2, 2100, 2000),                   # side A's, shot untouched
+            _trip(6, 18.0, 8000, 8100),                   # side B's, shot untouched
+            _trip(2, 20.0, 2100, 2100, fx=15.0)]          # side A's, fired first: not destroyed
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {"db": {}, "stats": {}}}}
+    blob = toys.round_blob(toys.ten(), n=1, util=util)
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}), tmp_path)
+    return snapshot.load(tmp_path)
+
+
+def test_timeline_holds_the_destroyed_devices_with_their_area(destroyed_snap):
+    events = [e for e in query.timeline(destroyed_snap, 1)["events"] if e["kind"] == "destroyed"]
+    assert [(e["t"], e["device"], e["owner"], e["area"]["name"]) for e in events] == [
+        (17.2, "trip", "P1#T1", "A Site"), (18.0, "trip", "P6#T6", "B Site")]
+    assert "destroyed" in query.timeline(destroyed_snap, 1)["note"]
+
+
+def test_knew_lists_the_sides_own_devices_destroyed_by_then(destroyed_snap):
+    assert query.knew(destroyed_snap, 1, 17.0, "A")["destroyed"] == []
+    (lost,) = query.knew(destroyed_snap, 1, 17.5, "A")["destroyed"]
+    assert lost == {"t": 17.2, "device": "trip", "owner": "P1#T1", "area": {"name": "A Site", "super": "A"}}
+    assert [d["owner"] for d in query.knew(destroyed_snap, 1, 25.0, "B")["destroyed"]] == ["P6#T6"]
+    assert "destroyed" in query.knew(destroyed_snap, 1, 17.5, "A")["note"]
 
 
 def test_impact_is_the_stored_row(snap):

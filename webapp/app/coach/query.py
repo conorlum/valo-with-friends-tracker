@@ -94,15 +94,27 @@ def knew(snap, n, t, side) -> dict:
         return _missing("team_knowledge")
     if _groups_disagree(snap, int(n), view, control):
         return _missing("side_groups_disagree")
+    events = knowledge.signals(control.get("signals"), side, t, snap.names, view)
+    if events is None:
+        events = {"signals": None, "ruled_out": None, "lost_track": None}
+    lost = [{"t": d["t"], "device": d["device"], "owner": snap.names.get(d["owner"]), "area": _device_area(view, d)}
+            for d in view.destroyed() if d["side"] == side and d["t"] <= t]
     return {"round": int(n), "t": t, "side": side,
             "enemies": knowledge.known_enemies(control["knew"], side, t, view),
-            "signals": knowledge.signals(control.get("signals"), side, t, snap.names, view),
+            **events, "destroyed": lost,
             "note": "team knowledge, assuming everything any teammate learned was called. enemies: those the team "
-                    "had seen, with the place and time of the last sighting. signals: every stored event that "
-                    "located an enemy for the team (sight, sound, damage, a kill), with its time and reason and "
-                    "only a rough_place: from the nearest teammate, a minimap direction (up, down, left, right: "
+                    "had seen, with the place and time of the last sighting. signals: events that found or roughly "
+                    "placed an enemy, with class found or roughly_placed, time, reason and only a rough_place "
+                    "when positions are available: from the nearest teammate, a minimap direction (up, down, left, right: "
                     "a 90 degree quarter) and a distance band in metres. It is never a spot or a named area; "
-                    "signals is null when this round stores none"}
+                    "ruled_out: utility showed where an enemy was NOT, with time, name and reason; for Haunt and "
+                    "Recon, area is where the pulse looked and found nobody of that name, when the device's "
+                    "position is available. It never gives the enemy's position. lost_track: the team lost "
+                    "where an enemy was (no place given), with only time, name and reason. "
+                    "All three lists are null when this round stores no knowledge events. destroyed: this side's own "
+                    "devices (trip, camera, alarmbot, turret, sound sensor, haunt, recon) shot by the enemy by this "
+                    "time before anything set them off, with time, device, owner and the area the device stood in; "
+                    "the shooter is not recorded and a destroyed device tells nothing about where an enemy was"}
 
 
 def distance(snap, n, t, a, b) -> dict:
@@ -148,6 +160,10 @@ def control(snap, n, t0, t1, area) -> dict:
             "note": "a and b are the round's side groups; shares are fractions of the area's cells over the span"}
 
 
+def _device_area(view, d: dict) -> dict | None:
+    return None if d["u"] is None or d["v"] is None else view.area(d["u"], d["v"])
+
+
 def timeline(snap, n, t0=None, t1=None) -> dict:
     view = _view(snap, n)
     lo = 0.0 if t0 is None else float(t0)
@@ -156,6 +172,8 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     events = [{"t": k["t"], "kind": "kill", "killer": name(k.get("killer")), "victim": name(k["victim"]),
                "after_decided": k["t"] > view.t_decided} for k in view.kills]
     events += view.utility(spike=False) + view.damage()
+    events += [{"t": d["t"], "kind": "destroyed", "device": d["device"], "owner": name(d["owner"]),
+                "area": _device_area(view, d)} for d in view.destroyed()]
     db = snap.site(int(n)).get("db") or {}                  # the site's times, already on the replay clock
     bomb = view.spike()
     tries = view.defuse_attempts()
@@ -170,7 +188,10 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     if db.get("defuse") is not None and not any(a["result"] == "defused" for a in tries):
         events.append({"t": db["defuse"], "kind": "defuse"})
     events = sorted((e for e in events if lo <= e["t"] <= hi), key=lambda e: (e["t"], e["kind"]))
-    return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events}
+    return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events,
+            "note": "a destroyed event is a device (trip, camera, alarmbot, turret, sound sensor, haunt, recon) shot "
+                    "before anything set it off: time, device, owner and the area it stood in. The shooter is not "
+                    "recorded"}
 
 
 def impact(snap, n, player) -> dict:

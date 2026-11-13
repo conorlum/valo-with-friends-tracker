@@ -175,6 +175,19 @@ def test_knowledge_events_reach_the_summary(db, linked):
     assert body_of(call(db))["summary"]["0"]["info"]["heard"] == []
 
 
+def test_destroyed_devices_load_without_knowledge_events_and_old_headers(db, linked):
+    put_row(db, linked, 1)
+    row = db.get(ReplayRoundControl, (linked.id, 1))
+    row.data = packed({"destroyed": [[17.2, 0, "trip", 1200.0, 2300.0]]})
+    db.commit()
+    summary = body_of(call(db))["summary"]
+    assert summary["0"]["info"]["destroyed"] == [{"round": 1, "t": 17.2, "device": "trip"}]
+    assert all(s["info"]["destroyed"] == [] for slot, s in summary.items() if slot != "0")
+    row.data = packed({})
+    db.commit()
+    assert all(s["info"]["destroyed"] == [] for s in body_of(call(db))["summary"].values())
+
+
 def test_etag_gives_a_304_and_follows_the_moments(db, linked):
     put_moments(db, linked, 1)
     first = call(db)

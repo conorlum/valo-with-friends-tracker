@@ -17,6 +17,13 @@ def test_the_run_prompt_asks_for_no_voice():
     assert "voice" not in prompt.run_prompt(BOOK, BRIEF).lower()
 
 
+def test_the_run_prompt_explains_the_ruled_out_pulse_area():
+    text = prompt.run_prompt(BOOK, BRIEF)
+    assert "`area` is where the pulse looked and found nobody of that name" in text
+    assert "Neither gives a place" not in text
+    assert "time, name, reason only; no place" not in prompt.COMMANDS
+
+
 def test_the_repair_prompt_lists_each_failed_point_with_its_problems():
     text = prompt.repair_prompt([(2, {"title": "Died alone"}, ["the number 35 is not in a cited answer"])])
     assert "Died alone" in text and "the number 35" in text and '"index": 2' in text
