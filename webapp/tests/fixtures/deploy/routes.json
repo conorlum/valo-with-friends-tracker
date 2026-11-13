@@ -1,0 +1,69 @@
+{
+  "drain": {
+    "method": "POST", "path": "/admin/deploy/drain",
+    "request": {"run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "skip_drain": false},
+    "response": {
+      "result": "started", "superseded": null,
+      "drain": {
+        "id": 1, "run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "superseded": null,
+        "phase": "draining", "started_at": "2026-11-13T12:00:00+00:00", "requested_at": "2026-11-13T12:00:00+00:00",
+        "expires_at": "2026-11-13T14:00:00+00:00", "ended_at": null, "outcome": null, "commit": null,
+        "forced": false, "skip_drain": false, "waiting_total": null
+      }
+    }
+  },
+  "poll": {
+    "method": "POST", "path": "/admin/deploy/poll", "request": {"run_id": "1"},
+    "response": {
+      "drain": {
+        "id": 1, "run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "superseded": null,
+        "phase": "draining", "started_at": "2026-11-13T12:00:00+00:00", "requested_at": "2026-11-13T12:00:00+00:00",
+        "expires_at": "2026-11-13T14:01:00+00:00", "ended_at": null, "outcome": null, "commit": null,
+        "forced": false, "skip_drain": false, "waiting_total": 0
+      },
+      "status": {"quiet": true, "uploads_quiet": true, "waiting": {}, "waiting_total": 0},
+      "commits": {"worker": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "tasks": null},
+      "limit_s": 3600, "now": 1794571260.0
+    }
+  },
+  "status": {
+    "method": "GET", "path": "/admin/deploy/status", "request": null,
+    "response": {
+      "drain": {
+        "id": 1, "run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "superseded": null,
+        "phase": "draining", "started_at": "2026-11-13T12:00:00+00:00", "requested_at": "2026-11-13T12:00:00+00:00",
+        "expires_at": "2026-11-13T14:01:00+00:00", "ended_at": null, "outcome": null, "commit": null,
+        "forced": false, "skip_drain": false, "waiting_total": 0
+      },
+      "status": {"quiet": true, "uploads_quiet": true, "waiting": {}, "waiting_total": 0},
+      "commits": {"worker": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "tasks": null},
+      "limit_s": 3600, "now": 1794571260.0
+    }
+  },
+  "deploying": {
+    "method": "POST", "path": "/admin/deploy/deploying", "request": {"run_id": "1"},
+    "response": {
+      "drain": {
+        "id": 1, "run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "superseded": null,
+        "phase": "deploying", "started_at": "2026-11-13T12:00:00+00:00", "requested_at": "2026-11-13T12:00:00+00:00",
+        "expires_at": "2026-11-13T14:01:00+00:00", "ended_at": null, "outcome": null, "commit": null,
+        "forced": false, "skip_drain": false, "waiting_total": 0
+      }
+    }
+  },
+  "force": {
+    "method": "POST", "path": "/admin/deploy/force", "request": {"run_id": "1"},
+    "response": {"cancelled": [{"kind": "control", "key": "sample-control"}]}
+  },
+  "resume": {
+    "method": "POST", "path": "/admin/deploy/resume", "request": {"run_id": "1", "outcome": "ok"},
+    "response": {
+      "drain": {
+        "id": 1, "run_id": "1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "superseded": null,
+        "phase": "deploying", "started_at": "2026-11-13T12:00:00+00:00", "requested_at": "2026-11-13T12:00:00+00:00",
+        "expires_at": "2026-11-13T14:01:00+00:00", "ended_at": "2026-11-13T12:10:00+00:00", "outcome": "ok",
+        "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "forced": false, "skip_drain": false, "waiting_total": 0
+      }
+    }
+  }
+}

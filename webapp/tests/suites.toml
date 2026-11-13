@@ -179,6 +179,11 @@ about = "The stored site health inventory: failures and slow spots recorded in m
 tests = ["tests/test_site_health*.py"]
 guards = ["app/services/site_health*.py", "app/models/site_events.py", "app/data/site_health_resolved.json", "scripts/site_health.py"]
 
+[deploy-drain]
+about = "Deploy ownership, expiry, paused-work clocks and the site/worker readiness contract."
+tests = ["tests/test_deploy_drain.py"]
+guards = ["app/services/deploy_drain.py", "app/models/deploy_drain.py", "alembic/versions/0034_deploy_drains.py", "tests/fixtures/deploy/**"]
+
 [map-layouts]
 about = "Base map asset identities and per-layout replay selection and readers for control, gaps, heights and callouts."
 tests = ["tests/replays/test_layout_viewer.py", "tests/replays/test_*layout*.py"]

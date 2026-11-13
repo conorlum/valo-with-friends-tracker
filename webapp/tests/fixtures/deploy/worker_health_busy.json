@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "queued": 1,
+  "limits": {"timeout_s": 1800, "max_bytes": 1073741824, "queue_size": 20, "memory_cap": 4096},
+  "control": {
+    "enabled": true,
+    "gaps_protocol": 3,
+    "layouts": ["Haven"],
+    "features": {"wire": 1, "compiler": 19, "manifest": 2, "normalization": 2, "consumers": {"ascent_replay_v1": 5, "quiet_rope_v1": 7, "map_pool_replay_v1": 6}},
+    "queued": 3,
+    "running": 2,
+    "warm": [],
+    "preempted": 0,
+    "cache": {"bytes": 0, "maps": {}, "evictions": 0, "kept_pruned": 0, "reserve": 1073741824},
+    "warm_builds": {
+      "ready": [], "confirmed": [], "building": ["sample-warm"], "failures": {}, "missed": {}, "vanished": {},
+      "start_refused": [], "misses": 0, "recent_seconds": [], "rewarmed": {}, "boot": "sample-boot"
+    }
+  },
+  "archive": {"enabled": false, "reason": "not configured"},
+  "recipe": "sample-recipe",
+  "idle": true,
+  "heights": {"collecting": ["Haven"], "queued": ["Ascent"], "running": ["Bind"], "spool_bytes": 512, "protocol": 1, "diagnostics_protocol": 1},
+  "runners": {"parse": "workflow", "control": "workflow", "heights": "workflow"},
+  "workflow": {
+    "open": 9,
+    "by_kind": {
+      "control": {"open": 5, "waiting": 3, "oldest_wait_s": 10.0, "oldest_run_s": 30.0},
+      "warm": {"open": 1, "waiting": 0, "oldest_wait_s": 0.0, "oldest_run_s": 30.0},
+      "heights": {"open": 1, "waiting": 0, "oldest_wait_s": 0.0, "oldest_run_s": 30.0},
+      "util": {"open": 1, "waiting": 0, "oldest_wait_s": 0.0, "oldest_run_s": 30.0},
+      "parse": {"open": 1, "waiting": 0, "oldest_wait_s": 0.0, "oldest_run_s": 30.0}
+    },
+    "starts_per_min": 10, "last_reconcile": null, "last_error": null
+  },
+  "util": {"enabled": true, "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "protocol": 1, "bytes": 512, "reserve": 1073741824},
+  "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "drain": {
+    "hold": true, "hold_until": 1794578400.0, "drain_id": 1, "starts_blocked": true, "cancelling": 2,
+    "uploads": {"receiving": 1, "last_end_age_s": 30.0},
+    "parses": {"running": 1, "queued": 1},
+    "util": {"building": 1},
+    "runs": {"active": 9}
+  }
+}
