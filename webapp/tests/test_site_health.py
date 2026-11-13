@@ -572,6 +572,8 @@ def test_check_resolved():
     assert check([entry(kind="nope")])
     assert check([entry(kind="unscored_match")])           # checked live: nothing stored to clear
     assert check([entry(kind="control_failed")])           # a replay kind: nothing stored to clear
+    assert check([entry(kind="map_layout_walls")]) == []
+    assert "map_layout_walls" in site_health.RECORDED_KINDS
     assert check([{"kind": "page_error", "key": "/a"}])
     assert check([entry(fixed_by="")])
     assert check([entry(key=5)])

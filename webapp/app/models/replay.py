@@ -103,6 +103,22 @@ class ReplayRoundControl(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ReplayRoundWallShare(Base):
+    """Each ok control round's count of 4 Hz alive player positions on non-walk cells of its layout's walk mask,
+    `inside` of `total`, keyed by the control row's fingerprint it was computed against (migration 0032; written
+    by app/services/layout_walls.py). No foreign keys: readers join to current ok control rows."""
+
+    __tablename__ = "replay_round_wall_shares"
+
+    replay_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    round_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    control_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    inside: Mapped[int] = mapped_column(Integer, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ControlFeatureArtifact(Base):
     """Immutable compilation shared per map/version; rounds reference its full content digest."""
     __tablename__ = 'control_feature_artifacts'

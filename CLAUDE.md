@@ -180,7 +180,8 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
 The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`GROUPS`) lists the replay kinds plus
 stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
 (`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
-loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost; and checked
+loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost,
+`map_layout_walls` (maps whose replays put players inside walls after a patch); and checked
 kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs
 never wait on the database for it: `record`, `resolve` and `count` queue in memory, in the order they happen, and
 the flush thread writes them every 60 s (a resolve deletes rows last seen before it; one entry the database refuses

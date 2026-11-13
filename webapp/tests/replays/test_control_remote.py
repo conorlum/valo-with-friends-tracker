@@ -37,6 +37,8 @@ def old_limits(monkeypatch):
     """These tests were written for 8 rounds from any replays; the match limit has its own tests below."""
     monkeypatch.setattr(remote, "IN_FLIGHT", 8)
     monkeypatch.setattr(remote, "MAX_MATCHES", 1000)
+    # Legacy dispatcher rows contain dummy control bytes; real wall-share counting has its own tests.
+    monkeypatch.setattr(remote.layout_walls, "step", lambda *a, **k: {"computed": 0})
 
 
 GAP_ROW = {"seq": 0, "kind": "predicted", "map": "Toy", "victim_slot": 0, "victim_side": None, "t_open": 1.0,
