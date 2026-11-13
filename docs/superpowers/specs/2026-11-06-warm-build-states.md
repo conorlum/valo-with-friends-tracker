@@ -50,11 +50,19 @@ clears the counts. Counts live in memory: a worker restart starts every identity
 | 22 | a leased round failed for the machine (no visibility source) | probe slot freed; nothing counted; `warm` off | `test_a_round_that_fails_for_the_machine_leaves_its_identity_confirmed` |
 | 23 | a fallback round read the tracked file | `warm_read` on | `test_a_fallback_round_that_reads_the_tracked_file_marks_it_read` |
 | 24 | a fallback round succeeded with a visibility file on the disk | `warm_ids` on, `warm` on | `test_a_falling_back_height_mode_does_not_trust_another_modes_warm_flag` |
+| 25 | a warm build cancelled by a drain (`error_kind` `drain`) | nothing counted (`warm_failures` unchanged); untracked if its file isn't on the disk; requeued at the front | `test_a_warm_build_cancelled_by_a_drain_counts_nothing` in `test_replay_worker_drain_cancel.py` |
+| 26 | a control round (leased or not) cancelled by a drain | requeued at the front; nothing counted (`warm_missed` unchanged); probe slot freed; `released_name` cleared | `test_a_leased_round_cancelled_by_a_drain_goes_back_to_the_front_uncounted` in `test_replay_worker_drain_cancel.py` |
+| 27 | scheduling while starts are blocked (a drain's cancel until its release or the hold's expiry) | nothing launched, no warm build asked; the first pass after the barrier lifts schedules as before | `test_nothing_launches_or_is_warmed_while_starts_are_blocked` in `test_replay_worker_drain_cancel.py` |
 
 Every requeue frees the probe slot when the job held it, and clears `released_name`; a released round's cycle is set
 again whenever it is released.
 
 ## The site
+
+While a drain is active the site sends no round (`_submit` and each `_send`); in-flight rounds are still
+collected; a round answered `drain` is resent later with no try. Tests in `test_drain_pause.py`:
+`test_submit_pause`, `test_send_stops_mid_batch`, `test_collect_during_pause`, and
+`test_control_drain_failure_is_free`.
 
 A round's running backstop comes from the worker's admission answer (`runner`: `workflow` or `local`), never from a
 `/health` read (`_admitted_stale_s`; `test_a_rounds_backstop_comes_from_the_workers_admission_answer_whatever_health_says`).

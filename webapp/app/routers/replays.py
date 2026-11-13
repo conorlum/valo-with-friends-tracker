@@ -61,6 +61,7 @@ from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
 from app.services import gap_patterns
+from app.services import deploy_drain
 from app.services import replay_errors
 from app.services import replay_areas
 from app.services import replay_moments
@@ -124,9 +125,16 @@ def _recent_uploads(request: Request, db: Session | None) -> list[dict]:
     return listed
 
 
+def _deploy_banner(db: Session | None) -> dict | None:
+    if settings.demo_mode or db is None:
+        return None
+    return deploy_drain.banner(db, datetime.now(timezone.utc))
+
+
 def _upload_page(request: Request, status_code: int = 200, error: str | None = None, db: Session | None = None):
     return templates.TemplateResponse(request, "replays/upload.html", {
         "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
+        "deploy_banner": _deploy_banner(db),
         "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000,
         "max_files": uploads.batch_limit(uploads.client()), "uploads": _recent_uploads(request, db),
     }, status_code=status_code)
@@ -267,6 +275,7 @@ def _upload_errors_result(request: Request, db: Session) -> dict:
 def upload_errors(request: Request, db: Session = Depends(get_db)):
     """The upload-code session's corpus errors, capped for display while keeping full counts."""
     body = replay_errors.page(_upload_errors_result(request, db))
+    body["deploy"] = _deploy_banner(db)
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 

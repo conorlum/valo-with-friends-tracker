@@ -307,6 +307,9 @@ def _prepare(db, state: UtilState, digest: str, now: float) -> bool:
     state.have_pending = True
     state.resends = 0
     state.build_id = None
+    from app.services import deploy_drain
+    if deploy_drain.paused_now():
+        raise _Changed("deploy drain before pushing")
     state.phase = "pushing"
     state.asked = False
     state.tries[key] = state.tries.get(key, 0) + 1
@@ -348,6 +351,7 @@ def _send_entries(client, state: UtilState, kind: str, entries: list, budget: in
     batch, size = [], base_size
 
     def send():
+        _check_pause()
         sender(batch, ref=state.ref)
         del remaining[:len(batch)]
         log.info("util push key=%s ref=%s kind=%s count=%s", state.key, state.ref, kind, len(batch))
@@ -372,6 +376,18 @@ def _send_entries(client, state: UtilState, kind: str, entries: list, budget: in
     return budget
 
 
+def _check_pause() -> None:
+    from app.services import deploy_drain
+    if deploy_drain.paused_now():
+        raise _Changed("deploy drain")
+
+
+def _refund_preparation(state: UtilState) -> None:
+    if state.phase != "idle" and state.phase != "open" and state.build_id is None:
+        state.tries[state.key] = max(0, state.tries.get(state.key, 0) - 1)
+    _abandon(state)
+
+
 def push(db, client, state: UtilState, health: dict, now: float | None = None) -> None:
     """Decide, push at most eight batches, and open; keep unfinished preparation for next cycle."""
     if not enabled() or state.phase == "open":
@@ -379,6 +395,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
     now = time.time() if now is None else now
     stage = "push"
     try:
+        _check_pause()
         digest = build_digest.digest(WEBAPP)
         if (health.get("util") or {}).get("digest") != digest:
             note_digest_mismatch(state, now)
@@ -393,6 +410,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
             raise _Changed("prepared signature changed while pushing")
         if state.have_pending:
             db.rollback()  # detached preparation; no connection through worker I/O
+            _check_pause()
             answer = client.util_have(list(state.row_keys), list(state.obs_keys) if state.refit else None,
                                       prune=True, ref=state.ref)
             _missing(state, answer)
@@ -412,6 +430,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
             return
         stage = "dispatch"
         db.rollback()
+        _check_pause()
         answer = client.util_open(key=state.key, digest=state.digest, rows=list(state.row_keys),
                                   obs=list(state.obs_keys), refit=state.refit,
                                   context=base64.b64encode(state.context).decode("ascii"), ref=state.ref)
@@ -430,9 +449,7 @@ def push(db, client, state: UtilState, health: dict, now: float | None = None) -
         log.info("util open key=%s ref=%s id=%s bytes=0 seconds=0.0", state.key, state.ref, state.build_id)
     except _Changed as error:
         log.info("util abandon key=%s ref=%s reason=%s", state.key, state.ref, error)
-        if state.phase == "pushing" and state.build_id is None:
-            state.tries[state.key] = max(0, state.tries.get(state.key, 0) - 1)
-        _abandon(state)
+        _refund_preparation(state)
     except Exception as error:
         _failure(state, stage, error, now)
 
@@ -487,11 +504,12 @@ def _follow(session_factory, client, state: UtilState, now: float) -> None:
             if now - state.running_since > STALE_BUILD_S:
                 raise ValueError("build ran longer than 3600 seconds")
             return
-        if status == "failed" and answer.get("error_kind") == "deploy":
-            state.deploy_mismatch = True
-            note_digest_mismatch(state, now, answer.get("error", "task deploy mismatch"))
+        if status == "failed" and answer.get("error_kind") in ("deploy", "drain"):
+            if answer.get("error_kind") == "deploy":
+                state.deploy_mismatch = True
+                note_digest_mismatch(state, now, answer.get("error", "task deploy mismatch"))
             state.tries[state.key] = max(0, state.tries.get(state.key, 1) - 1)
-            state.backoff[state.key] = now + BACKOFF_S
+            state.backoff[state.key] = now + (60 if answer.get("error_kind") == "drain" else BACKOFF_S)
             log.info("util deploy retry key=%s ref=%s id=%s", state.key, state.ref, state.build_id)
             _abandon(state)
             return
@@ -534,6 +552,11 @@ def step(session_factory, client, state: UtilState | None = None, now: float | N
     now = time.time() if now is None else now
     if state.phase == "open":
         _follow(session_factory, client, state, now)
+        return
+    from app.services import deploy_drain
+    if deploy_drain.paused_now():
+        if state.phase != "idle":
+            _refund_preparation(state)
         return
     try:
         health = client.health()

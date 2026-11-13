@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "queued": 0,
+  "limits": {"timeout_s": 1800, "max_bytes": 1073741824, "queue_size": 20, "memory_cap": 4096},
+  "control": {
+    "enabled": true,
+    "gaps_protocol": 3,
+    "layouts": ["Haven"],
+    "features": {"wire": 1, "compiler": 19, "manifest": 2, "normalization": 2, "consumers": {"ascent_replay_v1": 5, "quiet_rope_v1": 7, "map_pool_replay_v1": 6}},
+    "queued": 0,
+    "running": 0,
+    "warm": [],
+    "preempted": 0,
+    "cache": {"bytes": 0, "maps": {}, "evictions": 0, "kept_pruned": 0, "reserve": 1073741824},
+    "warm_builds": {
+      "ready": [], "confirmed": [], "building": [], "failures": {}, "missed": {}, "vanished": {},
+      "start_refused": [], "misses": 0, "recent_seconds": [], "rewarmed": {}, "boot": "sample-boot"
+    }
+  },
+  "archive": {"enabled": false, "reason": "not configured"},
+  "recipe": "sample-recipe",
+  "idle": true,
+  "heights": {"collecting": [], "queued": [], "running": [], "spool_bytes": 0, "protocol": 1, "diagnostics_protocol": 1},
+  "runners": {"parse": "workflow", "control": "workflow", "heights": "workflow"},
+  "workflow": {"open": 0, "by_kind": {}, "starts_per_min": 10, "last_reconcile": null, "last_error": null},
+  "util": {"enabled": true, "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "protocol": 1, "bytes": 0, "reserve": 1073741824},
+  "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "drain": {
+    "hold": true, "hold_until": 1794578400.0, "drain_id": 1, "starts_blocked": true, "cancelling": 0,
+    "uploads": {"receiving": 0, "last_end_age_s": null},
+    "parses": {"running": 0, "queued": 0},
+    "util": {"building": 0},
+    "runs": {"active": 0}
+  }
+}

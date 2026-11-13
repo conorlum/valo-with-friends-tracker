@@ -1,0 +1,54 @@
+name: Deploy pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_drain:
+        description: Deploy immediately while pausing new work
+        type: boolean
+        default: false
+      dry_run:
+        description: Drain and report commits without deploying
+        type: boolean
+        default: false
+  # Enable in PR 2:
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - 'docs/**'
+  #     - '**/*.md'
+  #     - 'webapp/tests/**'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Drain and deploy
+        shell: bash
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          DEMO_URL: ${{ secrets.DEMO_URL }}
+          REPLAY_ADMIN_TOKEN: ${{ secrets.REPLAY_ADMIN_TOKEN }}
+          RENDER_DEPLOY_HOOK_TASKS: ${{ secrets.RENDER_DEPLOY_HOOK_TASKS }}
+          RENDER_DEPLOY_HOOK_WORKER: ${{ secrets.RENDER_DEPLOY_HOOK_WORKER }}
+          RENDER_DEPLOY_HOOK_SITE: ${{ secrets.RENDER_DEPLOY_HOOK_SITE }}
+          RENDER_DEPLOY_HOOK_DEMO: ${{ secrets.RENDER_DEPLOY_HOOK_DEMO }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=()
+          if [ "${{ inputs.skip_drain }}" = "true" ]; then
+            args+=(--skip-drain)
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python webapp/scripts/deploy_pipeline.py --run-id ${{ github.run_id }} --sha ${{ github.sha }} "${args[@]}"

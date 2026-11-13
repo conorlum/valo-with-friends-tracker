@@ -1,6 +1,7 @@
 """W9: the background loops record failures (loop_failed) and show when quiet (loop_quiet). SQLite, no network."""
 
 import threading
+import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -160,7 +161,7 @@ def test_a_loop_that_dies_on_its_own_stays_registered_and_goes_quiet(which, fact
 # ------------------------------------------------------------------------------------------- inner keys
 def run_cycle(factory, worker):
     state = remote.State()
-    remote.cycle(factory, None, state, now=1000.0, worker=worker)
+    remote.cycle(factory, types.SimpleNamespace(health=lambda: {}), state, now=1000.0, worker=worker)
 
 
 @pytest.fixture
@@ -168,6 +169,9 @@ def cycle_env(factory, monkeypatch):
     monkeypatch.setattr(remote, "_collect", lambda *a, **k: None)
     monkeypatch.setattr(remote, "_submit", lambda *a, **k: None)
     monkeypatch.setattr(remote, "_snapshot", lambda *a, **k: None)
+    # The drain hold sync has its own loop key (drain_hold_sync); these tests are about the other keys, and the
+    # fake worker can't answer its drain read.
+    monkeypatch.setattr(remote, "_sync_hold", lambda *a, **k: {})
     monkeypatch.setattr(remote, "LIVE", None)
     monkeypatch.setattr(remote.replay_control, "prepare_discovered", lambda *a, **k: None)
     monkeypatch.setattr(remote.replay_heights_remote, "enabled", lambda: False)

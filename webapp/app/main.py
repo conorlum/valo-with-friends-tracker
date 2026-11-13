@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -13,10 +14,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
-from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, players, replay_admin, replays, sessions,
-                         site_stats, squad, util_page)
+from app.routers import (accounts, auth, coach, deploy_admin, friends, gap_patterns, matches, players, replay_admin,
+                         replays, sessions, site_stats, squad, util_page)
 from app.services.auth import get_current_player
 from app.services.site_health_web import SlowPageMiddleware, page_error_handler
+from app.services.upload_activity import UploadActivityMiddleware
 from app.templates import templates
 
 # INFO-level timing logs (see app.routers.sessions / app.services.sessions /
@@ -74,6 +76,8 @@ app.add_exception_handler(Exception, page_error_handler)
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)
 app.add_middleware(SlowPageMiddleware)
+# Counts POST /replays/upload requests in flight, for the deploy drain (app/services/upload_activity.py).
+app.add_middleware(UploadActivityMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
@@ -87,6 +91,7 @@ app.include_router(matches.router)
 app.include_router(players.router)
 # Replays: every route 404s in demo mode (docs/replay-viewer-plan.md, decision 4).
 app.include_router(replay_admin.router)
+app.include_router(deploy_admin.router)
 app.include_router(coach.router)
 app.include_router(replays.router)
 app.include_router(gap_patterns.router)
@@ -107,7 +112,7 @@ def root(request: Request, db: Session = Depends(get_db)):
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"status": "ok"}
+    return {"status": "ok", "commit": os.environ.get("RENDER_GIT_COMMIT")}
 
 
 # Checked per request rather than at import, so the setting can be toggled in tests.

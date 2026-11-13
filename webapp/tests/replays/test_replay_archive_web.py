@@ -34,6 +34,7 @@ from replay_worker import server  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
+from app.models.deploy_drain import DeployDrain  # noqa: E402
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload  # noqa: E402
 from app.routers import replay_admin as admin  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
@@ -337,7 +338,7 @@ def engine(monkeypatch):
     monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=__import__("sqlalchemy.pool", fromlist=["StaticPool"]).StaticPool)
-    Base.metadata.create_all(engine, tables=[*TABLES, ReplayUpload.__table__])
+    Base.metadata.create_all(engine, tables=[*TABLES, ReplayUpload.__table__, DeployDrain.__table__])
     return engine
 
 

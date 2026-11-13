@@ -89,6 +89,16 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(autouse=True)
+def _no_configured_drain_database(monkeypatch):
+    """Schedulers without a test session must never reach the configured database."""
+    try:
+        from app.services import deploy_drain
+    except ImportError:
+        return
+    monkeypatch.setattr(deploy_drain, "paused_now", lambda: False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_background_util_build(monkeypatch):
     """A request that finds Critical Util's build stale starts it in a child process (app/services/util_rebuild.py),
     which would connect to the configured DATABASE_URL, not the test's database: never spawn one in a test.

@@ -20,7 +20,16 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
                        "idle" (a height build may start: no parse
                        running or waiting, or builds run as Workflow runs),
-                       "heights": {"protocol": 1, "collecting", "queued", "running" (map names), "spool_bytes"}}
+                       "heights": {"protocol": 1, "collecting", "queued", "running" (map names), "spool_bytes"},
+                       "commit" (RENDER_GIT_COMMIT, null if unset),
+                       "drain": {"hold", "hold_until" (Unix epoch seconds), "drain_id", "starts_blocked",
+                       "cancelling", "uploads": {"receiving", "last_end_age_s"}, "parses": {"running" (admitted,
+                       counted by the admission counter), "queued"}, "util": {"building"}, "runs": {"active"}}}
+    POST /drain/hold  body: JSON {drain_id (int), until (Unix epoch seconds, in the future)}: no parse is admitted
+                      while now < until (POST /jobs still streams, stores and queues). 200 {"hold": true, "drain_id",
+                      "until"}, or {"ignored": true} for an id below the highest seen; 400 not a hold. The same id
+                      renews, a higher id replaces. Kept in drain-hold.json (the archive root, else temp_root).
+    POST /drain/release body: JSON {drain_id}: 200 {"hold": false}, or {"ignored": true} while another id holds.
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 409 {error, height} when the task
@@ -510,6 +519,18 @@ class Worker:
         self.admission = threading.Lock()
         self._before_reply = lambda answer: None  # tests only: runs after an attempt is settled, before its reply
         self.wake = threading.Event()
+        # The deploy drain's parse hold (R4, R5, C5). Everything below is read and written under `hold_lock`, and a
+        # parse is admitted (`_admit`) under the same lock, so a parse admitted before `hold()` is counted as running
+        # and none is admitted after it.
+        self.hold_lock = threading.Lock()
+        self.hold_until: float | None = None      # Unix epoch seconds (the site's expires_at.timestamp())
+        self.hold_drain_id: int | None = None
+        self.max_drain_id = 0                     # the highest drain id ever held here; kept after a release
+        self.on_release: list = []                # called (no arguments) once each time a hold ends
+        self.returned: collections.deque[Job] = collections.deque()   # jobs taken while held, in order, first out
+        self.upload_lock = threading.Lock()
+        self.receiving = 0                        # uploads streaming in right now (POST /jobs)
+        self.last_upload_end: float | None = None   # time.monotonic()
         try:
             self.recipe = current_recipe()
         except Exception:  # noqa: BLE001 - a worker that can't name its recipe still parses uploads
@@ -533,6 +554,7 @@ class Worker:
                 self.archive.held_bytes = self.held_bytes
                 self.archive.cache_reserve = settings.archive_extra_reserve
         self.last_sweep = 0.0
+        self._load_hold()
         if self.archive is not None:
             self._recover()
             self._recover_attempts()
@@ -543,6 +565,126 @@ class Worker:
         for thread in self.threads:
             thread.start()
         self.thread = self.threads[0]
+
+    # -------------------------------------------------------------- the deploy drain's hold
+
+    def _hold_path(self) -> Path:
+        root = self.archive.root if self.archive is not None else self.settings.temp_root
+        return Path(root) / "drain-hold.json"
+
+    @staticmethod
+    def _is_int(value) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    @staticmethod
+    def _is_number(value) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def _load_hold(self) -> None:
+        """The hold a restart finds on disk. A missing or unreadable file is no hold."""
+        data = archive_store.read_json(self._hold_path(), None)
+        if not isinstance(data, dict):
+            return
+        drain_id, until, highest = data.get("drain_id"), data.get("until"), data.get("max_drain_id")
+        if self._is_int(highest) and highest >= 0:
+            self.max_drain_id = highest
+        if self._is_int(drain_id) and self._is_number(until):
+            self.hold_drain_id, self.hold_until = drain_id, float(until)
+            self.max_drain_id = max(self.max_drain_id, drain_id)
+
+    def _save_hold(self) -> None:
+        """Called with `hold_lock` held. A write that fails leaves the hold in memory only."""
+        try:
+            archive_store.write_json(self._hold_path(), {"drain_id": self.hold_drain_id, "until": self.hold_until,
+                                                         "max_drain_id": self.max_drain_id})
+        except OSError:
+            traceback.print_exc()
+
+    def _hold_ended(self) -> None:
+        """A hold ended (released or expired): wake the parse thread, then tell the hooks. Never under `hold_lock`."""
+        self.wake.set()
+        for hook in list(self.on_release):
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 - a failing hook must never stop the worker
+                traceback.print_exc()
+
+    def hold(self, drain_id: int, until: float) -> bool:
+        """Start or renew a hold. False (nothing changed) when `drain_id` is below the highest id seen: a delayed
+        hold from an older drain. The same id renews; a higher id replaces."""
+        with self.hold_lock:
+            if drain_id < self.max_drain_id:
+                return False
+            self.max_drain_id, self.hold_drain_id, self.hold_until = drain_id, drain_id, float(until)
+            self._save_hold()
+        return True
+
+    def release(self, drain_id: int) -> bool:
+        """End the hold. False (ignored) when another drain id holds; True otherwise, also when nothing was held."""
+        with self.hold_lock:
+            if self.hold_until is not None and self.hold_drain_id != drain_id:
+                return False
+            ended = self.hold_until is not None
+            if ended:
+                self.hold_until = self.hold_drain_id = None
+                self._save_hold()
+        if ended:
+            self._hold_ended()
+        return True
+
+    def holding(self, now: float | None = None) -> bool:
+        """Is a hold in force? An expired one is cleared here (so the parse thread's 1 s wake notices expiry)."""
+        now = time.time() if now is None else now
+        with self.hold_lock:
+            if self.hold_until is None:
+                return False
+            if now < self.hold_until:
+                return True
+            self.hold_until = self.hold_drain_id = None
+            self._save_hold()
+        self._hold_ended()
+        return False
+
+    def hold_state(self) -> dict:
+        now = time.time()
+        held = self.holding(now)
+        with self.hold_lock:
+            return {"hold": held, "hold_until": self.hold_until, "drain_id": self.hold_drain_id}
+
+    def _admit(self, job: Job) -> bool:
+        """Admission to a parse. While a hold is in force the job goes back to the front of its line (the
+        `returned` deque is read first) and False comes back; otherwise it counts as running, under the same lock
+        `hold()` takes."""
+        self.holding()
+        with self.hold_lock:
+            if self.hold_until is not None and time.time() < self.hold_until:
+                self.returned.appendleft(job)
+                return False
+            self._parse_started()
+            return True
+
+    def drain_counts(self) -> dict:
+        """Parses admitted (the admission counter, not job statuses) and jobs waiting for one."""
+        with self.lock:
+            running = self.parse_count
+        with self.hold_lock:
+            returned = len(self.returned)
+        return {"running": running,
+                "queued": self.queue.qsize() + self.reparse_queue.qsize() + returned + len(self.recovered)}
+
+    def upload_begin(self) -> None:
+        with self.upload_lock:
+            self.receiving += 1
+
+    def upload_end(self) -> None:
+        with self.upload_lock:
+            self.receiving = max(0, self.receiving - 1)
+            self.last_upload_end = time.monotonic()
+
+    def upload_counts(self) -> dict:
+        with self.upload_lock:
+            age = None if self.last_upload_end is None else max(0.0, time.monotonic() - self.last_upload_end)
+            return {"receiving": self.receiving, "last_end_age_s": age}
 
     @property
     def parsing(self) -> bool:
@@ -581,7 +723,7 @@ class Worker:
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
         if self.runs is not None and self.settings.parse_runner == "workflow":
             return True     # a Workflow parse takes no CPU here, so it holds back nothing local (spec D17)
-        return (not self.parsing and not self.recovered and self.queue.empty()
+        return (not self.parsing and not self.recovered and not self.returned and self.queue.empty()
                 and self.reparse_queue.empty())
 
     def _parse_coming(self) -> None:
@@ -931,35 +1073,50 @@ class Worker:
     def _next(self) -> Job:
         """Uploads first, then reparses, then the oldest held upload ready for another try. With the archive off,
         exactly the old blocking get."""
-        if self.archive is None:
-            job = self.queue.get()
-            self._parse_started()
-            return job
         while True:
+            if self.holding():          # a hold (the deploy drain) admits nothing, whatever is waiting
+                self._wait_for_work()
+                continue
+            job = self._take()
+            if job is None:
+                if self.archive is not None:    # archive off: `_take` already waited up to a second
+                    self._wait_for_work()
+                continue
+            if self._admit(job):
+                return job
+            self._wait_for_work()       # a hold began after the job was taken: it went back to the front
+
+    def _take(self) -> Job | None:
+        """The next job from any source, not yet admitted; None when nothing is ready. Returned jobs (taken while
+        held) come first so the order they had holds."""
+        with self.hold_lock:
+            if self.returned:
+                return self.returned.popleft()
+        if self.archive is None:
             try:
-                job = self.recovered.popleft()
-                self._parse_started()
-                return job
-            except IndexError:
+                return self.queue.get(timeout=1.0)
+            except queue.Empty:
+                return None
+        try:
+            return self.recovered.popleft()
+        except IndexError:
+            pass
+        for source in (self.queue, self.reparse_queue):
+            try:
+                return source.get_nowait()
+            except queue.Empty:
                 pass
-            for source in (self.queue, self.reparse_queue):
-                try:
-                    job = source.get_nowait()
-                    self._parse_started()
-                    return job
-                except queue.Empty:
-                    pass
-            job = self._release_held()
-            if job is not None:
-                self._parse_started()
-                return job
-            if time.time() - self.last_sweep > self.SWEEP_EVERY_S and self.sweep_lock.acquire(blocking=False):
-                try:
-                    self._sweep()
-                finally:
-                    self.sweep_lock.release()
-            self.wake.wait(timeout=1.0)
-            self.wake.clear()
+        return self._release_held()
+
+    def _wait_for_work(self) -> None:
+        if (self.archive is not None and time.time() - self.last_sweep > self.SWEEP_EVERY_S
+                and self.sweep_lock.acquire(blocking=False)):
+            try:
+                self._sweep()
+            finally:
+                self.sweep_lock.release()
+        self.wake.wait(timeout=1.0)
+        self.wake.clear()
 
     def _release_held(self) -> Job | None:
         """The oldest held upload ready for another try, now queued; None when there is none. Held jobs never sit
@@ -988,6 +1145,7 @@ class Worker:
             job = self._next()
             self._parse_coming()
             status, error, result = "failed", REASON_PARSE, None
+            drained = False
             try:
                 job.status = "parsing"
                 self._save(job)
@@ -996,6 +1154,8 @@ class Worker:
                         raise _JobFailed("this match was deleted on request")
                     self.archive.evict()
                 result, status, error = self._process(job), "done", None
+            except _Drained:
+                drained = True
             except _JobFailed as failed:
                 error = failed.reason
                 # Upload only (a held reparse would look "pending" to the automatic queue forever, blocking
@@ -1031,7 +1191,19 @@ class Worker:
             except Exception:  # noqa: BLE001 - one bad file must not stop the worker
                 traceback.print_exc()
             finally:
-                if status == "held":
+                owes_task_done = not job.released      # this take came from a queue (read before a requeue marks it)
+                if drained:
+                    # A forced deploy cancelled the run: nothing finished, nothing failed. The input stays (the
+                    # folder, the upload.vrf, no settle), the run's identity goes, and the job waits at the front
+                    # of the line, where the hold keeps it until the release. Marked `released` first: queued
+                    # again outside the queue, its next take owes no task_done (another thread may take it at once).
+                    job.run_id = job.run_token = job.run_deadline = None
+                    job.status, job.error, job.finished, job.released = "queued", None, None, True
+                    self._save(job)
+                    with self.hold_lock:
+                        self.returned.appendleft(job)
+                    self.wake.set()
+                elif status == "held":
                     # The file stays, same as a build the pin file never listed (above). The status write
                     # itself already happened under the lock, above; here, only finish the rest of the held
                     # state the same way, and only if this job is still "held" -- a concurrent _sweep (60-day
@@ -1060,7 +1232,7 @@ class Worker:
                         job.detail = job.parser_pin = None
                     self._save(job)
                 self._forget_old()
-                if not job.released:
+                if owes_task_done:
                     (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
                 self._parse_ended()
 
@@ -1127,6 +1299,8 @@ class Worker:
             if answer.get("status") == "ok":
                 job.parse_seconds = answer.get("parse_seconds")
                 return self._accept_result(job, answer["result"])
+            if kind == "drain":
+                raise _Drained()
             if kind == "deploy":
                 # This run's image has another recipe: nothing was parsed. Wait, then a fresh run, within the
                 # deadline (the loop's first check ends it).
@@ -1632,6 +1806,8 @@ class ControlRunner:
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
+        if self.runs is not None and self.runs.starts_blocked():
+            return None                              # a forced deploy: no launch, no warm build asked (state row 27)
         for job_id in self.pending:
             job = self.jobs[job_id]
             if job.kind == "heights" and self.remote(job):
@@ -1808,6 +1984,20 @@ class ControlRunner:
                 self.preempted.discard(job.id)
                 self.preempted_total += 1
                 job.status = "queued"
+                self.pending.insert(0, job.id)
+            elif kind == "drain" and job.kind in ("control", "warm"):
+                # A forced deploy cancelled the run (state rows 25 and 26): back to the front, nothing counted (no
+                # failure, no miss), the probe slot freed, the lease dropped (the next release leases again). A warm
+                # build whose tracked file isn't on this disk is untracked, uncounted.
+                if self.warm_probe.get(job.warm_id) == job.id:
+                    self.warm_probe.pop(job.warm_id, None)
+                job.released_name, job.status = None, "queued"
+                if job.kind == "warm":
+                    tracked = self.warm_names.get(job.warm_id)
+                    if tracked is not None and not (self.settings.control_cache_dir / tracked).is_file():
+                        self.warm_names.pop(job.warm_id, None)
+                        self.warm_read.discard(job.warm_id)
+                        self._withdraw(job.warm_id)
                 self.pending.insert(0, job.id)
             elif kind == "rewarm":
                 # Its warm cache left the disk before the run could lease it: back to the front, uncounted, and the
@@ -2226,6 +2416,10 @@ class _JobFailed(Exception):
         self.reason = reason
 
 
+class _Drained(Exception):
+    """A forced deploy cancelled this Workflow parse: the job goes back to the front of its line, input kept."""
+
+
 class UtilKeyError(ValueError):
     """A key (or a body) the util store refuses: a 400."""
 
@@ -2457,6 +2651,11 @@ class UtilBuilds:
 
     def result_file(self, build_id: str) -> Path:
         return self._result_file(build_id)
+
+    def building(self) -> int:
+        """Builds queued or running: the deploy drain's `util.building`."""
+        with self.lock:
+            return sum(1 for build in self.builds.values() if build["status"] in ("queued", "running"))
 
     def record_output(self, build_id: str, size: int, sha256: str) -> None:
         with self.lock:
@@ -2985,6 +3184,16 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 on = util is not None and runs_table is not None
                 body["util"] = {"enabled": on, "digest": util.digest if on else None, "protocol": UTIL_PROTOCOL,
                                 "bytes": util.usage() if on else 0, "reserve": worker.settings.util_reserve}
+                # The deploy drain (docs/superpowers/specs, R6): `commit` is what this service is running.
+                body["commit"] = os.environ.get("RENDER_GIT_COMMIT")
+                hold = worker.hold_state()
+                body["drain"] = {**hold,
+                                 "starts_blocked": runs_table.starts_blocked() if runs_table is not None else False,
+                                 "cancelling": runs_table.cancelling if runs_table is not None else 0,
+                                 "uploads": worker.upload_counts(),
+                                 "parses": worker.drain_counts(),
+                                 "util": {"building": util_builds.building() if util_builds is not None else 0},
+                                 "runs": {"active": (body["workflow"] or {}).get("open", 0)}}
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -3048,11 +3257,77 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 return self._attempt_post(self.path[len("/reparse/attempts/"):-len("/close")])
             if self.path in ("/reparse", "/archive/delete", "/archive/tombstones"):
                 return self._archive_post()
+            if self.path == "/drain/hold":
+                return self._drain_hold()
+            if self.path == "/drain/release":
+                return self._drain_release()
+            if self.path == "/drain/cancel":
+                return self._drain_cancel()
             if self.path != "/jobs":
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
             size = self._length(len(VRF_MAGIC), worker.settings.max_bytes)
             if size is None:
                 return None
+            worker.upload_begin()       # counted from here to the answer, whatever it is (the deploy drain, R6)
+            try:
+                return self._upload(size)
+            finally:
+                worker.upload_end()
+
+        def _drain_hold(self):
+            body = self._json()
+            drain_id, until = (body or {}).get("drain_id"), (body or {}).get("until")
+            if (not isinstance(drain_id, int) or isinstance(drain_id, bool) or isinstance(until, bool)
+                    or not isinstance(until, (int, float)) or until != until or until <= time.time()):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a hold: drain_id (int) and a future until"})
+            if not worker.hold(drain_id, until):
+                return self._send(HTTPStatus.OK, {"ignored": True})
+            return self._send(HTTPStatus.OK, {"hold": True, "drain_id": drain_id, "until": until})
+
+        def _drain_release(self):
+            body = self._json()
+            drain_id = (body or {}).get("drain_id")
+            # null is the site's release of a worker that reported only `starts_blocked` (no hold): it lifts the
+            # barrier and never ends another drain's hold.
+            if body is None or (drain_id is not None and (not isinstance(drain_id, int) or isinstance(drain_id, bool))):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a release: drain_id (int or null)"})
+            if not worker.release(drain_id):
+                return self._send(HTTPStatus.OK, {"ignored": True})
+            if runs_table is not None:
+                runs_table.unblock_starts()      # also when no hold was held: the barrier alone is lifted
+            if control is not None:
+                control.wake.set()
+            return self._send(HTTPStatus.OK, {"hold": False})
+
+        def _drain_cancel(self):
+            """A forced deploy (R9). Fenced like a release: ignored unless the hold names this drain id. The answer
+            comes at once with the runs claimed; Render's cancels run on a thread (`Runs.cancel_all`)."""
+            body = self._json()
+            drain_id = (body or {}).get("drain_id")
+            if not isinstance(drain_id, int) or isinstance(drain_id, bool):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a cancel: drain_id (int)"})
+            state = worker.hold_state()
+            if not state["hold"] or state["drain_id"] != drain_id:
+                return self._send(HTTPStatus.OK, {"ignored": True, "cancelled": []})
+            claimed = runs_table.cancel_all() if runs_table is not None else []
+            return self._send(HTTPStatus.OK, {"cancelled": [{"kind": c["kind"], "key": self._cancel_key(c)}
+                                                            for c in claimed]})
+
+        def _cancel_key(self, claimed: dict) -> str:
+            """The name a cancelled run goes by: a round's key, a warm or height build's map, a util build's key, an
+            upload's id; the job id when the owner has already forgotten it."""
+            job_id = claimed["job_id"]
+            job = control.get(job_id) if control is not None else None
+            if job is not None:
+                return job.key if job.kind == "control" else job.map
+            if claimed["kind"] == "util" and util_builds is not None:
+                with util_builds.lock:
+                    build = util_builds.builds.get(job_id)
+                    if build is not None:
+                        return build["key"]
+            return job_id
+
+        def _upload(self, size: int):
             try:
                 job_id, folder = worker.reserve_folder(size)
             except NoSpace:
@@ -3277,6 +3552,12 @@ def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
         util_builds = UtilBuilds(worker.settings, util, runs_table)
     httpd = ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table, util, util_builds))
     httpd.util_builds = util_builds
+    if runs_table is not None:
+        # A hold that ends (released or expired) lifts the start barrier a forced deploy raised, and wakes the
+        # control scheduler (R5). The parse thread is woken by the Worker itself.
+        worker.on_release.append(runs_table.unblock_starts)
+        if control is not None:
+            worker.on_release.append(control.wake.set)
     return httpd
 
 

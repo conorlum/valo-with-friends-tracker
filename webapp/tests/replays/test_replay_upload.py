@@ -40,7 +40,8 @@ def db(monkeypatch):
     monkeypatch.setattr(settings, "replay_upload_code", "letmein")
     monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[*TABLES, ReplayUpload.__table__])
+    from app.models.deploy_drain import DeployDrain
+    Base.metadata.create_all(engine, tables=[*TABLES, ReplayUpload.__table__, DeployDrain.__table__])
     session = sessionmaker(bind=engine)()
     yield session
     session.close()

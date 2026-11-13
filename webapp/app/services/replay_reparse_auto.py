@@ -393,7 +393,8 @@ def _resolve(session, worker, memo: Memo, upload_id: str, recipe: str, site_off:
     why = site_off or _selection_problem(session, context, recipe)
     session.rollback()   # the selection was read under the lock; the store checks it again under the same lock
     if why is None:
-        if may_send():
+        from app.services import deploy_drain
+        if may_send() and not deploy_drain.paused_now():
             _send(session, worker, memo, upload_id, context, when, counts, "reparse_recovered")
         return
     try:
@@ -503,14 +504,16 @@ def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: di
     when = datetime.fromtimestamp(now, timezone.utc)
 
     def quiet() -> bool:
-        return busy_reason(session, health, control_in_flight) is None
+        from app.services import deploy_drain
+        return not deploy_drain.paused_now() and busy_reason(session, health, control_in_flight) is None
 
     oldest = True   # only the oldest unfinished attempt may be sent again: two can't wait on each other
     for upload_id in pending:
         still = _recover(session, worker, memo, upload_id, recipe, site_off,
                          quiet if oldest else (lambda: False), when, counts)
         oldest = oldest and not still
-    if site_off is not None:
+    from app.services import deploy_drain
+    if site_off is not None or deploy_drain.paused_now():
         return _owed(session)
 
     if memo.index is None or memo.index_at is None or now - memo.index_at >= INDEX_S:
@@ -532,10 +535,13 @@ def _step(session, worker, memo: Memo, control_in_flight, now: float, counts: di
     by_id = {replay_id: sha for replay_id, sha in session.query(Replay.id, Replay.source_sha256)}
     chosen = next((entry for entry in entries if entry.state == "eligible"
                    and (entry.match_uuid, by_id.get(entry.replay_id)) not in refused), None)
+    if deploy_drain.paused_now():
+        return holding
     reserved = _reserve(session, chosen, recipe, memo.index, when) if chosen is not None else None
     if reserved is not None:
         counts["reparse_reserved"] += 1
-        _send(session, worker, memo, reserved[0], reserved[1], when, counts, "reparse_sent")
+        if not deploy_drain.paused_now():
+            _send(session, worker, memo, reserved[0], reserved[1], when, counts, "reparse_sent")
     return holding
 
 

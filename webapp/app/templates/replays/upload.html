@@ -3,6 +3,9 @@
 {% block title %}Upload a replay &ndash; {{ site_name }}{% endblock %}
 {% block content %}
 <h1>Upload a replay</h1>
+{% if deploy_banner %}
+<p class="page-meta" role="status" data-deploy-banner>{{ deploy_banner.text }}</p>
+{% endif %}
 <div class="card">
   {% if error %}<p class="upload-error" role="alert">{{ error }}</p>{% endif %}
   {% if not authorized %}
@@ -68,6 +71,7 @@
 </details>
 <details class="card replay-errors" data-errors>
   <summary>Show site health</summary>
+  <p class="page-meta" role="status" data-errors-deploy hidden></p>
   <p class="page-meta" role="status" data-errors-status>Open to check site health.</p>
   <button type="button" data-errors-copy disabled>Copy prompt</button>
   <div data-errors-body hidden></div>
@@ -171,6 +175,9 @@
     }
     function render(result) {
       var empty = [], group = null;
+      var deploy = panel.querySelector("[data-errors-deploy]");
+      deploy.textContent = result.deploy ? result.deploy.text : "";
+      deploy.hidden = !result.deploy;
       result.kinds.forEach(function (kind) {
         if (!kind.count) {
           // A check still running or unavailable isn't "nothing": it says so.

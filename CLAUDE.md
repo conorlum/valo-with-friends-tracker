@@ -222,6 +222,16 @@ or clears rows;
 A new recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
 Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
 
+### Deploy drain
+
+`deploy_drains` (migration `0034`) stores drain ownership, pause intervals and deploy history;
+`app/services/deploy_drain.py` owns the pause. `/admin/deploy` exposes POST `/drain`, `/poll`,
+`/deploying`, `/force`, `/resume` and GET `/status`, with Bearer `REPLAY_ADMIN_TOKEN`
+(404 without it or in demo mode). `.github/workflows/deploy.yml` runs
+`webapp/scripts/deploy_pipeline.py`; PR 1 is manual-only, with `skip_drain` and `dry_run` inputs.
+Any new background scheduler must check `deploy_drain.paused` before admitting new work.
+See `webapp/RENDER_DEPLOY.md`, "Deploy drain (GitHub Action)", for setup and recovery.
+
 ### Running the webapp locally
 
 ```

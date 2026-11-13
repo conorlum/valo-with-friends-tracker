@@ -56,7 +56,7 @@ from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.replays import height_inputs as hi
 from app.replays import layouts
-from app.services import control_heights, replay_control
+from app.services import control_heights, deploy_drain, replay_control
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +73,12 @@ MAX_TRIES = 3
 BACKOFF_S = 300
 MAX_BUILDS = settings.heights_max_builds     # maps whose rebuild is open at once (HEIGHTS_MAX_BUILDS)
 COUNTS = ("heights_live", "heights_rejected", "heights_failed", "heights_stale", "heights_off", "heights_sent")
+
+
+def open_builds() -> int:
+    """Open worker jobs in the dispatcher's last detached snapshot."""
+    from app.services import replay_control_remote
+    return replay_control_remote._OPEN_HEIGHT_BUILDS
 
 
 def enabled() -> bool:
@@ -364,6 +370,8 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
                 return False
             if (health.get('heights') or {}).get('diagnostics_protocol') == 1:
                 options['diagnostic'] = control_feature_artifacts.diagnostic_snapshot(session, build.map_name)
+            if deploy_drain.paused_now():
+                return False
             state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest, **options)
             build.job_id = state.get("id")
             build.queued_since = build.running_since = None
@@ -426,6 +434,10 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if status == "done":
             _finish(session_factory, session, build, state if "result" in state else client.build(build.job_id), counts)
             return True
+        if status == "failed" and state.get("error_kind") == "drain":
+            build.job_id = None
+            build.queued_since = build.running_since = None
+            return False
         if status == "failed" and state.get("error_code") == "unknown_layout":
             raise _UnknownLayout(str(state.get("error") or "worker layout unavailable"))
         raise BuildFailed(str(state.get("error") or f"the worker says the build is {status!r}"))
@@ -503,11 +515,15 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
     # collected (or failed) is still in it and must not be opened again until the next cycle plans afresh.
     attempted = set(hstate.builds)
     for build in list(hstate.builds.values()):
+        if build.job_id is None and deploy_drain.paused_now():
+            continue
         _try_build(session_factory, session, client, hstate, build, due, now, counts, held)
     building = {b.map_name for b in hstate.builds.values()}
     ready = [d for key, d in due.items()
              if key not in attempted and key not in hstate.builds and d.map_name not in building
              and key not in hstate.waiting and hstate.may_try(key, now)]
+    if deploy_drain.paused_now():
+        ready = []
     if not ready or len(hstate.builds) >= MAX_BUILDS:
         return held
     try:
@@ -536,6 +552,8 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
         return held
     actives = control_heights.active_digests(session)
     for d in ready[:room]:
+        if deploy_drain.paused_now():
+            break
         rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
         build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,
                       previous=actives.get(d.map_name),

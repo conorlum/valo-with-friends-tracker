@@ -1298,7 +1298,7 @@ def test_planning_is_throttled_when_control_and_gaps_are_both_current(factory, d
     remote.cycle(factory, worker, state, now=remote.CYCLE_S)
     assert calls == [False, True] and not worker.tasks, "one control plan and one forced plan, then the throttle"
     remote.cycle(factory, worker, state, now=remote.PLAN_IDLE_S + 1)
-    assert calls == [False, True, False, True] and worker.health_reads == 2
+    assert calls == [False, True, False, True] and worker.health_reads == 3
 
 
 def test_a_gaps_only_result_that_arrives_after_control_moved_is_skipped(factory, db, linked):

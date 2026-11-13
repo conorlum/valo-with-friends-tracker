@@ -125,7 +125,9 @@ def handler(tmp_path, monkeypatch, *, task=None, accepts=False):
     index.write_text(json.dumps({'maps': {'Ascent': {}, 'Ascent_13_10': {}}}))
     monkeypatch.setattr(server, 'WEBAPP', webapp)
     worker = SimpleNamespace(settings=server.Settings(), queue=SimpleNamespace(qsize=lambda: 0),
-        memory_cap=0, archive_status=lambda: {}, recipe=None, idle=lambda: True)
+        memory_cap=0, archive_status=lambda: {}, recipe=None, idle=lambda: True,
+        hold_state=lambda: {'hold': False, 'hold_until': None, 'drain_id': None},
+        upload_counts=lambda: {}, drain_counts=lambda: {})
     control = SimpleNamespace(enabled=True, settings=server.Settings(), counts=lambda: {},
         remote=lambda job: False,
         submit=(lambda task: SimpleNamespace(id='synthetic', status='queued')) if accepts else

@@ -591,7 +591,8 @@ def test_a_round_too_large_to_send_fails_the_build_instead_of_being_sent(rig, fa
 
 def test_a_build_nobody_can_finish_sending_is_given_up_on(rig, factory, db, linked, monkeypatch):
     clone(db, linked, 1)
-    answers = iter([True])                                     # idle once, to open it; then a parse that never ends
+    # The drain-hold sync reads first; only the height admission read is idle, then a parse never ends.
+    answers = iter([False, True])
     monkeypatch.setattr(rig.client, "health", lambda: {"idle": next(answers, False)})
     rig.cycle(factory, step_s=10)
     assert rig.state.heights.build is not None

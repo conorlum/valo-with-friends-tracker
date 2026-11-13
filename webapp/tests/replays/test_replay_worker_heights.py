@@ -50,7 +50,9 @@ def test_health_advertises_heights_protocol_without_network(tmp_path, with_runne
         builds._spooled = lambda: 0
     worker = SimpleNamespace(settings=server.Settings(temp_root=tmp_path),
                              queue=SimpleNamespace(qsize=lambda: 0), memory_cap=0,
-                             archive_status=lambda: {}, recipe=None, idle=lambda: True)
+                             archive_status=lambda: {}, recipe=None, idle=lambda: True,
+                             hold_state=lambda: {"hold": False, "hold_until": None, "drain_id": None},
+                             upload_counts=lambda: {}, drain_counts=lambda: {})
     handler_type = server.make_handler(worker, heights=builds)
     handler = object.__new__(handler_type)
     handler.path = "/health"
