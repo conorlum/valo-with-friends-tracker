@@ -223,6 +223,25 @@ def test_an_orphan_anchor_and_a_new_trip_reusing_its_endpoint_are_two_events(own
     assert new["wire"] == [[100, 200], [50, 60]]
 
 
+def test_an_explicit_end_with_no_match_does_not_take_an_orphan_anchor():
+    orphan = second(id=5, t=0.0, t1=29.0, gone=10.0, u=500, v=600)
+    main = trip(id=12, t=20.0, t1=29.0, gone=29.0, u=100, v=200, end=[50, 60])
+    old, new = found([orphan, main])
+    assert (old["t"], old["id"], old["u"], old["v"]) == (10.0, 5, 500, 600)
+    assert "wire" not in old
+    assert (new["t"], new["id"], new["u"], new["v"]) == (29.0, 12, 75.0, 130.0)
+    assert new["wire"] == [[100, 200], [50, 60]]
+
+
+def test_a_trip_without_an_end_does_not_pair_with_a_far_placement_time():
+    orphan = second(id=5, t=0.0, t1=29.0, gone=10.0, u=500, v=600)
+    main = trip(id=12, t=20.0, t1=29.0, gone=29.0, u=100, v=200)
+    old, new = found([orphan, main])
+    assert (old["t"], old["id"], old["u"], old["v"]) == (10.0, 5, 500, 600)
+    assert (new["t"], new["id"], new["u"], new["v"]) == (29.0, 12, 100, 200)
+    assert "wire" not in old and "wire" not in new
+
+
 def test_two_trips_one_tethers_an_enemy_the_other_is_shot():
     t1 = trip(id=100, u=100, v=100, t=0.0, t1=20.0, gone=18.0)
     t2 = trip(id=200, u=500, v=500, t=1.0, t1=20.0, gone=18.0)

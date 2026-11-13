@@ -62,8 +62,9 @@ def _is_device_row(r) -> bool:
 
 def _pair_trips(rows: list[dict]) -> list[_Device]:
     """Devices from the device rows. A main `4_TripWire` and its `4_TripWire_SecondWire` are one trip: paired by the
-    main row's `end` when it has one, else nearest id, always by owner and close `t1` (placement time when either
-    `t1` is absent). Any other row is a device alone."""
+    main row's `end` when it has one, else nearest id with close placement times, always by owner and close `t1`
+    (placement time when either `t1` is absent). An unmatched explicit end stays alone. Any other row is a device
+    alone."""
     out: list[_Device] = []
     mains = sorted((r for r in rows if r["name"] == _TRIP), key=lambda r: (r.get("id") or 0, float(r["t"])))
     seconds = sorted((r for r in rows if r["name"] == _SECOND), key=lambda r: (r.get("id") or 0, float(r["t"])))
@@ -80,8 +81,9 @@ def _pair_trips(rows: list[dict]) -> list[_Device]:
         if isinstance(end, list) and len(end) >= 2:
             pick = next((s for s in seconds if id(s) not in taken and s.get("by") == m.get("by")
                          and close(s) and abs(s["u"] - end[0]) <= 1 and abs(s["v"] - end[1]) <= 1), None)
-        if pick is None:
-            near = [s for s in seconds if id(s) not in taken and s.get("by") == m.get("by") and close(s)]
+        else:
+            near = [s for s in seconds if id(s) not in taken and s.get("by") == m.get("by") and close(s)
+                    and abs(float(s["t"]) - float(m["t"])) <= _PAIR_T1_S]
             if near:
                 pick = min(near, key=lambda s: (abs((s.get("id") or 0) - (m.get("id") or 0)), s.get("id") or 0))
         if pick is not None:
