@@ -25,7 +25,7 @@ import struct
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-PIN_COMMIT = "04dcbd92806cbb3005323ec987e4fa7c95ab6a1f"
+PIN_COMMIT = "fbf24b62c5a8b8b7a64df71b4cbaaf0a651ce5b8"
 BUILD = "++Ares-Core+release-13.06"
 
 

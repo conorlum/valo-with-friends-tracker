@@ -38,7 +38,7 @@ def test_happy_path(tmp_path):
     assert out.match_uuid == MATCH_UUID
     assert out.map_name == "Ascent" and out.hz == 16 and out.round_count == 3
     assert out.game_branch == "++Ares-Core+release-13.06"
-    assert out.recipe.startswith(f"04dcbd92806c.c{fmt.CONDENSE_REVISION}.f1.a")
+    assert out.recipe.startswith(f"fbf24b62c5a8.c{fmt.CONDENSE_REVISION}.f1.a")
     assert [p["agent"] for p in out.players] == AGENT_NAMES
     assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
     assert [p["subject"] for p in out.players] == [subject(i) for i in range(10)]
