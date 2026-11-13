@@ -13,9 +13,14 @@
   </form>
   {% else %}
   <p class="page-meta">Pick a competitive match's <code>.vrf</code> file from
-    <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker into the minimap
+    <code data-demos-path>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker into the minimap
     replay. If the match is on this site, the replay links to it; if not, it plays on its own and links after the match
     is crawled.</p>
+  {# Browsers can't open the picker at a path, but Windows' file dialog jumps to any folder pasted into its
+     "File name" box, %LOCALAPPDATA% included. #}
+  <p class="page-meta"><button type="button" data-demos-copy>Copy folder path</button>
+    <span data-demos-copy-status>Then, in the file picker, paste it into the <strong>File name</strong> box and press
+    Enter to jump to your replays.</span></p>
   {# The wording of the archive promise (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). #}
   <p class="page-meta" data-archive-promise><strong>What is kept:</strong> the site also keeps the <code>.vrf</code> file
     itself, privately on that worker, so new features can be built from your matches later. A <code>.vrf</code> holds
@@ -243,6 +248,55 @@
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(render)
         .catch(function (e) { status.textContent = "Could not check site health (" + e.message + "). Reload the page to try again."; });
+    });
+  })();
+</script>
+<script>
+  // Finding the Demos folder. "Copy folder path" puts the path on the clipboard for the file dialog's File name box.
+  // Where the browser has showOpenFilePicker (Chrome, Edge), the file input opens it instead, with its own id, so
+  // the browser remembers the Demos folder for this button apart from every other upload. The picked files go back
+  // into the input, so the form and the upload script below are unchanged; any other browser keeps the plain input.
+  (function () {
+    var copyButton = document.querySelector("[data-demos-copy]");
+    var copyStatus = document.querySelector("[data-demos-copy-status]");
+    var path = document.querySelector("[data-demos-path]").textContent;
+    var hint = copyStatus.innerHTML;
+    copyButton.addEventListener("click", function () {
+      function done(text) {
+        copyStatus.textContent = text;
+        setTimeout(function () { copyStatus.innerHTML = hint; }, 6000);
+      }
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        done("Couldn't copy: select the folder path above and press Ctrl+C.");
+        return;
+      }
+      navigator.clipboard.writeText(path).then(function () {
+        done("Copied. In the file picker, paste it into the File name box (Ctrl+V) and press Enter.");
+      }, function () { done("Couldn't copy: select the folder path above and press Ctrl+C."); });
+    });
+
+    var input = document.querySelector("[data-upload-form] input[type=file]");
+    if (!input || typeof window.showOpenFilePicker !== "function" || typeof DataTransfer !== "function") return;
+    var usePicker = true;
+    input.addEventListener("click", function (event) {
+      if (!usePicker) return;
+      event.preventDefault();
+      window.showOpenFilePicker({
+        id: "valorant-replays",
+        multiple: true,
+        types: [{description: "Valorant replays", accept: {"application/octet-stream": [".vrf"]}}],
+      }).then(function (handles) {
+        return Promise.all(handles.map(function (handle) { return handle.getFile(); }));
+      }).then(function (files) {
+        var picked = new DataTransfer();
+        files.forEach(function (file) { picked.items.add(file); });
+        input.files = picked.files;
+        input.dispatchEvent(new Event("change", {bubbles: true}));
+      }).catch(function (error) {
+        if (error && error.name === "AbortError") return;  // the picker was closed without choosing
+        usePicker = false;  // this browser refused the picker: the plain input from now on
+        input.click();
+      });
     });
   })();
 </script>
