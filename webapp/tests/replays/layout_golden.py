@@ -20,7 +20,7 @@ from app.coach import areas
 from app.config import settings
 from app.db import Base
 from app.models.replay import ControlFeatureArtifact, ControlHeight
-from app.replays import choke_assets, control_format, height_inputs
+from app.replays import choke_assets, control_format, height_inputs, layouts
 from app.replays import format as replay_format
 from app.replays.map_feature_artifacts import FeatureArtifactRef
 from app.services import control_feature_artifacts, replay_control, replay_gaps
@@ -43,7 +43,9 @@ CONTROL_TABLES = [ControlHeight.__table__, ControlFeatureArtifact.__table__]
 
 
 def map_names():
-    return sorted(json.loads(INDEX_PATH.read_text(encoding="utf-8"))["maps"])
+    """The base keys only (R2-12): a redraw adds <Map>_<NN>_<NN> keys, which this golden doesn't pin."""
+    return sorted(key for key in json.loads(INDEX_PATH.read_text(encoding="utf-8"))["maps"]
+                  if layouts.map_of(key) == key)
 
 
 def _figure(label, compute):

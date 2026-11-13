@@ -683,6 +683,10 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             return True                      # sendable work is left: plan again next cycle
         if not room_for(state, p.replay_id):
             continue                         # another match is in flight: this one waits its turn
+        if state.layout_wait.get(p.asset_key or p.map_name, 0.0) > now:
+            # R2-9: an earlier round of this batch was just refused for its layout; the rest wait with it.
+            counts['layout_waiting'] = counts.get('layout_waiting', 0) + 1
+            continue
         key = keys[p.replay_id, p.round_number]
         gaps_only = kind == "gaps"
         expect_gaps = gaps_only or key != task_key(p.replay_id, p.round_number, p.fingerprint)
