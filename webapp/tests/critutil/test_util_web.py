@@ -254,6 +254,35 @@ def _fingerprint(db, replay, n):
     return db.get(ReplayRoundUtil, (replay.id, n)).fingerprint
 
 
+@pytest.mark.parametrize("stored", [True, False])
+def test_payload_keeps_area_with_stored_figures_and_uses_published_fallback(db, linked, monkeypatch, tmp_path, stored):
+    from app.coach import areas
+    from tests.coach.test_areas import painted_object, write_paint
+
+    # Stored figures say B even when publication moves to A; missing rows use published B.
+    map_name = replay_util._replay_context(db, {linked.id})[linked.id]["map"]
+    names = [{"id": 1, "name": "B Site", "parent": None, "super": "B", "super_source": "set"}]
+    obj = painted_object({areas.cell_at(5000, 5000): 1}, names=names) | {"map": map_name}
+    write_paint(tmp_path, obj, map_name)
+    published = areas.load_table(tmp_path)
+    obj["names"][0].update(name="A Site", super="A")
+    write_paint(tmp_path, obj, map_name)
+    if stored:
+        published = areas.load_table(tmp_path)
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    assert replay_util.area_of(map_name, 5000, 5000, "attack") == "A"
+    monkeypatch.setattr(areas, "load_table", lambda **kw: published if kw.get("published_only") else {})
+    built = _stored_build(db, linked, {"area": "B", "lift": 0.0312, "base_n": 55})
+    if not stored:
+        built["rows"] = []
+        key = replay_util._values_row(db)[0]
+        replay_util._store_values(db, key, built)
+    row = replay_util.match_payload(db, linked)["rounds"]["1"]["casts"][0]
+    assert row["area"] == "B"
+    if stored:
+        assert row["lift"] == 3.12 and row["base_n"] == 55
+
+
 def _stored_build(db, linked, row, fingerprints=True):
     from app.services import util_model
 

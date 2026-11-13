@@ -54,7 +54,7 @@ The player detail page's two heaviest computations (the round-win/kill-order sta
 
 ### Critical Util
 
-Reviewed paint is published by merging it, and Critical Util builds ignore uncommitted areas files.
+Critical Util builds read reviewed paint from origin/main; merge it to publish.
 
 ### AI coach
 

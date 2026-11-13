@@ -53,6 +53,18 @@ def write_paint(tmp_path, obj, map_name="Sunset"):
     return path
 
 
+def test_same_size_same_mtime_replacement_reads_new_bytes(tmp_path):
+    import os
+
+    path = write_paint(tmp_path, painted_object({0: 1}))
+    stat = path.stat()
+    assert areas.load_painted("Sunset", tmp_path).cells[0] == 1
+    write_paint(tmp_path, painted_object({0: 3}))
+    assert path.stat().st_size == stat.st_size
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert areas.load_painted("Sunset", tmp_path).cells[0] == 3
+
+
 def test_reviewed_paint_replaces_approximate_evidence_positions(tmp_path):
     points = [(3475, 4892), (8627, 4063)]
     names = deepcopy(NAMES)

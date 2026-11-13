@@ -238,8 +238,9 @@ def _area_problems(text: str, grounded: set[str], area_names, improve: bool) -> 
         patterns = []
         for area in area_names:
             escaped = re.escape(area)
-            if area in ("A", "B", "C"):
-                escaped = rf"(?i:{escaped}[ -]site|site[ -]{escaped})"
+            if re.fullmatch(r"[ABC](?: site)?", area, flags=re.IGNORECASE):
+                site = re.escape(area[0])
+                escaped = rf"(?i:{site}[ -]site|site[ -]{site})"
             patterns.append("(" + escaped + ")")
         mentioned = {area_names[match.lastindex - 1] for match in re.finditer(
             r"(?<![\w-])(?:" + "|".join(patterns) + r")(?![\w-])", text,

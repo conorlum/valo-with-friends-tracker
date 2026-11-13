@@ -156,7 +156,7 @@ def control(snap, n, t0, t1, area) -> dict:
         return _missing("no control ticks in that span")
     approximate = shares.get("approximate")
     if approximate is None:
-        approximate = not areas.is_painted(view.map_name)
+        approximate = True
     note = "a and b are the round's side groups; shares are fractions of the area's cells over the span"
     if approximate:
         note += "; area labels are approximate nearest-callout guesses"

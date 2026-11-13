@@ -858,12 +858,13 @@ def match_payload(db, replay, *, wait: bool = False) -> dict:
             updating = True
     built = {(r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None, r["t"] if r["i"] is None else None): r
              for r in corpus.get("rows") or () if r.get("replay") == replay.id}
-    flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True) if ctx else []
+    flat = _cast_rows(replay.id, ctx, current, model, weights, include_unscored=True,
+                      painted_table=areas.load_table(published_only=True)) if ctx else []
     for r in flat:          # the lift comes from the stored build (the same cast there), when it has one
         b = built.get((r["replay"], r["round"], r["i"], r["slot"] if r["i"] is None else None,
                        r["t"] if r["i"] is None else None))
         if b is not None:
-            r.update(lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
+            r.update(area=b.get("area"), lift=b.get("lift"), base_n=b.get("base_n", 0), base_level=b.get("base_level"))
             r.update({k: b.get(k) for k in ("type", "L", "lift_all", "lift_yours", "yours_level", "yours_n", "gate_all",
                                             "gate_yours", "lift_device", "device_level", "device_n", "gate_device")})
     by_round: dict[int, list] = defaultdict(list)

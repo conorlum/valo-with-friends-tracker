@@ -212,10 +212,9 @@ def dumps(painted_dict: dict) -> str:
 
 
 @lru_cache(maxsize=64)
-def _read_painted(path: Path, mtime_ns: int, size: int) -> Painted | None:
-    # The stat fields are part of the cache key so edits replace the cached decoded data.
+def _read_painted(path: Path, raw: bytes) -> Painted | None:
+    # bytes are hashed in the cache key: even a same-size/same-mtime edit replaces the decode.
     try:
-        raw = path.read_bytes()
         obj = json.loads(raw.decode("utf-8"))
         if isinstance(obj, dict) and obj.get("reviewed") is False:
             return None
@@ -244,13 +243,13 @@ def load_painted(map_name: str, areas_dir: Path | None = None) -> Painted | None
         return None
     path = _areas_dir(areas_dir) / (map_name + _SUFFIX)
     try:
-        stat = path.stat()
+        raw = path.read_bytes()
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
         _LOG.warning("Cannot access painted areas file %s: %s", path, exc)
         return None
-    return _read_painted(path, stat.st_mtime_ns, stat.st_size)
+    return _read_painted(path, raw)
 
 
 def area_at(
@@ -303,31 +302,66 @@ def _git_root() -> Path | None:
     return next((path for path in (webapp, *webapp.parents) if (path / ".git").exists()), None)
 
 
-def _head_bytes(root: Path, path: Path) -> bytes | None:
-    try:
-        relative = path.resolve().relative_to(root.resolve()).as_posix()
-        result = subprocess.run(["git", "-C", str(root), "show", f"HEAD:{relative}"],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False)
-    except ValueError:
-        return None
-    return result.stdout if result.returncode == 0 else None
+def _git_bytes(root: Path, *args: str, input: bytes | None = None) -> bytes:
+    result = subprocess.run(["git", "-C", str(root), *args], input=input,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False)
+    if result.returncode:
+        raise OSError(f"git {args[0]} failed")
+    return result.stdout
 
 
-@lru_cache(maxsize=None)
-def _warn_unpublished(path: Path) -> None:
-    _LOG.warning("Ignoring unpublished painted areas file %s in Critical Util builds; merge reviewed paint to publish it", path)
+@lru_cache(maxsize=8)
+def _published_table(root: Path, directory: Path, sha: str) -> dict[str, Painted]:
+    """Read a fetched commit's paint in one batch, without consulting working files."""
+    relative = directory.relative_to(root)
+    listing = _git_bytes(root, "ls-tree", "-r", "-z", sha, "--", relative.as_posix())
+    entries = []
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        path = Path(name.decode("utf-8"))
+        mode, kind, oid = metadata.split()
+        if kind == b"blob" and path.parent == relative and path.name.endswith(_SUFFIX):
+            entries.append((path, oid))
+    if not entries:
+        return {}
+    blobs = _git_bytes(root, "cat-file", "--batch", input=b"".join(oid + b"\n" for _, oid in entries))
+    table, offset = {}, 0
+    for path, _ in entries:
+        end = blobs.index(b"\n", offset)
+        oid, kind, size = blobs[offset:end].split()
+        if kind != b"blob":
+            raise ValueError("expected a painted areas blob")
+        start, size = end + 1, int(size)
+        raw = blobs[start:start + size]
+        offset = start + size + 1
+        if len(raw) != size or blobs[offset - 1:offset] != b"\n":
+            raise ValueError("incomplete painted areas blob")
+        painted = _read_painted(root / path, raw)
+        if painted is not None:
+            table[path.name.removesuffix(_SUFFIX)] = painted
+    return table
 
 
 @lru_cache(maxsize=None)
 def _warn_git_unavailable(root: Path) -> None:
-    _LOG.warning("Cannot read committed painted areas with git in %s; using reviewed working files", root)
+    _LOG.warning("Cannot read origin/main painted areas with git in %s; using reviewed working files", root)
 
 
 def load_table(areas_dir: Path | None = None, *, published_only: bool = False) -> dict[str, Painted]:
-    """Capture reviewed paint once. Compare working and HEAD bytes after normalizing CRLF to LF."""
+    """Capture reviewed paint; Critical Util reads origin/main in a git checkout."""
     table = {}
     root = _git_root() if published_only else None
     directory = _areas_dir(areas_dir)
+    if root is not None:
+        try:
+            sha = _git_bytes(root, "rev-parse", "--verify", "origin/main").decode("ascii").strip()
+            if not sha:
+                raise ValueError("missing origin/main commit")
+            return _published_table(root.resolve(), directory.resolve(), sha)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            _warn_git_unavailable(root)
     try:
         paths = sorted(directory.glob(f"*{_SUFFIX}"))
     except OSError as exc:
@@ -338,26 +372,17 @@ def load_table(areas_dir: Path | None = None, *, published_only: bool = False) -
         painted = load_painted(map_name, areas_dir)
         if painted is not None:
             table[map_name] = painted
-    if root is None:
-        return table
-    published = {}
-    try:
-        for map_name, painted in table.items():
-            head = _head_bytes(root, directory / (map_name + _SUFFIX))
-            if head is not None and painted.raw.replace(b"\r\n", b"\n") == head.replace(b"\r\n", b"\n"):
-                published[map_name] = painted
-    except (OSError, subprocess.TimeoutExpired):
-        _warn_git_unavailable(root)
-        return table
-    for map_name in table:
-        if map_name not in published:
-            _warn_unpublished(directory / (map_name + _SUFFIX))
-    return published
+    return table
 
 
 def table_hash(areas_dir: Path | None = None, *, painted_table: dict[str, Painted] | None = None) -> str | None:
     table = load_table(areas_dir) if painted_table is None else painted_table
+    return _table_digest(tuple(table[map_name].raw for map_name in sorted(table)))
+
+
+@lru_cache(maxsize=8)
+def _table_digest(raws: tuple[bytes, ...]) -> str | None:
     digest = hashlib.sha256()
-    for map_name in sorted(table):
-        digest.update(table[map_name].raw.replace(b"\r\n", b"\n"))
-    return digest.hexdigest() if table else None
+    for raw in raws:
+        digest.update(raw.replace(b"\r\n", b"\n"))
+    return digest.hexdigest() if raws else None

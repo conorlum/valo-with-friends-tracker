@@ -578,3 +578,12 @@ def test_a_timeline_spike_area_alone_does_not_ground_a_named_area(spike_log):
 def test_an_attempt_length_not_in_the_answer_fails(spike_log):
     snap, log = spike_log
     assert _check(snap, log, "You made a 2.5 s tap.", SPIKE_INST) != []
+
+
+@pytest.mark.parametrize("area", ["A", "A Site", "B", "B Site", "C", "C Site"])
+@pytest.mark.parametrize("spelling", ["{s} site", "{s_lower} site", "site {s}", "{s}-site"])
+def test_site_spellings_count_as_area_mentions(area, spelling):
+    text = spelling.format(s=area[0], s_lower=area[0].lower())
+    assert checker._area_problems(text, set(), [area], False)
+    assert checker._area_problems(text, {area}, [area], False) == []
+    assert checker._area_problems("A better trade", set(), [area], False) == []

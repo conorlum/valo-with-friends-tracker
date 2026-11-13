@@ -136,7 +136,7 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 
 ### Critical Util
 
-Reviewed paint is published by merging it, and Critical Util builds ignore uncommitted areas files.
+Critical Util builds read reviewed paint from origin/main; merge it to publish.
 
 Which utility wins rounds, each friend's best and worst util, and the patterns in how they use it
 (`docs/superpowers/specs/2026-10-21-critical-util-design.md`). Never on the demo. No AI in the per-match tab.

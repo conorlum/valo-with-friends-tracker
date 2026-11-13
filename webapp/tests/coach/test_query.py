@@ -40,7 +40,7 @@ def test_where_lists_every_player_with_side_and_state(snap):
 
 
 @pytest.mark.parametrize("flag, painted, expected", [(True, True, True), (False, False, False),
-                                                  (None, False, True), (None, True, False)])
+                                                  (None, False, True), (None, True, True)])
 def test_control_marks_approximate_shares_and_reads_legacy_shapes(snap, tmp_path, monkeypatch, flag, painted, expected):
     monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
     monkeypatch.setattr(areas, "is_painted", lambda map_name: painted)
@@ -51,6 +51,15 @@ def test_control_marks_approximate_shares_and_reads_legacy_shapes(snap, tmp_path
     out = query.control(snap, 1, 0, 10, "A Site")
     assert out["approximate"] is expected
     assert ("approximate" in out["note"]) is expected
+
+
+def test_legacy_control_stays_approximate_with_reviewed_paint(snap, tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    view = query._view(snap, 1)
+    write_paint(tmp_path, painted_object({0: 3}) | {"map": view.map_name}, view.map_name)
+    assert areas.is_painted(view.map_name)
+    assert "approximate" not in snap.control(1)
+    assert query.control(snap, 1, 0, 10, "A Site")["approximate"] is True
 
 
 def test_knew_answers_for_a_side_or_for_a_players_side(snap):
