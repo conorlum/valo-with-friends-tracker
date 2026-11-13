@@ -163,6 +163,29 @@ def last_outcome(db: Session) -> DeployDrain | None:
                       .limit(1).execution_options(populate_existing=True)).first()
 
 
+def banner(db: Session, now: datetime) -> dict | None:
+    """Best-effort notice from persisted state, including before the first poll."""
+    try:
+        row = active(db, now)
+        if row is not None:
+            if row.phase == "draining":
+                return {"kind": "draining", "text":
+                        f"Deploying: {row.waiting_total or 0} runs finishing, new work paused"}
+            return {"kind": "deploying", "text": f"Deploying {row.sha[:7]}: new work paused"}
+        row = last_outcome(db)
+        if row is not None and row.outcome == "failed":
+            ended = _utc(row.ended_at).strftime("%Y-%m-%d %H:%M UTC")
+            return {"kind": "failed", "text": f"Last deploy failed ({row.sha[:7]}, {ended})"}
+    except Exception as error:
+        # Keep upload queries usable after a failed read, without logging DB details.
+        log.warning("deploy banner unavailable (%s)", type(error).__name__)
+        try:
+            db.rollback()
+        except Exception as rollback_error:
+            log.warning("deploy banner rollback failed (%s)", type(rollback_error).__name__)
+    return None
+
+
 def drained(db: Session, start: datetime, end: datetime, now: datetime) -> timedelta:
     start, end, now = _utc(start), _utc(end), _utc(now)
     end = min(end, now)

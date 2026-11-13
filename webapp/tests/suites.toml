@@ -181,7 +181,7 @@ guards = ["app/services/site_health*.py", "app/models/site_events.py", "app/data
 
 [deploy-drain]
 about = "Deploy ownership, expiry, paused-work clocks and the site/worker readiness contract."
-tests = ["tests/test_deploy_drain.py", "tests/test_deploy_admin.py", "tests/test_upload_activity.py", "tests/replays/test_drain_pause.py"]
+tests = ["tests/test_deploy_drain.py", "tests/test_deploy_admin.py", "tests/test_deploy_banner.py", "tests/test_upload_activity.py", "tests/replays/test_drain_pause.py"]
 guards = ["app/routers/deploy_admin.py", "app/services/deploy_drain.py", "app/services/upload_activity.py", "app/models/deploy_drain.py", "alembic/versions/0034_deploy_drains.py", "tests/fixtures/deploy/**"]
 
 [map-layouts]
