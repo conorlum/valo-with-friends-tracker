@@ -113,8 +113,9 @@ def test_destroyed_trip_locates_the_only_enemy_at_the_trip(monkeypatch, gone_anc
     assert runner.unknown.located["A"][5] == pytest.approx(GONE)
     [hit] = _destruction_hits(rnd, runner)
     x, y = np.array(uv(*DEVICE_PX)) * ce.PX / 10000
-    assert hit == pytest.approx((GONE, "trip_destroyed", ce.TRIP_DESTROY_REACH_M,
-                                 rnd.geo.node_at_px(x, y), x, y))
+    assert hit[:3] == (GONE, "trip_destroyed", ce.TRIP_DESTROY_REACH_M)
+    assert hit[3][0] == rnd.geo.node_at_px(x, y)
+    assert hit[4:] == pytest.approx((x, y))
     assert ce.TRIP_DESTROY_REACH_M == 20.0
     area = runner.unknown._area(hit[3], hit[4], hit[5], hit[2], rnd.geo.walk_n)
     distances = np.hypot(rnd.geo.centres[:, 0] - x, rnd.geo.centres[:, 1] - y) * rnd.geo.m_per_px
@@ -261,6 +262,45 @@ def test_trip_on_upper_floor_seeds_both_floors_and_contains_the_shooter():
     assert np.isfinite(runner.unknown.reached["A"][5][shooter_node])
 
 
+@pytest.mark.parametrize("device", ["trip", "camera"])
+@pytest.mark.parametrize("live_sight", [False, True])
+def test_offset_lower_platform_is_seeded_within_device_reach(device, live_sight):
+    upper_rect = (96, 96, 128, 128)
+    lower_rect = (128, 96, 192, 128)
+    geo = toy_heights("OffsetPlatforms", [upper_rect, lower_rect], ground=[(lower_rect, -2.0)],
+                      upper=[(upper_rect, 4.0)])
+    point, shooter = (110, 108), (170, 108)
+    data = height_blob({0: ("A", [(0.0, 120, 108, 180, 4.0)]),
+                        5: ("B", [(0.0, *shooter, 180, -2.0)])}, t_end=20.0,
+                       util=[*_devices(device, point=point, z=z_dm(4.0)), _shot(start=shooter, end=point)])
+    rnd, runner = _runner(geo, data)
+    [hit] = _destruction_hits(rnd, runner)
+    x, y = np.array(uv(*point)) * ce.PX / 10000
+    primary = geo.node_at_px(x, y, rnd._device_z(z_dm(4.0)) + hc.STAND_M)
+    assert hit[3][0] == primary
+    sx, sy = np.array(uv(*shooter)) * ce.PX / 10000
+    shooter_node = geo.node_at_px(sx, sy, -2.0 + hc.STAND_M)
+    near = np.hypot(geo.centres[:, 0] - x, geo.centres[:, 1] - y) * geo.m_per_px <= hit[2]
+    room = geo.walk_n.copy()
+    if live_sight:
+        live = ce.Tick(rnd, GONE).live[0]
+        assert not live[shooter_node]
+        room &= ~live
+        observed = geo.walk_n & near & live
+        observed[primary] = False
+        assert observed.any(), "the teammate sees other nodes inside device reach"
+    area = runner.unknown._area(hit[3], x, y, hit[2], room)
+    assert area[shooter_node]
+    assert area[primary]
+    assert area[room & near].all()
+    if live_sight:
+        assert not area[observed].any()
+        # Only the primary device node remains forced even when every node is observed.
+        forced = runner.unknown._area(hit[3], x, y, hit[2], np.zeros(geo.n, bool))
+        assert np.flatnonzero(forced).tolist() == [primary]
+    assert not area[~near & (np.arange(geo.n) != primary)].any()
+
+
 SIDE_OF = {0: "A", 1: "A", 5: "B", 6: "B"}
 
 
@@ -302,6 +342,32 @@ def test_camera_ray_reaches_beyond_the_display_tracer_with_two_shooters():
     assert ce.destroyer(shots, (30, 0), GONE, "A", SIDE_OF, 1.0) == 5
 
 
+@pytest.mark.parametrize("start,end", [((34, -10), (34, 15)), ((34, 0), (59, 0)),
+                                       ((-55, 0), (-30, 0)), ((30, 4), (5, 4))])
+@pytest.mark.parametrize("other_shooter", [False, True])
+def test_usable_camera_aim_requires_origin_within_reach_and_ray_within_two_metres(start, end, other_shooter):
+    shots = [{"k": "shot", "t": GONE, "by": 5, "u": start[0], "v": start[1],
+              "u1": end[0], "v1": end[1]}]
+    if other_shooter:
+        shots.append({"k": "shot", "t": GONE, "by": 6, "u": 0, "v": 50})
+    assert ce.destroyer(shots, (0, 0), GONE, "A", SIDE_OF, 1.0) is None
+
+
+@pytest.mark.parametrize("line", [{}, {"u1": 20, "v1": 0}])
+def test_sole_shooter_without_usable_aim_is_credited_but_cannot_override_a_miss(line):
+    shot = {"k": "shot", "t": GONE, "by": 5, "u": 20, "v": 0, **line}
+    assert ce.destroyer([shot], (0, 0), GONE, "A", SIDE_OF, 1.0) == 5
+    miss = {"k": "shot", "t": GONE, "by": 5, "u": 34, "v": 0, "u1": 59, "v1": 0}
+    assert ce.destroyer([shot, miss], (0, 0), GONE, "A", SIDE_OF, 1.0) is None
+
+
+@pytest.mark.parametrize("distance,expected", [(20, 5), (20.01, None)])
+def test_trip_origin_reach_is_measured_to_wire_instead_of_midpoint(distance, expected):
+    shot = {"k": "shot", "t": GONE, "by": 5, "u": distance, "v": 20, "u1": distance - 25, "v1": 20}
+    assert ce.destroyer([shot], (0, 0), GONE, "A", SIDE_OF, 1.0,
+                        wire=[[0, -20], [0, 20]], reach_m=ce.TRIP_DESTROY_REACH_M) == expected
+
+
 @pytest.mark.parametrize("wire", [None, [[1000, 1900], [1000, 2100]]])
 def test_sole_shooter_whose_rays_clearly_miss_is_not_credited(wire):
     # Thirty metres to the side; explicitly use the trip's 20 m reach.
@@ -320,8 +386,9 @@ def test_trip_ray_and_fallback_use_the_trip_reach_in_world_metres():
 
 
 def test_only_shooter_fallback_counts_distinct_slots():
-    assert _destroyer([_segment(5, 300), _segment(5, 400)]) == 5
-    assert _destroyer([_segment(5, 300), _segment(6, 400)]) is None
+    shots = [_shot(end=None), _shot(end=None)]
+    assert _destroyer(shots) == 5
+    assert _destroyer([shots[0], dict(shots[1], by=6)]) is None
 
 
 @pytest.mark.parametrize("offset,expected", [(-0.5, 5), (-0.501, None), (0.05, 5), (0.051, None)])

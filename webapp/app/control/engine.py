@@ -304,10 +304,10 @@ def destroyer(shots, device_uv, gone: float, owner_side: str, side_of: dict[int,
     """Select the D8 shooter by its closest forward ray within 2 m, bounded by the device's reach.
     Trips measure against the whole wire when both anchors are known; other devices use their point.
     Equal distances choose the lower slot. The sole-shooter fallback requires no usable shot line or
-    a ray within reach_m of the device; clear misses cannot identify a destroyer."""
+    an aimed shot from within reach_m of the device; clear misses cannot identify a destroyer."""
+    aim_tolerance_m = 2.0
     shooters = set()
     lined = set()
-    plausible = set()
     closest = None
     for shot in shots:
         by = shot.get("by")
@@ -321,23 +321,28 @@ def destroyer(shots, device_uv, gone: float, owner_side: str, side_of: dict[int,
         du, dv = end[0] - start[0], end[1] - start[1]
         length = math.hypot(du, dv)
         if length:
-            # u1/v1 cap the display tracer at 25 m, not the bullet's travel.
-            scale = reach_m / metres_per_unit / length
-            end = (start[0] + du * scale, start[1] + dv * scale)
             lined.add(by)
+        origin_distance = _point_segment_distance(start, *wire) if wire is not None else math.dist(start, device_uv)
+        if origin_distance * metres_per_unit > reach_m:
+            continue
+        if length:
+            # u1/v1 cap the display tracer at 25 m, not the bullet's travel.
+            # Extend past every possible projection onto the device/wire, independently of origin reach.
+            targets = wire if wire is not None else (device_uv,)
+            ray_length = max(reach_m / metres_per_unit, *(math.dist(start, p) for p in targets))
+            scale = (ray_length + aim_tolerance_m / metres_per_unit) / length
+            end = (start[0] + du * scale, start[1] + dv * scale)
         distance = _segment_distance(start, end, *wire) if wire is not None \
             else _point_segment_distance(device_uv, start, end)
         distance_m = distance * metres_per_unit
-        if distance_m <= reach_m:
-            plausible.add(by)
         candidate = (distance_m, by)
-        if distance_m <= 2.0 and (closest is None or candidate < closest):
+        if distance_m <= aim_tolerance_m and (closest is None or candidate < closest):
             closest = candidate
     if closest is not None:
         return closest[1]
     if len(shooters) == 1:
         by = next(iter(shooters))
-        if by not in lined or by in plausible:
+        if by not in lined:
             return by
     return None
 
@@ -667,9 +672,10 @@ class RoundInputs:
         for event in self.destroyed:
             if event["device"] not in ("trip", "camera"):
                 continue
+            reach_m = TRIP_DESTROY_REACH_M if event["device"] == "trip" else CAMERA_DESTROY_REACH_M
             by = destroyer(shots, (event["u"], event["v"]), event["t"], event["side"], self.team,
                            1.0 / geo.uv_per_unit / 100, wire=event.get("wire"),
-                           reach_m=TRIP_DESTROY_REACH_M if event["device"] == "trip" else CAMERA_DESTROY_REACH_M)
+                           reach_m=reach_m)
             if by is None:
                 self.miss("destroyed device without a shooter", event["owner"])
                 continue
@@ -677,9 +683,11 @@ class RoundInputs:
             x, y = event["u"] * px_per_uv, event["v"] * px_per_uv
             z = self._device_z(event["z"])
             node = geo.node_at_px(x, y, None if z is None else z + hc.STAND_M)
-            # Device height does not tell us which floor the shooter fired from.
-            floors = geo.nodes_at_px(x, y) if geo.adaptive or geo.heights is not None else ()
-            nodes = tuple(dict.fromkeys([node, *map(int, floors)]))
+            # The shooter may stand on any floor within reach, including an offset platform.
+            r_px = reach_m / geo.m_per_px
+            near = (geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2 <= r_px ** 2
+            seeds = np.flatnonzero(geo.walk_n & near)
+            nodes = tuple(dict.fromkeys([node, *map(int, seeds)]))
             self.destroyed_places[key] = (nodes if len(nodes) > 1 else node, x, y)
             self.sounds.append(key)
         state = self.blob.get("player_state")
@@ -2828,7 +2836,7 @@ class Unknown:
                     reached[area] = te
                     before = np.full(n, np.inf)     # every route starts again from the area's centre
                     seeds = np.atleast_1d(centre).tolist()
-                    sources = dict.fromkeys(seeds, te)
+                    sources = {seed: te for seed in seeds if area[seed]}
                     centre = seeds[0]     # the device node remains the log's primary centre
                     self.seen[side].pop(slot, None)
                     self._seen_entry[side].pop(slot, None)
@@ -3012,7 +3020,7 @@ class Unknown:
         a live player of the team, and, at t, moving faster than AUDIBLE_MPS within FOOTSTEP_RANGE_M of one.
         Heard footsteps and gunfire name the enemy only when `_attributable` (R1/R2); otherwise they locate
         no one and add nothing. A destroyed trip or camera also needs attribution and locates around its
-        device's position on every floor there, using its reach radius. Other events without a position for the enemy
+        device's position on every floor within reach. Other events without a position for the enemy
         locate nothing and are counted (R20)."""
         out = []
         times, rows = rnd.locating_rows(slot)
@@ -3061,10 +3069,13 @@ class Unknown:
     def _area(self, node: int | tuple[int, ...], x: float, y: float, radius_m: float, room: np.ndarray,
               solid: np.ndarray | None = None) -> np.ndarray:
         """Nodes within radius_m of (x, y) px reached by walking from `node` through `room` (the unobserved
-        walkable nodes), plus the seed node(s); destruction locates seed all floors at the device.
+        walkable nodes), plus the primary seed. Destruction locates seed unobserved nodes on all floors
+        within device reach; only the first seed (the device's node) is forced in outside `room`.
         No diagonal step past a `solid` node (the team's trips), as in the spread."""
         seed = np.zeros(self.geo.n, bool)
-        seed[np.atleast_1d(node)] = True
+        nodes = np.atleast_1d(node)
+        seed[nodes] = room[nodes]
+        seed[nodes[0]] = True
         if radius_m <= 0:
             return seed
         within = room | seed
