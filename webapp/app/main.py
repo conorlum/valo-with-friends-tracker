@@ -17,6 +17,7 @@ from app.routers import (accounts, auth, coach, friends, gap_patterns, matches, 
                          site_stats, squad, util_page)
 from app.services.auth import get_current_player
 from app.services.site_health_web import SlowPageMiddleware, page_error_handler
+from app.services.upload_activity import UploadActivityMiddleware
 from app.templates import templates
 
 # INFO-level timing logs (see app.routers.sessions / app.services.sessions /
@@ -74,6 +75,8 @@ app.add_exception_handler(Exception, page_error_handler)
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)
 app.add_middleware(SlowPageMiddleware)
+# Counts POST /replays/upload requests in flight, for the deploy drain (app/services/upload_activity.py).
+app.add_middleware(UploadActivityMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
