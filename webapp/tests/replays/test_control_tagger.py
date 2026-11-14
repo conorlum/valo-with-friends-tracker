@@ -409,6 +409,64 @@ def test_page_height_dab_undo_save_restore_erase_and_feature_replacement(height_
     assert erased["ground"] == height_cells(12)
 
 
+@pytest.mark.parametrize("empty_height", [False, True])
+@pytest.mark.parametrize("current_draft", [None, {}, {"Ascent": {"tags": {"2": "walkable"},
+                                                            "paints": {}, "cover_reviewed": False}}])
+def test_legacy_draft_upgrade_keeps_embedded_heights(height_page, empty_height, current_draft):
+    page, data = height_page
+    if empty_height:
+        data["height_paint"] = {"maps": {}}
+        data["height_paint_sha"] = hashlib.sha256(b'{"maps":{}}').hexdigest()
+    store_code = page.split('  var STORE = ', 1)[1].split('  var $ = ', 1)[0]
+    functions = "\n".join(page_function(page, name) for name in ["cellsCopy", "save", "restore"])
+    legacy = {"Ascent": {"tags": {"1": "cover"}, "paints": {"cover_paint": height_cells(3, 9)},
+                         "cover_reviewed": True}}
+    got = run_node("""
+      function run(p) {
+        var DATA = p.data, STORE, memory = {};
+        var localStorage = {setItem: (k,v) => memory[k] = v, getItem: k => memory[k]};
+        var edits = {Ascent: T.editsFrom(DATA.tags.maps.Ascent, DATA.height_paint.maps.Ascent)};
+        // The key and row format used before height painting was added.
+        const legacyKey = 'control-tagger-v3:' + (function (s) {
+          var h = 5381;
+          for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+          return h.toString(36) + '.' + s.length;
+        })(JSON.stringify(DATA.tags));
+        memory[legacyKey] = JSON.stringify(p.legacy);
+        eval('STORE = ' + p.store); eval(p.functions);
+        if (p.current !== null) memory[STORE] = JSON.stringify(p.current);
+        const embedded = T.heightPaintExport({edits});
+        restore();
+        const first = {tags: edits.Ascent.tags, touched: edits.Ascent.touched,
+                       cover: edits.Ascent.cover_reviewed,
+                       paint: edits.Ascent.paints.cover_paint ? T.packPaint(edits.Ascent.paints.cover_paint) : null,
+                       heights: T.heightPaintExport({edits})};
+        const migrated = memory[STORE] ? JSON.parse(memory[STORE]) : null;
+        // Reload from the new key after changing the old draft: migration happens once.
+        memory[legacyKey] = JSON.stringify({});
+        edits.Ascent = T.editsFrom(DATA.tags.maps.Ascent, DATA.height_paint.maps.Ascent);
+        restore();
+        return {first, embedded, migrated, reloadedTags: edits.Ascent.tags,
+                reloadedHeights: T.heightPaintExport({edits}),
+                key: STORE, expectedKey: legacyKey + ':' + DATA.height_paint_sha};
+      }
+    """, {"data": data, "store": store_code, "functions": functions, "legacy": legacy,
+          "current": current_draft})
+    assert got["key"] == got["expectedKey"]
+    assert got["first"]["heights"] == got["reloadedHeights"] == got["embedded"]
+    if current_draft is None:
+        assert got["first"]["tags"] == got["reloadedTags"] == legacy["Ascent"]["tags"]
+        assert got["first"]["touched"] is True
+        assert got["first"]["cover"] is True
+        assert got["first"]["paint"] == legacy["Ascent"]["paints"]["cover_paint"]
+        assert got["migrated"]["Ascent"]["tags"] == legacy["Ascent"]["tags"]
+        assert got["migrated"]["Ascent"]["heightTouched"] is False
+    else:
+        assert got["migrated"] == current_draft
+        assert got["first"]["tags"] == got["reloadedTags"]
+        assert got["first"]["tags"] != legacy["Ascent"]["tags"]
+
+
 def test_height_source_identity_prevents_an_old_local_draft(height_page):
     page, data = height_page
     store_code = page.split('  var STORE = ', 1)[1].split('  var $ = ', 1)[0]

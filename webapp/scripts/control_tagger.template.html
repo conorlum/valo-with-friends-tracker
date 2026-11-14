@@ -409,19 +409,25 @@
   }
   function restore() {
     try {
-      var raw = JSON.parse(localStorage.getItem(STORE)) || {};
+      var stored = localStorage.getItem(STORE), legacy = stored == null;
+      // Before height paint existed, the key ended at the tags hash. Upgrade only
+      // when this source's key is absent; even an empty current draft takes priority.
+      if (legacy) stored = localStorage.getItem(STORE.slice(0, STORE.lastIndexOf(":")));
+      if (stored == null) return;
+      var raw = JSON.parse(stored) || {};
       Object.keys(raw).forEach(function (name) {
         if (!edits[name]) return;
         var r = raw[name], paints = {}, heightPaints = {};
         T.PAINTS.forEach(function (k) { paints[k] = r.paints[k] ? T.unpackPaint(r.paints[k]) : null; });
         T.HEIGHT_PAINTS.forEach(function (k) {
-          heightPaints[k] = r.heightPaints ? (r.heightPaints[k] ? T.unpackPaint(r.heightPaints[k]) : null)
+          heightPaints[k] = !legacy && r.heightPaints ? (r.heightPaints[k] ? T.unpackPaint(r.heightPaints[k]) : null)
             : cellsCopy(edits[name].heightPaints[k]);
         });
-        edits[name] = { touched: r.touched !== false, heightTouched: !!r.heightTouched,
+        edits[name] = { touched: r.touched !== false, heightTouched: !legacy && !!r.heightTouched,
                         tags: r.tags, paints: paints, heightPaints: heightPaints,
                         cover_reviewed: r.cover_reviewed };
       });
+      if (legacy) save();
     } catch (err) { /* nothing saved */ }
   }
 
