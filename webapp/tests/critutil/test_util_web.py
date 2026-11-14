@@ -428,6 +428,30 @@ def test_the_payload_never_mutates_the_build_or_shares_with_it(db, linked):
     assert replay_util._values_row(db)[1] == before
 
 
+def test_pages_and_payload_keep_the_cached_values_build_unchanged(db, linked):
+    import copy
+
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
+    put_util(db, linked, 1)
+    built = replay_util.build_corpus(db)
+    assert set(built) == {"ability_prior", "estimator", "fingerprints", "fit", "gate", "matches",
+                          "overlap", "prior_sums", "rows", "same_type_overlap", "spread", "spread_by_mode"}
+    key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
+    replay_util._store_values(db, key, built)
+    first = replay_util._values_row(db)[1]
+    before = copy.deepcopy(first)
+    circle = {r["player_id"] for r in first["rows"]}
+    for mode in ("all", "yours"):
+        assert replay_util.page_for(first, circle, mode=mode)["n"] > 0
+    assert body_of(call(db))["rounds"]["1"]["casts"]
+    assert replay_util.match_payload(db, linked)["rounds"]["1"]["casts"]
+    assert replay_util._values_row(db)[1] == before
+    assert replay_util._values_row(db)[1] is first
+    assert db.get(UtilModel, "values").data is None
+
+
 def test_a_cast_after_the_round_was_decided_is_shown_unscored(db, linked):
     late = {**cast(i=1, value_kills=False), "t": 95.0, "after_decided": True}
     put_util(db, linked, 1, payload=data([cast(), late]))

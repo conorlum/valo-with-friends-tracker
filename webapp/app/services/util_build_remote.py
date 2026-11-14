@@ -3,6 +3,7 @@
 The loop's cheap signature gates the full freshness/key check. A preparation keeps
 metadata and encoded context, and reads only worker-missing blobs in bounded chunks.
 One UtilState admits one build, followed and collected outside the control lock.
+The values build is stored as a zlib blob through util_store.
 """
 
 from __future__ import annotations
@@ -15,13 +16,14 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
 
-from sqlalchemy import String, case, cast, func, literal, select, text, tuple_
+from sqlalchemy import String, case, cast, func, literal, select, tuple_
 from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.coach import areas
@@ -32,7 +34,7 @@ from app.models.kill_event import KillEvent
 from app.models.match import Match, MatchPlayer
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
-from app.services import replay_util, site_health, util_build_health, util_model, util_values
+from app.services import replay_util, site_health, util_build_health, util_model, util_store, util_values
 
 
 log = logging.getLogger(__name__)
@@ -459,6 +461,13 @@ def _failure(state: UtilState, stage: str, error, now: float) -> None:
     util_build_health.record(stage, str(error), context)
     log.warning("util %s failed key=%s ref=%s id=%s error=%s", stage, state.key, state.ref, state.build_id, error)
     if state.key:
+        # Any OperationalError in the store gives up on the key, not only a lost connection: a store that crashed
+        # Postgres surfaced as several kinds (closed connection, "in recovery mode" on reconnect) and every retry
+        # crashed it again. A transient timeout giving up too costs only a stale /util until the key changes.
+        if stage == "store" and (isinstance(error, OperationalError)
+                                 or isinstance(error, DBAPIError) and error.connection_invalidated):
+            state.tries[state.key] = MAX_TRIES
+            log.warning("util store lost the database connection; giving up on key=%s", state.key)
         state.backoff[state.key] = now + BACKOFF_S
         if state.tries.get(state.key, 0) >= MAX_TRIES and state.key not in state.gave_up:
             util_build_health.record("gave_up", "three build tries exhausted", context)
@@ -467,21 +476,21 @@ def _failure(state: UtilState, stage: str, error, now: float) -> None:
 
 
 def _store(session_factory, state: UtilState, answer: dict, data: str) -> None:
-    """Extract both products in SQL from one bound text value; never decode the build."""
+    """Decode the build once, then store values and any refitted win model in one commit."""
+    result = json.loads(data)
+    if not isinstance(result, dict) or not isinstance(result.get("values"), dict):
+        raise ValueError("build result must contain a values dict")
+    if state.refit and (not isinstance(result.get("win"), dict)
+                        or not isinstance(result["win"].get("key"), str) or not result["win"]["key"]):
+        raise ValueError("refitted build result must contain a win dict with a non-empty key")
     with session_factory() as db:
         with util_model.rebuild_lock(db, "values"):
-            source = "CAST(:data AS JSONB)" if db.get_bind().dialect.name == "postgresql" else ":data"
-            products = [f"('values', :values_version, :values_key, {source} -> 'values', CURRENT_TIMESTAMP)"]
+            util_store.store_values(db, answer["values_key"], result["values"])
             if state.refit:
-                products.append(f"('win', :win_version, ({source} -> 'win' ->> 'key'), "
-                                f"{source} -> 'win', CURRENT_TIMESTAMP)")
-            db.execute(text("INSERT INTO util_model (name, version, key, data, computed_at) VALUES "
-                            + ", ".join(products) + " ON CONFLICT (name) DO UPDATE SET "
-                            "version = excluded.version, key = excluded.key, data = excluded.data, "
-                            "computed_at = excluded.computed_at"),
-                       {"data": data, "values_version": util_values.VERSION, "values_key": answer["values_key"],
-                        "win_version": util_model.VERSION})
+                db.merge(UtilModel(name="win", version=util_model.VERSION, key=result["win"]["key"],
+                                   data=result["win"], computed_at=datetime.now(timezone.utc)))
             db.commit()
+    del result
 
 
 def _follow(session_factory, client, state: UtilState, now: float) -> None:

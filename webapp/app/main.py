@@ -38,7 +38,8 @@ async def lifespan(_app: FastAPI):
     from app.db import SessionLocal
     # The Competitive map pool's daily patch-notes check (app/services/map_pool_refresh.py); off unless MAP_POOL_AUTO.
     # The per-match state table the match lists read (app/services/replay_match_states.py): on whenever not in demo mode.
-    from app.services import (map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states,
+    # Missing per-kill Impact splits (app/services/kill_impact_sweep.py): on whenever not in demo mode.
+    from app.services import (kill_impact_sweep, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states,
                               util_build_remote)
     # numpy for the map-mask decode every replay freshness check needs (app/services/mask_accel.py): app/replays
     # stays standard library only, so the web app hands it the fast path.
@@ -54,7 +55,7 @@ async def lifespan(_app: FastAPI):
     health_stop = None
     try:
         for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states,
-                        util_build_remote):
+                        util_build_remote, kill_impact_sweep):
             stops.append(service.start(SessionLocal))
         # The flush thread writes what the site recorded and applies app/data/site_health_resolved.json (once
         # each); startup itself never waits on the database for it. None in demo mode.

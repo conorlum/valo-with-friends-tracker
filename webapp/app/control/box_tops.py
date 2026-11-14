@@ -1,5 +1,11 @@
-"""Steady stands within reach of cover, and the box tops they teach. Only unambiguous stands inside an outline
-teach; the others match learnt tops or become conflicts. Build evidence uses world dm, diagnostics world metres."""
+"""Steady stands within reach of cover, and the box tops they teach.
+Stands level with any side floor are ground, including inside stands.
+Outside stands matching a connected floor within GROUND_NEAR_M are near-floor ground.
+Stands within TOP_TOUCH_M of an outline count as inside and their emitted pixels snap onto the piece.
+Remaining ambiguous stands vote for their effective piece or nearest candidate; TOP_VOTES_INSIDE inside/touching
+stands or TOP_VOTES_OUTSIDE in all agreeing within TOP_TOL_M teach a top.
+Other stands match learnt tops or become conflicts; build evidence uses world dm, diagnostics world metres.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,8 @@ import numpy as np
 from app.control import heights
 from app.control.geometry import CELL, GRID, PX
 from app.control.heights import (BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M,
-                                 CROUCH_DROP_M, CROUCH_LAG_S, CROUCH_NEAR_S, TOP_REACH_M, TOP_TOL_M)
+                                 CROUCH_DROP_M, CROUCH_LAG_S, CROUCH_NEAR_S, GROUND_NEAR_M,
+                                 TOP_REACH_M, TOP_TOL_M, TOP_TOUCH_M, TOP_VOTES_INSIDE, TOP_VOTES_OUTSIDE)
 
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6
@@ -165,13 +172,18 @@ def _most_common(values) -> int:
 
 @dataclass(frozen=True)
 class PieceFloors:
-    """The floor round each cover piece, in the floors' units, learnt side by side (the owner's rule, 2026-11-02:
-    some boxes have no one floor all round them, so the floor is sampled on each side the piece has one).
-    `sides[piece]` = {side: the most common of the lowest floors of the ring cells on that side}; `ground[piece]`
-    = the most common of those side floors (each side one vote, a tie takes the lower), so a small lower area along
-    one long face no longer outvotes the floor the piece stands on. A piece with no floor round it is left out."""
+    """The floors round each cover piece, in the floors' units, learnt side by side.
+    `sides[piece]` maps each side to the most common of the lowest floors of its ring cells. `ground[piece]` is
+    the lowest side floor, since a box stands on the lowest floor round it and a higher side is a ledge it is
+    backed against. In `judge`, stands level with any side floor count as ground for that piece, keeping ledge
+    walls from learning the upper floor as a top. A piece with no floor round it is left out.
+    `standing[piece]` is the floor the map-control engine reads (`ground_of`, `piece_ground`): the most common of
+    the side floors, each side one vote, a tie taking the lower (CONTROL_REVISION 23's rule). The engine has no
+    side-floor ground rule, so the lowest side would put a player beside a ledge box on the drop's floor; `ground`
+    is the height build's only."""
     ground: dict
     sides: dict
+    standing: dict = field(default_factory=dict)
     _near: dict = field(default_factory=dict, repr=False, compare=False)   # piece -> (y0, x0, nearest y, nearest x)
 
     def side_at(self, piece: int, px) -> str | None:
@@ -202,7 +214,8 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
     ring pixel's side is the direction from the piece's nearest pixel to it. With `walk_px`, only walkable ring pixels
     joined to the piece by walkable pixels inside the ring count: floor across a wall beside the piece is not its
     floor (Summit's piece 20, whose north face is a wall with a lower area behind it). A cell is read once per side,
-    by the lowest of its floors."""
+    by the lowest of its floors. Ground is the lowest side floor. The side-floor ground rule in `judge` handles
+    stands level with an upper side floor, including Ascent's piece 17 and Summit's piece 20."""
     from scipy import ndimage
 
     cover = np.asarray(cover_px)
@@ -213,7 +226,7 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
         leaf = np.repeat(np.repeat(flat.reshape(GRID, GRID, -1), 2, axis=0), 2, axis=1)
         leaf.reshape(-1, leaf.shape[-1])[fine_cells] = fine_floors
         leaf = leaf.reshape(-1, leaf.shape[-1])
-    ground, sides, near = {}, {}, {}
+    ground, standing, sides, near = {}, {}, {}, {}
     big = np.iinfo(np.int32).max
     for piece, box in enumerate(ndimage.find_objects(cover.astype(np.int32)), start=1):
         if box is None:
@@ -245,17 +258,20 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
                 found[name] = _most_common(lowest)
         if found:
             sides[piece] = found
-            ground[piece] = _most_common(list(found.values()))
-    return PieceFloors(ground, sides, near)
+            ground[piece] = min(found.values())
+            standing[piece] = _most_common(list(found.values()))
+    return PieceFloors(ground, sides, standing, near)
 
 
 def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None,
               walk_px=None) -> dict[int, int]:
-    """{cover piece id: the floor it stands on} in `floors`' units: `piece_floors`' ground, the most common of its
-    sides' floors. Not the lowest: a piece at a ledge's edge has a drop on one side (Ascent's piece 17: floor at
-    2.0 m round most of it, 0.0 m on one side, and players at 2.0 m on its outline), and not the most common cell:
-    a small lower area along one long face (Summit's piece 20) would outvote the side it stands on."""
-    return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).ground
+    """{cover piece id: the floor the map-control engine reads for it} in `floors`' units: `piece_floors`'
+    `standing`, the most common of its sides' floors. Not the lowest, which only the height build's `judge` uses:
+    a piece at a ledge's edge has a drop on one side (Ascent's piece 17: floor at 2.0 m round most of it, 0.0 m on
+    one side, and players at 2.0 m on its outline), and not the most common cell: a small lower area along one long
+    face (Summit's piece 20) would outvote the side it stands on. Changing this rule changes the engine: bump
+    CONTROL_REVISION."""
+    return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).standing
 
 
 def on_a_step(stands: list[TopStand], ground: dict[int, int]) -> list[TopStand]:
@@ -300,6 +316,57 @@ def match_top(z_m, tops):
     return min(matches, key=lambda t: (round(abs(t - z_m), 9), t)) if matches else None
 
 
+def effective_piece(s) -> int:
+    """R4: inside wins; otherwise touching the nearest outline counts as inside (ties: lower piece id)."""
+    if s.inside:
+        return s.inside
+    touching = [(d, p) for p, d in zip(s.candidates, s.cand_dist) if d <= TOP_TOUCH_M + EPS]
+    return min(touching)[1] if touching else 0
+
+
+def piece_snapper(cover_px):
+    """Snap a clipped (x, y) pixel onto its piece, caching each piece's nearest-pixel indices lazily."""
+    from scipy import ndimage
+
+    nearest = {}
+    height, width = cover_px.shape
+
+    def snap(piece, px):
+        x = int(np.clip(px[0], 0, width - 1))
+        y = int(np.clip(px[1], 0, height - 1))
+        if cover_px[y, x] == piece:
+            return x, y
+        if piece not in nearest:
+            nearest[piece] = ndimage.distance_transform_edt(
+                cover_px != piece, return_distances=False, return_indices=True)
+        ny, nx = nearest[piece]
+        return int(nx[y, x]), int(ny[y, x])
+
+    return snap
+
+
+def floors_near(leaf_floor, px, radius_px) -> tuple:
+    """Sorted union of connected floors in aligned 4 px leaves whose footprint reaches within the radius.
+
+    Read each leaf once at its nearest pixel (clipped to the map), always including the own leaf.
+    A lattice anchored at the stand misses near corners: Summit's stand at (497, 675) needs
+    the 3.5 m leaf at (504, 676), within radius 8 although the lattice sample (505, 679) is not.
+    """
+    x_start = max(0, math.floor((px[0] - radius_px) / FINE)) * FINE
+    y_start = max(0, math.floor((px[1] - radius_px) / FINE)) * FINE
+    x_stop = min(PX - 1, px[0] + radius_px)
+    y_stop = min(PX - 1, px[1] + radius_px)
+    floors = set()
+    for y0 in range(y_start, math.floor(y_stop / FINE) * FINE + 1, FINE):
+        y = min(PX - 1, max(y0, min(px[1], y0 + FINE - 1)))
+        for x0 in range(x_start, math.floor(x_stop / FINE) * FINE + 1, FINE):
+            x = min(PX - 1, max(x0, min(px[0], x0 + FINE - 1)))
+            dx, dy = x - px[0], y - px[1]
+            if dx * dx + dy * dy <= radius_px * radius_px:
+                floors.update(leaf_floor((x, y)))
+    return tuple(sorted(floors))
+
+
 def _fold_crouches(stands):
     """Fold lower levels into better-supported higher levels of one piece, before emitting any rows.
     Support is the original number of stands, fixed before folds; equal support keeps both levels.
@@ -318,39 +385,51 @@ def _fold_crouches(stands):
     return folded
 
 
-def judge(stands, ground, leaf_floor, beside=None):
+def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
     """(world-dm top rows, [(stand, piece, top world dm)], conflict records, fate counts).
-    `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf. `beside(piece, px)`, when
-    given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`): a stand outside
-    a piece is a step above that, not above the piece's ground, since a piece's sides can stand on different floors
-    (Summit's piece 20: 2.0 m on one face, 3.0 m on the others, players at 3.0 m against it)."""
-    counts = dict(teach=0, assign=0, conflict=0, ground=0, platform=0, blackout=0)
+    `leaf_floor(px)` yields connected floor heights in world dm within GROUND_NEAR_M of the pixel;
+    an outside stand matching one within TOP_TOL_M is near-floor ground. `beside(piece, px)`, when
+    given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`). An outside
+    stand must be a step above that floor, since a piece's sides can stand on different floors (Summit's piece 20
+    has 2.0 m on one face and 3.0 m on the others). Optional `sides` maps each piece to its side floors in world dm.
+    A stand within TOP_TOL_M of any of a piece's side floors is ground for that piece, including inside stands.
+    Touching stands count as inside (R4); optional `snap(piece, px)` puts emitted pixels on their piece.
+    The owner's design: remaining ambiguous stands vote for their effective piece or nearest candidate box;
+    3 inside/touching stands or 5 in all agreeing within TOP_TOL_M make a top. Evidence accumulates because
+    every build re-reads every round of the map. Remaining stands can then match the voted tops (R6)."""
+    counts = dict(teach=0, assign=0, vote=0, conflict=0, ground=0, platform=0, blackout=0)
     teaching, pending = defaultdict(list), []
 
-    def floor_for(s, p):
-        if beside is None or s.inside == p:
+    def floor_for(s, p, e):
+        if beside is None or e == p:
             return ground[p]
         got = beside(p, s.px)
         return ground[p] if got is None else got
 
     for s in stands:
+        e = effective_piece(s)
         cands = tuple(sorted(p for p in s.candidates
-                             if p in ground and s.z_dm - floor_for(s, p) >= BOX_STEP_M * 10 - EPS))
-        if not cands or (not s.inside and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
+                             if p in ground and s.z_dm - floor_for(s, p, e) >= BOX_STEP_M * 10 - EPS
+                             and (sides is None or not any(abs(s.z_dm - f) <= TOP_TOL_M * 10 + EPS
+                                                          for f in sides.get(p, ())))))
+        if not cands or (not e and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
                                              for z in leaf_floor(s.px))):
             counts['ground'] += 1
-        elif len(cands) == 1 and s.inside == cands[0]:
+        elif len(cands) == 1 and e == cands[0]:
             teaching[cands[0]].append(s)
             counts['teach'] += 1
         else:
             pending.append((s, cands))
     learnt, rows = {}, []
     for piece, group in sorted(teaching.items()):
+        if snap is not None:
+            group = [replace(s, px=snap(piece, s.px)) if s.inside != piece else s for s in group]
         got = top_rows(_fold_crouches(group))
         learnt[piece] = sorted(set(int(z) for z in got[:, 2]))
         rows.extend(got.tolist())
     assigned, conflicts = [], []
-    for s, cands in pending:
+
+    def assign_top(s, cands):
         matches = []
         for piece in cands:
             top = match_top(s.z_dm / 10, [z / 10 for z in learnt.get(piece, ())])
@@ -361,7 +440,43 @@ def judge(stands, ground, leaf_floor, beside=None):
             _, piece, z = min(matches)
             assigned.append((s, piece, z))
             counts['assign'] += 1
-        else:
+            return True
+        return False
+
+    pending = [(s, cands) for s, cands in pending if not assign_top(s, cands)]
+    votes = defaultdict(list)
+    for i, (s, cands) in enumerate(pending):
+        e = effective_piece(s)
+        distances = dict(zip(s.candidates, s.cand_dist))
+        piece = e if e in cands else min(cands, key=lambda p: (distances.get(p, math.inf), p))
+        votes[piece].append((i, s))
+
+    voted = set()
+    for piece, group in sorted(votes.items()):
+        levels = []
+        for entry in sorted(group, key=lambda entry: entry[1].z_dm):
+            if not levels or entry[1].z_dm - levels[-1][0][1].z_dm > TOP_TOL_M * 10 + EPS:
+                levels.append([])
+            levels[-1].append(entry)
+        for level in levels:
+            if (sum(effective_piece(s) == piece for _, s in level) < TOP_VOTES_INSIDE
+                    and len(level) < TOP_VOTES_OUTSIDE):
+                continue
+            z = int(round(float(np.median([s.z_dm for _, s in level]))))
+            mx = float(np.median([s.px[0] for _, s in level]))
+            my = float(np.median([s.px[1] for _, s in level]))
+            near = min((s for _, s in level),
+                       key=lambda s: ((s.px[0] - mx) ** 2 + (s.px[1] - my) ** 2, s.px[1], s.px[0]))
+            px = snap(piece, near.px) if snap is not None and near.inside != piece else near.px
+            rows.append([int(px[0]), int(px[1]), z])
+            learnt.setdefault(piece, []).append(z)
+            learnt[piece].sort()
+            assigned.extend((s, piece, z) for _, s in level)
+            counts['vote'] += len(level)
+            voted.update(i for i, _ in level)
+
+    for i, (s, cands) in enumerate(pending):
+        if i not in voted and not assign_top(s, cands):
             distances = dict(zip(s.candidates, s.cand_dist))
             candidates = []
             for p in cands:

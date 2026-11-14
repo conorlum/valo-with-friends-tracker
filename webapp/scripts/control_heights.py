@@ -1,8 +1,10 @@
 """The map heights the replay worker built: look at them, put an earlier one back, turn a map's off, or write
-the active one to a folder (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 4).
+the active one or a build by digest to a folder
+(docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 4).
 
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\control_heights.py list [--map Sunset]
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\control_heights.py export --map Sunset --out %TEMP%\\valo-replay\\heights-db
+    .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\control_heights.py export --map Sunset --digest 0123456789ab --out %TEMP%\\valo-replay\\heights-db
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb scripts\\control_heights.py activate --map Sunset --digest 0123456789ab
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb scripts\\control_heights.py off --map Sunset
 
@@ -14,7 +16,9 @@ recomputes them when it is idle; the pages keep showing the stored ones, marked 
 Neither stops the next automatic rebuild: for that, unset REPLAY_HEIGHTS_AUTO on the web service. Both emit
 fresh feature diagnostics and prepare the selected artifact independently of height activation.
 `export` writes the map's active asset and its report to a folder outside the repository, in the layout of a
-preview, for `height_viewer.py --dir` and `control_tagger.py --heights-dir`.
+preview, for `height_viewer.py --dir` and `control_tagger.py --heights-dir`. With `--digest`, it writes the
+newest build with that digest, whatever its status. The report and bytes come from that exact build;
+export never changes any build's status.
 
 Exits 0 when done, 2 when refused.
 """
@@ -76,6 +80,7 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
     commands.add_parser("off").add_argument("--map", required=True)
     export = commands.add_parser("export")
     export.add_argument("--map", required=True)
+    export.add_argument("--digest", help="export the newest build with this digest, whatever its status")
     export.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -96,12 +101,16 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
             if inside_a_repository(args.out):
                 print(f"REFUSED: --out {args.out} is inside a repository", file=sys.stderr)
                 return 2
-            row = control_heights.active_rows(session).get(args.map)
-            data = None if row is None else control_heights.asset_bytes(session, args.map, row.digest)
+            if args.digest is None:
+                row = control_heights.active_rows(session).get(args.map)
+            else:
+                row = next((r for r in control_heights.rows(session, args.map) if r.digest == args.digest), None)
+            data = None if row is None else control_heights.asset_bytes_of_row(session, row.id)
             if data is None:
-                print(f"REFUSED: {args.map} has no active heights in the database", file=sys.stderr)
+                which = "active heights" if args.digest is None else f"heights with digest {args.digest}"
+                print(f"REFUSED: {args.map} has no {which} in the database", file=sys.stderr)
                 return 2
-            report = next(r.report for r in control_heights.rows(session, args.map) if r.id == row.id)
+            report = row.report
             args.out.mkdir(parents=True, exist_ok=True)
             (args.out / f"{args.map}.height.npz").write_bytes(data)
             (args.out / f"{args.map}.height.json").write_text(

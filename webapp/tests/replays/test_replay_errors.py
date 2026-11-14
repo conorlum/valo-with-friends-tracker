@@ -46,6 +46,8 @@ RECORD = {"match": "0a9ab548-718b-41ee-94ce-db25fd430bf8", "round": 1, "slot": 5
 def errors(db, monkeypatch):
     ReplayUpload.__table__.create(db.get_bind(), checkfirst=True)
     module = importlib.import_module("app.services.replay_errors")
+    loader = module.retired_upload_ids
+    loader.cache_clear()
     monkeypatch.setattr(module, "now", lambda: STAMP)
     monkeypatch.setattr(module, "_cached", None)
     monkeypatch.setattr(module, "_verification_results", {}, raising=False)
@@ -64,6 +66,7 @@ def errors(db, monkeypatch):
     monkeypatch.setattr(module, "_start_verification", lambda: None, raising=False)
     ch._BOX_CONFLICTS.clear()
     yield module
+    loader.cache_clear()
     ch._BOX_CONFLICTS.clear()
 
 
@@ -594,6 +597,100 @@ def test_upload_kinds(errors, db, linked, key, kwargs):
     assert row["figures"]["size_bytes"] == 123 and row["figures"]["worker_job_id"] == "synthetic-job"
 
 
+@pytest.mark.parametrize("entries,problem", [
+    ({}, "list"),
+    ([1], "object"),
+    ([{"upload_id": "x", "reason": "r", "fixed_by": "f"}], "UUID"),
+    ([{"upload_id": 1, "reason": "r", "fixed_by": "f"}], "UUID"),
+    ([{"upload_id": str(UUID(int=1)), "reason": "", "fixed_by": "f"}], "reason"),
+    ([{"upload_id": str(UUID(int=1)), "fixed_by": "f"}], "reason"),
+    ([{"upload_id": str(UUID(int=1)), "reason": "r"}], "fixed_by"),
+    ([{"upload_id": str(UUID(int=1)), "reason": "r", "fixed_by": ""}], "fixed_by"),
+    ([{"upload_id": value, "reason": "r", "fixed_by": "f"}
+      for value in (str(UUID(int=0xABC)), str(UUID(int=0xABC)).upper())], "duplicate"),
+    ([{"upload_id": value, "reason": "r", "fixed_by": "f"}
+      for value in (str(UUID(int=0xABC)), UUID(int=0xABC).hex)], "duplicate"),
+    ([{"upload_id": str(UUID(int=1)), "reason": "r", "fixed_by": "f"}], None),
+])
+def test_check_retired_reports_each_problem(errors, entries, problem):
+    problems = errors.check_retired(entries)
+    if problem is None:
+        assert problems == []
+    else:
+        assert any(problem in message for message in problems)
+
+
+def test_committed_retired_file_is_valid(errors):
+    entries = json.loads(errors.RETIRED_FILE.read_text(encoding="utf-8"))
+    assert errors.check_retired(entries) == []
+    assert {entry["upload_id"] for entry in entries} == {
+        "2c399b3a-a386-42d9-85d6-367959a3bc29",
+        "c3c63dbd-9793-457d-8eef-844bd0954e86",
+        "8094c097-5b1b-4614-b433-d71c1cc220c1",
+        "99d06615-9b14-4dc5-b193-ed6c808a0edc",
+        "89ad01f8-c44c-4aba-8963-7b5738958f25",
+        "91799cba-4da4-459c-8d80-deaeda5dcc7d",
+        "cde7e3f5-5c3a-4bfd-8a72-b119dc475cec",
+    }
+
+
+def test_retired_upload_is_left_out_of_failure_kinds(errors, db, monkeypatch):
+    monkeypatch.setattr(errors, "retired_upload_ids", lambda: frozenset({str(UUID(int=1))}))
+    retired = upload(db, 1, store_outcome="failed")
+    shown = upload(db, 2, store_outcome="failed")
+    for key in ("upload_failed", "store_failed"):
+        found = kind(errors, db, key)
+        assert found["count"] == len(found["rows"]) == 1
+        assert found["rows"][0]["figures"]["upload_id"] == shown.id
+        query = errors._rest_query(key, found["rows"])
+        assert shown.id in query
+        assert retired.id not in query
+
+
+def test_retired_upload_matches_any_uuid_spelling(errors, db, monkeypatch, tmp_path):
+    path = tmp_path / "retired_uploads.json"
+    path.write_text(json.dumps([{"upload_id": UUID(int=1).hex.upper(),
+                                 "reason": "Parse failed; no file was kept.", "fixed_by": "test"}]),
+                    encoding="utf-8")
+    monkeypatch.setattr(errors, "RETIRED_FILE", path)
+    assert errors.retired_upload_ids() == frozenset({str(UUID(int=1))})
+    upload(db, 1)
+    assert kind(errors, db, "upload_failed")["count"] == 0
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("upload_held", {"status": "held"}),
+    ("stuck", {"status": "queued", "created_at": STAMP - timedelta(hours=2)}),
+    ("stuck", {"status": "parsing", "created_at": STAMP - timedelta(hours=2)}),
+    ("ack_missing", {"status": "stored", "archive_ack": None, "finished_at": STAMP - timedelta(hours=2)}),
+])
+def test_retired_upload_still_listed_in_other_kinds(errors, db, monkeypatch, key, kwargs):
+    monkeypatch.setattr(errors, "retired_upload_ids", lambda: frozenset({str(UUID(int=1))}))
+    stored = upload(db, 1, **kwargs)
+    found = kind(errors, db, key)
+    assert found["count"] == len(found["rows"]) == 1
+    assert found["rows"][0]["figures"]["upload_id"] == stored.id
+
+
+@pytest.mark.parametrize("content", [
+    "not JSON",
+    json.dumps([{"upload_id": "x", "reason": "r", "fixed_by": "f"}]),
+    None,
+])
+def test_unusable_retired_file_retires_nothing(errors, db, monkeypatch, tmp_path, caplog, content):
+    path = tmp_path / "retired_uploads.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(errors, "RETIRED_FILE", path)
+    with caplog.at_level("WARNING", logger=errors.__name__):
+        assert errors.retired_upload_ids() == frozenset()
+        upload(db, 1)
+        assert kind(errors, db, "upload_failed")["count"] == 1
+    warnings = [record for record in caplog.records
+                if record.name == errors.__name__ and record.levelname == "WARNING"]
+    assert len(warnings) == 1
+
+
 def test_later_success_supersedes_only_failures_with_sha(errors, db):
     upload(db, 1, source_sha256="a" * 64)
     no_sha = upload(db, 2)
@@ -601,6 +698,29 @@ def test_later_success_supersedes_only_failures_with_sha(errors, db):
     assert one(errors, db, "upload_failed")["figures"]["upload_id"] == no_sha.id
     upload(db, 4, source_sha256="a" * 64, created_at=STAMP + timedelta(seconds=1))
     assert kind(errors, db, "upload_failed")["count"] == 2
+
+
+def test_later_success_supersedes_store_failures_with_sha(errors, db):
+    upload(db, 1, store_outcome="failed", source_sha256="b" * 64)
+    no_sha = upload(db, 2, store_outcome="failed")
+    upload(db, 3, status="stored", source_sha256="b" * 64, created_at=STAMP, archive_ack="ok")
+    assert one(errors, db, "store_failed")["figures"]["upload_id"] == no_sha.id
+    assert one(errors, db, "upload_failed")["figures"]["upload_id"] == no_sha.id
+
+    later_failure = upload(db, 4, store_outcome="failed", source_sha256="b" * 64,
+                           created_at=STAMP + timedelta(seconds=1))
+    found = kind(errors, db, "store_failed")
+    assert found["count"] == 2
+    assert {row["figures"]["upload_id"] for row in found["rows"]} == {no_sha.id, later_failure.id}
+
+
+def test_store_failed_rest_query_lists_only_shown_uploads(errors, db):
+    superseded = upload(db, 1, store_outcome="failed", source_sha256="b" * 64)
+    no_sha = upload(db, 2, store_outcome="failed")
+    upload(db, 3, status="stored", source_sha256="b" * 64, created_at=STAMP, archive_ack="ok")
+    query = errors._rest_query("store_failed", kind(errors, db, "store_failed")["rows"])
+    assert no_sha.id in query
+    assert superseded.id not in query
 
 
 def test_upload_time_boundaries_and_finished_time(errors, db):

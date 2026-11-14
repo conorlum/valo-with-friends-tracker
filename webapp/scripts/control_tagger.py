@@ -17,6 +17,8 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
 - watch the kill-line test live against the 2% bar, with the blocked lines drawn, and the resulting sight and
   walk masks as overlays; undo; tick "cover reviewed" (which clears the map's badge);
 - export the whole `tags.json` (every map, unknown fields kept);
+- paint Open underneath, Ground only or Solid to the top, and Export height paint separately.
+  Copy that export over `app/static/data/control/height_paint.json`; `--height-paint <file>` loads another source.
 - in Chokes mode (timing-gaps spec section 2), select, rename, move (arrow keys), delete (a tombstone) and
   add (paint cells, then "make choke") the map's chokes from `<Map>.chokes.json`, and export that file.
   Copy it over `app/static/data/control/<Map>.chokes.json`: a rename changes no fingerprint, but adding,
@@ -71,9 +73,11 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.coach import areas, areas_draft  # noqa: E402
 from app.control import geometry as cg  # noqa: E402
+from app.control import height_build as hb  # noqa: E402
 from app.control import heights as hc  # noqa: E402
 from app.control.height_motion import coarse_of_fine  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
+from app.replays import height_inputs  # noqa: E402
 from app.replays import map_feature_schema as ms  # noqa: E402
 from app.replays import map_feature_inputs as fi  # noqa: E402
 
@@ -138,6 +142,14 @@ def _floor_data(asset: hc.HeightAsset | None) -> dict:
             'floor_counts': (np.isfinite(asset.floors) & (asset.floors >= 0)).sum(axis=2).ravel().tolist(),
             'unresolved': asset.unresolved.astype('uint8').ravel().tolist(),
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
+
+
+def _height_overlay(name: str, asset: hc.HeightAsset) -> str:
+    """Embed the builder's review picture, including its refined child footprints."""
+    with tempfile.TemporaryDirectory(prefix="valo-tagger-heights-") as scratch:
+        png = Path(scratch) / "heights.png"
+        hb.picture(hb.HeightBuild(asset, {}), cg.load_base_geometry(name), png)
+        return base64.b64encode(png.read_bytes()).decode("ascii")
 
 
 def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict:
@@ -245,8 +257,12 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
 
 def render(
     tags: dict, maps: dict, heights_dir: Path | None = None, diagnostics: dict | None = None, *,
-    areas_dir: Path | None = None,
+    areas_dir: Path | None = None, height_paint: Path | None = None,
 ) -> str:
+    paint_path = cg.ASSET_DIR / "height_paint.json" if height_paint is None else Path(height_paint)
+    height_inputs.height_paint_entry("", paint_path)  # Validate every map, including maps outside this page.
+    paint = json.loads(paint_path.read_text(encoding="utf-8")) if paint_path.is_file() else {"maps": {}}
+    paint_sha = hashlib.sha256(json.dumps(paint, separators=(",", ":")).encode("utf-8")).hexdigest()
     assets = {name: _height_asset(name, cg.ASSET_DIR, heights_dir) for name in maps}
     features = features_data(sorted(maps), assets=assets)
     if diagnostics is not None:
@@ -262,7 +278,12 @@ def render(
             raise ValueError('Diagnostic report versions are stale; regenerate it')
         features['diagnostics'] = {name: diagnostics}
     maps = {name: {**data, "areas": _areas_data(name, assets[name], areas_dir)} for name, data in maps.items()}
-    data = json.dumps({"tags": tags, "maps": maps, "features": features},
+    if heights_dir is not None:
+        for name, map_ in maps.items():
+            if assets[name] is not None and (Path(heights_dir) / f"{name}.height.npz").is_file():
+                map_["height_overlay"] = _height_overlay(name, assets[name])
+    data = json.dumps({"tags": tags, "maps": maps, "features": features,
+                       "height_paint": paint, "height_paint_sha": paint_sha},
                       separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
     ui = FEATURES_JS.read_text(encoding="utf-8")
@@ -275,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, help="the page to write (default under %%TEMP%%)")
     parser.add_argument("--tags", type=Path, default=cg.ASSET_DIR / "tags.json", help="the tags.json to start from")
+    parser.add_argument("--height-paint", type=Path, help="the height_paint.json to start from (default in app/static/data/control)")
     parser.add_argument("--map", action="append", help="only this map (repeatable)")
     parser.add_argument("--starts", type=Path, help="round-start positions to draw, {map: [[side, x px, y px], ...]} "
                                                     "(players at t = 0 stand pressed against the barriers)")
@@ -291,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     diagnostics = json.loads(args.diagnostics.read_text(encoding='utf-8')) if args.diagnostics else None
     try:
-        page = render(tags, maps, args.heights_dir, diagnostics, areas_dir=args.areas_dir)
+        page = render(tags, maps, args.heights_dir, diagnostics, areas_dir=args.areas_dir, height_paint=args.height_paint)
     except ValueError as exc:
         parser.error(str(exc))
     out.write_text(page, encoding="utf-8")

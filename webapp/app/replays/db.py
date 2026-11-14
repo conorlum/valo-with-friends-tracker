@@ -134,7 +134,7 @@ def write_link(session, replay: Replay, result: lk.LinkResult) -> str:
     replay.db_deaths = result.db_deaths
     replay.link_report = result.report
     replay.linked_at = datetime.now(timezone.utc)
-    replay.kill_impact = None  # recomputed after commit (app/services/replay_impact.py)
+    replay.kill_impact = None  # filled by the site's kill-impact sweep or link_replays.py
     for slot, mp in result.slot_to_match_player.items():
         session.query(ReplayPlayer).filter(ReplayPlayer.replay_id == replay.id, ReplayPlayer.slot == slot).update(
             {ReplayPlayer.match_player_id: mp}, synchronize_session=False)

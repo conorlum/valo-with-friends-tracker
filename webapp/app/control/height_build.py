@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 import copy
 
 import hashlib
+import math
 from collections import Counter
 
 import numpy as np
@@ -660,6 +661,8 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not. `cover_px` (the cover piece labels)
     also learns the pieces' tops and reports conflicts after the ground's final refinement."""
+    if geo.height_paint and refinement_history is None:
+        raise ValueError("height paint needs a refinement history")
     found, found_walks, round_match, counts = all_ground(rounds, geo, cover_px)
     dt = counts.pop("dt")
     box_stands = counts.pop("box_stands", [])
@@ -728,6 +731,7 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
         floors = box_tops.piece_floors(cover_px, asset.floors, fine_cells=asset.fine_cells,
                                        fine_floors=asset.fine_floors, walk_px=geo.walk_px)
         ground = {p: g + asset.origin_z for p, g in floors.ground.items()}
+        sides = {p: tuple(f + asset.origin_z for f in s.values()) for p, s in floors.sides.items()}
 
         def beside(piece, px):
             got = floors.floor_at(piece, px)
@@ -735,8 +739,11 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
 
         covered_geo = copy.copy(geo)
         covered_geo.cover_px = cover_px
-        tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset),
-                                                        beside)
+        leaf = box_leaf_floor(covered_geo, asset)
+        radius = math.ceil(hc.GROUND_NEAR_M / geo.m_per_px)
+        tops, _, conflicts, box_counts = box_tops.judge(
+            box_stands, ground, lambda px: box_tops.floors_near(leaf, px, radius), beside,
+            sides=sides, snap=box_tops.piece_snapper(cover_px))
         tops[:, 2] -= asset.origin_z
         tops = tops[tops[:, 2] >= 0]
         asset.box_tops = tops if len(tops) else None
@@ -837,12 +844,20 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
 # ---------------------------------------------------------------- the checks before an asset is committed
 
 
-def kill_line_check(rounds: list, geo: Geometry) -> dict:
+# A player this far below the map's lowest floor has fallen off it (Abyss). A fall kill needs no sight line:
+# whoever last damaged the player gets the kill wherever they are. Measured at -64 m on Abyss (2026-11-13).
+FELL_BELOW_M = 3.0
+
+
+def kill_line_check(rounds: list, geo: Geometry, *, keep_all: bool = False) -> dict:
     """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
     have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
-    clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill line is
+    clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill where either
+    player is below the map (FELL_BELOW_M: a fall, credited to the last damager wherever they stood) has no
+    sight line and is excluded. A kill line is
     blocked only if the killer's eye sees neither the victim's head nor their feet. `geo` has the
-    heights; excluded kills are counted by reason."""
+    heights; excluded kills are counted by reason. `keep_all` retains every blocked line for preview;
+    otherwise examples are capped at ten."""
     from app.control import engine
 
     excluded: Counter = Counter()
@@ -873,6 +888,9 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 excluded["no position with z near the kill"] += 1
                 continue
             (kx, ky, kz), (vx, vy, vz) = ends
+            if min(kz, vz) < -FELL_BELOW_M:     # z is above the map's lowest floor: off the map, no sight line
+                excluded["fell off the map"] += 1
+                continue
             if geo.unresolved_at_px(kx, ky) or geo.unresolved_at_px(vx, vy):
                 excluded["on an unresolved cell"] += 1
                 continue
@@ -885,7 +903,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
             if not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.HEAD_M), smokes) and \
                     not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.FEET_M), smokes):
                 blocked += 1
-                if len(examples) < 10:
+                if keep_all or len(examples) < 10:
                     examples.append({"match": str(match), "round": n, "t": round(float(t), 2),
                                      "killer_px": [round(kx), round(ky)], "victim_px": [round(vx), round(vy)],
                                      "z": [round(kz, 1), round(vz, 1)]})

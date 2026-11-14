@@ -59,8 +59,8 @@ def test_the_per_kill_split_only_reads_impact():
 
 
 def test_web_code_imports_no_scoring_and_not_the_split():
-    """The web service never runs the scorer (AFK run decision D3): no router, and no replay
-    service a router uses, imports scoring code or replay_impact."""
+    """PLAN D1: the site runs the split only through kill_impact_sweep; routers and the
+    replay services they use still import neither scoring code nor replay_impact."""
     files = [*(APP / "routers").rglob("*.py"), *(APP / "services").rglob("replay*.py"), *REPLAYS.rglob("*.py")]
     for path in files:
         if path.name == "replay_impact.py":
@@ -68,6 +68,20 @@ def test_web_code_imports_no_scoring_and_not_the_split():
         names = _imports(path)
         assert not [n for n in names if n.startswith(FORBIDDEN)], path.name
         assert not [n for n in names if n.startswith("app.services.replay_impact")], path.name
+
+
+def test_kill_impact_sweep_imports_no_scoring():
+    path = APP / "services" / "kill_impact_sweep.py"
+    assert path.is_file()
+    assert not [n for n in _imports(path) if n.startswith("app.scoring")]
+
+
+def test_only_the_sweep_imports_the_split_in_the_app():
+    allowed = {APP / "services" / "kill_impact_sweep.py", APP / "services" / "replay_impact.py"}
+    callers = {path for path in APP.rglob("*.py")
+               if any(n.startswith("app.services.replay_impact") for n in _imports(path))}
+    assert APP / "services" / "kill_impact_sweep.py" in callers
+    assert callers <= allowed
 
 
 # A branch-wide origin/main diff belonged to the original replay-only migration

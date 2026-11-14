@@ -5,6 +5,7 @@ manifest."""
 import hashlib
 import io
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -28,9 +29,10 @@ from tests.replays.control_toys import z_dm  # noqa: E402
 
 # recorded on the code before this item, for the toy builds below (no cover given)
 NO_COVER_BUILD_DIGEST = "b48acdae2528"
-# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 7 (was "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
+# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 8 (was "31495d88d6e6e4f5" at 7,
+# "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
 # the build digest is unchanged
-NO_COVER_MANIFEST_DIGEST = "31495d88d6e6e4f5"
+NO_COVER_MANIFEST_DIGEST = "1f82b0eb900c99e7"
 
 PIECE = (slice(150, 170), slice(300, 320))        # rows (y), columns (x) of the one cover piece
 
@@ -54,10 +56,12 @@ def as_json(report):
     return json.dumps(report, sort_keys=True, default=str)
 
 
-def test_a_no_cover_build_and_manifest_keep_the_digests_they_had():
+def test_a_no_cover_build_and_manifest_keep_the_digests_they_had(monkeypatch):
     sample = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
     assert sample.asset.box_tops is None and sample.asset.digest == NO_COVER_BUILD_DIGEST
     assert hi.digest(hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)) == NO_COVER_MANIFEST_DIGEST
+    monkeypatch.setattr("app.replays.control_format.HEIGHT_RULES_REVISION", 7)
+    assert hi.digest(hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)) == "31495d88d6e6e4f5"
 
 
 def test_a_cover_build_learns_the_top_and_changes_nothing_else():
@@ -79,11 +83,75 @@ def test_a_cover_build_learns_the_top_and_changes_nothing_else():
     assert learnt.asset.digest != plain.asset.digest
 
 
+def test_cover_build_passes_world_sides_snap_and_near_floors(monkeypatch):
+    from app.control import box_tops as bt
+
+    labels = cover()
+    probe = (325, 160)  # six pixels beyond the piece's last pixel (319, 160)
+    neighbour = (329, 160)  # its connected leaf starts at (328, 160), 3 px from the probe
+    seen = {}
+    judge, floors_near = bt.judge, bt.floors_near
+
+    def sparse_leaf(geo, asset):
+        assert geo.cover_px is labels
+        seen['asset'] = asset
+        # Isolate the wiring: this leaf has no floor at the probe, only at its neighbour.
+        connected = {(neighbour[0] // 4, neighbour[1] // 4): (z_dm(0.0),)}
+        leaf = lambda px: connected.get((px[0] // 4, px[1] // 4), ())
+        seen['plain_leaf'] = leaf
+        return leaf
+
+    def near(leaf, px, radius):
+        seen['radius'] = radius
+        return floors_near(leaf, px, radius)
+
+    def record(stands, ground, leaf_floor, beside=None, **kwargs):
+        seen.update(kwargs)
+        seen['near_floors'] = leaf_floor(probe)
+        return judge(stands, ground, leaf_floor, beside, **kwargs)
+
+    monkeypatch.setattr(hb, 'box_leaf_floor', sparse_leaf)
+    monkeypatch.setattr(bt, 'floors_near', near)
+    monkeypatch.setattr(bt, 'judge', record)
+    learnt = hb.build(covered_rounds({9: box_player()}), GEO, cover_px=labels)
+    asset = seen['asset']
+    floors = bt.piece_floors(labels, asset.floors, fine_cells=asset.fine_cells,
+                             fine_floors=asset.fine_floors, walk_px=GEO.walk_px)
+    assert asset.origin_z != 0
+    assert seen['sides'] == {p: tuple(f + asset.origin_z for f in s.values())
+                             for p, s in floors.sides.items()}
+    assert set(seen['sides'][1]) == {z_dm(0.0)}
+    assert callable(seen['snap'])
+    x, y = seen['snap'](1, probe)
+    assert labels[y, x] == 1
+    assert seen['plain_leaf'](probe) == ()
+    assert seen['plain_leaf'](neighbour) == (z_dm(0.0),)
+    assert seen['plain_leaf']((328, 160)) == (z_dm(0.0),)
+    assert seen['near_floors'] == (z_dm(0.0),)
+    assert seen['radius'] == math.ceil(1.0 / GEO.m_per_px)
+    assert learnt.asset.box_tops[:, 2].tolist() == [z_dm(1.2) - asset.origin_z]
+
+
 def test_a_top_is_learnt_without_a_climb():
     """A player who starts the round on the box (no rise before it) still shows its top: it is a clear step."""
     start_on = ("B", [(0.0, 308, 160, 0, 1.2), (30.0, 308, 160, 0, 1.2)])
     tops = hb.build(covered_rounds({9: start_on}), GEO, cover_px=cover()).asset.box_tops
     assert tops is not None and tops[:, 2].tolist() == [z_dm(1.2) - z_dm(0.0)]
+
+
+def test_touching_stands_build_tops_on_the_piece_and_pass_verification(tmp_path, checks):
+    touching = ('B', [(0., 299, 160, 0, 1.2), (30., 299, 160, 0, 1.2)])
+    assets = cover_assets(tmp_path)
+    blobs = write_blobs(tmp_path / 'blobs', covered_rounds({9: touching}))
+    out = height_job.run('Ascent', height_job.BlobDir(blobs, 'Ascent'), asset_dir=assets, must_block=checks)
+    tops = _raw_parts(out['asset']).get('box_tops')
+    assert round(GEO.m_per_px, 2) == 0.14
+    assert tops is not None and len(tops) > 0
+    assert (cover()[tops[:, 1], tops[:, 0]] == 1).all()
+    assert tops[:, 0].tolist() == [300]
+    assert tops[:, 2].tolist() == [z_dm(1.2) - z_dm(0.0)]
+    seen = height_verify.describe(out['asset'], 'Ascent', asset_dir=assets, must_block=checks)
+    assert 'error' not in seen and seen['box_tops'] == len(tops) and seen['digest'] == out['digest']
 
 
 def test_a_stand_at_floor_height_inside_the_outline_is_no_top():
@@ -130,8 +198,8 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
     previous = hr.history(GEO.name, [parent])
     original = hr.analyze
 
-    def lower_child(*args):
-        evidence = original(*args)
+    def lower_child(*args, **kwargs):
+        evidence = original(*args, **kwargs)
         for child in evidence['children']:
             child['floors_world_dm'] = [(z_dm(-1), 0)]
             child['kind'] = hc.KIND_STANDS
@@ -141,11 +209,11 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
     judge = bt.judge
     seen = []
 
-    def after_refine(stands, ground, leaf_floor, beside=None):
+    def after_refine(stands, ground, leaf_floor, beside=None, **kwargs):
         # The connected child is in the new world frame and is visible to the judge.
         assert z_dm(-1) in leaf_floor((292, 160))
         seen.append(True)
-        return judge(stands, ground, leaf_floor, beside)
+        return judge(stands, ground, leaf_floor, beside, **kwargs)
 
     monkeypatch.setattr(bt, 'judge', after_refine)
     sample = hb.build(rounds(), GEO, cover_px=cover(), refinement_history=previous)
@@ -155,17 +223,21 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
 
 
 def test_conflicts_are_world_records_in_meta_and_report_links_and_round_trip(tmp_path):
-    outside = ('B', [(0., 299, 160, 0, 3.), (30., 299, 160, 0, 3.)])
-    sample = hb.build(covered_rounds({9: outside}), GEO, cover_px=cover())
+    outside = ('B', [(0., 297, 160, 0, 3.), (30., 297, 160, 0, 3.)])
+    # Keep the full ground corpus, with one outside stand below either vote threshold.
+    source = covered_rounds()
+    source[0] = covered_rounds({9: outside})[0]
+    sample = hb.build(source, GEO, cover_px=cover())
     conflicts = sample.asset.meta['box_conflicts']
-    assert sample.report['box_conflicts'] == sample.report['box_counts']['conflict'] == len(conflicts) == 6
+    assert sample.report['box_conflicts'] == sample.report['box_counts']['conflict'] == len(conflicts) == 1
     assert sample.asset.box_tops is None
     first = conflicts[0]
+    # Encoded toy coordinates truncate to x=296, y=159: four pixels (0.56 m) off the piece.
     assert first == dict(match='match-0', round=1, slot=9, t0=0., t1=30., z=z_dm(3.) / 10,
-                         candidates=[[1, [], round(GEO.m_per_px, 2)]], px=[299, 159])  # decoded toy y is 159.9488 px
+                         candidates=[[1, [], round(4 * GEO.m_per_px, 2)]], px=[296, 159])
     lines = hb.report_lines('Toy', sample.report)
-    assert any('6 box conflicts' in line for line in lines)
-    assert f"  box conflict: piece(s) 1 ({GEO.m_per_px:.2f} m) z {first['z']} m 30.0 s https://valowithfriendstracker.onrender.com/replays/match-0?round=1&t=0.0" in lines
+    assert any('1 box conflicts' in line for line in lines)
+    assert f"  box conflict: piece(s) 1 ({4 * GEO.m_per_px:.2f} m) z {first['z']} m 30.0 s https://valowithfriendstracker.onrender.com/replays/match-0?round=1&t=0.0" in lines
     hc.save_asset(tmp_path / 'conflicts.npz', sample.asset)
     back = hc.load_asset(tmp_path / 'conflicts.npz')
     assert back.meta['box_conflicts'] == conflicts and back.digest == sample.asset.digest

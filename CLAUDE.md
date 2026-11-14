@@ -35,11 +35,18 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 - `alembic/versions/` — schema migrations; `0001_initial_schema.py` creates all 7 tables, `0002_friendships.py` adds `friendships`, `0003_player_view_cache.py` adds `player_view_cache`.
 - `docker-compose.yml` — local Postgres 18 for development. The data volume holds a Postgres 18 cluster and is mounted at `/var/lib/postgresql` (the 18 image keeps its data under `18/docker`).
 - `render.yaml` (repo root) — the Render Blueprint for the `valowithfriendstracker` web service only: it runs `alembic upgrade head` on build, and it declares no databases. A Blueprint sync applies its `plan:` over the dashboard's setting. The `valomaths` service isn't in it (see above).
-- `control_heights` (migration 0019): a map's height assets, keyed by asset key (one row set per layout: `<Map>` for the base layout, `<Map>_<major>_<minor>` for a later one; a layout's build pools its own replays plus other layouts' outside the regions that changed, `app/replays/height_inputs.py`), built on the replay worker and activated behind a gate (`app/replays/height_inputs.py`, `app/services/control_heights.py`, `app/services/replay_heights_remote.py`; `REPLAY_HEIGHTS_AUTO`, on in `render.yaml`; `scripts/control_heights.py list | activate | off | export`). The demo never has any. See `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`.
+- `control_heights` (migration 0019): a map's height assets, keyed by asset key (one row set per layout: `<Map>` for the base layout, `<Map>_<major>_<minor>` for a later one; a layout's build pools its own replays plus other layouts' outside the regions that changed, `app/replays/height_inputs.py`), built on the replay worker and activated behind a gate (`app/replays/height_inputs.py`, `app/services/control_heights.py`, `app/services/replay_heights_remote.py`; `REPLAY_HEIGHTS_AUTO`, on in `render.yaml`; `scripts/control_heights.py list | activate | off | export`). Heights can be corrected by hand paint (three brushes in the tagger, `height_paint.json`), applied in the build; check with `build_control_heights.py --preview`. The demo never has any. See `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`.
 - Warm builds (a cold map's visibility cache built as its own run, confirmed by one probe round, then the rest of its rounds run at once) exist and are behind `REPLAY_WARM_BUILDS` (on in `render.yaml`). The Workflow time limits (`REPLAY_CONTROL_RUN_TIMEOUT_S`, `REPLAY_WARM_BUILD_TIMEOUT_S`, `REPLAY_HEIGHT_RUN_TIMEOUT_S`) apply to Workflow runs only; local runs keep their own (1800 s control, 3600 s heights). Read `webapp/RENDER_DEPLOY.md` ("Warm builds, time limits and the concurrency ramp") before changing either; any scheduler change updates the state table `docs/superpowers/specs/2026-11-06-warm-build-states.md` first, with a test per row.
 - `map_pool_changes` / `map_pool_patch_notes` (migration 0023): the Competitive map pool's history, from the committed seed `app/data/map_pool_seed.json` (`scripts/build_map_pool_seed.py`) plus pages read from playvalorant.com's patch notes once a day (`app/services/map_pool_refresh.py`; `MAP_POOL_AUTO`, on in `render.yaml`, always off in demo mode). `app/services/map_pool.py` reads it (`load_pool_history`); map streaks use it. `scripts/map_pool.py show [--at ISO] | refresh | seed`.
 - `scripts/seed_demo_matches.py` / `scripts/ingest_demo_match.py` — one-off scripts to bulk- or single-ingest match JSONs from `MatchHTMLJsons/` into the DB via the adapter above. Not part of the deploy path.
 - `seed_data/demo_matches.sql` — the public ValoMaths demo's sample data (six matches plus a fixed sample friend group), a data-only dump at the schema head. `scripts/load_seed_data.py` loads it and `scripts/dump_seed_data.py` regenerates it. Every command against the demo DB goes through `scripts/with_demo_db.py`, which reads `webapp/.env.demo-remote` and refuses to run unless it is connected to `valomaths_demo`. See `load_seed_data.py`'s docstring for the rebuild order.
+
+Per-kill Impact (`replays.kill_impact`) is filled on the site by `app/services/kill_impact_sweep.py`
+every 30 s, up to 5 per pass, newest first, and never in demo mode. The site reads a byte-identical
+mirror of the active manifest under `webapp/app/data/scoring_manifests/` when the `docs/` file is
+missing, because Render's `rootDir: webapp` hides `docs/`. A scoring release that changes
+`ACTIVE_MANIFEST` must refresh the mirror in the same PR (`tests/test_active_manifest_mirror.py`
+fails otherwise). Stale splits after a rescore still need `scripts/link_replays.py --refresh-impact`.
 
 ### Map layouts
 
@@ -221,6 +228,7 @@ or clears rows;
 `scripts/site_health.py` only lists. A route with a secret in its path (`{key}`) is stored as its template.
 A new recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
 Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
+A failed upload whose file is gone is retired by an entry in `app/data/retired_uploads.json` (upload_id, reason, fixed_by), a PR only; a later stored upload of the same file clears both upload kinds.
 
 ### Deploy drain
 
