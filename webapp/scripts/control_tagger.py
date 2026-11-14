@@ -73,6 +73,7 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.coach import areas, areas_draft  # noqa: E402
 from app.control import geometry as cg  # noqa: E402
+from app.control import height_build as hb  # noqa: E402
 from app.control import heights as hc  # noqa: E402
 from app.control.height_motion import coarse_of_fine  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
@@ -141,6 +142,14 @@ def _floor_data(asset: hc.HeightAsset | None) -> dict:
             'floor_counts': (np.isfinite(asset.floors) & (asset.floors >= 0)).sum(axis=2).ravel().tolist(),
             'unresolved': asset.unresolved.astype('uint8').ravel().tolist(),
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
+
+
+def _height_overlay(name: str, asset: hc.HeightAsset) -> str:
+    """Embed the builder's review picture, including its refined child footprints."""
+    with tempfile.TemporaryDirectory(prefix="valo-tagger-heights-") as scratch:
+        png = Path(scratch) / "heights.png"
+        hb.picture(hb.HeightBuild(asset, {}), cg.load_base_geometry(name), png)
+        return base64.b64encode(png.read_bytes()).decode("ascii")
 
 
 def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict:
@@ -269,6 +278,10 @@ def render(
             raise ValueError('Diagnostic report versions are stale; regenerate it')
         features['diagnostics'] = {name: diagnostics}
     maps = {name: {**data, "areas": _areas_data(name, assets[name], areas_dir)} for name, data in maps.items()}
+    if heights_dir is not None:
+        for name, map_ in maps.items():
+            if assets[name] is not None and (Path(heights_dir) / f"{name}.height.npz").is_file():
+                map_["height_overlay"] = _height_overlay(name, assets[name])
     data = json.dumps({"tags": tags, "maps": maps, "features": features,
                        "height_paint": paint, "height_paint_sha": paint_sha},
                       separators=(",", ":")).replace("</", "<\\/")

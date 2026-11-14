@@ -84,6 +84,11 @@
   <select id="map" aria-label="Map"></select>
   <label><input type="checkbox" id="showCandidates" checked> shapes</label>
   <label><input type="checkbox" id="showPaint" checked> paint</label>
+  <span id="heightControls" hidden>
+    <label title="Ground height blue to yellow, upper floors white, unresolved cells red"><input type="checkbox" id="showHeights" checked> build heights <kbd>J</kbd></label>
+    <label>Opacity <input type="range" id="heightOpacity" min="0" max="100" value="60">
+      <output id="heightOpacityText" for="heightOpacity">60%</output></label>
+  </span>
   <label><input type="checkbox" id="showSight"> sight mask</label>
   <label><input type="checkbox" id="showWalk"> can't walk</label>
   <label><input type="checkbox" id="showLines" checked> kill lines</label>
@@ -102,6 +107,7 @@
   <div class="stage" id="stage">
     <div id="zoom">
       <canvas id="base" width="1024" height="1024"></canvas>
+      <canvas id="heightOverlay" width="1024" height="1024" aria-hidden="true" style="pointer-events:none" hidden></canvas>
       <canvas id="tint" width="1024" height="1024"></canvas>
       <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
       <canvas id="feat" width="1024" height="1024" aria-label="Map features: draw, select and link features"></canvas>
@@ -470,9 +476,16 @@
     map.candidates.forEach(function (c) { state.byId[c.id] = c; });
     $("reviewed").checked = !!mapEdits().cover_reviewed;
     loadImage(DATA.maps[name].image).then(function (img) {
+      if (state.map !== name) return;
       var base = $("base").getContext("2d");
       base.clearRect(0, 0, PX, PX); base.drawImage(img, 0, 0, PX, PX);
     });
+    if (DATA.maps[name].height_overlay && !map.heightImage) {
+      loadImage(DATA.maps[name].height_overlay).then(function (img) {
+        map.heightImage = img;
+        if (state.map === name) paintHeights();
+      });
+    }
     recompute();
     if (window.taggerFeatures) window.taggerFeatures.onMap(name);
     if (window.taggerAreas) window.taggerAreas.onMap(name);
@@ -484,7 +497,21 @@
     state.risk = T.riskOne(state.masks.sight, map.lines, state.masks.cover);
     state.blocked = {};
     state.risk.blocked.forEach(function (k) { state.blocked[k] = true; });
-    paintTint(); paintOverlay(); updateStats(); showSelected(); showChoke();
+    paintHeights(); paintTint(); paintOverlay(); updateStats(); showSelected(); showChoke();
+  }
+
+  function paintHeights() {
+    var canvas = $("heightOverlay"), ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, PX, PX);
+    var available = !!DATA.maps[state.map].height_overlay;
+    var image = maps[state.map].heightImage;
+    $("heightControls").hidden = !available;
+    $("heightOpacityText").textContent = $("heightOpacity").value + "%";
+    canvas.hidden = !available || !$("showHeights").checked || !image;
+    if (canvas.hidden) return;
+    ctx.globalAlpha = Number($("heightOpacity").value) / 100;
+    ctx.drawImage(image, 0, 0, PX, PX);
+    ctx.globalAlpha = 1;
   }
 
   function paintTint() {
@@ -825,6 +852,12 @@
   $("reviewed").addEventListener("change", function () { beforeChange(); mapEdits().cover_reviewed = this.checked; changed(); });
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "j" && DATA.maps[state.map].height_overlay) {
+      e.preventDefault();
+      $("showHeights").checked = !$("showHeights").checked;
+      paintHeights();
+      return;
+    }
     var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
                   k: "chokes", a: "choke_paint", f: "features", m: "areas", o: "open", h: "ground", t: "top" };
     var modeKey = !e.ctrlKey && !e.metaKey && !e.altKey && modes[e.key.toLowerCase()];
@@ -849,6 +882,8 @@
     else if (modeKey) setMode(modeKey);
   });
   ["showCandidates", "showPaint", "showSight", "showWalk"].forEach(function (id) { $(id).addEventListener("change", paintTint); });
+  $("showHeights").addEventListener("change", paintHeights);
+  $("heightOpacity").addEventListener("input", paintHeights);
   $("showLines").addEventListener("change", paintOverlay);
   $("showStarts").addEventListener("change", paintOverlay);
   $("showChokes").addEventListener("change", paintOverlay);

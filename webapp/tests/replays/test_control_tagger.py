@@ -4,6 +4,7 @@ exporting an unchanged page gives back the loaded tags.json. The JS checks need 
 
 import base64
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -22,6 +23,8 @@ sys.path.insert(0, str(WEBAPP / "scripts"))
 import control_tagger  # noqa: E402
 
 from app.control import geometry as cg  # noqa: E402
+from app.control import heights as hc  # noqa: E402
+from app.control import height_refinement as hr  # noqa: E402
 
 CORE = WEBAPP / "scripts" / "control_tagger_core.js"
 NODE = shutil.which("node")
@@ -182,6 +185,84 @@ def test_the_page_builds_with_every_map(tmp_path):
     assert sorted(data["maps"]) == ["Abyss", "Breeze"] and data["tags"] == TAGS
     assert data["height_paint"] == json.loads((cg.ASSET_DIR / "height_paint.json").read_text(encoding="utf-8"))
     assert data["maps"]["Breeze"]["lines"] == [] and len(data["maps"]["Abyss"]["lines"]) == 200
+    assert all("height_overlay" not in m for m in data["maps"].values())
+
+
+@pytest.fixture
+def exported_height_page(tmp_path):
+    floors = np.full((cg.GRID, cg.GRID, hc.MAX_FLOORS), -1, np.int16)
+    floors[20, 20, 0] = 0
+    unresolved = np.zeros((cg.GRID, cg.GRID), bool)
+    unresolved[21, 21] = True
+    fine = np.full((4, hc.MAX_FLOORS), -1, np.int16)
+    fine[0, :2] = [0, 60]
+    fine[2, 0] = 60
+    for name in ("Ascent", "Abyss"):
+        history = hr.history(name, [10 * cg.GRID + 10])
+        asset = hc.HeightAsset(
+            floors.copy(), np.zeros_like(floors), floors[..., 0] >= 0, unresolved.copy(),
+            np.empty((0, 5), np.int32),
+            refinement={"v": 1, "history": history, "history_sha256": hr.identity(history),
+                        "previous_history_sha256": hr.identity(hr.history(name)), "evidence_sha256": "0" * 64},
+            fine_cells=np.array(hr._child_ids(10 * cg.GRID + 10), np.int32), fine_floors=fine.copy(),
+            fine_spread=np.zeros_like(fine), fine_supported=fine[:, 0] >= 0,
+            fine_unresolved=np.array([False, True, False, True]),
+            fine_kind=np.array([hc.KIND_STANDS, hc.KIND_NONE, hc.KIND_STANDS, hc.KIND_NONE], np.int8),
+            fine_edges=np.empty((0, 5), np.int32),
+        )
+        hc.save_asset(tmp_path / f"{name}.height.npz", asset)
+        (tmp_path / f"{name}.height.json").write_text(
+            json.dumps({"height_sha": asset.digest, "height": {}}), encoding="utf-8")
+    out = tmp_path / "tagger.html"
+    assert control_tagger.main(["--out", str(out), "--heights-dir", str(tmp_path),
+                                "--map", "Ascent", "--map", "Abyss", "--map", "Breeze"]) == 0
+    page = out.read_text(encoding="utf-8")
+    return page, json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+
+
+def test_exported_heights_embed_a_review_png_per_exported_map(exported_height_page):
+    _, data = exported_height_page
+    assert {name for name, m in data["maps"].items() if "height_overlay" in m} == {"Ascent", "Abyss"}
+    for name in ("Ascent", "Abyss"):
+        with Image.open(io.BytesIO(base64.b64decode(data["maps"][name]["height_overlay"], validate=True))) as img:
+            assert img.format == "PNG" and img.size == (1024, 1024)
+            assert img.getpixel((85, 81)) == (220, 40, 40)  # unresolved child
+            assert img.getpixel((169, 169)) == (220, 40, 40)  # unresolved parent
+            assert img.getpixel((81, 80)) == (255, 255, 255)  # two-floor child mark
+            assert img.getpixel((81, 81)) == (40, 90, 200)  # low child
+            assert img.getpixel((81, 85)) == (255, 240, 30)  # high child
+
+
+def test_height_overlay_controls_draw_under_paint_and_hide_on_unexported_maps(exported_height_page):
+    page, _ = exported_height_page
+    assert page.index('id="base"') < page.index('id="heightOverlay"') < page.index('id="tint"')
+    assert 'id="heightControls" hidden' in page
+    modes = re.search(r"var modes = \{([^}]+)\}", page).group(1)
+    assert "j" not in dict(re.findall(r'(\w+)\s*:\s*"([^"]+)"', modes))
+    assert 'e.key.toLowerCase() === "j"' in page
+    assert '$("showHeights").addEventListener("change", paintHeights)' in page
+    assert '$("heightOpacity").addEventListener("input", paintHeights)' in page
+    assert "paintHeights();" in page_function(page, "recompute")
+    got = run_node("""
+      function run(p) {
+        var PX = 1024, draws = [], clears = 0;
+        var ctx = {clearRect: () => clears++, drawImage: function (img) { draws.push([img, this.globalAlpha]); }};
+        var elements = {heightOverlay: {getContext: () => ctx}, heightControls: {},
+                        showHeights: {checked: true}, heightOpacity: {value: '60'}, heightOpacityText: {}};
+        var $ = id => elements[id], state = {map: 'Ascent'};
+        var DATA = {maps: {Ascent: {height_overlay: 'png'}, Breeze: {}}};
+        var maps = {Ascent: {heightImage: 'loaded'}, Breeze: {}};
+        eval(p.draw);
+        paintHeights();
+        elements.heightOpacity.value = '25'; paintHeights();
+        elements.showHeights.checked = false; paintHeights();
+        state.map = 'Breeze'; paintHeights();
+        return {draws, clears, hidden: elements.heightControls.hidden,
+                opacityText: elements.heightOpacityText.textContent, alpha: ctx.globalAlpha};
+      }
+    """, {"draw": page_function(page, "paintHeights")})
+    assert got == {"draws": [["loaded", 0.6], ["loaded", 0.25]], "clears": 4,
+                   "hidden": True, "opacityText": "25%", "alpha": 1}
 
 
 def test_the_page_includes_areas_data_panel_and_distinct_mode_keys(tmp_path):
