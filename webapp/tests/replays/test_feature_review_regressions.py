@@ -106,7 +106,9 @@ def test_height_rebuild_selects_a_new_feature_key_and_rebuilds_before_control(tm
     from types import SimpleNamespace
     from app.control import heights as hc
     from app.replays import height_inputs, map_feature_sources
-    from app.services import control_feature_artifacts as archive, control_heights, replay_control
+    # The worker image ships only two modules of app.services (replay_worker/Dockerfile): this is a site test.
+    archive = pytest.importorskip("app.services.control_feature_artifacts")
+    from app.services import control_heights, replay_control
 
     old_geo, old_input, base, raw = top_feature_case(tops=False)
     geo, inp, _, _ = top_feature_case()
