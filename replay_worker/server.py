@@ -3544,13 +3544,20 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    # Python's default listen backlog is 5. Fifteen parses, or a map's rounds, can post their results in the
+    # same instant; a connection that overflows the backlog can be reset, and a run whose result never arrives
+    # is run again.
+    request_queue_size = 128
+
+
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
                 control: ControlRunner | None = None, heights: HeightBuilds | None = None,
                 runs_table=None, util: "UtilStore | None" = None,
                 util_builds: "UtilBuilds | None" = None) -> ThreadingHTTPServer:
     if util_builds is None and util is not None and runs_table is not None:
         util_builds = UtilBuilds(worker.settings, util, runs_table)
-    httpd = ThreadingHTTPServer((host, port), make_handler(worker, control, heights, runs_table, util, util_builds))
+    httpd = _Server((host, port), make_handler(worker, control, heights, runs_table, util, util_builds))
     httpd.util_builds = util_builds
     if runs_table is not None:
         # A hold that ends (released or expired) lifts the start barrier a forced deploy raised, and wakes the

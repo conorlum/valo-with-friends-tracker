@@ -563,6 +563,32 @@ def test_hook_without_query_and_self_takeover():
     assert not site.gh_calls
 
 
+@pytest.mark.parametrize("status,reason", [(404, "HTTP 404"), (None, "RuntimeError")])
+def test_a_failed_hook_says_which_service_and_why_without_the_url(status, reason):
+    site = Site()
+    plain = site.http
+
+    def http(method, url, **kwargs):
+        if urlsplit(url).hostname == "hooks.invalid" and status is not None:
+            raise HTTPError(url, status, url, {}, None)
+        return plain(method, url, **kwargs)
+
+    site.http = http
+    site.raise_hook = "tasks"
+    assert site.run() == 1
+    printed = site.output.getvalue()
+    assert "tasks deploy hook failed: " + reason + "\n" in printed
+    assert "hooks.invalid" not in printed and "synthetic" not in printed
+    assert site.events("resume")[-1][1]["outcome"] == "failed"
+
+
+def test_a_hook_secret_with_a_trailing_newline_still_deploys():
+    site = Site()
+    site.env["RENDER_DEPLOY_HOOK_TASKS"] += "\n"
+    assert site.run() == 0
+    assert [service for service, _ in site.hooks] == list(SERVICES)
+
+
 def test_input_flags_and_workflow_triggers_contract():
     assert pipeline.build_args({"skip_drain": "false", "dry_run": "true"}) == ["--dry-run"]
     assert pipeline.build_args({"skip_drain": True, "dry_run": False}) == ["--skip-drain"]

@@ -47,6 +47,8 @@ PAGE_ROUTES = {
     "/accounts/search": "not_page",
     "/admin/deploy/status": "not_page",
     "/admin/replays/archive": "not_page",
+    "/admin/replays/archive/{match_uuid}.vrf": "not_page",
+    "/admin/replays/refused": "not_page",
     "/admin/replays/reparse/status": "not_page",
     "/admin/replays/uploads/{upload_id}": "not_page",
     "/friends": "page",

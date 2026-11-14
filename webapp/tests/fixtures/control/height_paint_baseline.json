@@ -111,7 +111,7 @@
     "walkable_cells": 1006,
     "walks": 0
   },
-  "ledge_sha256": "029c830d2fd87ac572272239e3be6434c44ab6110d6ab84c7ee791afa04f3e8a",
+  "ledge_content_sha256": "5704189e13abf6a746dd8990c90d596d909e342ed537e776fa79d078264db2df",
   "preview_report": {
     "air_only": [],
     "blackouts": 0,
@@ -166,5 +166,5 @@
     "walkable_cells": 1000,
     "walks": 0
   },
-  "preview_sha256": "cbe8c584193ff9fb2209b96c1924296bb62ec11484927848af25a448673a55f1"
+  "preview_content_sha256": "e4655a426a4ddce1cefb51e1a362437dd300845b76574b7b2c6c31d129be5fd2"
 }
