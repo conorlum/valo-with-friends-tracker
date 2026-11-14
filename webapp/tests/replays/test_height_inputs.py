@@ -22,11 +22,14 @@ PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72e
                                       # "bb8b0358a9c8", then "52136ab282f4"), for the head and feet sight points
                                       # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
                                       # (was "ef8175ac1844"), then for the crouch key
-                7: "93c941558c40"}    # 7 (2026-11-02): the build's code only (box floors side by side)
+                7: "93c941558c40",    # 7 (2026-11-02): the build's code only (box floors side by side)
+                8: "3ff54544c11e"}    # 8 (2026-11-13): box top touching, votes and nearby ground constants
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
                                        ("TOP_REACH_M", 0.8), ("VIEW_REACH_M", 1.2), ("TOP_TOL_M", 0.25), ("CROUCH_DROP_M", 0.3),
+                                       ("TOP_TOUCH_M", 0.3), ("TOP_VOTES_INSIDE", 4), ("TOP_VOTES_OUTSIDE", 6),
+                                       ("GROUND_NEAR_M", 1.5),
                                        ("EYE_M", 1.1), ("HEAD_M", 1.0), ("FEET_M", -0.6),
                                        ("CROUCH_LAG_S", 0.3), ("CROUCH_NEAR_S", 3.0)])
 def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
@@ -37,7 +40,8 @@ def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
 
 def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
     for name in ("TOP_REACH_M", "VIEW_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M", "HEAD_M", "FEET_M",
-                 "CROUCH_LAG_S", "CROUCH_NEAR_S"):
+                 "CROUCH_LAG_S", "CROUCH_NEAR_S", "TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE",
+                 "GROUND_NEAR_M"):
         monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.setattr(hc, "EYE_M", 0.7)
     monkeypatch.setattr(hc, "STEP_UP_M", 0.7)
@@ -46,6 +50,8 @@ def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(m
 
 
 def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypatch):
+    for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
+        monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.delattr(hc, "VIEW_REACH_M")
@@ -54,6 +60,8 @@ def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypa
 
 
 def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypatch):
+    for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
+        monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.setattr(hc, "EYE_M", 1.1)
@@ -61,17 +69,22 @@ def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypa
 
 
 def test_without_the_crouch_key_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
+        monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     assert hc.rules()["constants"] == "ef8175ac1844"
 
 
-def test_the_height_rules_are_pinned_to_their_revision():
+def test_the_height_rules_are_pinned_to_their_revision(monkeypatch):
     digest = hc.rules()["constants"]
     assert PINNED_RULES.get(cf.HEIGHT_RULES_REVISION) == digest, (
         f"the height constants changed (hash {digest}): bump HEIGHT_RULES_REVISION in "
         f"app/replays/control_format.py and pin {{{cf.HEIGHT_RULES_REVISION + 1}: '{digest}'}} here")
     assert hc.rules() == {"version": cf.HEIGHT_VERSION, "revision": cf.HEIGHT_RULES_REVISION, "constants": digest}
+    for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
+        monkeypatch.delattr(hc, name)
+    assert hc.rules()["constants"] == PINNED_RULES[7]
 
 
 def test_the_manifest_is_the_same_whatever_order_the_replays_come_in():

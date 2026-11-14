@@ -194,20 +194,21 @@ def floors_at(cells_z):
     return f
 
 
-def test_ground_is_the_floor_most_of_the_ring_stands_on():
+def test_ground_is_the_lowest_side_floor():
     # piece 1 is x 100-139, y 100-139, at a ledge's edge: 2.0 m round three sides, a drop to 0.0 m on one cell
     g = bt.ground_of(cover(), floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0}))
-    assert g[1] == 20
+    assert g[1] == 0
 
 
 def test_a_stand_at_the_upper_floor_of_a_ledge_is_no_top():
     """Ascent's piece 17: players stood at 2.0 m on its outline, beside a drop to 0.0 m on one side."""
-    f = floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0})
-    xs, ys, zs = const(120, 120, 20, 1.0)
-    assert tops(blob(seg(0.0, xs, ys, zs)), ground=bt.ground_of(cover(), f)) == []
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(z=20, inside=1, candidates=(1,))], {1: 0}, lambda px: (), sides={1: (20, 0)})
+    assert counts['ground'] == 1
+    assert rows.shape == (0, 3) and not assigned and not conflicts
 
 
-def test_a_tie_takes_the_lower_floor():
+def test_two_sides_take_the_lower_floor():
     g = bt.ground_of(cover(), floors_at({(92, 120): 20, (120, 92): 40}))
     assert g[1] == 20
 
@@ -237,16 +238,15 @@ def one_box():
     return c
 
 
-# Summit's piece 20 (the owner's rule, 2026-11-02): a box with no one floor all round it. A small lower area runs
-# along its long west face; it stands on the floor of its other sides.
+# Summit's piece 20 has different side floors, with a small lower area along its long west face.
 LOWER_WEST = {**{(92, y): 20 for y in (100, 108, 116, 124, 132)}, (148, 120): 30, (120, 92): 30}
 
 
-def test_each_side_of_a_piece_learns_its_own_floor_and_each_side_has_one_vote():
+def test_each_side_of_a_piece_learns_its_own_floor_and_ground_is_the_lowest():
     pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
     assert pf.sides[1] == {"n": 30, "e": 30, "w": 20}
-    assert pf.ground[1] == 30, "five lower cells on one face are one side's vote, not five"
-    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 30}
+    assert pf.ground[1] == 20, "the lowest side is the floor the box stands on"
+    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 20}
 
 
 def test_the_floor_beside_a_piece_is_its_sides():
@@ -254,7 +254,7 @@ def test_the_floor_beside_a_piece_is_its_sides():
     assert [pf.side_at(1, px) for px in ((120, 96), (144, 120), (120, 145), (95, 120), (120, 120))] == \
         ["n", "e", "s", "w", None]
     assert pf.floor_at(1, (95, 120)) == 20 and pf.floor_at(1, (144, 120)) == 30
-    assert pf.floor_at(1, (120, 145)) == 30, "a side with no floor of its own takes the piece's ground"
+    assert pf.floor_at(1, (120, 145)) == 20, "a side with no floor of its own takes the piece's ground"
     assert pf.floor_at(2, (95, 120)) is None
 
 
@@ -267,6 +267,46 @@ def test_a_stand_beside_a_box_is_judged_against_the_floor_on_its_side():
     _, _, conflicts, counts = bt.judge([east, west], {1: 20}, lambda px: (), pf.floor_at)
     assert (counts["ground"], counts["conflict"]) == (1, 1)
     assert conflicts[0]["px"] == [95, 120], "on the lower side 3.0 m is still a step up"
+    rows, assigned, conflicts, counts = bt.judge(
+        [east, west], pf.ground, lambda px: (), pf.floor_at, sides={1: (30, 30, 20)})
+    assert (counts["ground"], counts["conflict"]) == (2, 0)
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+
+
+def test_summit_11_jump_up_box_learns_its_top():
+    pf = bt.piece_floors(one_box(), floors_at({(92, 120): 40, (120, 92): 40, (120, 148): 20}))
+    assert pf.ground[1] == 20
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(30, inside=1, candidates=(1,))], pf.ground, lambda px: (),
+        sides={1: tuple(pf.sides[1].values())})
+    assert rows.tolist() == [[120, 120, 30]] and counts['teach'] == 1
+    assert not assigned and not conflicts
+
+
+@pytest.mark.parametrize('inside, px', [(1, (120, 120)), (0, (99, 120))])
+def test_ascent_3_level_with_the_upper_floor_is_ground(inside, px):
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(91, inside=inside, px=px)], {1: 67}, lambda px: (),
+        beside=lambda piece, px: 67, sides={1: (92, 92, 70, 67)})
+    assert counts['ground'] == 1
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+
+
+@pytest.mark.parametrize('offset, expected', [
+    (-hc.TOP_TOL_M * 10 - bt.EPS, 'ground'),
+    (hc.TOP_TOL_M * 10 + bt.EPS, 'ground'),
+    (hc.TOP_TOL_M * 10 + 2 * bt.EPS, 'teach'),
+])
+def test_side_floor_ground_includes_the_tolerance_boundary(offset, expected):
+    counts = bt.judge([stand(40 + offset)], {1: 0}, lambda px: (), sides={1: (40,)})[3]
+    assert counts[expected] == 1
+
+
+def test_side_floor_ground_filters_only_its_own_piece():
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(40, inside=2, candidates=(1, 2))], {1: 0, 2: 0}, lambda px: (), sides={1: (40,)})
+    assert rows.tolist() == [[120, 120, 40]] and counts['teach'] == 1
+    assert not assigned and not conflicts
 
 
 def test_floor_across_a_wall_beside_a_piece_is_not_its_floor():
@@ -281,10 +321,120 @@ def test_floor_across_a_wall_beside_a_piece_is_not_its_floor():
     assert bt.piece_floors(one_box(), floors_at({(92, 120): 30}), walk_px=edge).sides[1] == {"w": 30}
 
 
+def test_floors_near_reads_the_leaves_round_a_pixel():
+    # Cell (32, 30) starts 8 px away; cell (32, 32) is sqrt(128) px away.
+    floors = {(30, 30): (20, 20), (32, 30): (35, 20), (32, 32): (99,)}
+    reads = []
+
+    def lf(px):
+        cell = (px[0] // 4, px[1] // 4)
+        reads.append(cell)
+        return floors.get(cell, ())
+
+    assert bt.floors_near(lf, (120, 120), 8) == (20, 35)
+    assert len(reads) == len(set(reads))  # Each aligned leaf is read once.
+    assert bt.floors_near(lf, (120, 120), 7) == (20,)
+    reads.clear()
+    assert bt.floors_near(lf, (120, 120), 0) == (20,)
+    assert reads == [(30, 30)]  # The own cell has distance 0.
+
+    edge_floors = {(0, 0): (35, 20, 35), ((PX - 1) // 4, (PX - 1) // 4): (35, 20, 35)}
+
+    def edge_floor(px):
+        assert 0 <= px[0] < PX and 0 <= px[1] < PX
+        return edge_floors.get((px[0] // 4, px[1] // 4), ())
+
+    assert bt.floors_near(edge_floor, (0, 0), 8) == (20, 35)
+    assert bt.floors_near(edge_floor, (PX - 1, PX - 1), 8) == (20, 35)
+
+
+def test_floors_near_reads_a_leaf_whose_corner_is_inside_the_radius():
+    # Summit: the nearest pixel (504, 676) is sqrt(50) px away, inside radius 8.
+    floors = {(497 // 4, 675 // 4): (31,), (504 // 4, 676 // 4): (35,)}
+    lf = lambda px: floors.get((px[0] // 4, px[1] // 4), ())
+    assert bt.floors_near(lf, (497, 675), 8) == (31, 35)
+    assert bt.floors_near(lf, (497, 675), 7) == (31,)
+
+
+@pytest.mark.parametrize('px, floor_px', [((99, 120), (95, 120)), ((497, 675), (504, 676))])
+def test_an_outside_stand_with_a_matching_floor_near_is_ground(px, floor_px):
+    s = stand(35, inside=0, px=px, candidates=(1,), cand_dist=(0.4,))
+    # The matching cells' nearest pixels are 4 px and sqrt(50) px away respectively.
+    floors = {(floor_px[0] // 4, floor_px[1] // 4): (35,)}
+    lf = lambda px: floors.get((px[0] // 4, px[1] // 4), ())
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: bt.floors_near(lf, px, 8))
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+    assert counts['ground'] == 1 and counts['conflict'] == 0
+
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: bt.floors_near(lambda _: (), px, 8))
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 1
+    assert counts['ground'] == 0 and counts['conflict'] == 1
+
+
 # W6: judging is in world dm; diagnostic records are in world metres.
 def stand(z=40, inside=1, candidates=(1,), px=(120, 120), **kw):
     return bt.TopStand(0, 4, 0, 17.448, 26.856, inside, z, px,
                        candidates=candidates, match="toy-match", round=13, **kw)
+
+
+@pytest.mark.parametrize('inside,candidates,distances,expected', [
+    (2, (1, 2), (0.0, 0.1), 2),
+    (0, (1, 2), (0.15, 0.10), 2),
+    (0, (1, 2), (0.15, 0.15), 1),
+    (0, (2, 1), (0.15, 0.15), 1),
+    (0, (1, 2), (0.25, 0.3), 0),
+    (0, (1, 2), (), 0),
+    (0, (1,), (hc.TOP_TOUCH_M,), 1),
+    (0, (1,), (hc.TOP_TOUCH_M + bt.EPS / 2,), 1),
+    (0, (1,), (hc.TOP_TOUCH_M + 2 * bt.EPS,), 0),
+])
+def test_effective_piece(inside, candidates, distances, expected):
+    s = stand(inside=inside, candidates=candidates, cand_dist=distances)
+    assert bt.effective_piece(s) == expected
+
+
+def test_a_stand_touching_a_thin_wall_teaches_it():
+    # Ascent piece 11: one pixel (0.14 m) outside a thin wall at a clear step.
+    s = stand(83, inside=0, px=(99, 120), candidates=(1,), cand_dist=(0.14,))
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: (), snap=bt.piece_snapper(cover()))
+    assert rows.tolist() == [[100, 120, 83]]
+    assert not assigned and not conflicts and counts['teach'] == 1
+    assert s.px == (99, 120)
+    assert bt.judge([s], {1: 30}, lambda px: ())[0].tolist() == [[99, 120, 83]]
+    # Effective inside stands use the piece's ground and ignore connected leaf floors.
+    assert bt.judge([s], {1: 30}, lambda px: (83,), beside=lambda piece, px: 83)[3]['teach'] == 1
+
+
+def test_a_stand_further_than_touching_stays_outside():
+    s = stand(83, inside=0, px=(99, 120), candidates=(1,), cand_dist=(0.25,))
+    rows, assigned, conflicts, counts = bt.judge([s], {1: 30}, lambda px: ())
+    assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
+    assert conflicts[0]['candidates'] == [[1, [], 0.25]]
+
+
+def test_piece_snapper(monkeypatch):
+    from scipy import ndimage
+
+    original = ndimage.distance_transform_edt
+    calls = []
+
+    def distance(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ndimage, 'distance_transform_edt', distance)
+    labels = cover()
+    snap = bt.piece_snapper(labels)
+    assert calls == []
+    assert snap(2, (185, 120)) == (179, 120)
+    assert snap(2, (150, 120)) == (150, 120)
+    assert len(calls) == 1
+    assert snap(1, (95, 95)) == (100, 100)
+    x, y = snap(1, (-5, 2000))
+    assert labels[y, x] == 1 and len(calls) == 2
 
 
 def test_reach_collects_all_candidates_and_splits_when_leaving_reach():
@@ -401,10 +551,20 @@ def test_only_inside_single_candidate_stands_teach_and_others_assign():
     rows, assigned, conflicts, counts = bt.judge([outside, teacher], GROUND, lambda px: ())
     assert rows.tolist() == [[120, 120, 40]]
     assert assigned == [(outside, 1, 40)] and conflicts == []
-    assert counts == dict(teach=1, assign=1, conflict=0, ground=0, platform=0, blackout=0)
+    assert counts == dict(teach=1, assign=1, vote=0, conflict=0, ground=0, platform=0, blackout=0)
     rows, assigned, conflicts, counts = bt.judge([outside], GROUND, lambda px: ())
     assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
     assert conflicts[0]['candidates'] == [[1, []]]
+
+
+@pytest.mark.parametrize('with_teacher', [False, True])
+def test_judge_without_sides_is_unchanged(with_teacher):
+    outside = stand(inside=0, px=(99, 120))
+    stands = [outside, stand()] if with_teacher else [outside]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    explicit = bt.judge(stands, GROUND, lambda px: (), sides=None)
+    assert np.array_equal(rows, explicit[0])
+    assert (assigned, conflicts, counts) == explicit[1:]
 
 
 def test_real_shaped_ambiguous_stand_assigns_without_teaching():
@@ -433,6 +593,129 @@ def test_real_shaped_ground_row_keeps_candidate_distances_without_changing_its_f
     assert s.cand_dist == (0.582,)
     rows, assigned, conflicts, counts = bt.judge([s], {15: 20}, lambda px: (20,))
     assert rows.shape == (0, 3) and not assigned and not conflicts and counts['ground'] == 1
+
+
+def test_three_inside_votes_make_a_top():
+    stands = [stand(30, inside=2, candidates=(1, 2), cand_dist=(0.5, 0.0), px=(x, 120))
+              for x in (150, 152, 154)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    assert rows.tolist() == [[152, 120, 30]]
+    assert assigned == [(s, 2, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 3 and counts['teach'] == counts['conflict'] == 0
+    rows, assigned, conflicts, counts = bt.judge(stands[:2], GROUND, lambda px: ())
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 2
+    assert counts['conflict'] == 2 and counts['vote'] == 0
+
+
+def test_outside_votes_need_five():
+    stands = [stand(30, inside=0, px=(185, 120), candidates=(2,), cand_dist=(0.4,))
+              for _ in range(5)]
+    calls = []
+
+    def snap(piece, px):
+        calls.append((piece, px))
+        return 179, 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands[:4], GROUND, lambda px: (), snap=snap)
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 4
+    assert counts['conflict'] == 4 and counts['vote'] == 0 and not calls
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[179, 120, 30]] and calls == [(2, (185, 120))]
+    assert assigned == [(s, 2, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 5 and sum(counts.values()) == 5
+
+
+@pytest.mark.parametrize('candidates,distances,piece', [
+    ((1, 2), (0.6, 0.4), 2),
+    ((1, 2), (0.4, 0.6), 1),
+    ((2, 1), (0.5, 0.5), 1),
+    ((2, 1), (), 1),
+    ((2, 1), (0.6,), 2),  # a known distance wins over an unknown one
+])
+def test_outside_votes_go_to_the_nearer_box(candidates, distances, piece):
+    stands = [stand(30, inside=0, px=(185, 120), candidates=candidates, cand_dist=distances)
+              for _ in range(5)]
+    calls = []
+
+    def snap(p, px):
+        calls.append(p)
+        return (120 if p == 1 else 150), 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[120 if piece == 1 else 150, 120, 30]]
+    assert calls == [piece] and assigned == [(s, piece, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 5
+
+
+def test_votes_go_to_the_nearest_box_only():
+    # Summit pieces 5/6: overlapping reach must not teach both boxes.
+    stands = [stand(30, inside=2, candidates=(1, 2), cand_dist=(0.0, 0.1), px=(150, 120))
+              for _ in range(3)]
+    far = stand(50, inside=0, candidates=(1, 2), cand_dist=(0.6, 0.4))
+    rows, assigned, conflicts, counts = bt.judge([*stands, far], GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30]]
+    assert assigned == [(s, 2, 30) for s in stands]
+    assert conflicts[0]['candidates'] == [[1, [], 0.6], [2, [3.0], 0.4]]
+    assert counts['vote'] == 3 and counts['conflict'] == 1
+
+
+@pytest.mark.parametrize('zs,expected_z', [((30, 33, 34), None), ((30, 32, 33), 32),
+                                         ((30, 33, 35), None)])
+def test_votes_group_within_top_tol_from_the_first_member(zs, expected_z):
+    stands = [stand(z, inside=2, candidates=(1, 2), px=(150, 120)) for z in reversed(zs)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    if expected_z is None:
+        assert rows.shape == (0, 3) and not assigned and len(conflicts) == 3
+        assert counts['conflict'] == 3 and counts['vote'] == 0
+    else:
+        assert rows.tolist() == [[150, 120, expected_z]] and not conflicts
+        assert assigned == [(s, 2, expected_z) for s in sorted(stands, key=lambda s: s.z_dm)]
+        assert counts['vote'] == 3 and counts['conflict'] == 0
+
+
+def test_votes_split_by_height():
+    stands = [stand(z, inside=2, candidates=(1, 2), px=(150, 120)) for z in (30, 45) for _ in range(3)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30], [150, 120, 45]]
+    assert len(assigned) == counts['vote'] == 6 and not conflicts
+    assert sum(counts.values()) == 6
+
+
+def test_a_voted_top_assigns_a_left_stand():
+    votes = [stand(30, inside=2, candidates=(1, 2), px=(150, 120)) for _ in range(3)]
+    left = stand(31, inside=0, candidates=(1, 2), cand_dist=(0.6, 0.6))
+    rows, assigned, conflicts, counts = bt.judge([*votes, left], GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30]] and not conflicts
+    assert assigned == [(s, 2, 30) for s in votes] + [(left, 2, 30)]
+    assert assigned.count((left, 2, 30)) == 1
+    assert counts['vote'] == 3 and counts['assign'] == 1 and counts['conflict'] == 0
+    assert sum(counts.values()) == 4
+
+
+def test_touching_ambiguous_stands_vote_and_snap_the_member_pixel():
+    stands = [stand(30, inside=0, candidates=(1, 2), cand_dist=(0.5, 0.1), px=(x, y))
+              for x, y in ((184, 122), (184, 120), (182, 120))]
+    calls = []
+
+    def snap(piece, px):
+        calls.append((piece, px))
+        return 179, 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[179, 120, 30]] and calls == [(2, (184, 120))]
+    assert len(assigned) == counts['vote'] == 3 and not conflicts
+
+
+@pytest.mark.parametrize('pixels,expected', [
+    (((154, 124), (150, 120), (154, 120), (150, 124)), (150, 120)),
+    (((150, 120), (152, 120), (154, 120), (156, 120)), (152, 120)),
+])
+def test_vote_pixel_ties_choose_lower_y_then_x(pixels, expected):
+    stands = [stand(30, inside=2, candidates=(1, 2), px=px) for px in pixels]
+    rows, _, conflicts, counts = bt.judge(stands, GROUND, lambda px: (),
+                                         snap=lambda piece, px: pytest.fail('inside pixel must not snap'))
+    assert rows.tolist() == [[*expected, 30]] and not conflicts
+    assert counts['vote'] == len(stands)
 
 
 def test_conflict_distances_follow_piece_ids_after_sorting_and_filtering():
