@@ -2,6 +2,7 @@
 docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): the input manifest both services compute,
 and the check set, which is never "nothing to check" because its file is missing."""
 
+import base64
 import hashlib
 import json
 
@@ -161,3 +162,66 @@ def test_the_committed_check_set_is_readable_and_the_geometry_identity_matches_t
     got = hi.geometry_identity(name)
     assert got["sight"] == index[name]["sight_sha"] and got["walk"] == index[name]["walk_sha"] and got["scale"]
     assert hi.geometry_identity("NoSuchMap") is None
+
+
+@pytest.fixture
+def paint_assets(tmp_path, monkeypatch):
+    (tmp_path / "index.json").write_text(json.dumps({"maps": {
+        "Toy": {"sight_sha": GEOMETRY["sight"], "walk_sha": GEOMETRY["walk"]}}}), encoding="utf-8")
+    (tmp_path / "maps.json").write_text(json.dumps({"Toy": {"xMultiplier": GEOMETRY["scale"]}}), encoding="utf-8")
+    monkeypatch.setattr(hi, "CONTROL_DIR", tmp_path)
+    monkeypatch.setattr(hi, "MAPS_JSON", tmp_path / "maps.json")
+    monkeypatch.setattr(hi, "HEIGHT_PAINT", tmp_path / "height_paint.json", raising=False)
+    return tmp_path / "height_paint.json"
+
+
+def test_without_height_paint_geometry_is_unchanged(paint_assets):
+    assert hi.geometry_identity("Toy") == GEOMETRY
+
+
+def test_height_paint_is_canonical_manifest_input(paint_assets):
+    before = hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks")
+    entry = {"top": base64.b64encode(b"\x08" + bytes(8191)).decode(),
+             "ground": base64.b64encode(b"\x01" + bytes(8191)).decode()}
+    paint_assets.write_text(json.dumps({"maps": {"Toy": entry}}), encoding="utf-8")
+    geometry = hi.geometry_identity("Toy")
+    after = hi.manifest("Toy", REPLAYS, geometry, "checks")
+    sha = hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    assert geometry == {**GEOMETRY, "height_paint": sha}
+    assert after["geometry"] == geometry
+    assert hi.digest(before) != hi.digest(after)
+    assert hi.changes(before, after) == {"added": [], "gone": [], "other": True}
+    paint_assets.write_text(json.dumps({"maps": {"Toy": dict(reversed(list(entry.items())))}}), encoding="utf-8")
+    assert hi.geometry_identity("Toy") == geometry
+
+
+@pytest.mark.parametrize("text", ["not json", "[]", '{"maps": []}',
+    '{"maps": {"Toy": {"ground": ""}}}', '{"maps": {"Toy": {"ground": "bad!"}}}'])
+def test_bad_height_paint_marks_manifest_invalid(paint_assets, text):
+    paint_assets.write_text(text, encoding="utf-8")
+    geometry = hi.geometry_identity("Toy")
+    assert geometry == {**GEOMETRY, "height_paint": "invalid"}
+    assert hi.manifest("Toy", REPLAYS, geometry, "checks")["geometry"] == geometry
+
+
+def test_unreadable_height_paint_marks_manifest_invalid(paint_assets):
+    paint_assets.mkdir()
+    assert hi.geometry_identity("Toy") == {**GEOMETRY, "height_paint": "invalid"}
+
+
+@pytest.mark.parametrize("maps", [{}, {"Other": {}}, {"Toy": {}},
+    {"Toy": {"ground": base64.b64encode(bytes(8192)).decode()}}])
+def test_empty_height_paint_keeps_missing_file_manifest(paint_assets, maps):
+    before = hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks")
+    paint_assets.write_text(json.dumps({"maps": maps}), encoding="utf-8")
+    assert hi.geometry_identity("Toy") == GEOMETRY
+    assert hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks") == before
+
+
+def test_revision_seven_manifest_keeps_pre_fall_digest(monkeypatch):
+    from tests.replays import layout_golden as golden
+
+    monkeypatch.setattr(cf, "HEIGHT_RULES_REVISION", 7)
+    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, hi.geometry_identity("Abyss"),
+                           golden._must_block_sha_lf())
+    assert hi.digest(manifest) == "d9bae5b3eb533d11"

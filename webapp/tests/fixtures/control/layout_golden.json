@@ -37,7 +37,7 @@
     "sight": "8342f6714685",
     "walk": "42d1d3f29a3c"
    },
-   "height_manifest_digest": "d9bae5b3eb533d11",
+   "height_manifest_digest": "ca207c560e2c2a73",
    "map_layer_sha256": "428d46d7e20fc5076736434f3ca5a25f27f52ce00f21d63d939c68c2d53081a0"
   },
   "Ascent": {
@@ -78,7 +78,7 @@
     "sight": "06147e83b898",
     "walk": "12861b1023d3"
    },
-   "height_manifest_digest": "84aa758d1fe434fb",
+   "height_manifest_digest": "5a6a5c346e3d59f6",
    "map_layer_sha256": "1ce07436d429fbc1c418c73689ac423b27c4be7a19fc2e82737e77210e1b3a44"
   },
   "Bind": {
@@ -110,7 +110,7 @@
     "sight": "8e9f1fc13fec",
     "walk": "59c0154fc89d"
    },
-   "height_manifest_digest": "a77880dffcc8e756",
+   "height_manifest_digest": "2e34408ffc9ac34f",
    "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
   },
   "Breeze": {
@@ -136,7 +136,7 @@
     "sight": "a112074736d2",
     "walk": "439038d9b82b"
    },
-   "height_manifest_digest": "965babe16ca6cfee",
+   "height_manifest_digest": "da5be547e5d35d3c",
    "map_layer_sha256": null
   },
   "Corrode": {
@@ -168,7 +168,7 @@
     "sight": "b25b161d4a72",
     "walk": "683601dd7bf6"
    },
-   "height_manifest_digest": "6a3871ca65df74ac",
+   "height_manifest_digest": "a95e63e2b620a89b",
    "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
   },
   "Fracture": {
@@ -194,7 +194,7 @@
     "sight": "c4d5aa47ca61",
     "walk": "61afa6aa6628"
    },
-   "height_manifest_digest": "21dcd6cd47f11fc1",
+   "height_manifest_digest": "f35fa5b5b2a6d279",
    "map_layer_sha256": null
   },
   "Haven": {
@@ -226,7 +226,7 @@
     "sight": "4b33f5f8746f",
     "walk": "456ddf172cf3"
    },
-   "height_manifest_digest": "1112c1eb5a28cdef",
+   "height_manifest_digest": "e4d6d6e9ba5ab4e5",
    "map_layer_sha256": "5951bcfd2cc41d5e138fffb9fe90eea50325133f2212304bcb68407aba580a96"
   },
   "Icebox": {
@@ -252,7 +252,7 @@
     "sight": "748966afbe52",
     "walk": "87ebfd069462"
    },
-   "height_manifest_digest": "5211c73e9bae5a54",
+   "height_manifest_digest": "20d3ef42c2894af0",
    "map_layer_sha256": null
   },
   "Lotus": {
@@ -290,7 +290,7 @@
     "sight": "39a88a11dd2f",
     "walk": "1bbf00db2ac5"
    },
-   "height_manifest_digest": "cd973471cc9ff386",
+   "height_manifest_digest": "185f72721dc50ff9",
    "map_layer_sha256": "5dec69e4c506949408e48c732c8d581381de069374ef9913f80e0976835fe805"
   },
   "Pearl": {
@@ -316,7 +316,7 @@
     "sight": "68e221537cb1",
     "walk": "21d5594157a5"
    },
-   "height_manifest_digest": "541a889904bbe3d9",
+   "height_manifest_digest": "b49557f3cd7ef986",
    "map_layer_sha256": null
   },
   "Split": {
@@ -354,7 +354,7 @@
     "sight": "f6b62d344ccd",
     "walk": "87c9ddfd6702"
    },
-   "height_manifest_digest": "d8de591b8a1f4926",
+   "height_manifest_digest": "b3a55f56c27fc0f7",
    "map_layer_sha256": "ebd384fcfbf105668931599831df54f27ec854b6515e91523bcf442c32855d50"
   },
   "Summit": {
@@ -395,7 +395,7 @@
     "sight": "a8686d5a1bbd",
     "walk": "3f2a7cec58c7"
    },
-   "height_manifest_digest": "9a6ea9acbfa14b72",
+   "height_manifest_digest": "6543ae430114ca79",
    "map_layer_sha256": "12e12fa22657ce259abe6086254a5c69643f2b1f0d69ad9094716fbdcbcfc1b5"
   },
   "Sunset": {
@@ -436,7 +436,7 @@
     "sight": "e608a189a789",
     "walk": "ba2802b67c05"
    },
-   "height_manifest_digest": "69a51bf6e72d835b",
+   "height_manifest_digest": "9e76d91fc0de24ff",
    "map_layer_sha256": "f0c524ab395cca8437a2f6428bd6678694a8c49c15797ee34aec4b2277be6e62"
   }
  },
