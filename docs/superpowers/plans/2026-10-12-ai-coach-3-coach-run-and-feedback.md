@@ -1974,7 +1974,7 @@ The owner's PowerShell profile is outside the repository. Show them this functio
 
 ```powershell
 function coach {
-    param([Parameter(Mandatory = $true)][string]$Match, [Parameter(Mandatory = $true)][string]$Player, [switch]$DryRun)
+    param([Parameter(Mandatory = $true)][string]$Match, [Parameter(Mandatory = $true)][string[]]$Player, [switch]$DryRun)
     & "$HOME\Documents\GitHub\valo-with-friends-tracker\webapp\scripts\coach.ps1" -Match $Match -Player $Player -DryRun:$DryRun
 }
 ```

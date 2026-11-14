@@ -1,13 +1,15 @@
 """A coach snapshot on disk, and the reader every coach command uses. No database imports: `scripts/coach_query.py`
 starts a fresh Python for each of the model's questions, so whatever this module imports is paid on every one.
 
-On disk a snapshot is `snapshot.json` (the version, the page context and the list of rounds) plus one file per round
-under `rounds/`, so a question about one round reads that round alone. A snapshot written as one file (every
-round inside `snapshot.json`, before the split) still loads."""
+On disk `snapshot.json` holds the version, page context and list of rounds. It points to a directory with one
+file per round, so a question about one round reads that round alone. Older snapshots with rounds in
+`snapshot.json` or in a fixed `rounds/` directory still load."""
 
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -37,7 +39,7 @@ class _RoundFiles(Mapping):
         if key not in self._numbers:
             raise KeyError(key)
         if key not in self._loaded:
-            path = self._directory / ROUNDS_DIR / f"{key}.json"
+            path = self._directory / f"{key}.json"
             self._loaded[key] = json.loads(path.read_text(encoding="utf-8"))
         return self._loaded[key]
 
@@ -49,21 +51,30 @@ class _RoundFiles(Mapping):
 
 
 def save(data: dict, directory: Path) -> None:
-    """The round files first and `snapshot.json` last, so a snapshot.json on disk always has its rounds."""
+    """Publish the manifest after all of its round files have been written."""
     directory = Path(directory)
-    rounds_dir = directory / ROUNDS_DIR
-    rounds_dir.mkdir(parents=True, exist_ok=True)
-    for n, entry in data["rounds"].items():
-        (rounds_dir / f"{n}.json").write_text(json.dumps(entry, separators=(",", ":")), encoding="utf-8")
-    head = {"v": data["v"], "context": data["context"], "round_files": list(data["rounds"])}
-    (directory / FILE).write_text(json.dumps(head, separators=(",", ":")), encoding="utf-8")
+    directory.mkdir(parents=True, exist_ok=True)
+    rounds_dir = Path(tempfile.mkdtemp(prefix=f"{ROUNDS_DIR}-", dir=directory))
+    try:
+        for n, entry in data["rounds"].items():
+            (rounds_dir / f"{n}.json").write_text(json.dumps(entry, separators=(",", ":")), encoding="utf-8")
+        head = {"v": data["v"], "context": data["context"], "round_files": list(data["rounds"]),
+                "rounds_dir": rounds_dir.name}
+        manifest = rounds_dir / FILE
+        manifest.write_text(json.dumps(head, separators=(",", ":")), encoding="utf-8")
+        # Readers that already loaded the previous manifest can still open its round files.
+        manifest.replace(directory / FILE)
+    except Exception:
+        shutil.rmtree(rounds_dir, ignore_errors=True)
+        raise
 
 
 def load(directory: Path) -> Snapshot:
     directory = Path(directory)
     data = json.loads((directory / FILE).read_text(encoding="utf-8"))
     if "round_files" in data:
-        data = {"v": data.get("v"), "context": data["context"], "rounds": _RoundFiles(directory, data["round_files"])}
+        rounds_dir = directory / data.get("rounds_dir", ROUNDS_DIR)
+        data = {"v": data.get("v"), "context": data["context"], "rounds": _RoundFiles(rounds_dir, data["round_files"])}
     return Snapshot(data)
 
 

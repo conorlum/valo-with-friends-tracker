@@ -208,5 +208,3 @@ def hide_enemy_names(data: dict, player_id: int) -> dict:
     if team is None:
         raise SnapshotError(f"player {player_id} is not in this replay")
     return {**data, "context": {**data["context"], "players": enemy_names.hide_in(players, team)}}
-
-

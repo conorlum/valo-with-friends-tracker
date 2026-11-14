@@ -94,6 +94,8 @@ and show the last build with an "updating" note when it is stale or missing. The
 
 ### AI coach
 
+- From `webapp`, run `.\scripts\coach.ps1 <match uuid> "A#1","B#2"` to coach several named players. If you use a
+  `coach` wrapper in your PowerShell profile, declare its `$Player` parameter as `[string[]]` to pass multiple names through.
 - A moment's **Area should be** correction stores the name and selected player (migration `0033`). Export the corrections as replay pins with `scripts/area_pins.py` through `scripts/with_friends_db.py --read-only`.
 
 ### Site health

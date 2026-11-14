@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.coach import snapshot
@@ -29,18 +31,47 @@ def test_a_complete_match_has_no_gaps(tmp_path):
 
 def test_a_snapshot_is_saved_one_file_per_round_and_reads_only_the_round_asked_for(tmp_path):
     snapshot.save(built(), tmp_path)
-    assert sorted(p.name for p in (tmp_path / snapshot.ROUNDS_DIR).iterdir()) == ["1.json", "2.json"]
-    assert '"blob"' not in (tmp_path / snapshot.FILE).read_text(encoding="utf-8")
-    (tmp_path / snapshot.ROUNDS_DIR / "2.json").unlink()      # round 1's questions never open round 2's file
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    rounds_dir = tmp_path / head["rounds_dir"]
+    assert sorted(p.name for p in rounds_dir.iterdir()) == ["1.json", "2.json"]
+    assert "rounds" not in head
+    (rounds_dir / "2.json").unlink()      # round 1's questions never open round 2's file
     snap = snapshot.load(tmp_path)
     assert snap.round_numbers == [1, 2] and snap.gaps(1) == [] and snap.view(1).number == 1
 
 
-def test_a_snapshot_written_as_one_file_still_loads(tmp_path):
-    import json
-    (tmp_path / snapshot.FILE).write_text(json.dumps(built()), encoding="utf-8")
+@pytest.mark.parametrize("split", [False, True])
+def test_an_older_snapshot_still_loads(tmp_path, split):
+    data = built()
+    if split:
+        rounds = data.pop("rounds")
+        data["round_files"] = list(rounds)
+        rounds_dir = tmp_path / snapshot.ROUNDS_DIR
+        rounds_dir.mkdir()
+        for n, entry in rounds.items():
+            (rounds_dir / f"{n}.json").write_text(json.dumps(entry), encoding="utf-8")
+    (tmp_path / snapshot.FILE).write_text(json.dumps(data), encoding="utf-8")
     snap = snapshot.load(tmp_path)
     assert snap.round_numbers == [1, 2] and snap.control(2)["cells"] == {"A Site": 1}
+
+
+def test_replacing_a_snapshot_keeps_each_reader_on_one_generation(tmp_path):
+    snapshot.save(built(), tmp_path)
+    old = snapshot.load(tmp_path)
+    updated = built()
+    updated["rounds"]["1"]["gaps"] = ["updated"]
+    updated["rounds"]["2"]["gaps"] = [object()]
+    original_files = set(tmp_path.iterdir())
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        snapshot.save(updated, tmp_path)
+    assert set(tmp_path.iterdir()) == original_files
+    assert snapshot.load(tmp_path).gaps(1) == []
+
+    updated["rounds"]["2"]["gaps"] = ["updated"]
+    snapshot.save(updated, tmp_path)
+    latest = snapshot.load(tmp_path)
+    assert [latest.gaps(n) for n in latest.round_numbers] == [["updated"], ["updated"]]
+    assert [old.gaps(n) for n in old.round_numbers] == [[], []]
 
 
 def test_the_query_tool_loads_no_database_code():

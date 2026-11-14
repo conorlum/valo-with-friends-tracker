@@ -117,6 +117,11 @@ def main() -> int:
         try:
             book = playbook.load()
             resolved = [(name, *resolve(db, uuid, name)) for name in args.players]
+            seen = set()
+            for name, _, player_id in resolved:
+                if player_id in seen:
+                    raise ValueError(f"player {name!r} was requested more than once")
+                seen.add(player_id)
             ask = (lambda: _admin_client.request_util_build(_admin_client.DEFAULT_SITE)) \
                 if os.environ.get("REPLAY_ADMIN_TOKEN", "").strip() else None
             data = snapshot.read(db, uuid, ask=ask)

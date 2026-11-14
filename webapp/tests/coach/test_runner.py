@@ -528,6 +528,15 @@ def test_an_unknown_player_refuses_the_batch_before_any_run(tmp_path, monkeypatc
     assert "refused" in capsys.readouterr().err
 
 
+def test_a_duplicate_player_refuses_the_batch_before_any_run(tmp_path, monkeypatch, capsys):
+    from scripts import coach_store_report
+
+    reads, runs = _players(monkeypatch, tmp_path, ["P0#T0", "p0#t0"])
+    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, name: (7, 100))
+    assert coach_report.main() == 2 and runs == [] and reads == []
+    assert "player 'p0#t0' was requested more than once" in capsys.readouterr().err
+
+
 def test_the_team_command_refuses_a_player_who_is_not_in_the_match(monkeypatch, capsys):
     from scripts import coach_store_report
     coach_team, ran = _team(monkeypatch, ["abc", "nobody"], {})
