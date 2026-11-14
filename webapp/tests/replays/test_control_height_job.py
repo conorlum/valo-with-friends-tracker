@@ -269,15 +269,24 @@ def child_task(tmp_path, blobs, assets, checks, monkeypatch, replays=None):
     return {"key": hi.key(manifest), "map": "Ascent", "dir": str(blobs), "manifest": manifest}
 
 
-def test_the_child_answers_in_json_and_proves_what_it_was_built_from(tmp_path, checks, monkeypatch):
+@pytest.mark.parametrize("painted", [False, True])
+def test_the_child_answers_in_json_and_proves_what_it_was_built_from(tmp_path, checks, monkeypatch, painted):
     from replay_worker import height_job as child
 
     assets = toy_assets(tmp_path)
+    if painted:
+        import numpy as np
+        mask = np.zeros((256, 256), bool)
+        mask[51, 51] = True
+        (assets / "height_paint.json").write_text(json.dumps({"maps": {
+            "Ascent": {"ground": cg.pack_paint(mask)}}}), encoding="utf-8")
     blobs = write_blobs(tmp_path / "blobs", covered_rounds())
     task = child_task(tmp_path, blobs, assets, checks, monkeypatch)
     out = child.run(task)
     assert out["status"] == "ok" and out["key"] == task["key"] and out["map"] == "Ascent" and out["rounds"] == 6, out
     assert out["inputs_sha"] == hi.digest(task["manifest"])
+    if painted:
+        assert out["report"]["painted"] == {"open": 0, "ground": 1, "top": 0}
     json.dumps(out)
     assert height_verify.describe(base64.b64decode(out["asset"]), "Ascent", asset_dir=assets, must_block=checks)["digest"] == out["digest"]
 

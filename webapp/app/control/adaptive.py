@@ -326,12 +326,24 @@ def area_readiness(geo, asset):
 
 def refine(build, geo, found, walks, round_match, direct_floors, reasons, previous):
     """Overlay selected child evidence, preserving the coarse builder on reliable parents."""
-    evidence = hr.analyze(geo, found, walks, round_match, direct_floors, reasons, previous)
+    if geo.height_paint:
+        from app.control import height_paint
+        forced = height_paint.painted_parents(geo.height_paint, geo.walk)
+        evidence = hr.analyze(geo, found, walks, round_match, direct_floors, reasons, previous, forced=forced)
+    else:
+        evidence = hr.analyze(geo, found, walks, round_match, direct_floors, reasons, previous)
     history = evidence['history']; asset = build.asset
     asset.refinement = {'v': 1, 'history': history, 'history_sha256': evidence['history_sha256'],
         'previous_history_sha256': evidence['previous_history_sha256'], 'evidence_sha256': evidence['evidence_sha256']}
     # Keep removed-mask selections in immutable history with empty, nonwalkable children.
     children = {c['cell']: c for c in evidence['children']}
+    supported = {cell: bool(row['floors_world_dm']) for cell, row in children.items()}
+    if geo.height_paint:
+        coarse_floors = {parent: [int(z) + asset.origin_z for z in row if z >= 0]
+                         for parent, row in enumerate(asset.floors.reshape(BASE, -1))}
+        counts = height_paint.apply(evidence['children'], geo.height_paint, coarse_floors)
+        build.report['painted'] = {brush: counts[brush] for brush in ('open', 'ground', 'top')}
+        build.report['paint_unresolved'] = counts['unresolved']
     ids = sorted(c for p in history['parents'] for c in hr._child_ids(p))
     asset.fine_cells = np.asarray(ids, np.int32)
     asset.fine_floors = np.full((len(ids), hc.MAX_FLOORS), -1, np.int16)
@@ -355,7 +367,7 @@ def refine(build, geo, found, walks, round_match, direct_floors, reasons, previo
             continue
         for level, (z, spread) in enumerate(row['floors_world_dm']):
             asset.fine_floors[i, level] = z - origin; asset.fine_spread[i, level] = spread
-        asset.fine_supported[i] = bool(row['floors_world_dm'])
+        asset.fine_supported[i] = supported[child] and bool(row['floors_world_dm'])
         asset.fine_unresolved[i] = not bool(row['floors_world_dm'])
         asset.fine_kind[i] = row['kind']
     # Old whole-parent ground and edges cannot remain active underneath child footprints.

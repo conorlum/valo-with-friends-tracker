@@ -16,6 +16,8 @@ Committing the asset is what turns the map's heights on; its rounds are then sta
 
 With `--preview --out <dir>` it builds below the bar too and writes the asset and the report under `<dir>`
 only, which must be outside the repository: a preview is for looking, never for committing.
+Painted builds use the worker's base geometry, cover and gate, with their own explicit
+refinement history starting from nothing.
 `--preview-min-matches 1` also lets a preview make floors from a single match (the real rule is two, so one
 match's Sage wall or boost can't become a floor); the asset records that it was built that way.
 The report beside a preview says what the build read (`inputs`: the rounds' digest when they came from
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import sys
@@ -190,7 +193,10 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
             return 2
     elif args.out is not None:
         parser.error("--out is for --preview only")
-    geo = cg.load_geometry(args.map, asset_dir)
+    paint, paint_sha = cg.load_height_paint(args.map, asset_dir)
+    geo = cg.load_base_geometry(args.map, asset_dir) if paint else cg.load_geometry(args.map, asset_dir)
+    if paint:
+        geo.height_paint, geo.height_paint_sha = paint, paint_sha
     started = time.perf_counter()
     rounds, skipped = blob_rounds(args.blobs_dir, args.map) if args.blobs_dir else db_rounds(args.map, session_factory)
     print(f"{args.map}: {len(rounds)} rounds read in {time.perf_counter() - started:.1f}s"
@@ -201,7 +207,13 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
         if args.preview_min_matches is not None:
             hc.FLOOR_MIN_MATCHES = args.preview_min_matches     # a preview's own, looser rule: never an asset's
             print(f"PREVIEW RULE: a floor needs {args.preview_min_matches} match(es), not {rule}", flush=True)
-        build = hb.build(rounds, geo)
+        if paint:
+            result = height_job.run(args.map, rounds, asset_dir=asset_dir, must_block=MUST_BLOCK,
+                                    refinement_history=height_inputs.refinement_history(args.map, None))
+            build = hb.HeightBuild(hc.load_asset(io.BytesIO(result['asset'])), result['report'],
+                                   ready=result['report']['ready'])
+        else:
+            build = hb.build(rounds, geo)
     finally:
         hc.FLOOR_MIN_MATCHES = rule
     try:

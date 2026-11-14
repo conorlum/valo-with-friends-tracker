@@ -660,6 +660,8 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not. `cover_px` (the cover piece labels)
     also learns the pieces' tops and reports conflicts after the ground's final refinement."""
+    if geo.height_paint and refinement_history is None:
+        raise ValueError("height paint needs a refinement history")
     found, found_walks, round_match, counts = all_ground(rounds, geo, cover_px)
     dt = counts.pop("dt")
     box_stands = counts.pop("box_stands", [])

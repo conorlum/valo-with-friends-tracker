@@ -28,9 +28,8 @@ from tests.replays.control_toys import z_dm  # noqa: E402
 
 # recorded on the code before this item, for the toy builds below (no cover given)
 NO_COVER_BUILD_DIGEST = "b48acdae2528"
-# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 7 (was "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
-# the build digest is unchanged
-NO_COVER_MANIFEST_DIGEST = "31495d88d6e6e4f5"
+# Revision-8 manifest value from the earlier fall fix (revision 7 was "31495d88d6e6e4f5").
+NO_COVER_MANIFEST_DIGEST = "1f82b0eb900c99e7"
 
 PIECE = (slice(150, 170), slice(300, 320))        # rows (y), columns (x) of the one cover piece
 
@@ -130,8 +129,8 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
     previous = hr.history(GEO.name, [parent])
     original = hr.analyze
 
-    def lower_child(*args):
-        evidence = original(*args)
+    def lower_child(*args, **kwargs):
+        evidence = original(*args, **kwargs)
         for child in evidence['children']:
             child['floors_world_dm'] = [(z_dm(-1), 0)]
             child['kind'] = hc.KIND_STANDS

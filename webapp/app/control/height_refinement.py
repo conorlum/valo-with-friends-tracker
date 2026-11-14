@@ -60,7 +60,7 @@ def observations(stands, walks, round_match):
     return by_child
 
 
-def analyze(geo, stands, walks, round_match, parent_floors, parent_reasons, previous):
+def analyze(geo, stands, walks, round_match, parent_floors, parent_reasons, previous, *, forced=()):
     """Propose 4-pixel children on any map; retained selections never silently shrink.
 
     The caller must supply a history, including an explicit empty one on the first
@@ -78,8 +78,9 @@ def analyze(geo, stands, walks, round_match, parent_floors, parent_reasons, prev
     conflicts = {c for c, reason in parent_reasons.items()
                  if reason in (hb.TOO_CLOSE, hb.SPREAD, hb.TOO_MANY, hb.NEIGHBOURS_DISAGREE)}
     multi = {c for c, floors in parent_floors.items() if len(floors) > 1}
-    candidates = sorted(((conflicts | multi) & direct) | set(prior['parents']))
-    chosen, checked, records = set(prior['parents']), [], {}
+    forced = {parent for parent in forced if geo.walk.ravel()[parent]}
+    candidates = sorted(((conflicts | multi) & direct) | set(prior['parents']) | forced)
+    chosen, checked, records = set(prior['parents']) | forced, [], {}
     for parent in candidates:
         if not geo.walk.ravel()[parent]:
             # Retain history across mask revisions, but do not make a removed region walkable.
