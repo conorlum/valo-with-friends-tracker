@@ -736,7 +736,7 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
         covered_geo = copy.copy(geo)
         covered_geo.cover_px = cover_px
         tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset),
-                                                        beside)
+                                                        beside, snap=box_tops.piece_snapper(cover_px))
         tops[:, 2] -= asset.origin_z
         tops = tops[tops[:, 2] >= 0]
         asset.box_tops = tops if len(tops) else None

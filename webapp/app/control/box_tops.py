@@ -1,5 +1,5 @@
-"""Steady stands within reach of cover, and the box tops they teach. Only unambiguous stands inside an outline
-teach; the others match learnt tops or become conflicts. Build evidence uses world dm, diagnostics world metres."""
+"""Steady stands within reach of cover, and the box tops they teach. Unambiguous stands inside or touching an
+outline teach; the others match learnt tops or become conflicts. Build evidence uses world dm, diagnostics world metres."""
 
 from __future__ import annotations
 
@@ -301,6 +301,35 @@ def match_top(z_m, tops):
     return min(matches, key=lambda t: (round(abs(t - z_m), 9), t)) if matches else None
 
 
+def effective_piece(s) -> int:
+    """R4: inside wins; otherwise touching the nearest outline counts as inside (ties: lower piece id)."""
+    if s.inside:
+        return s.inside
+    touching = [(d, p) for p, d in zip(s.candidates, s.cand_dist) if d <= TOP_TOUCH_M + EPS]
+    return min(touching)[1] if touching else 0
+
+
+def piece_snapper(cover_px):
+    """Snap a clipped (x, y) pixel onto its piece, caching each piece's nearest-pixel indices lazily."""
+    from scipy import ndimage
+
+    nearest = {}
+    height, width = cover_px.shape
+
+    def snap(piece, px):
+        x = int(np.clip(px[0], 0, width - 1))
+        y = int(np.clip(px[1], 0, height - 1))
+        if cover_px[y, x] == piece:
+            return x, y
+        if piece not in nearest:
+            nearest[piece] = ndimage.distance_transform_edt(
+                cover_px != piece, return_distances=False, return_indices=True)
+        ny, nx = nearest[piece]
+        return int(nx[y, x]), int(ny[y, x])
+
+    return snap
+
+
 def _fold_crouches(stands):
     """Fold lower levels into better-supported higher levels of one piece, before emitting any rows.
     Support is the original number of stands, fixed before folds; equal support keeps both levels.
@@ -319,37 +348,41 @@ def _fold_crouches(stands):
     return folded
 
 
-def judge(stands, ground, leaf_floor, beside=None, *, sides=None):
+def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
     """(world-dm top rows, [(stand, piece, top world dm)], conflict records, fate counts).
     `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf. `beside(piece, px)`, when
     given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`). An outside
     stand must be a step above that floor, since a piece's sides can stand on different floors (Summit's piece 20
     has 2.0 m on one face and 3.0 m on the others). Optional `sides` maps each piece to its side floors in world dm.
-    A stand within TOP_TOL_M of any of a piece's side floors is ground for that piece, including inside stands."""
+    A stand within TOP_TOL_M of any of a piece's side floors is ground for that piece, including inside stands.
+    Touching stands count as inside (R4); optional `snap(piece, px)` puts emitted pixels on their piece."""
     counts = dict(teach=0, assign=0, conflict=0, ground=0, platform=0, blackout=0)
     teaching, pending = defaultdict(list), []
 
-    def floor_for(s, p):
-        if beside is None or s.inside == p:
+    def floor_for(s, p, e):
+        if beside is None or e == p:
             return ground[p]
         got = beside(p, s.px)
         return ground[p] if got is None else got
 
     for s in stands:
+        e = effective_piece(s)
         cands = tuple(sorted(p for p in s.candidates
-                             if p in ground and s.z_dm - floor_for(s, p) >= BOX_STEP_M * 10 - EPS
+                             if p in ground and s.z_dm - floor_for(s, p, e) >= BOX_STEP_M * 10 - EPS
                              and (sides is None or not any(abs(s.z_dm - f) <= TOP_TOL_M * 10 + EPS
                                                           for f in sides.get(p, ())))))
-        if not cands or (not s.inside and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
+        if not cands or (not e and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
                                              for z in leaf_floor(s.px))):
             counts['ground'] += 1
-        elif len(cands) == 1 and s.inside == cands[0]:
+        elif len(cands) == 1 and e == cands[0]:
             teaching[cands[0]].append(s)
             counts['teach'] += 1
         else:
             pending.append((s, cands))
     learnt, rows = {}, []
     for piece, group in sorted(teaching.items()):
+        if snap is not None:
+            group = [replace(s, px=snap(piece, s.px)) if s.inside != piece else s for s in group]
         got = top_rows(_fold_crouches(group))
         learnt[piece] = sorted(set(int(z) for z in got[:, 2]))
         rows.extend(got.tolist())

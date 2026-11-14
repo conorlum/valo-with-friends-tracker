@@ -327,6 +327,64 @@ def stand(z=40, inside=1, candidates=(1,), px=(120, 120), **kw):
                        candidates=candidates, match="toy-match", round=13, **kw)
 
 
+@pytest.mark.parametrize('inside,candidates,distances,expected', [
+    (2, (1, 2), (0.0, 0.1), 2),
+    (0, (1, 2), (0.15, 0.10), 2),
+    (0, (1, 2), (0.15, 0.15), 1),
+    (0, (2, 1), (0.15, 0.15), 1),
+    (0, (1, 2), (0.25, 0.3), 0),
+    (0, (1, 2), (), 0),
+    (0, (1,), (hc.TOP_TOUCH_M,), 1),
+    (0, (1,), (hc.TOP_TOUCH_M + bt.EPS / 2,), 1),
+    (0, (1,), (hc.TOP_TOUCH_M + 2 * bt.EPS,), 0),
+])
+def test_effective_piece(inside, candidates, distances, expected):
+    s = stand(inside=inside, candidates=candidates, cand_dist=distances)
+    assert bt.effective_piece(s) == expected
+
+
+def test_a_stand_touching_a_thin_wall_teaches_it():
+    # Ascent piece 11: one pixel (0.14 m) outside a thin wall at a clear step.
+    s = stand(83, inside=0, px=(99, 120), candidates=(1,), cand_dist=(0.14,))
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: (), snap=bt.piece_snapper(cover()))
+    assert rows.tolist() == [[100, 120, 83]]
+    assert not assigned and not conflicts and counts['teach'] == 1
+    assert s.px == (99, 120)
+    assert bt.judge([s], {1: 30}, lambda px: ())[0].tolist() == [[99, 120, 83]]
+    # Effective inside stands use the piece's ground and ignore connected leaf floors.
+    assert bt.judge([s], {1: 30}, lambda px: (83,), beside=lambda piece, px: 83)[3]['teach'] == 1
+
+
+def test_a_stand_further_than_touching_stays_outside():
+    s = stand(83, inside=0, px=(99, 120), candidates=(1,), cand_dist=(0.25,))
+    rows, assigned, conflicts, counts = bt.judge([s], {1: 30}, lambda px: ())
+    assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
+    assert conflicts[0]['candidates'] == [[1, [], 0.25]]
+
+
+def test_piece_snapper(monkeypatch):
+    from scipy import ndimage
+
+    original = ndimage.distance_transform_edt
+    calls = []
+
+    def distance(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ndimage, 'distance_transform_edt', distance)
+    labels = cover()
+    snap = bt.piece_snapper(labels)
+    assert calls == []
+    assert snap(2, (185, 120)) == (179, 120)
+    assert snap(2, (150, 120)) == (150, 120)
+    assert len(calls) == 1
+    assert snap(1, (95, 95)) == (100, 100)
+    x, y = snap(1, (-5, 2000))
+    assert labels[y, x] == 1 and len(calls) == 2
+
+
 def test_reach_collects_all_candidates_and_splits_when_leaving_reach():
     parts = cat(const(139, 120, 40, 1), const(90, 120, 40, 1), const(99, 120, 40, 1))
     found = bt.top_stands(blob(seg(0, *parts)), cover(), m_per_px=0.14)
