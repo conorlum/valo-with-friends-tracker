@@ -289,6 +289,9 @@ retargeted to `main` before it merges.
   exists, and a read-only `SELECT … FROM site_events WHERE kind = …` as the rest query; its first line says
   Site health.
 - The card's computation stays cached for 55 s and is read-only: the site has no way to clear anything.
+- A failed upload whose file is gone is retired from `upload_failed` and `store_failed` by a PR entry in
+  `app/data/retired_uploads.json` (`upload_id`, `reason`, `fixed_by`); its other upload kinds stay visible.
+  A later stored upload of the same file clears both failure kinds.
 
 ## 4. Tests
 
