@@ -603,6 +603,29 @@ def test_later_success_supersedes_only_failures_with_sha(errors, db):
     assert kind(errors, db, "upload_failed")["count"] == 2
 
 
+def test_later_success_supersedes_store_failures_with_sha(errors, db):
+    upload(db, 1, store_outcome="failed", source_sha256="b" * 64)
+    no_sha = upload(db, 2, store_outcome="failed")
+    upload(db, 3, status="stored", source_sha256="b" * 64, created_at=STAMP, archive_ack="ok")
+    assert one(errors, db, "store_failed")["figures"]["upload_id"] == no_sha.id
+    assert one(errors, db, "upload_failed")["figures"]["upload_id"] == no_sha.id
+
+    later_failure = upload(db, 4, store_outcome="failed", source_sha256="b" * 64,
+                           created_at=STAMP + timedelta(seconds=1))
+    found = kind(errors, db, "store_failed")
+    assert found["count"] == 2
+    assert {row["figures"]["upload_id"] for row in found["rows"]} == {no_sha.id, later_failure.id}
+
+
+def test_store_failed_rest_query_lists_only_shown_uploads(errors, db):
+    superseded = upload(db, 1, store_outcome="failed", source_sha256="b" * 64)
+    no_sha = upload(db, 2, store_outcome="failed")
+    upload(db, 3, status="stored", source_sha256="b" * 64, created_at=STAMP, archive_ack="ok")
+    query = errors._rest_query("store_failed", kind(errors, db, "store_failed")["rows"])
+    assert no_sha.id in query
+    assert superseded.id not in query
+
+
 def test_upload_time_boundaries_and_finished_time(errors, db):
     cutoff = STAMP - timedelta(hours=1)
     upload(db, 1, status="queued", created_at=cutoff.replace(tzinfo=None))

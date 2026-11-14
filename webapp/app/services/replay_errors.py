@@ -513,7 +513,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             kinds.append("upload_failed")
         if upload.status == "held":
             kinds.append("upload_held")
-        if upload.store_outcome == "failed":
+        if upload.store_outcome == "failed" and not superseded:
             kinds.append("store_failed")
         if (upload.status == "stored" and upload.archive_ack is None
                 and _utc(upload.finished_at or upload.created_at) < cutoff):
