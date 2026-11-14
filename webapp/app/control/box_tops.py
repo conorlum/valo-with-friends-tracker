@@ -13,7 +13,8 @@ import numpy as np
 from app.control import heights
 from app.control.geometry import CELL, GRID, PX
 from app.control.heights import (BOX_RING_PX, BOX_SETTLE_S, BOX_STEADY_DZ_M, BOX_STEP_M,
-                                 CROUCH_DROP_M, CROUCH_LAG_S, CROUCH_NEAR_S, TOP_REACH_M, TOP_TOL_M)
+                                 CROUCH_DROP_M, CROUCH_LAG_S, CROUCH_NEAR_S, GROUND_NEAR_M,
+                                 TOP_REACH_M, TOP_TOL_M, TOP_TOUCH_M, TOP_VOTES_INSIDE, TOP_VOTES_OUTSIDE)
 
 FINE = 4                    # the fine cell's side, px
 EPS = 1e-6

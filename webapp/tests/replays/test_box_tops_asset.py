@@ -28,9 +28,10 @@ from tests.replays.control_toys import z_dm  # noqa: E402
 
 # recorded on the code before this item, for the toy builds below (no cover given)
 NO_COVER_BUILD_DIGEST = "b48acdae2528"
-# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 7 (was "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
+# the manifest digest holds HEIGHT_RULES_REVISION: re-recorded at 8 (was "31495d88d6e6e4f5" at 7,
+# "be548d2a5bc53e15" at 6, "3dcbe2c75de289ad" at 5);
 # the build digest is unchanged
-NO_COVER_MANIFEST_DIGEST = "31495d88d6e6e4f5"
+NO_COVER_MANIFEST_DIGEST = "1f82b0eb900c99e7"
 
 PIECE = (slice(150, 170), slice(300, 320))        # rows (y), columns (x) of the one cover piece
 
@@ -54,10 +55,12 @@ def as_json(report):
     return json.dumps(report, sort_keys=True, default=str)
 
 
-def test_a_no_cover_build_and_manifest_keep_the_digests_they_had():
+def test_a_no_cover_build_and_manifest_keep_the_digests_they_had(monkeypatch):
     sample = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
     assert sample.asset.box_tops is None and sample.asset.digest == NO_COVER_BUILD_DIGEST
     assert hi.digest(hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)) == NO_COVER_MANIFEST_DIGEST
+    monkeypatch.setattr("app.replays.control_format.HEIGHT_RULES_REVISION", 7)
+    assert hi.digest(hi.manifest("Sunset", REPLAYS, GEOMETRY, "k" * 12)) == "31495d88d6e6e4f5"
 
 
 def test_a_cover_build_learns_the_top_and_changes_nothing_else():
