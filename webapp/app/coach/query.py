@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.coach import areas, control_areas, knowledge
-from app.coach.snapshot import SnapshotError
+from app.coach.snapfile import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
 

@@ -27,6 +27,34 @@ def test_a_complete_match_has_no_gaps(tmp_path):
     assert snap.view(2).number == 2 and snap.view(2).position(0, 1.0)["alive"]
 
 
+def test_a_snapshot_is_saved_one_file_per_round_and_reads_only_the_round_asked_for(tmp_path):
+    snapshot.save(built(), tmp_path)
+    assert sorted(p.name for p in (tmp_path / snapshot.ROUNDS_DIR).iterdir()) == ["1.json", "2.json"]
+    assert '"blob"' not in (tmp_path / snapshot.FILE).read_text(encoding="utf-8")
+    (tmp_path / snapshot.ROUNDS_DIR / "2.json").unlink()      # round 1's questions never open round 2's file
+    snap = snapshot.load(tmp_path)
+    assert snap.round_numbers == [1, 2] and snap.gaps(1) == [] and snap.view(1).number == 1
+
+
+def test_a_snapshot_written_as_one_file_still_loads(tmp_path):
+    import json
+    (tmp_path / snapshot.FILE).write_text(json.dumps(built()), encoding="utf-8")
+    snap = snapshot.load(tmp_path)
+    assert snap.round_numbers == [1, 2] and snap.control(2)["cells"] == {"A Site": 1}
+
+
+def test_the_query_tool_loads_no_database_code():
+    import subprocess
+    import sys
+    from pathlib import Path
+    code = ("import sys; import app.coach.query, app.coach.snapfile; "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] == 'sqlalchemy' or m in ('app.db', "
+            "'app.services.replay_control', 'app.coach.snapshot')))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                         cwd=Path(__file__).resolve().parents[2]).stdout.strip()
+    assert out == "[]"
+
+
 def test_each_missing_source_is_named(tmp_path):
     no_knew = {**SHARES, "knew": None}
     blob = toys.round_blob(toys.ten(), n=2)

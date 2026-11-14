@@ -8,7 +8,7 @@ import json
 import re
 
 from app.coach import knowledge, query
-from app.coach.snapshot import SnapshotError
+from app.coach.snapfile import SnapshotError
 from app.services.agent_roles import role_of
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"

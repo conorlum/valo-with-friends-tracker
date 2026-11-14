@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--player", required=True)
     parser.add_argument("--flags-only", action="store_true")
     args = parser.parse_args()
-    from app.coach import brief, snapshot
+    from app.coach import brief, snapfile as snapshot
 
     try:
         snap = snapshot.load(args.run)

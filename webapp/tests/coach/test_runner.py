@@ -457,39 +457,75 @@ def _team(monkeypatch, argv, results):
     return coach_team, ran
 
 
-def test_the_team_command_runs_every_teammate_in_order_and_passes_the_options_on(monkeypatch, capsys):
+def test_the_team_command_hands_every_teammate_to_one_report_process(monkeypatch):
     coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
     assert coach_team.main() == 0
-    assert [command[2:] for command in ran] == [["abc", name, "--model", "opus", "--dry-run"]
-                                                for name in ("Owner#1", "Friend#2", "Third#3")]
-    assert all(command[1].endswith("coach_report.py") for command in ran)
-    out = capsys.readouterr().out
-    assert "3 players, one at a time" in out and "== 2 of 3: Friend#2 ==" in out and "3 of 3 runs succeeded" in out
-
-
-def test_the_team_command_never_runs_two_players_at_once(monkeypatch):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
-    running = []
-
-    def run_one(command):
-        assert not running, "a second run started before the first ended"
-        running.append(command)
-        ran.append(command)
-        running.pop()
-        return 0
-
-    monkeypatch.setattr(coach_team, "run_one", run_one)
-    assert coach_team.main() == 0 and len(ran) == 3
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--model", "opus",
+                                                 "--dry-run"]]
+    assert ran[0][1].endswith("coach_report.py")
     with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
         monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
         coach_team.main()
 
 
-def test_one_failed_teammate_does_not_stop_the_others_and_fails_the_command(monkeypatch, capsys):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Friend#2": 1})
-    assert coach_team.main() == 1 and len(ran) == 3
+def test_the_team_command_passes_the_report_process_failure_on(monkeypatch):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Owner#1": 1})
+    assert coach_team.main() == 1 and len(ran) == 1
+
+
+# --- several players in one coach_report.py: one read of the match, the runs one after another ---
+
+def _players(monkeypatch, tmp_path, names, fail=()):
+    """coach_report.main over `names` (slots), with run_player recorded instead of calling a model."""
+    from scripts import coach_store_report
+
+    reads, runs, running = [], [], []
+    _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", *names], make_data())
+    monkeypatch.setattr(snapshot, "read", lambda db, uuid, **kw: reads.append(uuid) or make_data())
+    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 100 + int(player)))
+
+    def run_player(args, uuid, book, player, match_id, player_id, data):
+        assert not running, "a second run started before the first ended"
+        running.append(player)
+        runs.append((player, player_id, data["context"]["players"]))
+        running.pop()
+        if player in fail:
+            raise RuntimeError("boom")
+        return 0
+
+    monkeypatch.setattr(coach_report, "run_player", run_player)
+    return reads, runs
+
+
+def test_several_players_read_the_match_once_and_run_in_order(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"])
+    assert coach_report.main() == 0
+    assert len(reads) == 1 and [(p, pid) for p, pid, _ in runs] == [("0", 100), ("6", 106)]
+    # each run hides the other team's names: player 100 is on team1, player 106 on team2
+    assert runs[0][2]["5"]["name"] == "the enemy Jett" and runs[0][2]["1"]["name"] == "P1#T1"
+    assert runs[1][2]["1"]["name"] == "the enemy Jett" and runs[1][2]["5"]["name"] == "P5#T5"
+    assert "2 of 2 runs succeeded" in capsys.readouterr().out
+
+
+def test_one_players_crash_does_not_stop_the_next_and_fails_the_command(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"], fail=("0",))
+    assert coach_report.main() == 1 and [p for p, _, _ in runs] == ["0", "6"]
     out = capsys.readouterr().out
-    assert "== Friend#2: FAILED (exit 1) ==" in out and "2 of 3 runs succeeded; failed: Friend#2" in out
+    assert "== 0: FAILED (exit 1) ==" in out and "1 of 2 runs succeeded; failed: 0" in out
+
+
+def test_an_unknown_player_refuses_the_batch_before_any_run(tmp_path, monkeypatch, capsys):
+    from scripts import coach_store_report
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "nobody"])
+
+    def resolve(db, uuid, player):
+        if player == "nobody":
+            raise ValueError("'nobody' is not a player of this match")
+        return 7, 100
+
+    monkeypatch.setattr(coach_store_report, "resolve", resolve)
+    assert coach_report.main() == 2 and runs == [] and reads == []
+    assert "refused" in capsys.readouterr().err
 
 
 def test_the_team_command_refuses_a_player_who_is_not_in_the_match(monkeypatch, capsys):

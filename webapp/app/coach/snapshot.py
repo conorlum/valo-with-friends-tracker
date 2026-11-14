@@ -1,25 +1,19 @@
-"""Everything one coach run needs about a match, read from the database once and kept as one JSON file on
-disk. The brief, the detectors and the query commands read the file; the model never reaches the database."""
+"""Everything one coach run needs about a match, read from the database once and kept on disk
+(`app/coach/snapfile.py`). The brief, the detectors and the query commands read the files; the model never
+reaches the database."""
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
 
 from app.coach import control_areas
-from app.coach.roundview import RoundView
+from app.coach.snapfile import FILE, ROUNDS_DIR, VERSION, Snapshot, SnapshotError, _groups, load, save  # noqa: F401
 from app.replays import format as fmt
 from app.services import enemy_names, replay_control, replays
 
-VERSION = 1
-FILE = "snapshot.json"
 log = logging.getLogger(__name__)
-
-
-class SnapshotError(Exception):
-    pass
 
 
 def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], links: dict | None = None,
@@ -47,10 +41,6 @@ def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], 
             gaps.append("critical_util")
         rounds[str(n)] = {"blob": blob, "control": shares, "link": link, "gaps": gaps, "util": round_util}
     return {"v": VERSION, "context": context, "rounds": rounds}
-
-
-def _groups(context: dict) -> dict[int, str]:
-    return {int(slot): p["side"] for slot, p in context["players"].items() if p.get("side") is not None}
 
 
 def _replay_identity(replay):
@@ -220,72 +210,3 @@ def hide_enemy_names(data: dict, player_id: int) -> dict:
     return {**data, "context": {**data["context"], "players": enemy_names.hide_in(players, team)}}
 
 
-def save(data: dict, directory: Path) -> None:
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / FILE).write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
-
-
-class Snapshot:
-    def __init__(self, data: dict):
-        if data.get("v") != VERSION:
-            raise SnapshotError(f"snapshot version {data.get('v')!r} is not {VERSION}")
-        self.data, self.context = data, data["context"]
-        self.map, self.uuid = self.context["match"]["map"], self.context["match"]["uuid"]
-        # Snapshots written before layout selection used the base map's callouts.
-        self.asset_key = self.context["match"].get("asset_key", self.map)
-        self.names = {int(slot): p["name"] for slot, p in self.context["players"].items()}
-        self._views: dict[int, RoundView] = {}
-
-    round_numbers = property(lambda self: sorted(int(n) for n in self.data["rounds"]))
-
-    def _round(self, n: int) -> dict:
-        try:
-            return self.data["rounds"][str(n)]
-        except KeyError:
-            raise SnapshotError(f"round {n} is not in this match (rounds {self.round_numbers[0]}"
-                                f"-{self.round_numbers[-1]})") from None
-
-    def view(self, n: int) -> RoundView:
-        if n not in self._views:
-            entry = self._round(n)
-            link = entry.get("link") or {}
-            roles = {int(slot): role for slot, role in (link.get("sides") or {}).items()}
-            self._views[n] = RoundView(entry["blob"], self.names, self.context["match"]["uv_per_unit"], self.asset_key,
-                                       groups=_groups(self.context), db_deaths=link.get("db_deaths") or (),
-                                       roles=roles)
-        return self._views[n]
-
-    def role(self, n: int, slot: int) -> str | None:
-        """`attack` or `defense` for this slot in round n, from the link; None when the link names none."""
-        return ((self._round(n).get("link") or {}).get("sides") or {}).get(str(slot))
-
-    def control(self, n: int) -> dict | None:
-        return self._round(n)["control"]
-
-    def util(self, n: int) -> dict | None:
-        """The round's Critical Util ({"casts", "unused", "avail"}), or None when the snapshot has none."""
-        return self._round(n).get("util")
-
-    def gaps(self, n: int) -> list[str]:
-        return list(self._round(n)["gaps"])
-
-    def site(self, n: int) -> dict:
-        return self.context["rounds"].get(str(n), {})
-
-    def slot_of(self, token: str) -> int:
-        token = str(token).strip()
-        if token.isdigit() and int(token) in self.names:
-            return int(token)
-        wanted = token.lower()
-        exact = [s for s, name in self.names.items() if name.lower() == wanted]
-        short = [s for s, name in self.names.items() if name.lower().split("#")[0] == wanted]
-        found = exact or short
-        if len(found) != 1:
-            raise SnapshotError(f"{token!r} is {'ambiguous' if found else 'not in this match'}; players: "
-                                + ", ".join(self.names[s] for s in sorted(self.names)))
-        return found[0]
-
-
-def load(directory: Path) -> Snapshot:
-    return Snapshot(json.loads((Path(directory) / FILE).read_text(encoding="utf-8")))

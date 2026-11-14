@@ -113,8 +113,11 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   one repair is published anyway if it can be stored, and listed with its problems in the command's output
   (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
   the first prompt to `prompt.txt` in the run directory and calls no model. `-Team` does the same for that
-  player and their four teammates (`scripts/coach_team.py`): one `coach_report.py` process each, one after another,
-  never two at once (the owner's choice); one player's failed run leaves the others' reports alone.
+  player and their four teammates (`scripts/coach_team.py`); `coach <match uuid> "A#1","B#2"` coaches the players named. Several
+  players go through one `coach_report.py` process that reads the match once, then runs them one after another,
+  never two at once (the owner's choice); one player's failed run leaves the others' reports alone. The snapshot
+  is saved one file per round (`app/coach/snapfile.py`, which imports no database code), so each `./q` call
+  loads only the round it asks about.
 - What the checker holds a point to: a figure with a unit against cited answers of that kind (metres, seconds),
   a named area against a cited answer, a count like 2v1 against who was alive, and, in a point to improve, no
   distance to or place of an enemy the player's side could not see. It does not check who did what: "X killed
