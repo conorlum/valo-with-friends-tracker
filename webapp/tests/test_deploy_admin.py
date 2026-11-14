@@ -292,7 +292,7 @@ def test_force_records_real_health_event_and_later_success_resolves(site):
     assert site.request("force") == (200, CONTRACT["force"]["response"])
     assert site.worker.calls[-1] == ("cancel", 1)
     [event] = events(site)
-    assert event.key == "1" and event.error == "deploy forced after 60 min"
+    assert event.key == "1" and event.error == "deploy forced after 90 min"
     # Site health's existing context scrubber masks fields named key.
     assert event.context == {"cancelled": [{"kind": "control", "key": "***"}], "waiting": {}}
     with site.factory() as db:
@@ -388,7 +388,7 @@ def test_health_commit_and_main_router_registration(site, monkeypatch, demo, com
 
 
 def test_health_kind_and_page_classification():
-    assert ("forced_deploy", "Deploy forced after 60 min") in replay_errors.KINDS
+    assert ("forced_deploy", "Deploy forced after 90 min") in replay_errors.KINDS
     assert replay_errors.GROUPS["forced_deploy"] == "Background work"
     assert "forced_deploy" in replay_errors.EVENT_KINDS
     assert "forced_deploy" in site_health.RECORDED_KINDS

@@ -120,7 +120,8 @@ Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
 `app/services/deploy_drain.py` owns the pause. `/admin/deploy` exposes POST `/drain`, `/poll`,
 `/deploying`, `/force`, `/resume` and GET `/status`, with Bearer `REPLAY_ADMIN_TOKEN`
 (404 without it or in demo mode). `.github/workflows/deploy.yml` runs
-`webapp/scripts/deploy_pipeline.py`; PR 1 is manual-only, with `skip_drain` and `dry_run` inputs.
+`webapp/scripts/deploy_pipeline.py` on every merge to `main` (not docs/Markdown/tests-only merges) and by hand
+(`skip_drain`, `dry_run`); it is the only deployer of all four services (`autoDeploy: false`). Drain limit 90 min.
 Any new background scheduler must check `deploy_drain.paused` before admitting new work.
 See `webapp/RENDER_DEPLOY.md`, "Deploy drain (GitHub Action)", for setup and recovery.
 

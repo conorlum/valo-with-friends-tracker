@@ -294,8 +294,11 @@ date, while the worker recomputes them when it is idle. Watch the worker's memor
 ## Deploy drain (GitHub Action)
 
 `.github/workflows/deploy.yml` ("Deploy pipeline") runs `scripts/deploy_pipeline.py`.
-PR 1 is manual-only (`workflow_dispatch`). The Blueprint still has `autoDeploy: true`.
-It does not yet protect merges automatically. Keep the manual warm-build merge rule below until PR 2.
+It runs on every merge to `main`, except merges that touch only `docs/**`, `**/*.md` or
+`webapp/tests/**`, and by hand (`workflow_dispatch`, inputs `skip_drain` and `dry_run`).
+`render.yaml` has `autoDeploy: false` for `valowithfriendstracker` and `replay-worker`, and auto-deploy is
+off in the dashboard for `valomaths` and `replay-tasks`: the Action is the only thing that deploys them.
+A merge of docs or tests alone deploys nothing; run the Action by hand if one needs to go out.
 
 The Action pauses new control/gaps rounds, height builds, auto re-parses and Critical Util builds
 (remote opens and local child starts). The worker accepts and stores uploads but starts no parses,
@@ -307,7 +310,7 @@ Uploads must finish at both the site and worker, then stay quiet for 60 seconds.
 restarts that quiet period. Map-pool checks, archive sync, replay-states, site-health flush and
 layout-wall checks are not waited for.
 
-After 60 minutes from the original drain start, it deploys anyway, but first waits for uploads
+After 90 minutes from the original drain start, it deploys anyway, but first waits for uploads
 and their 60 quiet seconds. The worker cancels active Render Workflow runs, and a `forced_deploy`
 row in Site health records what was lost. It then deploys `replay-tasks` → `replay-worker` →
 `valowithfriendstracker` → `valomaths`, all from the requested commit. Each service must report
@@ -342,10 +345,10 @@ next successful deploy. During the drain they show how many runs are finishing a
    Check the log prints `tasks commit:`, `worker commit:`, `site commit:` and `demo commit:` with
    readable commit IDs, the Action succeeds, and the pause clears. An unreadable commit fails the dry run.
 
-PR 2 enables the merge trigger on `main`, excluding changes only to `docs/**`, `**/*.md` and
-`webapp/tests/**`, and sets the Blueprint's `autoDeploy: false`. It follows the owner's setup and
-successful live dry run. Until then, Blueprint services still auto-deploy on merges.
-The manual `skip_drain` input skips the wait and cancellation, but still pauses new work during deploys.
+PR 2 (after the dry run passed on 2026-11-13) enabled the merge trigger and set the Blueprint's
+`autoDeploy: false`, and raised the drain limit from 60 to 90 minutes. If a Blueprint sync ever shows
+auto-deploy back on for the site or worker, turn it off: a merge would otherwise deploy them twice, once
+without a drain. The manual `skip_drain` input skips the wait and cancellation, but still pauses new work during deploys.
 
 ### Upload gap and stuck-drain recovery
 
@@ -361,7 +364,7 @@ without the token and in demo mode. Resume releases the worker's parse hold and 
 
 Every owner poll and drain request resets `expires_at` to now + 2 hours. Expiry therefore means
 2 hours without either, not 2 hours since the drain began. Neither refresh moves `started_at`
-or the 60-minute clock. After recovery, check that the pause has cleared.
+or the 90-minute clock. After recovery, check that the pause has cleared.
 
 ## Render Workflows (`replay-tasks`)
 
@@ -529,8 +532,8 @@ Read the worker's `/health` from its Render shell:
 1. **Merge while control is quiet** (owner): no recompute running and `control.warm_builds` absent or its
    `building` empty. A worker restart in the middle of a warm build does not cancel that run on Render: it keeps
    running to its limit while the restarted worker starts a new one. Merge only when `control.warm_builds.building`
-   is empty. Keep this manual rule until PR 2 enables the
-   [deploy-drain Action](#deploy-drain-github-action). Every merge restarts the single-instance worker and drops
+   is empty. Superseded by the
+   [deploy-drain Action](#deploy-drain-github-action), which now waits for warm builds before every deploy. Every merge restarts the single-instance worker and drops
    its open control runs (risk 9), and the worker and replay-tasks workflow come up separately (risk 10).
    - Check: the replay-tasks workflow lists a `warm` task and has deployed this commit; `/health` shows
      `control.cache` and `workflow.by_kind`. Control run logs show `control phase:` lines.

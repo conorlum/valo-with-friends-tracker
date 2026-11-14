@@ -52,7 +52,7 @@ KINDS = (
     ("slow_page", "Slow page loads"),
     ("loop_failed", "Background loops that failed"),
     ("loop_quiet", "Background loops gone quiet"),
-    ("forced_deploy", "Deploy forced after 60 min"),
+    ("forced_deploy", "Deploy forced after 90 min"),
     ("util_build_failed", "Critical Util build failed"),
     ("util_build_stale", "Critical Util build out of date"),
     ("worker_overrun", "Worker jobs that ran over"),

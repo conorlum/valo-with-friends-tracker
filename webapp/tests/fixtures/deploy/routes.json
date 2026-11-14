@@ -23,7 +23,7 @@
       },
       "status": {"quiet": true, "uploads_quiet": true, "waiting": {}, "waiting_total": 0},
       "commits": {"worker": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "tasks": null},
-      "limit_s": 3600, "now": 1794571260.0
+      "limit_s": 5400, "now": 1794571260.0
     }
   },
   "status": {
@@ -37,7 +37,7 @@
       },
       "status": {"quiet": true, "uploads_quiet": true, "waiting": {}, "waiting_total": 0},
       "commits": {"worker": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "tasks": null},
-      "limit_s": 3600, "now": 1794571260.0
+      "limit_s": 5400, "now": 1794571260.0
     }
   },
   "deploying": {

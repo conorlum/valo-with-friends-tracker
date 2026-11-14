@@ -11,13 +11,12 @@ on:
         description: Drain and report commits without deploying
         type: boolean
         default: false
-  # Enable in PR 2:
-  # push:
-  #   branches: [main]
-  #   paths-ignore:
-  #     - 'docs/**'
-  #     - '**/*.md'
-  #     - 'webapp/tests/**'
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'webapp/tests/**'
 
 permissions:
   contents: read

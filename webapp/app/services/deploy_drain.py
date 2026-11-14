@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 DRAIN_LOCK = 7_346_120_134
 QUIET_UPLOAD_S = 60
 EXPIRY = timedelta(hours=2)
-LIMIT_S = 3600
+LIMIT_S = 90 * 60
 
 
 class NotOwner(Exception):

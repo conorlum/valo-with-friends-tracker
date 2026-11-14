@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 SERVICES = ("tasks", "worker", "site", "demo")
 POLL_S = 30
 HTTP_TIMEOUT_S = 60
-DRAIN_S = 3600
+DRAIN_S = 90 * 60
 BUSY_S = 90 * 60
 DEPLOY_S = 30 * 60
 UPLOAD_S = 15 * 60
