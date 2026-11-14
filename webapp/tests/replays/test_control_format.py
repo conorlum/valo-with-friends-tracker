@@ -145,6 +145,34 @@ def test_the_height_build_only_constants_are_not_engine_constants(monkeypatch):
         assert not HEIGHT_BUILD_ONLY & set(vars(module)), module.__name__
 
 
+def _reads(path, names):
+    """{enclosing top-level function (or '<module>'): the `names` it reads} in the source file at `path`."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    found = {}
+    for top in tree.body:
+        where = top.name if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else "<module>"
+        for node in ast.walk(top):
+            name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+            if name in names:
+                found.setdefault(where, set()).add(name)
+    return found
+
+
+def test_the_height_build_only_constants_are_read_only_by_the_build():
+    """The engine reaches box_tops through piece_tops, piece_ground, piece_reach and match_top, and stance.py; the
+    four constants may only be read where the height build judges stands (effective_piece and judge), and by the
+    build itself. Any other reader makes them engine constants: drop them from HEIGHT_BUILD_ONLY."""
+    from app.control import box_tops, height_build, stance
+
+    assert _reads(box_tops.__file__, HEIGHT_BUILD_ONLY).keys() <= {"effective_piece", "judge"}
+    assert _reads(height_build.__file__, HEIGHT_BUILD_ONLY).keys() <= {"build"}
+    for module in (ce, cg, stance):
+        assert not _reads(module.__file__, HEIGHT_BUILD_ONLY), module.__name__
+
+
 def _without_the_destroyed_reach(monkeypatch):
     for name in ("TRIP_DESTROY_REACH_M", "CAMERA_DESTROY_REACH_M"):
         monkeypatch.delattr(ce, name)

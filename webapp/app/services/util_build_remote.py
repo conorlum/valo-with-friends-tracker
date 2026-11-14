@@ -461,6 +461,9 @@ def _failure(state: UtilState, stage: str, error, now: float) -> None:
     util_build_health.record(stage, str(error), context)
     log.warning("util %s failed key=%s ref=%s id=%s error=%s", stage, state.key, state.ref, state.build_id, error)
     if state.key:
+        # Any OperationalError in the store gives up on the key, not only a lost connection: a store that crashed
+        # Postgres surfaced as several kinds (closed connection, "in recovery mode" on reconnect) and every retry
+        # crashed it again. A transient timeout giving up too costs only a stale /util until the key changes.
         if stage == "store" and (isinstance(error, OperationalError)
                                  or isinstance(error, DBAPIError) and error.connection_invalidated):
             state.tries[state.key] = MAX_TRIES

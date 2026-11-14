@@ -176,9 +176,14 @@ class PieceFloors:
     `sides[piece]` maps each side to the most common of the lowest floors of its ring cells. `ground[piece]` is
     the lowest side floor, since a box stands on the lowest floor round it and a higher side is a ledge it is
     backed against. In `judge`, stands level with any side floor count as ground for that piece, keeping ledge
-    walls from learning the upper floor as a top. A piece with no floor round it is left out."""
+    walls from learning the upper floor as a top. A piece with no floor round it is left out.
+    `standing[piece]` is the floor the map-control engine reads (`ground_of`, `piece_ground`): the most common of
+    the side floors, each side one vote, a tie taking the lower (CONTROL_REVISION 23's rule). The engine has no
+    side-floor ground rule, so the lowest side would put a player beside a ledge box on the drop's floor; `ground`
+    is the height build's only."""
     ground: dict
     sides: dict
+    standing: dict = field(default_factory=dict)
     _near: dict = field(default_factory=dict, repr=False, compare=False)   # piece -> (y0, x0, nearest y, nearest x)
 
     def side_at(self, piece: int, px) -> str | None:
@@ -221,7 +226,7 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
         leaf = np.repeat(np.repeat(flat.reshape(GRID, GRID, -1), 2, axis=0), 2, axis=1)
         leaf.reshape(-1, leaf.shape[-1])[fine_cells] = fine_floors
         leaf = leaf.reshape(-1, leaf.shape[-1])
-    ground, sides, near = {}, {}, {}
+    ground, standing, sides, near = {}, {}, {}, {}
     big = np.iinfo(np.int32).max
     for piece, box in enumerate(ndimage.find_objects(cover.astype(np.int32)), start=1):
         if box is None:
@@ -254,15 +259,19 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
         if found:
             sides[piece] = found
             ground[piece] = min(found.values())
-    return PieceFloors(ground, sides, near)
+            standing[piece] = _most_common(list(found.values()))
+    return PieceFloors(ground, sides, standing, near)
 
 
 def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None,
               walk_px=None) -> dict[int, int]:
-    """Map each cover piece id to the floor it stands on, in `floors`' units, using its lowest side floor.
-    Stands level with an upper side floor (Ascent's piece 17 and Summit's piece 20) are handled by the side-floor
-    ground rule in `judge`."""
-    return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).ground
+    """{cover piece id: the floor the map-control engine reads for it} in `floors`' units: `piece_floors`'
+    `standing`, the most common of its sides' floors. Not the lowest, which only the height build's `judge` uses:
+    a piece at a ledge's edge has a drop on one side (Ascent's piece 17: floor at 2.0 m round most of it, 0.0 m on
+    one side, and players at 2.0 m on its outline), and not the most common cell: a small lower area along one long
+    face (Summit's piece 20) would outvote the side it stands on. Changing this rule changes the engine: bump
+    CONTROL_REVISION."""
+    return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).standing
 
 
 def on_a_step(stands: list[TopStand], ground: dict[int, int]) -> list[TopStand]:

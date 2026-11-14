@@ -41,13 +41,15 @@ def store_values(db: Session, key: str, values: dict, *, version: int | None = N
 
 def read_values(db: Session) -> tuple[str, dict] | None:
     global _cache_identity, _cache_value
+    # The metadata read runs outside the lock, so a slow connection holds up only its own request. A miss takes
+    # the lock for the payload read and decode, so concurrent misses decode the build once, not once each.
+    metadata = db.query(UtilModel.key, UtilModel.version, UtilModel.computed_at).filter(
+        UtilModel.name == "values").one_or_none()
+    if metadata is None or metadata.version != util_values.VERSION:
+        return None
+    url = str(db.get_bind().url)
+    identity = (url, metadata.key, metadata.version, metadata.computed_at)
     with _lock:
-        metadata = db.query(UtilModel.key, UtilModel.version, UtilModel.computed_at).filter(
-            UtilModel.name == "values").one_or_none()
-        if metadata is None or metadata.version != util_values.VERSION:
-            return None
-        url = str(db.get_bind().url)
-        identity = (url, metadata.key, metadata.version, metadata.computed_at)
         if identity == _cache_identity:
             return _cache_value
 

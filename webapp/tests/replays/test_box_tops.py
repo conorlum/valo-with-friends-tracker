@@ -194,10 +194,11 @@ def floors_at(cells_z):
     return f
 
 
-def test_ground_is_the_lowest_side_floor():
+def test_the_builds_ground_is_the_lowest_side_and_the_engines_the_most_common():
     # piece 1 is x 100-139, y 100-139, at a ledge's edge: 2.0 m round three sides, a drop to 0.0 m on one cell
-    g = bt.ground_of(cover(), floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0}))
-    assert g[1] == 0
+    f = floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0})
+    assert bt.piece_floors(cover(), f).ground[1] == 0, "the height build judges against the lowest side"
+    assert bt.ground_of(cover(), f)[1] == 20, "the engine keeps the floor most of the ring stands on"
 
 
 def test_a_stand_at_the_upper_floor_of_a_ledge_is_no_top():
@@ -246,7 +247,8 @@ def test_each_side_of_a_piece_learns_its_own_floor_and_ground_is_the_lowest():
     pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
     assert pf.sides[1] == {"n": 30, "e": 30, "w": 20}
     assert pf.ground[1] == 20, "the lowest side is the floor the box stands on"
-    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 20}
+    assert pf.standing[1] == 30, "five lower cells on one face are one side's vote, not five"
+    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 30}
 
 
 def test_the_floor_beside_a_piece_is_its_sides():
