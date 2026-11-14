@@ -373,8 +373,11 @@ def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
     stand must be a step above that floor, since a piece's sides can stand on different floors (Summit's piece 20
     has 2.0 m on one face and 3.0 m on the others). Optional `sides` maps each piece to its side floors in world dm.
     A stand within TOP_TOL_M of any of a piece's side floors is ground for that piece, including inside stands.
-    Touching stands count as inside (R4); optional `snap(piece, px)` puts emitted pixels on their piece."""
-    counts = dict(teach=0, assign=0, conflict=0, ground=0, platform=0, blackout=0)
+    Touching stands count as inside (R4); optional `snap(piece, px)` puts emitted pixels on their piece.
+    The owner's design: remaining ambiguous stands vote for their effective piece or nearest candidate box;
+    3 inside/touching stands or 5 in all agreeing within TOP_TOL_M make a top. Evidence accumulates because
+    every build re-reads every round of the map. Remaining stands can then match the voted tops (R6)."""
+    counts = dict(teach=0, assign=0, vote=0, conflict=0, ground=0, platform=0, blackout=0)
     teaching, pending = defaultdict(list), []
 
     def floor_for(s, p, e):
@@ -405,7 +408,8 @@ def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
         learnt[piece] = sorted(set(int(z) for z in got[:, 2]))
         rows.extend(got.tolist())
     assigned, conflicts = [], []
-    for s, cands in pending:
+
+    def assign_top(s, cands):
         matches = []
         for piece in cands:
             top = match_top(s.z_dm / 10, [z / 10 for z in learnt.get(piece, ())])
@@ -416,7 +420,43 @@ def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
             _, piece, z = min(matches)
             assigned.append((s, piece, z))
             counts['assign'] += 1
-        else:
+            return True
+        return False
+
+    pending = [(s, cands) for s, cands in pending if not assign_top(s, cands)]
+    votes = defaultdict(list)
+    for i, (s, cands) in enumerate(pending):
+        e = effective_piece(s)
+        distances = dict(zip(s.candidates, s.cand_dist))
+        piece = e if e in cands else min(cands, key=lambda p: (distances.get(p, math.inf), p))
+        votes[piece].append((i, s))
+
+    voted = set()
+    for piece, group in sorted(votes.items()):
+        levels = []
+        for entry in sorted(group, key=lambda entry: entry[1].z_dm):
+            if not levels or entry[1].z_dm - levels[-1][0][1].z_dm > TOP_TOL_M * 10 + EPS:
+                levels.append([])
+            levels[-1].append(entry)
+        for level in levels:
+            if (sum(effective_piece(s) == piece for _, s in level) < TOP_VOTES_INSIDE
+                    and len(level) < TOP_VOTES_OUTSIDE):
+                continue
+            z = int(round(float(np.median([s.z_dm for _, s in level]))))
+            mx = float(np.median([s.px[0] for _, s in level]))
+            my = float(np.median([s.px[1] for _, s in level]))
+            near = min((s for _, s in level),
+                       key=lambda s: ((s.px[0] - mx) ** 2 + (s.px[1] - my) ** 2, s.px[1], s.px[0]))
+            px = snap(piece, near.px) if snap is not None and near.inside != piece else near.px
+            rows.append([int(px[0]), int(px[1]), z])
+            learnt.setdefault(piece, []).append(z)
+            learnt[piece].sort()
+            assigned.extend((s, piece, z) for _, s in level)
+            counts['vote'] += len(level)
+            voted.update(i for i, _ in level)
+
+    for i, (s, cands) in enumerate(pending):
+        if i not in voted and not assign_top(s, cands):
             distances = dict(zip(s.candidates, s.cand_dist))
             candidates = []
             for p in cands:

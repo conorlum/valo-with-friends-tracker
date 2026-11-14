@@ -88,7 +88,7 @@ def test_older_blobs_keep_stands_and_judge_rows_byte_for_byte(cover_px, with_net
     rows, assigned, conflicts, counts = bt.judge(st, GROUND, lambda px: ())
     assert rows.tobytes() == np.array([[108, 120, 40], [120, 120, 40]], np.int32).tobytes()
     assert assigned == conflicts == []
-    assert counts == dict(teach=3, assign=0, conflict=0, ground=0, platform=0, blackout=0)
+    assert counts == dict(teach=3, assign=0, vote=0, conflict=0, ground=0, platform=0, blackout=0)
 
 
 def test_netted_without_key_activity_is_crouched_without_lag(cover_px):

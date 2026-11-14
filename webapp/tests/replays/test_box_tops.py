@@ -528,7 +528,7 @@ def test_only_inside_single_candidate_stands_teach_and_others_assign():
     rows, assigned, conflicts, counts = bt.judge([outside, teacher], GROUND, lambda px: ())
     assert rows.tolist() == [[120, 120, 40]]
     assert assigned == [(outside, 1, 40)] and conflicts == []
-    assert counts == dict(teach=1, assign=1, conflict=0, ground=0, platform=0, blackout=0)
+    assert counts == dict(teach=1, assign=1, vote=0, conflict=0, ground=0, platform=0, blackout=0)
     rows, assigned, conflicts, counts = bt.judge([outside], GROUND, lambda px: ())
     assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
     assert conflicts[0]['candidates'] == [[1, []]]
@@ -570,6 +570,129 @@ def test_real_shaped_ground_row_keeps_candidate_distances_without_changing_its_f
     assert s.cand_dist == (0.582,)
     rows, assigned, conflicts, counts = bt.judge([s], {15: 20}, lambda px: (20,))
     assert rows.shape == (0, 3) and not assigned and not conflicts and counts['ground'] == 1
+
+
+def test_three_inside_votes_make_a_top():
+    stands = [stand(30, inside=2, candidates=(1, 2), cand_dist=(0.5, 0.0), px=(x, 120))
+              for x in (150, 152, 154)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    assert rows.tolist() == [[152, 120, 30]]
+    assert assigned == [(s, 2, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 3 and counts['teach'] == counts['conflict'] == 0
+    rows, assigned, conflicts, counts = bt.judge(stands[:2], GROUND, lambda px: ())
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 2
+    assert counts['conflict'] == 2 and counts['vote'] == 0
+
+
+def test_outside_votes_need_five():
+    stands = [stand(30, inside=0, px=(185, 120), candidates=(2,), cand_dist=(0.4,))
+              for _ in range(5)]
+    calls = []
+
+    def snap(piece, px):
+        calls.append((piece, px))
+        return 179, 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands[:4], GROUND, lambda px: (), snap=snap)
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 4
+    assert counts['conflict'] == 4 and counts['vote'] == 0 and not calls
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[179, 120, 30]] and calls == [(2, (185, 120))]
+    assert assigned == [(s, 2, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 5 and sum(counts.values()) == 5
+
+
+@pytest.mark.parametrize('candidates,distances,piece', [
+    ((1, 2), (0.6, 0.4), 2),
+    ((1, 2), (0.4, 0.6), 1),
+    ((2, 1), (0.5, 0.5), 1),
+    ((2, 1), (), 1),
+    ((2, 1), (0.6,), 2),  # a known distance wins over an unknown one
+])
+def test_outside_votes_go_to_the_nearer_box(candidates, distances, piece):
+    stands = [stand(30, inside=0, px=(185, 120), candidates=candidates, cand_dist=distances)
+              for _ in range(5)]
+    calls = []
+
+    def snap(p, px):
+        calls.append(p)
+        return (120 if p == 1 else 150), 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[120 if piece == 1 else 150, 120, 30]]
+    assert calls == [piece] and assigned == [(s, piece, 30) for s in stands] and not conflicts
+    assert counts['vote'] == 5
+
+
+def test_votes_go_to_the_nearest_box_only():
+    # Summit pieces 5/6: overlapping reach must not teach both boxes.
+    stands = [stand(30, inside=2, candidates=(1, 2), cand_dist=(0.0, 0.1), px=(150, 120))
+              for _ in range(3)]
+    far = stand(50, inside=0, candidates=(1, 2), cand_dist=(0.6, 0.4))
+    rows, assigned, conflicts, counts = bt.judge([*stands, far], GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30]]
+    assert assigned == [(s, 2, 30) for s in stands]
+    assert conflicts[0]['candidates'] == [[1, [], 0.6], [2, [3.0], 0.4]]
+    assert counts['vote'] == 3 and counts['conflict'] == 1
+
+
+@pytest.mark.parametrize('zs,expected_z', [((30, 33, 34), None), ((30, 32, 33), 32),
+                                         ((30, 33, 35), None)])
+def test_votes_group_within_top_tol_from_the_first_member(zs, expected_z):
+    stands = [stand(z, inside=2, candidates=(1, 2), px=(150, 120)) for z in reversed(zs)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    if expected_z is None:
+        assert rows.shape == (0, 3) and not assigned and len(conflicts) == 3
+        assert counts['conflict'] == 3 and counts['vote'] == 0
+    else:
+        assert rows.tolist() == [[150, 120, expected_z]] and not conflicts
+        assert assigned == [(s, 2, expected_z) for s in sorted(stands, key=lambda s: s.z_dm)]
+        assert counts['vote'] == 3 and counts['conflict'] == 0
+
+
+def test_votes_split_by_height():
+    stands = [stand(z, inside=2, candidates=(1, 2), px=(150, 120)) for z in (30, 45) for _ in range(3)]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30], [150, 120, 45]]
+    assert len(assigned) == counts['vote'] == 6 and not conflicts
+    assert sum(counts.values()) == 6
+
+
+def test_a_voted_top_assigns_a_left_stand():
+    votes = [stand(30, inside=2, candidates=(1, 2), px=(150, 120)) for _ in range(3)]
+    left = stand(31, inside=0, candidates=(1, 2), cand_dist=(0.6, 0.6))
+    rows, assigned, conflicts, counts = bt.judge([*votes, left], GROUND, lambda px: ())
+    assert rows.tolist() == [[150, 120, 30]] and not conflicts
+    assert assigned == [(s, 2, 30) for s in votes] + [(left, 2, 30)]
+    assert assigned.count((left, 2, 30)) == 1
+    assert counts['vote'] == 3 and counts['assign'] == 1 and counts['conflict'] == 0
+    assert sum(counts.values()) == 4
+
+
+def test_touching_ambiguous_stands_vote_and_snap_the_member_pixel():
+    stands = [stand(30, inside=0, candidates=(1, 2), cand_dist=(0.5, 0.1), px=(x, y))
+              for x, y in ((184, 122), (184, 120), (182, 120))]
+    calls = []
+
+    def snap(piece, px):
+        calls.append((piece, px))
+        return 179, 120
+
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: (), snap=snap)
+    assert rows.tolist() == [[179, 120, 30]] and calls == [(2, (184, 120))]
+    assert len(assigned) == counts['vote'] == 3 and not conflicts
+
+
+@pytest.mark.parametrize('pixels,expected', [
+    (((154, 124), (150, 120), (154, 120), (150, 124)), (150, 120)),
+    (((150, 120), (152, 120), (154, 120), (156, 120)), (152, 120)),
+])
+def test_vote_pixel_ties_choose_lower_y_then_x(pixels, expected):
+    stands = [stand(30, inside=2, candidates=(1, 2), px=px) for px in pixels]
+    rows, _, conflicts, counts = bt.judge(stands, GROUND, lambda px: (),
+                                         snap=lambda piece, px: pytest.fail('inside pixel must not snap'))
+    assert rows.tolist() == [[*expected, 30]] and not conflicts
+    assert counts['vote'] == len(stands)
 
 
 def test_conflict_distances_follow_piece_ids_after_sorting_and_filtering():
