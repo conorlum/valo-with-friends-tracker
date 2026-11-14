@@ -321,9 +321,69 @@ def test_the_operator_lists_activates_exports_and_turns_off(factory, db, linked,
     assert (out_dir / f"{name}.height.npz").read_bytes() == b"npz-aaaaaaaaaaaa"
     wrapper = json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8"))
     assert wrapper["height_sha"] == "aaaaaaaaaaaa" and wrapper["height"]["supported_cells"] == 4200
+    statuses = {r.id: r.status for r in ch.rows(db)}
+    assert command.main(["export", "--map", name, "--digest", "bbbbbbbbbbbb", "--out", str(out_dir)],
+                        session_factory=factory) == 0
+    assert (out_dir / f"{name}.height.npz").read_bytes() == b"npz-bbbbbbbbbbbb"
+    wrapper = json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8"))
+    assert wrapper["height_sha"] == "bbbbbbbbbbbb" and wrapper["height"]["not_ready"] == ["thin"]
+    missing_dir = tmp_path / "missing"
+    assert command.main(["export", "--map", name, "--digest", "000000000000", "--out", str(missing_dir)],
+                        session_factory=factory) == 2
+    assert not missing_dir.exists()
+    assert "000000000000" in capsys.readouterr().err
+    db.expire_all()
+    assert {r.id: r.status for r in ch.rows(db)} == statuses
     assert command.main(["export", "--map", name, "--out", str(WEBAPP / "here")], session_factory=factory) == 2
     assert command.main(["off", "--map", name], session_factory=factory) == 0
     db.expire_all()
     assert ch.active_digests(db) == {}
     assert command.main(["off", "--map", name], session_factory=factory) == 0 and "no active heights" in capsys.readouterr().out
     assert command.main(["export", "--map", name, "--out", str(out_dir)], session_factory=factory) == 2
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("status", ["active", "rejected", "superseded"])
+@pytest.mark.parametrize("same_time", [False, True])
+def test_operator_exports_one_exact_build_without_changing_status(factory, db, tmp_path, status, same_time):
+    import io
+    from datetime import datetime, timedelta, timezone
+
+    import numpy as np
+    import control_heights as command
+
+    name, digest = "Toy", "cccccccccccc"
+    now = datetime(2026, 11, 13, tzinfo=timezone.utc)
+    artifacts = {}
+    for row_id, map_name, row_digest, row_status, built_at in (
+        (1, name, digest, status if not same_time else "superseded", now),
+        (2, name, digest, status if same_time else "superseded", now if same_time else now - timedelta(days=1)),
+        (3, "Other", digest, "rejected", now + timedelta(days=1)),
+        (4, name, "dddddddddddd", "rejected", now + timedelta(days=1)),
+    ):
+        asset = io.BytesIO()
+        meta = {"build": row_id}
+        np.savez_compressed(asset, meta=np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8))
+        rep = report(seconds=float(row_id), ready=row_status != "rejected")
+        artifacts[row_id] = (asset.getvalue(), rep, meta)
+        db.add(ControlHeight(id=row_id, map_name=map_name, digest=row_digest, status=row_status,
+                             built_at=built_at, asset=asset.getvalue(), report=rep, rules=dict(RULES),
+                             match_uuids=[], inputs={}, inputs_sha="test-inputs"))
+    db.commit()
+    statuses = {r.id: r.status for r in ch.rows(db)}
+    chosen = 2 if same_time else 1
+    expected_bytes, expected_report, expected_meta = artifacts[chosen]
+    out_dir = tmp_path / "export"
+    assert command.main(["export", "--map", name, "--digest", digest, "--out", str(out_dir)],
+                        session_factory=factory) == 0
+    exported = (out_dir / f"{name}.height.npz").read_bytes()
+    assert exported == expected_bytes
+    assert ch._asset_meta(exported) == expected_meta
+    assert json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8")) == {
+        "height_sha": digest, "height": expected_report}
+    if status == "active":
+        assert command.main(["export", "--map", name, "--out", str(out_dir)], session_factory=factory) == 0
+        assert (out_dir / f"{name}.height.npz").read_bytes() == expected_bytes
+        assert json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8"))["height"] == expected_report
+    db.expire_all()
+    assert {r.id: r.status for r in ch.rows(db)} == statuses
