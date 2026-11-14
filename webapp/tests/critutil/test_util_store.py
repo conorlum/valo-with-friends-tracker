@@ -22,7 +22,7 @@ V3 = {"rows": [{"a": 3.5}], "fit": {"w": [0.3]}}
 @pytest.fixture
 def db():
     engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine, tables=[UtilModel.__table__])
     with Session(engine) as session:
         yield session
     engine.dispose()
@@ -216,7 +216,7 @@ def test_cache_identity_includes_database_url(db):
     db.commit()
     assert util_store.read_values(db) == ("k1", V)
     engine = create_engine("sqlite+pysqlite://")
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine, tables=[UtilModel.__table__])
     try:
         with Session(engine) as other:
             other.add(UtilModel(name="values", version=util_values.VERSION, key="k1", data=V2,
