@@ -43,42 +43,42 @@
   "Ascent": {
    "callouts_sha256": "0fd802b1658c27441a8fb623aff4a7c7566ba2bcff83f7ebbc7290efc53295f9",
    "choke_asset_hash": "6dcf88e6769966f4",
-   "control_fingerprint": "064827e053ef68a1",
+   "control_fingerprint": "f5e93437c80a5c53",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
      "height_digest": "flat",
      "map_name": "Ascent",
-     "tags_digest": "a06d75610560346ce73a89b59ec679f03091a93ec7b5972b2834930d2977f8a8"
+     "tags_digest": "fd506c1b21c29ee8792777adf27184e75f01472f00ed288341d293d57e57e964"
     },
     "geometry": {
      "barrier": "77b049460968",
-     "cover": "48afd9eee5e9",
+     "cover": "03d6b7c14536",
      "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
      "scale": 7e-05,
-     "sight": "06147e83b898",
+     "sight": "09f5f6a85c9b",
      "specials": [],
-     "walk": "12861b1023d3"
+     "walk": "c7b8d59538e6"
     },
     "state": "ready"
    },
    "engine_key": "a98ae2b284695957",
-   "gap_fingerprint": "dbb6d468415d0263",
+   "gap_fingerprint": "769d060d0465c1e1",
    "geometry_inputs": {
     "barrier": "77b049460968",
-    "cover": "48afd9eee5e9",
+    "cover": "03d6b7c14536",
     "scale": 7e-05,
-    "sight": "06147e83b898",
+    "sight": "09f5f6a85c9b",
     "specials": [],
-    "walk": "12861b1023d3"
+    "walk": "c7b8d59538e6"
    },
    "height_geometry_identity": {
-    "cover": "48afd9eee5e9",
+    "cover": "03d6b7c14536",
     "scale": 7e-05,
-    "sight": "06147e83b898",
-    "walk": "12861b1023d3"
+    "sight": "09f5f6a85c9b",
+    "walk": "c7b8d59538e6"
    },
-   "height_manifest_digest": "84aa758d1fe434fb",
+   "height_manifest_digest": "d4fae9144db57a2f",
    "map_layer_sha256": "1ce07436d429fbc1c418c73689ac423b27c4be7a19fc2e82737e77210e1b3a44"
   },
   "Bind": {

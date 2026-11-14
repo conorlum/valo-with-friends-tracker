@@ -2,6 +2,7 @@
 scripts/build_control_geometry.py): fresh against its inputs, and passing Risk 1 on every map with
 replays (docs/replay-map-control-plan.md: 2% or less of kill lines blocked)."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,8 +56,58 @@ def test_committed_masks_match_a_fresh_build(name):
     assert (cg.read_mask_png(cg.ASSET_DIR / f"{name}.walk.png") == fresh.walk).all()
 
 
-# Ascent's whole cover mask has 15 pieces; taking out the pixels that overlap a real wall splits two of them.
-COVER_PIECES = {"Summit": 28, "Ascent": 17, "Sunset": 1}
+# Ascent's traced A11 boxes join wall 11; the A17 boxes form one new piece, separate from wall 17.
+COVER_PIECES = {"Summit": 28, "Ascent": 18, "Sunset": 1}
+
+
+def test_ascent_traced_boxes():
+    labels = cg.load_geometry("Ascent", height_mode="flat").cover_px
+    assert labels[538, 437] == labels[535, 441] == labels[537, 450] != 0
+    assert labels[758, 329] == labels[758, 340] != 0
+    assert labels[749, 330] != 0
+    assert labels[758, 329] != labels[749, 330]
+    assert labels[550, 445] == 0
+
+
+def test_ascent_paint_is_exactly_the_traced_cells():
+    tags = json.loads((cg.ASSET_DIR / "tags.json").read_text(encoding="utf-8"))
+    cells = cg.unpack_paint(tags["maps"]["Ascent"]["cover_paint"])[::4, ::4].copy()
+    assert cells[133:137, 109].all()
+    assert cells[132:136, 111:115].all()
+    assert not cells[136:141, 111].any()
+    assert cells[189:191, 81:86].all()
+    # x86 dropped by owner ruling 2026-11-13: it clipped a real kill line
+    assert not cells[189:191, 86].any()
+    cells[133:137, 109] = False
+    cells[132:136, 111:115] = False
+    cells[136:141, 111] = False
+    cells[189:191, 81:86] = False
+    # Recorded from origin/main before W1's edit by the scratch ascent_paint.py script;
+    # recomputed with the amended rectangle (x81-85): unchanged, since x86 was unset.
+    assert hashlib.sha256(cells.tobytes()).hexdigest() == (
+        "0b5eadb940ca459fee7f3fa84bf87d277b31294e501ab4308de7b6c0ee8ebfd3")
+    del tags["maps"]["Ascent"]["cover_paint"]
+    assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
+        "a64e8e0d542cdedb58fbe5d6cf66d7924e336734568898fb80ce2fd9d99af0e1")
+
+
+def test_ascent_without_traced_cells_keeps_original_masks():
+    entry = dict(TAGS["Ascent"])
+    cells = cg.unpack_paint(entry["cover_paint"])[::4, ::4].copy()
+    cells[133:137, 109] = False
+    cells[132:136, 111:115] = False
+    cells[136:141, 111] = True
+    cells[189:191, 81:86] = False
+    entry["cover_paint"] = cg.pack_paint(cells)
+    image = rgba("Ascent")
+    original = cg.masks(image, entry)
+    # Committed asset identities before R1: switching off the trace gives the old masks.
+    for mask, expected in (
+        (original.sight, "06147e83b898"),
+        (original.walk, "12861b1023d3"),
+        (cg.see_over_cover(image, entry), "48afd9eee5e9"),
+    ):
+        assert hashlib.sha256(np.packbits(mask).tobytes()).hexdigest()[:12] == expected
 
 
 def _paint_cells(*cells):

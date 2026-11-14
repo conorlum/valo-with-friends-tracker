@@ -23,14 +23,14 @@
    }
   },
   "Ascent": {
-   "fingerprint": "9b6261e3108b2f64",
+   "fingerprint": "5936989ba94c9037",
    "geometry_inputs": {
     "barrier": "77b049460968",
-    "cover": "48afd9eee5e9",
+    "cover": "03d6b7c14536",
     "scale": 7e-05,
-    "sight": "06147e83b898",
+    "sight": "09f5f6a85c9b",
     "specials": [],
-    "walk": "12861b1023d3"
+    "walk": "c7b8d59538e6"
    }
   },
   "Bind": {
