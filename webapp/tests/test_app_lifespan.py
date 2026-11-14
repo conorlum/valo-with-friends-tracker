@@ -5,12 +5,12 @@ import pytest
 from app import main
 from app.config import settings
 from app.db import SessionLocal
-from app.services import map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health
+from app.services import kill_impact_sweep, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health
 
-SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states, util_build_remote)
+SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states, util_build_remote, kill_impact_sweep)
 
 
-@pytest.mark.parametrize("failure", [None, "request", 0, 1, 2, 3, 4])
+@pytest.mark.parametrize("failure", [None, "request", *range(len(SERVICES))])
 def test_lifespan_cleans_up_normal_exit_runtime_error_and_partial_startup(monkeypatch, failure):
     calls, events = [], []
     for i, service in enumerate(SERVICES):
@@ -186,3 +186,25 @@ def test_util_thread_uses_control_cadence_and_returns_stop(monkeypatch):
     assert kwargs["kwargs"]["every_s"] == replay_control_remote.CYCLE_S
     assert kwargs["name"] == "util-build" and kwargs["daemon"]
     thread.return_value.start.assert_called_once_with()
+
+
+def test_kill_impact_sweep_starts_daemon_and_returns_stop(monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr(settings, "demo_mode", False)
+    thread = Mock()
+    monkeypatch.setattr(threading, "Thread", thread)
+    stop = kill_impact_sweep.start(SessionLocal)
+    assert isinstance(stop, threading.Event)
+    assert not stop.is_set()
+    thread.assert_called_once_with(target=kill_impact_sweep.run_forever,
+                                   args=(SessionLocal, stop), name="kill-impact", daemon=True)
+    thread.return_value.start.assert_called_once_with()
+
+
+def test_kill_impact_sweep_demo_starts_no_thread(monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr(settings, "demo_mode", True)
+    thread = Mock()
+    monkeypatch.setattr(threading, "Thread", thread)
+    assert kill_impact_sweep.start(SessionLocal) is None
+    thread.assert_not_called()

@@ -16,9 +16,10 @@ It stores full-precision values and a fingerprint of the stored rows (`db.impact
 the page shows the split only while that fingerprint is unchanged, so a rescore hides it until
 this runs again.
 
-It runs only from user-run scripts (ingest's write path, `link_replays.py`, the crawl hook),
-after the link commits, in its own session: a scorer error there can't undo a store or a link,
-and the web service never runs the scorer (AFK run decision D3, approved).
+It runs from user-run scripts (ingest's write path, `link_replays.py`, the crawl hook) and
+the site's `kill_impact_sweep`, after the link commits, in its own session: a scorer error
+can't undo a store or a link. PLAN D1 puts the sweep on the site because the Workflow worker
+has no database code and the scorer reads a session and frozen models.
 
 This is the one replay module that may import scoring code, and only these read-only names;
 tests/replays/test_replay_isolation.py enforces the list, and that nothing here persists.
