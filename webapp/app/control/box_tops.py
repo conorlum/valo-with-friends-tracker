@@ -1,5 +1,11 @@
-"""Steady stands within reach of cover, and the box tops they teach. Unambiguous stands inside or touching an
-outline teach; the others match learnt tops or become conflicts. Build evidence uses world dm, diagnostics world metres."""
+"""Steady stands within reach of cover, and the box tops they teach.
+Stands level with any side floor are ground, including inside stands.
+Outside stands matching a connected floor within GROUND_NEAR_M are near-floor ground.
+Stands within TOP_TOUCH_M of an outline count as inside and their emitted pixels snap onto the piece.
+Remaining ambiguous stands vote for their effective piece or nearest candidate; TOP_VOTES_INSIDE inside/touching
+stands or TOP_VOTES_OUTSIDE in all agreeing within TOP_TOL_M teach a top.
+Other stands match learnt tops or become conflicts; build evidence uses world dm, diagnostics world metres.
+"""
 
 from __future__ import annotations
 
@@ -368,7 +374,8 @@ def _fold_crouches(stands):
 
 def judge(stands, ground, leaf_floor, beside=None, *, sides=None, snap=None):
     """(world-dm top rows, [(stand, piece, top world dm)], conflict records, fate counts).
-    `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf. `beside(piece, px)`, when
+    `leaf_floor(px)` yields connected floor heights in world dm within GROUND_NEAR_M of the pixel;
+    an outside stand matching one within TOP_TOL_M is near-floor ground. `beside(piece, px)`, when
     given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`). An outside
     stand must be a step above that floor, since a piece's sides can stand on different floors (Summit's piece 20
     has 2.0 m on one face and 3.0 m on the others). Optional `sides` maps each piece to its side floors in world dm.

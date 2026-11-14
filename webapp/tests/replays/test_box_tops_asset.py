@@ -5,6 +5,7 @@ manifest."""
 import hashlib
 import io
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -80,6 +81,53 @@ def test_a_cover_build_learns_the_top_and_changes_nothing_else():
     assert 'box_conflicts' not in learnt.asset.meta and 'box_conflicts' not in plain.report
     assert plain.asset.meta == learnt.asset.meta
     assert learnt.asset.digest != plain.asset.digest
+
+
+def test_cover_build_passes_world_sides_snap_and_near_floors(monkeypatch):
+    from app.control import box_tops as bt
+
+    labels = cover()
+    probe = (325, 160)  # six pixels beyond the piece's last pixel (319, 160)
+    neighbour = (329, 160)  # a connected leaf four pixels from the probe
+    seen = {}
+    judge, floors_near = bt.judge, bt.floors_near
+
+    def sparse_leaf(geo, asset):
+        assert geo.cover_px is labels
+        seen['asset'] = asset
+        # Isolate the wiring: this leaf has no floor at the probe, only at its neighbour.
+        leaf = lambda px: (z_dm(0.0),) if px == neighbour else ()
+        seen['plain_leaf'] = leaf
+        return leaf
+
+    def near(leaf, px, radius):
+        seen['radius'] = radius
+        return floors_near(leaf, px, radius)
+
+    def record(stands, ground, leaf_floor, beside=None, **kwargs):
+        seen.update(kwargs)
+        seen['near_floors'] = leaf_floor(probe)
+        return judge(stands, ground, leaf_floor, beside, **kwargs)
+
+    monkeypatch.setattr(hb, 'box_leaf_floor', sparse_leaf)
+    monkeypatch.setattr(bt, 'floors_near', near)
+    monkeypatch.setattr(bt, 'judge', record)
+    learnt = hb.build(covered_rounds({9: box_player()}), GEO, cover_px=labels)
+    asset = seen['asset']
+    floors = bt.piece_floors(labels, asset.floors, fine_cells=asset.fine_cells,
+                             fine_floors=asset.fine_floors, walk_px=GEO.walk_px)
+    assert asset.origin_z != 0
+    assert seen['sides'] == {p: tuple(f + asset.origin_z for f in s.values())
+                             for p, s in floors.sides.items()}
+    assert set(seen['sides'][1]) == {z_dm(0.0)}
+    assert callable(seen['snap'])
+    x, y = seen['snap'](1, probe)
+    assert labels[y, x] == 1
+    assert seen['plain_leaf'](probe) == ()
+    assert seen['plain_leaf'](neighbour) == (z_dm(0.0),)
+    assert seen['near_floors'] == (z_dm(0.0),)
+    assert seen['radius'] == math.ceil(1.0 / GEO.m_per_px)
+    assert learnt.asset.box_tops[:, 2].tolist() == [z_dm(1.2) - asset.origin_z]
 
 
 def test_a_top_is_learnt_without_a_climb():

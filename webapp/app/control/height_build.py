@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 import copy
 
 import hashlib
+import math
 from collections import Counter
 
 import numpy as np
@@ -728,6 +729,7 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
         floors = box_tops.piece_floors(cover_px, asset.floors, fine_cells=asset.fine_cells,
                                        fine_floors=asset.fine_floors, walk_px=geo.walk_px)
         ground = {p: g + asset.origin_z for p, g in floors.ground.items()}
+        sides = {p: tuple(f + asset.origin_z for f in s.values()) for p, s in floors.sides.items()}
 
         def beside(piece, px):
             got = floors.floor_at(piece, px)
@@ -735,8 +737,11 @@ def build(rounds, geo: Geometry, *, refinement_history=None, cover_px=None) -> H
 
         covered_geo = copy.copy(geo)
         covered_geo.cover_px = cover_px
-        tops, _, conflicts, box_counts = box_tops.judge(box_stands, ground, box_leaf_floor(covered_geo, asset),
-                                                        beside, snap=box_tops.piece_snapper(cover_px))
+        leaf = box_leaf_floor(covered_geo, asset)
+        radius = math.ceil(hc.GROUND_NEAR_M / geo.m_per_px)
+        tops, _, conflicts, box_counts = box_tops.judge(
+            box_stands, ground, lambda px: box_tops.floors_near(leaf, px, radius), beside,
+            sides=sides, snap=box_tops.piece_snapper(cover_px))
         tops[:, 2] -= asset.origin_z
         tops = tops[tops[:, 2] >= 0]
         asset.box_tops = tops if len(tops) else None
