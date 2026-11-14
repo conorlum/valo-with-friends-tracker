@@ -24,7 +24,7 @@ PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72e
                                       # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
                                       # (was "ef8175ac1844"), then for the crouch key
                 7: "93c941558c40",    # 7 (2026-11-02): the build's code only (box floors side by side)
-                8: "ecff823ee518"}    # 8 unreleased: FELL_BELOW_M, falls left out of the kill-line check
+                8: "93c941558c40"}    # 8 unreleased: build code only (fall check and height paint)
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
@@ -38,7 +38,6 @@ def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
 
 
 def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
-    monkeypatch.delattr(hc, "FELL_BELOW_M", raising=False)
     for name in ("TOP_REACH_M", "VIEW_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M", "HEAD_M", "FEET_M",
                  "CROUCH_LAG_S", "CROUCH_NEAR_S"):
         monkeypatch.delattr(hc, name, raising=False)
@@ -49,7 +48,6 @@ def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(m
 
 
 def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypatch):
-    monkeypatch.delattr(hc, "FELL_BELOW_M", raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.delattr(hc, "VIEW_REACH_M")
@@ -58,7 +56,6 @@ def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypa
 
 
 def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypatch):
-    monkeypatch.delattr(hc, "FELL_BELOW_M", raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     monkeypatch.setattr(hc, "EYE_M", 1.1)
@@ -66,14 +63,23 @@ def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypa
 
 
 def test_without_the_crouch_key_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
-    monkeypatch.delattr(hc, "FELL_BELOW_M", raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     assert hc.rules()["constants"] == "ef8175ac1844"
 
 
-def test_without_the_fall_threshold_the_revision_seven_hash_is_unchanged(monkeypatch):
-    monkeypatch.delattr(hc, "FELL_BELOW_M")
+def test_the_revision_seven_constants_hash_is_unchanged():
+    assert hc.rules()["constants"] == PINNED_RULES[7]
+
+
+def test_the_fall_threshold_is_build_only(monkeypatch):
+    from app.control import height_build as hb
+    from tests.replays.test_control_format import _constants_digest
+
+    assert not hasattr(hc, "FELL_BELOW_M")
+    before = _constants_digest()
+    monkeypatch.setattr(hb, "FELL_BELOW_M", hb.FELL_BELOW_M + 1.0)
+    assert _constants_digest() == before
     assert hc.rules()["constants"] == PINNED_RULES[7]
 
 

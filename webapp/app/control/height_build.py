@@ -839,6 +839,11 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
 # ---------------------------------------------------------------- the checks before an asset is committed
 
 
+# A player this far below the map's lowest floor has fallen off it (Abyss). A fall kill needs no sight line:
+# whoever last damaged the player gets the kill wherever they are. Measured at -64 m on Abyss (2026-11-13).
+FELL_BELOW_M = 3.0
+
+
 def kill_line_check(rounds: list, geo: Geometry, *, keep_all: bool = False) -> dict:
     """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
     have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
@@ -878,7 +883,7 @@ def kill_line_check(rounds: list, geo: Geometry, *, keep_all: bool = False) -> d
                 excluded["no position with z near the kill"] += 1
                 continue
             (kx, ky, kz), (vx, vy, vz) = ends
-            if min(kz, vz) < -hc.FELL_BELOW_M:     # z is above the map's lowest floor: off the map, no sight line
+            if min(kz, vz) < -FELL_BELOW_M:     # z is above the map's lowest floor: off the map, no sight line
                 excluded["fell off the map"] += 1
                 continue
             if geo.unresolved_at_px(kx, ky) or geo.unresolved_at_px(vx, vy):

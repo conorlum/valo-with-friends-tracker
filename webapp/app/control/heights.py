@@ -113,9 +113,6 @@ TRIP_REACH_M = 10.0
 
 # --- the kill-line check
 KILL_SAMPLE_S = 0.25       # killer and victim each need a position with z this close to the kill
-# A player this far below the map's lowest floor has fallen off it (Abyss). A fall kill needs no sight line:
-# whoever last damaged the player gets the kill wherever they are. Measured at -64 m on Abyss (2026-11-13).
-FELL_BELOW_M = 3.0
 
 # --- box tops (app/control/stance.py and box_tops.py import these, so the rules hash covers them)
 BOX_SETTLE_S = 0.5
