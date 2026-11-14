@@ -221,6 +221,7 @@ or clears rows;
 `scripts/site_health.py` only lists. A route with a secret in its path (`{key}`) is stored as its template.
 A new recorded kind goes in `site_health.RECORDED_KINDS` and the card's `KINDS`, `GROUPS` and `EVENT_KINDS`.
 Spec: `docs/superpowers/specs/2026-11-05-site-health-design.md`.
+A failed upload whose file is gone is retired by an entry in `app/data/retired_uploads.json` (upload_id, reason, fixed_by), a PR only; a later stored upload of the same file clears both upload kinds.
 
 ### Deploy drain
 

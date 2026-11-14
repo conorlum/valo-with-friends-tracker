@@ -13,7 +13,10 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from functools import cache
+from pathlib import Path
 from urllib.parse import urlencode
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -27,6 +30,7 @@ from app.services.replay_gaps import Freshness
 
 SHOW = 50
 TTL_S = 55
+RETIRED_FILE = Path(__file__).resolve().parents[1] / "data" / "retired_uploads.json"
 SITE = "https://valowithfriendstracker.onrender.com"
 KINDS = (
     ("box_conflict", "Box height conflicts"),
@@ -94,6 +98,47 @@ _util_checked_at: datetime | None = None
 # warning uses, since the card's own cheap query also counts rows a newer input superseded
 _util_oldest_current: tuple | None = None
 _digests: dict = {}    # (replay id, round, fingerprint) -> the round's feature artifact digest, or None
+
+
+def check_retired(entries) -> list[str]:
+    """Validate the committed list before any upload can be retired."""
+    if not isinstance(entries, list):
+        return ["retired uploads must be a list"]
+    problems = []
+    seen = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            problems.append(f"entry {index} must be an object")
+            continue
+        value = entry.get("upload_id")
+        try:
+            if not isinstance(value, str):
+                raise ValueError("not a string")
+            upload_id = str(UUID(value))
+        except ValueError:
+            problems.append(f"entry {index} upload_id must be a UUID string")
+        else:
+            if upload_id in seen:
+                problems.append(f"entry {index} has a duplicate upload_id")
+            seen.add(upload_id)
+        for field in ("reason", "fixed_by"):
+            if not isinstance(entry.get(field), str) or not entry[field].strip():
+                problems.append(f"entry {index} {field} must be a nonempty string")
+    return problems
+
+
+@cache
+def retired_upload_ids() -> frozenset[str]:
+    """Read once per process; an unusable list leaves every failure visible."""
+    try:
+        entries = json.loads(RETIRED_FILE.read_text(encoding="utf-8"))
+        problems = check_retired(entries)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return frozenset(str(UUID(entry["upload_id"])) for entry in entries)
+    except (OSError, ValueError) as exc:
+        log.warning("Cannot load retired uploads from %s: %s", RETIRED_FILE, exc)
+        return frozenset()
 
 
 def now() -> datetime:
@@ -509,11 +554,12 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         kinds = []
         superseded = (upload.source_sha256 is not None and upload.source_sha256 in latest_stored
                       and latest_stored[upload.source_sha256] > _utc(upload.created_at))
-        if upload.status == "failed" and not superseded:
+        retired = str(UUID(str(upload.id))) in retired_upload_ids()
+        if upload.status == "failed" and not superseded and not retired:
             kinds.append("upload_failed")
         if upload.status == "held":
             kinds.append("upload_held")
-        if upload.store_outcome == "failed" and not superseded:
+        if upload.store_outcome == "failed" and not superseded and not retired:
             kinds.append("store_failed")
         if (upload.status == "stored" and upload.archive_ack is None
                 and _utc(upload.finished_at or upload.created_at) < cutoff):

@@ -1,0 +1,37 @@
+[
+  {
+    "upload_id": "2c399b3a-a386-42d9-85d6-367959a3bc29",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "c3c63dbd-9793-457d-8eef-844bd0954e86",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "8094c097-5b1b-4614-b433-d71c1cc220c1",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "99d06615-9b14-4dc5-b193-ed6c808a0edc",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "89ad01f8-c44c-4aba-8963-7b5738958f25",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "91799cba-4da4-459c-8d80-deaeda5dcc7d",
+    "reason": "Replay parsing failed on 2026-10-14; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  },
+  {
+    "upload_id": "cde7e3f5-5c3a-4bfd-8a72-b119dc475cec",
+    "reason": "Replay could not be condensed (lifecycle) on 2026-10-16; no file was kept.",
+    "fixed_by": "health-card-uploads"
+  }
+]
