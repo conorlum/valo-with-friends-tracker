@@ -293,7 +293,7 @@ def test_poll_superseded_during_retry_never_resumes():
 
 def test_drain_poll_retries_keep_takeovers_original_server_clock():
     site = Site()
-    site.age = 3000
+    site.age = pipeline.DRAIN_S - 600
     site.quiet_after = 10000
     site.fail_request = lambda route, data: 502 if route == "poll" and len(site.polls) in (19, 20) else None
     assert site.run() == 0
@@ -315,7 +315,7 @@ def test_dry_probe_retries_keep_original_six_minute_deadline():
 def test_wait_phase_polls_retry_and_abort_only_after_continuous_failure(stage, persistent):
     site = Site()
     if stage == "cancellations":
-        site.age = 3600
+        site.age = pipeline.DRAIN_S
         site.quiet_after = 10000
     if stage == "probe":
         site.quiet_after = 1
@@ -346,7 +346,7 @@ def test_wait_phase_polls_retry_and_abort_only_after_continuous_failure(stage, p
 def test_poll_retry_does_not_restart_phase_deadline(stage):
     site = Site()
     if stage == "cancellations":
-        site.age = 3600
+        site.age = pipeline.DRAIN_S
         site.quiet_after = 10000
         site.cancel_for = 360
     else:
@@ -372,15 +372,15 @@ def test_poll_retry_does_not_restart_phase_deadline(stage):
 def test_never_quiet_protects_uploads_before_force():
     site = Site()
     site.quiet_after = 10000
-    site.uploads = lambda: site.clock() >= site.begin + 3660
+    site.uploads = lambda: site.clock() >= site.begin + pipeline.DRAIN_S + 60
     assert site.run() == 0
-    assert site.force_at == site.begin + 3660
-    assert site.begin + 3600 in site.polls
+    assert site.force_at == site.begin + pipeline.DRAIN_S + 60
+    assert site.begin + pipeline.DRAIN_S in site.polls
 
 
 def test_takeover_keeps_clock_and_cancels_old_run():
     site = Site()
-    site.age = 3000
+    site.age = pipeline.DRAIN_S - 600
     site.superseded = "previous-run"
     site.quiet_after = 10000
     site.gh_fails = True
@@ -395,7 +395,7 @@ def test_superseded_never_resumes_again(route):
     site = Site()
     site.lose_on = route
     if route == "force":
-        site.age = 3600
+        site.age = pipeline.DRAIN_S
         site.quiet_after = 10000
     assert site.run() == 0
     assert len(site.events("resume")) == (1 if route == "resume" else 0)
@@ -433,7 +433,7 @@ def test_tasks_ignores_probe_started_before_hook():
 @pytest.mark.parametrize("cancel_for,expected", [(60, 60), (360, 300)])
 def test_force_waits_for_cancels_with_five_minute_limit(cancel_for, expected):
     site = Site()
-    site.age = 3600
+    site.age = pipeline.DRAIN_S
     site.quiet_after = 10000
     site.cancel_for = cancel_for
     assert site.run() == 0
@@ -482,7 +482,7 @@ def test_dry_run_waits_for_first_probe_and_prints_all_commits(probe_delay, commi
 def test_dry_run_never_forces_even_at_drain_limit():
     site = Site()
     site.quiet_after = 10000
-    site.age = 3600
+    site.age = pipeline.DRAIN_S
     assert site.run("--dry-run") == 0
     assert not site.events("force") and not site.events("deploying")
 
@@ -515,7 +515,7 @@ def test_busy_eighty_minutes_then_all_limits_fit_job_budget():
     site.quiet_after = 10000
     site.cancel_for = 360
     site.delays = dict.fromkeys(SERVICES, 1800)
-    site.uploads = lambda: site.clock() >= site.busy_until + 3600 + 900 if not site.hooks else False
+    site.uploads = lambda: site.clock() >= site.busy_until + pipeline.DRAIN_S + 900 if not site.hooks else False
     assert site.run() == 0
     assert site.clock() - site.begin <= 360 * 60
 
@@ -563,13 +563,17 @@ def test_hook_without_query_and_self_takeover():
     assert not site.gh_calls
 
 
-def test_input_flags_and_workflow_dispatch_contract():
+def test_input_flags_and_workflow_triggers_contract():
     assert pipeline.build_args({"skip_drain": "false", "dry_run": "true"}) == ["--dry-run"]
     assert pipeline.build_args({"skip_drain": True, "dry_run": False}) == ["--skip-drain"]
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
     active = "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
     assert "workflow_dispatch:" in active
-    assert not any(line.strip().startswith("push:") for line in active.splitlines())
+    # D1: every merge to main deploys, except merges touching only docs, Markdown or tests.
+    lines = [line.strip() for line in active.splitlines()]
+    assert "push:" in lines and "branches: [main]" in lines and "paths-ignore:" in lines
+    ignored = lines[lines.index("paths-ignore:") + 1:lines.index("paths-ignore:") + 4]
+    assert ignored == ["- 'docs/**'", "- '**/*.md'", "- 'webapp/tests/**'"]
     assert "api.render.com" not in workflow
     assert "timeout-minutes: 360" in active
     assert 'python-version: "3.13"' in active
@@ -581,3 +585,10 @@ def test_input_flags_and_workflow_dispatch_contract():
     for name in Site().env:
         assert name + ": ${{ secrets." + name + " }}" in active
     assert "GH_TOKEN: ${{ github.token }}" in active
+
+
+def test_blueprint_services_leave_deploys_to_the_pipeline():
+    # The Action deploys them after a drain; Render auto-deploying too would restart them mid-work.
+    blueprint = (ROOT / "render.yaml").read_text()
+    assert blueprint.count("autoDeploy: false") == 2
+    assert "autoDeploy: true" not in blueprint

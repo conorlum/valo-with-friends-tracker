@@ -1,6 +1,6 @@
 # Deploy drain pipeline (PR 1 of 2)
 Goal: a deploy no longer kills in-flight replay work. A GitHub Action drains the friends site (pauses new work,
-waits for running work to finish, up to 60 min), deploys `replay-tasks`, `replay-worker`, `valowithfriendstracker`
+waits for running work to finish, up to 90 min), deploys `replay-tasks`, `replay-worker`, `valowithfriendstracker`
 and `valomaths` from one commit, in that order, then resumes. PR 1 ships everything with the Action manual-only
 (`workflow_dispatch`) and `render.yaml` still `autoDeploy: true`; PR 2 (later, not this build) flips the merge trigger
 and `autoDeploy: false` after the owner's setup and a live `dry_run`.
@@ -18,7 +18,7 @@ Done when:
 ## Decisions (settled with the owner 2026-11-12/13; not re-asked)
 D1 Trigger (PR 2): every merge to main except merges touching only `docs/**`, `**/*.md`, `webapp/tests/**`
    (`paths-ignore`). PR 1: `workflow_dispatch` only.
-D2 Merges collapse: a new Action arriving during a drain takes it over, keeping the original 60-min clock; the old
+D2 Merges collapse: a new Action arriving during a drain takes it over, keeping the original 90-min clock; the old
    Action is cancelled. Arriving while deploys run, it waits for them to finish, then runs its own full drain.
 D3 Manual inputs: `skip_drain` (default off) deploys at once; `dry_run` drains, waits, resumes, deploys nothing.
 D4 No CI gate.
@@ -29,7 +29,8 @@ D6 Waited for: control/gaps rounds incl. queued on the worker and not yet collec
    height builds; a Critical Util build already open or a local child already running; a parse already running;
    uploads arriving (at the site and at the worker), then 60 quiet seconds (a new upload restarts the 60 s).
    Not waited for: map-pool check, archive sync, replay-states, site-health flush, layout walls.
-D7 Hard limit 60 min from the drain's start, then deploy anyway; even then wait for an upload in progress + its 60 s.
+D7 Hard limit 90 min (was 60; raised by the owner 2026-11-13 in PR 2, after a Lotus control run outlasted the
+   dry run's 60 min) from the drain's start, then deploy anyway; even then wait for an upload in progress + its 60 s.
 D8 Forced deploy: the worker cancels its active Render Workflow runs; a `forced_deploy` row on the Site health card
    says what was lost (new recorded kind).
 D9 Deploy order replay-tasks → replay-worker → valowithfriendstracker → valomaths, same commit, each live before the next.
@@ -37,7 +38,7 @@ D10 Resume after deploys. On a failed deploy: resume anyway, fail the Action, ba
     next successful deploy.
 D11 Safety expiry 2 h. AMENDED 2026-11-13 (plan review F3, owner): every owner poll and every drain request sets
     `expires_at` = now + 2 h, so it fires only when the Action has stopped polling for 2 h; `started_at` and the
-    60-min clock never move.
+    90-min clock never move.
 D12 Visibility: banner (upload page + Site health card) and the Actions log. No audio.
 D13 Rollout: PR 1 as above; owner creates 4 deploy hooks, adds secrets, turns off auto-deploy for demo and
     replay-tasks, runs `dry_run`; PR 2 flips the trigger and `autoDeploy: false`.
@@ -126,7 +127,7 @@ R12 Banner: active, phase `draining` → "Deploying: N runs finishing, new work 
     new work paused". Not active and the latest drain with outcome `ok` or `failed` is `failed` → "Last deploy failed
     (<short sha>, <time>)"; `dry_run` and `expired` rows are ignored for this. Shown on `/replays/upload` and in
     `errors.json`'s card payload. Never in demo mode.
-R13 Pipeline: drain (unless `skip_drain`) → owner poll every 30 s until `quiet` or 3600 s after the drain's
+R13 Pipeline: drain (unless `skip_drain`) → owner poll every 30 s until `quiet` or 5400 s after the drain's
     `started_at` (the server's, so a takeover keeps the clock) → at the limit poll until `uploads_quiet`, then force, then
     poll until worker `drain.cancelling` is 0 (5 min limit, then go on) → `deploying` → for each service in D9 order:
     (before the worker and site hooks only) poll until `uploads_quiet` again, 15 min limit, then go on — uploads
@@ -141,7 +142,7 @@ R13 Pipeline: drain (unless `skip_drain`) → owner poll every 30 s until `quiet
 R14 Takeover: a `superseded` run id in the drain answer is cancelled with `gh run cancel` (failure logged, not
     fatal). A 409 on any owner call ends the run "superseded", exit 0, without resuming. A `busy` answer re-requests
     every 30 s until it isn't busy, for at most 90 min (then exit 1, "another deploy never finished"). The job's
-    limit is 360 min (GitHub's maximum), which covers 90 busy + 60 drain + 5 cancel + 4×(15 upload + 30 deploy).
+    limit is 360 min (GitHub's maximum), which covers 90 busy + 90 drain + 5 cancel + 2×15 upload + 4×30 deploy (335 min).
 R15 Every committed file is free of secrets: hook URLs, token and site URLs come from GitHub secrets
     (`RENDER_DEPLOY_HOOK_TASKS`, `_WORKER`, `_SITE`, `_DEMO`, `REPLAY_ADMIN_TOKEN`, `SITE_URL`, `DEMO_URL`); the
     script never prints a hook URL or the token.

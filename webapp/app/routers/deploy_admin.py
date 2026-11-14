@@ -174,7 +174,7 @@ def force(body: OwnerBody, db: Session = Depends(get_db)):
     context = {"cancelled": cancelled, "waiting": waiting}
     if result is None:
         context["worker_unreachable"] = True
-    site_health.record_now("forced_deploy", str(row.id), "deploy forced after 60 min", context,
+    site_health.record_now("forced_deploy", str(row.id), "deploy forced after 90 min", context,
                            session_factory=_session_factory)
     _owner_write(deploy_drain.mark_forced, db, body.run_id)
     return {"cancelled": cancelled}

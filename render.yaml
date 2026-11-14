@@ -16,7 +16,7 @@ services:
       alembic upgrade head
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeploy: false
     envVars:
       - key: DATABASE_URL
         sync: false  # set manually in the Render dashboard to the Render Postgres INTERNAL connection string
@@ -90,7 +90,7 @@ services:
     # Memory: the condense peaked near 1 GB on a 60 MB export, ~3.3 GB scaled to the 200 MB upload cap, before the
     # parser's own (unmeasured) memory. 4 GB is tight for the largest uploads; re-size from Render's measured peak.
     plan: 2c-4g
-    autoDeploy: true
+    autoDeploy: false
     # The .vrf archive (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). Only files
     # under the mount persist across deploys; a disk means no zero-downtime deploys and one instance, and
     # it can grow but never shrink. 50 GB keeps about 31 GB of archive (~350 matches) after the parse
