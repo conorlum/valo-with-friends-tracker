@@ -330,6 +330,24 @@ def piece_snapper(cover_px):
     return snap
 
 
+def floors_near(leaf_floor, px, radius_px) -> tuple:
+    """Sorted union of connected floors on a clipped 4 px lattice within the radius, including px.
+
+    Summit 27's slope has floors at 3.0/3.5/4.3 m within 1 m of the 3.5 m stands,
+    but none on their own 4 px leaf, so ground checks must also read nearby leaves.
+    """
+    steps = math.floor(radius_px / FINE)
+    floors = set()
+    for j in range(-steps, steps + 1):
+        for i in range(-steps, steps + 1):
+            dx, dy = FINE * i, FINE * j
+            if dx * dx + dy * dy <= radius_px * radius_px:
+                x = min(PX - 1, max(0, px[0] + dx))
+                y = min(PX - 1, max(0, px[1] + dy))
+                floors.update(leaf_floor((x, y)))
+    return tuple(sorted(floors))
+
+
 def _fold_crouches(stands):
     """Fold lower levels into better-supported higher levels of one piece, before emitting any rows.
     Support is the original number of stands, fixed before folds; equal support keeps both levels.

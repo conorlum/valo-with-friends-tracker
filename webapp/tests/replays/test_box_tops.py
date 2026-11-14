@@ -321,6 +321,35 @@ def test_floor_across_a_wall_beside_a_piece_is_not_its_floor():
     assert bt.piece_floors(one_box(), floors_at({(92, 120): 30}), walk_px=edge).sides[1] == {"w": 30}
 
 
+def test_floors_near_reads_the_leaves_round_a_pixel():
+    floors = {(112, 120): (35,), (120, 120): (20,), (128, 128): (99,), (121, 120): (88,)}
+    lf = lambda px: floors.get(px, ())
+    assert bt.floors_near(lf, (120, 120), 8) == (20, 35)
+    assert bt.floors_near(lf, (120, 120), 7) == (20,)
+    assert bt.floors_near(lf, (120, 120), 0) == (20,)
+
+    def edge_floor(px):
+        assert 0 <= px[0] < PX and 0 <= px[1] < PX
+        return (35, 20, 35)
+
+    assert bt.floors_near(edge_floor, (0, 0), 8) == (20, 35)
+    assert bt.floors_near(edge_floor, (PX - 1, PX - 1), 8) == (20, 35)
+
+
+def test_an_outside_stand_with_a_matching_floor_near_is_ground():
+    s = stand(35, inside=0, px=(99, 120), candidates=(1,), cand_dist=(0.4,))
+    lf = lambda px: (35,) if px == (95, 120) else ()
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: bt.floors_near(lf, px, 8))
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+    assert counts['ground'] == 1 and counts['conflict'] == 0
+
+    rows, assigned, conflicts, counts = bt.judge(
+        [s], {1: 30}, lambda px: bt.floors_near(lambda _: (), px, 8))
+    assert rows.shape == (0, 3) and not assigned and len(conflicts) == 1
+    assert counts['ground'] == 0 and counts['conflict'] == 1
+
+
 # W6: judging is in world dm; diagnostic records are in world metres.
 def stand(z=40, inside=1, candidates=(1,), px=(120, 120), **kw):
     return bt.TopStand(0, 4, 0, 17.448, 26.856, inside, z, px,
