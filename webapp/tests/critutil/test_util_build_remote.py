@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.critutil import build_digest, corpus
@@ -21,7 +22,7 @@ from app.models.match import Match, MatchPlayer, MatchSource
 from app.models.player import Player
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel
 from app.models.round import Round, RoundPlayerStat
-from app.services import replay_control_remote, replay_util, util_model, util_values
+from app.services import replay_control_remote, replay_util, util_model, util_store, util_values
 from app.services import util_build_remote as remote
 from app.services.replay_control_remote import ControlClient, Conflict, Unreachable, WorkerGone
 
@@ -745,7 +746,7 @@ def advance(env, at=NOW):
 
 
 @pytest.mark.parametrize("refit", [False, True])
-def test_step_queued_running_done_stores_exact_output_and_estimator_key(stepping, refit, caplog, monkeypatch):
+def test_step_queued_running_done_stores_exact_output_and_estimator_key(stepping, refit, caplog):
     env = stepping
     put_rows(env)
     if refit:
@@ -761,27 +762,34 @@ def test_step_queued_running_done_stores_exact_output_and_estimator_key(stepping
         env.status = "running"
         advance(env, NOW + 2)
         env.status = "done"
-        # Collection must not decode the output in Python. ORM reads below happen after restoration.
-        original_loads = json.loads
-        def reject_output(data, *a, **kw):
-            assert data != env.output, "collector decoded the result blob"
-            return original_loads(data, *a, **kw)
-        with monkeypatch.context() as patch:
-            patch.setattr(json, "loads", reject_output)
+        commits = []
+
+        def committed(db):
+            commits.append(db)
+
+        event.listen(Session, "after_commit", committed)
+        try:
             advance(env, NOW + 3)
+        finally:
+            event.remove(Session, "after_commit", committed)
+        assert commits == [env.sessions[-1]]
     assert not remote.in_flight(env.state)
     assert env.flags[0] is True and env.flags[-1] is False and env.clears == [True]
     assert all(not path.exists() for path in env.paths)
     with env.factory() as db:
         stored = db.get(UtilModel, "values")
-        assert stored.data == json.loads(env.output)["values"]
+        assert stored.data is None
+        assert util_store.decode_values(stored.blob) == json.loads(env.output)["values"]
         assert stored.version == util_values.VERSION and stored.computed_at is not None
         assert stored.key != dispatch_key
         assert stored.key == replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
         if refit:
             win = db.get(UtilModel, "win")
             assert win.data == json.loads(env.output)["win"] and win.version == util_model.VERSION
-    assert any("->" in statement and "INSERT INTO util_model" in statement for statement in sql)
+    writes = [statement.upper() for statement in sql
+              if statement.lstrip().upper().startswith(("INSERT INTO UTIL_MODEL", "UPDATE UTIL_MODEL"))]
+    assert writes
+    assert all("CAST(" not in statement and "JSONB" not in statement for statement in writes)
     advance(env, NOW + 4)
     assert len(env.client.sent("open")) == 1
     records = [r.getMessage() for r in caplog.records if r.name == remote.__name__]
@@ -881,6 +889,129 @@ def test_step_store_failure_rolls_back_both_products(stepping, monkeypatch):
     assert env.db.query(UtilModel).count() == 0
     assert all(not db.in_transaction() for db in env.sessions)
     assert not env.clears
+
+
+@pytest.mark.parametrize("error", [
+    OperationalError("INSERT", {}, Exception("SSL SYSCALL error: EOF detected")),
+    DBAPIError("INSERT", {}, Exception("gone"), connection_invalidated=True),
+])
+def test_step_store_lost_connection_gives_up_on_the_key_at_once(stepping, monkeypatch, error):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    key = env.state.key
+    env.status = "done"
+
+    def reject(*a):
+        raise error
+
+    monkeypatch.setattr(util_store, "store_values", reject)
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["store", "gave_up"]
+    assert env.state.tries[key] == remote.MAX_TRIES
+    assert key in env.state.gave_up
+    advance(env, NOW + remote.BACKOFF_S + 2)
+    assert len(env.client.sent("open")) == 1
+    assert [f[0] for f in env.failures] == ["store", "gave_up"]
+    add_replay(env.db, 2)
+    env.db.commit()
+    advance(env, NOW + remote.BACKOFF_S + 3)
+    assert len(env.client.sent("open")) == 2
+    assert env.state.key != key
+
+
+def test_step_store_other_error_keeps_three_tries(stepping, monkeypatch):
+    env = stepping
+    put_rows(env)
+    env.status = "done"
+
+    def reject(*a):
+        raise RuntimeError("synthetic store failure")
+
+    monkeypatch.setattr(util_store, "store_values", reject)
+    for attempt in range(4):
+        at = NOW + attempt * (remote.BACKOFF_S + 2)
+        advance(env, at)
+        advance(env, at + 1)
+    assert [f[0] for f in env.failures] == ["store", "store", "store", "gave_up"]
+    assert list(env.state.tries.values()) == [remote.MAX_TRIES]
+    assert len(env.client.sent("open")) == 3
+
+
+def test_step_lost_connection_outside_store_keeps_three_tries(stepping):
+    env = stepping
+    put_rows(env)
+    advance(env)
+    key = env.state.key
+    env.status = OperationalError("SELECT", {}, Exception("gone"))
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["run"]
+    assert env.state.tries[key] == 1
+    assert not env.state.gave_up
+
+
+@pytest.mark.parametrize("refit,output", [
+    (False, {"win": None, "values": None}),
+    (True, {"win": {}, "values": {"rows": []}}),
+    (True, {"win": None, "values": {"rows": []}}),
+    (True, {"win": {"key": ""}, "values": {"rows": []}}),
+    (True, {"win": {"key": 1}, "values": {"rows": []}}),
+])
+def test_store_rejects_missing_values_or_win_before_writing(stepping, refit, output):
+    env = stepping
+    put_rows(env)
+    if refit:
+        env.db.query(UtilModel).delete()
+        env.db.commit()
+    advance(env)
+    assert env.state.refit is refit
+    env.output = corpus.encode_output(output)
+    env.status = "done"
+    writes = []
+
+    def capture(conn, cursor, statement, parameters, context, many):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE")):
+            writes.append(statement)
+
+    event.listen(env.db.get_bind(), "before_cursor_execute", capture)
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["store"]
+    assert env.db.get(UtilModel, "values") is None
+    assert not writes
+
+
+def test_step_store_failure_after_values_write_keeps_both_old_products(stepping, monkeypatch):
+    env = stepping
+    put_rows(env)
+    old_values = {"rows": [], "estimator": {"key": "synthetic-old"}}
+    old_win = {"key": "synthetic-old", "excluded": [], "cells": {}}
+    util_store.store_values(env.db, "synthetic-old-values", old_values)
+    env.db.merge(UtilModel(name="win", version=util_model.VERSION, key="synthetic-old", data=old_win))
+    env.db.commit()
+    advance(env)
+    assert env.state.refit
+    env.status = "done"
+    merge = Session.merge
+    flushed = []
+
+    def reject_win(db, instance, *a, **kw):
+        if isinstance(instance, UtilModel) and instance.name == "win":
+            db.flush()
+            assert db.get(UtilModel, "values").key != "synthetic-old-values"
+            flushed.append(True)
+            raise RuntimeError("synthetic win write failure")
+        return merge(db, instance, *a, **kw)
+
+    monkeypatch.setattr(Session, "merge", reject_win)
+    advance(env, NOW + 1)
+    assert [f[0] for f in env.failures] == ["store"]
+    assert flushed == [True]
+    with env.factory() as db:
+        values = db.get(UtilModel, "values")
+        win = db.get(UtilModel, "win")
+        assert values.key == "synthetic-old-values" and values.data is None
+        assert util_store.decode_values(values.blob) == old_values
+        assert win.key == "synthetic-old" and win.data == old_win
 
 
 def test_step_new_replay_after_success_opens_new_worker_identity(stepping):

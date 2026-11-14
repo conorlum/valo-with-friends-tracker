@@ -99,6 +99,16 @@ def _no_configured_drain_database(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_util_store_cache():
+    """Decoded builds must not leak between tests; the worker image omits this service."""
+    try:
+        from app.services import util_store
+    except ImportError:
+        return
+    util_store.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_background_util_build(monkeypatch):
     """A request that finds Critical Util's build stale starts it in a child process (app/services/util_rebuild.py),
     which would connect to the configured DATABASE_URL, not the test's database: never spawn one in a test.

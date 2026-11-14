@@ -236,15 +236,17 @@ class ReplayRoundUtil(Base):
 
 class UtilModel(Base):
     """Critical Util's corpus products (migration 0029), one row per `name`: "win" (the round-win estimator,
-    app/services/util_model.py), "values" (every stored cast's value and the fitted weights, app/services/
-    util_values.py). `key` says what it was built from, so a reader can tell it is stale."""
+    app/services/util_model.py) is stored in `data`; "values" (every stored cast's value and the fitted
+    weights) in `blob` (zlib JSON, app/services/util_store.py). `key` says what it was built from,
+    so a reader can tell it is stale."""
 
     __tablename__ = "util_model"
 
     name: Mapped[str] = mapped_column(String(16), primary_key=True)
     version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     key: Mapped[str] = mapped_column(String(64), nullable=False)
-    data: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

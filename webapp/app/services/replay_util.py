@@ -27,7 +27,7 @@ from app.critutil.corpus import (  # re-export the portable build and its helper
     ability_label, area_of, build_from_rounds, buy_type, corpus_from_inputs, kind_label,
     label_of, lineup_score, values_key,
 )
-from app.services import util_model, util_values
+from app.services import util_model, util_store, util_values
 from app.services.replay_gaps import Freshness  # re-export the shared lightweight rule
 
 
@@ -42,16 +42,12 @@ def winner_side(outcome: str | None, round_number: int) -> str | None:
 
 
 # --- loading
+# The values build is a zlib blob, decoded and cached by util_store.
 
 
 def _values_row(db) -> tuple[str, dict] | None:
     """(key, data) of the stored corpus build, or None."""
-    from app.models.replay import UtilModel
-
-    row = db.get(UtilModel, "values")
-    if row is None or row.version != util_values.VERSION or not row.data:
-        return None
-    return row.key, row.data
+    return util_store.read_values(db)
 
 
 def current_rows(db, replay_ids=None, *, with_data: bool = True) -> list[tuple]:
@@ -210,15 +206,10 @@ def corpus_inputs(db, rows: list[tuple]) -> tuple[dict, dict, set]:
 
 
 def _store_values(db, key: str, data: dict) -> None:
-    from datetime import datetime, timezone
-
     from sqlalchemy.exc import IntegrityError
 
-    from app.models.replay import UtilModel
-
     try:
-        db.merge(UtilModel(name="values", version=util_values.VERSION, key=key, data=data,
-                           computed_at=datetime.now(timezone.utc)))
+        util_store.store_values(db, key, data)
         db.commit()
     except IntegrityError:
         db.rollback()       # another process stored the first row meanwhile (no lock on this database): keep theirs
