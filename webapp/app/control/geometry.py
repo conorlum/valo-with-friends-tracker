@@ -57,7 +57,7 @@ from scipy import ndimage
 from app.control import heights as hc
 from app.replays import format as fmt
 
-from app.replays import layouts
+from app.replays import height_inputs, layouts
 
 GEOMETRY_VERSION = 1
 # In a map with heights' visibility cache key. 2: a line's ground follows the floor it travels over (_ground_floor).
@@ -179,6 +179,21 @@ def unpack_paint(b64: str) -> np.ndarray:
     cells = np.unpackbits(raw, bitorder="little")[: PAINT_GRID * PAINT_GRID].reshape(PAINT_GRID, PAINT_GRID)
     step = PX // PAINT_GRID
     return cells.astype(bool).repeat(step, 0).repeat(step, 1)
+
+
+def load_height_paint(name: str, asset_dir: Path = ASSET_DIR) -> tuple[dict | None, str | None]:
+    """Read disjoint height brushes as 256 x 256 boolean cells, without reading tags.
+
+    Base geometry and the verifier do not load these; the height builder attaches them explicitly.
+    """
+    try:
+        masks, sha = height_inputs.height_paint_entry(name, Path(asset_dir) / "height_paint.json")
+    except (OSError, ValueError) as error:
+        raise GeometryError(f"invalid height_paint.json: {error}") from error
+    if masks is None:
+        return None, None
+    return {brush: np.unpackbits(np.frombuffer(raw, dtype=np.uint8), bitorder="little")
+            .reshape(PAINT_GRID, PAINT_GRID).astype(bool) for brush, raw in masks.items()}, sha
 
 
 def tag_shapes(rgba: np.ndarray, entry: dict) -> dict[str, np.ndarray]:
@@ -318,6 +333,8 @@ class Geometry:
     cover_sha: str | None = None          # index.json's `cover_sha`: the see-over cover mask, if the map has any
     cover_px: np.ndarray | None = None    # PX x PX int16: 4-connected pieces of that mask, 1.., 0 = none
     height_cover_dropped: int = 0         # box-top cells adaptive.attach dropped: fine floors + 8 px cells cut from edges
+    height_paint: dict | None = None      # optional open/ground/top brushes, each 256 x 256 bool cells
+    height_paint_sha: str | None = None   # canonical map entry's hash, shared with the height manifest
 
     def see_over_mask(self, label: int) -> np.ndarray:
         """The pixels of one cover piece (all False for label 0 or when the map has no cover)."""

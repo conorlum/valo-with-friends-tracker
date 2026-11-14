@@ -616,6 +616,107 @@ def kill_round(kills, players, n=1, t_end=10.0):
     return ("m", n, blob)
 
 
+def test_kill_line_check_can_keep_every_blocked_line_for_preview():
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    rounds = [kill_round([(2.0 + i / 4, 0, 5) for i in range(12)], {
+        0: standing(x, 204, 4.0), 5: standing(x + 3 * M_PX, 204, 0.0, "B")})]
+    default = hb.kill_line_check(rounds, geo)
+    complete = hb.kill_line_check(rounds, geo, keep_all=True)
+    assert default["blocked"] == complete["blocked"] == 12
+    assert len(default["examples"]) == 10 and len(complete["examples"]) == 12
+    assert complete["examples"][:10] == default["examples"]
+    assert {k: v for k, v in default.items() if k != "examples"} == {
+        k: v for k, v in complete.items() if k != "examples"}
+
+
+@pytest.mark.parametrize("painted, failing", [(True, True), (False, False), (False, True)])
+def test_preview_paint_check_embeds_picture_all_lines_brushes_and_gate(
+        tmp_path, capsys, no_picture, monkeypatch, painted, failing):
+    import base64
+    import io
+    import re
+    import socket
+    import xml.etree.ElementTree as ET
+    from PIL import Image
+
+    def no_connection(*args, **kwargs):
+        pytest.fail("preview and the gate import must not connect to a database")
+
+    monkeypatch.setattr(socket.socket, "connect", no_connection)
+    assets = toy_assets(tmp_path)
+    if painted:
+        brushes = {}
+        for x, brush in enumerate(("open", "ground", "top"), start=50):
+            mask = np.zeros((256, 256), dtype=bool)
+            mask[50, x] = True
+            brushes[brush] = cg.pack_paint(mask)
+        (assets / "height_paint.json").write_text(json.dumps({"maps": {"Ascent": brushes}}), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in assets.iterdir()}
+    rounds = covered_rounds()
+    for _, _, blob in rounds:
+        blob["kills"] = [{"i": i, "t": 5.0 + i, "killer": 0, "victim": 5} for i in range(2)]
+    if failing:
+        # Keep real round parsing/attachment; make every height sightline fail while 2D stays clear.
+        monkeypatch.setattr(hb, "geo_los", lambda geo, a, b, smokes: a[2] is None)
+        lines = tmp_path / "required.json"
+        lines.write_text(json.dumps({"lines": [{"map": "Ascent", "viewer": [X, Y, None],
+            "target": [X + 40, Y, None], "source": "unknown endpoint"}]}), encoding="utf-8")
+        monkeypatch.setattr(command, "MUST_BLOCK", lines)
+    checked = []
+    original_check = hb.kill_line_check
+
+    def check(rounds, geo, **kwargs):
+        assert geo.heights is not None, "the page must check the attached asset"
+        checked.append(kwargs.get("keep_all", False))
+        return original_check(rounds, geo, **kwargs)
+
+    monkeypatch.setattr(hb, "kill_line_check", check)
+    blobs = write_blobs(tmp_path / "blobs", rounds)
+    out_dir = tmp_path / "preview"
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(out_dir)],
+                        asset_dir=assets) == 0
+    page_path = out_dir / "Ascent.paint-check.html"
+    page = page_path.read_text(encoding="utf-8")
+    saved = json.loads((out_dir / "Ascent.height.json").read_text(encoding="utf-8"))
+    assert len(saved["height"]["kill_lines"]["examples"]) == (10 if failing else 0)
+    assert str(page_path) in capsys.readouterr().out
+    assert checked[-1] is True
+    svg = ET.fromstring(re.search(r"<svg\b.*?</svg>", page, re.S).group())
+    ns = {"s": "http://www.w3.org/2000/svg"}
+    assert svg.attrib["viewBox"] == "0 0 1024 1024"
+    drawn = svg.findall(".//s:line", ns)
+    assert len(drawn) == (12 if failing else 0)
+    image = svg.find("s:image", ns)
+    assert image.attrib["width"] == image.attrib["height"] == "1024"
+    data = image.attrib["href"].removeprefix("data:image/png;base64,")
+    assert Image.open(io.BytesIO(base64.b64decode(data))).size == (1024, 1024)
+    overlays = svg.findall("s:g[@data-brush]", ns)
+    assert len(overlays) == (3 if painted else 0)
+    if painted:
+        colours = set()
+        for x, (brush, overlay) in enumerate(zip(("open", "ground", "top"), overlays), start=50):
+            assert overlay.attrib["data-brush"] == brush
+            assert f'data-legend="{brush}"' in page
+            colours.add(overlay.attrib["stroke"])
+            [rect] = overlay.findall("s:rect", ns)
+            assert {k: rect.attrib[k] for k in ("x", "y", "width", "height")} == {
+                "x": str(x * 4), "y": "200", "width": "4", "height": "4"}
+        assert len(colours) == 3
+    else:
+        assert "data-legend=" not in page
+    if failing:
+        assert "kill lines 12 of 12 (100.0%)" in page
+        assert "must-block FAIL" in page and "gate FAIL" in page
+        assert "kill lines: 12 of 12 blocked by the heights" in page
+        assert "must-block: 0 of 1 impossible sightlines blocked, 1 could not be checked" in page
+    else:
+        assert "kill lines 0 of 12 (0.0%)" in page
+        assert "must-block PASS" in page and "would pass" in page
+    assert {p.name: p.read_bytes() for p in assets.iterdir()} == before
+    assert not page_path.resolve().is_relative_to(command.REPO_ROOT.resolve())
+
+
 @pytest.mark.slow
 def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_head_and_feet_are_hidden():
     geo = ledge_geo()
@@ -641,6 +742,21 @@ def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_head
     assert hidden_feet_seen_head, "the band where only the head shows"
     near = standing(x + hidden_feet_seen_head[len(hidden_feet_seen_head) // 2] * M_PX, 204, 0.0, "B")
     assert hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: players[0], 5: near})], geo)["blocked"] == 0
+
+
+@pytest.mark.slow
+def test_a_fall_off_the_map_is_not_a_kill_line():
+    # Abyss: whoever last damaged a player who then falls off the map gets the kill, wherever they stand, so
+    # there is no sight line to check. Without the rule this kill is blocked (the victim is under the ledge).
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    fallen = standing(x + 3 * M_PX, 204, -hb.FELL_BELOW_M - 0.5, "B")
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(x, 204, 4.0), 5: fallen})], geo)
+    assert result["qualifying"] == 0 and result["excluded"] == {"fell off the map": 1}
+    # just above the threshold it is an ordinary kill line again
+    low = standing(x + 3 * M_PX, 204, -hb.FELL_BELOW_M + 0.5, "B")
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(x, 204, 4.0), 5: low})], geo)
+    assert result["qualifying"] == 1 and "fell off the map" not in result["excluded"]
 
 
 @pytest.mark.slow

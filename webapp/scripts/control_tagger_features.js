@@ -165,8 +165,15 @@
       if (!force && TG.edits[n] && TG.edits[n].touched) return;
       var entry = (canonical.maps || {})[n];
       if (entry && entry.image_sha && entry.image_sha !== D.maps[n].image_sha) return;    // the minimap changed: kept as is
+      // Height paint and its dirty flag survive a catalogue import and the autosave that follows it.
+      var heightPaints = TG.edits[n] && TG.edits[n].heightPaints;
+      var heightTouched = TG.edits[n] && TG.edits[n].heightTouched;
+      var loadedHeightPaints = TG.loaded[n] && TG.loaded[n].heightPaints;
       TG.edits[n] = T.editsFrom(entry);
       TG.loaded[n] = T.editsFrom(entry);
+      if (heightPaints) TG.edits[n].heightPaints = heightPaints;
+      TG.edits[n].heightTouched = !!heightTouched;
+      if (loadedHeightPaints) TG.loaded[n].heightPaints = loadedHeightPaints;
     });
   }
 

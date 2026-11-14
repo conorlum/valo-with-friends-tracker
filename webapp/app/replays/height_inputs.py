@@ -20,6 +20,7 @@ Standard library only: the web app, the worker's server and its children all imp
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -38,6 +39,7 @@ from app.replays import layouts
 CONTROL_DIR = fmt.STATIC_DIR / "data" / "control"
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
 MUST_BLOCK = CONTROL_DIR / "must_block.json"
+HEIGHT_PAINT = CONTROL_DIR / "height_paint.json"
 MIN_CONDENSE_REVISION = 11       # blobs from before it carry no heights
 MANIFEST_VERSION = 2
 
@@ -76,6 +78,44 @@ def must_block_sha(path: Path | None = None, *, key: str | None = None) -> str |
         return None
 
 
+def height_paint_entry(map_name: str, path: Path | None = None) -> tuple[dict | None, str | None]:
+    """Strict fine-cell brush bytes and canonical entry hash; no paint gives (None, None).
+
+    Validate the whole document so malformed paint never silently disappears from a build.
+    OSError or ValueError means invalid paint; callers decide how to report it.
+    """
+    path = HEIGHT_PAINT if path is None else Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, None
+    document = json.loads(text)
+    if not isinstance(document, dict) or set(document) != {"maps"} or not isinstance(document["maps"], dict):
+        raise ValueError("height paint must be an object containing a maps object")
+    selected = (None, None)
+    for name, entry in document["maps"].items():
+        if not isinstance(entry, dict) or set(entry) - {"open", "ground", "top"}:
+            raise ValueError(f"invalid height paint brushes for {name}")
+        masks = {}
+        occupied = 0
+        for brush, payload in entry.items():
+            if not isinstance(payload, str):
+                raise ValueError(f"height paint {name}/{brush} must be a base64 string")
+            raw = base64.b64decode(payload, validate=True)
+            if len(raw) != 8192:
+                raise ValueError(f"height paint {name}/{brush} must decode to exactly 8192 bytes")
+            bits = int.from_bytes(raw, "little")
+            if occupied & bits:
+                raise ValueError(f"height paint brushes overlap on {name}")
+            occupied |= bits
+            masks[brush] = raw
+        if name == map_name and occupied:
+            sha = hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")) \
+                .hexdigest()[:12]
+            selected = masks, sha
+    return selected
+
+
 def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json: Path | None = None) -> dict | None:
     """The masks a build reads, by the hashes index.json records, and the map's scale. None without geometry."""
     try:
@@ -90,6 +130,12 @@ def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json:
     out = {"sight": entry["sight_sha"], "walk": entry["walk_sha"], "scale": scale}
     if entry.get("cover_sha"):          # only a map with cover pieces: the others' manifests stay as they were
         out["cover"] = entry["cover_sha"]
+    try:
+        _, paint_sha = height_paint_entry(map_name, control_dir / "height_paint.json" if control_dir is not None else None)
+    except (OSError, ValueError):
+        paint_sha = "invalid"
+    if paint_sha:
+        out["height_paint"] = paint_sha
     return out
 
 
@@ -165,7 +211,8 @@ def manifest(map_name: str, replays: list, geometry: dict, must_block: str | Non
     return {"v": MANIFEST_VERSION, "map": map_name, "height_version": cf.HEIGHT_VERSION,
             "height_rules": cf.HEIGHT_RULES_REVISION, "min_condense_revision": MIN_CONDENSE_REVISION,
             "geometry": {"sight": geometry.get("sight"), "walk": geometry.get("walk"), "scale": geometry.get("scale"),
-                         **({"cover": geometry["cover"]} if geometry.get("cover") else {})},
+                         **({"cover": geometry["cover"]} if geometry.get("cover") else {}),
+                         **({"height_paint": geometry["height_paint"]} if geometry.get("height_paint") else {})},
             "must_block": must_block,
             "refinement_history": refinement_history(map_name, history),
             "replays": sorted([str(u).lower(), str(recipe), str(source), int(count)]

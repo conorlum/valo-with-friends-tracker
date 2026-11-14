@@ -198,8 +198,8 @@ def test_tops_are_judged_after_real_refinement_with_a_nonzero_origin_shift(monke
     previous = hr.history(GEO.name, [parent])
     original = hr.analyze
 
-    def lower_child(*args):
-        evidence = original(*args)
+    def lower_child(*args, **kwargs):
+        evidence = original(*args, **kwargs)
         for child in evidence['children']:
             child['floors_world_dm'] = [(z_dm(-1), 0)]
             child['kind'] = hc.KIND_STANDS

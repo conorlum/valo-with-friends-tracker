@@ -304,7 +304,7 @@ guards = [
 about = "Map-control geometry: masks, sight casting, heights and floors, the height build and its jobs, ropes, terrain, routes and topology."
 tests = [
   "tests/replays/test_control_geometry.py", "tests/replays/test_control_floors.py", "tests/replays/test_control_sight.py",
-  "tests/replays/test_control_heights.py", "tests/replays/test_control_heights_db.py",
+  "tests/replays/test_control_heights.py", "tests/replays/test_control_heights_db.py", "tests/replays/test_height_paint.py",
   "tests/replays/test_control_height_job.py", "tests/replays/test_height_*.py", "tests/replays/test_heights_remote.py",
   "tests/replays/test_compare_height_builds.py", "tests/replays/test_rope_*.py", "tests/replays/test_terrain_audit.py",
   "tests/replays/test_topology_frontier.py", "tests/replays/test_adaptive_ground.py", "tests/replays/test_quiet_*.py",

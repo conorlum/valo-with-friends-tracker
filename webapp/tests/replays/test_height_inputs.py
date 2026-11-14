@@ -2,6 +2,7 @@
 docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): the input manifest both services compute,
 and the check set, which is never "nothing to check" because its file is missing."""
 
+import base64
 import hashlib
 import json
 
@@ -23,7 +24,8 @@ PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72e
                                       # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
                                       # (was "ef8175ac1844"), then for the crouch key
                 7: "93c941558c40",    # 7 (2026-11-02): the build's code only (box floors side by side)
-                8: "3ff54544c11e"}    # 8 (2026-11-13): box top touching, votes and nearby ground constants
+                8: "3ff54544c11e"}    # 8 (2026-11-13): box top touching, votes and nearby ground constants;
+                                      # the fall check and height paint are build code only
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
@@ -74,6 +76,17 @@ def test_without_the_crouch_key_constants_the_previous_rules_hash_is_unchanged(m
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
     monkeypatch.delattr(hc, "CROUCH_NEAR_S", raising=False)
     assert hc.rules()["constants"] == "ef8175ac1844"
+
+
+def test_the_fall_threshold_is_build_only(monkeypatch):
+    from app.control import height_build as hb
+    from tests.replays.test_control_format import _constants_digest
+
+    assert not hasattr(hc, "FELL_BELOW_M")
+    before = _constants_digest()
+    monkeypatch.setattr(hb, "FELL_BELOW_M", hb.FELL_BELOW_M + 1.0)
+    assert _constants_digest() == before
+    assert hc.rules()["constants"] == PINNED_RULES[8]
 
 
 def test_the_height_rules_are_pinned_to_their_revision(monkeypatch):
@@ -164,3 +177,66 @@ def test_the_committed_check_set_is_readable_and_the_geometry_identity_matches_t
     got = hi.geometry_identity(name)
     assert got["sight"] == index[name]["sight_sha"] and got["walk"] == index[name]["walk_sha"] and got["scale"]
     assert hi.geometry_identity("NoSuchMap") is None
+
+
+@pytest.fixture
+def paint_assets(tmp_path, monkeypatch):
+    (tmp_path / "index.json").write_text(json.dumps({"maps": {
+        "Toy": {"sight_sha": GEOMETRY["sight"], "walk_sha": GEOMETRY["walk"]}}}), encoding="utf-8")
+    (tmp_path / "maps.json").write_text(json.dumps({"Toy": {"xMultiplier": GEOMETRY["scale"]}}), encoding="utf-8")
+    monkeypatch.setattr(hi, "CONTROL_DIR", tmp_path)
+    monkeypatch.setattr(hi, "MAPS_JSON", tmp_path / "maps.json")
+    monkeypatch.setattr(hi, "HEIGHT_PAINT", tmp_path / "height_paint.json", raising=False)
+    return tmp_path / "height_paint.json"
+
+
+def test_without_height_paint_geometry_is_unchanged(paint_assets):
+    assert hi.geometry_identity("Toy") == GEOMETRY
+
+
+def test_height_paint_is_canonical_manifest_input(paint_assets):
+    before = hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks")
+    entry = {"top": base64.b64encode(b"\x08" + bytes(8191)).decode(),
+             "ground": base64.b64encode(b"\x01" + bytes(8191)).decode()}
+    paint_assets.write_text(json.dumps({"maps": {"Toy": entry}}), encoding="utf-8")
+    geometry = hi.geometry_identity("Toy")
+    after = hi.manifest("Toy", REPLAYS, geometry, "checks")
+    sha = hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    assert geometry == {**GEOMETRY, "height_paint": sha}
+    assert after["geometry"] == geometry
+    assert hi.digest(before) != hi.digest(after)
+    assert hi.changes(before, after) == {"added": [], "gone": [], "other": True}
+    paint_assets.write_text(json.dumps({"maps": {"Toy": dict(reversed(list(entry.items())))}}), encoding="utf-8")
+    assert hi.geometry_identity("Toy") == geometry
+
+
+@pytest.mark.parametrize("text", ["not json", "[]", '{"maps": []}',
+    '{"maps": {"Toy": {"ground": ""}}}', '{"maps": {"Toy": {"ground": "bad!"}}}'])
+def test_bad_height_paint_marks_manifest_invalid(paint_assets, text):
+    paint_assets.write_text(text, encoding="utf-8")
+    geometry = hi.geometry_identity("Toy")
+    assert geometry == {**GEOMETRY, "height_paint": "invalid"}
+    assert hi.manifest("Toy", REPLAYS, geometry, "checks")["geometry"] == geometry
+
+
+def test_unreadable_height_paint_marks_manifest_invalid(paint_assets):
+    paint_assets.mkdir()
+    assert hi.geometry_identity("Toy") == {**GEOMETRY, "height_paint": "invalid"}
+
+
+@pytest.mark.parametrize("maps", [{}, {"Other": {}}, {"Toy": {}},
+    {"Toy": {"ground": base64.b64encode(bytes(8192)).decode()}}])
+def test_empty_height_paint_keeps_missing_file_manifest(paint_assets, maps):
+    before = hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks")
+    paint_assets.write_text(json.dumps({"maps": maps}), encoding="utf-8")
+    assert hi.geometry_identity("Toy") == GEOMETRY
+    assert hi.manifest("Toy", REPLAYS, hi.geometry_identity("Toy"), "checks") == before
+
+
+def test_revision_seven_manifest_keeps_pre_fall_digest(monkeypatch):
+    from tests.replays import layout_golden as golden
+
+    monkeypatch.setattr(cf, "HEIGHT_RULES_REVISION", 7)
+    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, hi.geometry_identity("Abyss"),
+                           golden._must_block_sha_lf())
+    assert hi.digest(manifest) == "d9bae5b3eb533d11"

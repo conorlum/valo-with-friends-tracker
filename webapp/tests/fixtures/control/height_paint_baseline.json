@@ -1,0 +1,170 @@
+{
+  "ledge_report": {
+    "air_only": [
+      {
+        "bbox": [
+          240,
+          200,
+          279,
+          207
+        ],
+        "cells": 5,
+        "z": [
+          77,
+          77
+        ]
+      }
+    ],
+    "blackouts": 0,
+    "cells_2_floors": 5,
+    "cells_3_floors": 0,
+    "cells_by_kind": {
+      "filled": 0,
+      "gradient": 0,
+      "stands": 1000,
+      "walks": 0
+    },
+    "coarse_diagnostics": {
+      "air_only": [
+        {
+          "bbox": [
+            240,
+            200,
+            279,
+            207
+          ],
+          "cells": 5,
+          "z": [
+            77,
+            77
+          ]
+        }
+      ],
+      "cells_by_kind": {
+        "filled": 0,
+        "gradient": 0,
+        "stands": 1000,
+        "walks": 0
+      },
+      "edges": 7622,
+      "falls": 0,
+      "falls_closed": 0,
+      "one_way_edges": 0,
+      "refused_cells": 0,
+      "slides": 0,
+      "unresolved_areas": [],
+      "unresolved_cells": 0,
+      "unresolved_why": {},
+      "visited": 1.0,
+      "visited_cells": 1000,
+      "walkable_cells": 1000
+    },
+    "diagnostic_grid_px": 8,
+    "edges": 7622,
+    "falls": 0,
+    "falls_closed": 0,
+    "filled_cells": 0,
+    "floor_cells": 1002,
+    "matches": 2,
+    "not_ready": [],
+    "on_platforms": 0,
+    "one_way_edges": 0,
+    "origin_z": 37,
+    "ready": true,
+    "refined_children": 8,
+    "refined_parents": 2,
+    "refinement": {
+      "evidence_sha256": "939cd18c9e1afd0b71728df2d52e1fe4a380c53b03941cf0406c55996a7a4372",
+      "history": {
+        "child_px": 4,
+        "map": "Ledge",
+        "parents": [
+          3230,
+          3234
+        ],
+        "v": 1
+      },
+      "history_sha256": "29abcbeb4dcd5b97458fa3ccdba443f5299f9ac37fa07ca696dcb15ab35cfd93",
+      "previous_history_sha256": "5bc891a8d9d4233f2cacd89d7c78ae7abbeab2102f3c883dde144fcf71189b95",
+      "v": 1
+    },
+    "refused_cells": 0,
+    "rounds": 6,
+    "rounds_without_z": 0,
+    "runtime_grid_px": [
+      8,
+      4
+    ],
+    "slides": 0,
+    "stands": 60,
+    "supported": 0.999,
+    "supported_area_px2": 63936,
+    "supported_cells": 1002,
+    "unresolved_area_px2": 64,
+    "unresolved_areas": [],
+    "unresolved_cells": 4,
+    "unresolved_why": {},
+    "visited": 1.0,
+    "visited_cells": 1000,
+    "walk_sha": "334d6484a83c",
+    "walkable_area_px2": 64000,
+    "walkable_cells": 1006,
+    "walks": 0
+  },
+  "ledge_sha256": "029c830d2fd87ac572272239e3be6434c44ab6110d6ab84c7ee791afa04f3e8a",
+  "preview_report": {
+    "air_only": [],
+    "blackouts": 0,
+    "cells_2_floors": 0,
+    "cells_3_floors": 0,
+    "cells_by_kind": {
+      "filled": 0,
+      "gradient": 0,
+      "stands": 1000,
+      "walks": 0
+    },
+    "edges": 7614,
+    "falls": 0,
+    "falls_closed": 0,
+    "filled_cells": 0,
+    "kill_lines": {
+      "blocked": 0,
+      "examples": [],
+      "excluded": {},
+      "passes": true,
+      "qualifying": 6,
+      "share": 0.0
+    },
+    "matches": 2,
+    "must_block": {
+      "blocked": 0,
+      "checked": 0,
+      "lines": 0,
+      "passes": true,
+      "results": [],
+      "set": "fde6cb9ea71d",
+      "unchecked": 0
+    },
+    "not_ready": [],
+    "on_platforms": 0,
+    "one_way_edges": 0,
+    "origin_z": 37,
+    "ready": true,
+    "refused_cells": 0,
+    "rounds": 6,
+    "rounds_without_z": 0,
+    "slides": 0,
+    "stands": 54,
+    "supported": 1.0,
+    "supported_cells": 1000,
+    "unresolved_areas": [],
+    "unresolved_cells": 0,
+    "unresolved_why": {},
+    "visited": 1.0,
+    "visited_cells": 1000,
+    "walk_sha": "334d6484a83c",
+    "walkable_cells": 1000,
+    "walks": 0
+  },
+  "preview_sha256": "cbe8c584193ff9fb2209b96c1924296bb62ec11484927848af25a448673a55f1"
+}

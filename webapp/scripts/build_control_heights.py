@@ -16,6 +16,9 @@ Committing the asset is what turns the map's heights on; its rounds are then sta
 
 With `--preview --out <dir>` it builds below the bar too and writes the asset and the report under `<dir>`
 only, which must be outside the repository: a preview is for looking, never for committing.
+`<Map>.paint-check.html` embeds the height picture, every blocked kill line, paint outlines and the gate verdict.
+Painted builds use the worker's base geometry, cover and gate, with their own explicit
+refinement history starting from nothing.
 `--preview-min-matches 1` also lets a preview make floors from a single match (the real rule is two, so one
 match's Sage wall or boost can't become a floor); the asset records that it was built that way.
 The report beside a preview says what the build read (`inputs`: the rounds' digest when they came from
@@ -37,7 +40,11 @@ Exits 0 when written, 2 when refused.
 from __future__ import annotations
 
 import argparse
+import base64
+import copy
 import hashlib
+import html
+import io
 import json
 import os
 import sys
@@ -165,6 +172,45 @@ def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> 
     return checks
 
 
+def write_paint_check(path: Path, geo, png: Path, kills: dict, must: dict, reasons: list[str]) -> None:
+    """A self-contained review page in map pixels; keep the full kill list out of the stored report."""
+    image = base64.b64encode(png.read_bytes()).decode("ascii")
+    overlays, legend = [], ['<span style="color:#ffb000">Blocked kill lines</span>']
+    for brush, colour in (("open", "#00e5ff"), ("ground", "#58ee72"), ("top", "#ff68dc")):
+        mask = (geo.height_paint or {}).get(brush)
+        if mask is None or not mask.any():
+            continue
+        cell = cg.PX // mask.shape[0]
+        overlays.append(f'<g data-brush="{brush}" fill="none" stroke="{colour}" stroke-width="1">')
+        for y, x in zip(*np.nonzero(mask)):
+            overlays.append(f'<rect x="{x * cell}" y="{y * cell}" width="{cell}" height="{cell}"/>')
+        overlays.append('</g>')
+        legend.append(f'<span data-legend="{brush}" style="color:{colour}">{brush} brush outline</span>')
+    lines = []
+    for example in kills["examples"]:
+        x1, y1 = example["killer_px"]
+        x2, y2 = example["victim_px"]
+        lines.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}"/>')
+    verdict = '<h2>gate FAIL</h2><ul>' + ''.join(f'<li>{html.escape(reason)}</li>' for reason in reasons) + '</ul>' \
+        if reasons else '<h2>gate: would pass</h2>'
+    path.write_text(f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{html.escape(path.stem)}</title>
+<style>body {{background:#18181c;color:#eee;font:16px system-ui;margin:24px}}
+svg {{display:block;max-width:100%;height:auto}} .legend span {{margin-right:24px}}</style></head><body>
+<h1>{html.escape(geo.name)} height paint check</h1>
+<p>kill lines {kills['blocked']} of {kills['qualifying']} ({kills['share']:.1%})</p>
+<p>must-block {'PASS' if must['passes'] else 'FAIL'}</p>
+{verdict}
+<p class="legend">{' '.join(legend)}</p>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"
+role="img" aria-label="Height picture with paint outlines and blocked kill lines">
+<image width="1024" height="1024" href="data:image/png;base64,{image}"/>
+{''.join(overlays)}
+<g stroke="#ffb000" stroke-width="2" opacity="0.85">{''.join(lines)}</g>
+</svg></body></html>
+''', encoding="utf-8")
+
+
 def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_factory=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--map", required=True)
@@ -190,7 +236,10 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
             return 2
     elif args.out is not None:
         parser.error("--out is for --preview only")
-    geo = cg.load_geometry(args.map, asset_dir)
+    paint, paint_sha = cg.load_height_paint(args.map, asset_dir)
+    geo = cg.load_base_geometry(args.map, asset_dir) if paint else cg.load_geometry(args.map, asset_dir)
+    if paint:
+        geo.height_paint, geo.height_paint_sha = paint, paint_sha
     started = time.perf_counter()
     rounds, skipped = blob_rounds(args.blobs_dir, args.map) if args.blobs_dir else db_rounds(args.map, session_factory)
     print(f"{args.map}: {len(rounds)} rounds read in {time.perf_counter() - started:.1f}s"
@@ -201,7 +250,13 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
         if args.preview_min_matches is not None:
             hc.FLOOR_MIN_MATCHES = args.preview_min_matches     # a preview's own, looser rule: never an asset's
             print(f"PREVIEW RULE: a floor needs {args.preview_min_matches} match(es), not {rule}", flush=True)
-        build = hb.build(rounds, geo)
+        if paint:
+            result = height_job.run(args.map, rounds, asset_dir=asset_dir, must_block=MUST_BLOCK,
+                                    refinement_history=height_inputs.refinement_history(args.map, None))
+            build = hb.HeightBuild(hc.load_asset(io.BytesIO(result['asset'])), result['report'],
+                                   ready=result['report']['ready'])
+        else:
+            build = hb.build(rounds, geo)
     finally:
         hc.FLOOR_MIN_MATCHES = rule
     try:
@@ -222,7 +277,14 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     hb.picture(build, geo, png)
     print(f"  picture: {png}", flush=True)
     if args.preview:
+        from app.services.control_heights import gate
+
         args.out.mkdir(parents=True, exist_ok=True)
+        attached = cg.attach_heights(copy.copy(geo), build.asset)
+        all_kills = hb.kill_line_check(rounds, attached, keep_all=True)
+        page = args.out / f"{args.map}.paint-check.html"
+        write_paint_check(page, geo, png, all_kills, checks["must_block"], gate(build.report))
+        print(f"  paint check: {page}", flush=True)
         hc.save_asset(args.out / f"{args.map}.height.npz", build.asset)
         (args.out / f"{args.map}.height.json").write_text(json.dumps(index_entry(build, inputs), indent=1) + "\n",
                                                           encoding="utf-8")
