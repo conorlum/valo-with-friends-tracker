@@ -166,11 +166,11 @@ def _most_common(values) -> int:
 
 @dataclass(frozen=True)
 class PieceFloors:
-    """The floor round each cover piece, in the floors' units, learnt side by side (the owner's rule, 2026-11-02:
-    some boxes have no one floor all round them, so the floor is sampled on each side the piece has one).
-    `sides[piece]` = {side: the most common of the lowest floors of the ring cells on that side}; `ground[piece]`
-    = the most common of those side floors (each side one vote, a tie takes the lower), so a small lower area along
-    one long face no longer outvotes the floor the piece stands on. A piece with no floor round it is left out."""
+    """The floors round each cover piece, in the floors' units, learnt side by side.
+    `sides[piece]` maps each side to the most common of the lowest floors of its ring cells. `ground[piece]` is
+    the lowest side floor, since a box stands on the lowest floor round it and a higher side is a ledge it is
+    backed against. In `judge`, stands level with any side floor count as ground for that piece, keeping ledge
+    walls from learning the upper floor as a top. A piece with no floor round it is left out."""
     ground: dict
     sides: dict
     _near: dict = field(default_factory=dict, repr=False, compare=False)   # piece -> (y0, x0, nearest y, nearest x)
@@ -203,7 +203,8 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
     ring pixel's side is the direction from the piece's nearest pixel to it. With `walk_px`, only walkable ring pixels
     joined to the piece by walkable pixels inside the ring count: floor across a wall beside the piece is not its
     floor (Summit's piece 20, whose north face is a wall with a lower area behind it). A cell is read once per side,
-    by the lowest of its floors."""
+    by the lowest of its floors. Ground is the lowest side floor. The side-floor ground rule in `judge` handles
+    stands level with an upper side floor, including Ascent's piece 17 and Summit's piece 20."""
     from scipy import ndimage
 
     cover = np.asarray(cover_px)
@@ -246,16 +247,15 @@ def piece_floors(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, f
                 found[name] = _most_common(lowest)
         if found:
             sides[piece] = found
-            ground[piece] = _most_common(list(found.values()))
+            ground[piece] = min(found.values())
     return PieceFloors(ground, sides, near)
 
 
 def ground_of(cover_px: np.ndarray, floors: np.ndarray, *, fine_cells=None, fine_floors=None,
               walk_px=None) -> dict[int, int]:
-    """{cover piece id: the floor it stands on} in `floors`' units: `piece_floors`' ground, the most common of its
-    sides' floors. Not the lowest: a piece at a ledge's edge has a drop on one side (Ascent's piece 17: floor at
-    2.0 m round most of it, 0.0 m on one side, and players at 2.0 m on its outline), and not the most common cell:
-    a small lower area along one long face (Summit's piece 20) would outvote the side it stands on."""
+    """Map each cover piece id to the floor it stands on, in `floors`' units, using its lowest side floor.
+    Stands level with an upper side floor (Ascent's piece 17 and Summit's piece 20) are handled by the side-floor
+    ground rule in `judge`."""
     return piece_floors(cover_px, floors, fine_cells=fine_cells, fine_floors=fine_floors, walk_px=walk_px).ground
 
 
@@ -319,12 +319,13 @@ def _fold_crouches(stands):
     return folded
 
 
-def judge(stands, ground, leaf_floor, beside=None):
+def judge(stands, ground, leaf_floor, beside=None, *, sides=None):
     """(world-dm top rows, [(stand, piece, top world dm)], conflict records, fate counts).
     `leaf_floor(px)` yields only connected floor heights in world dm at that pixel's leaf. `beside(piece, px)`, when
-    given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`): a stand outside
-    a piece is a step above that, not above the piece's ground, since a piece's sides can stand on different floors
-    (Summit's piece 20: 2.0 m on one face, 3.0 m on the others, players at 3.0 m against it)."""
+    given, is the floor (world dm) on the side of `piece` the pixel is on (`PieceFloors.floor_at`). An outside
+    stand must be a step above that floor, since a piece's sides can stand on different floors (Summit's piece 20
+    has 2.0 m on one face and 3.0 m on the others). Optional `sides` maps each piece to its side floors in world dm.
+    A stand within TOP_TOL_M of any of a piece's side floors is ground for that piece, including inside stands."""
     counts = dict(teach=0, assign=0, conflict=0, ground=0, platform=0, blackout=0)
     teaching, pending = defaultdict(list), []
 
@@ -336,7 +337,9 @@ def judge(stands, ground, leaf_floor, beside=None):
 
     for s in stands:
         cands = tuple(sorted(p for p in s.candidates
-                             if p in ground and s.z_dm - floor_for(s, p) >= BOX_STEP_M * 10 - EPS))
+                             if p in ground and s.z_dm - floor_for(s, p) >= BOX_STEP_M * 10 - EPS
+                             and (sides is None or not any(abs(s.z_dm - f) <= TOP_TOL_M * 10 + EPS
+                                                          for f in sides.get(p, ())))))
         if not cands or (not s.inside and any(abs(z - s.z_dm) <= TOP_TOL_M * 10 + EPS
                                              for z in leaf_floor(s.px))):
             counts['ground'] += 1

@@ -194,20 +194,21 @@ def floors_at(cells_z):
     return f
 
 
-def test_ground_is_the_floor_most_of_the_ring_stands_on():
+def test_ground_is_the_lowest_side_floor():
     # piece 1 is x 100-139, y 100-139, at a ledge's edge: 2.0 m round three sides, a drop to 0.0 m on one cell
     g = bt.ground_of(cover(), floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0}))
-    assert g[1] == 20
+    assert g[1] == 0
 
 
 def test_a_stand_at_the_upper_floor_of_a_ledge_is_no_top():
     """Ascent's piece 17: players stood at 2.0 m on its outline, beside a drop to 0.0 m on one side."""
-    f = floors_at({(92, 112): 20, (92, 128): 20, (120, 92): 20, (112, 144): 0})
-    xs, ys, zs = const(120, 120, 20, 1.0)
-    assert tops(blob(seg(0.0, xs, ys, zs)), ground=bt.ground_of(cover(), f)) == []
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(z=20, inside=1, candidates=(1,))], {1: 0}, lambda px: (), sides={1: (20, 0)})
+    assert counts['ground'] == 1
+    assert rows.shape == (0, 3) and not assigned and not conflicts
 
 
-def test_a_tie_takes_the_lower_floor():
+def test_two_sides_take_the_lower_floor():
     g = bt.ground_of(cover(), floors_at({(92, 120): 20, (120, 92): 40}))
     assert g[1] == 20
 
@@ -237,16 +238,15 @@ def one_box():
     return c
 
 
-# Summit's piece 20 (the owner's rule, 2026-11-02): a box with no one floor all round it. A small lower area runs
-# along its long west face; it stands on the floor of its other sides.
+# Summit's piece 20 has different side floors, with a small lower area along its long west face.
 LOWER_WEST = {**{(92, y): 20 for y in (100, 108, 116, 124, 132)}, (148, 120): 30, (120, 92): 30}
 
 
-def test_each_side_of_a_piece_learns_its_own_floor_and_each_side_has_one_vote():
+def test_each_side_of_a_piece_learns_its_own_floor_and_ground_is_the_lowest():
     pf = bt.piece_floors(one_box(), floors_at(LOWER_WEST))
     assert pf.sides[1] == {"n": 30, "e": 30, "w": 20}
-    assert pf.ground[1] == 30, "five lower cells on one face are one side's vote, not five"
-    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 30}
+    assert pf.ground[1] == 20, "the lowest side is the floor the box stands on"
+    assert bt.ground_of(one_box(), floors_at(LOWER_WEST)) == {1: 20}
 
 
 def test_the_floor_beside_a_piece_is_its_sides():
@@ -254,7 +254,7 @@ def test_the_floor_beside_a_piece_is_its_sides():
     assert [pf.side_at(1, px) for px in ((120, 96), (144, 120), (120, 145), (95, 120), (120, 120))] == \
         ["n", "e", "s", "w", None]
     assert pf.floor_at(1, (95, 120)) == 20 and pf.floor_at(1, (144, 120)) == 30
-    assert pf.floor_at(1, (120, 145)) == 30, "a side with no floor of its own takes the piece's ground"
+    assert pf.floor_at(1, (120, 145)) == 20, "a side with no floor of its own takes the piece's ground"
     assert pf.floor_at(2, (95, 120)) is None
 
 
@@ -267,6 +267,46 @@ def test_a_stand_beside_a_box_is_judged_against_the_floor_on_its_side():
     _, _, conflicts, counts = bt.judge([east, west], {1: 20}, lambda px: (), pf.floor_at)
     assert (counts["ground"], counts["conflict"]) == (1, 1)
     assert conflicts[0]["px"] == [95, 120], "on the lower side 3.0 m is still a step up"
+    rows, assigned, conflicts, counts = bt.judge(
+        [east, west], pf.ground, lambda px: (), pf.floor_at, sides={1: (30, 30, 20)})
+    assert (counts["ground"], counts["conflict"]) == (2, 0)
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+
+
+def test_summit_11_jump_up_box_learns_its_top():
+    pf = bt.piece_floors(one_box(), floors_at({(92, 120): 40, (120, 92): 40, (120, 148): 20}))
+    assert pf.ground[1] == 20
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(30, inside=1, candidates=(1,))], pf.ground, lambda px: (),
+        sides={1: tuple(pf.sides[1].values())})
+    assert rows.tolist() == [[120, 120, 30]] and counts['teach'] == 1
+    assert not assigned and not conflicts
+
+
+@pytest.mark.parametrize('inside, px', [(1, (120, 120)), (0, (99, 120))])
+def test_ascent_3_level_with_the_upper_floor_is_ground(inside, px):
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(91, inside=inside, px=px)], {1: 67}, lambda px: (),
+        beside=lambda piece, px: 67, sides={1: (92, 92, 70, 67)})
+    assert counts['ground'] == 1
+    assert rows.shape == (0, 3) and not assigned and not conflicts
+
+
+@pytest.mark.parametrize('offset, expected', [
+    (-hc.TOP_TOL_M * 10 - bt.EPS, 'ground'),
+    (hc.TOP_TOL_M * 10 + bt.EPS, 'ground'),
+    (hc.TOP_TOL_M * 10 + 2 * bt.EPS, 'teach'),
+])
+def test_side_floor_ground_includes_the_tolerance_boundary(offset, expected):
+    counts = bt.judge([stand(40 + offset)], {1: 0}, lambda px: (), sides={1: (40,)})[3]
+    assert counts[expected] == 1
+
+
+def test_side_floor_ground_filters_only_its_own_piece():
+    rows, assigned, conflicts, counts = bt.judge(
+        [stand(40, inside=2, candidates=(1, 2))], {1: 0, 2: 0}, lambda px: (), sides={1: (40,)})
+    assert rows.tolist() == [[120, 120, 40]] and counts['teach'] == 1
+    assert not assigned and not conflicts
 
 
 def test_floor_across_a_wall_beside_a_piece_is_not_its_floor():
@@ -405,6 +445,16 @@ def test_only_inside_single_candidate_stands_teach_and_others_assign():
     rows, assigned, conflicts, counts = bt.judge([outside], GROUND, lambda px: ())
     assert rows.shape == (0, 3) and not assigned and counts['conflict'] == 1
     assert conflicts[0]['candidates'] == [[1, []]]
+
+
+@pytest.mark.parametrize('with_teacher', [False, True])
+def test_judge_without_sides_is_unchanged(with_teacher):
+    outside = stand(inside=0, px=(99, 120))
+    stands = [outside, stand()] if with_teacher else [outside]
+    rows, assigned, conflicts, counts = bt.judge(stands, GROUND, lambda px: ())
+    explicit = bt.judge(stands, GROUND, lambda px: (), sides=None)
+    assert np.array_equal(rows, explicit[0])
+    assert (assigned, conflicts, counts) == explicit[1:]
 
 
 def test_real_shaped_ambiguous_stand_assigns_without_teaching():
