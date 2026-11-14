@@ -178,7 +178,7 @@ guards = [
 
 [site-health]
 about = "The stored site health inventory: failures and slow spots recorded in memory, flushed to site_events, scrubbed and pruned."
-tests = ["tests/test_site_health*.py", "tests/test_kill_impact_sweep.py"]
+tests = ["tests/test_site_health*.py", "tests/test_kill_impact_sweep.py", "tests/test_kill_impact_sweep_db.py"]
 guards = ["app/services/site_health*.py", "app/services/kill_impact_sweep.py", "app/models/site_events.py", "app/data/site_health_resolved.json", "scripts/site_health.py"]
 
 [deploy-drain]

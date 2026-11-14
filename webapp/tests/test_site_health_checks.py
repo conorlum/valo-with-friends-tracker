@@ -154,9 +154,21 @@ def test_a_linked_replay_without_kill_impact_on_a_scored_match_shows(db):
     assert item["key"] == str(shown.id)
     assert item["context"] == {"match_id": scored.id, "map_name": "Ascent"}
     assert item["reproduce"].startswith("read-only: SELECT") and str(shown.match_uuid) in item["reproduce"]
-    assert "--refresh-impact" in item["reproduce"] and "EVERY linked replay" in item["reproduce"]
-    assert f"--uuid {shown.match_uuid} --refresh-impact" not in item["reproduce"]
+    assert "kill-impact sweep" in item["reproduce"] and "within minutes" in item["reproduce"]
+    assert "over an hour was refused" in item["reproduce"]
+    assert "per-kill Impact not stored" in item["reproduce"]
+    assert "python scripts/link_replays.py" in item["reproduce"]
+    assert "--refresh-impact" not in item["reproduce"]
+    assert f"--uuid {shown.match_uuid}" not in item["reproduce"]
     assert item["first_seen"] == T
+
+
+def test_stale_kill_impact_repair_still_refreshes_every_linked_replay():
+    match_uuid = uuid4()
+    reproduce = site_health_checks.kill_impact_reproduce(match_uuid)
+    assert reproduce.startswith("read-only: SELECT") and str(match_uuid) in reproduce
+    assert "--refresh-impact" in reproduce and "EVERY linked replay" in reproduce
+    assert f"--uuid {match_uuid}" not in reproduce
 
 
 def test_map_pool_notes_with_an_error_show(db):

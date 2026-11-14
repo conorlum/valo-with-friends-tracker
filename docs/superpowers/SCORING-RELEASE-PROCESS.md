@@ -90,7 +90,7 @@ reads fail.
 | the scorer | `app/scoring/impact.py` (`build_impact_rows_for_match`, `_time_factor`, `IMPACT_CALCULATION_VERSION`) |
 | one scoring configuration | `app/scoring/impact_config.py` (`ImpactScoringConfig`) |
 | declared comparators, manifest, fingerprints | `app/scoring/impact_manifest.py` (`COMPARATORS`, `HASHED_SOURCES`, `SOURCE_FINGERPRINT_VERSION`) |
-| the one runtime switch | `app/scoring/impact_runtime.py` (`ACTIVE_MANIFEST`) |
+| the one runtime switch | `app/scoring/impact_runtime.py` (`ACTIVE_MANIFEST`). Copy the new manifest to its byte-identical mirror under `webapp/app/data/scoring_manifests/` in the same PR as the `ACTIVE_MANIFEST` change. |
 | ingestion's refusal to write under the wrong code | `app/scoring/ingest_preflight.py`, `scripts/sql/release_write_gate.sql` |
 | release tools | `scripts/freeze_impact_candidate.py`, `export_impact_artifact.py`, `release_candidate_review.py`, `compare_rc3_decomposition.py`, `swap_impact_scores.py`, `install_release_write_gate.py`, `release_preflight.py`, `prewarm_player_cache_ids.py`, `verify_player_cache_coverage.py`, `verify_cache_matches_scores.py`, `catchup_inventory.py` (§I) |
 | a worked example of every stage | `impact-rc3/README.md` (first release, schema migrations included), `impact-v4/README.md` (scoring-only) |

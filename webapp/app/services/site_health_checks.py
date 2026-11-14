@@ -88,6 +88,16 @@ def kill_impact_reproduce(match_uuid) -> str:
             "python scripts/link_replays.py --refresh-impact")
 
 
+def kill_impact_missing_reproduce(match_uuid) -> str:
+    """Inspect a missing split and explain the automatic sweep and manual retry."""
+    uuid = str(match_uuid).replace("'", "''")
+    return (f"read-only: SELECT id, match_id, kill_impact->>'fingerprint' AS stored_fingerprint FROM replays "
+            f"WHERE match_uuid = '{uuid}'; compare it with app.replays.db.impact_fingerprint(session, match_id). "
+            "The site's kill-impact sweep fills a missing split within minutes of the link; "
+            "one listed for over an hour was refused (the site log says why: 'per-kill Impact not stored'). "
+            "Re-run by hand (writes every missing one, not just this): python scripts/link_replays.py")
+
+
 def _scored(match_id_column):
     """EXISTS: an impact_scores row, through rounds, for the match whose id is `match_id_column`."""
     return (select(ImpactScore.round_id).join(Round, ImpactScore.round_id == Round.id)
@@ -122,7 +132,7 @@ def kill_impact_null(db) -> list[dict]:
             "key": str(rid), "first_seen": _aware(linked_at or created_at),
             "error": "linked replay has no stored per-kill Impact",
             "context": {"match_id": match_id, "map_name": map_name},
-            "reproduce": kill_impact_reproduce(match_uuid),
+            "reproduce": kill_impact_missing_reproduce(match_uuid),
         } for rid, match_id, map_name, match_uuid, linked_at, created_at in found]
     return _safely(db, "per-kill Impact", body)
 
