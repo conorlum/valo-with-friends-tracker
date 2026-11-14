@@ -839,14 +839,15 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
 # ---------------------------------------------------------------- the checks before an asset is committed
 
 
-def kill_line_check(rounds: list, geo: Geometry) -> dict:
+def kill_line_check(rounds: list, geo: Geometry, *, keep_all: bool = False) -> dict:
     """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
     have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
     clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill where either
     player is below the map (FELL_BELOW_M: a fall, credited to the last damager wherever they stood) has no
     sight line and is excluded. A kill line is
     blocked only if the killer's eye sees neither the victim's head nor their feet. `geo` has the
-    heights; excluded kills are counted by reason."""
+    heights; excluded kills are counted by reason. `keep_all` retains every blocked line for preview;
+    otherwise examples are capped at ten."""
     from app.control import engine
 
     excluded: Counter = Counter()
@@ -892,7 +893,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
             if not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.HEAD_M), smokes) and \
                     not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.FEET_M), smokes):
                 blocked += 1
-                if len(examples) < 10:
+                if keep_all or len(examples) < 10:
                     examples.append({"match": str(match), "round": n, "t": round(float(t), 2),
                                      "killer_px": [round(kx), round(ky)], "victim_px": [round(vx), round(vy)],
                                      "z": [round(kz, 1), round(vz, 1)]})
