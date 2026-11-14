@@ -97,6 +97,11 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           24: "f71e8017809269db"}
 
 
+# heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
+# HEIGHT_RULES_REVISION (tests/replays/test_height_inputs.py), never the engine, so they are not digested here.
+HEIGHT_BUILD_ONLY = frozenset({"TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"})
+
+
 def _constants_digest() -> str:
     def plain(value):
         if isinstance(value, re.Pattern):
@@ -115,7 +120,8 @@ def _constants_digest() -> str:
     # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list; fs since 20
     for module in (ce, cg, hc, ct, ut, mo) + ((fs,) if cf.CONTROL_REVISION >= 20 else ()):
         for name, value in sorted(vars(module).items()):
-            if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
+            if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION" \
+                    and not (module is hc and name in HEIGHT_BUILD_ONLY):
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
                     constants[f"{module.__name__}.{name}"] = plain(value)
     text = json.dumps(constants, sort_keys=True, default=str)
@@ -127,6 +133,16 @@ def test_the_engine_constants_are_pinned_to_the_control_revision():
     assert PINNED.get(cf.CONTROL_REVISION) == digest, (
         f"the engine's or geometry's constants changed (digest {digest}): bump CONTROL_REVISION in "
         f"app/replays/control_format.py and pin {{{cf.CONTROL_REVISION + 1}: '{digest}'}} here")
+
+
+def test_the_height_build_only_constants_are_not_engine_constants(monkeypatch):
+    before = _constants_digest()
+    for name in HEIGHT_BUILD_ONLY:
+        assert hasattr(hc, name), f"{name} left heights.py: drop it from HEIGHT_BUILD_ONLY"
+        monkeypatch.setattr(hc, name, getattr(hc, name) + 1)
+    assert _constants_digest() == before
+    for module in (ce, cg, ct, ut, mo, fs):     # the engine side never reads them
+        assert not HEIGHT_BUILD_ONLY & set(vars(module)), module.__name__
 
 
 def _without_the_destroyed_reach(monkeypatch):
