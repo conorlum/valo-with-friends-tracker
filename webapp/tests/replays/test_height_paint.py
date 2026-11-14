@@ -188,6 +188,80 @@ def test_painted_parents_are_walkable():
     assert hp.painted_parents({"ground": paint_mask((10, 10), (30, 30))}, walk) == {5*128+5}
 
 
+@pytest.mark.parametrize("donor", ["painted", "neighbour", "coarse_footprint", "coarse_parent"])
+def test_apply_ignores_unwalkable_targets_and_donors(donor):
+    import copy
+    from app.control import height_paint as hp
+    target, blocked = 10*256+10, 10*256+11
+    rows = [evidence(target, [])]
+    coarse = {}
+    mask = paint_mask((10, 10))
+    walk = np.ones((256, 256), bool)
+    if donor.startswith("coarse"):
+        # The touching footprint belongs to an unrefined parent.
+        coarse[4*128+5] = [42]
+        walk[8:10, 10:12] = False
+        if donor == "coarse_footprint":
+            walk[8, 10:12] = True  # parent eligible, touching children ineligible
+    else:
+        rows.append(evidence(blocked, [42]))
+        walk.ravel()[blocked] = False
+        if donor == "painted":
+            mask.ravel()[blocked] = True
+    original = copy.deepcopy(rows)
+    control = copy.deepcopy(rows)
+    hp.apply(control, {"ground": mask}, coarse)
+    assert control[0]["floors_world_dm"] == [[42, 0]]
+    counts = hp.apply(rows, {"ground": mask}, coarse, walk=walk)
+    assert rows[0]["floors_world_dm"] == []
+    assert counts == {"open": 0, "ground": 0, "top": 0, "unresolved": 1}
+    assert rows[1:] == original[1:]
+
+
+def test_painted_parents_ignore_unwalkable_fine_paint():
+    from app.control import height_paint as hp
+    walk = np.ones((128, 128), bool)
+    fine_walk = np.ones((256, 256), bool)
+    fine_walk[10, 10] = False
+    assert hp.painted_parents({"ground": paint_mask((10, 10))}, walk, fine_walk) == set()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("paint_blocked", [False, True])
+@pytest.mark.parametrize("sample_walkable", [False, True])
+@pytest.mark.parametrize("blocked_rows_walkable", [0, 2])
+def test_partial_parent_paint_uses_only_children_reaching_asset(
+        paint_blocked, sample_walkable, blocked_rows_walkable):
+    from tests.replays.control_toys import TOY_SCALE, height_rounds
+    walk_px = np.zeros((1024, 1024), bool)
+    walk_px[200:208, 200:208] = True
+    walk_px[200:204, 200:204] = False
+    walk_px[200:200+blocked_rows_walkable, 200:204] = True
+    geo = cg.geometry_from_masks("PartialPaint", ~walk_px, walk_px, TOY_SCALE, None)
+    assert geo.walk[25, 25]  # three eligible children in a walkable parent
+    rounds = height_rounds(lambda m, n: {
+        0: standing(202, 202, 4.0),
+        **({1: standing(206, 202, 0.0)} if sample_walkable else {}),
+    })
+    found, _, round_match, _ = hb.all_ground(rounds, geo)
+    previous = hr.history(geo.name, [25*128+25])
+    analyzed = hr.analyze(geo, found, [], round_match, {}, {}, previous)
+    assert analyzed["children"][0]["floors_world_dm"] == [[TOY_Z0+40, 0]]
+    paint_cells = [(51, 50), (50, 50)] if paint_blocked else [(51, 50)]
+    geo.height_paint = {"ground": paint_mask(*paint_cells)}
+    built = hb.build(rounds, geo, refinement_history=previous)
+    target = int(np.flatnonzero(built.asset.fine_cells == 50*256+51)[0])
+    blocked = int(np.flatnonzero(built.asset.fine_cells == 50*256+50)[0])
+    assert (built.asset.fine_floors[blocked] == -1).all()
+    assert built.report["painted"] == {"open": 0, "ground": int(sample_walkable), "top": 0}
+    assert built.report["paint_unresolved"] == int(not sample_walkable)
+    assert built.asset.fine_unresolved[target] == (not sample_walkable)
+    assert built.asset.fine_supported[target] == sample_walkable
+    expected = [TOY_Z0] if sample_walkable else []
+    floors = built.asset.fine_floors[target]
+    assert (floors[floors >= 0] + built.asset.origin_z).tolist() == expected
+
+
 def test_donors_exclude_other_brushes_refined_parent_and_grid_wrap():
     from app.control import height_paint as hp
     rows = [evidence(0, []), evidence(1, [82]), evidence(65535, [42])]

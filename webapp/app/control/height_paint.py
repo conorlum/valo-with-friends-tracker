@@ -9,8 +9,9 @@ from scipy import ndimage
 from app.control import heights as hc, height_motion as hm
 
 
-def painted_parents(paint, walk) -> set[int]:
-    parents = {hm.coarse_of_fine(int(cell)) for mask in paint.values() for cell in np.flatnonzero(mask)}
+def painted_parents(paint, walk, fine_walk=None) -> set[int]:
+    parents = {hm.coarse_of_fine(int(cell)) for mask in paint.values()
+               for cell in np.flatnonzero(mask if fine_walk is None else mask & fine_walk)}
     return {parent for parent in parents if walk.ravel()[parent]}
 
 
@@ -40,12 +41,16 @@ def _open_floors(own, highest, area_low, touching):
     return [] if low is None else [low, high]
 
 
-def apply(children: list[dict], paint: dict, coarse_floors_world_dm: dict[int, list[int]]) -> dict:
+def apply(children: list[dict], paint: dict, coarse_floors_world_dm: dict[int, list[int]], *, walk=None) -> dict:
     """Resolve each brush area from a snapshot, so mutations never become donor evidence.
 
     A refined parent's unknown child cannot borrow its old whole-parent floor.
     Unrefined neighbours contribute once per touching fine footprint.
+    The fine walk mask includes parent eligibility and excludes targets and donors alike.
     """
+    if walk is None:
+        walk = np.ones((256, 256), bool)
+    paint = {brush: mask & walk for brush, mask in paint.items()}
     rows = {row['cell']: row for row in children}
     snapshot = {cell: [int(z) for z, _ in row['floors_world_dm']] for cell, row in rows.items()}
     refined = {hm.coarse_of_fine(cell) for cell in rows}
@@ -54,6 +59,8 @@ def apply(children: list[dict], paint: dict, coarse_floors_world_dm: dict[int, l
         painted |= mask
 
     def floors(cell):
+        if not walk.ravel()[cell]:
+            return []
         parent = hm.coarse_of_fine(cell)
         if parent in refined:
             return snapshot.get(cell, [])
