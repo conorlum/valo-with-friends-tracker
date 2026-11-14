@@ -220,9 +220,20 @@ class Pipeline:
     def hook(self, service):
         self.heartbeat()
         self.log("deploying " + service)
-        url = self.env["RENDER_DEPLOY_HOOK_" + service.upper()]
+        # A secret pasted with a trailing newline is not a valid URL: strip it.
+        url = self.env["RENDER_DEPLOY_HOOK_" + service.upper()].strip()
         separator = "&" if "?" in url else "?"
-        self.request("POST", url + separator + "ref=" + quote(self.args.sha, safe=""))
+        try:
+            self.request("POST", url + separator + "ref=" + quote(self.args.sha, safe=""))
+        except Superseded:
+            raise
+        except Exception as error:
+            # Say why without the error's text, which can hold the hook URL: only the
+            # HTTP status, or the error's class name.
+            reason = ("HTTP " + str(int(error.code)) if isinstance(error, HTTPError)
+                      else type(error).__name__)
+            self.log(service + " deploy hook failed: " + reason)
+            raise Failed() from None
         # A finished probe must have started strictly after the hook completed.
         return self.clock()
 

@@ -162,7 +162,7 @@ class Rig:
 
     def __init__(self, tmp_path, **overrides):
         self.render = FakeRender()
-        self.seen, self.gate = [], threading.Event()
+        self.seen, self.errors, self.gate = [], [], threading.Event()
         self.gate.set()
         self.callback_ready = threading.Event()
         self.disk = tmp_path / "disk"
@@ -181,8 +181,12 @@ class Rig:
         # callback URL/listener. A real Workflow would connect only once ready.
         assert self.callback_ready.wait(10), 'test callback listener did not start'
         self.gate.wait(30)
-        self.link(args).post_result({"status": "ok", "parse_seconds": 1.0,
-                                     "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
+        try:
+            self.link(args).post_result({"status": "ok", "parse_seconds": 1.0,
+                                         "result": {"match_uuid": f"m-{args['job_id']}", "map_name": "Ascent"}})
+        except Exception as error:      # the fake only marks the run failed: keep why, for a test that then waits
+            self.errors.append(repr(error))
+            raise
 
     def link(self, args, token=None):
         return tasks.WorkerLink(self.base, args["job_id"], token or args["token"])
@@ -269,7 +273,10 @@ def test_fifteen_uploads_parse_at_once(rig):
     # Fifteen Workflow parses take no CPU here: the worker still reads idle, so local control keeps its pool (D17).
     assert worker.parse_count == 15 and worker.parsing and worker.idle()
     rig.gate.set()
-    done = wait_jobs(worker, [j.id for j in jobs])
+    try:
+        done = wait_jobs(worker, [j.id for j in jobs])
+    except AssertionError:
+        raise AssertionError(f"jobs didn't finish; results that failed to post: {rig.errors}") from None
     assert all(j.status == "done" and j.parse_seconds == 1.0 for j in done)
     wait_for(lambda: worker.parse_count == 0)   # a job reads done just before its thread lowers the count
     assert {s["task"] for s in rig.render.started} == {"replay-tasks/parse"}

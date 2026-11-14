@@ -76,9 +76,10 @@ def test_render_enables_only_the_web_services_util_build_switch():
     assert configured == {"valowithfriendstracker": "true"}
     addition = '      - key: UTIL_BUILD_REMOTE\n        value: "true"\n'
     assert text.count(addition) == 1
-    # W11 changes only this setting. The rest of the Blueprint is the pre-W11 pin.
+    # W11 changes only this setting. The rest of the Blueprint is pinned (re-pinned when the deploy drain turned
+    # autoDeploy off on both services); any other Blueprint edit must update this digest on purpose.
     assert hashlib.sha256(text.replace(addition, "").encode()).hexdigest() == (
-        "060dfd68c171133f0ae8f41aa2a11bc8cf2f45584183d17e2e2b57635c0eb097")
+        "8151270e8809d4db476a198b8f33f675e22eedef2770811678149f7e477125cd")
 
 
 @pytest.mark.parametrize("remote", [True, False])

@@ -113,6 +113,17 @@ def test_geometry_has_unattached_height_paint_by_default():
 BASELINE = Path(__file__).parents[1] / "fixtures/control/height_paint_baseline.json"
 
 
+def npz_content_sha(path) -> str:
+    """sha256 over every array saved in the asset (name, dtype, shape, bytes; names sorted). Not the file's own
+    bytes: an .npz is deflated, and zlib writes different bytes on Windows and Linux for the same arrays."""
+    h = hashlib.sha256()
+    with np.load(path) as z:
+        for name in sorted(z.files):
+            a = np.ascontiguousarray(z[name])
+            h.update(f"{name}|{a.dtype.str}|{a.shape}|".encode("ascii") + a.tobytes())
+    return h.hexdigest()
+
+
 def ledge_build_inputs():
     import copy
     return copy.copy(ledge_geo()), covered_rounds({9: level_walk(240, 272, 4.0, side="B")})
@@ -278,7 +289,7 @@ def test_unpainted_ledge_matches_prechange_baseline(tmp_path):
     path = tmp_path / "ledge.npz"
     hc.save_asset(path, built.asset)
     baseline = json.loads(BASELINE.read_text())
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == baseline["ledge_sha256"]
+    assert npz_content_sha(path) == baseline["ledge_content_sha256"]
     assert json.loads(json.dumps(built.report)) == baseline["ledge_report"]
     assert "painted" not in built.report
 
@@ -295,7 +306,7 @@ def test_unpainted_preview_matches_prechange_baseline(tmp_path, monkeypatch):
     assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(out)],
                         asset_dir=assets) == 0
     baseline = json.loads(BASELINE.read_text())
-    assert hashlib.sha256((out / "Ascent.height.npz").read_bytes()).hexdigest() == baseline["preview_sha256"]
+    assert npz_content_sha(out / "Ascent.height.npz") == baseline["preview_content_sha256"]
     assert json.loads((out / "Ascent.height.json").read_text())["height"] == baseline["preview_report"]
 
 
