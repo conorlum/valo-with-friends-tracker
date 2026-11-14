@@ -18,6 +18,7 @@
 
   var PX = 1024, P = 256, END_SKIP = 3, BAR = 0.02;
   var PAINTS = ["see_across_paint", "cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint"];
+  var HEIGHT_PAINTS = ["open", "ground", "top"];
   var TAG_KINDS = ["cover", "seeover", "walkable", "glyph", "seeacross"];
 
   function base64Bytes(text) {
@@ -59,6 +60,36 @@
     var bytes = new Uint8Array(P * P / 8), any = false;
     for (var i = 0; i < cells.length; i++) if (cells[i]) { bytes[i >> 3] |= 1 << (i & 7); any = true; }
     return any ? bytesBase64(bytes) : null;
+  }
+
+  // Mutate a height-brush store. Painting replaces the other brushes at these cell indices;
+  // erasing clears only the chosen brush, as the page's erase tool does for legacy paint.
+  function paintHeightCells(store, kind, cells, value) {
+    if (HEIGHT_PAINTS.indexOf(kind) < 0) throw new Error("Unknown height brush: " + kind);
+    store[kind] = store[kind] || new Uint8Array(P * P);
+    cells.forEach(function (cell) {
+      store[kind][cell] = value ? 1 : 0;
+      if (value) HEIGHT_PAINTS.forEach(function (other) {
+        if (other !== kind && store[other]) store[other][cell] = 0;
+      });
+    });
+  }
+
+  // pageState = {edits: map -> editable state, height_paint?: loaded document}.
+  // Keep maps outside a filtered page, and omit every empty brush and map.
+  function heightPaintExport(pageState) {
+    var original = (pageState.height_paint || {}).maps || {}, edits = pageState.edits || {};
+    var out = { maps: {} };
+    Object.keys(Object.assign({}, original, edits)).forEach(function (name) {
+      var paints = edits[name] ? edits[name].heightPaints : editsFrom(null, original[name]).heightPaints;
+      var entry = {};
+      HEIGHT_PAINTS.forEach(function (kind) {
+        var packed = paints && paints[kind] ? packPaint(paints[kind]) : null;
+        if (packed) entry[kind] = packed;
+      });
+      if (Object.keys(entry).length) out.maps[name] = entry;
+    });
+    return out;
   }
 
   function paintAt(cells, i) {
@@ -169,10 +200,12 @@
   }
 
   // A map's editable state from its loaded entry.
-  function editsFrom(entry) {
-    var e = { touched: false, tags: {}, paints: {}, cover_reviewed: !!(entry && entry.cover_reviewed) };
+  function editsFrom(entry, heightEntry) {
+    var e = { touched: false, heightTouched: false, tags: {}, paints: {}, heightPaints: {},
+              cover_reviewed: !!(entry && entry.cover_reviewed) };
     ((entry && entry.tags) || []).forEach(function (row) { e.tags[row.id] = row.tag; });
     PAINTS.forEach(function (key) { e.paints[key] = entry && entry[key] ? unpackPaint(entry[key]) : null; });
+    HEIGHT_PAINTS.forEach(function (key) { e.heightPaints[key] = heightEntry && heightEntry[key] ? unpackPaint(heightEntry[key]) : null; });
     return e;
   }
 
@@ -2119,7 +2152,9 @@
   var api = {
     Areas: Areas,
     Features: Features,
-    PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,
+    PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, HEIGHT_PAINTS: HEIGHT_PAINTS,
+    paintHeightCells: paintHeightCells, heightPaintExport: heightPaintExport,
+    TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,
     packPaint: packPaint, compose: compose, linePixels: linePixels, riskOne: riskOne, exportTags: exportTags,
     editsFrom: editsFrom, base64Bytes: base64Bytes, roundHalfEven: roundHalfEven,
     CHOKE_GRID: G, selectAt: selectAt, rename: rename, remove: remove, move: move, add: add, exportAsset: exportAsset,

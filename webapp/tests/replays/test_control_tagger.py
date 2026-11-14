@@ -3,6 +3,7 @@ composes the sight and walk masks and runs the kill-line test exactly like app/c
 exporting an unchanged page gives back the loaded tags.json. The JS checks need Node; they skip without it."""
 
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -179,6 +180,7 @@ def test_the_page_builds_with_every_map(tmp_path):
     assert "global.TaggerCore = api" in page and "/*DATA*/" not in page and "/*CORE*/" not in page
     data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
     assert sorted(data["maps"]) == ["Abyss", "Breeze"] and data["tags"] == TAGS
+    assert data["height_paint"] == json.loads((cg.ASSET_DIR / "height_paint.json").read_text(encoding="utf-8"))
     assert data["maps"]["Breeze"]["lines"] == [] and len(data["maps"]["Abyss"]["lines"]) == 200
 
 
@@ -197,6 +199,203 @@ def test_the_page_includes_areas_data_panel_and_distinct_mode_keys(tmp_path):
     assert len({key for key, _ in pairs}) == len(pairs)
     assert {"k": "chokes", "a": "choke_paint", "f": "features", "m": "areas"}.items() <= set(pairs)
     assert all(f'data-mode="{mode}"' in page for _, mode in pairs)
+    assert {"o": "open", "h": "ground", "t": "top"}.items() <= set(pairs)
+
+
+def height_cells(*indices):
+    cells = np.zeros((cg.PAINT_GRID, cg.PAINT_GRID), bool)
+    cells.ravel()[list(indices)] = True
+    return cg.pack_paint(cells)
+
+
+def page_function(page, name):
+    match = re.search(r"^  function " + name + r"\([^\n]*\) \{.*?^  \}", page, re.M | re.S)
+    assert match, name
+    return match.group(0)
+
+
+@pytest.fixture
+def height_page(tmp_path):
+    source = {"maps": {"Ascent": {"open": height_cells(0, 7, 8, 65535), "ground": height_cells(12),
+                                   "top": height_cells(256)}, "Abyss": {"top": height_cells(19)}}}
+    path = tmp_path / "height_paint.json"
+    path.write_text(json.dumps(source), encoding="utf-8")
+    out = tmp_path / "height-tagger.html"
+    assert control_tagger.main(["--out", str(out), "--map", "Ascent", "--height-paint", str(path)]) == 0
+    page = out.read_text(encoding="utf-8")
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+    assert data["height_paint"] == source
+    expected_sha = hashlib.sha256(json.dumps(source, separators=(",", ":")).encode()).hexdigest()
+    assert data["height_paint_sha"] == expected_sha
+    return page, data
+
+
+def test_height_brushes_are_exclusive_and_erase_only_the_selected_brush():
+    got = run_node("""
+      function run(p) {
+        const store = {};
+        T.paintHeightCells(store, 'open', [0, 7, 8], 1);
+        T.paintHeightCells(store, 'ground', [7, 8], 1);
+        const before = T.HEIGHT_PAINTS.map(k => Array.from(store[k] || []).slice(0, 9));
+        T.paintHeightCells(store, 'top', [8], 1);
+        T.paintHeightCells(store, 'ground', [7, 8], 0);
+        return {kinds: T.HEIGHT_PAINTS, before,
+                after: T.HEIGHT_PAINTS.map(k => Array.from(store[k] || []).slice(0, 9))};
+      }
+    """, {})
+    assert got["kinds"] == ["open", "ground", "top"]
+    assert [i for i, v in enumerate(got["before"][0]) if v] == [0]
+    assert [i for i, v in enumerate(got["before"][1]) if v] == [7, 8]
+    assert [[i for i, v in enumerate(row) if v] for row in got["after"]] == [[0], [], [8]]
+
+
+def test_height_export_round_trips_and_python_loads_js_packing(height_page, tmp_path):
+    _, data = height_page
+    got = run_node("""
+      function run(p) {
+        const edits = {Ascent: T.editsFrom(p.tags.maps.Ascent, p.height_paint.maps.Ascent)};
+        const pageState = {edits, height_paint: p.height_paint};
+        const unchanged = T.heightPaintExport(pageState);
+        edits.Ascent.touched = true;
+        const tags = T.exportTags(p.tags, {Ascent: load(p.maps.Ascent)}, edits);
+        edits.Ascent.heightPaints.top.fill(0);
+        edits.Empty = T.editsFrom({}, {open: T.packPaint(new Uint8Array(T.P * T.P))});
+        const emptied = T.heightPaintExport(pageState);
+        return {unchanged, emptied, tags, legacyPaints: T.PAINTS};
+      }
+    """, data)
+    assert got["unchanged"] == data["height_paint"]
+    assert got["tags"] == data["tags"]
+    assert not {"open", "ground", "top", "heightPaints"}.intersection(got["legacyPaints"])
+    assert got["emptied"] == {"maps": {"Ascent": {k: v for k, v in data["height_paint"]["maps"]["Ascent"].items()
+                                                if k != "top"}, "Abyss": data["height_paint"]["maps"]["Abyss"]}}
+    (tmp_path / "height_paint.json").write_text(json.dumps(got["unchanged"]), encoding="utf-8")
+    masks, sha = cg.load_height_paint("Ascent", tmp_path)
+    assert sha
+    for kind, expected in {"open": [0, 7, 8, 65535], "ground": [12], "top": [256]}.items():
+        assert np.flatnonzero(masks[kind]).tolist() == expected
+
+
+def test_page_height_dab_undo_save_restore_erase_and_feature_replacement(height_page):
+    page, data = height_page
+    assert "T.paintHeightCells" in page_function(page, "dab")
+    assert 'id="exportHeightPaint"' in page and 'a.download = "height_paint.json"' in page
+    for kind, label in [("open", "Open underneath"), ("ground", "Ground only"), ("top", "Solid to the top")]:
+        assert f'data-mode="{kind}"' in page and label in page
+    functions = "\n".join(page_function(page, name) for name in
+                          ["cellsCopy", "snapshot", "save", "restore", "mapEdits", "beforeChange", "changed", "dab", "doUndo"])
+    features = (WEBAPP / "scripts" / "control_tagger_features.js").read_text(encoding="utf-8")
+    functions += "\n" + page_function(features, "rebuildLegacy")
+    got = run_node("""
+      function run(p) {
+        var edits = {Ascent: T.editsFrom(p.data.tags.maps.Ascent, p.data.height_paint.maps.Ascent)};
+        var state = {map: 'Ascent', mode: 'ground', lastPaint: 'ground', brush: 1};
+        var undo = [], chokeState = {}, P = T.P, PX = T.PX, STORE = 'test-height';
+        var memory = {}, localStorage = {setItem: (k,v) => memory[k] = v, getItem: k => memory[k]};
+        var $ = () => ({}), recompute = () => {}, saveChokes = () => {};
+        eval(p.functions);
+        const original = T.heightPaintExport({edits});
+        beforeChange(); dab(2, 2); changed();
+        const painted = T.heightPaintExport({edits});
+        doUndo();
+        const undone = T.heightPaintExport({edits});
+        beforeChange(); dab(2, 2); changed();
+        edits.Ascent = T.editsFrom({}); restore();
+        const restored = T.heightPaintExport({edits});
+        state.mode = 'erase'; dab(2, 2); changed();
+        const erased = T.heightPaintExport({edits});
+        var TG = {edits, loaded: {}}, D = {maps: {Ascent: {}}}, canonical = {maps: {Ascent: {}}};
+        rebuildLegacy(true);
+        const replaced = T.heightPaintExport({edits});
+        save();
+        edits.Ascent = T.editsFrom(p.data.tags.maps.Ascent, p.data.height_paint.maps.Ascent); restore();
+        const replacedRestored = T.heightPaintExport({edits});
+        T.HEIGHT_PAINTS.forEach(kind => T.paintHeightCells(edits.Ascent.heightPaints, kind, [7,8,12,256,65535], 0));
+        edits.Ascent.touched = true; save();
+        edits.Ascent = T.editsFrom(p.data.tags.maps.Ascent, p.data.height_paint.maps.Ascent); restore();
+        return {original, painted, undone, restored, erased, replaced, replacedRestored,
+                cleared: T.heightPaintExport({edits})};
+      }
+    """, {"functions": functions, "data": data})
+    assert got["undone"] == got["original"]
+    assert got["restored"] == got["painted"]
+    assert got["painted"] != got["original"]
+    assert got["replaced"] == got["erased"]
+    assert got["replacedRestored"] == got["erased"]
+    assert got["cleared"] == {"maps": {}}
+    erased = got["erased"]["maps"]["Ascent"]
+    assert erased["open"] == height_cells(7, 8, 65535)
+    assert erased["ground"] == height_cells(12)
+
+
+def test_height_source_identity_prevents_an_old_local_draft(height_page):
+    page, data = height_page
+    store_code = page.split('  var STORE = ', 1)[1].split('  var $ = ', 1)[0]
+    functions = "\n".join(page_function(page, name) for name in ["save", "restore"])
+    got = run_node("""
+      function run(p) {
+        var DATA = p.data, STORE, memory = {};
+        var localStorage = {setItem: (k,v) => memory[k] = v, getItem: k => memory[k]};
+        var edits = {Ascent: T.editsFrom(DATA.tags.maps.Ascent, DATA.height_paint.maps.Ascent)};
+        eval('STORE = ' + p.store); eval(p.functions);
+        const oldKey = STORE;
+        T.paintHeightCells(edits.Ascent.heightPaints, 'top', [0], 1);
+        edits.Ascent.touched = true; save();
+        const saved = T.heightPaintExport({edits});
+        edits.Ascent = T.editsFrom(DATA.tags.maps.Ascent, DATA.height_paint.maps.Ascent); restore();
+        const same = T.heightPaintExport({edits});
+        DATA.height_paint = {maps: {Ascent: {ground: p.newPaint}}};
+        DATA.height_paint_sha = p.newSha;
+        eval('STORE = ' + p.store);
+        edits.Ascent = T.editsFrom(DATA.tags.maps.Ascent, DATA.height_paint.maps.Ascent); restore();
+        return {oldKey, newKey: STORE, saved, same, changed: T.heightPaintExport({edits})};
+      }
+    """, {"data": data, "store": store_code, "functions": functions, "newPaint": height_cells(23),
+          "newSha": hashlib.sha256(json.dumps({"maps": {"Ascent": {"ground": height_cells(23)}}},
+                                             separators=(",", ":")).encode()).hexdigest()})
+    assert got["same"] == got["saved"]
+    assert got["oldKey"] != got["newKey"]
+    assert got["changed"] == {"maps": {"Ascent": {"ground": height_cells(23)}}}
+
+
+def test_page_draws_all_three_height_brushes_transparently(height_page):
+    page, data = height_page
+    colours = re.search(r"  var PAINT_COLOURS = (.*?);", page, re.S).group(0)
+    got = run_node("""
+      function run(p) {
+        var P = T.P, PX = T.PX, image;
+        var maps = {Ascent: {labels: new Int32Array(PX * PX), opaque: new Uint8Array(PX * PX)}};
+        var edits = {Ascent: T.editsFrom({}, p.paint)};
+        var state = {map: 'Ascent', masks: {}, byId: {}};
+        var $ = id => ({checked: id === 'showPaint', getContext: () => ({
+          createImageData: () => ({data: new Uint8ClampedArray(PX * PX * 4)}),
+          putImageData: img => image = img.data
+        })});
+        function mapEdits() {return edits.Ascent;}
+        eval(p.colours); eval(p.draw); paintTint();
+        return [0,12,256].map(cell => {
+          const pixel = Math.floor(cell / P) * 4 * PX + (cell % P) * 4;
+          return Array.from(image.slice(pixel * 4, pixel * 4 + 4));
+        });
+      }
+    """, {"paint": data["height_paint"]["maps"]["Ascent"], "colours": colours,
+          "draw": page_function(page, "paintTint")})
+    assert got == [[66, 180, 255, 150], [100, 210, 100, 150], [255, 150, 60, 150]]
+
+
+@pytest.mark.parametrize("document", [{"maps": []}, {"maps": {"Ascent": {"open": "bad"}}},
+                                     {"maps": {"Ascent": {"open": height_cells(7), "top": height_cells(7)}}}])
+def test_page_rejects_invalid_height_paint(tmp_path, document):
+    path = tmp_path / "height_paint.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError):
+        control_tagger.render(TAGS, {}, height_paint=path)
+
+
+def test_page_missing_height_paint_loads_an_empty_document(tmp_path):
+    page = control_tagger.render(TAGS, {}, height_paint=tmp_path / "missing.json")
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+    assert data["height_paint"] == {"maps": {}}
 
 
 # ---- Choke mode (timing-gaps spec section 2: add, delete, move, rename; hand edits survive re-detection) ----

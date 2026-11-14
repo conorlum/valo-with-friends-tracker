@@ -94,6 +94,7 @@
   <button id="clearBarriers" title="remove this map's barrier paint, to redraw it as thin lines (undo brings it back)">Clear barriers</button>
   <button id="export">Export tags.json</button>
   <button id="exportChokes" title="download this map's &lt;Map&gt;.chokes.json">Export chokes</button>
+  <button id="exportHeightPaint">Export height paint</button>
   <button id="importBtn">Import</button>
   <input type="file" id="importFile" accept="application/json" hidden>
 </header>
@@ -119,6 +120,9 @@
         <button data-mode="cant_walk_paint"><span class="sw" style="background:var(--cantwalk)"></span>Can't walk <kbd>W</kbd></button>
         <button data-mode="uncertain_paint"><span class="sw" style="background:var(--uncertain)"></span>Uncertain <kbd>U</kbd></button>
         <button data-mode="barrier_paint"><span class="sw" style="background:var(--barrier)"></span>Barrier <kbd>B</kbd></button>
+        <button data-mode="open"><span class="sw" style="background:rgb(66, 180, 255)"></span>Open underneath <kbd>O</kbd></button>
+        <button data-mode="ground"><span class="sw" style="background:rgb(100, 210, 100)"></span>Ground only <kbd>H</kbd></button>
+        <button data-mode="top"><span class="sw" style="background:rgb(255, 150, 60)"></span>Solid to the top <kbd>T</kbd></button>
         <button data-mode="chokes"><span class="sw" style="background:var(--choke)"></span>Chokes <kbd>K</kbd></button>
         <button data-mode="choke_paint"><span class="sw" style="background:var(--chokenew)"></span>Paint new choke <kbd>A</kbd></button>
         <button data-mode="features"><span class="sw" style="background:var(--feat)"></span>Map features <kbd>F</kbd></button>
@@ -348,16 +352,17 @@
   var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
                   seeacross: [190, 110, 255], "": [58, 160, 255], "void": [70, 40, 40] };
   var PAINT_COLOURS = { see_across_paint: [190, 110, 255], cover_paint: [229, 72, 77], cant_walk_paint: [255, 209, 102],
-                        uncertain_paint: [44, 213, 196], barrier_paint: [255, 122, 217] };
+                        uncertain_paint: [44, 213, 196], barrier_paint: [255, 122, 217],
+                        open: [66, 180, 255], ground: [100, 210, 100], top: [255, 150, 60] };
   var PAINT_NAMES = { see_across_paint: "see-across", cover_paint: "cover", cant_walk_paint: "can't walk",
-                      uncertain_paint: "uncertain", barrier_paint: "barrier" };
-  // Saved edits belong to the exact tags.json the page was built from: a rebuilt page starts fresh,
-  // so edits saved against older paint can't come back over newer paint.
+                      uncertain_paint: "uncertain", barrier_paint: "barrier",
+                      open: "open underneath", ground: "ground only", top: "solid to the top" };
+  // Saved edits belong to both source files, including the SHA of the embedded height paint.
   var STORE = "control-tagger-v3:" + (function (s) {
     var h = 5381;
     for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
     return h.toString(36) + "." + s.length;
-  })(JSON.stringify(DATA.tags));
+  })(JSON.stringify(DATA.tags)) + ":" + DATA.height_paint_sha;
   var $ = function (id) { return document.getElementById(id); };
   var maps = {}, edits = {}, loaded = {}, undo = [], state = { map: null, selected: 0, mode: "select",
     lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {}, choke: 0 };
@@ -375,19 +380,23 @@
 
   function cellsCopy(p) { return p ? new Uint8Array(p) : null; }
   function snapshot(e) {
-    var paints = {};
+    var paints = {}, heightPaints = {};
     T.PAINTS.forEach(function (k) { paints[k] = cellsCopy(e.paints[k]); });
-    return { touched: e.touched, tags: Object.assign({}, e.tags), paints: paints, cover_reviewed: e.cover_reviewed };
+    T.HEIGHT_PAINTS.forEach(function (k) { heightPaints[k] = cellsCopy(e.heightPaints[k]); });
+    return { touched: e.touched, heightTouched: e.heightTouched, tags: Object.assign({}, e.tags),
+             paints: paints, heightPaints: heightPaints, cover_reviewed: e.cover_reviewed };
   }
   function save() {
     try {
       var out = {};
       Object.keys(edits).forEach(function (name) {
         var e = edits[name];
-        if (!e.touched) return;
-        var paints = {};
+        if (!e.touched && !e.heightTouched) return;
+        var paints = {}, heightPaints = {};
         T.PAINTS.forEach(function (k) { paints[k] = e.paints[k] ? T.packPaint(e.paints[k]) : null; });
-        out[name] = { tags: e.tags, paints: paints, cover_reviewed: e.cover_reviewed };
+        T.HEIGHT_PAINTS.forEach(function (k) { heightPaints[k] = e.heightPaints[k] ? T.packPaint(e.heightPaints[k]) : null; });
+        out[name] = { touched: e.touched, heightTouched: e.heightTouched, tags: e.tags, paints: paints,
+                      heightPaints: heightPaints, cover_reviewed: e.cover_reviewed };
       });
       localStorage.setItem(STORE, JSON.stringify(out));
     } catch (err) { /* private window: edits last until the page closes */ }
@@ -397,9 +406,15 @@
       var raw = JSON.parse(localStorage.getItem(STORE)) || {};
       Object.keys(raw).forEach(function (name) {
         if (!edits[name]) return;
-        var r = raw[name], paints = {};
+        var r = raw[name], paints = {}, heightPaints = {};
         T.PAINTS.forEach(function (k) { paints[k] = r.paints[k] ? T.unpackPaint(r.paints[k]) : null; });
-        edits[name] = { touched: true, tags: r.tags, paints: paints, cover_reviewed: r.cover_reviewed };
+        T.HEIGHT_PAINTS.forEach(function (k) {
+          heightPaints[k] = r.heightPaints ? (r.heightPaints[k] ? T.unpackPaint(r.heightPaints[k]) : null)
+            : cellsCopy(edits[name].heightPaints[k]);
+        });
+        edits[name] = { touched: r.touched !== false, heightTouched: !!r.heightTouched,
+                        tags: r.tags, paints: paints, heightPaints: heightPaints,
+                        cover_reviewed: r.cover_reviewed };
       });
     } catch (err) { /* nothing saved */ }
   }
@@ -492,6 +507,10 @@
         for (var k = 0; k < T.PAINTS.length; k++) {
           var p = e.paints[T.PAINTS[k]];
           if (p && p[cell]) { col = PAINT_COLOURS[T.PAINTS[k]]; a = 150; }
+        }
+        for (var h = 0; h < T.HEIGHT_PAINTS.length; h++) {
+          var height = e.heightPaints[T.HEIGHT_PAINTS[h]];
+          if (height && height[cell]) { col = PAINT_COLOURS[T.HEIGHT_PAINTS[h]]; a = 150; }
         }
       }
       if (col) { d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = a; }
@@ -693,11 +712,18 @@
 
   function dab(x, y) {
     var kind = state.mode === "erase" ? state.lastPaint : state.mode, e = mapEdits();
-    var cells = e.paints[kind] = e.paints[kind] || new Uint8Array(P * P);
+    var cells = [];
     var v = state.mode === "erase" ? 0 : 1, rad = state.brush / (PX / P), cx = x / (PX / P), cy = y / (PX / P);
     for (var gy = Math.max(0, Math.floor(cy - rad)); gy <= Math.min(P - 1, Math.ceil(cy + rad)); gy++)
       for (var gx = Math.max(0, Math.floor(cx - rad)); gx <= Math.min(P - 1, Math.ceil(cx + rad)); gx++)
-        if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= rad * rad) cells[gy * P + gx] = v;
+        if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= rad * rad) cells.push(gy * P + gx);
+    if (T.HEIGHT_PAINTS.indexOf(kind) >= 0) {
+      T.paintHeightCells(e.heightPaints, kind, cells, v);
+      e.heightTouched = true;
+    } else {
+      var paint = e.paints[kind] = e.paints[kind] || new Uint8Array(P * P);
+      cells.forEach(function (cell) { paint[cell] = v; });
+    }
   }
 
   // Barrier mode draws one straight line, a single paint cell wide, from press to release.
@@ -800,7 +826,7 @@
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
     var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
-                  k: "chokes", a: "choke_paint", f: "features", m: "areas" };
+                  k: "chokes", a: "choke_paint", f: "features", m: "areas", o: "open", h: "ground", t: "top" };
     var modeKey = !e.ctrlKey && !e.metaKey && !e.altKey && modes[e.key.toLowerCase()];
     if (state.mode === "features") {
       if (e.key === "Escape") setMode("select");
@@ -849,6 +875,12 @@
     a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1) + "\n"], { type: "application/json" }));
     a.download = "tags.json"; a.click();
   });
+  $("exportHeightPaint").addEventListener("click", function () {
+    var out = T.heightPaintExport({ edits: edits, height_paint: DATA.height_paint });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1) + "\n"], { type: "application/json" }));
+    a.download = "height_paint.json"; a.click();
+  });
   $("importBtn").addEventListener("click", function () { $("importFile").click(); });
   $("importFile").addEventListener("change", function () {
     var f = this.files[0];
@@ -863,6 +895,8 @@
         var entry = data.maps[name];
         if (entry.image_sha && entry.image_sha !== DATA.maps[name].image_sha) { console.warn(name + ": the minimap changed; skipped"); return; }
         var e = T.editsFrom(entry);
+        e.heightPaints = edits[name].heightPaints;
+        e.heightTouched = edits[name].heightTouched;
         e.touched = true;
         edits[name] = e;
       });
@@ -871,8 +905,9 @@
   });
 
   Object.keys(DATA.maps).forEach(function (name) {
-    edits[name] = T.editsFrom((DATA.tags.maps || {})[name]);
-    loaded[name] = T.editsFrom((DATA.tags.maps || {})[name]);
+    var heightEntry = (DATA.height_paint.maps || {})[name];
+    edits[name] = T.editsFrom((DATA.tags.maps || {})[name], heightEntry);
+    loaded[name] = T.editsFrom((DATA.tags.maps || {})[name], heightEntry);
     var ch = DATA.maps[name].chokes || { chokes: [], next_id: 1 };
     chokeState[name] = chokeLoaded[name] = { chokes: ch.chokes, nextId: ch.next_id };
     chokeHigh[name] = ch.next_id;
