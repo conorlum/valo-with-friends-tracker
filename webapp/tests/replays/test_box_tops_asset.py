@@ -88,7 +88,7 @@ def test_cover_build_passes_world_sides_snap_and_near_floors(monkeypatch):
 
     labels = cover()
     probe = (325, 160)  # six pixels beyond the piece's last pixel (319, 160)
-    neighbour = (329, 160)  # a connected leaf four pixels from the probe
+    neighbour = (329, 160)  # its connected leaf starts at (328, 160), 3 px from the probe
     seen = {}
     judge, floors_near = bt.judge, bt.floors_near
 
@@ -96,7 +96,8 @@ def test_cover_build_passes_world_sides_snap_and_near_floors(monkeypatch):
         assert geo.cover_px is labels
         seen['asset'] = asset
         # Isolate the wiring: this leaf has no floor at the probe, only at its neighbour.
-        leaf = lambda px: (z_dm(0.0),) if px == neighbour else ()
+        connected = {(neighbour[0] // 4, neighbour[1] // 4): (z_dm(0.0),)}
+        leaf = lambda px: connected.get((px[0] // 4, px[1] // 4), ())
         seen['plain_leaf'] = leaf
         return leaf
 
@@ -125,6 +126,7 @@ def test_cover_build_passes_world_sides_snap_and_near_floors(monkeypatch):
     assert labels[y, x] == 1
     assert seen['plain_leaf'](probe) == ()
     assert seen['plain_leaf'](neighbour) == (z_dm(0.0),)
+    assert seen['plain_leaf']((328, 160)) == (z_dm(0.0),)
     assert seen['near_floors'] == (z_dm(0.0),)
     assert seen['radius'] == math.ceil(1.0 / GEO.m_per_px)
     assert learnt.asset.box_tops[:, 2].tolist() == [z_dm(1.2) - asset.origin_z]

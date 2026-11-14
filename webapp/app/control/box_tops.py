@@ -337,19 +337,23 @@ def piece_snapper(cover_px):
 
 
 def floors_near(leaf_floor, px, radius_px) -> tuple:
-    """Sorted union of connected floors on a clipped 4 px lattice within the radius, including px.
+    """Sorted union of connected floors in aligned 4 px leaves whose footprint reaches within the radius.
 
-    Summit 27's slope has floors at 3.0/3.5/4.3 m within 1 m of the 3.5 m stands,
-    but none on their own 4 px leaf, so ground checks must also read nearby leaves.
+    Read each leaf once at its nearest pixel (clipped to the map), always including the own leaf.
+    A lattice anchored at the stand misses near corners: Summit's stand at (497, 675) needs
+    the 3.5 m leaf at (504, 676), within radius 8 although the lattice sample (505, 679) is not.
     """
-    steps = math.floor(radius_px / FINE)
+    x_start = max(0, math.floor((px[0] - radius_px) / FINE)) * FINE
+    y_start = max(0, math.floor((px[1] - radius_px) / FINE)) * FINE
+    x_stop = min(PX - 1, px[0] + radius_px)
+    y_stop = min(PX - 1, px[1] + radius_px)
     floors = set()
-    for j in range(-steps, steps + 1):
-        for i in range(-steps, steps + 1):
-            dx, dy = FINE * i, FINE * j
+    for y0 in range(y_start, math.floor(y_stop / FINE) * FINE + 1, FINE):
+        y = min(PX - 1, max(y0, min(px[1], y0 + FINE - 1)))
+        for x0 in range(x_start, math.floor(x_stop / FINE) * FINE + 1, FINE):
+            x = min(PX - 1, max(x0, min(px[0], x0 + FINE - 1)))
+            dx, dy = x - px[0], y - px[1]
             if dx * dx + dy * dy <= radius_px * radius_px:
-                x = min(PX - 1, max(0, px[0] + dx))
-                y = min(PX - 1, max(0, px[1] + dy))
                 floors.update(leaf_floor((x, y)))
     return tuple(sorted(floors))
 
