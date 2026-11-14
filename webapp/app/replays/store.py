@@ -13,7 +13,8 @@
    the old rows survive.
 
 Refuses outright in demo mode and on the ValoMaths demo database, whatever called it. It never
-runs the scorer: the per-kill Impact split is a separate, later step (app/services/replay_impact.py).
+runs the scorer: the per-kill Impact split is filled later by the site's kill-impact sweep
+or link_replays.py, through app/services/replay_impact.py (PLAN D1).
 """
 
 from __future__ import annotations
