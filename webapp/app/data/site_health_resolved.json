@@ -1,1 +1,17 @@
-[]
+[
+  {
+    "kind": "page_error",
+    "key": "GET /health",
+    "fixed_by": "util-store-blob (PR #222)"
+  },
+  {
+    "kind": "page_error",
+    "key": "POST /admin/deploy/poll",
+    "fixed_by": "util-store-blob (PR #222)"
+  },
+  {
+    "kind": "page_error",
+    "key": "GET /replays/upload/progress.json",
+    "fixed_by": "util-store-blob (PR #222)"
+  }
+]
