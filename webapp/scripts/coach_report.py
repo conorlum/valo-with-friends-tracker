@@ -68,8 +68,12 @@ def claude_command(exe: str, model: str | None, session: str | None) -> list[str
     return command
 
 
+def find_claude() -> str | None:
+    return shutil.which("claude")
+
+
 def claude_call(run_dir: Path, model: str | None):
-    exe = shutil.which("claude")
+    exe = find_claude()
     if exe is None:
         raise SystemExit("refused: the claude command is not on PATH")
 
@@ -111,8 +115,12 @@ def main() -> int:
     except ValueError:
         print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
         return 2
+    if not args.prompt_only and find_claude() is None:      # before any database or run-directory work
+        print("refused: the claude command is not on PATH", file=sys.stderr)
+        return 2
     # Every player is resolved, and the match read once, before any model runs: a wrong name refuses the
-    # whole batch at once, not after the earlier players' runs.
+    # whole batch at once, not after the earlier players' runs. What is wrong for one player alone (no slot or
+    # team in the replay) refuses only that player's run.
     with SessionLocal() as db:
         try:
             book = playbook.load()
@@ -125,37 +133,45 @@ def main() -> int:
             ask = (lambda: _admin_client.request_util_build(_admin_client.DEFAULT_SITE)) \
                 if os.environ.get("REPLAY_ADMIN_TOKEN", "").strip() else None
             data = snapshot.read(db, uuid, ask=ask)
-            hidden = [(name, match_id, player_id, snapshot.hide_enemy_names(data, player_id))
-                      for name, match_id, player_id in resolved]
         except (ValueError, snapshot.SnapshotError) as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
-    if len(hidden) == 1:
-        return run_player(args, uuid, book, *hidden[0])
-    print(f"coaching {len(hidden)} players, one at a time, from one read of the match: "
-          f"{', '.join(name for name, *_ in hidden)}", flush=True)
+    if len(resolved) == 1:
+        return run_player(args, uuid, book, *resolved[0], data)
+    print(f"coaching {len(resolved)} players, one at a time, from one read of the match: "
+          f"{', '.join(name for name, *_ in resolved)}", flush=True)
     failed = []
-    for at, entry in enumerate(hidden, start=1):
+    for at, entry in enumerate(resolved, start=1):
         name = entry[0]
-        print(f"\n== {at} of {len(hidden)}: {name} ==", flush=True)
+        print(f"\n== {at} of {len(resolved)}: {name} ==", flush=True)
         try:
-            code = run_player(args, uuid, book, *entry)
+            code = run_player(args, uuid, book, *entry, data)
+        except SystemExit as stop:      # a helper's refusal: that player's failure, not the batch's
+            print(stop, file=sys.stderr)
+            code = stop.code if isinstance(stop.code, int) else 1
         except Exception:      # noqa: BLE001 - one player's crash must not cost the others their runs
             traceback.print_exc()
             code = 1
         if code != 0:
             print(f"== {name}: FAILED (exit {code}) ==", flush=True)
             failed.append(name)
-    print(f"\n{len(hidden) - len(failed)} of {len(hidden)} runs succeeded"
+    print(f"\n{len(resolved) - len(failed)} of {len(resolved)} runs succeeded"
           + (f"; failed: {', '.join(failed)}" if failed else ""))
     return 1 if failed else 0
 
 
-def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int, data: dict) -> int:
-    """One player's run from the match as that player's run sees it (enemy names hidden)."""
+def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int, match: dict) -> int:
+    """One player's run from the match as that player's run sees it (enemy names hidden). `match` is the shared
+    read, never changed: hiding builds new dicts for this player."""
     from app.coach import prompt, runner, snapshot
     from app.db import SessionLocal
     from app.services import coach
+
+    try:
+        data = snapshot.hide_enemy_names(match, player_id)
+    except snapshot.SnapshotError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
 
     # One directory per match and player: a second player's run must not delete the first's files.
     root = Path(tempfile.gettempdir()) / "valo-coach"

@@ -262,7 +262,7 @@ def answer(snap, command: str, args: list[str]) -> dict:
                          "seconds into the round (41.5, not 0:41)"}
     try:
         return COMMANDS[command](snap, *converted)
-    except QueryError as error:
+    except (QueryError, SnapshotError) as error:     # SnapshotError: e.g. a round's file is missing from the run
         return {"error": str(error)}
 
 

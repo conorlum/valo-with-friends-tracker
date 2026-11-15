@@ -28,7 +28,8 @@ def test_a_run_snapshot_names_only_the_subjects_team(tmp_path):
     snapshot.save(data, tmp_path)
     snap = snapshot.load(tmp_path)
     assert snap.names[0] == "P0#T0" and snap.names[4] == "P4#T4"
-    assert snap.names[5] == "the enemy Jett" and "P5#T5" not in (tmp_path / snapshot.FILE).read_text(encoding="utf-8")
+    on_disk = [p.read_text(encoding="utf-8") for p in tmp_path.rglob("*.json")]     # the manifest and every round
+    assert snap.names[5] == "the enemy Jett" and len(on_disk) > 1 and not any("P5#T5" in text for text in on_disk)
     assert built()["context"]["players"]["5"]["name"] == "P5#T5"        # the original is not changed
 
 

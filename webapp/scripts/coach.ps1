@@ -7,12 +7,13 @@ Usage:
   .\scripts\coach.ps1 <match uuid> "Name#TAG" -DryRun      # print the report, publish nothing
   .\scripts\coach.ps1 <match uuid> "Name#TAG" -Team        # Name#TAG and their four teammates, one at a time
   .\scripts\coach.ps1 <match uuid> "A#1","B#2","C#3"       # these players, one at a time, from one read of the match
+  .\scripts\coach.ps1 <match uuid> "A#1" "B#2" "C#3"       # the same, space-separated
 
 Needs webapp/.env.remote (see scripts/with_friends_db.py) and the claude command on PATH.
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Match,
-    [Parameter(Mandatory = $true, Position = 1)][string[]]$Player,
+    [Parameter(Mandatory = $true, Position = 1, ValueFromRemainingArguments = $true)][object[]]$Player,
     [string]$Model = "",
     [switch]$DryRun,
     [switch]$PromptOnly,
@@ -20,11 +21,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Remaining arguments arrive as one array per form ("A","B" or "A" "B"); [string[]] would join a comma list into one name.
+$Player = @($Player | ForEach-Object { $_ } | ForEach-Object { [string]$_ })
 $webappRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $webappRoot
 $python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
 $entry = if ($Team) { "scripts\coach_team.py" } else { "scripts\coach_report.py" }
-if ($Team -and $Player.Count -ne 1) { Write-Error "-Team takes one player"; exit 2 }
+if ($Team -and $Player.Count -ne 1) { [Console]::Error.WriteLine("refused: -Team takes one player"); exit 2 }
 $command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", $entry, $Match) + $Player
 if ($Model) { $command += @("--model", $Model) }
 if ($DryRun) { $command += "--dry-run" }

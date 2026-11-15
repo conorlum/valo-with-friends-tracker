@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -40,7 +41,11 @@ class _RoundFiles(Mapping):
             raise KeyError(key)
         if key not in self._loaded:
             path = self._directory / f"{key}.json"
-            self._loaded[key] = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                self._loaded[key] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:      # missing, unreadable or not JSON: a snapshot problem
+                raise SnapshotError(f"round {key}'s file {path} could not be read "
+                                    f"({type(error).__name__}: {error})") from None
         return self._loaded[key]
 
     def __iter__(self):
@@ -50,10 +55,39 @@ class _RoundFiles(Mapping):
         return len(self._numbers)
 
 
+REPLACE_TRIES = 40         # x REPLACE_WAIT_S: how long a save waits for readers to let go of the manifest
+REPLACE_WAIT_S = 0.05
+
+
+def _replace(source: Path, target: Path) -> None:
+    """os.replace, retried while Windows refuses it: CPython opens files without FILE_SHARE_DELETE, so a reader
+    holding the manifest for its few milliseconds makes the swap fail with a PermissionError."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_TRIES - 1:
+                raise PermissionError(f"{target} stayed locked by another process for "
+                                      f"{REPLACE_TRIES * REPLACE_WAIT_S:.0f} s; the snapshot was not replaced") from None
+            time.sleep(REPLACE_WAIT_S)
+
+
+def _generation(directory: Path) -> str | None:
+    """The rounds directory the manifest in `directory` names now, if any."""
+    try:
+        return json.loads((directory / FILE).read_text(encoding="utf-8")).get("rounds_dir")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def save(data: dict, directory: Path) -> None:
-    """Publish the manifest after all of its round files have been written."""
+    """Publish the manifest after all of its round files have been written. A save into a directory that already
+    holds a snapshot keeps the generation the old manifest named (a reader that loaded it may still open its round
+    files) and removes every older one, so repeated saves hold at most two generations."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    previous = _generation(directory)
     rounds_dir = Path(tempfile.mkdtemp(prefix=f"{ROUNDS_DIR}-", dir=directory))
     try:
         for n, entry in data["rounds"].items():
@@ -62,11 +96,13 @@ def save(data: dict, directory: Path) -> None:
                 "rounds_dir": rounds_dir.name}
         manifest = rounds_dir / FILE
         manifest.write_text(json.dumps(head, separators=(",", ":")), encoding="utf-8")
-        # Readers that already loaded the previous manifest can still open its round files.
-        manifest.replace(directory / FILE)
-    except Exception:
+        _replace(manifest, directory / FILE)
+    except BaseException:
         shutil.rmtree(rounds_dir, ignore_errors=True)
         raise
+    for old in directory.glob(f"{ROUNDS_DIR}-*"):
+        if old.is_dir() and old.name not in (rounds_dir.name, previous):
+            shutil.rmtree(old, ignore_errors=True)       # best effort: a locked file waits for the next save
 
 
 def load(directory: Path) -> Snapshot:
