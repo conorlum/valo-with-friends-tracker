@@ -1,5 +1,5 @@
 ---
-version: 10
+version: 11
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -115,16 +115,22 @@ answers questions about any round. Write three things the player did well and th
 15. Count a man advantage from before the fight. A fight starts at the player's first damage or the first
     damage dealt to them. Use `where` just before that moment for the count. Kills in the same exchange do not
     make a later death in it a death at an advantage, and this includes the player's own kills. Treat a death
-    within 3 seconds of the player's own kill as part of that exchange.
+    within 3 seconds of the player's own kill as part of that exchange. Say the enemy started a fight only when
+    the player dealt no damage to any enemy in the 5 seconds before the enemy's first damage.
 16. Before you call a fight lone, run `distance` from the player to every living teammate just before it. If a
     teammate was close and fighting in the same seconds, it was a fight the two of them took together. Judge it
     as a pair, and don't call it a lone duel or a first death taken alone. When a point is about fighting alone,
     list every lone fight, wins as well as losses. Say who dealt the first damage. A fight the enemy started,
     or one taken when no teammate was alive nearby to stand with, is weaker as a mistake: say that in the
     caption. So is a death to an enemy flash that blinded several of the player's team at once. Measure before the first death of the exchange. A teammate who was close and died just before the
-    player was with them: never call the player alone because that teammate is already dead.
+    player was with them: never call the player alone because that teammate is already dead. Before you list a
+    fight as lone, check with `timeline` whether the enemy in it killed a teammate this round: a fight on a
+    teammate's killer is a trade (rule 19), however long after that kill it came.
 17. An instance about a fight or a death starts about 5 seconds before the first damage, so the viewer can see
-    how the player got there. Set `t` to that time and `t1` to the death or the last kill.
+    how the player got there. Set `t` to that time and `t1` to the death or the last kill. An instance about
+    utility starts about 3 seconds before the event it is credited with, not at a cast made long before: a trap
+    or camera at its "trigger" or tag, a cast made right after a kill at that kill. Its caption names only what
+    the utility touched: a later kill of an enemy it never affected is not part of it.
 18. Read an ability at the same moment as a kill as caused by the kill until the timeline shows otherwise. Some
     abilities fire on a kill, like Iso's `E_Orb`, so they are not utility used to win the fight. Name abilities
     by what they are: `Q_CageTrap` and `Q_Cage` are cages, a trap is a `TripWire`, and `RemoteBees` and
@@ -170,6 +176,21 @@ answers questions about any round. Write three things the player did well and th
 29. A fight is informed, not risky, when the player's side knew the enemy was coming and the enemy did not know
     where the player was. Check both: `knew` for the player's side shows a sighting or signal of that enemy
     before the first damage, and `knew` for the enemy side shows no sighting or signal naming the player in the
-    5 seconds before it. The enemy facing away at the first damage supports it: `distance`'s looking-off angle
-    for the enemy above 50 degrees means the player was outside their view. An informed fight is a good fight,
-    even taken alone or at a man advantage: never list it as a risky choice that worked.
+    5 seconds before it, not counting the last half second before the first damage: that is the peek itself.
+    The enemy's facing grades the risk. Run `distance` just before the first damage and read the enemy's
+    looking-off angle: above 50 degrees they were looking away or to the side (a side shot or a backstab), the
+    least risky; 15 to 50 degrees, facing near the player with their crosshair off them (often on where the
+    player was before), still somewhat risky; under 15 degrees, looking at the player, risky. An informed fight
+    is a good fight, even taken alone or at a man advantage: never list it as a risky choice that worked. A peek
+    on an enemy aimed 15 to 50 degrees off is good timing, not a lone duel given away: if it was lost, say the
+    peek was well timed and the fight was lost, and don't list it as a mistake.
+30. A cast with no recorded hit only shows that no hit was recorded. A util fact with "hits_recorded" says the
+    replay records that ability's hits only in part: never write that it "hit no enemy" or "caught no one"; write
+    that the data shows no hit, or leave it out, and never list it as wasted for that.
+31. A stun or other status that hit nobody is a mistake only when it landed where the team had already cleared
+    or no enemy could be. Thrown to hold or deny space an enemy could use, to slow a push, or to clear a corner
+    nobody could see, it did its job: don't list it as wasted. Judge that from its "landed_area" and `knew`; with
+    no landing place, don't fault it. One landed inside a smoke ("smokes_near_landing" with the distance under
+    the radius) denies less than one at the smoke's edge: that is a placement note in its caption, not a waste.
+32. "sight_line_s" is seconds of enemy sight lines a smoke cut, added up over every line it cut: never write it
+    as how long the smoke blocked sight. The smoke's own duration is "life_s".

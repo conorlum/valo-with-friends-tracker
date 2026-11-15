@@ -557,6 +557,9 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
                         "kills": c.get("kills") or [], "harm": c.get("harm") or [], "effects": c.get("effects") or [],
                         "cover": c.get("cover"), "presence": c.get("presence"), "trigger": c.get("trigger"),
                         "hold": c.get("hold"),
+                        # where it landed (minimap uv; the thrown piece's spot, not the hand's): the coach names
+                        # the area and the smokes around it (app/coach/brief.py util_facts)
+                        "u": c.get("u"), "v": c.get("v"),
                         "heal": r.get("heal")})
         rounds_out[str(n)] = {"casts": out, "unused": (data.get("unused") or []) + ults.get(n, []),
                               "avail": data.get("avail") or {}}
