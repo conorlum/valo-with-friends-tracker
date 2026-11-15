@@ -379,8 +379,10 @@ def _area_problems(text: str, grounded: set[str], area_names, improve: bool) -> 
 def _gun_vocabulary(snap) -> dict[str, tuple[str, str | None]]:
     vocabulary = dict(_GUN_CATEGORIES)
     excluded = _ABILITY_GUN_NAMES | {"knife"}
+    # These hearing-table firearms have no archetype row in guns.json yet.
+    hearing_categories = {"operator": "sniper_rifle", "outlaw": "sniper_rifle", "compact pistol": "sidearm"}
     for name in _HEARING_GUNS:
-        vocabulary.setdefault(name.casefold(), (name, None))
+        vocabulary.setdefault(name.casefold(), (name, hearing_categories.get(name.casefold())))
     for n in snap.round_numbers:
         for row in snap.view(n).blob.get("util") or []:
             name = row.get("gun")
@@ -392,13 +394,21 @@ def _gun_vocabulary(snap) -> dict[str, tuple[str, str | None]]:
 
 def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
     """R10: captions use their own fights; shared text may cite any instance's usable fights."""
+    from app.replays.guns import is_close_range
+
     if not improve or not moments:
         return []
     vocabulary = _gun_vocabulary(snap)
-    if not vocabulary:
-        return []
+    categories = {"sidearm": "sidearm", "pistol": "sidearm", "smg": "smg", "shotgun": "shotgun",
+                  "rifle": "rifle", "sniper": "sniper_rifle", "sniper rifle": "sniper_rifle",
+                  "sniper-rifle": "sniper_rifle", "machine gun": "machine_gun", "machine-gun": "machine_gun",
+                  "lmg": "machine_gun", "close-range gun": "close_range", "close range gun": "close_range",
+                  "close-range-gun": "close_range"}
+    claims = {**vocabulary, **{word: (word, category) for word, category in categories.items()}}
+    ordinary_words = {"classic", "ghost", "judge", "guardian", "phantom", "marshal", "operator", "outlaw",
+                      "stinger", "frenzy", "spectre", "sheriff", "bulldog", "bandit", "warden", "shorty"}
     names = re.compile(r"\b(?:" + "|".join(re.escape(name) for name in sorted(
-        vocabulary, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+        claims, key=len, reverse=True)) + r")\b", re.IGNORECASE)
     all_fights, texts = [], []
     for label, n, t, t1, side, caption, entries in moments:
         fights = []
@@ -414,31 +424,47 @@ def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
         texts.append((label, side, caption, fights))
     texts.extend((key, moments[0][4], str(point.get(key) or ""), all_fights) for key in ("title", "body"))
 
-    def same(value, gun):
-        return isinstance(value, str) and value.casefold() == gun
+    def matches(value, gun):
+        if not isinstance(value, str):
+            return False
+        if gun not in categories:
+            return value.casefold() == gun
+        canonical, category = vocabulary.get(value.casefold(), (value, None))
+        if categories[gun] == "close_range":
+            return is_close_range(canonical)
+        return category is not None and category == categories[gun]
 
     problems = []
     for label, side, text, fights in texts:
+        text = _strip_names(text, snap.names)
         for sentence in re.finditer(r"[^.!?\n]+", text):
             sentence = sentence.group()
             for match in names.finditer(sentence):
                 gun = match.group().casefold()
-                canonical, category = vocabulary[gun]
-                preceding = re.findall(r"\b\w+\b", sentence[:match.start()].casefold())
+                if gun in ordinary_words and not match.group()[0].isupper():
+                    continue
+                canonical, category = claims[gun]
+                prefix = sentence[:match.start()].casefold()
+                preceding = re.findall(r"\b\w+\b", prefix)
                 own_words = preceding and (preceding[-1] == "your" or "you" in preceding[-3:])
-                if own_words and any(same(f.get("my_gun"), gun) or same(
+                owners = list(re.finditer(r"\b(?:you|your)\b", prefix))
+                ownership = prefix[owners[-1].end():] if owners else prefix
+                # A stripped player's name still leaves its possessive suffix.
+                enemy_owned = re.search(r"\b(?:their|his|her|its|enemy|enemies|opponents?)\b|['\u2019]s\b",
+                                        ownership)
+                if own_words and not enemy_owned and any(matches(f.get("my_gun"), gun) or matches(
                         (f.get("death") or {}).get("dropped_gun"), gun) for f in fights):
                     continue
                 supported = False
                 for fight in fights:
-                    known, death = fight.get("known") or {}, fight.get("death") or {}
-                    enemy_gun = same(fight.get("enemy_gun"), gun) or same(death.get("killer_gun_at_kill"), gun)
+                    known = fight.get("known") or {}
                     # RV3-b: a held gun cannot reveal what killed the player; use tracker.gg's weapon.
                     lost = fight.get("won") is False or ("won" not in fight and fight.get("death") is not None)
-                    killed_by = lost and same(fight.get("kill_weapon"), gun)
-                    observed = enemy_gun and known.get("how") in ("seen", "heard")
-                    guessed = (known.get("how") == "econ_guess" and category is not None
-                               and known.get("gun_class") == category and _GUN_HEDGE.search(sentence))
+                    killed_by = lost and matches(fight.get("kill_weapon"), gun)
+                    # Knowledge at t0 describes enemy_gun, never a later held gun.
+                    observed = matches(fight.get("enemy_gun"), gun) and known.get("how") in ("seen", "heard")
+                    guessed = (known.get("how") == "econ_guess" and category == "sidearm"
+                               and known.get("gun_class") == "sidearm" and _GUN_HEDGE.search(sentence))
                     if killed_by or observed or guessed:
                         supported = True
                         break
