@@ -10,6 +10,90 @@ KNEW = {"A": {"5": [[5.0, 12.0, 8000, 8000]]}, "B": {}}     # side A has P5 in v
 SHARES = {"t": [0.0], "cells": {}, "areas": {}, "knew": KNEW, "group_side": None}
 
 
+def fight_evidence(tmp_path, kind, seen, *, won=False, span=False):
+    from app.coach import fights
+    from tests.coach.test_fights import hold, snapshot as fight_snapshot
+
+    util = [hold(0, "Vandal"), hold(5, "Classic")]
+    if span:
+        util.append({"k": "damage", "t": 8, "t1": 8, "by": 0, "target": 5,
+                     "src": "gun", "wall": False, "n": 1})
+    kills = [{"t": 10, "killer": 0 if won else 5, "victim": 5 if won else 0}]
+    blob = fight_snapshot(util=util, kills=kills).view(1).blob
+    knew = {"A": {"5": seen}, "B": {}}
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {}}}
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, {**SHARES, "knew": knew})}), tmp_path)
+    snap = snapshot.load(tmp_path)
+    fact = {key: value for key, value in fights.for_round(snap, 1, 0)[0].items() if key != "flags"}
+    if kind == "fight":
+        result = query.answer(snap, "fight", ["1", "10", "0"])
+        entry = {"cmd": "fight", "args": [1, 10, "0"], "result": result}
+    else:
+        result = {"round": 1, "kind": kind, **fact}
+        entry = flag_entry([1, fact["t0"], kind], result)
+    log = {"f": entry, "k": {"cmd": "knew", "args": [1, 10, "A"],
+                               "result": query.knew(snap, 1, 10, "A")}}
+    instances = [{"round": 1, "t": 10, "caption": "", "evidence": ["f", "k"]}]
+    return snap, log, instances
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("seen", [[], [[9, 10, 2420, 2000]]])
+def test_fight_distances_require_visibility_at_geometry_time(tmp_path, kind, seen):
+    snap, log, instances = fight_evidence(tmp_path, kind, seen, won=True)
+    found = problems(snap, log, body="You fought at 6 m.", instances=instances)
+    assert any("number 6 m" in p for p in found) is (not bool(seen)), found
+    if seen:
+        assert found == []
+    else:
+        # Hearing remains usable even though the distance cannot support an improve point.
+        log["f"]["result"]["known"] = {"how": "heard", "t": 7, "before_s": 3}
+        assert problems(snap, log, body="You heard the gun 3 s before.", instances=instances) == []
+        assert problems(snap, log, polarity="good", body="You fought at 6 m.", instances=instances) == []
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+def test_fight_visibility_uses_g_and_existing_seen_slack(tmp_path, kind):
+    # A damage span starts at 8 s. Sight at 7 s is within slack of g, outside slack of the death.
+    snap, log, instances = fight_evidence(tmp_path, kind, [[6, 7, 2420, 2000]], span=True)
+    assert problems(snap, log, body="You fought at 6 m.", instances=instances) == []
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+def test_fights_ground_man_counts_before_seconds_and_picker_kills(tmp_path, kind):
+    snap, log, instances = fight_evidence(tmp_path, kind, [])
+    log["f"]["result"].update(alive={"own": 3, "enemy": 2},
+                                 known={"how": "heard", "t": 7, "before_s": 3.0}, kills_with=2)
+    for body in ("You fought a 3v2.", "You heard it 3 s before.", "They got 2 kills with your rifle."):
+        assert problems(snap, log, body=body, instances=instances) == []
+    assert any("4v2" in p for p in problems(snap, log, body="You fought a 4v2.", instances=instances))
+    assert any("time or duration" in p for p in problems(snap, log, body="You heard it 4 s before.", instances=instances))
+
+
+def test_unavailable_fight_answer_does_not_crash_an_improve_point(snap):
+    result = query.answer(snap, "fight", ["1", "10", "0"])
+    assert result["available"] is False
+    log = {"f": {"cmd": "fight", "args": [1, 10, "0"], "result": result},
+           "k": {"cmd": "knew", "args": [1, 10, "A"], "result": query.knew(snap, 1, 10, "A")}}
+    instances = [{"round": 1, "t": 10, "caption": "", "evidence": ["f", "k"]}]
+    assert problems(snap, log, body="You held your ground.", instances=instances) == []
+    found = problems(snap, log, body="You fought at 6 m.", instances=instances)
+    assert any("number 6 m" in problem for problem in found)
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("missing", ["g", "metres"])
+def test_fight_visibility_requires_both_geometry_fields(tmp_path, monkeypatch, kind, missing):
+    snap, log, instances = fight_evidence(tmp_path, kind, [])
+    del log["f"]["result"][missing]
+
+    def unexpected_visibility_check(*args):
+        pytest.fail("fight visibility requires both metres and g")
+
+    monkeypatch.setattr(checker, "_unseen_enemy", unexpected_visibility_check)
+    assert problems(snap, log, body="You held your ground.", instances=instances) == []
+
+
 @pytest.fixture
 def snap(tmp_path):
     first = toys.round_blob(toys.ten(), kills=[{"t": 20.0, "killer": 5, "victim": 0}], n=1)

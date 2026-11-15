@@ -12,6 +12,26 @@ KILLS = [{"t": 20.0, "killer": 5, "victim": 0}]
 DAMAGE = {"k": "damage", "t": 13.0, "t1": 13.2, "by": 5, "target": 0, "src": "gun", "wall": False, "n": 3}
 
 
+@pytest.mark.parametrize("asked", [8, 9, 10, 5, 13])
+def test_fight_query_finds_a_span_or_nearest_within_three_seconds(snap, monkeypatch, asked):
+    from tests.coach.test_fights import hold, snapshot as fight_snapshot
+
+    damage = {**DAMAGE, "t": 8, "t1": 8}
+    toy = fight_snapshot(util=[hold(0, "Vandal"), hold(5, "Classic"), damage])
+    monkeypatch.setattr(snap, "view", toy.view)
+    result = query.answer(snap, "fight", ["1", str(asked), "P0"])
+    assert (result["round"], result["t"], result["t0"], result["g"]) == (1, asked, 8, 8)
+    assert (result["subject"], result["side"], result["enemy_gun"]) == (0, "A", "Classic")
+    assert "flags" not in result
+    enemy = query.answer(snap, "fight", ["1", "9", "5"])
+    assert (enemy["subject"], enemy["side"], enemy["won"]) == (5, "B", True)
+
+
+def test_fight_query_missing_and_signature_error(snap):
+    assert query.answer(snap, "fight", ["1", "30", "P0"])["available"] is False
+    assert "wrong arguments for fight" in query.answer(snap, "fight", ["1", "x", "P0"])["error"]
+
+
 @pytest.fixture
 def snap(tmp_path):
     context = {**CONTEXT, "rounds": {"1": {"db": {"winner": "team1"}, "kills": {},

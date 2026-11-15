@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 
-from app.coach import areas, detectors
+from app.coach import areas, detectors, fights
 
 VERSION = 1
 _PLAYER_KEYS = ("slot", "name", "agent", "team", "side")
@@ -118,6 +118,7 @@ def build(snap, slot: int) -> dict:
         winner = db.get("winner")
         live = [k for k in view.kills if k["t"] <= view.t_decided]
         role = snap.role(n, slot)
+        round_fights = fights.for_round(snap, n, slot)
         rounds.append({
             "round": n, "role": role, "winner": winner,
             "won": None if winner is None else winner == subject["team"], "decided_at": view.t_decided,
@@ -126,7 +127,8 @@ def build(snap, slot: int) -> dict:
             "deaths": [k["t"] for k in live if k["victim"] == slot],
             "kills": [{"t": k["t"], "victim": snap.names.get(k["victim"])} for k in live if k.get("killer") == slot],
             "utility": [{k: v for k, v in row.items() if k != "by"} for row in view.utility(by=slot)],
-            "flags": detectors.flags(view, slot, (control or {}).get("knew"), role),
+            "flags": detectors.flags(view, slot, (control or {}).get("knew"), role, fights=round_fights),
+            "fights": [{key: value for key, value in fight.items() if key != "flags"} for fight in round_fights],
             "util_facts": util_facts(snap.util(n), slot, view),
             "gaps": snap.gaps(n)})
         if score is not None and winner is not None:

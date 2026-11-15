@@ -9,6 +9,25 @@ from scripts import coach_report
 from tests.coach import toys
 from tests.coach.test_snapshot import CONTEXT
 
+
+def test_fight_facts_are_logged_with_trusted_ids(snap, tmp_path):
+    from copy import deepcopy
+    from app.coach import checker
+
+    built, logged = runner._brief_with_flag_ids(snap, 0, tmp_path)
+    facts = built["rounds"][0]["fights"]
+    assert len(facts) == 1
+    for fact in facts:
+        entry = logged[fact["id"]]
+        assert entry["args"] == [1, fact["t0"], "fight_fact"]
+        assert entry["result"] == {"round": 1, "kind": "fight_fact",
+                                   **{key: value for key, value in fact.items() if key != "id"}}
+    raw = query.read_log(tmp_path)
+    assert set(raw) == set(checker.trusted_log(raw, snap, logged))
+    forged = deepcopy(raw)
+    forged[facts[0]["id"]]["result"]["metres"] = 999
+    assert facts[0]["id"] not in checker.trusted_log(forged, snap, logged)
+
 BOOK = Playbook("4", ("trading", "rotation"), "# Principles\n- Trade.")
 KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
 SHARES = {"t": [0.0], "cells": {}, "areas": {}, "knew": KNEW, "group_side": None}

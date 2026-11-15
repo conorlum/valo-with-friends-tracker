@@ -4,6 +4,24 @@ from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT, SHARES
 
 
+def test_lone_rifle_death_has_a_fight_and_handover_flag(tmp_path, monkeypatch):
+    from tests.coach.test_fights import snapshot as fight_snapshot
+
+    match = snap(tmp_path, {1: 0})
+    toy = fight_snapshot()
+    monkeypatch.setattr(match, "view", toy.view)
+    monkeypatch.setattr(match, "control", toy.control)
+    (row,) = brief.build(match, 0)["rounds"]
+    (fight,) = row["fights"]
+    assert fight["alive"] == {"own": 3, "enemy": 3}
+    assert fight["lone"] and fight["death"]["better"]
+    assert (fight["my_gun"], fight["enemy_gun"]) == ("Vandal", "Classic")
+    assert "flags" not in fight
+    flag = next(f for f in row["flags"] if f["kind"] == "gun_handover")
+    assert flag["t"] == fight["t0"]
+    assert flag["values"]["death"] == fight["death"]
+
+
 def snap(tmp_path, impacts, kills_by_round=None, controls=None):
     context = {**CONTEXT, "rounds": {}}
     blobs = {}

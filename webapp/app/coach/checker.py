@@ -28,12 +28,12 @@ _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining",
     "spike_left_s", "value", "enemies_affected", "teammates_hit", "teammate_died_affected", "sight_line_s",
-    "sight_lines", "life_s", "radius_m", "waiting_s", "points"})
+    "sight_lines", "life_s", "radius_m", "waiting_s", "points", "before_s", "kills_with"})
 # A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
 # round that happens to be 20 (PR 132 review, finding 1).
 _METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max", "radius_m"})
 _SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s", "sight_line_s", "life_s",
-                                       "waiting_s"})
+                                       "waiting_s", "before_s"})
 # A util fact's landing area names where that cast landed, so it grounds the name like a timely `where`.
 _AREA_KEYS = frozenset({"area", "landed_area"})
 SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
@@ -281,9 +281,10 @@ def _pairs(entry: dict) -> set[tuple[int, int]]:
             if p.get("alive") and p.get("side") in alive:
                 alive[p["side"]] += 1
         out |= {(alive["A"], alive["B"]), (alive["B"], alive["A"])}
-    before = result.get("alive_before")
-    if isinstance(before, dict) and "own" in before and "enemy" in before:
-        out |= {(before["own"], before["enemy"]), (before["enemy"], before["own"])}
+    for key in ("alive_before", "alive"):
+        before = result.get(key)
+        if isinstance(before, dict) and "own" in before and "enemy" in before:
+            out |= {(before["own"], before["enemy"]), (before["enemy"], before["own"])}
     return out
 
 
@@ -545,7 +546,17 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                     hidden = frozenset(p.get("name") for p in result.get("players") or [] if isinstance(p, dict)
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
                 asked = result.get("t")
-                cmd = "util_fact" if entry["cmd"] == "flag" and result.get("kind") == "util_fact" else entry["cmd"]
+                cmd = entry["cmd"]
+                if cmd == "flag":
+                    if result.get("kind") == "util_fact":
+                        cmd = "util_fact"
+                    elif result.get("kind") in ("fight_fact", "gun_handover", "off_range_fight"):
+                        cmd = "fight_fact"
+                # A one-shot victim is still alive at the geometry time just before the kill.
+                # Keep gun knowledge and counts usable when the enemy's distance was unseen.
+                if (guarded and cmd in ("fight", "fight_fact") and "metres" in result and "g" in result
+                        and _unseen_enemy(snap, n, side, result.get("enemy"), float(result["g"]))):
+                    result = {key: value for key, value in result.items() if key != "metres"}
                 source = (cmd, n, asked if type(asked) in (int, float) else None, i)
                 _collect(result, None, cited, source, hidden)
                 cited.pairs |= _pairs(entry)
