@@ -21,18 +21,21 @@ TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, che
 
 # The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
 # is an identifier or a coordinate and grounds nothing.
-_TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at"})
+_TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at", "trigger"})
 _SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
 _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining",
-    "spike_left_s", "value", "enemies_affected", "teammates_hit", "teammate_died_affected", "blocked_s",
-    "waiting_s", "points"})
+    "spike_left_s", "value", "enemies_affected", "teammates_hit", "teammate_died_affected", "sight_line_s",
+    "sight_lines", "life_s", "radius_m", "waiting_s", "points"})
 # A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
 # round that happens to be 20 (PR 132 review, finding 1).
-_METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max"})
-_SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s", "blocked_s", "waiting_s"})
+_METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max", "radius_m"})
+_SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s", "sight_line_s", "life_s",
+                                       "waiting_s"})
+# A util fact's landing area names where that cast landed, so it grounds the name like a timely `where`.
+_AREA_KEYS = frozenset({"area", "landed_area"})
 SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
@@ -237,7 +240,7 @@ def _collect(value, key, cited: _Cited, source: tuple[str, int, float | None, in
         if key == "area":
             cited.areas.add(((value,), *source))
     elif isinstance(value, dict):
-        if key == "area" and isinstance(value.get("name"), str):
+        if key in _AREA_KEYS and isinstance(value.get("name"), str):
             path = value.get("path")
             names = tuple(name for name in path if isinstance(name, str)) if isinstance(path, list) else ()
             cited.areas.add((names or (value["name"],), *source))
@@ -334,7 +337,7 @@ def _grounded_areas(cited: _Cited, moment_index: int | None = None) -> set[str]:
         round_number, start, end = cited.moments[index]
         timely_where = (cmd == "where" and asked is not None and n == round_number
                         and start - AREA_WHERE_WINDOW_S <= asked <= end)
-        if cmd == "knew" or timely_where:
+        if cmd in ("knew", "util_fact") or timely_where:
             names.update(path)
     return names
 
@@ -542,7 +545,8 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                     hidden = frozenset(p.get("name") for p in result.get("players") or [] if isinstance(p, dict)
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
                 asked = result.get("t")
-                source = (entry["cmd"], n, asked if type(asked) in (int, float) else None, i)
+                cmd = "util_fact" if entry["cmd"] == "flag" and result.get("kind") == "util_fact" else entry["cmd"]
+                source = (cmd, n, asked if type(asked) in (int, float) else None, i)
                 _collect(result, None, cited, source, hidden)
                 cited.pairs |= _pairs(entry)
         round_evidence.setdefault(n, []).extend(entries)

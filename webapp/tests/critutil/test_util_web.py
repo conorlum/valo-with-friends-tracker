@@ -560,5 +560,50 @@ def test_coach_util_facts_are_the_players_casts_with_ids():
                   "unused": [{"slot": 0, "t": 30.0, "kind": "held_at_death", "kinds": ["blind"]}]}
     facts = brief.util_facts(round_util, 0)
     assert [f["t"] for f in facts] == [8.0, 30.0]
-    assert facts[0]["kills"] == 1 and facts[0]["value"] == 2.5 and facts[0]["blocked_s"] == 3.5
+    assert facts[0]["kills"] == 1 and facts[0]["value"] == 2.5 and facts[0]["sight_line_s"] == 3.5
+    assert "blocked_s" not in facts[0], "line-seconds are never offered as a duration"
     assert brief.util_facts(None, 0) == []
+
+
+class _View:
+    uv_per_unit = 0.78
+
+    def area(self, u, v, z=None):
+        return {"name": "B Boba", "super": "B", "path": ["B", "B Boba"], "approximate": False}
+
+
+def test_coach_util_facts_say_where_a_cast_landed_and_what_the_replay_cannot_see():
+    from app.coach import brief
+
+    smoke = {"slot": 1, "t": 5.0, "ability": "Waveform", "kind": "smoke", "kinds": ["smoke"], "side": "attack",
+             "u": 1000, "v": 1000, "signals": {"landed": 5.0, "seen_end": 23.0}, "presence": {"r_m": 4.5}}
+    pulse = {"slot": 0, "t": 10.0, "ability": "M-pulse", "kind": "status", "kinds": ["status"], "side": "attack",
+             "u": 1000 + 0.78 * 300, "v": 1000, "signals": {"landed": 10.8},
+             # one teammate concussed by two pulses is one teammate hit
+             "harm": [{"mate": 7, "how": "concussed"}, {"mate": 7, "how": "concussed"}]}
+    quake = {"slot": 0, "t": 40.0, "ability": "Bassquake", "kind": "ult", "kinds": ["ult", "status"],
+             "side": "attack", "u": 5000, "v": 5000}
+    trip = {"slot": 0, "t": 0.0, "ability": "Trapwire", "kind": "device", "kinds": ["device"], "trigger": 18.9}
+    facts = brief.util_facts({"casts": [smoke, pulse, quake, trip]}, 0, _View())
+    p, q, tr = facts
+    assert p["teammates_hit"] == 1
+    assert p["landed_area"]["name"] == "B Boba"
+    assert p["smokes_near_landing"] == [{"ability": "Waveform", "side": "own", "metres": 3.0, "radius_m": 4.5}]
+    assert q["hits_recorded"] == "none" and "smokes_near_landing" not in q, "the smoke is 50 m away"
+    assert tr["trigger"] == 18.9 and "hits_recorded" not in tr
+    assert "landed_area" not in brief.util_facts({"casts": [pulse]}, 0)[0], "no view, no place"
+
+
+def test_checker_grounds_an_area_from_a_util_facts_landing():
+    from app.coach import checker
+
+    cited = checker._Cited()
+    fact = {"round": 3, "kind": "util_fact", "t": 37.75,
+            "landed_area": {"name": "B Boba", "super": "B", "path": ["B", "B Boba"]}}
+    checker._collect(fact, None, cited, ("util_fact", 3, 37.75, 0), frozenset())
+    cited.moments[0] = (3, 35.0, 40.0)
+    assert checker._grounded_areas(cited) == {"B", "B Boba"}
+    other = checker._Cited()
+    checker._collect(fact, None, other, ("flag", 3, 37.75, 0), frozenset())
+    other.moments[0] = (3, 35.0, 40.0)
+    assert checker._grounded_areas(other) == set(), "any other flag's area still grounds nothing"

@@ -41,13 +41,17 @@ evidence. An answer with "available": false means the data is missing for that r
 Each flag in the brief already has an "id" you may cite, and each round's "facts_id" cites that round's economy
 and the score going into it. Each entry of a round's "util_facts" (the player's utility, measured: who it affected,
 kills on affected enemies, teammates it hit, sight lines it cut, and "value", the change in the side's chance to win
-the round after it, in percentage points) has an "id" you may cite too. Evidence for an instance must be about that instance's round. Every answer is
+the round after it, in percentage points) has an "id" you may cite too. A util fact also gives, when known, where
+the cast landed ("landed_area"), the smokes up near that spot when it landed ("smokes_near_landing", each with its
+distance in metres from the smoke's centre and its radius), a device's first "trigger" time, and "hits_recorded"
+for an ability whose hits the replay records only in part ("none" or "damage only"). "sight_line_s" is seconds of
+enemy sight lines cut, added up over every line, never how long the smoke lasted ("life_s"). Evidence for an instance must be about that instance's round. Every answer is
 recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
 a clock time, 0:41); each must be in an answer you cite for that instance. Ground a named area with a cited
-`where` answer in the same round, asked from one second before the moment starts through its end, or with a
-cited `knew` answer. Any name in the answer's `area.path` counts. In a point to improve, an enemy's distance
+`where` answer in the same round, asked from one second before the moment starts through its end, with a
+cited `knew` answer, or, for where a cast landed, with its util fact's "landed_area". Any name in the answer's `area.path` counts. In a point to improve, an enemy's distance
 or place counts only while the player's side could see them; otherwise use the last sighting or the rough
 place that `knew` gives for found or roughly_placed signals.
 `ruled_out` says utility showed where an enemy was NOT, and `lost_track` says the team lost where an enemy was.

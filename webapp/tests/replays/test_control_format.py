@@ -94,7 +94,11 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           23: "49528e8ce780fc80",
           # 24 (2026-11-11): stored knowledge kind, destroyed trip/camera locates and the destroyed header.
           # The new reach constants move this digest; replay-only reasons/destroyed modules are not hashed.
-          24: "f71e8017809269db"}
+          24: "f71e8017809269db",
+          # 25 (2026-11-14): every placed device is off while its owner is suppressed; Undercut, Tejo's drone and Kill
+          # Contract's arena suppress (SUPPRESSED_DEVICE_KINDS ... ARENA_Z_M); a Shock Bolt contests for its blast
+          # only (DAMAGE_ZONE_LIFE_S). New constants only, so 24's digest stands without them.
+          25: "a0c40ddf4d8213f3"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -173,7 +177,22 @@ def test_the_height_build_only_constants_are_read_only_by_the_build():
         assert not _reads(module.__file__, HEIGHT_BUILD_ONLY), module.__name__
 
 
+REVISION_25_CONSTANTS = ("DAMAGE_ZONE_LIFE_S", "SUPPRESSED_DEVICE_KINDS", "SUPPRESSING_STATUS_ROWS",
+                         "SUPPRESSING_REVEAL_S", "ARENA_Z_M")
+
+
+def _without_the_suppression_sources(monkeypatch):
+    for name in REVISION_25_CONSTANTS:
+        monkeypatch.delattr(ce, name)
+
+
+def test_without_the_suppression_sources_the_revision_24_digest_is_unchanged(monkeypatch):
+    _without_the_suppression_sources(monkeypatch)
+    assert _constants_digest() == PINNED[24]
+
+
 def _without_the_destroyed_reach(monkeypatch):
+    _without_the_suppression_sources(monkeypatch)     # every older digest predates revision 25's constants
     for name in ("TRIP_DESTROY_REACH_M", "CAMERA_DESTROY_REACH_M"):
         monkeypatch.delattr(ce, name)
 
