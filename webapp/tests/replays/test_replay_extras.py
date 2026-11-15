@@ -916,6 +916,35 @@ def test_early_gun_switch_keeps_switch_time(tmp_path, lead, expected):
         assert firearm[0]["t"] == 5.0
 
 
+MELEE = "Default__Ability_Melee_Base_C"
+
+
+def test_early_switch_resolved_late_keeps_source_order_at_the_same_millisecond(tmp_path):
+    # Knife (unspawned) then Vandal at one instant; the knife spawns afterwards. Last hold must be Vandal.
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+                                 held(15_000, 101, 901), held(15_000, 101, 900),
+                                 spawned(15_500, 901, MELEE, 0, 0)])
+    rows = holds(extras)
+    assert [(r["gun"], r["t"]) for r in rows] == [("Knife", 5.0), ("Vandal", 5.0)]
+    assert rows[-1]["id"] == 900
+
+
+def test_early_switch_resolved_late_keeps_order_among_several_simultaneous_switches(tmp_path):
+    # Two unspawned actors and a spawned one, all at one instant, resolved at different later times.
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+                                 held(15_000, 101, 901), held(15_000, 101, 900), held(15_000, 101, 902),
+                                 spawned(15_400, 902, MELEE, 0, 0), spawned(15_600, 901, MELEE, 0, 0)])
+    assert [r["id"] for r in holds(extras)] == [901, 900, 902]
+
+
+def test_early_switch_resolved_late_on_another_slot_does_not_reorder_this_one(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+                                 held(15_000, 101, 901), held(15_000, 106, 900), held(15_000, 101, 900),
+                                 spawned(15_500, 901, MELEE, 0, 0)])
+    mine = [r["gun"] for r in holds(extras) if r["by"] == 1]
+    assert mine == ["Knife", "Vandal"]
+
+
 def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(12_000, 901, "Default__Ability_Melee_Base_C", 0, 0),

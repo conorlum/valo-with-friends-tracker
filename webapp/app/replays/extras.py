@@ -577,6 +577,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
     holding: dict[int, int] = {}           # each character's current equippable, to see a switch
+    placeholder_at: dict[tuple[int, int, int], int] = {}   # an unresolved switch -> its index in raw.holds
     unresolved: list[tuple[int, int, int]] = []    # switches to an equippable not spawned yet: (ms, character, guid)
     live_trips: dict[int, _Actor] = {}     # the trapwire anchor alive under each GUID
     closed_trips: dict[int, _Actor] = {}   # the last one closed under each GUID (a lethal hit can share its ms)
@@ -634,9 +635,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     gun_now[guid] = gun
                     raw.gun_actors.append(gun)
                     for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
-                        if 0 <= t_ms - at <= EQUIP_EARLY_MS:
-                            raw.holds.remove((at, pawn, None))
-                            raw.holds.append((at, pawn, gun))
+                        if 0 <= t_ms - at <= EQUIP_EARLY_MS and (at, pawn, waiting) in placeholder_at:
+                            # Resolve in place: moving it to the end would reverse the source order
+                            # of switches sharing this timestamp.
+                            # (the slot is remembered per waiting actor: placeholders can be equal tuples)
+                            raw.holds[placeholder_at.pop((at, pawn, waiting))] = (at, pawn, gun)
                     if held is None:
                         unresolved[:] = [u for u in unresolved if u[2] != guid]
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
@@ -802,6 +805,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
                     raw.holds.append((t_ms, guid, gun_now.get(held_now)))
                     if held_now not in equip_now and held_now not in gun_now:
+                        placeholder_at[(t_ms, guid, held_now)] = len(raw.holds) - 1
                         unresolved[:] = [u for u in unresolved if t_ms - u[0] <= EQUIP_EARLY_MS]
                         unresolved.append((t_ms, guid, held_now))   # kept even if they switch again before it spawns
                     elif held_now in equip_now and equip_now[held_now].name.startswith("X_"):
