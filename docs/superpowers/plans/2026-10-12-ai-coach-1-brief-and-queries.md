@@ -2181,7 +2181,7 @@ Using the snapshot from Task 5, Step 5:
 
 - [ ] **Step 1b: Read what the real snapshot says about the things the tests could only assume**
 
-From the same snapshot, print and report to the owner (a few lines of throwaway Python over `snapshot.json`, not committed):
+From the same snapshot, print and report to the owner (a few lines of throwaway Python over the snapshot read with `app.coach.snapfile.load`, not committed: since PR #225 `snapshot.json` holds only the context, and each round is a file of its own):
 
 - how many rounds have a survivor whose `alive` interval ends in `null` (expected: nearly all; this is the case that crashed the first draft of this plan),
 - whether any round's blob has `side: null` players, and how many rounds carry the `db_only_deaths` gap,

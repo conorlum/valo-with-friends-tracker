@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.coach import areas, control_areas, knowledge
-from app.coach.snapshot import SnapshotError
+from app.coach.snapfile import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
 
@@ -262,7 +262,7 @@ def answer(snap, command: str, args: list[str]) -> dict:
                          "seconds into the round (41.5, not 0:41)"}
     try:
         return COMMANDS[command](snap, *converted)
-    except QueryError as error:
+    except (QueryError, SnapshotError) as error:     # SnapshotError: e.g. a round's file is missing from the run
         return {"error": str(error)}
 
 

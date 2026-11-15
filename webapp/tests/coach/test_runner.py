@@ -249,6 +249,7 @@ def _wire(monkeypatch, tmp_path, argv, data):
     monkeypatch.setattr(snapshot, "read", lambda db, uuid, **kw: data)
     monkeypatch.setattr(coach, "active_notes", lambda db, kind: ["Plain words."])
     monkeypatch.setattr(coach_report.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(coach_report, "find_claude", lambda: "claude")
 
     def never(*args, **kwargs):
         raise AssertionError("the model must not be called")
@@ -438,7 +439,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
     assert "published version 4 (2 points, 0 dropped)" in capsys.readouterr().out
 
 
-# --- the team command: one coach_report.py run per player of the named player's team ---
+# --- the team command: one coach_report.py process given every player of the named player's team ---
 
 def _team(monkeypatch, argv, results):
     import app.db
@@ -457,39 +458,119 @@ def _team(monkeypatch, argv, results):
     return coach_team, ran
 
 
-def test_the_team_command_runs_every_teammate_in_order_and_passes_the_options_on(monkeypatch, capsys):
+def test_the_team_command_hands_every_teammate_to_one_report_process(monkeypatch):
     coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
     assert coach_team.main() == 0
-    assert [command[2:] for command in ran] == [["abc", name, "--model", "opus", "--dry-run"]
-                                                for name in ("Owner#1", "Friend#2", "Third#3")]
-    assert all(command[1].endswith("coach_report.py") for command in ran)
-    out = capsys.readouterr().out
-    assert "3 players, one at a time" in out and "== 2 of 3: Friend#2 ==" in out and "3 of 3 runs succeeded" in out
-
-
-def test_the_team_command_never_runs_two_players_at_once(monkeypatch):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
-    running = []
-
-    def run_one(command):
-        assert not running, "a second run started before the first ended"
-        running.append(command)
-        ran.append(command)
-        running.pop()
-        return 0
-
-    monkeypatch.setattr(coach_team, "run_one", run_one)
-    assert coach_team.main() == 0 and len(ran) == 3
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--model", "opus",
+                                                 "--dry-run"]]
+    assert ran[0][1].endswith("coach_report.py")
     with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
         monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
         coach_team.main()
 
 
-def test_one_failed_teammate_does_not_stop_the_others_and_fails_the_command(monkeypatch, capsys):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Friend#2": 1})
-    assert coach_team.main() == 1 and len(ran) == 3
+def test_the_team_command_passes_the_report_process_failure_on(monkeypatch):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Owner#1": 1})
+    assert coach_team.main() == 1 and len(ran) == 1
+
+
+# --- several players in one coach_report.py: one read of the match, the runs one after another ---
+
+def _players(monkeypatch, tmp_path, names, fail=None, fake=True, extra=()):
+    """coach_report.main over `names` (slots), counting match reads. With `fake`, run_player is recorded instead
+    of run; `fail` maps a name to the exception its run raises."""
+    from scripts import coach_store_report
+
+    reads, runs, running = [], [], []
+    _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", *names, *extra], make_data())
+    monkeypatch.setattr(snapshot, "read", lambda db, uuid, **kw: reads.append(uuid) or make_data())
+    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 100 + int(player)))
+
+    def run_player(args, uuid, book, player, match_id, player_id, match):
+        assert not running, "a second run started before the first ended"
+        running.append(player)
+        runs.append((player, player_id))
+        running.pop()
+        if player in (fail or {}):
+            raise fail[player]
+        return 0
+
+    if fake:
+        monkeypatch.setattr(coach_report, "run_player", run_player)
+    return reads, runs
+
+
+def test_several_players_read_the_match_once_and_run_in_order(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"])
+    assert coach_report.main() == 0
+    assert len(reads) == 1 and runs == [("0", 100), ("6", 106)]
+    assert "2 of 2 runs succeeded" in capsys.readouterr().out
+
+
+def test_each_player_of_one_read_sees_only_the_other_teams_names_hidden(tmp_path, monkeypatch, capsys):
+    reads, _ = _players(monkeypatch, tmp_path, ["0", "6"], fake=False, extra=["--prompt-only"])
+    assert coach_report.main() == 0 and len(reads) == 1
+    run = tmp_path / "valo-coach" / "abcdef12-0000-4000-8000-000000000000"
+    team1 = (run.parent / f"{run.name}-p100" / "prompt.txt").read_text(encoding="utf-8")   # player 100: team1
+    team2 = (run.parent / f"{run.name}-p106" / "prompt.txt").read_text(encoding="utf-8")   # player 106: team2
+    assert "P1#T1" in team1 and "P5#T5" not in team1
+    assert "P5#T5" in team2 and "P1#T1" not in team2
+    for directory in (run.parent / f"{run.name}-p100", run.parent / f"{run.name}-p106"):
+        on_disk = "".join(p.read_text(encoding="utf-8") for p in directory.rglob("*.json"))
+        assert ("P5#T5" in on_disk) != ("P1#T1" in on_disk)       # one team named, never both
+
+
+def test_one_players_crash_does_not_stop_the_next_and_fails_the_command(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"], fail={"0": RuntimeError("boom")})
+    assert coach_report.main() == 1 and [p for p, _ in runs] == ["0", "6"]
     out = capsys.readouterr().out
-    assert "== Friend#2: FAILED (exit 1) ==" in out and "2 of 3 runs succeeded; failed: Friend#2" in out
+    assert "== 0: FAILED (exit 1) ==" in out and "1 of 2 runs succeeded; failed: 0" in out
+
+
+def test_one_players_refusal_by_system_exit_does_not_stop_the_batch(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"], fail={"0": SystemExit("refused: stopped")})
+    assert coach_report.main() == 1 and [p for p, _ in runs] == ["0", "6"]
+    captured = capsys.readouterr()
+    assert "refused: stopped" in captured.err and "1 of 2 runs succeeded; failed: 0" in captured.out
+
+
+def test_a_player_missing_from_the_replay_fails_alone(tmp_path, monkeypatch, capsys):
+    reads, _ = _players(monkeypatch, tmp_path, ["0", "99"], fake=False, extra=["--prompt-only"])
+    assert coach_report.main() == 1 and len(reads) == 1      # player 199 is in the match but not the replay
+    captured = capsys.readouterr()
+    assert "player 199 is not in this replay" in captured.err and "== 99: FAILED (exit 2) ==" in captured.out
+    assert (tmp_path / "valo-coach" / "abcdef12-0000-4000-8000-000000000000-p100" / "prompt.txt").exists()
+
+
+def test_a_missing_claude_refuses_before_reading_anything(tmp_path, monkeypatch, capsys):
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "6"])
+    monkeypatch.setattr(coach_report, "find_claude", lambda: None)
+    assert coach_report.main() == 2 and reads == [] and runs == []
+    assert "claude command is not on PATH" in capsys.readouterr().err
+    assert not (tmp_path / "valo-coach").exists()
+
+
+def test_an_unknown_player_refuses_the_batch_before_any_run(tmp_path, monkeypatch, capsys):
+    from scripts import coach_store_report
+    reads, runs = _players(monkeypatch, tmp_path, ["0", "nobody"])
+
+    def resolve(db, uuid, player):
+        if player == "nobody":
+            raise ValueError("'nobody' is not a player of this match")
+        return 7, 100
+
+    monkeypatch.setattr(coach_store_report, "resolve", resolve)
+    assert coach_report.main() == 2 and runs == [] and reads == []
+    assert "refused" in capsys.readouterr().err
+
+
+def test_a_duplicate_player_refuses_the_batch_before_any_run(tmp_path, monkeypatch, capsys):
+    from scripts import coach_store_report
+
+    reads, runs = _players(monkeypatch, tmp_path, ["P0#T0", "p0#t0"])
+    monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, name: (7, 100))
+    assert coach_report.main() == 2 and runs == [] and reads == []
+    assert "player 'p0#t0' was requested more than once" in capsys.readouterr().err
 
 
 def test_the_team_command_refuses_a_player_who_is_not_in_the_match(monkeypatch, capsys):

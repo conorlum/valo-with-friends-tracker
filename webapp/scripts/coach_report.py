@@ -1,6 +1,10 @@
 """Writes and publishes one coaching report: snapshot, brief, headless Claude Code, checker, store.
 
-    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" [--model <name>] [--dry-run | --prompt-only]
+    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" ["<player>" ...] [--model <name>] [--dry-run | --prompt-only]
+
+Several players are coached one after another, never two at once, from one read of the match (the read takes
+about a minute); each keeps its own run directory, and one player's failure leaves the others' runs and reports
+alone. Exits 1 when any run failed.
 
 The model runs in the snapshot's own directory under the system temp folder, with an allow-listed environment
 (no DATABASE_URL) and one permitted command, ./q (the logged query tool). `--dry-run` prints the payload and stores
@@ -16,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid as uuid_module
 from datetime import datetime
 from pathlib import Path
@@ -63,8 +68,12 @@ def claude_command(exe: str, model: str | None, session: str | None) -> list[str
     return command
 
 
+def find_claude() -> str | None:
+    return shutil.which("claude")
+
+
 def claude_call(run_dir: Path, model: str | None):
-    exe = shutil.which("claude")
+    exe = find_claude()
     if exe is None:
         raise SystemExit("refused: the claude command is not on PATH")
 
@@ -89,16 +98,15 @@ def claude_call(run_dir: Path, model: str | None):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("match_uuid")
-    parser.add_argument("player")
+    parser.add_argument("players", nargs="+", metavar="player")
     parser.add_argument("--model")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--prompt-only", action="store_true",
                       help="write the first prompt to <run dir>/prompt.txt and stop; no model is called")
     args = parser.parse_args()
-    from app.coach import playbook, prompt, runner, snapshot
+    from app.coach import playbook, snapshot
     from app.db import SessionLocal
-    from app.services import coach
     from scripts import _admin_client
     from scripts.coach_store_report import resolve
 
@@ -107,16 +115,64 @@ def main() -> int:
     except ValueError:
         print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
         return 2
+    if not args.prompt_only and find_claude() is None:      # before any database or run-directory work
+        print("refused: the claude command is not on PATH", file=sys.stderr)
+        return 2
+    # Every player is resolved, and the match read once, before any model runs: a wrong name refuses the
+    # whole batch at once, not after the earlier players' runs. What is wrong for one player alone (no slot or
+    # team in the replay) refuses only that player's run.
     with SessionLocal() as db:
         try:
             book = playbook.load()
-            match_id, player_id = resolve(db, uuid, args.player)
+            resolved = [(name, *resolve(db, uuid, name)) for name in args.players]
+            seen = set()
+            for name, _, player_id in resolved:
+                if player_id in seen:
+                    raise ValueError(f"player {name!r} was requested more than once")
+                seen.add(player_id)
             ask = (lambda: _admin_client.request_util_build(_admin_client.DEFAULT_SITE)) \
                 if os.environ.get("REPLAY_ADMIN_TOKEN", "").strip() else None
-            data = snapshot.hide_enemy_names(snapshot.read(db, uuid, ask=ask), player_id)
+            data = snapshot.read(db, uuid, ask=ask)
         except (ValueError, snapshot.SnapshotError) as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
+    if len(resolved) == 1:
+        return run_player(args, uuid, book, *resolved[0], data)
+    print(f"coaching {len(resolved)} players, one at a time, from one read of the match: "
+          f"{', '.join(name for name, *_ in resolved)}", flush=True)
+    failed = []
+    for at, entry in enumerate(resolved, start=1):
+        name = entry[0]
+        print(f"\n== {at} of {len(resolved)}: {name} ==", flush=True)
+        try:
+            code = run_player(args, uuid, book, *entry, data)
+        except SystemExit as stop:      # a helper's refusal: that player's failure, not the batch's
+            print(stop, file=sys.stderr)
+            code = stop.code if isinstance(stop.code, int) else 1
+        except Exception:      # noqa: BLE001 - one player's crash must not cost the others their runs
+            traceback.print_exc()
+            code = 1
+        if code != 0:
+            print(f"== {name}: FAILED (exit {code}) ==", flush=True)
+            failed.append(name)
+    print(f"\n{len(resolved) - len(failed)} of {len(resolved)} runs succeeded"
+          + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
+def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int, match: dict) -> int:
+    """One player's run from the match as that player's run sees it (enemy names hidden). `match` is the shared
+    read, never changed: hiding builds new dicts for this player."""
+    from app.coach import prompt, runner, snapshot
+    from app.db import SessionLocal
+    from app.services import coach
+
+    try:
+        data = snapshot.hide_enemy_names(match, player_id)
+    except snapshot.SnapshotError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
+
     # One directory per match and player: a second player's run must not delete the first's files.
     root = Path(tempfile.gettempdir()) / "valo-coach"
     run_dir = root / f"{uuid}-p{player_id}"
@@ -136,7 +192,7 @@ def main() -> int:
     write_q(run_dir, Path(sys.executable))
     snap = snapshot.load(run_dir)
     try:
-        slot = snap.slot_of(args.player)
+        slot = snap.slot_of(player)
     except snapshot.SnapshotError as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2

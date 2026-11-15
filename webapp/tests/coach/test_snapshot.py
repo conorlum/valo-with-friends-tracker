@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.coach import snapshot
@@ -25,6 +27,120 @@ def test_a_complete_match_has_no_gaps(tmp_path):
     assert snap.round_numbers == [1, 2] and snap.map == "Toy"
     assert snap.gaps(1) == [] and snap.control(1)["cells"] == {"A Site": 1}
     assert snap.view(2).number == 2 and snap.view(2).position(0, 1.0)["alive"]
+
+
+def test_a_snapshot_is_saved_one_file_per_round_and_reads_only_the_round_asked_for(tmp_path):
+    snapshot.save(built(), tmp_path)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    rounds_dir = tmp_path / head["rounds_dir"]
+    assert sorted(p.name for p in rounds_dir.iterdir()) == ["1.json", "2.json"]
+    assert "rounds" not in head
+    (rounds_dir / "2.json").unlink()      # round 1's questions never open round 2's file
+    snap = snapshot.load(tmp_path)
+    assert snap.round_numbers == [1, 2] and snap.gaps(1) == [] and snap.view(1).number == 1
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_an_older_snapshot_still_loads(tmp_path, split):
+    data = built()
+    if split:
+        rounds = data.pop("rounds")
+        data["round_files"] = list(rounds)
+        rounds_dir = tmp_path / snapshot.ROUNDS_DIR
+        rounds_dir.mkdir()
+        for n, entry in rounds.items():
+            (rounds_dir / f"{n}.json").write_text(json.dumps(entry), encoding="utf-8")
+    (tmp_path / snapshot.FILE).write_text(json.dumps(data), encoding="utf-8")
+    snap = snapshot.load(tmp_path)
+    assert snap.round_numbers == [1, 2] and snap.control(2)["cells"] == {"A Site": 1}
+
+
+def test_replacing_a_snapshot_keeps_each_reader_on_one_generation(tmp_path):
+    snapshot.save(built(), tmp_path)
+    old = snapshot.load(tmp_path)
+    updated = built()
+    updated["rounds"]["1"]["gaps"] = ["updated"]
+    updated["rounds"]["2"]["gaps"] = [object()]
+    original_files = set(tmp_path.iterdir())
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        snapshot.save(updated, tmp_path)
+    assert set(tmp_path.iterdir()) == original_files
+    assert snapshot.load(tmp_path).gaps(1) == []
+
+    updated["rounds"]["2"]["gaps"] = ["updated"]
+    snapshot.save(updated, tmp_path)
+    latest = snapshot.load(tmp_path)
+    assert [latest.gaps(n) for n in latest.round_numbers] == [["updated"], ["updated"]]
+    assert [old.gaps(n) for n in old.round_numbers] == [[], []]
+
+
+def test_repeated_saves_keep_only_the_current_and_the_previous_generation(tmp_path):
+    names = []
+    for _ in range(4):
+        snapshot.save(built(), tmp_path)
+        names.append(json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))["rounds_dir"])
+    left = sorted(p.name for p in tmp_path.iterdir() if p.is_dir())
+    assert left == sorted(names[-2:])               # a reader of the previous manifest can still open its rounds
+    assert snapshot.load(tmp_path).gaps(2) == []
+
+
+def test_a_locked_manifest_is_retried_then_named(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.coach import snapfile
+    snapshot.save(built(), tmp_path)
+    real, refusals = Path.replace, []
+
+    def locked_twice(self, target):
+        if len(refusals) < 2:
+            refusals.append(target)
+            raise PermissionError(5, "Access is denied")
+        return real(self, target)
+
+    monkeypatch.setattr(snapfile, "REPLACE_WAIT_S", 0.001)
+    monkeypatch.setattr(Path, "replace", locked_twice)
+    snapshot.save(built(), tmp_path)                        # two refusals, then the swap goes through
+    assert len(refusals) == 2 and snapshot.load(tmp_path).round_numbers == [1, 2]
+
+    monkeypatch.setattr(Path, "replace", lambda self, target: (_ for _ in ()).throw(PermissionError(5, "denied")))
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with pytest.raises(PermissionError, match="stayed locked"):
+        snapshot.save(built(), tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before      # the old snapshot is still the live one
+
+
+@pytest.mark.parametrize("damage", ["missing", "not json"])
+def test_a_damaged_round_file_is_a_snapshot_error_naming_the_round(tmp_path, damage):
+    from app.coach import query
+    snapshot.save(built(), tmp_path)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    path = tmp_path / head["rounds_dir"] / "2.json"
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_text("{not json", encoding="utf-8")
+    snap = snapshot.load(tmp_path)
+    with pytest.raises(snapshot.SnapshotError, match="round 2's file"):
+        snap.gaps(2)
+    answer = query.run(snap, tmp_path, "timeline", ["2"])            # an answer the model reads, and logged
+    assert "round 2's file" in answer["error"] and answer["id"] in query.read_log(tmp_path)
+
+
+def test_the_query_tool_loads_no_database_code(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    webapp = Path(__file__).resolve().parents[2]
+    snapshot.save(built(), tmp_path)
+    # The real entry point, run as ./q runs it; then what it imported.
+    code = ("import runpy, sys; sys.argv = ['coach_query.py', '--run', sys.argv[1], '--', 'timeline', '1']\n"
+            "try:\n    runpy.run_path('scripts/coach_query.py', run_name='__main__')\n"
+            "except SystemExit:\n    pass\n"
+            "print(sorted(m for m in sys.modules if m.split('.')[0] == 'sqlalchemy' or m in ('app.db', "
+            "'app.services.replay_control', 'app.coach.snapshot')))")
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=True,
+                         cwd=webapp).stdout.strip().splitlines()
+    assert json.loads(out[0])["round"] == 1 and out[-1] == "[]"
 
 
 def test_each_missing_source_is_named(tmp_path):

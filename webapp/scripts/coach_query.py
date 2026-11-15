@@ -32,7 +32,7 @@ def main() -> int:
         print("refused: --run may be given only once", file=sys.stderr)
         return 2
     args.run = args.run[0]
-    from app.coach import query, snapshot
+    from app.coach import query, snapfile as snapshot
 
     print(json.dumps(query.run(snapshot.load(args.run), args.run, args.command, args.args)))
     return 0
