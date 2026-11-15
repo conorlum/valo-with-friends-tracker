@@ -79,6 +79,94 @@ def test_pickup_and_kills_follow_actor_generation_and_last_shot():
     assert f["kills_with"] == 1
 
 
+def pickup_rows(*extra):
+    return [hold(0, "Vandal", gen=4), hold(5, "Classic"),
+            hold(5, "Vandal", 11, guid="gun-0", gen=4, **{"from": 0}), *extra]
+
+
+def with_kill_weapons(snap, weapons):
+    for i, weapon in weapons.items():
+        snap.context["rounds"]["1"]["kills"][str(i)] = {"weapon": weapon}
+    return snap
+
+
+def test_kills_with_ignores_ability_kill_after_the_gun_was_fired_once():
+    rows = pickup_rows(shot(5, "Vandal", 11.1, "gun-0", 4))
+    kills = [{"t": 10, "killer": 5, "victim": 0}, {"t": 20, "killer": 5, "victim": 1}]
+    snap = with_kill_weapons(snapshot(util=rows, kills=kills), {1: "Paint Shells"})
+    assert first(snap)["kills_with"] == 0
+    snap = with_kill_weapons(snapshot(util=rows, kills=kills), {1: "vandal"})
+    assert first(snap)["kills_with"] == 1
+    assert first(snapshot(util=rows, kills=kills))["kills_with"] == 1    # weapon unknown: shot decides
+
+
+def test_kills_with_needs_the_picker_still_holding_the_actor():
+    other = [hold(5, "Classic", 12.5, guid="gun-5", gen=0), None]
+    for switch in (other[0], {"k": "hold", "t": 12.5, "by": 5, "gun": None, "cat": "other"},
+                   hold(5, "Overdrive", 12.5, guid="x", gen=9)):
+        rows = pickup_rows(shot(5, "Vandal", 11.9, "gun-0", 4), switch)
+        kills = [{"t": 10, "killer": 5, "victim": 0}, {"t": 12, "killer": 5, "victim": 1},
+                 {"t": 13, "killer": 5, "victim": 2}]
+        assert first(snapshot(util=rows, kills=kills))["kills_with"] == 1, switch
+
+
+def test_kills_with_stops_at_the_pickers_death():
+    rows = pickup_rows(shot(5, "Vandal", 11.9, "gun-0", 4), shot(5, "Vandal", 13.9, "gun-0", 4))
+    kills = [{"t": 10, "killer": 5, "victim": 0}, {"t": 12, "killer": 5, "victim": 1},
+             {"t": 13, "killer": 2, "victim": 5}, {"t": 14, "killer": 5, "victim": 3}]
+    assert first(snapshot(util=rows, kills=kills, own=4))["kills_with"] == 1
+
+
+def test_kills_with_ignores_the_pickers_friendly_kills():
+    rows = pickup_rows(shot(5, "Vandal", 11.9, "gun-0", 4))
+    kills = [{"t": 10, "killer": 5, "victim": 0}, {"t": 12, "killer": 5, "victim": 6}]
+    assert first(snapshot(util=rows, kills=kills))["kills_with"] == 0
+
+
+@pytest.mark.parametrize("killer,victim,subject", [(1, 0, 0), (1, 0, 1), (0, 1, 0), (0, 1, 1)])
+def test_team_kills_are_not_fights_for_either_side(killer, victim, subject):
+    rows = [hold(0, "Vandal"), hold(1, "Classic"), hold(5, "Classic")]
+    snap = snapshot(util=rows, kills=[{"t": 10, "killer": killer, "victim": victim}])
+    assert fights.for_round(snap, 1, subject) == []
+
+
+def test_enemy_team_kill_is_not_a_fight_for_the_enemy_either():
+    snap = snapshot(kills=[{"t": 10, "killer": 6, "victim": 5}])
+    assert fights.for_round(snap, 1, 5) == [] and fights.for_round(snap, 1, 6) == []
+
+
+def test_gun_given_to_a_teammate_before_death_is_not_dropped():
+    rows = [hold(0, "Vandal", gen=4), hold(1, "Vandal", 5, guid="gun-0", gen=4, **{"from": 0}),
+            hold(0, "Classic", 6, guid="c0", gen=1), hold(5, "Classic")]
+    f = first(snapshot(util=rows))
+    assert (f["death"]["dropped_gun"], f["death"]["dropped_id"], f["death"]["better"]) == ("Classic", "c0", False)
+    assert f["handover"]["better"] is False and f["flags"] == []
+
+
+def test_gun_with_no_candidate_left_has_no_drop_and_no_handover():
+    rows = [hold(0, "Vandal", gen=4), hold(1, "Vandal", 5, guid="gun-0", gen=4, **{"from": 0}),
+            {"k": "hold", "t": 6, "by": 0, "gun": "Knife", "cat": "melee", "id": "k", "gen": 7}, hold(5, "Classic")]
+    f = first(snapshot(util=rows))
+    assert f["death"]["dropped_gun"] is None and f["death"]["dropped_id"] is None
+    assert f["death"]["better"] is False and f["flags"] == []
+
+
+def test_gun_taken_back_before_death_is_a_candidate_again():
+    rows = [hold(0, "Vandal", gen=4), hold(1, "Vandal", 5, guid="gun-0", gen=4, **{"from": 0}),
+            hold(0, "Vandal", 7, guid="gun-0", gen=4, **{"from": 1}), hold(0, "Classic", 8, guid="c0", gen=1),
+            hold(5, "Classic")]
+    f = first(snapshot(util=rows))
+    assert (f["death"]["dropped_gun"], f["death"]["better"]) == ("Vandal", True)
+
+
+def test_a_gun_taken_only_at_or_before_the_death_instant_counts_and_after_does_not():
+    base = [hold(0, "Vandal", gen=4), hold(0, "Classic", 6, guid="c0", gen=1), hold(5, "Classic")]
+    at = first(snapshot(util=[*base, hold(5, "Vandal", 10, guid="gun-0", gen=4, **{"from": 0})]))
+    assert at["death"]["dropped_gun"] == "Classic"
+    after = first(snapshot(util=[*base, hold(5, "Vandal", 10.5, guid="gun-0", gen=4, **{"from": 0})]))
+    assert after["death"]["dropped_gun"] == "Vandal" and after["picked_up"] == {"by": "P5", "t": 10.5}
+
+
 @pytest.mark.parametrize("picker,gen,expected", [(6, 0, {"by": "P6", "t": 11}), (5, 8, None), (1, 0, None)])
 def test_pickup_requires_enemy_previous_holder_and_same_generation(picker, gen, expected):
     rows = [hold(0, "Vandal"), hold(5, "Classic"),

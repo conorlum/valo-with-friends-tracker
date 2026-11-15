@@ -83,7 +83,15 @@ def _known(view, slot, enemy, t0, gun, holds, shots, control, site):
 
 
 def _death(view, slot, enemy, t, holds, shots):
-    firearms = [row for row in _life_rows(view, slot, t, holds) if _tier(row) is not None]
+    def given_away(row):
+        # Another slot holding the same actor later in this life proves it left this player's hands.
+        actor = (row.get("id"), row.get("gen"))
+        return None not in actor and any(
+            other["by"] != slot and (other.get("id"), other.get("gen")) == actor
+            and row["t"] < other["t"] <= t for other in holds)
+
+    firearms = [row for row in _life_rows(view, slot, t, holds)
+                if _tier(row) is not None and not given_away(row)]
     best = max(reversed(firearms), key=lambda row: (_tier(row), row["t"]), default=None)
     killer, _ = _gun_at(view, enemy, t, holds, shots)
     dropped_tier, killer_tier = _tier(best), _tier(killer)
@@ -95,7 +103,7 @@ def _death(view, slot, enemy, t, holds, shots):
             "killer_tier": killer_tier, "better": better}
 
 
-def _pickup(view, names, slot, t, death, holds, shots):
+def _pickup(view, names, slot, t, death, holds, shots, site_kills):
     actor = (death["dropped_id"], death["dropped_gen"])
     if None in actor:
         return None, 0
@@ -106,12 +114,24 @@ def _pickup(view, names, slot, t, death, holds, shots):
     picker = picked["by"]
     count = 0
     for kill in view.kills:
-        if kill.get("killer") != picker or kill.get("victim") == picker or kill["t"] <= picked["t"]:
+        if kill["t"] <= picked["t"]:
+            continue
+        if kill.get("victim") == picker:
+            break                      # the count stops at the picker's death
+        if kill.get("killer") != picker or kill.get("victim") not in view.slots \
+                or view.side(kill["victim"]) == view.side(picker):
             continue
         last = next((row for row in reversed(shots) if row.get("by") == picker
                      and picked["t"] <= row["t"] <= kill["t"]), None)
-        if last and (last.get("gid"), last.get("gen")) == actor:
-            count += 1
+        if not last or (last.get("gid"), last.get("gen")) != actor:
+            continue
+        current = next((row for row in reversed(holds) if row["by"] == picker and row["t"] <= kill["t"]), None)
+        if current is None or (current.get("id"), current.get("gen")) != actor:
+            continue
+        weapon = ((site_kills.get(str(kill.get("i"))) or {}).get("weapon"))
+        if weapon is not None and str(weapon).lower() != str(death["dropped_gun"]).lower():
+            continue
+        count += 1
     return {"by": names.get(picker), "t": picked["t"]}, count
 
 
@@ -131,7 +151,7 @@ def for_round(snap, n: int, slot: int) -> list[dict]:
             continue
         won = killer == slot
         enemy = victim if won else killer
-        if enemy not in view.slots:
+        if enemy not in view.slots or view.side(enemy) == view.side(slot):
             continue
         t0 = _start(rows, slot, enemy, t)
         g = t0 if t0 < t else t - 0.05
@@ -153,7 +173,8 @@ def for_round(snap, n: int, slot: int) -> list[dict]:
         death = None if won else _death(view, slot, enemy, t, holds, shots)
         handover = None if won else {"my_best_tier": death["dropped_tier"],
                                     "killer_tier": death["killer_tier"], "better": death["better"]}
-        picked_up, kills_with = (None, 0) if won else _pickup(view, snap.names, slot, t, death, holds, shots)
+        picked_up, kills_with = (None, 0) if won else _pickup(view, snap.names, slot, t, death, holds, shots,
+                                                                site.get("kills") or {})
         flags = []
         one_v_one = alive == {"own": 1, "enemy": 1}
         if death and death["better"] and lone and not one_v_one and alive["own"] >= alive["enemy"]:
