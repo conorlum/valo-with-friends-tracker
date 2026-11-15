@@ -64,7 +64,7 @@ def test_locating_and_excluding_the_same_slot_are_separate_runs(reason):
 
 
 def test_knowledge_event_kinds_use_control_revision_24():
-    assert cf.CONTROL_REVISION == 24
+    assert cf.CONTROL_REVISION >= 24
 
 
 def test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence():

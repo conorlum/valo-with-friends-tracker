@@ -208,6 +208,18 @@ DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
     (r"^Killjoy_4_BeeSwarm_Damage$", 450), (r"^Hunter_4_ExplosiveBolt_Explosion$", 350),
     (r"^Clay_Q_Explosion$", 450), (r"^Cashew_X_Segment$", 350), (r"^Sarge_X_OrbitalStrike", 900),
     (r"^Cashew_E_Explosion$", 450)]]
+# A damage zone whose object outlives its damage: `<code>_<name>` -> how long it contests from its spawn. Shock Bolt is
+# one blast, and its object stays 4.0 s after it (every one in a live match, 2026-11-14); 0.4 s is its molly figure.
+DAMAGE_ZONE_LIFE_S = {"Hunter_4_ExplosiveBolt_Explosion": 0.4}
+# Suppression turns off its target's placed devices (revision 25): Cypher's trips and camera, Killjoy's turret and
+# alarmbot, Chamber's trap. Besides KAY/O's `suppressed` statuses, these suppress (wiki, 2026-11-14): Undercut, for
+# its Fragile's 4 s (its `fragile` status row); Tejo's Stealth Drone pulse, for 8 s from its reveal row; and Iso's Kill
+# Contract, both duellists while in its arena. The arena is off the map: their tracks sit at z ~ -499 m from 1.33 s
+# after the cast (17 of 17 catching casts in four live matches), so a track below ARENA_Z_M is in it.
+SUPPRESSED_DEVICE_KINDS = ("trip", "camera", "turret", "area")
+SUPPRESSING_STATUS_ROWS = ("Sequoia_Q_FragileMissile_TrajectoryWarning",)
+SUPPRESSING_REVEAL_S = {"Cashew_4_SonarPing": 8.0}
+ARENA_Z_M = -250.0
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
@@ -642,7 +654,9 @@ class RoundInputs:
                                             r * geo.uv_per_unit * px_per_uv, solid))
                 for pat, r in DAMAGE_ZONES:
                     if pat.match(key):
-                        self.damage_zones.append((t0, t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
+                        z_t1 = t1 if key not in DAMAGE_ZONE_LIFE_S \
+                            else min(t1, _span(e["t"], e["t"] + DAMAGE_ZONE_LIFE_S[key])[1])
+                        self.damage_zones.append((t0, z_t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
                                                   r * geo.uv_per_unit * px_per_uv, e.get("by")))
                 self._watcher(e, key, t0, t1)
             elif k in ("flash", "nearsight"):
@@ -710,22 +724,48 @@ class RoundInputs:
         self._suppress_devices(util)
 
     def _suppress_devices(self, util: list) -> None:
-        """A suppressed Cypher's trips and camera are off while he is suppressed and back on when it ends, unless
-        they ended first (the 2026-10-05 review, item 5): his `suppressed` statuses join each device's off spans.
-        His own sight is untouched (only statuses that blind or downgrade do that)."""
-        spans: dict[int, list[tuple[float, float]]] = defaultdict(list)
-        for e in util:
-            if e.get("k") == "status" and e.get("status") == "suppressed" and e.get("target") is not None \
-                    and not self._immune_row(e):
-                spans[int(e["target"])].append(_span(e["t"], e["t1"]))
+        """A suppressed owner's placed devices (SUPPRESSED_DEVICE_KINDS) are off while they are suppressed and back
+        on when it ends, unless they ended first (the 2026-10-05 review, item 5; revision 25 widened it from Cypher's
+        to every placed device, and added Undercut, Tejo's drone and Kill Contract's arena): the owner's suppressed
+        spans join each device's off spans. Their own sight is untouched (only statuses that blind or downgrade do
+        that)."""
+        spans = self._suppressed_spans(util)
         for w in self.watchers:
-            if w.kind not in ("trip", "camera") or w.by not in spans:
+            if w.kind not in SUPPRESSED_DEVICE_KINDS or w.by not in spans:
                 continue
             for a, b in spans[w.by]:
                 a, b = max(a, w.t0), min(b, w.t1)
                 if b > a:
                     w.off = sorted([*w.off, (a, b)])
                     self.events += [a, b]
+
+    def _suppressed_spans(self, util: list) -> dict[int, list[tuple[float, float]]]:
+        """slot -> the grid spans it was suppressed (see SUPPRESSED_DEVICE_KINDS): KAY/O's `suppressed` statuses,
+        Undercut's Fragile rows, Tejo's drone reveals (SUPPRESSING_REVEAL_S from the hit), and Kill Contract's
+        arena (its track below ARENA_Z_M). An ulting Veto shrugs off all but the arena."""
+        spans: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        for e in util:
+            target, k = e.get("target"), e.get("k")
+            if target is None or k not in ("status", "reveal"):
+                continue
+            key = util_key(e)
+            if k == "status" and (e.get("status") == "suppressed" or key in SUPPRESSING_STATUS_ROWS):
+                span = _span(e["t"], e["t1"])
+            elif k == "reveal" and key in SUPPRESSING_REVEAL_S:
+                span = _span(e["t"], e["t"] + SUPPRESSING_REVEAL_S[key])
+            else:
+                continue
+            if utility.affects("suppress", self.evolution, int(target), float(e["t"])):
+                spans[int(target)].append(span)
+        for s, z in self.track_z.items():
+            inside = np.nan_to_num(z, nan=0.0) < ARENA_Z_M
+            if not inside.any():
+                continue
+            times = self.tracks[s][0]
+            edges = np.flatnonzero(np.diff(np.concatenate(([0], inside.astype(np.int8), [0]))))
+            for a, b in zip(edges[::2], edges[1::2]):
+                spans[s].append(_span(times[a], times[b - 1] + 1 / self.hz))
+        return spans
 
     def _immune_row(self, e: dict) -> bool:
         """A reveal or status on an ulting Veto, which doesn't touch him (W10). Flash and nearsight rows are
