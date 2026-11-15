@@ -931,6 +931,50 @@ def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
     assert len(extras.rounds[1]["equips"]) == 1
 
 
+@pytest.mark.parametrize("archetype", [
+    "Default__Equippable_Snake_Totem_C",
+    "Default__Equippable_Sequoia_X_ArenaTeleport_C",
+    "Default__Equippable_Totem_PDA_C",
+    "Default__Equippable_Skymage_Totem_C",
+    "Default__Equippable_DuosDay26_Duck_Totem_C",
+    "Default__Equippable_FutureItem_C",
+    "Default__Bomb_Defuser_C",
+])
+def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype):
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+        spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
+    assert holds(extras) == [
+        {"k": "hold", "t": 4.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0},
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "other"}]
+    assert extras.report["holds_unnamed"] == 0
+
+
+def test_unarmed_equippable_still_opens_a_melee_hold(tmp_path):
+    from app.replays import guns
+
+    archetype = "Default__Equippable_Unarmed_C"
+    assert guns.is_melee(archetype)
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+        spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
+    assert holds(extras)[1] == {"k": "hold", "t": 5.0, "by": 1, "gun": "Knife", "cat": "melee",
+                                "id": 901, "gen": 1}
+    assert extras.report["holds_unnamed"] == 0
+
+
+@pytest.mark.parametrize("fired", [False, True])
+def test_unknown_ds_gun_remains_a_candidate_for_shot_learning(tmp_path, fired):
+    rows = [spawned(12_000, 900, VANDAL, 0, 0),
+            spawned(13_000, 901, "Default__DS_Gun_C", 0, 0),
+            held(14_000, 101, 900), held(15_000, 101, 901)]
+    if fired:
+        rows.append(gun_shot(16_000, guid=901, name="Outlaw", category="sniper_rifle"))
+    extras = held_run(tmp_path, rows)
+    assert holds(extras)[1] == {"k": "hold", "t": 5.0, "by": 1,
+                                "gun": "Outlaw" if fired else None,
+                                "cat": "sniper_rifle" if fired else None, "id": 901, "gen": 1}
+    assert extras.report["holds_unnamed"] == (0 if fired else 1)
+
+
 def test_learning_and_pickups_are_per_generation_even_for_late_shot_rows(tmp_path):
     extras = held_run(tmp_path, [spawned(12_000, 900, UNKNOWN_GUN, 0, 0),
         held(13_000, 101, 900), held(20_000, 106, 900), closed(30_000, 900),

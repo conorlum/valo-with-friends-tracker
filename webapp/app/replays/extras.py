@@ -619,10 +619,14 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 held = EQUIPPABLE_ARCHETYPE.match(archetype)
                 melee = guns.is_melee(archetype)
                 known_name, category = guns.lookup(archetype)
+                # Totems and other non-gun items close holds. Unarmed is admitted as melee below;
+                # unknown gun archetypes remain candidates so shots can still teach their names.
                 candidate = (archetype.startswith("Default__") and archetype.endswith("_C")
+                             and not archetype.startswith("Default__Equippable_")
                              and not ABILITY_ARCHETYPE.match(archetype)
                              and archetype not in (BOMB_ARCHETYPE, BOMB_EQUIPPABLE_ARCHETYPE,
-                                                   ORB_ARCHETYPE, "Default__EquippableGroundPickup_C")
+                                                   ORB_ARCHETYPE, "Default__EquippableGroundPickup_C",
+                                                   "Default__Bomb_Defuser_C")
                              and not archetype.endswith("_PC_C"))
                 if held is not None or melee or known_name is not None or candidate:
                     gun = _Gun(guid, t_ms, archetype, len(raw.gun_actors), melee,
