@@ -1,0 +1,13 @@
+{
+  "short_range_m": 10,
+  "effective_m": {
+    "Bucky": 7,
+    "Judge": 7,
+    "Shorty": 7,
+    "Stinger": 10,
+    "Frenzy": 10,
+    "Classic": 10,
+    "Spectre": 15
+  },
+  "falloff_note": "shotguns fall off from 5 m (owner, 2026-11-14)"
+}
