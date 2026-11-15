@@ -137,6 +137,171 @@ def problems(snap, log, **over):
     return checker.check_point(point(**over), log, snap, THEMES, 0)      # slot 0 is the coached player, side A
 
 
+def gun_evidence(tmp_path, kind="fight_fact", *, known=None, won=True, enemy="Bucky", kill_weapon=None):
+    snap, log, instances = fight_evidence(tmp_path, kind, [], won=won)
+    log["f"]["result"].update(enemy="the enemy Raze", enemy_gun=enemy, my_gun="Vandal",
+                              known=known, won=won, kill_weapon=kill_weapon)
+    if not won:
+        log["f"]["result"]["death"].update(dropped_gun="Vandal", killer_gun_at_kill=enemy)
+    if kind in ("gun_handover", "off_range_fight"):
+        del log["f"]["result"]["won"]  # Gun flags omit the fight result, retaining death and kill_weapon.
+    return snap, log, instances
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("how", [None, "heard", "seen"])
+def test_enemy_gun_claim_needs_seen_or_heard_fight(tmp_path, kind, how):
+    known = {"how": how, "t": 7, "before_s": 3} if how else None
+    snap, log, instances = gun_evidence(tmp_path, kind, known=known)
+    found = problems(snap, log, body="You took a close fight against the enemy Raze's Bucky", instances=instances)
+    assert found == ([] if how else ["body: names the enemy's Bucky, which side A had not seen or heard by then"])
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("weapon,accepted", [("Bucky", True), ("bUcKy", True), (None, False), ("Paint Shells", False)])
+def test_killed_by_exception_needs_tracker_kill_weapon(tmp_path, kind, weapon, accepted):
+    snap, log, instances = gun_evidence(tmp_path, kind, won=False, kill_weapon=weapon)
+    found = problems(snap, log, body="Their Bucky punished the close fight.", instances=instances)
+    assert bool(found) is not accepted
+    if found:
+        assert "enemy's Bucky" in found[0]
+
+
+def test_ability_kill_does_not_reveal_held_vandal(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, won=False, enemy="Vandal", kill_weapon="Paint Shells")
+    assert len(problems(snap, log, body="Their Vandal punished the fight.", instances=instances)) == 1
+    log["f"]["result"]["kill_weapon"] = "Vandal"
+    assert problems(snap, log, body="Their Vandal punished the fight.", instances=instances) == []
+
+
+@pytest.mark.parametrize("kind", ["gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("weapon,accepted", [("Vandal", True), ("Phantom", False)])
+def test_gun_flag_without_won_uses_death_and_kill_weapon(tmp_path, kind, weapon, accepted):
+    snap, log, instances = gun_evidence(tmp_path, kind, won=False, enemy="Vandal", kill_weapon=weapon)
+    assert "won" not in log["f"]["result"]
+    found = problems(snap, log, body="The enemy's Vandal punished the fight.", instances=instances)
+    assert found == ([] if accepted else [
+        "body: names the enemy's Vandal, which side A had not seen or heard by then"])
+    log["f"]["result"]["death"] = None
+    assert len(problems(snap, log, body="The enemy's Vandal punished the fight.", instances=instances)) == 1
+    log["f"]["result"].update(won=True, death={"killer_gun_at_kill": "Vandal"})
+    assert len(problems(snap, log, body="The enemy's Vandal punished the fight.", instances=instances)) == 1
+
+
+@pytest.mark.parametrize("hedge", ["likely", "probably", "may", "might", "could"])
+def test_econ_guess_needs_a_hedge_in_the_same_sentence(tmp_path, hedge):
+    snap, log, instances = gun_evidence(tmp_path, enemy="Classic", known={"how": "econ_guess", "gun_class": "sidearm"})
+    assert problems(snap, log, body=f"The enemy was {hedge} on a Classic.", instances=instances) == []
+    for body in ("The enemy had a Classic.", "The enemy was maybe on a Classic.",
+                 f"They {hedge} stayed. The enemy had a Classic."):
+        assert len(problems(snap, log, body=body, instances=instances)) == 1
+    log["f"]["result"]["known"]["gun_class"] = "rifle"
+    assert len(problems(snap, log, body=f"The enemy was {hedge} on a Classic.", instances=instances)) == 1
+
+
+@pytest.mark.parametrize("text,accepted", [("Your Vandal was exposed.", True), ("You exposed the Vandal.", True),
+    ("You had exposed Vandal.", True), ("You had exposed the Vandal.", False),
+    ("The enemy had a Vandal.", False), ("Your Bucky was exposed.", False)])
+def test_own_gun_exemption_needs_ownership_words_and_matching_gun(tmp_path, text, accepted):
+    snap, log, instances = gun_evidence(tmp_path, enemy="Vandal")
+    found = problems(snap, log, body=text, instances=instances)
+    assert bool(found) is not accepted
+
+
+def test_dropped_gun_counts_as_own(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    log["f"]["result"]["my_gun"] = "Classic"
+    assert problems(snap, log, body="Your Vandal was exposed.", instances=instances) == []
+
+
+@pytest.mark.parametrize("kind", ["fight_fact", "fight", "gun_handover", "off_range_fight"])
+@pytest.mark.parametrize("wrong", ["subject", "future"])
+def test_gun_evidence_requires_subject_and_timely_start(tmp_path, kind, wrong):
+    snap, log, instances = gun_evidence(tmp_path, kind, known={"how": "heard"})
+    log["f"]["result"].update({"subject": 5} if wrong == "subject" else {"t0": 11})
+    assert len(problems(snap, log, body="The enemy had a Bucky.", instances=instances)) == 1
+    assert len(problems(snap, log, body="Your Vandal was exposed.", instances=instances)) == 1
+    if wrong == "future":
+        instances[0]["t1"] = 11
+        assert problems(snap, log, body="The enemy had a Bucky.", instances=instances) == []
+
+
+@pytest.mark.parametrize("section", ["title", "body", "caption"])
+def test_gun_claims_are_checked_in_all_text_sections(tmp_path, section):
+    snap, log, instances = gun_evidence(tmp_path)
+    over = {"title": "Fight", "body": "Reposition.", "instances": instances}
+    if section == "caption":
+        instances[0]["caption"] = "The enemy had a Bucky."
+    else:
+        over[section] = "The enemy had a Bucky."
+    found = problems(snap, log, **over)
+    assert len(found) == 1 and "enemy's Bucky" in found[0]
+
+
+def test_point_gun_claim_can_use_any_instance_but_captions_need_their_own(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, known={"how": "heard"})
+    instances.append({"round": 1, "t": 12, "caption": "", "evidence": ["k"]})
+    assert problems(snap, log, body="The enemy had a Bucky.", instances=instances) == []
+    instances[1]["caption"] = "The enemy had a Bucky."
+    found = problems(snap, log, body="Reposition.", instances=instances)
+    assert len(found) == 1 and found[0].startswith("instance 2:")
+    instances[0]["evidence"] = ["k"]
+    instances[1]["caption"] = ""
+    assert len(problems(snap, log, body="The enemy had a Bucky.", instances=instances)) == 1
+
+
+def test_own_gun_wording_does_not_cross_sentence_boundary(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, enemy="Vandal")
+    assert len(problems(snap, log, body="You waited. Vandal punished the fight.", instances=instances)) == 1
+
+
+def test_econ_guess_supports_the_category_rather_than_the_actual_gun(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, enemy="Ghost", known={"how": "econ_guess", "gun_class": "sidearm"})
+    assert problems(snap, log, body="The enemy was likely on a Classic.", instances=instances) == []
+
+
+def test_observed_killer_gun_and_actual_killing_gun_are_separate_support(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, won=False, enemy="Classic", kill_weapon="Vandal")
+    assert problems(snap, log, body="Their Vandal punished the fight.", instances=instances) == []
+    log["f"]["result"].update(kill_weapon="Paint Shells", known={"how": "heard"})
+    log["f"]["result"]["death"]["killer_gun_at_kill"] = "Vandal"
+    assert problems(snap, log, body="Their Vandal punished the fight.", instances=instances) == []
+
+
+def test_gun_vocabulary_includes_hearing_and_snapshot_shots(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path)
+    snap.view(1).blob.setdefault("util", []).extend([
+        {"by": 5, "gun": "Outlaw", "k": "shot", "n": 1, "t": 2, "u": 2420, "v": 2000,
+         "u1": 2000, "v1": 2000, "gid": "gun-5", "gen": 0},
+        {"by": 5, "gun": "Replay Carbine", "k": "shot", "n": 1, "t": 3, "u": 2420, "v": 2000,
+         "u1": 2000, "v1": 2000, "gid": "gun-5", "gen": 0}])
+    for gun in ("Outlaw", "Operator", "Replay Carbine"):
+        found = problems(snap, log, body=f"The enemy had a {gun}.", instances=instances)
+        assert len(found) == 1 and f"enemy's {gun}" in found[0]
+
+
+def test_gun_vocabulary_excludes_abilities_knife_and_partial_words(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path)
+    assert problems(snap, log, body="Knife Overdrive Tour de Force Ghosted", instances=instances) == []
+
+
+@pytest.mark.parametrize("body,gun", [("The enemy Chamber's Tour de Force", "Tour de Force"),
+                                     ("Their Headhunter", "Headhunter"), ("Their Overdrive", "Overdrive")])
+@pytest.mark.parametrize("shot", [False, True])
+def test_ability_guns_are_excluded_without_shot_categories(tmp_path, body, gun, shot):
+    snap, log, instances = gun_evidence(tmp_path)
+    if shot:
+        snap.view(1).blob.setdefault("util", []).append(
+            {"by": 5, "gun": gun, "k": "shot", "n": 1, "t": 2, "u": 2420, "v": 2000,
+             "u1": 2000, "v1": 2000, "gid": "gun-5", "gen": 0})
+    assert problems(snap, log, body=body, instances=instances) == []
+
+
+def test_good_point_does_not_restrict_gun_names(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path)
+    assert problems(snap, log, polarity="good", body="The enemy had a Bucky.", instances=instances) == []
+
+
 def test_a_grounded_point_passes(snap, log):
     assert problems(snap, log) == []
 
