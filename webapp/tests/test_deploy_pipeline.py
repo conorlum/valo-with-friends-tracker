@@ -599,6 +599,28 @@ def test_a_failed_deploy_request_says_which_service_and_why_without_secrets(serv
     assert site.events("resume")[-1][1]["outcome"] == "failed"
 
 
+@pytest.mark.parametrize("body,shown", [
+    (b'{"code": "insufficient_token_scope", "message": "rnd_synthetic-api-key lacks scope"}',
+     "HTTP 403 (insufficient_token_scope)"),
+    (b'{"code": "Not A Code rnd_synthetic-api-key", "message": "x"}', "HTTP 403"),
+    (b"not json", "HTTP 403"),
+])
+def test_a_render_error_shows_its_code_but_never_its_message(body, shown):
+    site = Site()
+    plain = site.http
+
+    def http(method, url, **kwargs):
+        if urlsplit(url).hostname == "api.render.com":
+            raise HTTPError(url, 403, "Forbidden", {}, io.BytesIO(body))
+        return plain(method, url, **kwargs)
+
+    site.http = http
+    assert site.run() == 1
+    printed = site.output.getvalue()
+    assert "tasks deploy request failed: " + shown + "\n" in printed
+    assert "synthetic" not in printed and "lacks scope" not in printed
+
+
 def test_secrets_with_a_trailing_newline_still_deploy():
     site = Site()
     for name in ("RENDER_DEPLOY_HOOK_WORKER", "RENDER_API_KEY", "RENDER_WORKFLOW_ID"):
