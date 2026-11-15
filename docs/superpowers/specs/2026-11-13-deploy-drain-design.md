@@ -50,7 +50,9 @@ C2 Ownership is arbitrated by the site: each call carries the Actions run id; on
    move to `deploying`, force or resume (409 otherwise). A superseded Action exits on its next owner poll.
 C3 "Live" = the service reports the target commit: site and demo `/health` gain `commit` (`RENDER_GIT_COMMIT`); the
    worker's `/health` gains `commit`; `replay-tasks`' commit comes from a ping run's answer. Deploys are triggered
-   with the hook URL plus `ref=<sha>`. 30 min per service, then that service has failed; the first failure stops later
+   with the hook URL plus `ref=<sha>` (amended 2026-11-14: `replay-tasks`, a Workflow, has no deploy hook; it is
+   deployed with `POST /v1/workflowversions` from `RENDER_API_KEY` and `RENDER_WORKFLOW_ID`, which replace
+   `RENDER_DEPLOY_HOOK_TASKS` below; a 409 from Render is a failed deploy, never "superseded"). 30 min per service, then that service has failed; the first failure stops later
    deploys. `dry_run` prints all four commits and fails when any is unreadable.
 C4 `skip_drain` still takes the drain row, straight into `deploying` (new work paused during the deploys; no wait, no
    cancel), so a merge during it queues behind it.

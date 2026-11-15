@@ -19,6 +19,10 @@ from urllib.request import Request, urlopen
 
 
 SERVICES = ("tasks", "worker", "site", "demo")
+# replay-tasks is a Render Workflow, which has no deploy hook: it is deployed by
+# creating a workflow version through Render's API. The other three use hooks.
+RENDER_API = "https://api.render.com/v1"
+SECRETS = ("SITE_URL", "DEMO_URL", "REPLAY_ADMIN_TOKEN", "RENDER_API_KEY", "RENDER_WORKFLOW_ID")
 POLL_S = 30
 HTTP_TIMEOUT_S = 60
 DRAIN_S = 90 * 60
@@ -42,6 +46,13 @@ def build_args(inputs: dict) -> list[str]:
     """GitHub booleans may arrive as strings; 'false' must stay false."""
     return ["--" + name.replace("_", "-") for name in ("skip_drain", "dry_run")
             if str(inputs.get(name, False)).lower() == "true"]
+
+
+def deploy_keys(service):
+    """The secrets one service's deploy needs."""
+    if service == "tasks":
+        return ["RENDER_API_KEY", "RENDER_WORKFLOW_ID"]
+    return ["RENDER_DEPLOY_HOOK_" + service.upper()]
 
 
 def _http(method, url, *, data=None, headers=None, timeout=HTTP_TIMEOUT_S):
@@ -76,9 +87,9 @@ class Pipeline:
         # Only fixed messages and validated commit ids reach here. Never stringify
         # an exception: urllib errors often contain the full credential-bearing URL.
         for key, value in self.env.items():
-            if value and (key in ("SITE_URL", "DEMO_URL", "REPLAY_ADMIN_TOKEN")
-                          or key.startswith("RENDER_DEPLOY_HOOK_")):
-                message = message.replace(value, "[redacted]")
+            if value and (key in SECRETS or key.startswith("RENDER_DEPLOY_HOOK_")):
+                for secret in {value, value.strip()} - {""}:
+                    message = message.replace(secret, "[redacted]")
         print(message, file=self.out, flush=True)
 
     def request(self, method, url, data=None, headers=None):
@@ -220,19 +231,27 @@ class Pipeline:
     def hook(self, service):
         self.heartbeat()
         self.log("deploying " + service)
-        # A secret pasted with a trailing newline is not a valid URL: strip it.
-        url = self.env["RENDER_DEPLOY_HOOK_" + service.upper()].strip()
-        separator = "&" if "?" in url else "?"
+        # Secrets pasted with a trailing newline still work: strip them.
+        if service == "tasks":
+            url = RENDER_API + "/workflowversions"
+            data = {"workflowId": self.env["RENDER_WORKFLOW_ID"].strip(),
+                    "commit": self.args.sha}
+            headers = {"Authorization": "Bearer " + self.env["RENDER_API_KEY"].strip(),
+                       "Accept": "application/json"}
+        else:
+            hook = self.env["RENDER_DEPLOY_HOOK_" + service.upper()].strip()
+            separator = "&" if "?" in hook else "?"
+            url = hook + separator + "ref=" + quote(self.args.sha, safe="")
+            data = headers = None
         try:
-            self.request("POST", url + separator + "ref=" + quote(self.args.sha, safe=""))
-        except Superseded:
-            raise
+            # Not self.request: a 409 from Render is a failed deploy, not a lost drain.
+            self.http("POST", url, data=data, headers=headers, timeout=HTTP_TIMEOUT_S)
         except Exception as error:
-            # Say why without the error's text, which can hold the hook URL: only the
-            # HTTP status, or the error's class name.
+            # Say why without the error's text, which can hold the hook URL or key: only
+            # the HTTP status, or the error's class name.
             reason = ("HTTP " + str(int(error.code)) if isinstance(error, HTTPError)
                       else type(error).__name__)
-            self.log(service + " deploy hook failed: " + reason)
+            self.log(service + " deploy request failed: " + reason)
             raise Failed() from None
         # A finished probe must have started strictly after the hook completed.
         return self.clock()
@@ -317,7 +336,7 @@ class Pipeline:
     def execute(self):
         required = ["SITE_URL", "DEMO_URL", "REPLAY_ADMIN_TOKEN"]
         if not self.args.dry_run:
-            required += ["RENDER_DEPLOY_HOOK_" + service.upper() for service in SERVICES]
+            required += [key for service in SERVICES for key in deploy_keys(service)]
         if any(not self.env.get(key) for key in required):
             self.log("missing deploy configuration")
             raise Failed()
