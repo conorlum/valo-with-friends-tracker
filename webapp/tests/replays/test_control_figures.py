@@ -97,7 +97,9 @@ def test_the_revisions_of_this_release():
     # CONDENSE 28: Ascent door reopening
     # Control 24: stored knowledge kind, destroyed trip/camera locates and the optional destroyed header.
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (29, 24)
+    # Control 25: every placed device is off while its owner is suppressed (Undercut, Tejo's drone and Kill Contract's
+    # arena suppress too), and a Shock Bolt contests for its blast only.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (29, 25)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
 
 

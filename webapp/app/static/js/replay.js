@@ -509,21 +509,30 @@
     return !aliveAt((alive || {})[String(a.slot)], t, tEnd);
   }
 
-  // A Cypher trip or camera is off while its owner is suppressed, and back on when that ends (the engine's rule,
-  // app/control/engine.py RoundInputs._suppress_devices): the owner's `suppressed` statuses at t.
-  var PAUSED_BY_SUPPRESSION = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera)$/;
+  // A placed device (Cypher's trips and camera, Killjoy's turret and alarmbot, Chamber's trap) is off while its owner
+  // is suppressed, and back on when that ends (the engine's rule, app/control/engine.py RoundInputs._suppressed_spans):
+  // KAY/O's `suppressed` statuses, Undercut's Fragile (Suppress for the same 4 s), and Tejo's Stealth Drone pulse
+  // (its reveal row; Suppress 8 s). Kill Contract's arena is utilInArenaAt, below.
+  var SUPPRESSIBLE = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera|Killjoy_E_Turret|Killjoy_Q_StealthAlarmbot|Deadeye_E_Trap)$/;
+  var SUPPRESSING_STATUS = /^Sequoia_Q_FragileMissile_TrajectoryWarning$/;
+  var SUPPRESSING_REVEAL_S = { Cashew_4_SonarPing: 8.0 };
 
-  function utilSuppressedAt(a, statuses, t) {
-    if (a.slot === null || a.slot === undefined || !PAUSED_BY_SUPPRESSION.test(a.code + "_" + a.name)) return false;
-    return statusesAt(statuses, t).some(function (st) { return st.target === a.slot && st.status === "suppressed"; });
+  function utilSuppressedAt(a, statuses, t, reveals) {
+    if (a.slot === null || a.slot === undefined || !SUPPRESSIBLE.test(a.code + "_" + a.name)) return false;
+    var byStatus = statusesAt(statuses, t).some(function (st) {
+      return st.target === a.slot && (st.status === "suppressed" || SUPPRESSING_STATUS.test(st.code + "_" + st.name));
+    });
+    return byStatus || (reveals || []).some(function (rv) {
+      var s = condOwn(SUPPRESSING_REVEAL_S, rv.code + "_" + rv.name);
+      return s !== undefined && rv.target === a.slot && rv.t0 <= t && t < rv.t0 + s;
+    });
   }
 
   // Placed util is off while its owner is inside Iso's Kill Contract, the same as while suppressed. The duel's arena
   // is off the map: both duellists' tracks jump to a segment at z ~ -4990 from 1.33 s after the cast (17 of 17 casts
   // that caught someone in four live matches, 2026-11-14; a miss has none), the loser's ending at their death and
   // Iso's about 2.5 s later. Any tracked z below ARENA_Z is that arena.
-  var ARENA_Z = -2500;
-  var OFF_IN_ARENA = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera|Killjoy_E_Turret|Killjoy_Q_StealthAlarmbot|Deadeye_E_Trap)$/;
+  var ARENA_Z = -2500;     // world dm: the engine's ARENA_Z_M (-250 m)
 
   // Whether a slot's track puts it in the Kill Contract arena at t (a live sample only, not last-known).
   function inArenaAt(segments, t) {
@@ -541,7 +550,7 @@
   }
 
   function utilInArenaAt(a, tracks, t) {
-    if (a.slot === null || a.slot === undefined || !OFF_IN_ARENA.test(a.code + "_" + a.name)) return false;
+    if (a.slot === null || a.slot === undefined || !SUPPRESSIBLE.test(a.code + "_" + a.name)) return false;
     return inArenaAt((tracks || {})[String(a.slot)], t);
   }
 
@@ -2552,7 +2561,7 @@
           color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
           watching = false;
-        } else if (utilSuppressedAt(a, self.current.extras.statuses, t)) {
+        } else if (utilSuppressedAt(a, self.current.extras.statuses, t, self.current.extras.reveals)) {
           color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
           text += " · off (owner suppressed)";
           watching = false;

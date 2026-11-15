@@ -84,19 +84,73 @@ def test_two_suppressions_are_two_off_spans_and_his_own_sight_stays():
     assert ce.Tick(rnd, 5.0).holders[1].watch.any()
 
 
+def test_every_placed_device_of_a_suppressed_owner_is_off():
+    """Revision 25: a suppressed Killjoy's turret and alarmbot are off like Cypher's trip; her drone-free kit only."""
+    util = [toy_ability("Killjoy", "E_Turret", 250, 110, 1, t=0.0, t1=20.0, kind="GameObject", yaw=0),
+            toy_ability("Killjoy", "Q_StealthAlarmbot", 260, 120, 1, t=0.0, t1=20.0, kind="GameObject"),
+            suppressed(1, 5.0, 13.0)]
+    rnd = ce.RoundInputs(cypher_round(util), open_hall())
+    assert {w.kind: w.off for w in rnd.watchers} == {"turret": [(5.0, 13.0)], "area": [(5.0, 13.0)]}
+
+
+def test_undercut_and_tejos_drone_suppress_his_devices():
+    """Undercut suppresses for its Fragile's span; Tejo's drone pulse for 8 s from its reveal (wiki, 2026-11-14).
+    A recon bolt's reveal, or a fragile from anything else, suppresses nothing."""
+    undercut = {"k": "status", "t": 2.0, "t1": 6.0, "by": 5, "target": 1, "status": "fragile", "code": "Sequoia",
+                "name": "Q_FragileMissile_TrajectoryWarning", "from": "caster"}
+    drone = {"k": "reveal", "t": 9.0, "t1": 15.0, "by": 5, "target": 1, "code": "Cashew", "name": "4_SonarPing"}
+    recon = {"k": "reveal", "t": 3.0, "t1": 4.0, "by": 5, "target": 1, "code": "Hunter", "name": "Q_SonarPing"}
+    rnd = ce.RoundInputs(cypher_round([trip(t1=30.0), undercut, drone, recon], t_end=30.0), open_hall())
+    [w] = [w for w in rnd.watchers if w.kind == "trip"]
+    assert w.off == [(2.0, 6.0), (9.0, 17.0)]
+
+
+def test_his_devices_are_off_while_he_is_in_kill_contracts_arena():
+    """Kill Contract's arena is off the map (tracks at z ~ -4990 dm): his trip is off from his arrival to his return."""
+    from tests.replays.control_toys import HZ, track
+
+    b = cypher_round([trip(t1=20.0)])
+    pts = [(0.0, 110, 120, 180)]
+    segs = [track(pts, 0.0, 6.0)[0], track(pts, 6.0 + 1 / HZ, 10.0)[0], track(pts, 10.0 + 1 / HZ, 20.0)[0]]
+    for seg, z in zip(segs, (30, -4990, 30)):
+        seg["z"] = [z] + [0] * (len(seg["u"]) - 1)
+    b["tracks"]["1"] = segs
+    rnd = ce.RoundInputs(b, open_hall())
+    [w] = [w for w in rnd.watchers if w.kind == "trip"]
+    assert w.off == [ce._span(6.0 + 1 / HZ, 10.0 + 1 / HZ)]
+    assert ce._watching(w, 5.9) and not ce._watching(w, 8.0) and ce._watching(w, 10.5)
+
+
+def test_a_shock_bolt_contests_only_for_its_blast():
+    """Its explosion object stays 4 s after the blast; the zone lasts DAMAGE_ZONE_LIFE_S (0.4 s)."""
+    bolt = toy_ability("Hunter", "4_ExplosiveBolt_Explosion", 300, 200, 5, t=5.0, t1=9.0, kind="GameObject")
+    molly = toy_ability("Phoenix", "MolotovFire", 300, 200, 5, t=5.0, t1=9.0, kind="GameObject")
+    zones = ce.RoundInputs(cypher_round([bolt, molly]), open_hall()).damage_zones
+    assert sorted((z[0], z[1]) for z in zones) == [ce._span(5.0, 5.4), (5.0, 9.0)]
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_viewer_shows_the_same_off_state():
     script = """
       const R = require(process.argv[1]);
-      const statuses = [{t0: 5, t1: 13, target: 1, status: "suppressed"}, {t0: 5, t1: 13, target: 0, status: "concussed"}];
+      const statuses = [{t0: 5, t1: 13, target: 1, status: "suppressed"}, {t0: 5, t1: 13, target: 0, status: "concussed"},
+                        {t0: 20, t1: 24, target: 1, status: "fragile", code: "Sequoia", name: "Q_FragileMissile_TrajectoryWarning"},
+                        {t0: 20, t1: 24, target: 0, status: "slowed", code: "Deadeye", name: "E_Slow_Large"}];
+      const reveals = [{t0: 30, t1: 36, target: 1, code: "Cashew", name: "4_SonarPing"},
+                       {t0: 30, t1: 36, target: 0, code: "Hunter", name: "Q_SonarPing"}];
       const wire = {code: "Gumshoe", name: "4_TripWire", slot: 1}, cam = {code: "Gumshoe", name: "E_PossessableCamera", slot: 1};
       const turret = {code: "Killjoy", name: "E_Turret", slot: 1}, other = {code: "Gumshoe", name: "4_TripWire", slot: 0};
-      process.stdout.write(JSON.stringify([4, 5, 12, 13.5].map(t => [R.utilSuppressedAt(wire, statuses, t),
-        R.utilSuppressedAt(cam, statuses, t), R.utilSuppressedAt(turret, statuses, t), R.utilSuppressedAt(other, statuses, t)])));"""
+      const off = (a, t) => R.utilSuppressedAt(a, statuses, t, reveals);
+      process.stdout.write(JSON.stringify([4, 5, 12, 13.5, 21, 25, 37, 38.5].map(t => [off(wire, t), off(cam, t),
+        off(turret, t), off(other, t)])));"""
     done = subprocess.run([NODE, "-e", script, str(REPLAY_JS)], capture_output=True, text=True, timeout=60, check=False)
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == [[False, False, False, False], [True, True, False, False],
-                                       [True, True, False, False], [False, False, False, False]]
+    # KAY/O's knife 5-13, Undercut 20-24, Tejo's drone 30-38 (8 s from its reveal): every placed device of the
+    # suppressed owner, and never the other owner's (concussed, slowed, recon-revealed: not suppressed).
+    assert json.loads(done.stdout) == [[False, False, False, False], [True, True, True, False],
+                                       [True, True, True, False], [False, False, False, False],
+                                       [True, True, True, False], [False, False, False, False],
+                                       [True, True, True, False], [False, False, False, False]]
 
 
 def eye(x, y, t=10.0, t1=12.0, by=5):
