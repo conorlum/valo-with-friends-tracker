@@ -135,7 +135,8 @@
     // Sova
     [/^Hunter_Q_SonarPing$/, { ability: "Recon Bolt", shape: "reveal", r: 1500 }],
     [/^Hunter_Q_SonarBolt$/, { ability: "Recon Bolt", shape: "hidden" }],
-    [/^Hunter_4_ExplosiveBolt_Explosion$/, { ability: "Shock Bolt", shape: "area", r: 350 }],
+    // Shock Bolt is one blast where it lands; its object stays 4.0 s after (every one in a live match, 2026-11-14).
+    [/^Hunter_4_ExplosiveBolt_Explosion$/, { ability: "Shock Bolt", shape: "area", r: 350, pop: 0.6 }],
     [/^Hunter_E_Drone$/, { ability: "Owl Drone", shape: "badge", life: 7.1 }],
     [/^Hunter_E_Drone_RevealDart$/, { ability: "Owl Drone", shape: "badge", small: true, label: "Owl Drone dart" }],
     // Waylay
@@ -515,6 +516,33 @@
   function utilSuppressedAt(a, statuses, t) {
     if (a.slot === null || a.slot === undefined || !PAUSED_BY_SUPPRESSION.test(a.code + "_" + a.name)) return false;
     return statusesAt(statuses, t).some(function (st) { return st.target === a.slot && st.status === "suppressed"; });
+  }
+
+  // Placed util is off while its owner is inside Iso's Kill Contract, the same as while suppressed. The duel's arena
+  // is off the map: both duellists' tracks jump to a segment at z ~ -4990 from 1.33 s after the cast (17 of 17 casts
+  // that caught someone in four live matches, 2026-11-14; a miss has none), the loser's ending at their death and
+  // Iso's about 2.5 s later. Any tracked z below ARENA_Z is that arena.
+  var ARENA_Z = -2500;
+  var OFF_IN_ARENA = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera|Killjoy_E_Turret|Killjoy_Q_StealthAlarmbot|Deadeye_E_Trap)$/;
+
+  // Whether a slot's track puts it in the Kill Contract arena at t (a live sample only, not last-known).
+  function inArenaAt(segments, t) {
+    for (var s = 0; s < (segments || []).length; s++) {
+      var seg = segments[s];
+      if (!seg.length || t < seg[0].t || t > seg[seg.length - 1].t) continue;
+      var lo = 0, hi = seg.length - 1;
+      while (hi - lo > 1) {
+        var mid = (lo + hi) >> 1;
+        if (seg[mid].t <= t) lo = mid; else hi = mid;
+      }
+      return typeof seg[lo].z === "number" && seg[lo].z < ARENA_Z;
+    }
+    return false;
+  }
+
+  function utilInArenaAt(a, tracks, t) {
+    if (a.slot === null || a.slot === undefined || !OFF_IN_ARENA.test(a.code + "_" + a.name)) return false;
+    return inArenaAt((tracks || {})[String(a.slot)], t);
   }
 
   // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
@@ -1231,16 +1259,59 @@
   // A player row's health at t, for the players panel: {dead, pct, total, armor}. `total` is HP plus shield and
   // `armor` the shield bought (25 or 50; 0 none), both null unless proven: after a hit, from that hit; before any,
   // from a round-start seed (full). `pct` is null when there's a timeline but no proven figure.
+  // `hpPct` is HP alone (of its max) and `shieldPct` the shield left out of heavy shield's 50 (light shield fills
+  // half), drawn as the bar and the orange line above it; both null unless proven, like `total`.
+  var FULL_SHIELD = 50;
+
+  function splitPct(hp, mhp, sh) {
+    var clamp = function (x) { return Math.max(0, Math.min(100, x)); };
+    return { hpPct: mhp > 0 ? clamp(100 * hp / mhp) : null, shieldPct: clamp(100 * sh / FULL_SHIELD) };
+  }
+
+  // The first event of a known life that carries both maxima ({mhp, msh}), or null. Only with a life index: across
+  // lives the shield bought can differ.
+  function laterMaxima(index, slot, life) {
+    if (life === null || life === undefined) return null;
+    var entry = index && index.vitals ? condOwn(index.vitals, String(slot)) : undefined;
+    var line = entry ? condOwn(entry.lives, String(life)) : undefined;
+    var ev = line ? line.ev.filter(function (e) { return typeof e.mhp === "number" && e.mhp > 0 && typeof e.msh === "number"; })[0]
+      : undefined;
+    return ev ? { mhp: ev.mhp, msh: ev.msh } : null;
+  }
+
   function hudVitals(index, slot, t) {
     var h = healthAt(index, slot, t);
-    if (h.state === "dead") return { dead: true, pct: 0, total: null, armor: null };
-    if (h.state === "known") return { dead: false, pct: h.pct, total: Math.round(h.hp + h.sh), armor: h.msh };
+    if (h.state === "dead") return { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null };
+    if (h.state === "known") {
+      var split = splitPct(h.hp, h.mhp, h.sh);
+      return { dead: false, pct: h.pct, total: Math.round(h.hp + h.sh), armor: h.msh, hpPct: split.hpPct,
+               shieldPct: split.shieldPct };
+    }
     if (h.state === "undamaged") {
       var seed = vitalsAt(index, slot, t, h.life === null ? undefined : h.life);
       var proven = !!seed && healthPct(seed) !== null;
-      return { dead: false, pct: 100, total: proven ? Math.round(seed.mhp + seed.msh) : null, armor: proven ? seed.msh : null };
+      // No round-start seed: the shield bought is fixed for the life, and nothing has hit them yet, so they are at
+      // full; this life's first later hit proves the maxima.
+      if (!proven) seed = laterMaxima(index, slot, h.life);
+      proven = !!seed;
+      return { dead: false, pct: 100, total: proven ? Math.round(seed.mhp + seed.msh) : null, armor: proven ? seed.msh : null,
+               hpPct: proven ? 100 : null, shieldPct: proven ? splitPct(seed.mhp, seed.mhp, seed.msh).shieldPct : null };
     }
-    return { dead: false, pct: null, total: null, armor: null };
+    return { dead: false, pct: null, total: null, armor: null, hpPct: null, shieldPct: null };
+  }
+
+  // The gun a slot is holding at t, as far as the replay shows it: the gun of its latest shot at or before t
+  // ({gun, fired: true}); before its first shot of the round, the gun of that first shot ({gun, fired: false}); null
+  // when it fires nothing this round. The replay records no live loadout, so a swap shows only once it fires.
+  function gunAt(shots, slot, t) {
+    var last = null, first = null;
+    (shots || []).forEach(function (sh) {
+      if (sh.slot !== slot || !sh.gun) return;
+      if (sh.t <= t) { if (!last || sh.t >= last.t) last = sh; }
+      else if (!first || sh.t < first.t) first = sh;
+    });
+    if (last) return { gun: last.gun, fired: true };
+    return first ? { gun: first.gun, fired: false } : null;
   }
 
   // An agent's abilities in key order, C, Q, E and then the ult X, from the icon table: each icon's file name says its
@@ -2197,11 +2268,24 @@
       var impact = typeof value === "number"
         ? '<span class="replay-pl-impact ' + (value > 0 ? "pos" : value < 0 ? "neg" : "") + '" title="' +
           escapeHtml(impactTitle) + '">' + signed(value) + "</span>" : "";
-      var v = life ? hudVitals(self.current.state, p.slot, t) : { dead: true, pct: 0, total: null, armor: null };
-      var bar = v.pct === null
+      var v = life ? hudVitals(self.current.state, p.slot, t)
+        : { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null };
+      var fill = v.hpPct !== null && v.hpPct !== undefined ? v.hpPct : v.pct;
+      // The orange line above the bar: the shield left, out of heavy shield's 50; empty with no shield left.
+      var shield = life && v.shieldPct !== null && v.shieldPct !== undefined
+        ? '<span class="replay-pl-shield" title="Shield ' + Math.round(v.shieldPct * FULL_SHIELD / 100) + " of " +
+          (v.armor || 0) + ' bought"><span style="width:' + v.shieldPct.toFixed(1) + '%"></span></span>'
+        : '<span class="replay-pl-shield is-unknown"></span>';
+      var bar = shield + (fill === null
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
-        : '<span class="replay-pl-bar"><span style="width:' + v.pct.toFixed(1) + '%"></span></span>';
+        : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
+      var held = life ? gunAt(self.current.extras.shots, p.slot, t) : null;
+      var gun = held
+        ? '<span class="replay-pl-gun' + (held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.fired
+          ? "Gun of their latest shot (the replay records no live loadout)"
+          : "Not fired yet: the gun of their first shot this round") + '">' + escapeHtml(held.gun) + "</span>"
+        : "";
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
@@ -2229,7 +2313,7 @@
         '<div class="replay-pl-main"><div class="replay-pl-top"><span class="replay-pl-name" title="' +
         escapeHtml((info.name || p.agent) + " · " + p.agent) + '">' + escapeHtml((info.name || p.agent).split("#")[0]) + "</span>" +
         (life ? armor + hp : '<span class="replay-pl-dead">dead</span>') + "</div>" + bar + "</div>" +
-        '<div class="replay-pl-kit">' + abilities + ultHtml + "</div>" +
+        '<div class="replay-pl-kit">' + abilities + ultHtml + gun + "</div>" +
         '<div class="replay-pl-nums"><span title="Kills / deaths / assists so far this round">' + mine.k + "/" + mine.d + "/" +
         mine.a + "</span>" + impact + '<span class="replay-pl-money" title="Loadout value and credits left at the round&#39;s ' +
         'start (tracker.gg): the replay has no live weapon or credits">¤ ' + money(s.loadout) + " · " + money(s.remaining) +
@@ -2471,6 +2555,10 @@
         } else if (utilSuppressedAt(a, self.current.extras.statuses, t)) {
           color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
           text += " · off (owner suppressed)";
+          watching = false;
+        } else if (utilInArenaAt(a, self.current.tracks, t)) {
+          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is in Iso's Kill Contract
+          text += " · off (owner in Kill Contract)";
           watching = false;
         } else if (deviceOffAt(a, t)) {
           color = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
@@ -4430,7 +4518,8 @@
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
-    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
+    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, inArenaAt: inArenaAt,
+    utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,

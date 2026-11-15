@@ -2002,6 +2002,14 @@ table.compact-table .badge-score {
 }
 .replay-pl-hp { min-width: 3ch; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .replay-pl-dead { color: var(--critical); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.replay-pl-gun {
+  margin-left: 0.35rem; color: var(--ink-secondary); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
+}
+.replay-pl-gun.is-unfired { color: var(--ink-muted); font-weight: 400; font-style: italic; }
+/* The shield line sits on top of the health bar: orange, out of heavy shield's 50. */
+.replay { --replay-shield: #f2994a; }
+.replay-pl-shield { display: block; height: 3px; margin-bottom: 1px; border-radius: 2px; overflow: hidden; }
+.replay-pl-shield > span { display: block; height: 100%; background: var(--replay-shield); }
 .replay-pl-bar { display: block; height: 5px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
 .replay-pl-bar > span { display: block; height: 100%; background: var(--ink); }
 .replay-pl-bar.is-unknown { background: repeating-linear-gradient(45deg, var(--gridline) 0 4px, transparent 4px 8px); }

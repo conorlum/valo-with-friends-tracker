@@ -613,10 +613,81 @@ def test_players_panel_kit_uses_and_health():
     assert got["kit"] == ["C:Prowler", "Q:Seize", "E:Haunt", "X:Nightfall"]
     assert got["none"] == []
     assert got["uses"] == [{"1": {"Haunt": 1, "Nightfall": 1}}, {"1": {"Haunt": 2, "Nightfall": 1}}]
-    assert got["before"] == {"dead": False, "pct": 100, "total": 150, "armor": 50}
-    assert got["after"] == {"dead": False, "pct": 40, "total": 60, "armor": 50}
-    assert got["unproven"] == {"dead": False, "pct": None, "total": None, "armor": None}
+    assert got["before"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100}
+    assert got["after"] == {"dead": False, "pct": 40, "total": 60, "armor": 50, "hpPct": 60, "shieldPct": 0}
+    assert got["unproven"] == {"dead": False, "pct": None, "total": None, "armor": None, "hpPct": None,
+                               "shieldPct": None}
     assert got["dead"]["dead"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_gun_and_light_shield():
+    """The gun shown is the latest shot's, else the round's first shot's (marked not fired); light shield fills half
+    the shield line."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const shots = [{t: 10, slot: 1, gun: "Classic"}, {t: 20, slot: 1, gun: "Vandal"}, {t: 5, slot: 2, gun: "Ghost"}];
+        const ps = {version: 1, vitals: {"1": [{t: -10, life: 0, hp: 100, sh: 25, mhp: 100, msh: 25, q: "start"}]},
+                    damage_taken: {"1": [50]}};
+        const blob = {players: [{slot: 1}], alive: {"1": [[0, null, "round_end"]]}, t_end: 90, player_state: ps};
+        const index = R.indexRoundState(blob, []);
+        // No round-start seed: before the first hit, the life's first hit proves what was bought (full shield then).
+        const ps2 = {version: 1, vitals: {"1": [{t: 30, life: 0, hp: 80, sh: 10, mhp: 100, msh: 50}]},
+                     damage_taken: {"1": [30]}};
+        const index2 = R.indexRoundState({players: [{slot: 1}], alive: {"1": [[0, null, "round_end"]]}, t_end: 90,
+                                          player_state: ps2}, []);
+        process.stdout.write(JSON.stringify({
+          guns: [3, 10, 15, 25].map(t => R.gunAt(shots, 1, t)), none: R.gunAt(shots, 3, 50),
+          light: R.hudVitals(index, 1, 3).shieldPct, later: R.hudVitals(index2, 1, 10)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["guns"] == [{"gun": "Classic", "fired": False}, {"gun": "Classic", "fired": True},
+                           {"gun": "Classic", "fired": True}, {"gun": "Vandal", "fired": True}]
+    assert got["none"] is None
+    assert got["light"] == 50
+    assert got["later"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_placed_util_is_off_while_its_owner_is_in_kill_contract():
+    """Kill Contract's arena is off the map (z ~ -4990): a sentinel's placed util is off while its owner's live
+    track is there, and back on once they are out. Other util, and other owners', are untouched."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const seg = (t0, t1, z) => [{t: t0, u: 0, v: 0, yaw: 0, z: z}, {t: t1, u: 0, v: 0, yaw: 0, z: z}];
+        const tracks = {"3": [seg(0, 16.3, 40), seg(16.38, 22, -4990), seg(22.1, 60, 40)], "4": [seg(0, 60, 40)]};
+        const util = (code, name, slot) => ({kind: "GameObject", code: code, name: name, slot: slot});
+        const off = (a, t) => R.utilInArenaAt(a, tracks, t);
+        const trip = util("Gumshoe", "4_TripWire", 3);
+        process.stdout.write(JSON.stringify({
+          trip: [off(trip, 10), off(trip, 18), off(trip, 30)],
+          set: ["E_PossessableCamera", "4_TripWire_SecondWire"].map(n => off(util("Gumshoe", n, 3), 18))
+            .concat([off(util("Killjoy", "E_Turret", 3), 18), off(util("Killjoy", "Q_StealthAlarmbot", 3), 18),
+                     off(util("Deadeye", "E_Trap", 3), 18)]),
+          other_owner: off(util("Gumshoe", "4_TripWire", 4), 18),
+          not_placed: off(util("Wraith", "4_Smoke", 3), 18),
+          no_z: R.inArenaAt([[{t: 0, u: 0, v: 0, yaw: 0}, {t: 9, u: 0, v: 0, yaw: 0}]], 5)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["trip"] == [False, True, False]
+    assert got["set"] == [True, True, True, True, True]
+    assert got["other_owner"] is False and got["not_placed"] is False and got["no_z"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_shock_bolt_is_a_burst_not_a_four_second_zone():
+    """Shock Bolt's explosion object stays 4 s after the blast; the viewer shows the blast only."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const bolt = {kind: "GameObject", code: "Hunter", name: "4_ExplosiveBolt_Explosion", t0: 45.174, t1: 49.174};
+        process.stdout.write(JSON.stringify([45.3, 45.7, 47].map(t => R.abilitiesAt([bolt], t, 90).length)));
+      });"""
+    assert run_node(script, {}) == [1, 1, 0]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
