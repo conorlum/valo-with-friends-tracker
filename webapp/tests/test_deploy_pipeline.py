@@ -640,6 +640,19 @@ def test_input_flags_and_workflow_triggers_contract():
     assert "GH_TOKEN: ${{ github.token }}" in active
 
 
+def test_a_skip_drain_label_on_the_merged_pr_skips_the_drain():
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
+    active = "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
+    assert "pull-requests: read" in active
+    step = active[active.index("id: pr"):active.index("- name: Drain and deploy")]
+    # Only merges look up a PR; a failed lookup must fall back to the drained deploy.
+    assert "if: github.event_name == 'push'" in step
+    assert "/commits/${{ github.sha }}/pulls" in step and "|| true" in step
+    assert "grep -qx 'skip-drain'" in step and 'echo "skip_drain=true" >> "$GITHUB_OUTPUT"' in step
+    assert ('if [ "${{ steps.pr.outputs.skip_drain }}" = "true" ]; then\n'
+            "            args+=(--skip-drain)") in active
+
+
 def test_blueprint_services_leave_deploys_to_the_pipeline():
     # The Action deploys them after a drain; Render auto-deploying too would restart them mid-work.
     blueprint = (ROOT / "render.yaml").read_text()
