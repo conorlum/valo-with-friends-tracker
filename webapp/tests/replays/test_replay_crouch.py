@@ -131,7 +131,7 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     assert all(blob["crouch"] == {} for n, blob in result.rounds.items() if n != 1)
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
-    assert fmt.CONDENSE_REVISION == 29
+    assert fmt.CONDENSE_REVISION == 30
 
 
 def test_a_legacy_blob_without_crouch_reads_unchanged():

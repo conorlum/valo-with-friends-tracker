@@ -19,7 +19,11 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   to | null]` and `trigger` = the slot whose crossing raised it; Omen's ult marker has `outcome`, `evidence`
   and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it; Veto's Interceptor
   has `active` = when it was set off and `intercepts` = `[[t, u, v], ...]`, inferred: `intercepts`);
-- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
+- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n", ["gid", "gen"]}`;
+- `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}` (revision 30):
+  a firearm or melee switch; `id`/shot `gid` is its actor guid and `gen` its spawn index. A switch
+  to another item closes the hold with `gun: null, cat: "other"`, without `id` or `gen`.
+  `from` names the previous holder of this generation; `seed` marks a surviving round-start carry.
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`;
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
@@ -80,6 +84,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.replays import format as fmt
+from app.replays import guns
 from app.replays.condense import MapInfo, PlayerTable
 from app.replays.contract import RPC_ORB_PICKUP, loads_row
 from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
@@ -251,6 +256,18 @@ def _dm(z: float) -> int:
 
 
 @dataclass
+class _Gun:
+    """One gun actor generation; names learned from shots never cross a guid reuse."""
+    guid: int
+    t_ms: int
+    archetype: str
+    gen: int
+    melee: bool = False
+    other: bool = False
+    end_ms: int | None = None
+
+
+@dataclass
 class _Equip:
     """An equippable (`Default__Ability_<Code>_<Name>_C`): the held item a player places or throws
     an ability with. Its owner comes from `votes`: the continuous effects played on a character
@@ -293,6 +310,8 @@ class _Effect:
 class Raw:
     actors: dict[int, _Actor]
     shots: list[dict]
+    gun_actors: list[_Gun] = field(default_factory=list)
+    holds: list[tuple[int, int, _Gun | None]] = field(default_factory=list)
     equips: list[_Equip] = field(default_factory=list)
     contexts: list[_Context] = field(default_factory=list)
     effects: list[_Effect] = field(default_factory=list)
@@ -551,6 +570,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     closes: dict[int, int] = {}
     raw = Raw(actors, [])
     equip_now: dict[int, _Equip] = {}      # the equippable alive under each GUID
+    gun_now: dict[int, _Gun] = {}
     bombs: set[int] = set()
     carried: set[int] = set()              # the spike's equippable, alive under each GUID
     walls: set[int] = set()
@@ -582,6 +602,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     ended.replaced_ms = t_ms
                 closed_trips.pop(guid, None)
                 equip_now.pop(guid, None)
+                ended_gun = gun_now.pop(guid, None)
+                if ended_gun is not None:
+                    ended_gun.end_ms = t_ms
                 waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
                 for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:
                     del holding[pawn]           # a reused GUID: holding the new actor is a new switch
@@ -591,6 +614,27 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.device_fx.pop(guid, None)
                 if KJ_DEVICE.match(archetype):
                     raw.device_fx[guid] = []
+                # Inventory actors need no world position. Ability equippables are tracked too:
+                # their shots have generations, but their switches close a firearm hold.
+                held = EQUIPPABLE_ARCHETYPE.match(archetype)
+                melee = guns.is_melee(archetype)
+                known_name, category = guns.lookup(archetype)
+                candidate = (archetype.startswith("Default__") and archetype.endswith("_C")
+                             and not ABILITY_ARCHETYPE.match(archetype)
+                             and archetype not in (BOMB_ARCHETYPE, BOMB_EQUIPPABLE_ARCHETYPE,
+                                                   ORB_ARCHETYPE, "Default__EquippableGroundPickup_C")
+                             and not archetype.endswith("_PC_C"))
+                if held is not None or melee or known_name is not None or candidate:
+                    gun = _Gun(guid, t_ms, archetype, len(raw.gun_actors), melee,
+                               not melee and (held is not None or category == "ability"))
+                    gun_now[guid] = gun
+                    raw.gun_actors.append(gun)
+                    for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
+                        if 0 <= t_ms - at <= EQUIP_EARLY_MS:
+                            raw.holds.remove((at, pawn, None))
+                            raw.holds.append((at, pawn, gun))
+                    if held is None:
+                        unresolved[:] = [u for u in unresolved if u[2] != guid]
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     carried.add(guid)
                     continue
@@ -636,6 +680,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     live_trips[guid] = instance
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
+                ended_gun = gun_now.pop(guid, None)
+                if ended_gun is not None:
+                    ended_gun.end_ms = t_ms
                 instance = live_trips.pop(guid, None)
                 if instance is not None and t_ms >= instance.t_ms:
                     instance.closed_ms = t_ms
@@ -746,11 +793,14 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     if mine is not None and mine.instigator is None:
                         mine.instigator = int(payload["Instigator"])
                 held_now = payload.get("NewCurrentEquippable")
+                if isinstance(held_now, dict):
+                    held_now = held_now.get("net_guid")
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
-                    if held_now not in equip_now:          # a gun, or an equippable whose spawn row is still to come
+                    raw.holds.append((t_ms, guid, gun_now.get(held_now)))
+                    if held_now not in equip_now and held_now not in gun_now:
                         unresolved[:] = [u for u in unresolved if t_ms - u[0] <= EQUIP_EARLY_MS]
                         unresolved.append((t_ms, guid, held_now))   # kept even if they switch again before it spawns
-                    elif equip_now[held_now].name.startswith("X_"):
+                    elif held_now in equip_now and equip_now[held_now].name.startswith("X_"):
                         raw.ult_equips.append((t_ms, guid, equip_now[held_now]))
                     holding[guid] = held_now
                 moved = payload.get("ReplicatedMovement")
@@ -2032,9 +2082,111 @@ def _dizzy_shot_down(t_ms: int, spawners_at: dict[int, list[_Actor]], shots_at: 
     return False
 
 
+def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Counter,
+               alive_by_round):
+    """Write holds and return each shot's generation, resolving by time rather than file order."""
+    by_guid = defaultdict(list)
+    for gun in raw.gun_actors:
+        by_guid[gun.guid].append(gun)
+    for generations in by_guid.values():
+        generations.sort(key=lambda g: (g.t_ms, g.gen))
+    spawn_times = {guid: [g.t_ms for g in generations] for guid, generations in by_guid.items()}
+    shot_guns = {}
+    learned = {}
+    for data in raw.shots:
+        equippable = (data.get("shot") or {}).get("equippable") or {}
+        guid = equippable.get("net_guid")
+        t_ms = int(data.get("time_ms", 0))
+        i = bisect.bisect_right(spawn_times.get(guid, []), t_ms) - 1
+        if i < 0:
+            continue
+        gun = by_guid[guid][i]
+        if gun.end_ms is not None and t_ms >= gun.end_ms:
+            continue
+        shot_guns[id(data)] = gun
+        if equippable.get("name") and equippable.get("category"):
+            learned.setdefault(gun.gen, (equippable["name"], equippable["category"]))
+
+    latest = {}       # slot -> (time, pawn, generation, stored row)
+    owners = {}       # generation -> most recent holder (even after switching away)
+    ordered = sorted(raw.holds, key=lambda h: h[0])
+    at = 0
+    counts.update({"holds": 0, "holds_unnamed": 0, "holds_seeded": 0})
+
+    def pawn_at(slot, t_ms, fallback):
+        changes = [p for t, p in players.pawn_changes.get(slot, []) if t <= t_ms]
+        return changes[-1] if changes else fallback
+
+    def add(n, row):
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("holds", []).append(row)
+        counts["holds"] += 1
+        counts["holds_unnamed"] += row["cat"] is None
+        counts["holds_seeded"] += bool(row.get("seed"))
+
+    def consume(n, start, limit):
+        nonlocal at
+        explicit_zero = set()
+        while at < len(ordered) and ordered[at][0] <= limit:
+            t_ms, pawn, gun = ordered[at]
+            at += 1
+            slot = players.pawn_slot.get(pawn)
+            if slot is None:
+                continue
+            row = {"t": max(0.0, _seconds(t_ms, start)), "slot": slot, "gun": None, "cat": "other"}
+            if gun is not None:
+                name, cat = (("Knife", "melee") if gun.melee else
+                             guns.lookup(gun.archetype, {gun.archetype: learned[gun.gen]}
+                                         if gun.gen in learned else None))
+                if not gun.other and cat != "ability":
+                    row.update(gun=name, cat=cat, id=gun.guid, gen=gun.gen)
+                    before = owners.get(gun.gen)
+                    if before is not None and before != slot:
+                        row["from"] = before
+                    owners[gun.gen] = slot
+            if t_ms <= start:
+                explicit_zero.add(slot)
+            latest[slot] = (t_ms, pawn, gun, row)
+            if _round_of(t_ms, windows, buy_phase=True) == n:
+                add(n, row)
+        return explicit_zero
+
+    for n, (start, _, end) in enumerate(windows, 1):
+        explicit_zero = consume(n, start, start)
+        if n > 1 and alive_by_round is not None:
+            previous_end = windows[n - 2][2]
+            previous_alive = alive_by_round.get(n - 1, {})
+            current_alive = alive_by_round.get(n, {})
+            for slot, state in list(latest.items()):
+                if slot in explicit_zero:
+                    continue
+                t_ms, pawn, gun, row = state
+                spans = previous_alive.get(str(slot), [])
+                now = current_alive.get(str(slot), [])
+                # A death invalidates the carry even after a revive. The pawn must survive
+                # unchanged into this round, and no other holder may have taken this actor.
+                survived = (spans and spans[-1][1] is None and spans[-1][2] == "round_end"
+                            and not any(iv[2] == "kill" for iv in spans))
+                starts_alive = any(iv[0] == 0 and (iv[1] is None or iv[1] > 0) for iv in now)
+                valid = (survived and starts_alive and "gen" in row and gun is not None
+                         and owners.get(gun.gen) == slot
+                         and (gun.end_ms is None or gun.end_ms > start)
+                         and pawn_at(slot, previous_end, pawn) == pawn_at(slot, start, pawn) == pawn)
+                if valid:
+                    seed = {k: v for k, v in row.items() if k not in ("from", "seed")}
+                    seed.update(t=0.0, seed=True)
+                    add(n, seed)
+                else:
+                    del latest[slot]   # a later round cannot revive a stale carry
+        consume(n, start, end)
+        if n in out.rounds and "holds" in out.rounds[n]:
+            out.rounds[n]["holds"].sort(key=lambda row: (row["t"], row["slot"]))
+
+    return shot_guns
+
+
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
                  game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None,
-                 teams: dict[int, str | None] | None = None, pawn_yaws=None) -> Extras:
+                 teams: dict[int, str | None] | None = None, pawn_yaws=None, *, alive_by_round=None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
     `pawn_path(guid)` -> [(t_ms, x, y[, z | None])]: a non-player pawn's movement (a drone), or None.
@@ -2574,6 +2726,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": equip.code, "name": equip.name})
         counts["ult_equips"] += 1
 
+    shot_guns = _held_guns(raw, players, windows, out, counts, alive_by_round)
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
         shot = data.get("shot") or {}
@@ -2595,6 +2748,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         u, v = game_map.to_uv(x, y)
         entry = {"t": _seconds(t_ms, start), "slot": slot, "u": u, "v": v,
                  "gun": ((shot.get("equippable") or {}).get("name")), "n": shot.get("num_projectiles") or 1}
+        gid = (shot.get("equippable") or {}).get("net_guid")
+        if gid is not None:
+            entry["gid"] = gid
+            gun = shot_guns.get(id(data))
+            if gun is not None:
+                entry["gen"] = gun.gen
         vectors = shot.get("attack_vectors") or []
         if vectors and vectors[0].get("x") is not None:
             dx, dy = float(vectors[0]["x"]), float(vectors[0]["y"])
@@ -2701,13 +2860,16 @@ def util_entries(round_extras: dict) -> list[dict]:
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
+    for hold in round_extras.get("holds", []):
+        rest = {k: v for k, v in hold.items() if k not in ("t", "slot")}
+        out.append({"k": "hold", "t": hold["t"], "by": hold["slot"], **rest})
     return out
 
 
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses, casts, buffs, equips = [], [], [], [], [], [], []
+    abilities, shots, reveals, statuses, casts, buffs, equips, holds = [], [], [], [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -2724,6 +2886,8 @@ def rounds_extras(util: list[dict]) -> dict:
             buffs.append({"t0": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "equip":
             equips.append({"t": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "hold":
+            holds.append({"t": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
@@ -2735,4 +2899,6 @@ def rounds_extras(util: list[dict]) -> dict:
         out["buffs"] = buffs
     if equips:
         out["equips"] = equips
+    if holds:
+        out["holds"] = holds
     return out

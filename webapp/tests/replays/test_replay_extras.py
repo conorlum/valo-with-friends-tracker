@@ -112,7 +112,7 @@ def test_shots_resolve_their_shooter_and_point_a_tracer_along_the_attack_vector(
 
 @pytest.mark.parametrize("archetype", ["Default__BasePistol_C", "Default__Ability_Melee_Base_C",
                                        "Default__Wraith_PC_C", "Default__EquippableGroundPickup_C"])
-def test_other_actors_are_ignored(tmp_path, archetype):
+def test_spawns_without_a_switch_write_no_rows(tmp_path, archetype):
     assert run(tmp_path, [spawned(20_000, 16, archetype, 0, 0)]).rounds == {}
 
 
@@ -869,6 +869,177 @@ def held(t_ms, pawn, equippable):
     return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": pawn, "is_actor": False,
             "export_group_path": "/Script/ShooterGame.AresInventory",
             "payload": {"NetTimestamp": 1, "NewCurrentEquippable": equippable}}
+
+
+# Held guns (revision 30). All actor and pawn ids here are synthetic.
+VANDAL = "Default__AssaultRifle_AK_C"
+OVERDRIVE = "Default__Gun_Sprinter_X_HeavyLightningGun_Production_C"
+UNKNOWN_GUN = "Default__FutureSniper_C"
+
+
+def gun_shot(t_ms, guid=900, name="Vandal", category="rifle"):
+    row = shot(t_ms, 201, 0, 0, 1, 0, name)
+    row["shot"]["equippable"] = {"net_guid": guid, "name": name, "category": category}
+    return row
+
+
+def held_run(tmp_path, rows, *, table=None, alive=None):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return build_extras(path, table or players(), WINDOWS, GAME_MAP, AGENTS, lambda t: {},
+                        alive_by_round=alive)
+
+
+def holds(extras, n=1):
+    return [r for r in util_entries(extras.rounds.get(n, {})) if r["k"] == "hold"]
+
+
+@pytest.mark.parametrize("reference", [{"net_guid": 900}, {"net_guid": 900, "path": "SyntheticGun"}])
+def test_held_vandal_real_inventory_shape_and_shot_guid(tmp_path, reference):
+    switch = held(15_000, 101, 900)
+    switch["payload"]["NewCurrentEquippable"] = reference
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0), switch,
+                                 held(15_100, 101, 900), gun_shot(16_000)])
+    assert holds(extras) == [{"k": "hold", "t": 5.0, "by": 1, "gun": "Vandal", "cat": "rifle",
+                              "id": 900, "gen": 0}]
+    assert extras.rounds[1]["shots"][0]["gid"] == 900
+    assert extras.rounds[1]["shots"][0]["gen"] == 0
+    assert extras.report["holds"] == 1
+
+
+@pytest.mark.parametrize("lead,expected", [(1_500, True), (3_000, False)])
+def test_early_gun_switch_keeps_switch_time(tmp_path, lead, expected):
+    extras = held_run(tmp_path, [held(15_000, 101, 900), spawned(15_000 + lead, 900, VANDAL, 0, 0)])
+    firearm = [r for r in holds(extras) if r.get("id") == 900]
+    assert bool(firearm) == expected
+    if expected:
+        assert firearm[0]["t"] == 5.0
+
+
+def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+        spawned(12_000, 901, "Default__Ability_Melee_Base_C", 0, 0),
+        spawned(12_000, 902, "Default__Ability_Vampire_X_Frenzy_C", 0, 0),
+        spawned(12_000, 903, "Default__BombEquippable_C", 0, 0),
+        spawned(12_000, 904, OVERDRIVE, 0, 0),
+        held(14_000, 101, 900), held(15_000, 101, 901), held(16_000, 101, 902),
+        held(17_000, 101, 903), held(18_000, 101, 904)])
+    rows = holds(extras)
+    assert (rows[1]["gun"], rows[1]["cat"]) == ("Knife", "melee")
+    assert rows[2:] == [{"k": "hold", "t": t, "by": 1, "gun": None, "cat": "other"}
+                        for t in (6.0, 7.0, 8.0)]
+    assert len(extras.rounds[1]["equips"]) == 1
+
+
+def test_learning_and_pickups_are_per_generation_even_for_late_shot_rows(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 900, UNKNOWN_GUN, 0, 0),
+        held(13_000, 101, 900), held(20_000, 106, 900), closed(30_000, 900),
+        spawned(31_000, 900, UNKNOWN_GUN, 0, 0), held(32_000, 101, 900),
+        gun_shot(14_000, name="Outlaw", category="sniper_rifle")])
+    first, pickup, reused = holds(extras)
+    assert (first["gun"], first["cat"]) == ("Outlaw", "sniper_rifle")
+    assert pickup["from"] == 1 and pickup["gen"] == first["gen"] == 0
+    assert "from" not in reused and reused["gen"] == 1
+    assert reused["gun"] is None and reused["cat"] is None
+    assert extras.report["holds_unnamed"] == 1
+    assert extras.rounds[1]["shots"][0]["gen"] == 0
+
+
+def test_ability_gun_shots_have_distinct_generations_and_close_holds(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 900, OVERDRIVE, 0, 0), held(13_000, 101, 900),
+        gun_shot(14_000, name="Overdrive", category="ability"), closed(15_000, 900),
+        spawned(16_000, 900, OVERDRIVE, 0, 0), held(17_000, 101, 900),
+        gun_shot(18_000, name="Overdrive", category="ability")])
+    assert [(s["gid"], s["gen"]) for s in extras.rounds[1]["shots"]] == [(900, 0), (900, 1)]
+    assert all(r["cat"] == "other" and "gen" not in r and "id" not in r for r in holds(extras))
+
+
+def test_shot_without_equippable_has_no_guid_or_generation(tmp_path):
+    row = shot(15_000, 201, 0, 0, 1, 0)
+    del row["shot"]["equippable"]
+    [entry] = held_run(tmp_path, [row]).rounds[1]["shots"]
+    assert "gid" not in entry and "gen" not in entry
+
+
+def test_buy_phase_switch_and_survivor_seed(tmp_path):
+    alive = {1: {"1": [[0.0, None, "round_end"]], "6": [[0.0, None, "round_end"]]},
+             2: {"1": [[0.0, None, "round_end"]], "6": [[0.0, None, "round_end"]]}}
+    rows = [spawned(12_000, 900, VANDAL, 0, 0), held(15_000, 101, 900),
+            spawned(65_000, 901, VANDAL, 0, 0), held(66_000, 106, 901)]
+    extras = held_run(tmp_path, rows, alive=alive)
+    assert holds(extras, 2) == [
+        {"k": "hold", "t": 0.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0, "seed": True},
+        {"k": "hold", "t": 0.0, "by": 6, "gun": "Vandal", "cat": "rifle", "id": 901, "gen": 1}]
+    assert extras.report["holds_seeded"] == 1
+    assert not any(r.get("seed") for r in holds(held_run(tmp_path, rows), 2))
+
+
+@pytest.mark.parametrize("revive", [False, True])
+def test_dead_or_revived_holder_never_seeds_but_surviving_picker_does(tmp_path, revive):
+    table = players()
+    if revive:
+        table.pawn_slot[301] = 1
+        table.pawn_changes[1] = [(0, 101), (40_000, 301)]
+    alive = {1: {"1": [[0.0, 20.0, "kill"]] + ([[30.0, None, "round_end"]] if revive else []),
+                 "6": [[0.0, None, "round_end"]]},
+             2: {"1": [[0.0, None, "round_end"]], "6": [[0.0, None, "round_end"]]}}
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0), held(15_000, 101, 900),
+                                 held(35_000, 106, 900)], table=table, alive=alive)
+    assert holds(extras)[1]["from"] == 1
+    assert holds(extras, 2) == [{"k": "hold", "t": 0.0, "by": 6, "gun": "Vandal", "cat": "rifle",
+                                 "id": 900, "gen": 0, "seed": True}]
+
+
+def test_death_then_revive_without_pickup_still_does_not_seed(tmp_path):
+    table = players()
+    table.pawn_slot[301] = 1
+    table.pawn_changes[1] = [(0, 101), (40_000, 301)]
+    alive = {1: {"1": [[0.0, 20.0, "kill"], [30.0, None, "round_end"]]},
+             2: {"1": [[0.0, None, "round_end"]]}}
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0), held(15_000, 101, 900)],
+                      table=table, alive=alive)
+    assert holds(extras, 2) == []
+
+
+def test_hold_python_round_trip_preserves_all_fields():
+    rows = [{"k": "hold", "t": 0.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0, "seed": True},
+            {"k": "hold", "t": 20.0, "by": 6, "gun": None, "cat": None, "id": 901, "gen": 1, "from": 1},
+            {"k": "hold", "t": 21.0, "by": 6, "gun": None, "cat": "other"}]
+    assert util_entries(rounds_extras(rows)) == rows
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_attach_extras_passes_survival_for_seeds(tmp_path, streaming):
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    events = match.events() + [spawned(start + 1_000, 9001, VANDAL, 0, 0),
+                               held(start + 2_000, match.pawn(1, 1), 9001)]
+    directory = match.write(tmp_path / "export", events)
+    from replay_synthetic import MATCH_UUID
+
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    replay = cd.condense_export_dir(directory, source_sha256=match.source_sha256,
+                                    streaming=streaming, vrf_path=vrf)
+    assert [r for r in replay.rounds[2]["util"] if r["k"] == "hold"] == [
+        {"k": "hold", "t": 0.0, "by": 1, "gun": "Vandal", "cat": "rifle",
+         "id": 9001, "gen": 0, "seed": True}]
+    assert not [r for r in replay.rounds[3]["util"] if r["k"] == "hold"]
+
+
+def test_seeds_use_ownership_at_round_start_and_a_later_explicit_hold_does_not_hide_seed(tmp_path):
+    alive = {1: {"1": [[0.0, None, "round_end"]]},
+             2: {"1": [[0.0, None, "round_end"]], "6": [[0.0, None, "round_end"]]}}
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0), held(15_000, 101, 900),
+                                 held(80_000, 106, 900)], alive=alive)
+    assert holds(extras, 2)[0].get("seed") is True
+    assert holds(extras, 2)[1]["from"] == 1
+
+
+def test_a_gun_taken_by_another_slot_cannot_seed_for_its_earlier_living_holder(tmp_path):
+    alive = {n: {str(s): [[0.0, None, "round_end"]] for s in (1, 6)} for n in (1, 2)}
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0), held(15_000, 101, 900),
+                                 held(35_000, 106, 900)], alive=alive)
+    assert [r["by"] for r in holds(extras, 2)] == [6]
 
 
 def test_a_switch_to_the_ult_equippable_is_one_equip_row_and_other_switches_none(tmp_path):

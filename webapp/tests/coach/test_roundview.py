@@ -104,6 +104,11 @@ def test_utility_and_damage_rows_carry_names():
     assert v.damage() == [{"t": 13.0, "kind": "damage", "by": "P5", "target": "P0", "source": "gun", "hits": 3}]
 
 
+def test_held_guns_are_not_utility():
+    util = [{"k": "hold", "t": 1.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0}]
+    assert view(toys.round_blob(toys.ten(), util=util)).utility() == []
+
+
 def test_r_f9_a_round_role_beats_the_fixed_page_group():
     """R-F9: with no side in the blob, the group comes from the round's role as the control engine derives it
     (attack -> A, defense -> B), not from the page's fixed team group."""
