@@ -251,10 +251,30 @@ class Pipeline:
             # the HTTP status, or the error's class name.
             reason = ("HTTP " + str(int(error.code)) if isinstance(error, HTTPError)
                       else type(error).__name__)
+            code = self.render_error_code(error)
+            if code:
+                reason += " (" + code + ")"
             self.log(service + " deploy request failed: " + reason)
             raise Failed() from None
         # A finished probe must have started strictly after the hook completed.
         return self.clock()
+
+    @staticmethod
+    def render_error_code(error):
+        """Render's error body has a short code, e.g. insufficient_token_scope.
+
+        Only that code is kept, and only when it is a plain lowercase word: the
+        message beside it is free text and is never logged.
+        """
+        if not isinstance(error, HTTPError):
+            return None
+        try:
+            code = json.loads(error.read()).get("code")
+        except Exception:
+            return None
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+            return code
+        return None
 
     def wait_commit(self, service, hooked_at):
         deadline = self.clock() + DEPLOY_S

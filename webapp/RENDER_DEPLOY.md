@@ -354,6 +354,10 @@ PR 2 (after the dry run passed on 2026-11-13) enabled the merge trigger and set 
 `autoDeploy: false`, and raised the drain limit from 60 to 90 minutes. If a Blueprint sync ever shows
 auto-deploy back on for the site or worker, turn it off: a merge would otherwise deploy them twice, once
 without a drain. The manual `skip_drain` input skips the wait and cancellation, but still pauses new work during deploys.
+A PR merged with the `skip-drain` label deploys the same way (`gh pr edit <n> --add-label skip-drain`, before the
+merge); if the label lookup fails, the merge gets the normal drained deploy. A quick run started while a drained one
+is still waiting takes the drain over and cancels the older run; once the older run is deploying, the quick run
+waits for it to finish, then deploys.
 
 ### Upload gap and stuck-drain recovery
 
