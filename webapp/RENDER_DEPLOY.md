@@ -322,13 +322,17 @@ next successful deploy. During the drain they show how many runs are finishing a
 
 ### Owner's setup checklist (between PR 1 and PR 2)
 
-1. Create four Render deploy hooks, one each for `replay-tasks`, `replay-worker`,
-   `valowithfriendstracker` and `valomaths`. Keep their values out of files and logs.
-2. Add these seven GitHub repository Actions secrets:
+1. Create three Render deploy hooks, one each for `replay-worker`, `valowithfriendstracker` and
+   `valomaths` (Settings → Deploy Hook). `replay-tasks` is a Workflow and has no deploy hook: the
+   pipeline deploys it with `POST https://api.render.com/v1/workflowversions` (`workflowId`, `commit`),
+   which needs a Render API key (Account Settings → API Keys) and the workflow's ID (`wfl-…`, in its
+   dashboard address). Keep all of these out of files and logs.
+2. Add these eight GitHub repository Actions secrets:
 
    | Secret | Value to enter privately |
    |---|---|
-   | `RENDER_DEPLOY_HOOK_TASKS` | The `replay-tasks` deploy hook |
+   | `RENDER_API_KEY` | A Render API key, used only to deploy `replay-tasks` |
+   | `RENDER_WORKFLOW_ID` | The `replay-tasks` workflow's ID |
    | `RENDER_DEPLOY_HOOK_WORKER` | The `replay-worker` deploy hook |
    | `RENDER_DEPLOY_HOOK_SITE` | The `valowithfriendstracker` deploy hook |
    | `RENDER_DEPLOY_HOOK_DEMO` | The `valomaths` deploy hook |
@@ -336,10 +340,11 @@ next successful deploy. During the drain they show how many runs are finishing a
    | `SITE_URL` | The friends site's base address |
    | `DEMO_URL` | The demo's existing base address |
 
-   Hook URLs, site URLs and the token belong only in secrets. The script never prints a hook URL or token.
+   Hook URLs, the API key, site URLs and the token belong only in secrets. The script never prints any
+   of them. A failed deploy request logs only `<service> deploy request failed: HTTP <status>` or the
+   error's class name (`ValueError` means a hook secret is not a full `https://` URL).
 3. Turn off auto-deploy for `valomaths` and `replay-tasks` in Render. Check that the Workflow service
-   exposes this setting and that it is off. Confirm its deploy hook is available too; if either is
-   unavailable, resolve that setup gap before PR 2. Do not change the demo's registered address.
+   exposes this setting and that it is off. Do not change the demo's registered address.
 4. In GitHub Actions, run "Deploy pipeline" from the PR 1 commit with `dry_run: true` and
    `skip_drain: false`. It drains, waits and resumes without calling hooks or forcing work to stop.
    Check the log prints `tasks commit:`, `worker commit:`, `site commit:` and `demo commit:` with

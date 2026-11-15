@@ -42,10 +42,13 @@ class Site:
         # Synthetic addresses and credentials only; no deployed service data.
         self.env = {"SITE_URL": "https://site.invalid", "DEMO_URL": "https://demo.invalid",
                     "REPLAY_ADMIN_TOKEN": "synthetic-admin"}
-        for service in SERVICES:
+        for service in SERVICES[1:]:
             self.env["RENDER_DEPLOY_HOOK_" + service.upper()] = (
                 "https://hooks.invalid/" + service + "?key=synthetic"
             )
+        # replay-tasks is a Render Workflow: deployed through the API, not a hook.
+        self.env["RENDER_API_KEY"] = "rnd_synthetic-api-key"
+        self.env["RENDER_WORKFLOW_ID"] = "wfl-synthetic"
         self.row = copy.deepcopy(ROUTES["drain"]["response"]["drain"])
         self.calls = []
         self.polls = []
@@ -91,11 +94,19 @@ class Site:
             if len(self.polls) > 1:
                 assert self.polls[-1] - self.polls[-2] < 7200, "drain expired"
         self.clock.now += self.latency(method, url)
-        if urlsplit(url).hostname == "hooks.invalid":
-            service = route
+        if urlsplit(url).hostname in ("hooks.invalid", "api.render.com"):
             assert method == "POST"
-            assert parse_qs(urlsplit(url).query)["ref"] == [SHA]
-            assert not headers, "do not send the admin credential to a hook"
+            if urlsplit(url).hostname == "api.render.com":
+                service = "tasks"
+                assert url == "https://api.render.com/v1/workflowversions"
+                assert data == {"workflowId": "wfl-synthetic", "commit": SHA}
+                assert headers == {"Authorization": "Bearer rnd_synthetic-api-key",
+                                   "Accept": "application/json"}
+            else:
+                service = route
+                assert parse_qs(urlsplit(url).query)["ref"] == [SHA]
+                assert data is None
+                assert not headers, "do not send the admin credential to a hook"
             assert self.row["phase"] == "deploying"
             if self.raise_hook == service:
                 raise RuntimeError(url + self.env["REPLAY_ADMIN_TOKEN"])
@@ -184,6 +195,7 @@ class Site:
         text = self.output.getvalue()
         assert self.env["REPLAY_ADMIN_TOKEN"] not in text
         assert all(url not in text for name, url in self.env.items() if "HOOK" in name)
+        assert "synthetic-api-key" not in text and "wfl-synthetic" not in text
         assert "https://" not in text
         return result
 
@@ -557,36 +569,51 @@ def test_skip_drain_still_owns_row_without_wait_or_force():
 
 def test_hook_without_query_and_self_takeover():
     site = Site()
-    site.env["RENDER_DEPLOY_HOOK_TASKS"] = "https://hooks.invalid/tasks"
+    site.env["RENDER_DEPLOY_HOOK_WORKER"] = "https://hooks.invalid/worker"
     site.superseded = "1"
     assert site.run() == 0
     assert not site.gh_calls
 
 
-@pytest.mark.parametrize("status,reason", [(404, "HTTP 404"), (None, "RuntimeError")])
-def test_a_failed_hook_says_which_service_and_why_without_the_url(status, reason):
+@pytest.mark.parametrize("service", ["tasks", "worker"])
+@pytest.mark.parametrize("status,reason", [(404, "HTTP 404"), (409, "HTTP 409"),
+                                           (None, "RuntimeError")])
+def test_a_failed_deploy_request_says_which_service_and_why_without_secrets(service, status, reason):
+    # A 409 from Render is a failed deploy: only the site's admin routes mean "superseded".
     site = Site()
     plain = site.http
+    host = "api.render.com" if service == "tasks" else "hooks.invalid"
 
     def http(method, url, **kwargs):
-        if urlsplit(url).hostname == "hooks.invalid" and status is not None:
-            raise HTTPError(url, status, url, {}, None)
+        if urlsplit(url).hostname == host and status is not None:
+            raise HTTPError(url, status, url + site.env["RENDER_API_KEY"], {}, None)
         return plain(method, url, **kwargs)
 
     site.http = http
-    site.raise_hook = "tasks"
+    site.raise_hook = service
     assert site.run() == 1
     printed = site.output.getvalue()
-    assert "tasks deploy hook failed: " + reason + "\n" in printed
+    assert service + " deploy request failed: " + reason + "\n" in printed
     assert "hooks.invalid" not in printed and "synthetic" not in printed
+    assert "superseded" not in printed
     assert site.events("resume")[-1][1]["outcome"] == "failed"
 
 
-def test_a_hook_secret_with_a_trailing_newline_still_deploys():
+def test_secrets_with_a_trailing_newline_still_deploy():
     site = Site()
-    site.env["RENDER_DEPLOY_HOOK_TASKS"] += "\n"
+    for name in ("RENDER_DEPLOY_HOOK_WORKER", "RENDER_API_KEY", "RENDER_WORKFLOW_ID"):
+        site.env[name] += "\n"
     assert site.run() == 0
     assert [service for service, _ in site.hooks] == list(SERVICES)
+
+
+@pytest.mark.parametrize("missing", ["RENDER_API_KEY", "RENDER_WORKFLOW_ID"])
+def test_missing_workflow_secrets_stop_before_the_drain(missing):
+    site = Site()
+    del site.env[missing]
+    assert site.run() == 1
+    assert "missing deploy configuration" in site.output.getvalue()
+    assert not site.events("drain") and not site.hooks
 
 
 def test_input_flags_and_workflow_triggers_contract():
