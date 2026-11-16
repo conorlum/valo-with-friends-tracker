@@ -166,6 +166,7 @@ tests = [
   "tests/test_site_modes.py", "tests/test_wide_layout_*.py", "tests/test_page_sections.py",
   "tests/test_auth_navigation.py", "tests/test_demo_http_contract.py", "tests/test_app_lifespan.py",
   "tests/test_maintenance_mode.py", "tests/test_request_trace.py", "tests/test_vendor_map_assets.py",
+  "tests/test_agent_tables.py",
   "tests/test_migration_lifecycle.py",
 ]
 guards = [

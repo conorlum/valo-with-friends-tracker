@@ -39,10 +39,7 @@ def replay_upload_enabled() -> bool:
 templates.env.globals["replay_upload_enabled"] = replay_upload_enabled
 
 _AGENT_ICON_SLUGS = {
-    "astra", "breach", "brimstone", "chamber", "clove", "cypher", "deadlock",
-    "fade", "gekko", "harbor", "iso", "jett", "kayo", "killjoy", "miks",
-    "neon", "omen", "phoenix", "raze", "reyna", "sage", "skye", "sova",
-    "tejo", "veto", "viper", "vyse", "waylay", "yoru",
+    path.stem for path in (Path(__file__).resolve().parent / "static" / "img" / "agents").glob("*.png")
 }
 
 
