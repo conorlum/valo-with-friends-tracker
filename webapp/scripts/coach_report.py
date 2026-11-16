@@ -75,6 +75,24 @@ def find_claude() -> str | None:
     return shutil.which("claude")
 
 
+def failure_reason(done, usage: dict) -> str:
+    """Why a `claude -p --output-format json` call exited non-zero. The CLI puts its reason (a rate or usage
+    limit, an API error) in the JSON on stdout, not on stderr; a failed call's usage still counts."""
+    parts = [done.stderr.strip()[:500]] if (done.stderr or "").strip() else []
+    try:
+        out = json.loads(done.stdout or "")
+    except ValueError:
+        out = None
+    if isinstance(out, dict):
+        add_usage(usage, out)
+        for key in ("subtype", "api_error_status", "result"):
+            if out.get(key) not in (None, ""):
+                parts.append(f"{key}={str(out[key])[:300]}")
+    elif (done.stdout or "").strip():
+        parts.append(done.stdout.strip()[-500:])
+    return "; ".join(parts) or "no output"
+
+
 def claude_call(run_dir: Path, model: str | None):
     exe = find_claude()
     if exe is None:
@@ -84,7 +102,7 @@ def claude_call(run_dir: Path, model: str | None):
         done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
                               encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
-            raise RuntimeError(f"claude exited {done.returncode}: {done.stderr.strip()[:500]}")
+            raise RuntimeError(f"claude exited {done.returncode}: {failure_reason(done, call.usage)}")
         out = json.loads(done.stdout)
         usage = out.get("modelUsage")
         if isinstance(usage, dict):

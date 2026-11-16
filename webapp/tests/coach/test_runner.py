@@ -258,6 +258,30 @@ def test_usage_is_summed_over_every_call_of_a_run(tmp_path, monkeypatch):
     assert "$0.75" in coach_report.usage_line(usage) and "15 turns" in coach_report.usage_line(usage)
 
 
+def test_a_failed_call_says_why_from_stdout_and_counts_its_usage(tmp_path, monkeypatch):
+    class Done:
+        returncode, stderr = 1, ""
+        stdout = json.dumps({**_cli_out(0.1, 1, 5), "subtype": "error_during_execution", "is_error": True,
+                             "api_error_status": 429, "result": "rate limited"})
+
+    monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
+    (tmp_path / "model").mkdir()
+    call = coach_report.claude_call(tmp_path, None)
+    with pytest.raises(RuntimeError, match="api_error_status=429.*rate limited"):
+        call("x", None)
+    assert call.usage["calls"] == 1 and call.usage["cost_usd"] == pytest.approx(0.1)
+
+
+def test_a_failed_call_with_plain_output_shows_it():
+    class Done:
+        returncode, stderr, stdout = 1, "", "Credit balance is too low"
+
+    assert coach_report.failure_reason(Done(), coach_report.new_usage()) == "Credit balance is too low"
+    Done.stdout = ""
+    assert coach_report.failure_reason(Done(), coach_report.new_usage()) == "no output"
+
+
 def test_odd_usage_fields_count_zero():
     usage = coach_report.add_usage(coach_report.new_usage(), {"total_cost_usd": None, "usage": "x",
                                                                "num_turns": True, "modelUsage": {"m": "x"}})
