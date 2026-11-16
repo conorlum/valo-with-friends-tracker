@@ -14,6 +14,8 @@ from replay_synthetic import MATCH_UUID  # noqa: E402
 from test_replay_worker import get, post, start, stub, vrf_bytes, wait  # noqa: E402,F401  (fixture)
 from test_replay_worker_archive import ack_body, send, start_archive  # noqa: E402
 
+from app.replays import condense  # noqa: E402
+from app.replays.contract import waiting_agent_text  # noqa: E402
 from app.replays.header import game_build  # noqa: E402
 from replay_worker import archive as arc  # noqa: E402
 from replay_worker import server  # noqa: E402
@@ -325,5 +327,158 @@ def test_health_lists_held_builds_without_crashing_when_one_is_unknown(tmp_path,
         assert wait(base, second_id, until=("held", "failed"))["status"] == "held"  # game_build is unreadable
         archive = get(base, "/health")[1]["archive"]
         assert archive["held"] == 2 and archive["held_builds"] == [NEW]  # must not raise, must not list None
+    finally:
+        httpd.shutdown()
+
+
+# ------------------------------------------------------------------ holds for an agent the site doesn't know yet
+
+CODE = "NotAnAgent"
+
+
+def held_for_agent(worker, base, body=None):
+    """Uploads a replay whose condense meets the unknown agent; the job id once it is held."""
+    job_id = post(base, body or vrf_bytes())[1]["id"]
+    assert wait(base, job_id, until=("held", "failed"))["status"] == "held"
+    return job_id
+
+
+def test_an_upload_with_an_unknown_agent_is_held_for_that_agent(tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="unknown_agent")
+    try:
+        job_id = held_for_agent(worker, base)
+        job = get(base, f"/jobs/{job_id}")[1]
+        assert job["waiting_agent"] == CODE and job["error"] == waiting_agent_text(CODE)
+        assert (disk / "jobs" / job_id / "upload.vrf").read_bytes() == vrf_bytes()
+        archive = get(base, "/health")[1]["archive"]
+        assert archive["held"] == 1 and archive["held_agents"] == [CODE] and archive["held_builds"] == []
+        # An ordinary upload after it still parses, and the held one stays held.
+        worker.settings.parser_cmd[-1] = "ok"
+        assert wait(base, post(base, vrf_bytes() + b"2")[1]["id"])["status"] == "done"
+        assert get(base, f"/jobs/{job_id}")[1]["status"] == "held"
+    finally:
+        httpd.shutdown()
+
+
+def test_an_agent_hold_is_not_released_by_a_recipe_change_alone(tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="unknown_agent")
+    try:
+        job_id = held_for_agent(worker, base)
+        worker.recipe = "another recipe"
+        worker.settings.parser_cmd[-1] = "ok"
+        time.sleep(1.5)
+        job = get(base, f"/jobs/{job_id}")[1]
+        assert job["status"] == "held" and job["waiting_agent"] == CODE
+    finally:
+        httpd.shutdown()
+
+
+def test_an_agent_hold_is_released_and_parsed_once_the_site_knows_the_agent(tmp_path, stub, monkeypatch):  # noqa: F811
+    disk = tmp_path / "disk"
+    folder = disk / "jobs" / "agent001"
+    folder.mkdir(parents=True)
+    body = vrf_bytes()
+    (folder / "upload.vrf").write_bytes(body)
+    arc.write_json(folder / "job.json", {"id": "agent001", "kind": "upload", "status": "held",
+                                         "sha256": hashlib.sha256(body).hexdigest(), "size": len(body),
+                                         "created": time.time() - 3600, "waiting_agent": CODE,
+                                         "error": waiting_agent_text(CODE)})
+    # The restarted worker's agents table now names it, in another case.
+    real = condense.load_agents()
+    monkeypatch.setattr(condense, "load_agents", lambda *a, **k: {**real, "NOTANAGENT": "Someone"})
+    worker, httpd, base, _ = start_archive(tmp_path, stub)
+    try:
+        done = wait(base, "agent001")
+        assert done["status"] == "done", done
+        assert worker.get("agent001").waiting_agent is None and "waiting_agent" not in done
+        assert (disk / "pending" / "agent001.vrf").read_bytes() == body
+    finally:
+        httpd.shutdown()
+
+
+def test_an_agent_hold_that_is_still_unsupported_keeps_status_and_error_over_a_restart(tmp_path, stub):  # noqa: F811
+    disk = tmp_path / "disk"
+    folder = disk / "jobs" / "agent002"
+    folder.mkdir(parents=True)
+    body = vrf_bytes()
+    (folder / "upload.vrf").write_bytes(body)
+    arc.write_json(folder / "job.json", {"id": "agent002", "kind": "upload", "status": "held",
+                                         "sha256": hashlib.sha256(body).hexdigest(), "size": len(body),
+                                         "created": time.time() - 3600, "waiting_agent": CODE,
+                                         "error": waiting_agent_text(CODE)})
+    worker, httpd, base, _ = start_archive(tmp_path, stub)
+    try:
+        time.sleep(1.5)
+        job = get(base, "/jobs/agent002")[1]
+        assert (job["status"], job["error"], job["waiting_agent"]) == ("held", waiting_agent_text(CODE), CODE)
+    finally:
+        httpd.shutdown()
+
+
+def test_a_job_saved_queued_with_an_agent_code_is_held_again_after_a_restart(tmp_path, stub):  # noqa: F811
+    disk = tmp_path / "disk"
+    folder = disk / "jobs" / "agent003"
+    folder.mkdir(parents=True)
+    body = vrf_bytes()
+    (folder / "upload.vrf").write_bytes(body)
+    arc.write_json(folder / "job.json", {"id": "agent003", "kind": "upload", "status": "queued",
+                                         "sha256": hashlib.sha256(body).hexdigest(), "size": len(body),
+                                         "created": time.time() - 60, "waiting_agent": CODE})
+    worker, httpd, base, _ = start_archive(tmp_path, stub)
+    try:
+        time.sleep(1.5)
+        job = get(base, "/jobs/agent003")[1]
+        assert (job["status"], job["error"]) == ("held", waiting_agent_text(CODE))
+    finally:
+        httpd.shutdown()
+
+
+def test_with_the_archive_off_an_unknown_agent_fails_telling_the_uploader_to_keep_the_file(tmp_path, stub):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub, mode="unknown_agent")
+    try:
+        job = wait(base, post(base, vrf_bytes())[1]["id"])
+        assert job["status"] == "failed" and "waiting_agent" not in job
+        assert job["error"] == (f"not condensable: unknown_agent (code name {CODE}): keep the file and upload "
+                                "it again once the site supports this agent")
+    finally:
+        httpd.shutdown()
+
+
+def test_over_the_cap_an_unknown_agent_fails_telling_the_uploader_to_keep_the_file(tmp_path, stub, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(server, "HELD_MAX_BYTES", 0)
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="unknown_agent")
+    try:
+        job = wait(base, post(base, vrf_bytes())[1]["id"])
+        assert job["status"] == "failed" and "keep the file and upload it again" in job["error"]
+        assert CODE in job["error"]
+    finally:
+        httpd.shutdown()
+
+
+def test_a_reparse_that_meets_an_unknown_agent_fails_and_is_never_held(tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        body = vrf_bytes()
+        uploaded = wait(base, post(base, body)[1]["id"])
+        send(base, f"/jobs/{uploaded['id']}/ack", ack_body(hashlib.sha256(body).hexdigest()))
+        worker.settings.parser_cmd[-1] = "unknown_agent"
+        done = wait(base, worker.submit_reparse(MATCH_UUID).id)
+        assert done["status"] == "failed" and done["error"] == "not condensable: unknown_agent"
+        assert "waiting_agent" not in done
+    finally:
+        httpd.shutdown()
+
+
+def test_an_agent_hold_past_its_ttl_is_deleted_with_the_agent_text(tmp_path, stub, monkeypatch):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="unknown_agent")
+    try:
+        job_id = held_for_agent(worker, base)
+        monkeypatch.setattr(server, "HELD_TTL_S", 0)
+        worker._sweep()
+        job = get(base, f"/jobs/{job_id}")[1]
+        assert job["status"] == "failed"
+        assert job["error"] == (f"waiting for agent {CODE}: it still wasn't supported after 0 days, so the kept "
+                                "file was deleted")
+        assert not (disk / "jobs" / job_id / "upload.vrf").exists()
     finally:
         httpd.shutdown()

@@ -24,9 +24,9 @@ web-service side are Stage 3's PR.
 After `parse failed`, `detail` holds the parser's last few lines of output (stack frames left out, at most 300
 characters), when it wrote any; the output itself is deleted with the job.
 
-## Held uploads: an unsupported game version, or the parser's own refusal
+## Held uploads: an unsupported game version, the parser's own refusal, or an unknown agent
 
-Two different situations hold a file on disk instead of parsing it, archive on only (archive off, both fail at
+Three different situations hold a file on disk instead of parsing it, archive on only (archive off, both fail at
 once instead). `game_build` may be unknown in either; `parser_pin` (upload-kind jobs only) is what actually
 tells them apart.
 
@@ -54,6 +54,16 @@ match, which is already true for these and would otherwise release (and re-crash
 never take this path (only uploads do): a held reparse would look "pending" to the automatic reparse queue
 forever and block every other automatic retry behind it, so a reparse the parser refuses just fails, as
 before, for the next attempt to retry under the current recipe.
+
+**An agent the site doesn't support yet.** A replay whose condense meets an agent code that is not in
+`app/static/data/agents.json` (`UnknownAgent`, from a local parse or a Workflow parse whose answer carries
+`agent_code`) is held the same way (archive on, under the 10 GB cap): the job is `held`, `waiting_agent` is the
+code as the replay spells it, and the error says the file is kept. The signal is the agents table the worker
+read at start: the job is released when its code, compared case-insensitively, is in it (so after a deploy that
+adds the agent), never on a recipe change alone. It survives a restart with the same status and error, and
+the 60-day TTL (`HELD_TTL_S`) fails it and deletes the file, as for any hold. `/health` `archive.held_agents`
+lists the codes; `held_builds` leaves them out. Archive off, or over the cap, fails at once telling the uploader
+to keep the file. A reparse that meets an unknown agent fails as before and is never held.
 
 `/health`'s `archive` block gains `held`, `held_bytes` and `held_builds` (the last excludes jobs with no known
 build). The web app shows a held upload as "waiting for a parser update", never times it out and doesn't count

@@ -207,8 +207,10 @@ if str(WEBAPP) not in sys.path:
     sys.path.insert(0, str(WEBAPP))
 
 from app.critutil import build_digest  # noqa: E402 - standard library only; never app.critutil.corpus (numpy)
+from app.replays import condense  # noqa: E402
 from app.replays.condense import condense_export_dir  # noqa: E402
-from app.replays.contract import ContractError, current_recipe, load_pin  # noqa: E402
+from app.replays.contract import (  # noqa: E402
+    ContractError, UnknownAgent, current_recipe, load_pin, waiting_agent_text)
 from app.replays.header import game_build  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
@@ -471,6 +473,7 @@ class Job:
     detail: str | None = None       # the parser's own last lines when a parse failed
     parser_pin: str | None = None   # set only when held after the parser itself refused a pinned build (below):
                                      # this deploy's recipe, so a later deploy with a different one releases it
+    waiting_agent: str | None = None  # set while held for an agent code the site doesn't support yet
     released: bool = False          # a held job taken straight to the parse thread, not from a queue (not saved)
     run_id: str | None = None
     run_token: str | None = None
@@ -486,6 +489,8 @@ class Job:
             body["detail"] = self.detail
         if self.game_build:
             body["game_build"] = self.game_build
+        if self.waiting_agent:
+            body["waiting_agent"] = self.waiting_agent
         if self.result is not None:
             body["result"] = self.result
         if self.parse_seconds is not None:
@@ -542,6 +547,11 @@ class Worker:
                 self.supported_builds = load_pin().supported_builds
             except Exception:  # noqa: BLE001 - without the list nothing is held: every upload is parsed as before
                 traceback.print_exc()
+        self.agent_codes: frozenset[str] = frozenset()
+        try:
+            self.agent_codes = frozenset(k.lower() for k in condense.load_agents())
+        except Exception:  # noqa: BLE001 - without the table nothing is released for an agent
+            traceback.print_exc()
         self.archive, self.archive_reason = None, "REPLAY_ARCHIVE_DIR is not set"
         if settings.archive_dir is not None:
             self.archive, self.archive_reason = archive_store.open_archive(
@@ -708,9 +718,11 @@ class Worker:
         if self.archive is None:
             return {"enabled": False, "reason": self.archive_reason}
         with self.lock:
-            held = [j.game_build for j in self.jobs.values() if j.status == "held"]
-        return {**self.archive.status(), "held": len(held), "held_bytes": self.held_bytes(),
-                "held_builds": sorted({b for b in held if b})}  # a parser-refused hold may have no known build
+            holds = [j for j in self.jobs.values() if j.status == "held"]
+        held = [j.game_build for j in holds if j.waiting_agent is None]
+        return {**self.archive.status(), "held": len(holds), "held_bytes": self.held_bytes(),
+                "held_builds": sorted({b for b in held if b}),  # a parser-refused hold may have no known build
+                "held_agents": sorted({j.waiting_agent for j in holds if j.waiting_agent})}
 
     def held_bytes(self) -> int:
         with self.lock:
@@ -1127,16 +1139,23 @@ class Worker:
         fixed it, and there is no narrower signal than "the parser changed"."""
         with self.lock:
             ready = sorted((j for j in self.jobs.values() if j.status == "held" and (
-                            (j.parser_pin is None and j.game_build in (self.supported_builds or ()))
-                            or (j.parser_pin is not None and self.recipe is not None and j.parser_pin != self.recipe))),
+                            (j.waiting_agent is None and j.parser_pin is None
+                             and j.game_build in (self.supported_builds or ()))
+                            or (j.waiting_agent is None and j.parser_pin is not None and self.recipe is not None
+                                and j.parser_pin != self.recipe)
+                            or (j.waiting_agent is not None and j.waiting_agent.lower() in self.agent_codes))),
                            key=lambda j: j.created)
             if not ready:
                 return None
             job = ready[0]
             was_parser_refused, job.status, job.error, job.released = job.parser_pin is not None, "queued", None, True
         self._save(job)
-        reason = "the parser changed since it refused this file" if was_parser_refused \
-            else f"the parser now supports {job.game_build}"
+        if job.waiting_agent is not None:
+            reason = f"the site supports agent {job.waiting_agent} now"
+        elif was_parser_refused:
+            reason = "the parser changed since it refused this file"
+        else:
+            reason = f"the parser now supports {job.game_build}"
         _log(f"job {job.id} released: {reason}")
         return job
 
@@ -1188,6 +1207,26 @@ class Worker:
                         _log(f"job {job.id} held: the parser refused it ({job.detail})")
             except ContractError as refused:
                 error = f"not condensable: {refused.reason}"
+                if isinstance(refused, UnknownAgent) and job.kind == "upload":
+                    code = refused.code
+                    held_now = False
+                    if self.archive is not None:
+                        # One lock, one write, as the parser-refusal hold above does.
+                        with self.lock:
+                            held_bytes = sum(j.size for j in self.jobs.values() if j.status == "held")
+                            if held_bytes + job.size <= HELD_MAX_BYTES:
+                                job.status, job.waiting_agent = "held", code
+                                job.game_build = job.parser_pin = None
+                                job.error, job.finished = waiting_agent_text(code), None
+                                job.run_id = job.run_token = job.run_deadline = None
+                                held_now = True
+                    if held_now:
+                        status, error = "held", waiting_agent_text(code)
+                        self._save(job)
+                        _log(f"job {job.id} held: the site doesn't support agent {code} yet")
+                    else:
+                        error = (f"not condensable: unknown_agent (code name {code}): keep the file and upload it "
+                                 "again once the site supports this agent")
             except Exception:  # noqa: BLE001 - one bad file must not stop the worker
                 traceback.print_exc()
             finally:
@@ -1226,6 +1265,7 @@ class Worker:
                     job.run_id = job.run_token = job.run_deadline = None
                     job.result, job.error, job.finished = result, error, time.time()
                     job.status = status
+                    job.waiting_agent = None
                     if status == "done":
                         # A released parser-refusal hold that now succeeds shouldn't still read as carrying
                         # that old refusal (a fresh failure's own detail is set above and must survive this).
@@ -1324,6 +1364,8 @@ class Worker:
                 job.detail, job.parse_seconds = answer.get("detail"), answer.get("parse_seconds")
                 raise _JobFailed(answer.get("error") or REASON_PARSE)
             if kind == "contract":
+                if answer.get("agent_code"):
+                    raise UnknownAgent(str(answer["agent_code"]))       # one branch with the local path (_run)
                 raise _JobFailed(answer.get("error") or REASON_PARSE)
             raise _JobFailed(REASON_PARSE)
 
@@ -1371,7 +1413,7 @@ class Worker:
                   "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
         if job.attempt_id:
             record["attempt_id"] = job.attempt_id
-        for key in ("game_build", "detail", "parser_pin", "run_id", "run_token", "run_deadline"):
+        for key in ("game_build", "detail", "parser_pin", "waiting_agent", "run_id", "run_token", "run_deadline"):
             if getattr(job, key):
                 record[key] = getattr(job, key)
         try:
@@ -1406,7 +1448,8 @@ class Worker:
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
                       kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
                       attempt_id=record.get("attempt_id"), game_build=record.get("game_build"),
-                      detail=record.get("detail"), parser_pin=record.get("parser_pin"), run_id=record.get("run_id"),
+                      detail=record.get("detail"), parser_pin=record.get("parser_pin"),
+                      waiting_agent=record.get("waiting_agent"), run_id=record.get("run_id"),
                       run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
             if job.status == "expiring":
@@ -1416,6 +1459,10 @@ class Worker:
                     job.status, job.finished = "failed", time.time()
                     job.error = "the kept file is gone from the worker: please upload it again"
                     self._save(job)
+            elif job.waiting_agent and job.status in ("queued", "parsing"):
+                # Released for its agent just before the restart: held again, released by _next on its turn.
+                job.status, job.error = "held", waiting_agent_text(job.waiting_agent)
+                self._save(job)
             elif (job.game_build or job.parser_pin) and job.status in ("queued", "parsing"):
                 # A held job released just before the restart: held again, released by _next when its turn comes.
                 job.status = "held"
@@ -1456,10 +1503,15 @@ class Worker:
                 self._save(job)
                 (job.folder / "upload.vrf").unlink(missing_ok=True)
                 job.status, job.finished = "failed", time.time()
-                build_text = f"recorded on game version {_version(job.game_build)}" if job.game_build else \
-                    "the parser refused this file"
-                job.error = (f"{build_text}: it still wasn't parseable after {HELD_TTL_S // 86400} days, so the "
-                             "kept file was deleted")
+                if job.waiting_agent:
+                    job.error = (f"waiting for agent {job.waiting_agent}: it still wasn't supported after "
+                                 f"{HELD_TTL_S // 86400} days, so the kept file was deleted")
+                    job.waiting_agent = None
+                else:
+                    build_text = f"recorded on game version {_version(job.game_build)}" if job.game_build else \
+                        "the parser refused this file"
+                    job.error = (f"{build_text}: it still wasn't parseable after {HELD_TTL_S // 86400} days, "
+                                 "so the kept file was deleted")
                 self._save(job)
                 _log(f"job {job.id} was held for {HELD_TTL_S // 86400} days; its file is deleted")
             cutoff = time.time() - archive_store.UNCOLLECTED_TTL_S
