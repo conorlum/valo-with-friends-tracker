@@ -814,6 +814,8 @@ Pandemic_AcidMolotov_NewMolotov Phoenix_MolotovFire Sarge_Q_Molotov_Production T
 Aggrobot_RollyPolly Aggrobot_SeekerNade Clay_E_Boomba Guide_Q_PossessableScout Gumshoe_E_PossessableCamera
 Hunter_E_Drone Pine_E_RadEater Stealth_4_Decoy_V2 Gumshoe_Q_Cage Wraith_4_Smoke
 Pandemic_4_SmokeZone Pandemic_X_Circular Grenadier_E_SuppressionPulse
+Paprika_4_PullBlast Paprika_E_RedirectPullArea Paprika_X_LevitateZone Paprika_X_ForceProxyManager
+Paprika_X_ForceModuleProxy
 """.split()
 
 
@@ -836,6 +838,38 @@ def test_every_seen_archetype_has_a_style_naming_a_real_ability():
         key = row["code"] + "_" + row["name"]
         assert style.get("ability"), f"{key} has no style"
         assert style["ability"] in icons[style["agent"]], f"{key}: {style['ability']!r} isn't one of {style['agent']}'s"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_hush_projectiles_utility_ids_and_shapes():
+    """Hush: each Paprika projectile resolves to a style naming a real Hush ability, her two Flashbulb utility ids
+    title as Hush / Flashbulb (with an icon), and the Flow badge, Displacement area and Suspension area carry their
+    label and radius. Her ult costs 8 points (7 casts in the two Hush replays; the wiki says 8)."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const proj = n => R.abilityStyle({kind: "Projectile", code: "Paprika", name: n, agent: "Hush"});
+        const obj = n => R.abilityStyle({kind: "GameObject", code: "Paprika", name: n, agent: "Hush"});
+        const pick = s => [s.shape, s.ability, s.agent];
+        process.stdout.write(JSON.stringify({
+          proj: ["Q_RedirectFlash", "Q_RedirectFlash_Underhand", "E_RedirectPull", "X_FullBendPop"].map(n => pick(proj(n))),
+          util: [R.utilAbility("hush_flashbulb_overhand"), R.utilAbility("hush_flashbulb_underhand")],
+          flow: [obj("4_PullBlast").shape, obj("4_PullBlast").label],
+          pull: [obj("E_RedirectPullArea").shape, obj("E_RedirectPullArea").r, obj("E_RedirectPullArea").pop],
+          zone: [obj("X_LevitateZone").shape, obj("X_LevitateZone").r],
+          ult: R.ULT_COST.Hush
+        }));
+      });"""
+    got = run_node(script, {})
+    icons = json.loads((WEBAPP / "app" / "static" / "data" / "abilities.json").read_text(encoding="utf-8"))["Hush"]
+    assert got["proj"] == [["projectile", "Flashbulb", "Hush"], ["projectile", "Flashbulb", "Hush"],
+                           ["projectile", "Displacement", "Hush"], ["projectile", "Suspension", "Hush"]]
+    assert got["util"] == [{"agent": "Hush", "ability": "Flashbulb"}] * 2
+    assert "Flashbulb" in icons
+    assert got["flow"] == ["badge", "Flow (anchor)"]
+    assert got["pull"][0] == "area" and got["pull"][1] > 0 and got["pull"][2] > 0
+    assert got["zone"] == ["area", 700]
+    assert got["ult"] == 8
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
