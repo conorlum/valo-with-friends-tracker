@@ -97,7 +97,7 @@ def test_a_failed_point_gets_one_repair_and_is_kept_when_fixed(snap, tmp_path):
         lambda q: json.dumps({"points": [good_point([q]), bad_point()]}),
         lambda q: json.dumps({"points": [{"index": 1, **good_point([q]), "title": "Fixed"}]})])
     assert [p["title"] for p in payload["points"]] == ["Held your ground", "Fixed"] and payload["dropped_points"] == 0
-    assert model.prompts[1][1] is None and "q999" in model.prompts[1][0]
+    assert model.prompts[1][1] == "session-1" and "q999" in model.prompts[1][0]
 
 
 def test_a_repair_reply_with_the_index_as_a_string_is_still_matched(snap, tmp_path):
@@ -134,7 +134,6 @@ def test_a_side_that_comes_back_short_is_asked_for_more(snap, tmp_path):
         lambda q: json.dumps({"points": [{"index": 1, **good_point([q]), "title": "Second"},
                                          {"index": 2, **bad_point(), "title": "Weak third"}]})])
     ask = model.prompts[1][0]
-    assert model.prompts[1][1] == "session-1"
     assert '2 more "good"' in ask and '3 more "improve"' in ask and "starting at 1" in ask
     assert [p["title"] for p in payload["points"]] == ["Held your ground", "Second", "Weak third"]
     assert [w["title"] for w in payload["unchecked"]] == ["Weak third"]
@@ -161,115 +160,6 @@ def test_extract_points_reads_bare_fenced_and_embedded_json():
     for text in (body, f"```json\n{body}\n```", f"Report follows.\n{body}\nDone."):
         assert runner.extract_points(text) == [{"title": "x"}]
     assert runner.extract_points("nothing here") is None and runner.extract_points('{"other": 1}') is None
-
-
-def test_fresh_repair_repeats_the_first_prompt_and_shows_each_cited_entry(snap, tmp_path):
-    def first(q):
-        point = bad_point()
-        point["instances"][0]["evidence"] = [q, "q1", "q999"]
-        return json.dumps({"points": [point]})
-
-    payload, model = run(snap, tmp_path, [first, "no fix"])
-    first_prompt, _ = model.prompts[0]
-    repair, session = model.prompts[1]
-    assert session is None
-    section = repair.removeprefix(first_prompt + "\n\n")
-    assert repair.startswith(first_prompt + "\n\n")
-    assert section.startswith("Your report is written; do not write a new one. Only fix these points")
-    assert "Made up" in section and "You were 35 m away." in section
-    assert '"index": 0' in section and '"evidence"' in section
-    assert all(problem in section for problem in payload["unchecked"][0]["problems"])
-    log = query.read_log(tmp_path)
-    assert log["q1"]["cmd"] == "flag"
-    for evidence_id in (model.asked, "q1"):
-        assert section.count(query.show(log[evidence_id])) == 1
-
-
-def test_fresh_repair_then_top_up_resumes_the_original_session(snap, tmp_path):
-    model = Model(snap, tmp_path, [
-        lambda q: json.dumps({"points": [bad_point()]}),
-        lambda q: json.dumps({"points": [{**good_point([q]), "index": 0, "title": "Fixed"},
-                                         {**good_point([q]), "index": 1, "title": "Fresh extra"}]}),
-        lambda q: json.dumps({"points": [{**good_point([q]), "index": 0, "title": "Overwrite"},
-                                         {**good_point([q]), "index": 1, "title": "Top up"}]})])
-
-    def call(text, session):
-        reply, _ = model(text, session)
-        return reply, "fresh-session" if len(model.prompts) == 2 else "session-1"
-
-    payload = runner.generate(snap, 0, tmp_path, BOOK, call, "test-model")
-    assert [session for _, session in model.prompts] == [None, None, "session-1"]
-    assert model.prompts[2][0] == prompt.repair_prompt([], {"good": 2, "improve": 3}, 1)
-    assert [p["title"] for p in payload["points"]] == ["Fixed", "Top up"]
-    assert payload["unchecked"] == []
-
-
-def test_fresh_fixes_without_indices_are_taken_in_order_when_a_side_is_short(snap, tmp_path):
-    payload, model = run(snap, tmp_path, [
-        lambda q: json.dumps({"points": [bad_point(), bad_point()]}),
-        lambda q: json.dumps({"points": [{**good_point([q]), "title": title} for title in ("Fixed early", "Fixed late")]}),
-        "nothing to add"])
-    assert [p["title"] for p in payload["points"]] == ["Fixed early", "Fixed late"]
-    assert payload["unchecked"] == []
-    assert [session for _, session in model.prompts] == [None, None, "session-1"]
-
-
-@pytest.mark.parametrize("unstorable", [False, True])
-def test_garbage_fresh_repair_keeps_the_original_unchecked_or_dropped(snap, tmp_path, unstorable):
-    point = bad_point()
-    if unstorable:
-        point["instances"][0]["round"] = 99
-    payload, model = run(snap, tmp_path, [
-        lambda q: json.dumps({"points": [good_point([q]), point]}), "garbage", "nothing to add"])
-    assert model.prompts[1][1] is None
-    assert payload["dropped_points"] == int(unstorable)
-    assert [p["title"] for p in payload["points"]] == (
-        ["Held your ground"] if unstorable else ["Held your ground", "Made up"])
-    assert [p["title"] for p in payload["unchecked"]] == ([] if unstorable else ["Made up"])
-
-
-def test_a_fresh_repair_exception_fails_the_run(snap, tmp_path):
-    model = Model(snap, tmp_path, [json.dumps({"points": [bad_point()]})])
-
-    def call(text, session):
-        if model.prompts:
-            assert session is None
-            raise RuntimeError("fresh repair failed")
-        return model(text, session)
-
-    with pytest.raises(RuntimeError, match="fresh repair failed"):
-        runner.generate(snap, 0, tmp_path, BOOK, call, "test-model")
-
-
-def test_failed_points_can_be_repaired_without_a_first_session(snap, tmp_path):
-    model = Model(snap, tmp_path, [
-        json.dumps({"points": [bad_point()]}),
-        lambda q: json.dumps({"points": [{**good_point([q]), "index": 0}]})])
-
-    def call(text, session):
-        reply, _ = model(text, session)
-        return reply, None
-
-    payload = runner.generate(snap, 0, tmp_path, BOOK, call, "test-model")
-    assert payload["unchecked"] == []
-    assert [session for _, session in model.prompts] == [None, None]
-
-
-@pytest.mark.parametrize("entry", [
-    {"id": "q999"},
-    {"id": "q999", "cmd": "where", "result": []},
-    {"id": "q999", "cmd": "where", "result": {"note": 5}},
-])
-def test_a_malformed_cited_log_entry_still_allows_fresh_repair(snap, tmp_path, entry):
-    def first(q):
-        with (tmp_path / query.LOG).open("a", encoding="utf-8") as log:
-            log.write(json.dumps(entry) + "\n")
-        return json.dumps({"points": [bad_point()]})
-
-    payload, model = run(snap, tmp_path, [first, "no fix"])
-    assert model.prompts[1][1] is None
-    assert json.dumps(entry, ensure_ascii=False) in model.prompts[1][0]
-    assert [p["title"] for p in payload["unchecked"]] == ["Made up"]
 
 
 def test_an_answer_edited_in_the_log_file_is_not_evidence(snap, tmp_path):

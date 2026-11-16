@@ -74,8 +74,7 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
 
 def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) -> dict:
     built, flags = _brief_with_flag_ids(snap, slot, run_dir)
-    first_prompt = prompt.run_prompt(book, built)
-    text, session = call_model(first_prompt, None)
+    text, session = call_model(prompt.run_prompt(book, built), None)
     points = extract_points(text)
     if points is None:
         _need_session(session)
@@ -103,7 +102,7 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
         except Exception:               # noqa: BLE001 - a point that cannot be read cannot be shown
             return False
 
-    failed = [(i, p, problems)
+    failed = [(i, p if isinstance(p, dict) else {}, problems)
               for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
     # The owner wants three and three even when some are weak: a side that came back short is asked for more.
     missing = {side: max(0, PER_SIDE - sum(1 for p in points if isinstance(p, dict) and p.get("polarity") == side))
@@ -111,24 +110,16 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
     unchecked: dict[int, list[str]] = {}        # points kept although their evidence did not check out
     dropped = 0
     if failed or (any(missing.values()) and session):
+        _need_session(session)
         first_count = len(points)
-        fixes = {}
-        if failed:
-            section = prompt.fresh_repair_section(failed, query.read_log(run_dir))
-            text, _ = call_model(first_prompt + "\n\n" + section, None)
-            returned = [p for p in (extract_points(text) or []) if isinstance(p, dict)]
-            fixes = {int(p["index"]): p for p in returned if re.fullmatch(r"[0-9]+", str(p.get("index")))}
-            if len(returned) == len(failed) and all("index" not in p for p in returned):
-                # One unnumbered fix per failed point is taken in order, even when a side also needs more.
-                fixes = {i: p for (i, _, _), p in zip(failed, returned)}
-        added = []
-        if any(missing.values()) and session:
-            _need_session(session)
-            text, _ = call_model(prompt.repair_prompt([], missing, first_count), session)
-            returned = [p for p in (extract_points(text) or []) if isinstance(p, dict)]
-            additions = {int(p["index"]): p for p in returned if re.fullmatch(r"[0-9]+", str(p.get("index")))}
-            added = [additions[i] for i in sorted(additions) if i >= first_count]
+        text, session = call_model(prompt.repair_prompt(failed, missing, first_count), session)
+        returned = [p for p in (extract_points(text) or []) if isinstance(p, dict)]
+        fixes = {int(p["index"]): p for p in returned if re.fullmatch(r"[0-9]+", str(p.get("index")))}
+        if not fixes and failed and len(returned) == len(failed) and not any(missing.values()):
+            # the fixes came back without their index: one for each failed point, so they are taken in order
+            fixes = {i: p for (i, _, _), p in zip(failed, returned)}
         offered = [fixes.get(i) for i, _, _ in failed]
+        added = [fixes[i] for i in sorted(fixes) if i >= first_count]
         verdicts = iter(checked([f for f in offered if f is not None] + added))
         for (i, _, problems), fix in zip(failed, offered):
             fix_problems = next(verdicts) if fix is not None else None
