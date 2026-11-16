@@ -250,6 +250,17 @@ def test_patterns_and_plain_queries_share_a_write_q_batch(pattern_snap, tmp_path
         assert query.show(log[f"q{i}"]) in text
 
 
+def test_pattern_cli_uses_short_rendering(pattern_snap, tmp_path, capsys):
+    from app.coach import compact
+    from tests.coach.test_compact import drop_nulls
+
+    assert coach_query.main(["--compact", "--run", str(tmp_path), "--", "deaths", "0"]) == 0
+    text = capsys.readouterr().out.strip()
+    expected = ask(pattern_snap, tmp_path / "expected", "deaths", ["0"])
+    assert text == compact.render(expected, short=True)
+    assert compact.parse(text, short=True) == drop_nulls(expected)
+
+
 @pytest.mark.parametrize("command, args", [
     ("deaths", []), ("deaths", ["0", "1"]), ("kills", ["missing"]),
     ("moment", ["5"]), ("moment", ["5", "nan"]), ("moment", ["5", "-1"]),

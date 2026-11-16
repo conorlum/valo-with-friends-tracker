@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import json
+import random
 import sys
 
 import pytest
@@ -49,10 +51,123 @@ FLAG = {"round": 3, "t": 21.0, "kind": "stack_seen_elsewhere", "site": "A", "ene
     [{"nested": [{"a": None}, {"b": [None, {}]}]}, {"nested": {"x": None}}],
     {**AREA, "extra": {"kept": False}},
 ])
-def test_round_trip(value):
+@pytest.mark.parametrize("short", [False, True])
+def test_round_trip(value, short):
     before = copy.deepcopy(value)
-    same(compact.parse(compact.render(value)), drop_nulls(value))
+    same(compact.parse(compact.render(value, short=short), short=short), drop_nulls(value))
     same(value, before)
+
+
+@pytest.mark.parametrize("path", [["Top Mid"], ["Mid", "Top Mid"]])
+@pytest.mark.parametrize("super_name", [None, "Mid"])
+@pytest.mark.parametrize("approximate", [None, False, True])
+def test_short_areas_keep_paths_super_and_the_presence_of_approximate(path, super_name, approximate):
+    area = {"name": "Top Mid", "path": path}
+    if super_name is not None:
+        area["super"] = super_name
+    if approximate is not None:
+        area["approximate"] = approximate
+    text = compact.render(area, short=True)
+    same(compact.parse(text, short=True), area)
+    same(compact.parse(text, short=True), compact.parse(compact.render(area)))
+    if approximate is None:
+        assert text == compact.render(area)
+    else:
+        assert text == "(Top Mid" + ("[Mid]" if len(path) > 1 else "") + (
+            "^Mid" if super_name else "") + ")" + ("~" if approximate else "")
+
+
+@pytest.mark.parametrize("name", ["A|B", "A(B)", "A[B]", "A^B", "A~B", "@A", "A;B", 'A"B', "A\\B"])
+def test_short_area_names_with_marks_use_the_full_form(name):
+    area = {"name": name, "path": [name], "approximate": True}
+    assert compact.render(area, short=True) == compact.render(area)
+    same(compact.parse(compact.render(area, short=True), short=True), area)
+
+
+@pytest.mark.parametrize("area", [
+    {**AREA, "extra": 1}, {**AREA, "path": []},
+    {**AREA, "path": [AREA["name"], "Mid"]}, {**AREA, "path": [AREA["name"], AREA["name"]]},
+    {**AREA, "approximate": 1}, {**AREA, "approximate": 0}, {**AREA, "super": "Mid^Top"},
+])
+def test_other_area_shapes_stay_lossless(area):
+    text = compact.render(area, short=True)
+    same(compact.parse(text, short=True), drop_nulls(area))
+    assert text == compact.render(area)
+
+
+def test_short_non_ascii_names_and_nested_values():
+    area = {"name": "\u5e7f\u573a", "path": ["\u4e2d\u8def", "\u5e7f\u573a"], "super": "\u4e2d\u8def", "approximate": True}
+    assert compact.render(area, short=True) == "(\u5e7f\u573a[\u4e2d\u8def]^\u4e2d\u8def)~"
+    value = {"area": area, "names": ["(A)~", "@(P0 right 1-2m)", "A^B", "\u5e7f\u573a"]}
+    same(compact.parse(compact.render(value, short=True), short=True), value)
+
+
+@pytest.mark.parametrize("low,high", [(120, 130), (120.0, 130.0), (1.25, 2.5), (-2.0, -0.0), (1e-9, 1e20)])
+def test_short_rough_places_keep_both_distances_and_their_numeric_types(low, high):
+    place = {"from": "P0", "direction": "right", "metres_min": low, "metres_max": high}
+    text = compact.render(place, short=True)
+    assert text == f"@(P0 right {json.dumps(low)}-{json.dumps(high)}m)"
+    same(compact.parse(text, short=True), place)
+    same(compact.parse(text, short=True), compact.parse(compact.render(place)))
+
+
+@pytest.mark.parametrize("change", [
+    {"metres_max": None}, {"extra": True}, {"from": "P(0)"}, {"direction": "unknown"},
+    {"metres_min": True}, {"metres_min": "120"},
+])
+def test_incomplete_or_ambiguous_rough_places_use_the_full_form(change):
+    place = {"from": "P0", "direction": "right", "metres_min": 120.0, "metres_max": 130.0, **change}
+    assert compact.render(place, short=True) == compact.render(place)
+    same(compact.parse(compact.render(place, short=True), short=True), drop_nulls(place))
+
+
+@pytest.mark.parametrize("missing", ["from", "direction", "metres_min", "metres_max"])
+def test_rough_places_with_each_missing_field_fall_back(missing):
+    place = {"from": "P0", "direction": "up", "metres_min": 1, "metres_max": 2}
+    del place[missing]
+    assert compact.render(place, short=True) == compact.render(place)
+    same(compact.parse(compact.render(place, short=True), short=True), place)
+
+
+@pytest.mark.parametrize("name", ["P(0)", "P|0", "P^0", "P~0", "@P0", "\u5e7f\u573a", "P 0"])
+def test_rough_place_from_names_round_trip(name):
+    place = {"from": name, "direction": "down", "metres_min": 0, "metres_max": 10.0}
+    same(compact.parse(compact.render(place, short=True), short=True), place)
+
+
+def test_short_tables_drop_only_trailing_blank_cells():
+    rows = [{"a": 1, "b": None}, {"b": 2}, {"a": 3, "c": 4}, {}, {"a": ""}, {"a": 5, "b": 6, "c": 7}]
+    assert compact.render(rows, short=True) == '<a|b|c;\n1;\n|2;\n3||4;\n;\n"";\n5|6|7>'
+    same(compact.parse(compact.render(rows, short=True), short=True), drop_nulls(rows))
+    with pytest.raises(ValueError, match="cell count"):
+        compact.parse("<a|b;\n1>")
+    with pytest.raises(ValueError, match="cell count"):
+        compact.parse("<a;\n1|2>", short=True)
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_randomized_round_trip(short):
+    rng = random.Random(731)
+    scalars = [None, False, True, 0, 1.25, "", "~(", "(A)~", "@(P0 right 1-2m)", "\u5e7f\u573a", "a|b"]
+
+    def value(depth):
+        if depth == 0 or rng.random() < 0.4:
+            return rng.choice(scalars)
+        if rng.random() < 0.5:
+            return [value(depth - 1) for _ in range(rng.randrange(5))]
+        return {rng.choice(["name", "path", "area", "a", "b", "(x)", "@x"]): value(depth - 1)
+                for _ in range(rng.randrange(5))}
+
+    for _ in range(500):
+        item = value(4)
+        same(compact.parse(compact.render(item, short=short), short=short), drop_nulls(item))
+
+
+def test_default_toy_brief_is_byte_identical(snap):
+    from app.coach import brief
+
+    text = compact.render(brief.build(snap, 0))
+    assert hashlib.sha256(text.encode()).hexdigest() == "d8e1ae5e2bfa917624842d35b7530f1013ff7d802cc334139553dad1afaa02c5"
 
 
 def test_tables_and_inline_areas_are_compact_and_ordered():
@@ -74,7 +189,7 @@ def test_show_special_answers(cmd, result):
     original = copy.deepcopy(entry)
     header, body = query.show(entry).split("\n", 1)
     assert "q7" in header and cmd in header and "A Main" in header
-    same(compact.parse(body.split("\nnote: ", 1)[0]), drop_nulls({k: v for k, v in result.items() if k != "note"}))
+    same(compact.parse(body.split("\nnote: ", 1)[0], short=True), drop_nulls({k: v for k, v in result.items() if k != "note"}))
     if "note" in result:
         assert body.endswith("note: " + result["note"])
     same(entry, original)
@@ -101,17 +216,17 @@ def test_every_command_keeps_results_and_notes(snap, tmp_path, monkeypatch, appr
         entry = query.read_log(tmp_path)[out["id"]]
         same(entry["result"], result)
         shown = query.show(entry)
-        same(compact.parse(shown.split("\n", 1)[1].split("\nnote: ", 1)[0]),
+        same(compact.parse(shown.split("\n", 1)[1].split("\nnote: ", 1)[0], short=True),
              drop_nulls({k: v for k, v in result.items() if k != "note"}))
         if cmd in NOTES:
             assert NOTES[cmd] not in shown
-            assert ("\nnote: " in shown) == (approximate and cmd != "distance")
-            if approximate and cmd != "distance":
+            assert ("\nnote: " in shown) == (approximate and cmd == "control")
+            if approximate and cmd == "control":
                 assert shown.endswith("note: " + extra)
     for cmd, args in [("where", ["bad", "0"]), ("knew", ["2", "0", "A"])]:
         result = query.answer(snap, cmd, args)
         assert "error" in result or result.get("available") is False
-        same(compact.parse(query.show({"id": "q0", "cmd": cmd, "args": args, "result": result}).split("\n", 1)[1]), result)
+        same(compact.parse(query.show({"id": "q0", "cmd": cmd, "args": args, "result": result}).split("\n", 1)[1], short=True), result)
 
 
 def test_fixed_notes_appear_once_in_prompt():

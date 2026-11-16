@@ -8,6 +8,20 @@ BRIEF = {"v": 1, "subject": {"name": "Owner#1"}, "match": {"map": "Ascent"}, "ro
          "areas": ["A Main"], "data_gaps": {}, "players": []}
 
 
+def test_query_format_and_fixed_approximate_note():
+    from app.coach.query import _APPROXIMATE_AREAS
+
+    text = prompt.run_prompt(BOOK, BRIEF)
+    format_text = text.split("Every answer", 1)[1].split(prompt.COMMANDS, 1)[0]
+    assert "(name[path names]^super)~" in format_text
+    assert "@(from direction min-maxm)" in format_text
+    assert "trailing blank cells" in format_text
+    assert "its absence means approximate false" in format_text
+    assert "~(name|super|path|approximate)" in format_text
+    assert text.count(_APPROXIMATE_AREAS) == 1
+    assert _APPROXIMATE_AREAS in text.split("# Fixed notes", 1)[1]
+
+
 def test_the_run_prompt_carries_the_playbook_brief_and_the_command():
     text = prompt.run_prompt(BOOK, BRIEF)
     assert "Trade your teammate." in text

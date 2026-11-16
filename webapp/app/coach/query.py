@@ -302,12 +302,14 @@ def show(entry: dict) -> str:
 
     result = entry["result"]
     header = f'{entry["id"]} {entry["cmd"]} ' + json.dumps(entry.get("args", []), ensure_ascii=False)
-    body = compact.render({k: v for k, v in result.items() if k != "note"})
+    body = compact.render({k: v for k, v in result.items() if k != "note"}, short=True)
     note = result.get("note")
     if note is not None:
         fixed = NOTES.get(entry["cmd"])
         if fixed is not None and note.startswith(fixed):
             note = note[len(fixed):]
+            if note == ". " + _APPROXIMATE_AREAS:
+                note = ""
         if note:
             body += "\nnote: " + note
     return header + "\n" + body

@@ -6,6 +6,7 @@ import json
 
 from app.coach import compact
 from app.coach.notes import NOTES
+from app.coach.query import _APPROXIMATE_AREAS
 
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
@@ -43,10 +44,15 @@ Run it from the current directory with no pipes or redirection. Several queries 
 `+`, for example `./q where 7 41.5 + knew 7 42 A`. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
 number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name.
-Every answer is a compact block with a header giving the id, command and arguments; cite that id as evidence.
+Every answer is a compact block with a header giving the id, command and arguments. Cite that id as evidence.
 Objects use key:value and scalar lists use brackets. Tables use <key|key; then one row per line, separated by
-semicolons; a blank cell or missing field is null. Empty lists and objects mean none. Strings are quoted when
-ambiguous. An area is ~(name|super|path|approximate), with true marking an approximate area; path is a list.
+semicolons. Rows drop trailing blank cells. A blank cell or missing field is null. Empty lists and objects mean
+none. Strings are quoted when ambiguous. Query areas use (name[path names]^super)~. The bracketed list contains
+the ancestors in path order, followed implicitly by name. It is omitted when path is just [name]. ^super appears
+when super is present. A trailing ~ marks approximate true, and its absence means approximate false.
+Other shapes use the full ~(name|super|path|approximate) form, which the brief also uses.
+A rough place uses @(from direction min-maxm), preserving the nearest teammate, minimap direction and both
+distances in metres, for example @(P0 right 120.0-130.0m). Incomplete or ambiguous shapes keep their full fields.
 An answer with error is not evidence. An answer with available:false means the data is missing for that round.
 
 {COMMANDS}
@@ -66,6 +72,8 @@ tied only to the round.
 # Fixed notes
 
 These apply to every answer of the named command. Any additional note appears below its answer.
+
+{_APPROXIMATE_AREAS}
 
 {fixed_notes}
 

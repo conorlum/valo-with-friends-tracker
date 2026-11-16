@@ -67,7 +67,7 @@ def main(argv=None) -> int:
                         print(query.show(entry) if args.compact
                               else json.dumps({"id": entry["id"], **entry["result"]}))
                 else:
-                    print(compact.render(result) if args.compact else json.dumps(result))
+                    print(compact.render(result, short=True) if args.compact else json.dumps(result))
                 continue
             result = query.run(snap, args.run, command, query_args)
             if args.compact:

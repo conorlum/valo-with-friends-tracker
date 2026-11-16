@@ -102,6 +102,26 @@ def test_default_output_is_one_json_object_per_query(run_dir, monkeypatch, capsy
     assert len(log) == 3
 
 
+def test_compact_and_json_cli_keep_identical_log_bytes(run_dir, tmp_path, monkeypatch, capsys):
+    from app.coach import areas
+    from tests.coach import toys
+
+    monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
+    other = tmp_path / "other"
+    other.mkdir()
+    parts = "where 1 6 + knew 1 6 A + timeline 1".split()
+    original_load = snapfile.load
+    monkeypatch.setattr(snapfile, "load", lambda path: original_load(run_dir))
+    assert invoke(monkeypatch, run_dir, parts, compact=False) == 0
+    json_output = capsys.readouterr().out
+    assert query._APPROXIMATE_AREAS in json_output
+    assert invoke(monkeypatch, other, parts) == 0
+    short_output = capsys.readouterr().out
+    assert "note:" not in short_output and ")~" in short_output
+    assert "@(P0#T0 right 120.0-130.0m)" in short_output
+    assert (other / query.LOG).read_bytes() == (run_dir / query.LOG).read_bytes()
+
+
 @pytest.mark.parametrize("source", ["plan", "write_q"])
 def test_option_orders_and_explicit_argv(run_dir, source, capsys):
     if source == "plan":
