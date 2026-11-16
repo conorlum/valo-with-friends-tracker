@@ -26,6 +26,7 @@ from app.models import Player
 from app.models.replay import (ControlHeight, Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayRoundGapRun,
                                ReplayRoundMoments, ReplayRoundUtil, ReplayUpload)
 from app.models.site_events import SiteEvent
+from app.replays import contract
 from app.services import control_heights as ch, replay_progress as progress
 from app.services.replay_progress import uploads, cf, replay_control, replay_gaps, STEPS, _LABELS
 from app.services.replay_util import Freshness
@@ -595,6 +596,34 @@ def test_upload_kinds(errors, db, linked, key, kwargs):
     assert row["error"] == stored.error
     assert row["figures"]["upload_id"] == stored.id
     assert row["figures"]["size_bytes"] == 123 and row["figures"]["worker_job_id"] == "synthetic-job"
+
+
+def test_agent_holds_are_grouped_by_code_with_all_ids_in_the_query(errors, db):
+    newer = upload(db, 3, status="held", error=contract.waiting_agent_text("Paprika"),
+                   created_at=STAMP - timedelta(hours=1))
+    older = upload(db, 1, status="held", error=contract.waiting_agent_text("Paprika"),
+                   created_at=STAMP - timedelta(hours=3))
+    other = upload(db, 2, status="held", error=contract.waiting_agent_text("Foo"))
+    game = upload(db, 4, status="held", error="recorded on game version 99.99, which is not supported yet")
+    failed = upload(db, 5, error=contract.waiting_agent_text("Paprika"))
+
+    found = kind(errors, db, "upload_held")
+    assert found["count"] == len(found["rows"]) == 3
+    game_row, foo_row, paprika_row = found["rows"]
+    assert game_row["figures"]["upload_id"] == game.id and game_row["error"] == game.error
+    assert foo_row["error"] == "Foo: 1 upload waiting"
+    assert foo_row["figures"] == {"agent_code": "Foo", "uploads": 1, "upload_ids": [other.id]}
+    assert paprika_row["error"] == "Paprika: 2 uploads waiting"
+    assert paprika_row["figures"] == {"agent_code": "Paprika", "uploads": 2,
+                                       "upload_ids": [older.id, newer.id]}
+    assert paprika_row["revision"] == {"created_at": (STAMP - timedelta(hours=3)).isoformat()}
+    assert all(set(row) == FIELDS for row in found["rows"])
+
+    query = errors._rest_query("upload_held", found["rows"])
+    for stored in (newer, older, other, game):
+        assert stored.id in query
+    assert failed.id not in query
+    assert "WHERE u.status = 'held' AND u.id IN (" in query
 
 
 @pytest.mark.parametrize("entries,problem", [

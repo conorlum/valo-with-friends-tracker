@@ -38,6 +38,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -450,7 +451,15 @@ def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | 
     if status == "gone":
         return _finish(db, upload, "failed", GONE_WHILE_HELD)
     if status == HELD or was_held:
-        note = job.get("error") if status == HELD else RELEASED if status in UNFINISHED else upload.error
+        note = upload.error
+        if status == HELD:
+            note = job.get("error")
+        elif status in UNFINISHED:
+            code = contract.waiting_agent_code(upload.error)
+            if code is not None:
+                note = f"the site supports agent {code} now: parsing"
+            elif not re.fullmatch(r"the site supports agent .+ now: parsing", upload.error or ""):
+                note = RELEASED
         if (upload.status, upload.error) != (HELD, note):
             upload.status, upload.error = HELD, note
             db.commit()

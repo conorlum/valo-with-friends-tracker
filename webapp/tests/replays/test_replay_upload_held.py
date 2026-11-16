@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import sessionmaker
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ from test_replay_worker_archive import start_archive  # noqa: E402
 from test_replay_worker_held import new_patch_bytes  # noqa: E402
 
 from app.models.replay import Replay, ReplayUpload  # noqa: E402
+from app.replays import contract  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
 
@@ -85,6 +87,17 @@ def test_a_held_upload_never_times_out_and_is_stored_once_the_worker_parses_it(d
     upload = uploads.refresh_job(db, upload, ScriptedWorker({"status": "done", "result": result_of(condensed)}))
     assert upload.status == "stored" and upload.error is None and upload.archive_ack == "archived"
     assert db.get(Replay, upload.replay_id).source_sha256 == condensed.source_sha256
+
+
+@pytest.mark.parametrize("status", ("queued", "parsing"))
+def test_an_agent_release_note_survives_repeated_polls_and_an_unreachable_worker(db, status):
+    upload = held_row(db, note=contract.waiting_agent_text("Paprika"))
+    for worker_status in (status, "parsing"):
+        upload = uploads.refresh_job(db, upload, ScriptedWorker({"status": worker_status}))
+        db.expire_all()
+        assert (upload.status, upload.error) == ("held", "the site supports agent Paprika now: parsing")
+    upload = uploads.refresh_job(db, upload, ScriptedWorker(uploads.WorkerError("unreachable")))
+    assert (upload.status, upload.error) == ("held", "the site supports agent Paprika now: parsing")
 
 
 def test_a_held_upload_the_worker_no_longer_has_fails_with_a_plain_reason(db):

@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.site_events import SiteEvent
-from app.replays import control_format as cf
+from app.replays import contract, control_format as cf
 from app.models.replay import (Replay, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                ReplayRoundUtil, ReplayUpload, UtilModel)
 from app.services import control_heights, replay_progress, site_health
@@ -551,6 +551,7 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
             if sha not in latest_stored or created > latest_stored[sha]:
                 latest_stored[sha] = created
     cutoff = _utc(now()) - timedelta(hours=1)
+    agent_holds = {}
     for upload in uploads:
         kinds = []
         superseded = (upload.source_sha256 is not None and upload.source_sha256 in latest_stored
@@ -559,7 +560,11 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
         if upload.status == "failed" and not superseded and not retired:
             kinds.append("upload_failed")
         if upload.status == "held":
-            kinds.append("upload_held")
+            code = contract.waiting_agent_code(upload.error)
+            if code is None:
+                kinds.append("upload_held")
+            else:
+                agent_holds.setdefault(code, []).append(upload)
         if upload.store_outcome == "failed" and not superseded and not retired:
             kinds.append("store_failed")
         if (upload.status == "stored" and upload.archive_ack is None
@@ -573,6 +578,13 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                 figures={"upload_id": str(upload.id), "size_bytes": upload.size_bytes,
                          "worker_job_id": upload.worker_job_id},
                 revision={"created_at": _iso(upload.created_at), "finished_at": _iso(upload.finished_at)}))
+
+    for code, held in sorted(agent_holds.items()):
+        count = len(held)
+        rows["upload_held"].append(_row(
+            error=f"{code}: {count} upload{'s' if count != 1 else ''} waiting",
+            figures={"agent_code": code, "uploads": count, "upload_ids": sorted(str(upload.id) for upload in held)},
+            revision={"created_at": _iso(min(_utc(upload.created_at) for upload in held))}))
 
     for replay in replays.values():
         if replay.link_status in ("unlinked", "refused"):
@@ -781,8 +793,10 @@ def _rest_query(key, rows):
     filters = {"upload_failed": "u.status = 'failed'", "upload_held": "u.status = 'held'",
                "store_failed": "u.store_outcome = 'failed'", "ack_missing": "u.archive_ack IS NULL",
                "stuck": "u.status IN ('queued', 'parsing')"}
-    if key in filters and all("upload_id" in r["figures"] for r in rows):
-        ids = ", ".join(_sql_string(r["figures"]["upload_id"]) for r in rows)
+    if key in filters and all("upload_id" in r["figures"] or "upload_ids" in r["figures"] for r in rows):
+        ids = ", ".join(_sql_string(upload_id) for r in rows
+                        for upload_id in ([r["figures"]["upload_id"]] if "upload_id" in r["figures"]
+                                          else r["figures"]["upload_ids"]))
         return ("SELECT u.id, u.replay_id, u.status, u.error, u.created_at, u.finished_at, "
                 "u.worker_job_id, u.store_outcome, u.archive_ack FROM replay_uploads u "
                 f"WHERE {filters[key]} AND u.id IN ({ids}) ORDER BY u.id;")
