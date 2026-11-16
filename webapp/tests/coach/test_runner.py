@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from app.coach import query, runner, snapshot
+from app.coach import compact, prompt, query, runner, snapshot
 from app.coach.playbook import Playbook
 from scripts import coach_report
 from tests.coach import toys
@@ -60,7 +60,28 @@ def test_the_flags_are_logged_first_and_shown_with_their_ids(snap, tmp_path):
     payload, model = run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
     log = query.read_log(tmp_path)
     assert log["q1"]["cmd"] == "flag"
-    assert '"id": "q1"' in model.prompts[0][0] or '"id":"q1"' in model.prompts[0][0]
+    rendered = model.prompts[0][0].split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    assert any(flag["id"] == "q1" for r in compact.parse(rendered)["rounds"] for flag in r["flags"])
+
+
+def test_the_compact_prompt_keeps_every_runner_evidence_id(snap, tmp_path, monkeypatch):
+    from tests.coach.test_compact import drop_nulls
+
+    monkeypatch.setattr(snap, "util", lambda n: {
+        "casts": [{"slot": 0, "t": 67.35, "ability": "Fakeout", "kind": "device", "value": 0.0,
+                   "trigger": 77.02, "presence": {"life_s": 5.97}}],
+        "unused": [{"slot": 0, "t": 69.25, "kind": "held_at_death", "abilities": ["Blindside"]}]})
+    brief, logged = runner._brief_with_flag_ids(snap, 0, tmp_path)
+    text = prompt.run_prompt(BOOK, brief)
+    rendered = text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    parsed = compact.parse(rendered)
+    assert json.dumps(parsed, sort_keys=True) == json.dumps(drop_nulls(brief), sort_keys=True)
+    flag_ids = [f["id"] for r in parsed["rounds"] for f in r["flags"]]
+    facts_ids = [r["facts_id"] for r in parsed["rounds"] if "facts_id" in r]
+    util_ids = [f["id"] for r in parsed["rounds"] for f in r["util_facts"]]
+    assert flag_ids and facts_ids and util_ids
+    assert set(flag_ids + facts_ids + util_ids) == set(logged)
+    assert all(evidence_id in rendered for evidence_id in logged)
 
 
 def test_a_checked_report_becomes_a_storable_payload(snap, tmp_path):
@@ -460,7 +481,7 @@ def test_each_rounds_economy_and_score_can_be_cited(snap, tmp_path):            
 
     class Facts(Model):
         def __call__(self, text, session):
-            brief = json.loads(text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]) \
+            brief = compact.parse(text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]) \
                 if "# The brief" in text else None
             if brief:
                 self.facts = brief["rounds"][0]["facts_id"]

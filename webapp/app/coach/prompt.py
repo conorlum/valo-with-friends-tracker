@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from app.coach import compact
 from app.coach.notes import NOTES
 
 COMMANDS = """\
@@ -72,7 +73,7 @@ For Haunt and Recon, `area` is where the pulse looked and found nobody of that n
 
 # The brief
 
-{json.dumps(brief, separators=(",", ":"))}
+{compact.render(brief)}
 
 # What to return
 

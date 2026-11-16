@@ -1,4 +1,6 @@
-from app.coach import prompt
+import json
+
+from app.coach import compact, prompt
 from app.coach.playbook import Playbook
 
 BOOK = Playbook("4", ("trading", "rotation"), "# Principles\n- Trade your teammate.")
@@ -8,10 +10,37 @@ BRIEF = {"v": 1, "subject": {"name": "Owner#1"}, "match": {"map": "Ascent"}, "ro
 
 def test_the_run_prompt_carries_the_playbook_brief_and_the_command():
     text = prompt.run_prompt(BOOK, BRIEF)
-    assert "Trade your teammate." in text and '"Owner#1"' in text
+    assert "Trade your teammate." in text
+    rendered = text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    assert compact.parse(rendered)["subject"] == BRIEF["subject"]
     assert "./q where" in text and "./q knew" in text and "trading, rotation" in text
     assert '"points"' in text and '"evidence"' in text
     assert "one second before the moment" in text and "area.path" in text
+
+
+def test_the_run_prompt_brief_round_trips_measured_and_unused_utility():
+    from tests.coach.test_compact import drop_nulls
+
+    fact = {"t": 67.35, "ability": "Fakeout", "kind": "device", "value": 0.0,
+            "enemies_affected": 0, "kills": 0, "teammates_hit": 0, "teammate_died_affected": 0,
+            "followed": None, "wasted": False, "trigger": 77.02, "life_s": 5.97,
+            "landed_area": {"name": "A Main", "super": "A", "path": ["A Main"], "approximate": True},
+            "id": "q12"}
+    unused = {"t": 69.25, "kind": "held_at_death", "held": ["Blindside"], "points": None}
+    brief = {**BRIEF,
+             "rounds": [{"round": 1, "facts_id": "q2", "stats": {"impact": 59.0, "kills": 0},
+                         "economy": {"team-1": {"loadout": 3600, "remaining": 700},
+                                     "team-2": {"loadout": 3950, "remaining": 100}},
+                         "flags": [{"id": "q1", "values": {"empty": "", "unknown": None}}],
+                         "util_facts": [fact, unused,
+                                        {**fact, "id": "q13", "smokes_near_landing": [
+                                            {"ability": "Dark Cover", "side": "enemy", "metres": 19.0625,
+                                             "radius_m": 4.0}]}],
+                         "utility": [{"t": 67.35, "ability": "Fakeout", "hits": []},
+                                     {"t": 59.0, "ability": "Blindside", "hits": [], "extra": {}}]}]}
+    text = prompt.run_prompt(BOOK, brief)
+    rendered = text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    assert json.dumps(compact.parse(rendered), sort_keys=True) == json.dumps(drop_nulls(brief), sort_keys=True)
 
 
 def test_the_run_prompt_asks_for_no_voice():
