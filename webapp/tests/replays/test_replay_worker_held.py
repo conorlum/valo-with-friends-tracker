@@ -482,3 +482,109 @@ def test_an_agent_hold_past_its_ttl_is_deleted_with_the_agent_text(tmp_path, stu
         assert not (disk / "jobs" / job_id / "upload.vrf").exists()
     finally:
         httpd.shutdown()
+
+
+# ------------------------------------------------------------------ hold kinds are mutually exclusive
+
+
+def seed_job(tmp_path, job_id, **fields):
+    folder = tmp_path / "disk" / "jobs" / job_id
+    folder.mkdir(parents=True)
+    body = vrf_bytes()
+    (folder / "upload.vrf").write_bytes(body)
+    arc.write_json(folder / "job.json", {"id": job_id, "kind": "upload", "sha256": hashlib.sha256(body).hexdigest(),
+                                         "size": len(body), "created": time.time() - 3600, **fields})
+    return folder
+
+
+def wait_for(predicate, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+def test_a_released_agent_hold_the_parser_then_refuses_is_only_a_parser_hold(tmp_path, stub, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(server, "current_recipe", lambda: "the recipe")
+    seed_job(tmp_path, "excl0001", status="held", waiting_agent=CODE, error=waiting_agent_text(CODE))
+    real = condense.load_agents()
+    monkeypatch.setattr(condense, "load_agents", lambda *a, **k: {**real, "NOTANAGENT": "Someone"})
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="fail-unsupported-patch")
+    try:
+        assert wait_for(lambda: worker.get("excl0001").parser_pin is not None)
+        job = worker.get("excl0001")
+        assert job.status == "held" and job.waiting_agent is None
+        time.sleep(1.5)                                    # the agent signal must not release it again
+        body = get(base, "/jobs/excl0001")[1]
+        assert body["status"] == "held" and "waiting_agent" not in body
+        assert "may not be supported yet" in body["error"] and CODE not in body["error"]
+        archive = get(base, "/health")[1]["archive"]
+        assert archive["held_agents"] == [] and archive["held"] == 1
+        assert "waiting_agent" not in arc.read_json(disk / "jobs" / "excl0001" / "job.json", {})
+    finally:
+        httpd.shutdown()
+    # ...and after a restart it is still one parser hold, not released by the (now supported) agent.
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="fail-unsupported-patch")
+    try:
+        time.sleep(1.5)
+        body = get(base, "/jobs/excl0001")[1]
+        assert body["status"] == "held" and "waiting_agent" not in body
+        assert "may not be supported yet" in body["error"]
+        assert get(base, "/health")[1]["archive"]["held_agents"] == []
+    finally:
+        httpd.shutdown()
+
+
+def test_a_saved_job_with_both_hold_markers_recovers_as_a_parser_hold(tmp_path, stub, monkeypatch):  # noqa: F811
+    """What an earlier worker wrote after that transition: it must not be released by the agent signal."""
+    monkeypatch.setattr(server, "current_recipe", lambda: "the recipe")
+    seed_job(tmp_path, "excl0002", status="held", waiting_agent=CODE, parser_pin="the recipe",
+             detail="this patch may not be supported yet", error=waiting_agent_text(CODE))
+    seed_job(tmp_path, "excl0003", status="queued", waiting_agent=CODE, parser_pin="the recipe",
+             detail="this patch may not be supported yet")
+    real = condense.load_agents()
+    monkeypatch.setattr(condense, "load_agents", lambda *a, **k: {**real, "NOTANAGENT": "Someone"})
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="fail-unsupported-patch")
+    try:
+        time.sleep(1.5)
+        for job_id in ("excl0002", "excl0003"):
+            body = get(base, f"/jobs/{job_id}")[1]
+            assert body["status"] == "held" and "waiting_agent" not in body, body
+            assert "may not be supported yet" in body["error"] and CODE not in body["error"]
+        assert get(base, "/health")[1]["archive"]["held_agents"] == []
+    finally:
+        httpd.shutdown()
+
+
+def test_an_agent_hold_on_a_job_with_an_earlier_build_or_refusal_hold_clears_those(tmp_path, stub, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(server, "current_recipe", lambda: "the new recipe")
+    seed_job(tmp_path, "excl0004", status="held", game_build=NEW, parser_pin="an old recipe",
+             detail="this patch may not be supported yet", error="the parser refused this file")
+    worker, httpd, base, disk = start_archive(tmp_path, stub, mode="unknown_agent")
+    try:
+        assert wait_for(lambda: worker.get("excl0004").waiting_agent == CODE)
+        assert wait_for(lambda: worker.get("excl0004").status == "held")
+        job = worker.get("excl0004")
+        assert job.game_build is None and job.parser_pin is None and job.error == waiting_agent_text(CODE)
+        archive = get(base, "/health")[1]["archive"]
+        assert archive["held_agents"] == [CODE] and archive["held_builds"] == []
+        saved = arc.read_json(disk / "jobs" / "excl0004" / "job.json", {})
+        assert saved["waiting_agent"] == CODE and "game_build" not in saved and "parser_pin" not in saved
+    finally:
+        httpd.shutdown()
+
+
+def test_a_build_hold_established_on_a_job_carrying_an_agent_marker_clears_it(tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        folder = seed_job(tmp_path, "excl0005", status="queued")
+        job = server.Job("excl0005", folder, "0" * 64, 10)
+        job.game_build, job.waiting_agent = NEW, CODE
+        worker._hold(job)
+        assert job.status == "held" and job.waiting_agent is None and job.parser_pin is None
+        archive = get(base, "/health")[1]["archive"]
+        assert archive["held_agents"] == [] and archive["held_builds"] == [NEW]
+    finally:
+        httpd.shutdown()

@@ -822,6 +822,7 @@ class Worker:
                 held_bytes = sum(j.size for j in self.jobs.values() if j.status == "held")
                 if held_bytes + job.size <= HELD_MAX_BYTES:
                     job.status, job.error, held = "held", held_reason(job.game_build), True
+                    job.waiting_agent = job.parser_pin = None    # hold kinds are exclusive
                     self.jobs[job.id] = job
         if held:
             _log(f"job {job.id} held: {job.game_build} is not supported by the pinned parser")
@@ -1198,6 +1199,7 @@ class Worker:
                         held_bytes = sum(j.size for j in self.jobs.values() if j.status == "held")
                         if held_bytes + job.size <= HELD_MAX_BYTES:
                             job.status, job.game_build, job.parser_pin = "held", build, self.recipe
+                            job.waiting_agent = None    # hold kinds are exclusive: this one is not an agent hold
                             job.error, job.finished = refused_text, None
                             job.run_id = job.run_token = job.run_deadline = None
                             held_now = True
@@ -1452,6 +1454,13 @@ class Worker:
                       waiting_agent=record.get("waiting_agent"), run_id=record.get("run_id"),
                       run_token=record.get("run_token"), run_deadline=record.get("run_deadline"))
             shutil.rmtree(folder / "export", ignore_errors=True)
+            if job.waiting_agent and job.parser_pin:
+                # Saved by a worker that let a parser refusal keep an agent hold's marker. The refusal came last
+                # (an agent hold clears the pin), so it is the one hold this job has.
+                job.waiting_agent = None
+                if job.status == "held":
+                    job.error = parser_refused_reason(job.detail or "the parser refused this file")
+                self._save(job)
             if job.status == "expiring":
                 job.status = "held"                     # a sweep died mid-claim: it expires again on the next one
             if job.status == "held":
