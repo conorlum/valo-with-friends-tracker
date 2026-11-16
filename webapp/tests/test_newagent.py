@@ -4,6 +4,7 @@ import ast
 import io
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -42,6 +43,21 @@ def snapshot(root):
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+def _without_hush(root):
+    """The real tables now hold Hush; put the copies back to the state before it was added."""
+    def rewrite(relative, pattern, replacement=b""):
+        path = root / relative
+        data = path.read_bytes()
+        out, count = re.subn(pattern, replacement, data, flags=re.DOTALL)
+        assert count == 1, relative
+        path.write_bytes(out)
+
+    rewrite(TABLES[0], rb' {2}"Paprika": "Hush",\r?\n')
+    rewrite(TABLES[1], rb'"Hush", ')
+    rewrite(TABLES[2], rb' {2}"Hush": \{.*?\r?\n {2}\},\r?\n')
+    rewrite(TABLES[3], rb' {4}"Hush": \{[^\n]*\n')
+
+
 @pytest.fixture
 def identity_case(tmp_path, monkeypatch):
     root = tmp_path / "webapp"
@@ -49,6 +65,7 @@ def identity_case(tmp_path, monkeypatch):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(WEBAPP / relative, target)
+    _without_hush(root)
     # Unrelated art must remain intact too.
     for relative in ("app/static/img/agents/waylay.png", "app/static/img/abilities/waylay/ability1.png"):
         target = root / relative

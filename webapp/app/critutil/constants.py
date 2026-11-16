@@ -81,6 +81,7 @@ AGENT_KEYS = {
     "Fade": {"C": ("Prowler", "status"), "Q": ("Seize", "status"), "E": ("Haunt", "info")},
     "Gekko": {"C": ("Mosh Pit", "damaging"), "Q": ("Wingman", "status"), "E": ("Dizzy", "blind")},
     "Harbor": {"C": ("Storm Surge", "status"), "Q": ("High Tide", "smoke"), "E": ("Cove", "smoke")},
+    "Hush": {"C": ("Flow", "dash"), "Q": ("Flashbulb", "blind"), "E": ("Displacement", "status")},
     "Iso": {"C": ("Contingency", "other"), "Q": ("Undercut", "status"), "E": ("Double Tap", "other")},
     "Jett": {"C": ("Cloudburst", "smoke"), "Q": ("Updraft", "dash"), "E": ("Tailwind", "dash")},
     "KAY/O": {"C": ("FRAG/ment", "damaging"), "Q": ("FLASH/drive", "blind"), "E": ("ZERO/point", "status")},
