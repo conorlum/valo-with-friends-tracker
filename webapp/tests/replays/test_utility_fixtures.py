@@ -12,7 +12,7 @@ import pytest
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "replays" / "utility"
 NAMES = ["deadlock_sensor_hook", "deadlock_wall_broken", "deadlock_wall_full", "hush_displacement",
-         "hush_flashbulb_empty", "hush_flashbulb_overhand", "hush_flashbulb_underhand", "hush_flow",
+         "hush_displacement_concuss", "hush_flashbulb_empty", "hush_flashbulb_overhand", "hush_flashbulb_underhand", "hush_flow",
          "hush_suspension", "kayo_knife_empty", "kayo_knife_hits",
          "kayo_ult", "omen_ult", "phoenix_blaze", "phoenix_curveball", "phoenix_ult", "sage_wall",
          "skye_flash_empty", "skye_flash_hits", "vyse_wall_untriggered", "waylay_recall"]
@@ -158,3 +158,29 @@ def test_hush_rows_keep_the_shapes_the_readers_depend_on():
     assert len(levitates) == 2 and all(
         r["payload"]["Source"]["net_guid"] in spawns and r["payload"]["Duration"] == 4 for r in levitates)
     assert all(spawns[r["payload"]["Source"]["net_guid"]]["time_ms"] == r["time_ms"] for r in levitates)
+
+
+def test_a_displacement_that_hits_a_wall_leaves_a_concuss_naming_hush_beside_its_blocked_move():
+    """A1 (2026-11-15, two exports, 3 pulls): the 2 pulls that were stopped (by a wall) each play
+    FXC_Global_ConcussedWavy_Prototype naming the area's owner, in the ms of the first FXC_Paprika_E_ForceModule_
+    PulledMovementBlocked one-shot on that player, within the pull's 0.5 s; it carries no length (Buff.Duration -1) and
+    ends with a stop. The third pull (1d76e723) was stopped by nothing and played neither."""
+    data = rows("hush_displacement_concuss")
+    area = next(r for r in data if r["type"] == "actor_spawned")
+    owner = next(r for r in data if r["type"] == "export_group_received")["payload"]["Instigator"]["net_guid"]
+    pulls = {r["actor_net_guid"]: r["time_ms"] for r in data if r.get("function_name") == "NetMulticastApplyForceModule"}
+    assert set(pulls) == {1204, 1422} and area["archetype_path"].endswith("Paprika_E_RedirectPullArea_C")
+    plays = [r for r in data if r.get("function_name") == "MulticastPlayContinuousEffect"]
+    assert len(plays) == 2
+    for play in plays:
+        victim, payload = play["actor_net_guid"], play["payload"]
+        assert payload["EffectContainer"]["path"].endswith("FXC_Global_ConcussedWavy_Prototype_C")
+        assert [v["Value"]["net_guid"] for v in payload["FunctionObjectValues"]] == [owner]
+        assert [f["Value"] for f in payload["FunctionFloatValues"]] == [-1]
+        assert 0 <= play["time_ms"] - pulls[victim] <= 500
+        blocked = [r["time_ms"] for r in data if r.get("function_name") == "MulticastPlayOneShotEffect"
+                   and r["actor_net_guid"] == victim and "PulledMovementBlocked" in json.dumps(r)]
+        assert min(blocked) == play["time_ms"]
+        stop = [r for r in data if r.get("function_name") == "MulticastStopContinuousEffect"
+                and r["actor_net_guid"] == victim and r["payload"]["EffectId"] == payload["EffectId"]]
+        assert len(stop) == 1 and 1500 <= stop[0]["time_ms"] - play["time_ms"] <= 1900

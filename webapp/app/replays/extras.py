@@ -350,6 +350,9 @@ class Raw:
     # (contract._unwrap_reference) turns the `{"net_guid", "path"}` reference into a bare guid; a module written as a
     # bare guid (schema 8) has no path and is not kept here. `forces` is unchanged.
     force_modules: list[tuple[int, int, int, str, float | None]] = field(default_factory=list)
+    # The net guids (per export) of the effect container `CONCUSS_CONTAINER`, found by the path the row writes for it
+    # (A1): a concuss is told apart from the other global effects by its name, which the unwrapped rows no longer carry.
+    concuss_containers: set[int] = field(default_factory=set)
     # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
     # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
@@ -549,7 +552,9 @@ MOVEMENT_EQUIPPABLES = {
 #   FXC_Paprika_E_GameObject_ExplosionCenterDirectionIndicator, FXC_Paprika_E_GameObject_ExplosionWindup,
 #   FXC_Paprika_E_ProjectileSkelMeshProxy, FXC_Paprika_E_Projectile_PreRedirectHoverIdleAudio,
 #   FXC_Paprika_E_Projectile_RedirectActivated, and FXC_Paprika_E_ForceModule_PulledMovementBlocked (a pulled player
-#   stopped by a wall, 3 times; the pull itself is the force row), FXC_Paprika_Global_AbilityInitialFuseTimer (shared
+#   stopped by a wall or a player, 3 times: the same ms as the `FXC_Global_ConcussedWavy_Prototype` that IS read, as a
+#   `concussed` status after the pull, see CONCUSS_CONTAINER; the one-shot itself names nothing and is not read),
+#   FXC_Paprika_Global_AbilityInitialFuseTimer (shared
 #   by her thrown abilities);
 # - looks, sounds and windup of Flashbulb (its blind is the export's own `valorant_flash_player_hit` row, whose
 #   BlindConfig_Paprika_Q_Flash and FXC_Paprika_Q_Blinded are the same event; the end of its windup is the pop row):
@@ -595,6 +600,15 @@ def _force_module(line: str) -> tuple[str | None, float | None]:
         return None, None
     length = payload.get("Duration")
     return path, float(length) if isinstance(length, (int, float)) and not isinstance(length, bool) else None
+
+
+def _effect_container_path(line: str) -> str | None:
+    """The class path a `MulticastPlay*Effect` row writes for its `EffectContainer`, read from the row as written (the
+    shared reader has turned the reference into a bare guid); None when the row names no path (schema 8)."""
+    payload = json.loads(line).get("payload")
+    container = payload.get("EffectContainer") if isinstance(payload, dict) else None
+    path = container.get("path") if isinstance(container, dict) else None
+    return path if isinstance(path, str) and path else None
 
 
 def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
@@ -738,6 +752,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if floats:
                             raw.movement_plays.append((t_ms, guid, floats))
                     context = _context_values(payload)
+                    if guid in pawns and CONCUSS_CONTAINER in line:
+                        named = _effect_container_path(line)
+                        if named is not None and module_name(named) == CONCUSS_CONTAINER \
+                                and isinstance(payload.get("EffectContainer"), int):
+                            raw.concuss_containers.add(payload["EffectContainer"])
                     for value in context:
                         if guid in pawns and value in equip_now:
                             equip_now[value].votes[guid] += 1
@@ -1315,6 +1334,17 @@ FORCE_STATUS = {"ForceModule_Paprika_E_RedirectPull_ContinuousPull": "pulled",
 # A force row without a `Duration`: how long the status lasts. The measured 0.5 s of every Displacement pull; the wiki's
 # 4 s (wiki.playvalorant.com/en-us/Suspension, fetched 2026-11-15; the payload said 4 on 3 of 3).
 FORCE_STATUS_MS = {"pulled": 500, "levitated": 4000}
+# Displacement's pull only concusses a player it stops against something (the owner, 2026-11-15: "either another player
+# or a wall"). The export shows it as `FXC_Global_ConcussedWavy_Prototype` played on the pulled character, naming the
+# area's owner's pawn (context), a continuous effect with no duration tag (`FXC.Buff.Duration` -1: it lasts until its
+# stop), starting in the ms of the first `PulledMovementBlocked` one-shot on that player. Measured on the two Hush exports
+# (3 pulls): the 2 that were stopped concuss, 297 and 414 ms after the force row, for 1.8 and 1.6 s; the 1 stopped by
+# nothing plays neither. The container is found by that name (`Raw.concuss_containers`), its net guid being per export.
+# It is a status of the pull only when it starts within PULL_CONCUSS_AFTER_MS of that pull's force row (the pull's own
+# length, 0.5 s, the longest a pull moves a player) on the same player and names the area's owner; any other concuss
+# in that container (another agent's, with its own source object or a caster-named run) is read as before.
+CONCUSS_CONTAINER = "FXC_Global_ConcussedWavy_Prototype"
+PULL_CONCUSS_AFTER_MS = 500
 # Objects that are bookkeeping, not utility: no ability row (counted as `paprika_plumbing_skipped`).
 PLUMBING = re.compile(r"^Paprika_X_ForceProxyManager$")
 
@@ -1487,7 +1517,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
                   forces: list[tuple[int, int, int]] = (), trips: list[_Actor] = (),
                   trip_until: dict[int, int | None] | None = None,
                   trip_owner: dict[int, int | None] | None = None,
-                  force_modules: list[tuple[int, int, int, str, float | None]] = ()) -> list[dict]:
+                  force_modules: list[tuple[int, int, int, str, float | None]] = (),
+                  concuss_containers: frozenset[int] | set[int] = frozenset()) -> list[dict]:
     """[{t_ms, t1_ms, by, target, code, name, status, from}]: players an enemy's ability put a status
     on, from when to when. Two shapes, both effects played on the hit player's character:
 
@@ -1498,7 +1529,9 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
       that caster's status objects spawned (Iso's Fragile, Gekko's concuss). The source is that object.
 
     A third shape is a force row on the hit player's character whose module is in FORCE_STATUS and whose Source is the
-    ability object (`force_modules`; "force": Hush's pull and levitation). A levitated row also carries `src`.
+    ability object (`force_modules`; "force": Hush's pull and levitation). A levitated row also carries `src`. A
+    pull that concussed its victim (the concuss effect named in CONCUSS_CONTAINER, in `concuss_containers`, naming the
+    area's owner within PULL_CONCUSS_AFTER_MS of the force row) adds a `concussed` row from the same area and owner.
 
     Never the applier themself, and with `teams`, only their enemies, except a DEBUFF_ONLY object's debuff,
     which the game puts on teammates too (the export says who). A continuous effect lasts until
@@ -1640,9 +1673,21 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         by = owner(source)
         end = t_ms + (round(length * 1000) if length is not None else FORCE_STATUS_MS[label])
         if enemies(by, target):
-            hits.append((t_ms, end, source, target, label, "force"))
+            how = "force"
         elif teams and by is not None and by != target and teams.get(by) is not None:
-            hits.append((t_ms, end, source, target, label, "force_friendly"))
+            how = "force_friendly"
+        else:
+            continue
+        hits.append((t_ms, end, source, target, label, how))
+        if label == "pulled" and by is not None:
+            # The pull stopped the player against a wall or a player: the global concuss effect naming the area's owner,
+            # on the pulled character, starting within PULL_CONCUSS_AFTER_MS of the force row. Its own length is its stop.
+            for effect in effects:
+                if effect.actor == character and effect.container in concuss_containers \
+                        and t_ms <= effect.t_ms <= t_ms + PULL_CONCUSS_AFTER_MS \
+                        and any(caster(value, effect.t_ms) == by for value in effect.context):
+                    hits.append((effect.t_ms, effect.t_ms + span(effect, "concussed", source), source, target,
+                                 "concussed", how))
     # One run per (source, target, status): a trip's two anchors count as one source, its tether and
     # its going off as two statuses. A levitated run is per zone (its row names it, `src`).
     merged: dict[tuple, list[list]] = defaultdict(list)
@@ -2629,7 +2674,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams, raw.forces,
                              trips=trips, trip_until=trip_until, trip_owner=trip_owner,
-                             force_modules=raw.force_modules)
+                             force_modules=raw.force_modules, concuss_containers=raw.concuss_containers)
     for status in statuses:
         if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed"                 and not status.get("friendly"):
             # Going off reveals the player it caught (it's also a concuss).

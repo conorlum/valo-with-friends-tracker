@@ -1383,6 +1383,20 @@ def test_a_hush_status_cast_is_hers_with_its_projectile_and_area_as_one_use():
     assert c["enemies"] == [5]
 
 
+def test_a_displacement_pull_that_hit_a_wall_counts_its_concuss_in_the_same_use():
+    # A1 (2026-11-15): the pulled player was stopped by a wall and got a `concussed` row (by Hush, named for her area, as
+    # the pull is), starting 0.3 s into the pull and playing 1.8 s: one cast, one enemy, both hows on it
+    util = [toy_ability("Paprika", "E_RedirectPull", 200, 200, 1, t=5.0, t1=5.75, kind="Projectile"),
+            toy_ability("Paprika", "E_RedirectPullArea", 300, 200, 1, t=5.75, t1=7.05, kind="GameObject", id=31),
+            {"k": "status", "t": 6.55, "t1": 7.05, "by": 1, "target": 5, "code": "Paprika", "name": "E_RedirectPullArea",
+             "status": "pulled", "from": "force"},
+            {"k": "status", "t": 6.85, "t1": 8.65, "by": 1, "target": 5, "code": "Paprika", "name": "E_RedirectPullArea",
+             "status": "concussed", "from": "force"}]
+    (c,) = cast_by(run(util), 1)
+    assert (c["ability_id"], c["type"], c["kinds"], c["enemies"]) == ("Hush/Displacement", "status", ["status"], [5])
+    assert sorted((e["how"], e["target"]) for e in c["effects"]) == [("concussed", 5), ("pulled", 5)]
+
+
 def test_a_suspension_joins_the_status_whose_src_names_its_zone():
     # two Suspensions by one Hush: each levitated row belongs to the zone it names, not to the latest cast of the name
     util = [toy_ability("Paprika", "X_FullBendPop", 200, 200, 1, t=5.0, t1=5.7, kind="Projectile"),
