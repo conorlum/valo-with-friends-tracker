@@ -368,7 +368,13 @@ SAMPLE_SCALE = {"spawn_transform": 1.0, "replicated_movement": 100.0}
 # An explosion's evidence -> the scale of its own location: a flash source actor's spawn point is in world
 # units; `stop_projectile_rpc` copies the projectile's last replicated sample, so its unit and its age are
 # that sample's (`_pop`).
-POP_SOURCE_SCALE = {"skye_flash_source": 1.0, "vyse_flash_source": 1.0}
+# Hush's Flashbulb (2026-11-15, 22 of 22 casts in two exports, `flash_windup_ended`): the row's own location is in
+# metres (x 100) and equals the flight's last replicated sample, where the bulb came to rest; the pop follows that
+# sample by 418-502 ms (its windup), so the sample's age says nothing about the row. Every hit is in the pop's own
+# ms (+8 ms once) and no cast of 22 lacks the row, so it proves the flash went off. The pop is that row's place.
+POP_SOURCE_SCALE = {"skye_flash_source": 1.0, "vyse_flash_source": 1.0, "flash_windup_ended": 100.0}
+# What a placed explosion's `src` says it came from; any other evidence in POP_SOURCE_SCALE is a flash source actor.
+POP_SOURCE_NAME = {"flash_windup_ended": "flash_windup"}
 # Evidence that the flash really went off. Anything else (an actor that only closed) proves nothing.
 COMPLETED_EVIDENCE = frozenset({"stop_projectile_rpc", *POP_SOURCE_SCALE})
 # A copied sample this old at the explosion is where the flash was, not where it popped: the position is
@@ -559,7 +565,7 @@ def _pop(found: tuple[int, dict, str] | None, flight: list, counts: Counter) -> 
     scale = POP_SOURCE_SCALE.get(evidence)
     if scale is not None:
         out.update({"x": x * scale, "y": y * scale, "z": None if z is None else float(z) * scale,
-                    "src": "flash_source", "age_ms": 0})
+                    "src": POP_SOURCE_NAME.get(evidence, "flash_source"), "age_ms": 0})
         counts["flash_pops_placed"] += 1
         return out
     same = [s for s in flight if s[4] == "replicated_movement" and s[0] <= t_ms

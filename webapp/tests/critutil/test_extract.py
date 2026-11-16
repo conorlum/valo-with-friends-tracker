@@ -1367,3 +1367,56 @@ def test_veto_casts_are_named_and_a_chokehold_is_one_trap_triggered_by_its_tethe
     assert choke["trigger"] == pytest.approx(20.39, abs=0.011) and choke["set_off_kind"] == "fired"
     assert choke["enemies"] == [5]
     assert len(by_ability["Veto/Interceptor"]) == 1 and by_ability["Veto/Crosscut"][0]["type"] == "teleport"
+
+
+# --- Hush (W9): the rows her abilities leave, as the two real exports give them (2026-11-15)
+
+
+def test_a_hush_status_cast_is_hers_with_its_projectile_and_area_as_one_use():
+    # Displacement: the thrown projectile, the area it makes where it lands, and the pull it puts on an enemy
+    util = [toy_ability("Paprika", "E_RedirectPull", 200, 200, 1, t=5.0, t1=5.75, kind="Projectile"),
+            toy_ability("Paprika", "E_RedirectPullArea", 300, 200, 1, t=5.75, t1=7.05, kind="GameObject", id=31),
+            {"k": "status", "t": 6.55, "t1": 7.05, "by": 1, "target": 5, "code": "Paprika", "name": "E_RedirectPullArea",
+             "status": "pulled", "from": "force"}]
+    (c,) = cast_by(run(util), 1)
+    assert (c["ability_id"], c["type"], c["kinds"]) == ("Hush/Displacement", "status", ["status"])
+    assert c["enemies"] == [5]
+
+
+def test_a_suspension_joins_the_status_whose_src_names_its_zone():
+    # two Suspensions by one Hush: each levitated row belongs to the zone it names, not to the latest cast of the name
+    util = [toy_ability("Paprika", "X_FullBendPop", 200, 200, 1, t=5.0, t1=5.7, kind="Projectile"),
+            toy_ability("Paprika", "X_LevitateZone", 300, 200, 1, t=5.73, t1=12.7, kind="GameObject", id=17052),
+            toy_ability("Paprika", "X_FullBendPop", 200, 200, 1, t=6.0, t1=6.7, kind="Projectile"),
+            toy_ability("Paprika", "X_LevitateZone", 300, 200, 1, t=6.73, t1=13.7, kind="GameObject", id=17170),
+            {"k": "status", "t": 6.8, "t1": 10.8, "by": 1, "target": 5, "code": "Paprika", "name": "X_LevitateZone",
+             "status": "levitated", "from": "force", "src": 17052}]
+    casts = cast_by(run(util), 1)
+    assert [(c["ability_id"], c["type"], sorted(c["kinds"])) for c in casts] == [
+        ("Hush/Suspension", "ult", ["status", "ult"])] * 2
+    assert [c["enemies"] for c in casts] == [[5], []], "the first zone's cast, not the later one that also fits by name"
+
+
+def test_one_real_flow_is_one_dash_use_of_the_c_slot():
+    # hush_flow: the move starts (the cast row) in the same ms the anchor spawns; the anchor lives 2.5 s
+    util = [{"k": "cast", "t": 17.477, "by": 1, "code": "Paprika", "name": "4_PullBlast"},
+            toy_ability("Paprika", "4_PullBlast", 300, 200, 1, t=17.477, t1=19.97, kind="GameObject")]
+    casts = cast_by(run(util, t_end=40.0), 1)
+    assert [(c["ability_id"], c["type"], c["kinds"]) for c in casts] == [("Hush/Flow", "dash", ["dash"])]
+    assert extract.DASH_ANCHOR_S >= 0.01 and extract.DASH_ANCHOR_S <= 1.0
+
+
+def test_a_flow_anchor_whose_move_never_happened_is_a_dash_use_of_its_own_and_a_second_flow_is_a_second_use():
+    util = [toy_ability("Paprika", "4_PullBlast", 300, 200, 1, t=10.0, t1=12.5, kind="GameObject"),   # cast cut short
+            {"k": "cast", "t": 20.0, "by": 1, "code": "Paprika", "name": "4_PullBlast"},
+            toy_ability("Paprika", "4_PullBlast", 300, 200, 1, t=20.0, t1=22.5, kind="GameObject")]
+    casts = cast_by(run(util, t_end=40.0), 1)
+    assert [(c["t"], c["ability_id"], c["kinds"]) for c in casts] == [(10.0, "Hush/Flow", ["dash"]),
+                                                                       (20.0, "Hush/Flow", ["dash"])]
+
+
+def test_a_flow_anchor_only_joins_its_own_players_cast():
+    util = [{"k": "cast", "t": 20.0, "by": 0, "code": "Paprika", "name": "4_PullBlast"},
+            toy_ability("Paprika", "4_PullBlast", 300, 200, 1, t=20.0, t1=22.5, kind="GameObject")]
+    out = run(util, t_end=40.0)
+    assert [(c["by"], c["ability_id"]) for c in out["casts"]] == [(0, "Hush/Flow"), (1, "Hush/Flow")]

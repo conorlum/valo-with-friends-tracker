@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "replays" / "utility"
-NAMES = ["deadlock_sensor_hook", "deadlock_wall_broken", "deadlock_wall_full", "kayo_knife_empty", "kayo_knife_hits",
+NAMES = ["deadlock_sensor_hook", "deadlock_wall_broken", "deadlock_wall_full", "hush_displacement",
+         "hush_flashbulb_empty", "hush_flashbulb_overhand", "hush_flashbulb_underhand", "hush_flow",
+         "hush_suspension", "kayo_knife_empty", "kayo_knife_hits",
          "kayo_ult", "omen_ult", "phoenix_blaze", "phoenix_curveball", "phoenix_ult", "sage_wall",
          "skye_flash_empty", "skye_flash_hits", "vyse_wall_untriggered", "waylay_recall"]
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -135,3 +137,24 @@ def test_the_inspector_reads_a_fixture_and_keeps_a_bounded_number_of_rows(tmp_pa
     assert all(len(a["events"]) <= 3 for a in actors)                    # the cap
     assert any(sum(a["counts"].values()) > 3 for a in actors)            # the rest are counted, not kept
     assert all(a["closed_ms"] is not None for a in actors)
+
+
+def test_hush_rows_keep_the_shapes_the_readers_depend_on():
+    """W9 (Hush, measured on two real exports, 2026-11-15): the pop of a Flashbulb is its `flash_windup_ended` row,
+    in metres and equal to the flight's last replicated sample; a force module row names its class by path and
+    carries its length; a Levitate force names the zone itself as its Source."""
+    for name, hits in (("hush_flashbulb_overhand", 1), ("hush_flashbulb_underhand", 2), ("hush_flashbulb_empty", 0)):
+        pop = of_type(name, "valorant_flash_exploded")[0]
+        assert pop["evidence"] == "flash_windup_ended" and pop["flash_kind"].startswith("hush_flashbulb_")
+        last = [s for s in of_type(name, "valorant_flash_path_updated") if s["source"] == "replicated_movement"][-1]
+        assert pop["location"] == last["location"] and abs(pop["location"]["x"]) < 200      # metres
+        assert pop["time_ms"] - last["time_ms"] > 250                                         # older than POP_FRESH_MS
+        assert len(of_type(name, "valorant_flash_player_hit")) == hits
+    force = [r for r in rows("hush_flow") if r.get("function_name") == "NetMulticastApplyForceModule"]
+    assert {r["payload"]["Module"]["path"].rsplit("/", 1)[-1].split(".")[0]: r["payload"]["Duration"] for r in force} == {
+        "ForceModule_Paprika_4_StopAerialMovement": 0.7, "ForceModule_Paprika_4_PullDash": 0.4}
+    spawns = {r["actor_net_guid"]: r for r in of_type("hush_suspension", "actor_spawned")}
+    levitates = [r for r in rows("hush_suspension") if r.get("function_name") == "NetMulticastApplyForceModule"]
+    assert len(levitates) == 2 and all(
+        r["payload"]["Source"]["net_guid"] in spawns and r["payload"]["Duration"] == 4 for r in levitates)
+    assert all(spawns[r["payload"]["Source"]["net_guid"]]["time_ms"] == r["time_ms"] for r in levitates)

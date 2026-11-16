@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 7                 # 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 8                 # 8: Hush (her four table entries, Flow's anchor joins its cast, a levitated status joins its zone's cast); 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -19,6 +19,10 @@ SAME_PLACE_M = 1.5          # ... and the same piece placed farther than this fr
 FLASH_TAIL_S = 1.0         # a flash cast's rows end by its pop plus this
 FLASH_ROW_MATCH_S = 1.0    # a projectile or source thrown this close to a flash or nearsight row is that cast
 BUFF_MATCH_S = 0.3         # buff rows (Harmonize) of one caster starting this close together are one cast
+# Hush's Flow (2026-11-15, two exports): the `cast` row is the move starting, and the anchor object spawns in that very
+# ms (30 of 30 moves: gap 0 ms). A dash-type ability row this close to the same player's cast of the same ability is
+# that cast's anchor, not a second use. (The windup, which has no row, is 0.7 s before both.)
+DASH_ANCHOR_S = 0.25
 
 # --- windows (measure)
 GRACE_S = 1.0               # a kill this long after an effect ends still counts as on an affected enemy

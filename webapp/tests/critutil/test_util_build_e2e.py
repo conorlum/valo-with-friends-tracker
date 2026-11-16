@@ -30,7 +30,7 @@ from app.models.match import Match, MatchPlayer, MatchSource  # noqa: E402
 from app.models.player import Player  # noqa: E402
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel  # noqa: E402
 from app.models.round import Round, RoundPlayerStat  # noqa: E402
-from app.services import replay_control_remote, replay_util, util_model, util_store, util_values  # noqa: E402
+from app.services import replay_control_remote, replay_gaps, replay_util, util_model, util_store, util_values  # noqa: E402
 from app.services import util_build_remote as remote  # noqa: E402
 from app.services.replay_control_remote import ControlClient  # noqa: E402
 from tests.critutil.test_build import FRIEND, fake_gate, toy_corpus  # noqa: E402
@@ -100,7 +100,7 @@ def world(tmp_path, render, monkeypatch):
                           source_sha256="0" * 64, source="local", link_status="linked", link_inputs={},
                           clock_offset=0.0))
             db.add(ReplayRoundUtil(replay_id=m, round_number=1, status="ok", fingerprint=FINGERPRINT,
-                                   gaps_revision=5, data=stored[m][1], computed_at=COMPUTED))
+                                   gaps_revision=replay_gaps.GAPS_REVISION, data=stored[m][1], computed_at=COMPUTED))
         for m in NON_REPLAY:
             db.add(Match(id=m, external_id=f"toy-{m}", source=MatchSource.SCRAPED))
             db.add(Round(id=m, match_id=m, round_number=1))

@@ -141,3 +141,17 @@ def test_leaving_a_molly_long_before_the_fight_is_not_this_fight_s():
 
 def test_player_who_stays_inside_is_not_mollied():
     assert fight0([molly(5, 120)])["mollied"] == []
+
+
+def test_hush_utility_hits_carry_their_kinds_and_her_zones_are_near_utility():
+    # W9: a Flashbulb is a `flash` row (blind); a pull and a levitation are `status` rows; her Displacement area and
+    # Suspension zone are placed status utility; her Flow anchor and the other Paprika objects are not placed utility
+    f = fight0([flash(6.0, 1, [[5, 9.5, 1.0]], name="hush_flashbulb_overhand"),
+                status(9.0, 9.5, 1, 5, name="E_RedirectPullArea", status="pulled"),
+                status(9.2, 13.2, 1, 5, name="X_LevitateZone", status="levitated")])
+    assert sorted((u["kind"], u["util_kind"]) for u in f["util_on"]) == [("flash", "blind"), ("status", "status"), ("status", "status")]
+    assert "util_on_them" in f["tags"]
+    near = fight0([placed("X_LevitateZone", 4.0), placed("E_RedirectPullArea", 5.0)])
+    assert sorted((u["name"], u["util_kind"]) for u in near["util_near"]) == [
+        ("E_RedirectPullArea", "status"), ("X_LevitateZone", "status")] and "util_near_them" in near["tags"]
+    assert fight0([placed("4_PullBlast", 3.0, kind="GameObject"), placed("X_ForceProxyManager", 3.0, kind="GameObject")])["util_near"] == []

@@ -106,3 +106,11 @@ def test_gun_class_majority_and_tie_goes_to_earliest():
     f = run(0.0, [shot(10.0, 0, "Classic"), shot(10.1, 0, "Vandal")])
     assert f["moving"]["gun_class"] == "pistol"
     assert run(0.0, [shot(10.0, 0, "Mystery")])["moving"]["gun_class"] == "other"
+
+
+def test_a_hush_flow_cast_excludes_the_shots_around_it_from_the_moving_sample():
+    # W9: her Flow is a `cast` row (code Paprika, 4_PullBlast), read like any dash: 0.75 s either side
+    flow = cast(10.0, 0, code="Paprika", name="4_PullBlast")
+    f = run(4.0, [shot(10.7, 0)], [flow])
+    assert f["moving"]["measured"] == 0 and f["moving"]["first_mps"] is None
+    assert run(4.0, [shot(10.8, 0)], [flow])["moving"]["measured"] == 1
