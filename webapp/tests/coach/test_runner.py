@@ -255,7 +255,11 @@ def test_usage_is_summed_over_every_call_of_a_run(tmp_path, monkeypatch):
     assert usage["cost_usd"] == pytest.approx(0.75)
     assert usage["by_model"]["claude-x"]["cost_usd"] == pytest.approx(0.75)
     assert usage["by_model"]["claude-x"]["input_tokens"] == 1200
-    assert "$0.75" in coach_report.usage_line(usage) and "15 turns" in coach_report.usage_line(usage)
+    line = coach_report.usage_line(usage)
+    assert line.startswith("0.00M tokens") and "15 turns" in line and "$" not in line
+    big = {**coach_report.new_usage(), "input_tokens": 1_500_000, "output_tokens": 250_000}
+    assert coach_report.usage_line(big).startswith("1.75M tokens: 1.50M input") and "0.25M output" in \
+        coach_report.usage_line(big)
 
 
 def test_a_failed_call_says_why_from_stdout_and_counts_its_usage(tmp_path, monkeypatch):
@@ -319,7 +323,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
     assert logged[0]["outcome"] == "failed" and logged[0]["usage"]["cost_usd"] == pytest.approx(0.4)
-    assert "usage: $0.40" in capsys.readouterr().out
+    assert "usage: 0.00M tokens" in capsys.readouterr().out
 
 
 # --- main(): the command itself, with the database and the model replaced ---

@@ -11,8 +11,7 @@ The model runs in the snapshot's own directory under the system temp folder, wit
 nothing. `--prompt-only` writes the exact first prompt to <run dir>/prompt.txt, prints its path and length, and
 calls no model. Storing publishes the report on the site. Exits 2 when refused, 1 when the run failed.
 
-Usage: each run prints what its model calls cost (tokens, turns, minutes, and the CLI's API-price cost estimate),
-writes it to <run dir>/usage.json and appends it to ~/.valo-coach/usage.jsonl; a batch prints its total."""
+Usage: each run prints what its model calls used (tokens in millions, turns, minutes), writes it to <run dir>/usage.json and appends it to ~/.valo-coach/usage.jsonl; a batch prints its total."""
 
 from __future__ import annotations
 
@@ -169,11 +168,13 @@ def merge_usage(total: dict, part: dict) -> dict:
 
 
 def usage_line(usage: dict) -> str:
-    tokens = usage["input_tokens"] + usage["cache_read_input_tokens"] + usage["cache_creation_input_tokens"]
-    return (f"${usage['cost_usd']:.2f} (API-price estimate), {usage['calls']} call(s), {usage['num_turns']} turns, "
-            f"{tokens:,} input tokens ({usage['cache_read_input_tokens']:,} cache reads, "
-            f"{usage['cache_creation_input_tokens']:,} cache writes), {usage['output_tokens']:,} output tokens, "
-            f"{usage['duration_ms'] / 60000:.1f} min")
+    """Tokens in millions (M). Cache reads are cheap against plan limits; fresh input, cache writes and output
+    are what weigh."""
+    m = lambda n: f"{n / 1e6:.2f}M"
+    total = sum(usage[k] for k in USAGE_TOKENS)
+    return (f"{m(total)} tokens: {m(usage['input_tokens'])} input, {m(usage['cache_creation_input_tokens'])} cache "
+            f"writes, {m(usage['cache_read_input_tokens'])} cache reads, {m(usage['output_tokens'])} output; "
+            f"{usage['calls']} call(s), {usage['num_turns']} turns, {usage['duration_ms'] / 60000:.1f} min")
 
 
 def record_usage(run_dir: Path, entry: dict, log: Path | None = None) -> None:
