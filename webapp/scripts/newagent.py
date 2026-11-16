@@ -220,7 +220,10 @@ def objects(args) -> int:
                     raise ValueError(f"{export}/events.ndjson:{number}: {error}") from error
                 event_type = str(row.get("type", "unknown"))
                 for value in string_tokens(row):
+                    # RPC qualifiers belong to the class, including numbered instances.
+                    value = re.sub(r"(_C(?:_\d+)?):.*$", r"\1", value)
                     name = value.rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+                    name = name.removeprefix("Default__")
                     name = re.sub(r"_C(?:_\d+)?$", "", name)
                     if name.startswith(args.code) or f"_{args.code}_" in name:
                         counts[name][event_type] += 1
@@ -228,8 +231,14 @@ def objects(args) -> int:
                for relative in BEHAVIOUR_FILES if (args.root / relative).is_file()}
     unreferenced = False
     for name, types in sorted(counts.items()):
-        suffix = name.split(args.code + "_", 1)[-1]
-        references = [path for path, text in sources.items() if name in text or suffix in text]
+        _, separator, suffix = name.partition(args.code + "_")
+        tokens = (name, suffix) if separator and suffix else (name,)
+        whole_token = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, tokens))
+                                 + r")(?![A-Za-z0-9_])")
+        # An agent-qualified substring is specific enough even inside a prefixed identifier.
+        agent_token = args.code + "_" + suffix if separator else None
+        references = [path for path, text in sources.items()
+                      if whole_token.search(text) or (agent_token is not None and agent_token in text)]
         unreferenced |= not references
         by_type = ", ".join(f"{kind}={count}" for kind, count in sorted(types.items()))
         print(f'{name} total={sum(types.values())} {by_type} ' + (", ".join(references) or "UNREFERENCED"))

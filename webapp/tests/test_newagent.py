@@ -238,3 +238,46 @@ def test_objects_finds_all_prefixes_and_full_name_references(tmp_path, capsys):
     for name in names:
         line = next(line for line in lines if line.startswith(name + " "))
         assert "total=1" in line and "buff=1" in line and "app/moments/constants.py" in line
+
+
+def test_objects_merges_class_defaults_and_rpc_names(tmp_path, capsys):
+    rows = [
+        {"type": "class", "name": "Default__Ability_Paprika_4_PullBlast"},
+        {"type": "ability", "name": "Ability_Paprika_4_PullBlast"},
+        {"type": "rpc", "name": "Projectile_Paprika_E_RedirectPull_C:HideRedirectGuides"},
+        {"type": "projectile", "name": "Projectile_Paprika_E_RedirectPull_C"},
+        {"type": "rpc", "name": "Projectile_Paprika_E_RedirectPull_C_12:HideRedirectGuides"},
+        {"type": "class", "name": "/Game/Abilities/Ability_Paprika_4_PullBlast.Default__Ability_Paprika_4_PullBlast_C"},
+    ]
+    (tmp_path / "events.ndjson").write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+    assert newagent.main(["--root", str(tmp_path), "objects", "Paprika", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Ability_Paprika_4_PullBlast total=3 ability=1, class=2 UNREFERENCED",
+        "Projectile_Paprika_E_RedirectPull total=3 projectile=1, rpc=2 UNREFERENCED",
+    ]
+
+
+@pytest.mark.parametrize("name, source, referenced", [
+    ("BlindConfig_Paprika_Q_Flash", "Phoenix_Q_Flash", False),
+    ("BlindConfig_Paprika_Q_Flash", '"Q_Flash": {}', True),
+    ("BlindConfig_Paprika_Q_Flash", "Q_FlashExtra", False),
+    ("BlindConfig_Paprika_Q_Flash", "_Q_Flash", False),
+    ("BlindConfig_Paprika_Q_Flash", "BlindConfig_Paprika_Q_Flash", True),
+    ("Projectile_Paprika_Q_RedirectFlash", "Paprika_Q_RedirectFlash", True),
+    ("Projectile_Paprika_Q_RedirectFlash", "Other_Paprika_Q_RedirectFlash_C", True),
+    ("Paprika_PC", "RPC PCache ABCPC ABC_PC PC_1", False),
+    ("Paprika_PC", '"PC": {}', True),
+    ("Ability_Paprika_E_RedirectPullArea", '"E_RedirectPullArea": {}', True),
+    ("Ability_Paprika_E_RedirectPullArea", "Other_E_RedirectPullArea", False),
+])
+def test_objects_reference_token_boundaries(tmp_path, capsys, name, source, referenced):
+    (tmp_path / "events.ndjson").write_text(json.dumps({"type": "object", "name": name}), encoding="utf-8")
+    path = tmp_path / "app/static/js/replay.js"
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+    result = newagent.main(["--root", str(tmp_path), "objects", "Paprika", str(tmp_path),
+                            "--fail-unreferenced"])
+    output = capsys.readouterr().out
+    assert result == (0 if referenced else 1)
+    assert ("app/static/js/replay.js" in output) == referenced
+    assert ("UNREFERENCED" in output) != referenced
