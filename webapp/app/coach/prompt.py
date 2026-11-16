@@ -115,6 +115,33 @@ def repair_prompt(failed: list[tuple[int, dict, list[str]]], missing: dict | Non
     return "\n\n".join(parts)
 
 
+def fresh_repair_section(failed: list[tuple[int, object, list[str]]], cited: dict[str, dict]) -> str:
+    """Append failed points and their logged evidence to the exact first prompt for a fresh call."""
+    from app.coach import query
+
+    parts = ["Your report is written; do not write a new one. Only fix these points. "
+             "This overrides the original task to write three points a side. "
+             "Investigate only what each fix needs. Return each fixed point with its original \"index\" added."]
+    for index, point, problems in failed:
+        parts.append(json.dumps({"index": index, "point": point, "problems": problems}, ensure_ascii=False, indent=1))
+        instances = point.get("instances") if isinstance(point, dict) else None
+        evidence_ids = {}
+        for instance in instances if isinstance(instances, list) else []:
+            evidence = instance.get("evidence") if isinstance(instance, dict) else None
+            for evidence_id in evidence if isinstance(evidence, list) else []:
+                if isinstance(evidence_id, str) and evidence_id in cited:
+                    evidence_ids[evidence_id] = None
+        for evidence_id in evidence_ids:
+            entry = cited[evidence_id]
+            try:
+                parts.append(query.show(entry))
+            except (KeyError, TypeError, AttributeError, ValueError):
+                # The model can edit the log. Preserve an unreadable entry for repair. The checker still rejects it.
+                parts.append("Malformed cited entry\n" + json.dumps(entry, ensure_ascii=False))
+    parts.append('Reply with one JSON object {"points": [...]} holding only the fixed points, and nothing else.')
+    return "\n\n".join(parts)
+
+
 def _quote(text: str) -> str:
     """Reader-typed text, made unable to close its own block or to start a line that reads as a heading."""
     return " ".join(str(text).split()).replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
