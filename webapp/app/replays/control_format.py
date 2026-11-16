@@ -46,10 +46,11 @@ import struct
 import time
 from pathlib import Path
 
+# 26: side-wide one_of knowledge from Hush's Suspension hit feedback (2026-11-15)
 # 25: suppression turns off every placed device (Killjoy's and Chamber's too), Undercut, Tejo's drone and Kill
 # Contract's arena suppress, and a Shock Bolt contests for its blast only (2026-11-14)
 # 24: knowledge events store the Info's kind; destroyed trips and cameras locate (2026-11-11)
-CONTROL_REVISION = 25    # 23: a sight line's ground follows the floor it travels over (no seeing under a walkway into a cave beneath it), and a box's floor is voted side by side (2026-11-02); 22: airborne holders cast against learnt box plates (2026-10-31); 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
+CONTROL_REVISION = 26    # 23: a sight line's ground follows the floor it travels over (no seeing under a walkway into a cave beneath it), and a box's floor is voted side by side (2026-11-02); 22: airborne holders cast against learnt box plates (2026-10-31); 21: a player steady at a learnt box top is on that box, and from a box the eye sees over every lower topped piece (2026-10-27); 20: the summary's team fights and what each side lost (fight swing, 2026-10-23); 19: `nearsighted` status rows (Reckoning) blind like nearsight rows (2026-10-19); 18: spike taps and ult orbs taken are anonymous sounds (2026-10-18); 17: partial knife hits restrict the hit, exclude the missed (knife_rim_m); 16: anonymous hearing
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

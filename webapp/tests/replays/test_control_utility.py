@@ -14,6 +14,7 @@ from app.control.encode import encode_data
 from app.gaps.detect import judged_against_before
 from app.replays import control_format as cf
 from tests.replays.control_toys import HALL, blob, door_hall, open_hall, toy_geometry
+from tests.replays.control_toys import toy_ability
 
 # A west of everything, facing the west wall: it sees almost nothing of the hall. B5 and B6 stand east, out of view.
 A_HIDDEN = ("A", [(0.0, 104, 200, 180)])
@@ -43,6 +44,133 @@ def hall_round(t_end=8.0, more=None):
     players = {0: A_HIDDEN, 5: ("B", [(0.0, 400, 200, 0)])}
     players.update(more or {})
     return blob(players, t_end=t_end)
+
+
+def suspension_rows(by=0, source="zone-1", t=1.2):
+    return [toy_ability("Paprika", "X_LevitateZone", 400, 200, by, t=1.0, id=source),
+            {"k": "status", "t": t, "t1": t + .8, "by": by, "target": 5 if by == 0 else 0,
+             "code": "Paprika", "name": "X_LevitateZone", "status": "levitated", "from": "force", "src": source}]
+
+
+@pytest.mark.parametrize("case", ["enemy", "friendly", "none", "pulled", "two_zones", "two_hushes"])
+def test_control_suspension_reader_binds_enemy_hits_to_their_zone(case):
+    rows = suspension_rows()
+    if case == "friendly":
+        rows[1]["friendly"] = True
+    elif case == "none":
+        rows.pop()
+    elif case == "pulled":
+        rows[1]["status"] = "pulled"
+    elif case in ("two_zones", "two_hushes"):
+        rows.insert(0, suspension_rows(by=5 if case == "two_hushes" else 0, source="zone-2")[0])
+    if case == "enemy":
+        rows.append(dict(rows[1], t=1.1))
+    b = hall_round()
+    b["util"] = rows
+    rnd = ce.RoundInputs(b, open_hall())
+    out = ut.read_hush_suspensions(rnd)
+    if case in ("friendly", "none", "pulled"):
+        assert out == []
+    else:
+        [hit] = out
+        assert (hit.t, hit.side, hit.slot, hit.kind, hit.reason) == (
+            1.1 if case == "enemy" else 1.2, "A", -1, "one_of", "hush_suspension")
+        assert (hit.x, hit.y) == pytest.approx((400, 200), abs=.1)
+        assert hit.radius_m == 7.0 and hit.source == f"Paprika_X_LevitateZone@{hit.t}"
+
+
+@pytest.mark.parametrize("kind,slot", [("one_of", 3), ("restrict", -1)])
+def test_control_side_wide_info_requires_its_reserved_slot(kind, slot):
+    with pytest.raises(ValueError):
+        info(1.0, kind, slot=slot)
+
+
+def one_of(t=1.2, **kw):
+    return info(t, "one_of", 400, 200, r=7.0, slot=-1, reason="hush_suspension", source="zone", **kw)
+
+
+def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seed_t=0.0, t=1.2):
+    """No hidden position pushes: seed regions, then exercise the real Unknown.apply ordering and spread."""
+    geo = open_hall()
+    unknown = ce.Unknown(geo)
+    for slot, x in zip((5, 6), places):
+        reached = np.full(geo.n, np.inf)
+        reached[ut.footprint(info(0, "restrict", x, 200, r=5), geo)] = seed_t
+        unknown.reached["A"][slot] = reached
+    unknown._prev_t = 1.0
+    for side in ("A", "B"):
+        unknown.free_since[side] = np.zeros(geo.n)
+        unknown._room[side] = geo.walk_n.copy()
+    rnd = SimpleNamespace(team={0: "A", 5: "B", 6: "B"}, alive=lambda s, t: s not in dead,
+                          watchers=[], infos=ut.ordered(infos), evolution={s: [(0, 9)] for s in immune})
+    unknown.apply(SimpleNamespace(t=t, holders={}, rnd=rnd))
+    return geo, unknown
+
+
+@pytest.mark.parametrize("places,count", [((400, 200), 1), ((400, 400), 2), ((200, 200), 0)])
+def test_control_suspension_candidates_restrict_hypothesise_or_count(places, count):
+    hit = one_of()
+    geo, actual = suspension_unknown([hit], places)
+    _, baseline = suspension_unknown([], places)
+    fp = ut.footprint(hit, geo)
+    if count == 1:
+        assert not np.isfinite(actual.reached["A"][5][~fp]).any()
+        assert np.array_equal(actual.reached["A"][6], baseline.reached["A"][6])
+        assert actual.reasons["A"] == [(1.2, 5, "restrict", "hush_suspension", "zone")]
+    elif count == 2:
+        for slot in (5, 6):
+            assert actual.protect["A"][slot] == {"zone": geo.node_at_px(400, 200)}
+            assert (np.isfinite(baseline.reached["A"][slot]) <= np.isfinite(actual.reached["A"][slot])).all()
+        assert [r[2] for r in actual.reasons["A"]] == ["hypothesis", "hypothesis"]
+    else:
+        assert actual.ignored["one_of with no candidate"] == 1
+        for slot in (5, 6):
+            assert np.array_equal(actual.reached["A"][slot], baseline.reached["A"][slot])
+    assert actual.events["A"] == []
+
+
+@pytest.mark.parametrize("excluded", ["dead", "immune"])
+def test_control_suspension_never_selects_dead_or_immune_enemies(excluded):
+    _, actual = suspension_unknown([one_of()], (400, 400), **{excluded: (6,)})
+    assert actual.reasons["A"] == [(1.2, 5, "restrict", "hush_suspension", "zone")]
+    assert not actual.protect["A"]
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_control_suspension_respects_equal_time_exclusion_order(before):
+    hit = one_of()
+    exclude = info(1.2, "exclude", 400, 200, r=7, slot=6)
+    # Keep ground outside the excluded disk so the exclusion can succeed.
+    geo, actual = suspension_unknown([exclude, hit] if before else [hit, exclude], (400, 340))
+    assert [r[2] for r in actual.reasons["A"] if r[3] == "hush_suspension"] == (
+        ["restrict"] if before else ["hypothesis", "hypothesis"])
+
+
+def test_control_suspension_tests_regions_advanced_to_its_exact_instant():
+    geo, baseline = suspension_unknown([], (314, 200), seed_t=1.0, t=1.5)
+    hit = one_of(1.5)
+    fp = ut.footprint(hit, geo)
+    _, previous = suspension_unknown([], (314, 200), seed_t=1.0, t=1.0)
+    assert not np.isfinite(previous.reached["A"][5][fp]).any()
+    assert np.isfinite(baseline.reached["A"][5][fp]).any()
+    _, actual = suspension_unknown([hit], (314, 200), seed_t=1.0, t=1.5)
+    assert actual.reasons["A"] == [(1.5, 5, "restrict", "hush_suspension", "zone")]
+
+
+@pytest.mark.parametrize("from_blob", [True, False])
+def test_control_suspension_is_admitted_and_changes_compute_round(from_blob):
+    b, geo = hall_round(), open_hall()
+    b["util"] = suspension_rows(t=6.2) if from_blob else []
+    infos = [] if from_blob else [one_of(6.2)]
+    rnd = ce.RoundInputs(b, geo, infos=infos)
+    assert [(i.kind, i.slot) for i in rnd.infos] == [("one_of", -1)]
+    _, regions, extra = snapshots(b, geo, infos)
+    fp = ut.footprint(rnd.infos[0], geo)
+    assert not regions[6.2]["A"][5][~fp].any()
+    assert any(r[2:4] == ("restrict", "hush_suspension") for r in extra[6.2][1]["A"])
+    baseline = hall_round()
+    _, old, _ = snapshots(baseline, geo, [info(6.2, "resume")])
+    assert old[6.2]["A"][5].sum() > regions[6.2]["A"][5].sum()
 
 
 def test_a_round_with_no_info_has_only_its_frames():

@@ -98,7 +98,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 25 (2026-11-14): every placed device is off while its owner is suppressed; Undercut, Tejo's drone and Kill
           # Contract's arena suppress (SUPPRESSED_DEVICE_KINDS ... ARENA_Z_M); a Shock Bolt contests for its blast
           # only (DAMAGE_ZONE_LIFE_S). New constants only, so 24's digest stands without them.
-          25: "a0c40ddf4d8213f3"}
+          25: "a0c40ddf4d8213f3",
+          # 26 (2026-11-15): side-wide one_of knowledge, Hush's Suspension hit feedback and radius.
+          26: "49348445456575af"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -181,7 +183,32 @@ REVISION_25_CONSTANTS = ("DAMAGE_ZONE_LIFE_S", "SUPPRESSED_DEVICE_KINDS", "SUPPR
                          "SUPPRESSING_REVEAL_S", "ARENA_Z_M")
 
 
+def _without_the_suspension(monkeypatch):
+    # W10's airborne constants also enter this digest. Historical revisions predate them;
+    # HEIGHT_RULES_REVISION is not read here and stays at 9 for the current height build.
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES", ("Wushu_Q_CycloneBoost", "Wushu_E_Dash",
+                                                "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
+    for name in ("ONE_OF_SLOT", "SIDE_KINDS"):
+        monkeypatch.delattr(ut, name)
+    monkeypatch.setattr(ut, "KINDS", tuple(k for k in ut.KINDS if k != "one_of"))
+    monkeypatch.setattr(ut, "ORDER", {k: v for k, v in ut.ORDER.items() if k != "one_of"})
+    monkeypatch.setattr(ut, "READERS", tuple(r for r in ut.READERS if r != "read_hush_suspensions"))
+    monkeypatch.delitem(ut.FIGURES, "hush_suspension_radius_m")
+
+
+def test_without_the_suspension_the_revision_25_digest_is_unchanged(monkeypatch):
+    _without_the_suspension(monkeypatch)
+    assert _constants_digest() == PINNED[25]
+
+
+def test_control_suspension_readers_are_pinned():
+    assert ut.READERS == ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers",
+                          "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions")
+
+
 def _without_the_suppression_sources(monkeypatch):
+    _without_the_suspension(monkeypatch)
     for name in REVISION_25_CONSTANTS:
         monkeypatch.delattr(ce, name)
 
