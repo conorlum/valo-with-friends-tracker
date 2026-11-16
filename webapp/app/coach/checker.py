@@ -14,6 +14,7 @@ from app.services.agent_roles import role_of
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
+WINDOW_SLACK_S = 0.5
 AREA_WHERE_WINDOW_S = 1.0   # a where answer can place players up to one second before a moment
 SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
 BODY_MAX = 4000             # longer text is refused before the regexes run
@@ -297,12 +298,12 @@ def _round_of(entry: dict):
 
 def _in_moment(entry: dict, t: float, t1) -> bool:
     """P4 review F3: an answer asked for one second (where, distance, knew: a top-level `t`) is evidence only
-    for an instance that second belongs to, from KNEW_WINDOW_S before it starts to its end. Flags and answers
-    over a span (timeline, control) carry no single second and are tied to the round only."""
+    for an instance that second belongs to, from KNEW_WINDOW_S before it starts to WINDOW_SLACK_S past its end.
+    Flags and answers over a span (timeline, control) carry no single second and are tied to the round only."""
     asked = entry["result"].get("t")
     if entry.get("cmd") == "flag" or isinstance(asked, bool) or not isinstance(asked, (int, float)):
         return True
-    return t - KNEW_WINDOW_S <= float(asked) <= float(t1 if t1 is not None else t)
+    return t - KNEW_WINDOW_S <= float(asked) <= float(t1 if t1 is not None else t) + WINDOW_SLACK_S
 
 
 def _matches(x: float, numbers: list[float], shares: list[float]) -> bool:
@@ -528,7 +529,7 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 problems.append(f"{label}: {log_id} is about round {_round_of(entry)}, not round {n}")
             elif not _in_moment(entry, t, inst.get("t1")):
                 problems.append(f"{label}: {log_id} was asked for second {entry['result']['t']}, outside this "
-                                f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {inst.get('t1') or t})")
+                                f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {spans[-1] + WINDOW_SLACK_S})")
             else:
                 entries.append(entry)
                 result, hidden = entry["result"], frozenset()
@@ -558,9 +559,9 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                                     f"'({NO_KNOWLEDGE_NOTE})'")
             else:
                 if not any(e["cmd"] == "knew" and "enemies" in e["result"] and e["result"].get("side") == side
-                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t for e in entries):
+                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t + WINDOW_SLACK_S for e in entries):
                     problems.append(f"{label}: a mistake must cite a knew answer for side {side} in round {n}, "
-                                    f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t}")
+                                    f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t + WINDOW_SLACK_S}")
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
     if len(text) > BODY_MAX:
         return problems + [f"the text is over {BODY_MAX} characters"]

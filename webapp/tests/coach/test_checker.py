@@ -255,6 +255,53 @@ def test_a_distance_asked_shortly_before_the_moment_passes(snap, tmp_path):     
     assert checker.check_point(point(polarity="good", instances=inst), log, snap, THEMES, 0) == []
 
 
+@pytest.mark.parametrize("command", ["where", "distance"])
+@pytest.mark.parametrize("t1", [None, 45.0])
+@pytest.mark.parametrize("offset, accepted", [(0.5, True), (0.51, False)])
+def test_moment_answers_have_inclusive_end_slack(snap, tmp_path, command, t1, offset, accepted):
+    end = 40.0 if t1 is None else t1
+    asked = end + offset
+    args = ["1", str(asked)] + (["P1", "P2"] if command == "distance" else [])
+    query.run(snap, tmp_path, command, args)
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = {"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}
+    if t1 is not None:
+        inst["t1"] = t1
+    found = problems(snap, log, polarity="good", title="Keep support close", body="Hold position.",
+                     instances=[inst])
+    assert found == ([] if accepted else [
+        f"instance 1: q1 was asked for second {asked}, outside this moment (10.0 to {end + 0.5})"])
+
+
+@pytest.mark.parametrize("command", ["where", "distance"])
+@pytest.mark.parametrize("asked, accepted", [(10.0, True), (9.99, False)])
+def test_moment_answer_lower_bound_is_unchanged(snap, tmp_path, command, asked, accepted):
+    args = ["1", str(asked)] + (["P1", "P2"] if command == "distance" else [])
+    query.run(snap, tmp_path, command, args)
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = [{"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}]
+    found = problems(snap, log, polarity="good", title="Keep support close", body="Hold position.",
+                     instances=inst)
+    assert found == ([] if accepted else [
+        f"instance 1: q1 was asked for second {asked}, outside this moment (10.0 to 40.5)"])
+
+
+@pytest.mark.parametrize("side", ["A", "B"])
+@pytest.mark.parametrize("asked, accepted", [(40.5, True), (40.51, False), (10.0, True), (9.99, False)])
+def test_knew_window_has_inclusive_slack_and_unchanged_lower_bound(snap, tmp_path, side, asked, accepted):
+    query.run(snap, tmp_path, "knew", ["1", str(asked), side])
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    # The span keeps 40.51 inside the moment, so the knew rule must reject it independently.
+    inst = [{"round": 1, "t": 40.0, "t1": 45.0, "caption": "", "evidence": ["q1"]}]
+    found = problems(snap, log, title="Keep support close", body="Hold position.", instances=inst)
+    knew_problems = [p for p in found if "must cite a knew answer" in p]
+    assert knew_problems == ([] if accepted and side == "A" else [
+        "instance 1: a mistake must cite a knew answer for side A in round 1, "
+        "asked for a time from 10.0 to 40.5"])
+    if accepted and side == "A":
+        assert found == []
+
+
 def test_where_reports_health_as_a_word_and_it_grounds_nothing(snap):   # R-F8
     row = query.answer(snap, "where", ["1", "15"])["players"][0]
     assert row["health"] in ("healthy", "hurt", "low")

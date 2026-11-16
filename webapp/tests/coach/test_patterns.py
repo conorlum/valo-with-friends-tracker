@@ -175,7 +175,8 @@ def test_moment_evidence_satisfies_checker_windows_without_rounding(pattern_snap
     area = next(p for p in where["result"]["players"] if p["slot"] == 0)["area"]
     assert area["name"] == "Top Mid" and area["approximate"] is False
     assert next(e for e in log.values() if e["cmd"] == "knew" and e["args"][2] == "A")["result"]["enemies"]
-    for start, accepted in [(10.03125, True), (10.43125, True), (round(10.03125, 1), False)]:
+    for start, accepted in [(10.03125, True), (10.43125, True), (round(10.03125, 1), True),
+                            (10.03125 - 0.5, True), (10.03125 - 0.53125, False)]:
         point = {"polarity": "improve", "theme": "trading", "title": "Hold position",
                  "body": f"You held {area['name']}.",
                  "instances": [{"round": 5, "t": start, "caption": "", "evidence": list(log)}]}
@@ -212,7 +213,11 @@ def test_pattern_lead_up_uses_start_evidence_with_real_playbook(pattern_snap, tm
     assert checker.check_point(point, trusted, pattern_snap, book.themes, slot) == []
     point["instances"][0]["evidence"] = row_ids
     problems = checker.check_point(point, trusted, pattern_snap, book.themes, slot)
-    assert any("must cite a knew answer" in problem for problem in problems), problems
+    if row["t"] <= start + 0.5:  # Early-round rows can fall within the start's knew slack.
+        assert problems == []
+    else:
+        assert (f"instance 1: a mistake must cite a knew answer for side {side} in round {row['round']}, "
+                f"asked for a time from {max(0.0, start - 30.0)} to {start + 0.5}") in problems
     assert not any("outside this moment" in problem for problem in problems), problems
 
 
