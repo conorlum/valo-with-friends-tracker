@@ -120,6 +120,12 @@ def agent_keys_entry(text: str, name: str, values: dict) -> str:
         if key.value > name:
             lines.insert(key.lineno - 1, entry)
             return "".join(lines)
+    if block.values:
+        last = block.values[-1]
+        line = lines[last.end_lineno - 1].encode("utf-8")
+        end = last.end_col_offset  # AST columns are UTF-8 byte offsets.
+        if not line[end:].lstrip().startswith(b","):
+            lines[last.end_lineno - 1] = (line[:end] + b"," + line[end:]).decode("utf-8")
     lines.insert(block.end_lineno - 1, entry)
     return "".join(lines)
 
@@ -178,6 +184,14 @@ def identity(args) -> int:
         abilities_path: json_entry(texts[abilities_path], args.name, entries),
         keys_path: agent_keys_entry(texts[keys_path], args.name, values),
     }
+    for path, text in updates.items():
+        try:
+            if path == keys_path:
+                ast.parse(text)
+            else:
+                json.loads(text)
+        except (SyntaxError, ValueError) as error:
+            raise ValueError(f"invalid updated {path}: {error}") from error
     # Complete preflight and downloads before changing any files.
     downloaded = {a["displayIcon"]: fetch(a["displayIcon"]) for a in abilities}
     with Image.open(io.BytesIO(fetch(agent["displayIcon"]))) as image:
@@ -233,12 +247,14 @@ def objects(args) -> int:
     for name, types in sorted(counts.items()):
         _, separator, suffix = name.partition(args.code + "_")
         tokens = (name, suffix) if separator and suffix else (name,)
-        whole_token = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, tokens))
-                                 + r")(?![A-Za-z0-9_])")
-        # An agent-qualified substring is specific enough even inside a prefixed identifier.
-        agent_token = args.code + "_" + suffix if separator else None
+        patterns = [r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, tokens)) + r")"]
+        if separator and suffix:
+            patterns.append(r"(?<![A-Za-z0-9])" + re.escape(args.code + "_" + suffix))
+        # Class and instance wrappers may follow a complete identifier, including RPCs.
+        reference = re.compile(r"(?:" + "|".join(patterns)
+                               + r")(?:_C(?:_\d+)?)?(?![A-Za-z0-9]|_[A-Za-z0-9])")
         references = [path for path, text in sources.items()
-                      if whole_token.search(text) or (agent_token is not None and agent_token in text)]
+                      if reference.search(text)]
         unreferenced |= not references
         by_type = ", ".join(f"{kind}={count}" for kind, count in sorted(types.items()))
         print(f'{name} total={sum(types.values())} {by_type} ' + (", ".join(references) or "UNREFERENCED"))

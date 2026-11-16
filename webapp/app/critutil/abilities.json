@@ -1271,7 +1271,7 @@
    ],
    "replay_s": 1.3,
    "owner_s": 0.5,
-   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the pull (ForceModule_Paprika_E_RedirectPull_ContinuousPull) has Duration 0.5 s on 3 of 3 rows; the area lives 1.3 s; the concuss that follows is not recorded as a status",
+   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the pull (ForceModule_Paprika_E_RedirectPull_ContinuousPull) has Duration 0.5 s on 3 of 3 rows; the area lives 1.3 s. The collision concuss starts 297-414 ms into a blocked pull, only when the pulled player hits a wall or another player, and is recorded until its effect stops (1.8 s and 1.6 s in the two replays)",
    "duration_s": 0.5
   },
   {

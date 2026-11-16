@@ -163,6 +163,69 @@ def test_identity_refuses_before_writing(identity_case, problem, capsys):
     assert capsys.readouterr().err
 
 
+@pytest.mark.parametrize("comma", ["", ","])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("tail", ["", "  # final member"])
+def test_identity_appends_after_final_member(identity_case, comma, newline, tail):
+    root, args, agents, _, _ = identity_case
+    path = root / TABLES[3]
+    text, count = re.subn(r'(^    "Yoru": [^\n]*}),$', r'\1' + comma + tail,
+                          path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    assert count == 1
+    path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+    args[1] = agents[1]["displayName"] = "Zulu"
+    Path(args[5]).write_text(json.dumps({"data": agents}), encoding="utf-8")
+
+    assert newagent.main(args) == 0
+    updated = path.read_bytes().decode("utf-8")
+    module = ast.parse(updated)
+    keys = ast.literal_eval(next(node.value for node in module.body if isinstance(node, ast.Assign)
+                                 and any(isinstance(t, ast.Name) and t.id == "AGENT_KEYS"
+                                         for t in node.targets)))
+    assert list(keys)[-2:] == ["Yoru", "Zulu"]
+    assert keys["Zulu"]["E"] == ("Redirect Pull", "dash")
+    assert '},' + tail + newline + '    "Zulu":' in updated
+    after = snapshot(root)
+    assert newagent.main(args) == 0
+    assert snapshot(root) == after
+
+
+@pytest.mark.parametrize("relative", TABLES)
+def test_identity_rejects_invalid_completed_update(identity_case, monkeypatch, capsys, relative):
+    root, args, _, calls, _ = identity_case
+    if relative == TABLES[3]:
+        monkeypatch.setattr(newagent, "agent_keys_entry", lambda *args: "AGENT_KEYS = {\n")
+    else:
+        target_key = {TABLES[0]: "Paprika", TABLES[1]: "Duelist", TABLES[2]: "Hush"}[relative]
+        original = newagent.json_entry
+
+        def invalid_entry(text, key, value, **kwargs):
+            return "{" if key == target_key else original(text, key, value, **kwargs)
+
+        monkeypatch.setattr(newagent, "json_entry", invalid_entry)
+    before = snapshot(root)
+    with pytest.raises(SystemExit) as error:
+        newagent.main(args)
+    assert error.value.code != 0
+    assert snapshot(root) == before
+    assert not calls
+    message = capsys.readouterr().err
+    assert "invalid updated" in message
+    assert relative in message.replace("\\", "/")
+
+
+def test_displacement_collision_concuss_note():
+    notes = []
+    for filename in ("abilities.json", "abilities_seed.json"):
+        data = json.loads((WEBAPP / "app/critutil" / filename).read_text(encoding="utf-8"))
+        entry = next(row for row in data["abilities"] if row.get("ability") == "Displacement")
+        notes.append(entry["owner_note"])
+    assert notes[0] == notes[1]
+    assert "only when the pulled player hits a wall or another player" in notes[0]
+    assert "297-414 ms into a blocked pull" in notes[0]
+    assert "recorded until its effect stops (1.8 s and 1.6 s in the two replays)" in notes[0]
+
+
 def test_vendor_output_matches_original_loop(tmp_path, monkeypatch):
     agents = [fake_agent("Waylay", "Terra"), fake_agent("Hush", "Paprika")]
     # Include both kinds skipped by the original loop.
@@ -257,6 +320,7 @@ def test_objects_merges_class_defaults_and_rpc_names(tmp_path, capsys):
     ]
 
 
+@pytest.mark.parametrize("relative", newagent.BEHAVIOUR_FILES)
 @pytest.mark.parametrize("name, source, referenced", [
     ("BlindConfig_Paprika_Q_Flash", "Phoenix_Q_Flash", False),
     ("BlindConfig_Paprika_Q_Flash", '"Q_Flash": {}', True),
@@ -265,19 +329,62 @@ def test_objects_merges_class_defaults_and_rpc_names(tmp_path, capsys):
     ("BlindConfig_Paprika_Q_Flash", "BlindConfig_Paprika_Q_Flash", True),
     ("Projectile_Paprika_Q_RedirectFlash", "Paprika_Q_RedirectFlash", True),
     ("Projectile_Paprika_Q_RedirectFlash", "Other_Paprika_Q_RedirectFlash_C", True),
+    ("Ability_Paprika_E_RedirectPull", "OtherPaprika_E_RedirectPull", False),
+    ("Ability_Paprika_E_RedirectPull", "2Paprika_E_RedirectPull", False),
+    ("Ability_Paprika_E_RedirectPull", "_Paprika_E_RedirectPull", True),
     ("Paprika_PC", "RPC PCache ABCPC ABC_PC PC_1", False),
     ("Paprika_PC", '"PC": {}', True),
     ("Ability_Paprika_E_RedirectPullArea", '"E_RedirectPullArea": {}', True),
     ("Ability_Paprika_E_RedirectPullArea", "Other_E_RedirectPullArea", False),
 ])
-def test_objects_reference_token_boundaries(tmp_path, capsys, name, source, referenced):
+def test_objects_reference_token_boundaries(tmp_path, capsys, relative, name, source, referenced):
     (tmp_path / "events.ndjson").write_text(json.dumps({"type": "object", "name": name}), encoding="utf-8")
-    path = tmp_path / "app/static/js/replay.js"
+    path = tmp_path / relative
     path.parent.mkdir(parents=True)
     path.write_text(source, encoding="utf-8")
     result = newagent.main(["--root", str(tmp_path), "objects", "Paprika", str(tmp_path),
                             "--fail-unreferenced"])
     output = capsys.readouterr().out
     assert result == (0 if referenced else 1)
-    assert ("app/static/js/replay.js" in output) == referenced
+    assert (relative in output) == referenced
     assert ("UNREFERENCED" in output) != referenced
+
+
+@pytest.mark.parametrize("relative", newagent.BEHAVIOUR_FILES)
+@pytest.mark.parametrize("short, long", [
+    ("E_RedirectPull", "E_RedirectPullArea"),
+    ("Q_FlashBulb", "Q_FlashBulbs"),
+])
+@pytest.mark.parametrize("direction", ["longer source", "shorter source"])
+@pytest.mark.parametrize("form", ["suffix", "agent", "full"])
+def test_objects_rejects_identifier_prefixes(tmp_path, capsys, relative, short, long, direction, form):
+    exported, source = (short, long) if direction == "longer source" else (long, short)
+    prefixes = {"suffix": "", "agent": "Paprika_", "full": "Ability_Paprika_"}
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(prefixes[form] + source, encoding="utf-8")
+    row = {"type": "ability", "name": "Ability_Paprika_" + exported}
+    (tmp_path / "events.ndjson").write_text(json.dumps(row), encoding="utf-8")
+    assert newagent.main(["--root", str(tmp_path), "objects", "Paprika", str(tmp_path),
+                          "--fail-unreferenced"]) == 1
+    assert "UNREFERENCED" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("relative", newagent.BEHAVIOUR_FILES)
+@pytest.mark.parametrize("prefix", ["", "Paprika_", "Ability_Paprika_", "Default__Ability_Paprika_"])
+@pytest.mark.parametrize("ending, referenced", [
+    ("", True), ("_C", True), ("_C_2", True),
+    ("_C:Activate", True), ("_C_2:Activate", True), (".Default__Object_C", True),
+    ("Area", False), ("2", False), ("_Area", False), ("_2", False),
+    ("_CExtra", False), ("_C_2Extra", False), ("_C_Area", False), ("_C_2_Area", False),
+])
+def test_objects_reference_wrappers(tmp_path, capsys, relative, prefix, ending, referenced):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(prefix + "E_RedirectPull" + ending, encoding="utf-8")
+    row = {"type": "ability", "name": "Ability_Paprika_E_RedirectPull"}
+    (tmp_path / "events.ndjson").write_text(json.dumps(row), encoding="utf-8")
+    result = newagent.main(["--root", str(tmp_path), "objects", "Paprika", str(tmp_path),
+                            "--fail-unreferenced"])
+    assert result == (0 if referenced else 1)
+    assert (relative in capsys.readouterr().out) == referenced
