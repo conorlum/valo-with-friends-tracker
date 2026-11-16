@@ -89,7 +89,7 @@ def one_of(t=1.2, **kw):
     return info(t, "one_of", 400, 200, r=7.0, slot=-1, reason="hush_suspension", source="zone", **kw)
 
 
-def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seed_t=0.0, t=1.2):
+def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(), seed_t=0.0, t=1.2):
     """No hidden position pushes: seed regions, then exercise the real Unknown.apply ordering and spread."""
     geo = open_hall()
     unknown = ce.Unknown(geo)
@@ -98,6 +98,8 @@ def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seed_t=0
         reached[ut.footprint(info(0, "restrict", x, 200, r=5), geo)] = seed_t
         unknown.reached["A"][slot] = reached
     unknown._prev_t = 1.0
+    for slot, x, spotted_at in seen:
+        unknown.seen["A"][slot] = (geo.node_at_px(x, 200), spotted_at)
     for side in ("A", "B"):
         unknown.free_since[side] = np.zeros(geo.n)
         unknown._room[side] = geo.walk_n.copy()
@@ -171,6 +173,77 @@ def test_control_suspension_is_admitted_and_changes_compute_round(from_blob):
     baseline = hall_round()
     _, old, _ = snapshots(baseline, geo, [info(6.2, "resume")])
     assert old[6.2]["A"][5].sum() > regions[6.2]["A"][5].sum()
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_control_suspension_seen_enemy_explains_only_a_zone_it_is_inside(inside):
+    geo = door_hall()
+    b = blob({0: ("A", [(0.0, 300, 200, 180 if inside else 0)]),
+              5: ("B", [(0.0, 250 if inside else 400, 200, 0)]),
+              6: ("B", [(0.0, 180, 200, 180)])}, t_end=2.0)
+    # Exercise the real ability/status row shape and reader, including the visible victim's identity.
+    b["util"] = [toy_ability("Paprika", "X_LevitateZone", 240, 200, 0, t=1.0, t1=2.0, id="zone-1"),
+                 {"k": "status", "t": 1.2, "t1": 2.0, "by": 0, "target": 5,
+                  "code": "Paprika", "name": "X_LevitateZone", "status": "levitated",
+                  "from": "force", "src": "zone-1"}]
+    baseline = copy.deepcopy(b)
+    baseline["util"] = []
+    ticks = [0.0, 1.0, 1.2, 1.5, 2.0]
+    _, old, _ = snapshots(baseline, geo, [info(1.2, "resume", slot=6)], ticks=ticks)
+    rc, regions, extra = snapshots(b, geo, ticks=ticks)
+    [hit] = ce.RoundInputs(b, geo).infos
+    fp = ut.footprint(hit, geo)
+    assert (old[1.2]["A"][6] & fp).any(), "the hidden nonvictim must be a possible sound source"
+    assert (1.2, 5, "locate", "seen", "") in extra[1.2][1]["A"]
+    ignored = rc.missing_inputs.get("utility knowledge ignored: one_of explained by a seen enemy", 0)
+    if inside:
+        assert ignored == 1
+        for t in ticks:
+            assert np.array_equal(regions[t]["A"][6], old[t]["A"][6])
+        assert regions[1.2]["A"][6][geo.node_at_px(180, 200)]
+        assert not any(r[3] == "hush_suspension" for r in extra[1.2][1]["A"])
+    else:
+        assert ignored == 0
+        assert any(r[1:4] == (6, "restrict", "hush_suspension") for r in extra[1.2][1]["A"])
+        assert not regions[1.2]["A"][6][~fp].any()
+        assert not np.array_equal(regions[1.2]["A"][6], old[1.2]["A"][6])
+
+
+@pytest.mark.parametrize("before", [True, False])
+@pytest.mark.parametrize("inside", [True, False])
+@pytest.mark.parametrize("reason", ["hush_suspension", "side_wide_evidence"])
+def test_control_one_of_respects_equal_time_locate_order(before, inside, reason):
+    hit = info(1.2, "one_of", 400, 200, r=7.0, slot=-1, reason=reason, source="zone")
+    locate = info(1.2, "locate", 400 if inside else 200, 200, slot=6)
+    _, actual = suspension_unknown([locate, hit] if before else [hit, locate], (400, 400))
+    _, baseline = suspension_unknown([locate], (400, 400))
+    assert actual.ignored["one_of explained by a seen enemy"] == int(before and inside)
+    assert actual.ignored["one_of with no candidate"] == 0
+    if before and inside:
+        for slot in (5, 6):
+            assert np.array_equal(actual.reached["A"][slot], baseline.reached["A"][slot])
+        assert not actual.protect["A"]
+        assert not any(r[3] == reason for r in actual.reasons["A"])
+    elif not before:
+        assert [r[2] for r in actual.reasons["A"] if r[3] == reason] == ["hypothesis", "hypothesis"]
+    else:
+        assert [r[1:3] for r in actual.reasons["A"] if r[3] == reason] == [(5, "restrict")]
+
+
+def test_control_one_of_does_not_treat_an_old_sighting_as_seen_now():
+    _, actual = suspension_unknown([one_of()], seen=[(5, 400, 1.0)])
+    assert actual.ignored["one_of explained by a seen enemy"] == 0
+    assert actual.reasons["A"] == [(1.2, 5, "restrict", "hush_suspension", "zone")]
+
+
+def test_control_one_of_uses_a_locate_between_two_equal_time_sounds():
+    miss = info(1.2, "one_of", 100, 200, r=1.0, slot=-1, source="miss")
+    locate = info(1.2, "locate", 400, 200, slot=6)
+    _, actual = suspension_unknown([miss, locate, one_of()], (400, 400))
+    assert actual.ignored["one_of with no candidate"] == 1
+    assert actual.ignored["one_of explained by a seen enemy"] == 1
+    assert not actual.protect["A"]
+    assert not any(r[3] == "hush_suspension" for r in actual.reasons["A"])
 
 
 def test_a_round_with_no_info_has_only_its_frames():

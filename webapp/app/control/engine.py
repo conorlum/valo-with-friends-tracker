@@ -2852,6 +2852,10 @@ class Unknown:
                        and (watched[tick.holders[s].cell] or s in in_cone
                             or any(v.active[tick.holders[s].cell] and not air_pair(v, tick.holders[s])
                                    for v in viewers))}
+            known = {i.slot: self.geo.node_at_px(i.x, i.y, i.z) for i in early_infos
+                     if i.kind == "locate" and i.t == t and i.slot in enemies
+                     and i.x is not None and i.y is not None}
+            known.update({s: tick.holders[s].cell for s in spotted})
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
                 before = np.full(n, np.inf) if reached is None else reached.copy()
@@ -2957,6 +2961,13 @@ class Unknown:
             for info in late_infos:
                 if info.kind == "one_of":
                     fp = utility.footprint(info, self.geo)
+                    # D9: the sound says at least one enemy is in the zone. One already seen there
+                    # explains it, so it says nothing about any other enemy's uncertainty region.
+                    # A point locate ordered earlier at this instant counts too; old sightings and
+                    # locating areas do not establish that an enemy is still inside the footprint.
+                    if any(fp[node] for node in known.values()):
+                        self.ignored["one_of explained by a seen enemy"] += 1
+                        continue
                     candidates = [s for s, state in prepared.items()
                                   if utility.affects("status", rnd.evolution, s, info.t)
                                   and (np.isfinite(state[0]) & (state[0] <= info.t) & fp).any()]
@@ -2976,6 +2987,9 @@ class Unknown:
                     # these results, without spreading again or counting a pause interval twice.
                     reached, before, sources, area, centre = self._operate(
                         side, slot, [operation], reached, before, sources, area, centre, t, t, rnd)
+                    if (operation.kind == "locate" and operation.t == t
+                            and operation.x is not None and operation.y is not None):
+                        known[slot] = self.geo.node_at_px(operation.x, operation.y, operation.z)
                     reached[~room] = np.inf
                     for source, node in list(self.protect[side].get(slot, {}).items()):
                         if not room[node] or not np.isfinite(reached[node]):
