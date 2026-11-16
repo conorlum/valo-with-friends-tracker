@@ -47,6 +47,29 @@ def test_the_run_prompt_asks_for_no_voice():
     assert "voice" not in prompt.run_prompt(BOOK, BRIEF).lower()
 
 
+def test_the_run_prompt_explains_batching_and_pattern_evidence():
+    text = " ".join(prompt.run_prompt(BOOK, BRIEF).split())
+    assert "one call per command" not in text
+    assert "no pipes or redirection" in text
+    assert "Several queries go in one call joined by a lone `+`" in text
+    assert "./q where 7 41.5 + knew 7 42 A" in text
+    for command in ("deaths [player]", "kills [player]", "teammate_deaths [player]", "moment <round> <t>"):
+        assert f"./q {command}" in text
+    assert "player defaults to the subject" in text
+    assert "timeline" in text and "where (0.5 s before the moment, clamped to 0)" in text
+    assert "two knew answers (A and B) per moment" in text
+    assert "one row per moment" in text
+    for field in ("timeline_id", "where_id", "knew_a_id", "knew_b_id"):
+        assert field in text
+    assert "citable like any answer" in text
+    assert "moment prints the four full answers with their ids" in text
+
+
+def test_an_instance_citing_a_pattern_row_starts_at_its_time_or_up_to_half_a_second_later():
+    text = " ".join(prompt.run_prompt(BOOK, BRIEF).split())
+    assert "An instance citing a row starts at the row's t as printed, or up to 0.5 s later, never earlier." in text
+
+
 def test_the_run_prompt_explains_the_ruled_out_pulse_area():
     text = prompt.run_prompt(BOOK, BRIEF)
     assert "`area` is where the pulse looked and found nobody of that name" in text

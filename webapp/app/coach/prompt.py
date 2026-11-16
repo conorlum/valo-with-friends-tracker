@@ -13,7 +13,11 @@ COMMANDS = """\
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
-./q impact <round> <player>                the player's stored Impact row for the round"""
+./q impact <round> <player>                the player's stored Impact row for the round
+./q deaths [player]                       the player's deaths across the match
+./q kills [player]                        the player's kills across the match
+./q teammate_deaths [player]              deaths of the player's teammates across the match
+./q moment <round> <t>                    full timeline, where and both sides' knew answers for a moment"""
 
 SHAPE = """\
 {"points": [
@@ -35,7 +39,8 @@ A point's theme must be one of: {", ".join(book.themes)}
 
 # The query command
 
-Run it from the current directory, one call per command, with no pipes or redirection. Times are seconds into
+Run it from the current directory with no pipes or redirection. Several queries go in one call joined by a lone
+`+`, for example `./q where 7 41.5 + knew 7 42 A`. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
 number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name.
 Every answer is a compact block with a header giving the id, command and arguments; cite that id as evidence.
@@ -45,6 +50,12 @@ ambiguous. An area is ~(name|super|path|approximate), with true marking an appro
 An answer with error is not evidence. An answer with available:false means the data is missing for that round.
 
 {COMMANDS}
+
+For deaths, kills and teammate_deaths, player defaults to the subject. A pattern query logs a timeline,
+where (0.5 s before the moment, clamped to 0) and two knew answers (A and B) per moment, and prints one row per
+moment with round, t, killer, victim, player areas and health, matching flags, and the logged answers' ids
+(timeline_id, where_id, knew_a_id, knew_b_id), citable like any answer. moment prints the four full answers
+with their ids. An instance citing a row starts at the row's t as printed, or up to 0.5 s later, never earlier.
 
 # Fixed notes
 

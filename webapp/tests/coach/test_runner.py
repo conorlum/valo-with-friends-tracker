@@ -201,6 +201,19 @@ def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, m
         run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
 
 
+@pytest.mark.parametrize("options, expected", [
+    ([], "claude-opus-5-5"), (["--model", "x"], "x"), (["--model", ""], ""),
+])
+def test_the_report_parser_selects_and_passes_the_model(options, expected):
+    args = coach_report.build_parser().parse_args(["abcdef12-0000-4000-8000-000000000000", "0", *options])
+    assert args.model == expected
+    command = coach_report.claude_command("claude", args.model, None)
+    if expected:
+        assert command[-2:] == ["--model", expected]
+    else:
+        assert "--model" not in command
+
+
 def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
     command = coach_report.claude_command("claude", None, None)
     assert command[:4] == ["claude", "-p", "--output-format", "json"]
@@ -387,6 +400,38 @@ def test_prompt_only_writes_the_first_prompt_and_never_calls_the_model(tmp_path,
     assert "the enemy Jett" in text and "P5#T5" not in text and "P1#T1" in text   # player 100 is on team1
     out = capsys.readouterr().out
     assert str(path) in out and str(len(text)) in out
+
+
+@pytest.mark.parametrize("options, expected", [
+    ([], "claude-opus-5-5"), (["--model", "x"], "x"), (["--model", ""], ""),
+])
+def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeypatch, options, expected):
+    uuid = "abcdef12-0000-4000-8000-000000000000"
+    _wire(monkeypatch, tmp_path, [uuid, "0", "--dry-run", *options], make_data())
+    logged = []
+
+    def call(text, session):
+        raise AssertionError("generate is replaced")
+
+    call.denials, call.models, call.usage = 0, {"cli-model"}, coach_report.new_usage()
+    coach_report.add_usage(call.usage, _cli_out(0.1, 1, 10))
+
+    def make_call(run_dir, model):
+        assert model == expected
+        return call
+
+    def generate(snap, slot, run_dir, book, model_call, model):
+        assert model_call is call
+        assert model == (expected or "claude-code (default model)")
+        return {"model": model, "points": [], "dropped_points": 0}
+
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    monkeypatch.setattr(runner, "generate", generate)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    assert coach_report.main() == 0
+    assert logged[0]["model"] == (expected or "default")
+    path = tmp_path / "valo-coach" / f"{uuid}-p100" / "payload.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["model"] == (expected or "cli-model")
 
 
 def test_a_player_not_in_the_snapshot_is_refused_with_2(tmp_path, monkeypatch, capsys):

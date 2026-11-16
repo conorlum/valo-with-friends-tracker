@@ -31,6 +31,7 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 TIMEOUT_S = 1800
+DEFAULT_MODEL = "claude-opus-5-5"
 MODEL_DIR = "model"   # the model's cwd holds only q; snapshot and log stay one level up, where reads are refused (probe 3g).
 
 # What the model's process may inherit. Everything else (database URL, API keys, any other secret) is dropped.
@@ -193,16 +194,20 @@ def record_usage(run_dir: Path, entry: dict, log: Path | None = None) -> None:
         print(f"usage not appended to {log}: {error}", file=sys.stderr)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("match_uuid")
     parser.add_argument("players", nargs="+", metavar="player")
-    parser.add_argument("--model")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--prompt-only", action="store_true",
                       help="write the first prompt to <run dir>/prompt.txt and stop; no model is called")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     from app.coach import playbook, snapshot
     from app.db import SessionLocal
     from scripts import _admin_client
