@@ -1,4 +1,7 @@
-"""Fixed query explanations, shared by the answers and the run prompt. No imports."""
+"""Fixed query explanations and evidence limits, shared with the run prompt. No imports."""
+
+_APPROXIMATE_AREAS = "areas marked approximate are a nearest-label guess, not a painted area"
+SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
 
 NOTES = {'where': "health is a word (healthy, hurt, low) after the player's last recorded hit; null means no hit is "
           'recorded so far, not full health; heals are not recorded; a living player with no u/v has no '

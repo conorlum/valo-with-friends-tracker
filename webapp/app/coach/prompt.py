@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 
-from app.coach import checker, compact
-from app.coach.notes import NOTES
-from app.coach.query import _APPROXIMATE_AREAS
+from app.coach import compact, notes
 
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
@@ -31,7 +29,7 @@ SHAPE = """\
 
 
 def run_prompt(book, brief: dict) -> str:
-    fixed_notes = "\n\n".join(f"{cmd}: {note}" for cmd, note in NOTES.items())
+    fixed_notes = "\n\n".join(f"{cmd}: {note}" for cmd, note in notes.NOTES.items())
     return (f"""{book.text}
 
 # Themes
@@ -78,7 +76,7 @@ for the player's side, unless the round has no team-knowledge data, which the ca
 
 These apply to every answer of the named command. Any additional note appears below its answer.
 
-{_APPROXIMATE_AREAS}
+{notes._APPROXIMATE_AREAS}
 
 {fixed_notes}
 
@@ -109,7 +107,7 @@ For Haunt and Recon, `area` is where the pulse looked and found nobody of that n
 
 When you have checked your points, reply with one JSON object and nothing else, in this shape. "t" is the moment
 in the round; "t1" is optional and ends a span. Exactly three "good" and three "improve".
-"t1" is at most {checker.SPAN_MAX_S:g} s after "t".
+"t1" is at most {notes.SPAN_MAX_S:g} s after "t".
 
 {SHAPE}
 """)

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 
-from app.coach import knowledge, query
+from app.coach import knowledge, notes, query
 from app.coach.snapfile import SnapshotError
 from app.services.agent_roles import role_of
 
@@ -16,7 +16,7 @@ POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
 WINDOW_SLACK_S = 0.5
 AREA_WHERE_WINDOW_S = 1.0   # a where answer can place players up to one second before a moment
-SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
+SPAN_MAX_S = notes.SPAN_MAX_S
 BODY_MAX = 4000             # longer text is refused before the regexes run
 TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
 

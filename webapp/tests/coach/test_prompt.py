@@ -1,12 +1,24 @@
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 
-from app.coach import checker, compact, prompt
+from app.coach import checker, compact, notes, prompt
 from app.coach.playbook import Playbook
 
 BOOK = Playbook("4", ("trading", "rotation"), "# Principles\n- Trade your teammate.")
 BRIEF = {"v": 1, "subject": {"name": "Owner#1"}, "match": {"map": "Ascent"}, "rounds": [], "ranked": [],
          "areas": ["A Main"], "data_gaps": {}, "players": []}
+
+
+def test_the_prompt_does_not_import_the_control_engine():
+    code = ("import sys, app.coach.prompt; "
+            "print(sorted(m for m in sys.modules if m == 'app.control' or m.startswith('app.control.')))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "[]"
 
 
 def test_query_format_and_fixed_approximate_note():
@@ -118,8 +130,9 @@ def test_the_run_prompt_states_the_checker_span_limit(monkeypatch):
     def returned_text():
         return " ".join(prompt.run_prompt(BOOK, BRIEF).split("# What to return", 1)[1].split())
 
+    assert checker.SPAN_MAX_S == notes.SPAN_MAX_S == 10.0
     assert f'"t1" is at most {checker.SPAN_MAX_S:g} s after "t"' in returned_text()
-    monkeypatch.setattr(checker, "SPAN_MAX_S", 7.5)
+    monkeypatch.setattr(notes, "SPAN_MAX_S", 7.5)
     assert '"t1" is at most 7.5 s after "t"' in returned_text()
 
 

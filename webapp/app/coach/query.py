@@ -12,13 +12,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.coach import areas, control_areas, knowledge
-from app.coach.notes import NOTES
+from app.coach.notes import NOTES, _APPROXIMATE_AREAS
 from app.coach.snapfile import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
 
 LOG = "log.jsonl"
-_APPROXIMATE_AREAS = "areas marked approximate are a nearest-label guess, not a painted area"
 
 
 class QueryError(Exception):
