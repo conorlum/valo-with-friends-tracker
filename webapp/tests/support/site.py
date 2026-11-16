@@ -37,6 +37,7 @@ def bind_site(factory, monkeypatch):
     monkeypatch.setattr(template_module, "SessionLocal", factory)
     monkeypatch.setattr(settings, "demo_mode", False)
     monkeypatch.setattr(settings, "map_pool_auto", False)
+    monkeypatch.setattr(settings, "agent_check_auto", False)
     monkeypatch.setattr(settings, "replay_control_remote", False)
     monkeypatch.setattr(settings, "replay_worker_url", None)
     monkeypatch.delenv("MAINTENANCE_MODE", raising=False)

@@ -104,6 +104,7 @@ The upload page's "Site health" card (`app/services/replay_errors.py`, `KINDS`/`
 stored `site_events` rows (migration 0031; `app/services/site_health.py`): crashing pages, slow first page loads
 (`site_health.PAGE_ROUTES` classifies every GET route; a test fails on an unlisted one), loop failures and quiet
 loops, the Critical Util build, cache fallbacks, worker overruns and refusals, warm cache files lost,
+`agent_unsupported` (playable agents missing from the site, checked daily with `AGENT_CHECK_AUTO`),
 `map_layout_walls` (maps whose replays put players inside walls after a patch), `trip_too_long` (replays with trip
 pairs longer than `site_health.TRIP_LIMIT_M`); and checked
 kinds (unscored matches, per-kill Impact, map-pool notes, `app/services/site_health_checks.py`). The watched jobs

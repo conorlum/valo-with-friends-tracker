@@ -5,9 +5,9 @@ import pytest
 from app import main
 from app.config import settings
 from app.db import SessionLocal
-from app.services import kill_impact_sweep, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health
+from app.services import kill_impact_sweep, agent_check, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health
 
-SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states, util_build_remote, kill_impact_sweep)
+SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, agent_check, replay_match_states, util_build_remote, kill_impact_sweep)
 
 
 @pytest.mark.parametrize("failure", [None, "request", *range(len(SERVICES))])
@@ -149,7 +149,7 @@ def test_lifespan_yields_when_the_database_is_dead(monkeypatch):
 
 def test_demo_starts_no_threads_even_when_all_switches_are_on(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", True)
-    for name in ('map_pool_auto', 'replay_control_remote', 'replay_reparse_auto', 'replay_heights_auto', 'util_build_remote'):
+    for name in ('map_pool_auto', 'agent_check_auto', 'replay_control_remote', 'replay_reparse_auto', 'replay_heights_auto', 'util_build_remote'):
         monkeypatch.setattr(settings, name, True)
     monkeypatch.setattr(settings, 'replay_worker_url', 'http://worker.invalid')
     monkeypatch.setattr(settings, 'replay_upload_code', 'test-code')
