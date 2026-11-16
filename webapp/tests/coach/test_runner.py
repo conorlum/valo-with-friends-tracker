@@ -241,6 +241,7 @@ def test_the_q_script_runs_the_query_tool_against_this_run(tmp_path):
     assert path == tmp_path / "model" / "q"
     assert [p.name for p in (tmp_path / "model").iterdir()] == ["q"]
     assert f'--run "{tmp_path.resolve().as_posix()}" --compact --' in text
+    assert f'exec "{(tmp_path / "python.exe").as_posix()}" -X utf8 ' in text
 
 
 def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
@@ -445,6 +446,7 @@ def test_a_player_not_in_the_snapshot_is_refused_with_2(tmp_path, monkeypatch, c
 def test_q_ends_its_options_so_the_model_cannot_override_run(tmp_path):
     text = coach_report.write_q(tmp_path, tmp_path / "python.exe").read_text(encoding="utf-8")
     assert '"$@"' in text and '-- "$@"' in text
+    assert '" -X utf8 "' in text
 
 
 def test_coach_query_refuses_a_second_run_option(tmp_path, monkeypatch, capsys):

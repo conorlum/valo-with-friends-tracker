@@ -65,9 +65,21 @@ def test_the_run_prompt_explains_batching_and_pattern_evidence():
     assert "moment prints the four full answers with their ids" in text
 
 
-def test_an_instance_citing_a_pattern_row_starts_at_its_time_or_up_to_half_a_second_later():
+def test_pattern_rows_are_discovery_pointers_with_evidence_for_the_playbook_start():
     text = " ".join(prompt.run_prompt(BOOK, BRIEF).split())
-    assert "An instance citing a row starts at the row's t as printed, or up to 0.5 s later, never earlier." in text
+    assert "Rows are discovery pointers" in text
+    assert "answers are asked at the row's t" in text
+    assert "where 0.5 s before, clamped to 0" in text
+    assert "keeps the playbook's start" in text
+    assert "about 5 seconds before first damage" in text
+    assert "usually before the row's t" in text
+    assert "moment <round> <instance t>" in text
+    assert "cite its knew answer for the player's side" in text
+    assert "its where answer when the caption names the player's place at the start" in text
+    assert "30 s before the instance's t through its t1" in text
+    assert "a mistake's required knew answer must be no later than its t" in text
+    assert "timeline is tied only to the round" in text
+    assert "never earlier" not in text
 
 
 def test_the_run_prompt_explains_the_ruled_out_pulse_area():

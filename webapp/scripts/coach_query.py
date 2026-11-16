@@ -27,6 +27,11 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 
 def main(argv=None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError):
+        # Embedded callers may provide a text stream with no configurable encoding.
+        pass
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, type=Path, action="append")
     parser.add_argument("--compact", action="store_true")
@@ -65,6 +70,11 @@ def main(argv=None) -> int:
                     print(compact.render(result) if args.compact else json.dumps(result))
                 continue
             result = query.run(snap, args.run, command, query_args)
+            if args.compact:
+                print(query.show({"id": result["id"], "cmd": command, "args": query_args,
+                                  "result": {k: v for k, v in result.items() if k != "id"}}))
+            else:
+                print(json.dumps(result))
         except query.QueryError as error:
             print(f"error: {error}")
             status = 1
@@ -74,11 +84,6 @@ def main(argv=None) -> int:
             traceback.print_exc(file=sys.stderr)
             status = 1
             continue
-        if args.compact:
-            print(query.show({"id": result["id"], "cmd": command, "args": query_args,
-                              "result": {k: v for k, v in result.items() if k != "id"}}))
-        else:
-            print(json.dumps(result))
     return status
 
 

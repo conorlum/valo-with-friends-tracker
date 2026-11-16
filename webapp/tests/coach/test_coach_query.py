@@ -1,6 +1,11 @@
+import builtins
+import io
 import json
+import os
 import shlex
+import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,7 +108,9 @@ def test_option_orders_and_explicit_argv(run_dir, source, capsys):
         options = ["--compact", "--run", str(run_dir), "--"]
     else:
         script = coach_report.write_q(run_dir, run_dir / "python.exe").read_text(encoding="utf-8")
-        options = shlex.split(script.splitlines()[1])[3:-1]
+        words = shlex.split(script.splitlines()[1])
+        assert words[2:4] == ["-X", "utf8"]
+        options = words[5:-1]
     assert coach_query.main([*options, *"where 1 5 + knew 1 5 A".split()]) == 0
     log = query.read_log(run_dir)
     assert list(log) == ["q1", "q2"]
@@ -165,3 +172,88 @@ def test_fault_prints_traceback_and_later_queries_still_run(run_dir, monkeypatch
         assert captured.out.endswith(query.show(log["q2"]) + "\n")
     else:
         assert json.loads(captured.out.splitlines()[-1])["id"] == "q2"
+
+
+@pytest.mark.parametrize("parts, expected_commands", [
+    ("where 1 5 + timeline 1", ["where", "timeline"]),
+    ("deaths 0 + timeline 1", ["timeline", "where", "knew", "knew", "timeline"]),
+    ("moment 1 5 + timeline 1", ["timeline", "where", "knew", "knew", "timeline"]),
+    ("knew 1 5 SUBJECT + timeline 1", ["knew", "timeline"]),
+])
+def test_direct_query_writes_utf8_under_filtered_child_env(snap, tmp_path, parts, expected_commands):
+    # Synthetic name, deliberately outside cp1252. No inherited Python encoding settings.
+    name = "\u6d4b\u8bd5#TOY"
+    snap.context["players"]["0"]["name"] = name
+    snapfile.save(snap.data, tmp_path)
+    parts = parts.replace("SUBJECT", name)
+    env = coach_report.child_env(os.environ)
+    for key in list(env):
+        if key.upper() in {"PYTHONUTF8", "PYTHONIOENCODING", "PYTHONLEGACYWINDOWSSTDIO"}:
+            del env[key]
+    done = subprocess.run([sys.executable, str(coach_query.WEBAPP_ROOT / "scripts" / "coach_query.py"),
+                           "--run", str(tmp_path), "--compact", "--", *parts.split()],
+                          env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert done.returncode == 0, done.stderr.decode("utf-8", errors="replace")
+    output = done.stdout.decode("utf-8").replace("\r\n", "\n")
+    assert name in output
+    log = query.read_log(tmp_path)
+    assert [entry["cmd"] for entry in log.values()] == expected_commands
+    if parts.startswith("deaths"):
+        assert "timeline_id" in output and "where_id" in output
+    else:
+        assert all(query.show(entry) in output for entry in log.values())
+    assert query.show(next(reversed(log.values()))) in output
+
+
+@pytest.mark.parametrize("compact", [True, False])
+@pytest.mark.parametrize("command", ["where 1 5", "deaths 0", "moment 1 5"])
+@pytest.mark.parametrize("fault", ["render", "print"])
+def test_output_fault_is_per_part_and_later_queries_run(run_dir, monkeypatch, capsys, compact, command, fault):
+    from app.coach import compact as compact_module
+
+    if fault == "print":
+        original = builtins.print
+        target, attribute = coach_query, "print"
+    elif not compact:
+        # Patch only this module's JSON rendering, leaving query logging intact.
+        original = json.dumps
+        target, attribute = coach_query, "json"
+    elif command.startswith("deaths"):
+        original = compact_module.render
+        target, attribute = compact_module, "render"
+    else:
+        original = query.show
+        target, attribute = query, "show"
+    failed = False
+
+    def fail_once(*args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise UnicodeEncodeError("cp1252", "\u6d4b", 0, 1, "synthetic output fault")
+        return original(*args, **kwargs)
+
+    replacement = SimpleNamespace(dumps=fail_once) if fault == "render" and not compact else fail_once
+    monkeypatch.setattr(target, attribute, replacement, raising=False)
+    assert invoke(monkeypatch, run_dir, [*command.split(), "+", "timeline", "1"], compact=compact) == 1
+    captured = capsys.readouterr()
+    assert "error: part 1 failed: UnicodeEncodeError" in captured.out
+    assert "UnicodeEncodeError" in captured.err
+    last = list(query.read_log(run_dir).values())[-1]
+    assert last["cmd"] == "timeline"
+    if compact:
+        assert captured.out.endswith(query.show(last) + "\n")
+    else:
+        assert json.loads(captured.out.splitlines()[-1])["id"] == last["id"]
+
+
+@pytest.mark.parametrize("has_reconfigure", [True, False])
+def test_embedded_stdout_can_lack_reconfigure(run_dir, monkeypatch, has_reconfigure):
+    class Unconfigurable(io.StringIO):
+        def reconfigure(self, **kwargs):
+            raise io.UnsupportedOperation("synthetic embedded stream")
+
+    stream = Unconfigurable() if has_reconfigure else io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert invoke(monkeypatch, run_dir, ["where", "1", "5"]) == 0
+    assert query.show(query.read_log(run_dir)["q1"]) in stream.getvalue()

@@ -55,7 +55,13 @@ For deaths, kills and teammate_deaths, player defaults to the subject. A pattern
 where (0.5 s before the moment, clamped to 0) and two knew answers (A and B) per moment, and prints one row per
 moment with round, t, killer, victim, player areas and health, matching flags, and the logged answers' ids
 (timeline_id, where_id, knew_a_id, knew_b_id), citable like any answer. moment prints the four full answers
-with their ids. An instance citing a row starts at the row's t as printed, or up to 0.5 s later, never earlier.
+with their ids. Rows are discovery pointers: their answers are asked at the row's t (where 0.5 s before,
+clamped to 0). An instance keeps the playbook's start: a fight or death about 5 seconds before first damage,
+usually before the row's t. Run `moment <round> <instance t>` for that start and cite its knew answer for the
+player's side, and its where answer when the caption names the player's place at the start. The row's other ids
+may accompany it when valid for the instance: timed answers count from 30 s before the instance's t through its
+t1 (or t without t1), but a mistake's required knew answer must be no later than its t. The row's timeline is
+tied only to the round.
 
 # Fixed notes
 

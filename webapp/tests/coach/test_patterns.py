@@ -3,7 +3,7 @@ import shlex
 
 import pytest
 
-from app.coach import areas, checker, query, runner, snapfile, snapshot
+from app.coach import areas, checker, playbook, prompt, query, runner, snapfile, snapshot
 from scripts import coach_query, coach_report
 from tests.coach import toys
 from tests.coach.test_areas import painted_object, write_paint
@@ -183,6 +183,39 @@ def test_moment_evidence_satisfies_checker_windows_without_rounding(pattern_snap
         assert (problems == []) is accepted, problems
 
 
+@pytest.mark.parametrize("command, slot", [
+    ("deaths", 0), ("kills", 0), ("teammate_deaths", 5),
+    ("teammate_deaths", 0), ("deaths", 1),
+])
+def test_pattern_lead_up_uses_start_evidence_with_real_playbook(pattern_snap, tmp_path, command, slot):
+    book = playbook.load()
+    assert "starts about 5 seconds before the first damage" in book.text
+    text = " ".join(prompt.run_prompt(book, {}).split())
+    assert "Rows are discovery pointers" in text
+    row = ask(pattern_snap, tmp_path, command, [str(slot)])["moments"][0]
+    start = max(0.0, row["t"] - 5.0)
+    row_ids = [row[key] for key in ("timeline_id", "where_id", "knew_a_id", "knew_b_id")]
+    moment = ask(pattern_snap, tmp_path, "moment", [str(row["round"]), str(start)])
+    side = pattern_snap.view(row["round"]).side(slot)
+    knew = next(e for e in moment["entries"] if e["cmd"] == "knew" and e["result"]["side"] == side)
+    where = next(e for e in moment["entries"] if e["cmd"] == "where")
+    assert where["result"]["t"] == max(0.0, start - 0.5)
+    own = next(p for p in where["result"]["players"] if p["slot"] == slot)
+    caption = f"You held {own['area']['name']}." if own.get("area") else "You held position."
+    log = query.read_log(tmp_path)
+    trusted = checker.trusted_log(log, pattern_snap, {})
+    assert trusted == log
+    point = {"polarity": "improve", "theme": "trading", "title": "Hold together",
+             "body": "Keep support close.", "instances": [
+                 {"round": row["round"], "t": start, "t1": row["t"],
+                  "caption": caption, "evidence": row_ids + [knew["id"], where["id"]]}]}
+    assert checker.check_point(point, trusted, pattern_snap, book.themes, slot) == []
+    point["instances"][0]["evidence"] = row_ids
+    problems = checker.check_point(point, trusted, pattern_snap, book.themes, slot)
+    assert any("must cite a knew answer" in problem for problem in problems), problems
+    assert not any("outside this moment" in problem for problem in problems), problems
+
+
 def test_brief_writes_subject_and_explicit_player_overrides_it(pattern_snap, tmp_path):
     _, flags = runner._brief_with_flag_ids(pattern_snap, 0, tmp_path)
     assert json.loads((tmp_path / "subject.json").read_text(encoding="utf-8")) == {"slot": 0}
@@ -196,7 +229,9 @@ def test_brief_writes_subject_and_explicit_player_overrides_it(pattern_snap, tmp
 def test_patterns_and_plain_queries_share_a_write_q_batch(pattern_snap, tmp_path, capsys):
     (tmp_path / "subject.json").write_text('{"slot":0}', encoding="utf-8")
     script = coach_report.write_q(tmp_path, tmp_path / "python.exe").read_text(encoding="utf-8")
-    options = shlex.split(script.splitlines()[1])[3:-1]
+    words = shlex.split(script.splitlines()[1])
+    assert words[2:4] == ["-X", "utf8"]
+    options = words[5:-1]
     args = [*options, "deaths", "+", "timeline", "9", "7", "7",
             "+", "moment", "5", "0.25", "+", "kills", "0", "+", "teammate_deaths"]
     assert coach_query.main(args) == 0
