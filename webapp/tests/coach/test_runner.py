@@ -100,6 +100,48 @@ def test_a_failed_point_gets_one_repair_and_is_kept_when_fixed(snap, tmp_path):
     assert model.prompts[1][1] == "session-1" and "q999" in model.prompts[1][0]
 
 
+def test_number_misses_never_change_the_repair_prompt(snap, tmp_path):
+    replies = [lambda q: json.dumps({"points": [good_point([q]), bad_point()]}), "no fix"]
+    baseline = Model(snap, tmp_path / "baseline", replies)
+    original = runner.generate(snap, 0, tmp_path / "baseline", BOOK, baseline, "test-model")
+    misses = []
+    tracked = Model(snap, tmp_path / "tracked", replies)
+    result = runner.generate(snap, 0, tmp_path / "tracked", BOOK, tracked, "test-model", misses=misses)
+    assert result == original
+    assert tracked.prompts[1][0].encode() == baseline.prompts[1][0].encode()
+    assert misses == [{"stage": "first", "point": 1, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None}]
+
+
+@pytest.mark.parametrize("fixed_index", [1, 4])
+def test_number_misses_keep_sparse_original_and_appended_indices(snap, tmp_path, fixed_index):
+    def first(q):
+        points = [good_point([q]) for _ in range(6)]
+        points[1], points[4] = bad_point(), bad_point()
+        return json.dumps({"points": points})
+
+    repair = {"points": [{"index": fixed_index, **bad_point()}, {"index": 20, **bad_point()}]}
+    model = Model(snap, tmp_path, [first, json.dumps(repair)])
+    misses = []
+    runner.generate(snap, 0, tmp_path, BOOK, model, "test-model", misses=misses)
+    assert [(m["stage"], m["point"]) for m in misses] == [
+        ("first", 1), ("first", 4), ("repair", fixed_index), ("repair", 6)]
+    for record in misses:
+        assert set(record) == {"stage", "point", "figure", "kind", "nearest", "gap"}
+        assert record["figure"] == "35" and record["kind"] == "metres"
+        assert record["nearest"] is None and record["gap"] is None
+
+
+def test_number_misses_survive_a_run_error_after_the_first_check(snap, tmp_path):
+    model = Model(snap, tmp_path, [json.dumps({"points": [bad_point()]})])
+    misses = []
+    with pytest.raises(runner.RunError, match="session"):
+        runner.generate(snap, 0, tmp_path, BOOK, lambda text, session: (model(text, session)[0], None),
+                        "test-model", misses=misses)
+    assert misses == [{"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None}]
+
+
 def test_a_repair_reply_with_the_index_as_a_string_is_still_matched(snap, tmp_path):
     payload, _ = run(snap, tmp_path, [
         lambda q: json.dumps({"points": [good_point([q]), bad_point()]}),
@@ -349,7 +391,13 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
 
-    def generate(*args):
+    received = []
+
+    def generate(*args, misses=None):
+        assert isinstance(misses, list)
+        received.append(misses)
+        misses.append({"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None})
         coach_report.add_usage(call.usage, _cli_out(0.4, 7, 50))
         raise runner.RunError("no json")
 
@@ -358,6 +406,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
     assert logged[0]["outcome"] == "failed" and logged[0]["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
     assert "usage: 0.00M tokens" in capsys.readouterr().out
 
 
@@ -421,9 +470,15 @@ def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeyp
         assert model == expected
         return call
 
-    def generate(snap, slot, run_dir, book, model_call, model):
+    received = []
+
+    def generate(snap, slot, run_dir, book, model_call, model, *, misses=None):
         assert model_call is call
         assert model == (expected or "claude-code (default model)")
+        assert isinstance(misses, list)
+        received.append(misses)
+        misses.append({"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None})
         return {"model": model, "points": [], "dropped_points": 0}
 
     monkeypatch.setattr(coach_report, "claude_call", make_call)
@@ -431,6 +486,7 @@ def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeyp
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
     assert coach_report.main() == 0
     assert logged[0]["model"] == (expected or "default")
+    assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
     path = tmp_path / "valo-coach" / f"{uuid}-p100" / "payload.json"
     assert json.loads(path.read_text(encoding="utf-8"))["model"] == (expected or "cli-model")
 
@@ -601,7 +657,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
     monkeypatch.setattr(app.db, "SessionLocal", Db)
     monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
-    monkeypatch.setattr(runner, "generate", lambda *args: payload())
+    monkeypatch.setattr(runner, "generate", lambda *args, misses=None: payload())
     monkeypatch.setattr(coach, "store_report", lambda db, match_id, player_id, body: Report(db))
     assert coach_report.main() == 0
     assert "published version 4 (2 points, 0 dropped)" in capsys.readouterr().out

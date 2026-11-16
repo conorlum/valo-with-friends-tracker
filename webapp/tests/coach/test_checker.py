@@ -90,6 +90,46 @@ def test_a_clock_time_far_from_any_cited_time_is_refused(snap, log):
     assert any("1:30" in p for p in problems(snap, log, body="At 1:30 you were alone."))
 
 
+@pytest.mark.parametrize("body, cited, expected", [
+    ("Held for 12.3 s.", {"seconds": 12.31}, []),
+    ("Held for 12.4 s.", {"seconds": 12.31}, [("12.4", "seconds", 12.31, 0.09)]),
+    ("At 0:45 you held.", {"t": 41.5}, [("0:45", "seconds", 41.5, 3.5)]),
+    ("You stood 12.4 m away.", {"metres": -12.31}, [("12.4", "metres", -12.31, 0.09)]),
+    ("Impact reached 12.4.", {"impact": -12.31}, [("12.4", "value", -12.31, 0.09)]),
+    ("Loadout was 12,500.", {"loadout": 12000}, [("12,500", "value", 12000, 500)]),
+    ("Values were 12500 and 12,500.", {"value": 12000},
+     [("12500", "value", 12000, 500), ("12,500", "value", 12000, 500)]),
+    ("Control reached 50.", {"a": 0.5}, []),
+    ("Control reached 50.", {"a": 0.45}, [("50", "value", 45, 5)]),
+    ("Impact was +250.", {"impact": -250}, [("+250", "signed", None, None)]),
+    ("Impact was +250.", {"impact": -250, "damage": 40}, [("+250", "signed", 40, 210)]),
+    ("Impact was -250.", {"impact": -240, "damage": 250}, [("-250", "signed", -240, 10)]),
+    ("Gained -50% control.", {"a": 0.5, "b": -0.45}, [("-50%", "signed", -45, 5)]),
+    ("Held 35 m away.", {"seconds": 35}, [("35", "metres", None, None)]),
+    ("Impact reached 77.", {}, [("77", "value", None, None)]),
+    ("Held 12.4 to 15.4 s.", {"seconds": 12.31},
+     [("12.4", "seconds", 12.31, 0.09), ("15.4", "seconds", 12.31, 3.09)]),
+])
+def test_number_misses_preserve_problems_and_original_figures(snap, tmp_path, body, cited, expected):
+    log = _flag_log(snap, tmp_path, {"round": 1, **cited})
+    candidate = point(polarity="good", body=body, instances=[
+        {"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}])
+    original = checker.check_point(candidate, log, snap, THEMES, 0)
+    assert checker.check_point(candidate, log, snap, THEMES, 0, misses=None) == original
+    misses = []
+    assert checker.check_point(candidate, log, snap, THEMES, 0, misses=misses) == original
+    assert bool(original) == bool(expected)
+    assert len(misses) == len(expected)
+    for record, (figure, kind, nearest, gap) in zip(misses, expected):
+        assert set(record) == {"figure", "kind", "nearest", "gap"}
+        assert record["kind"] in {"seconds", "metres", "value", "signed"}
+        assert record["figure"] == figure and record["kind"] == kind
+        assert record["nearest"] == (None if nearest is None else pytest.approx(nearest))
+        assert record["gap"] == (None if gap is None else pytest.approx(gap))
+    if body == "Held for 12.4 s.":
+        assert original == ["the number 12.4 s is not a time or duration in a cited answer"]
+
+
 def test_a_number_from_a_cited_flag_is_allowed(snap, log):
     inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q5", "q2"]}]
     assert problems(snap, log, body="Nearest teammate 61 m away.", instances=inst) == []

@@ -72,7 +72,8 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
     return built, logged
 
 
-def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) -> dict:
+def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str, *,
+             misses: list | None = None) -> dict:
     built, flags = _brief_with_flag_ids(snap, slot, run_dir)
     text, session = call_model(prompt.run_prompt(book, built), None)
     points = extract_points(text)
@@ -83,18 +84,22 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
     if points is None:
         raise RunError("the model returned no report")
 
-    def check_one(p, log) -> list[str]:
+    def check_one(p, log, stage: str, index: int) -> list[str]:
         if not isinstance(p, dict):
             return ["the point is not an object"]
+        point_misses = [] if misses is not None else None
         try:
-            return checker.check_point(p, log, snap, book.themes, slot)
+            return checker.check_point(p, log, snap, book.themes, slot, misses=point_misses)
         except Exception as error:      # noqa: BLE001 - a point the checker cannot read fails; the run goes on
             return [f"the checker could not read this point: {type(error).__name__}"]
+        finally:
+            if point_misses is not None:
+                misses.extend({"stage": stage, "point": index, **record} for record in point_misses)
 
-    def checked(candidates: list) -> list[list[str]]:
+    def checked(candidates: list, stage: str) -> list[list[str]]:
         """Each candidate's problems, against the log as it can be reproduced now."""
         log = checker.trusted_log(query.read_log(run_dir), snap, flags)
-        return [check_one(p, log) for p in candidates]
+        return [check_one(p, log, stage, i) for i, p in candidates]
 
     def storable(p) -> bool:
         try:
@@ -103,7 +108,7 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
             return False
 
     failed = [(i, p if isinstance(p, dict) else {}, problems)
-              for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
+              for i, (p, problems) in enumerate(zip(points, checked(list(enumerate(points)), "first"))) if problems]
     # The owner wants three and three even when some are weak: a side that came back short is asked for more.
     missing = {side: max(0, PER_SIDE - sum(1 for p in points if isinstance(p, dict) and p.get("polarity") == side))
                for side in checker.POLARITIES}
@@ -120,7 +125,8 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
             fixes = {i: p for (i, _, _), p in zip(failed, returned)}
         offered = [fixes.get(i) for i, _, _ in failed]
         added = [fixes[i] for i in sorted(fixes) if i >= first_count]
-        verdicts = iter(checked([f for f in offered if f is not None] + added))
+        candidates = [(i, fix) for (i, _, _), fix in zip(failed, offered) if fix is not None]
+        verdicts = iter(checked(candidates, "repair"))
         for (i, _, problems), fix in zip(failed, offered):
             fix_problems = next(verdicts) if fix is not None else None
             if fix is not None and not fix_problems:
@@ -133,7 +139,7 @@ def generate(snap, slot: int, run_dir: Path, book, call_model, model_name: str) 
                 points[i] = None
                 dropped += 1
         for fix in added:
-            fix_problems = next(verdicts)
+            fix_problems = checked([(len(points), fix)], "repair")[0]
             if not fix_problems or storable(fix):
                 points.append(fix)
                 if fix_problems:

@@ -310,17 +310,19 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
         print(f"{path}\n{len(text)} characters")
         return 0
     call = claude_call(run_dir, args.model)
+    misses = []
     usage_entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "match": uuid,
                    "player_id": player_id, "player": player, "model": args.model or "default",
                    "outcome": "failed", "usage": call.usage}
     try:
         payload = runner.generate(snap, slot, run_dir, book, call,
-                                  args.model or "claude-code (default model)")
+                                  args.model or "claude-code (default model)", misses=misses)
         usage_entry["outcome"] = "generated"
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
     finally:      # a failed run's calls cost the same: always recorded
+        usage_entry["number_misses"] = misses
         if call.usage["calls"]:
             record_usage(run_dir, usage_entry)
             print(f"usage: {usage_line(call.usage)}", flush=True)
