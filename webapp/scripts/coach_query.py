@@ -1,4 +1,4 @@
-"""One coach question about a round, answered from a local snapshot and logged. No database, no network.
+"""Coach questions about rounds, answered from a local snapshot and logged. No database, no network.
 
     $PY scripts/coach_query.py --run <dir> where <round> <t>
     $PY scripts/coach_query.py --run <dir> knew <round> <t> <A|B|player>
@@ -9,40 +9,62 @@
 
 <dir> holds the snapshot and receives <dir>/log.jsonl. Prints JSON with the call's log id by default;
 --compact prints a header and compact tables, with fixed notes supplied in the run prompt. Times are seconds into
-the round. Always exits 0: an error is an answer (`{"id", "error"}`), so the caller reads it instead of retrying
-blind."""
+the round. Separate questions with a lone + argument. Each answer has its own log id, including error answers.
+Empty parts and unexpected faults are reported while later questions still run, and exit with status 1."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, type=Path, action="append")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument("command")
-    parser.add_argument("args", nargs="*")
-    args = parser.parse_args()
+    parser.add_argument("args", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
     if len(args.run) != 1:
         print("refused: --run may be given only once", file=sys.stderr)
         return 2
     args.run = args.run[0]
     from app.coach import query, snapfile as snapshot
 
-    result = query.run(snapshot.load(args.run), args.run, args.command, args.args)
-    if args.compact:
-        print(query.show({"id": result["id"], "cmd": args.command, "args": args.args,
-                          "result": {k: v for k, v in result.items() if k != "id"}}))
-    else:
-        print(json.dumps(result))
-    return 0
+    parts = [[]]
+    for arg in [args.command, *args.args]:
+        if arg == "+":
+            parts.append([])
+        else:
+            parts[-1].append(arg)
+
+    snap = snapshot.load(args.run)
+    status = 0
+    for position, part in enumerate(parts, 1):
+        if not part:
+            print(f"error: empty query at position {position}")
+            status = 1
+            continue
+        command, *query_args = part
+        try:
+            result = query.run(snap, args.run, command, query_args)
+        except Exception as error:
+            print(f"error: part {position} failed: {type(error).__name__}")
+            traceback.print_exc(file=sys.stderr)
+            status = 1
+            continue
+        if args.compact:
+            print(query.show({"id": result["id"], "cmd": command, "args": query_args,
+                              "result": {k: v for k, v in result.items() if k != "id"}}))
+        else:
+            print(json.dumps(result))
+    return status
 
 
 if __name__ == "__main__":
