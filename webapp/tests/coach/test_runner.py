@@ -226,6 +226,78 @@ def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
     assert seen["cwd"] == tmp_path / "model"
 
 
+def _cli_out(cost, turns, tokens, model="claude-x"):
+    return {"result": "hi", "session_id": "s", "total_cost_usd": cost, "num_turns": turns, "duration_ms": 60000,
+            "usage": {"input_tokens": tokens, "output_tokens": 10, "cache_read_input_tokens": 100,
+                      "cache_creation_input_tokens": 5},
+            "modelUsage": {model: {"costUSD": cost, "inputTokens": tokens, "outputTokens": 10,
+                                   "cacheReadInputTokens": 100, "cacheCreationInputTokens": 5}}}
+
+
+def test_usage_is_summed_over_every_call_of_a_run(tmp_path, monkeypatch):
+    outs = iter([_cli_out(0.5, 12, 1000), _cli_out(0.25, 3, 200)])
+
+    class Done:
+        returncode, stderr = 0, ""
+
+        def __init__(self):
+            self.stdout = json.dumps(next(outs))
+
+    monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
+    (tmp_path / "model").mkdir()
+    call = coach_report.claude_call(tmp_path, None)
+    call("first", None)
+    call("repair", "s")
+    usage = call.usage
+    assert (usage["calls"], usage["num_turns"], usage["input_tokens"], usage["output_tokens"]) == (2, 15, 1200, 20)
+    assert usage["cache_read_input_tokens"] == 200 and usage["duration_ms"] == 120000
+    assert usage["cost_usd"] == pytest.approx(0.75)
+    assert usage["by_model"]["claude-x"]["cost_usd"] == pytest.approx(0.75)
+    assert usage["by_model"]["claude-x"]["input_tokens"] == 1200
+    assert "$0.75" in coach_report.usage_line(usage) and "15 turns" in coach_report.usage_line(usage)
+
+
+def test_odd_usage_fields_count_zero():
+    usage = coach_report.add_usage(coach_report.new_usage(), {"total_cost_usd": None, "usage": "x",
+                                                               "num_turns": True, "modelUsage": {"m": "x"}})
+    assert usage["calls"] == 1 and usage["cost_usd"] == 0 and usage["num_turns"] == 0 and usage["by_model"] == {}
+
+
+def test_usage_is_merged_and_recorded(tmp_path):
+    one = coach_report.add_usage(coach_report.new_usage(), _cli_out(0.5, 2, 10))
+    two = coach_report.add_usage(coach_report.new_usage(), _cli_out(0.25, 1, 5, model="claude-y"))
+    total = coach_report.merge_usage(coach_report.merge_usage(coach_report.new_usage(), one), two)
+    assert total["calls"] == 2 and total["cost_usd"] == pytest.approx(0.75) and set(total["by_model"]) == {
+        "claude-x", "claude-y"}
+    log = tmp_path / "logs" / "usage.jsonl"
+    coach_report.record_usage(tmp_path, {"player": "A", "usage": one}, log)
+    coach_report.record_usage(tmp_path, {"player": "B", "usage": two}, log)
+    assert [json.loads(line)["player"] for line in log.read_text(encoding="utf-8").splitlines()] == ["A", "B"]
+    assert json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))["player"] == "B"
+
+
+def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
+    _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "0"], make_data())
+    logged = []
+
+    def call(text, session):
+        raise AssertionError("generate is replaced")
+
+    call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
+
+    def generate(*args):
+        coach_report.add_usage(call.usage, _cli_out(0.4, 7, 50))
+        raise runner.RunError("no json")
+
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(runner, "generate", generate)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
+    assert coach_report.main() == 1
+    assert logged[0]["outcome"] == "failed" and logged[0]["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert "usage: $0.40" in capsys.readouterr().out
+
+
 # --- main(): the command itself, with the database and the model replaced ---
 
 class _Db:
@@ -430,7 +502,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
     def call(text, session):
         raise AssertionError("generate is replaced")
 
-    call.denials, call.models = 0, set()
+    call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
     monkeypatch.setattr(app.db, "SessionLocal", Db)
     monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
     monkeypatch.setattr(runner, "generate", lambda *args: payload())
