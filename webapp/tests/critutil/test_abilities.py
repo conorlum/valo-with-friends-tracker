@@ -290,6 +290,12 @@ def test_every_agent_key_ability_and_slot_x_row_is_in_the_table():
     assert sum(1 for e in abilities.load() if e["slot"] == "X") >= 26
 
 
+def test_every_entry_has_a_slot_and_miks_matches_the_inventory():
+    assert not [e["ability"] for e in abilities.load() if e["slot"] not in ("C", "Q", "E", "X")]
+    miks = {e["ability"]: e["slot"] for e in abilities.load() if e["agent"] == "Miks"}
+    assert miks == {"M-pulse": "C", "M-pulse (heal)": "C", "Harmonize": "Q", "Waveform": "E", "Bassquake": "X"}
+
+
 def test_table_types_rules_and_regexes():
     import re
     for e in abilities.load():

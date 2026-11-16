@@ -709,6 +709,18 @@ def test_death_holding_a_flash_after_engaging_first_is_unused_util():
     assert out["unused"] == [{"slot": 0, "t": 9.5, "kind": "held_at_death", "abilities": ["Flashpoint"], "kinds": ["blind"]}]
 
 
+def test_miks_death_holding_m_pulse_and_waveform_is_unused_util_but_harmonize_is_not():
+    # inventory slots: Grenade (C) = M-pulse, Ability1 (Q) = Harmonize, Ability2 (E) = Waveform (valorant-api)
+    ps = {"version": 1, "charges": {"0": {k: [{"t": 0.0, "n": 1}] for k in ("C", "Q", "E")}}}
+    util = [shot(8.0, 0), damage(8.1, 0, 5), damage(9.0, 5, 0)]
+    rnd, data = round_of(players(), util=util, kills=[kill(9.5, 5, 0)], geo=GEO)
+    data["players"][0]["agent"] = "Miks"
+    data["player_state"] = ps
+    out = extract.round_util(rnd, data)
+    assert out["unused"] == [{"slot": 0, "t": 9.5, "kind": "held_at_death", "abilities": ["M-pulse", "Waveform"],
+                              "kinds": ["smoke", "status"]}]
+
+
 def test_ambushed_death_makes_no_unused_claim():
     ps = {"version": 1, "charges": {"0": {"Q": [{"t": 0.0, "n": 2}]}}}
     rnd, data = round_of(players(), util=[damage(9.0, 5, 0)], kills=[kill(9.5, 5, 0)], geo=GEO)
