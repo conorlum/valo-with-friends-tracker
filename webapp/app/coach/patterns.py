@@ -46,6 +46,13 @@ def run(snap, directory: Path, command: str, args: list) -> dict:
     if command not in COMMANDS:
         raise query.QueryError(f"unknown pattern {command!r}")
     slot = _player(snap, directory, args)
+    try:
+        subject = _player(snap, directory, [])
+    except query.QueryError:
+        subject = None
+    flags = []
+    if slot == subject:
+        flags = [entry for entry in query.read_log(directory).values() if entry.get("cmd") == "flag"]
     moments = []
     for n in snap.round_numbers:
         view = snap.view(n)
@@ -55,12 +62,32 @@ def run(snap, directory: Path, command: str, args: list) -> dict:
                        kill.get("killer") == slot if command == "kills" else
                        kill["victim"] in teammates)
             if matches:
-                moments.append((n, kill["t"]))
+                moments.append((n, kill))
     rows = []
-    for n, t in moments:
+    for n, kill in moments:
+        t = kill["t"]
         entries = _answers(snap, directory, n, t)
-        rows.append({"round": n, "t": t, **dict(zip(
-            ("timeline_id", "where_id", "knew_a_id", "knew_b_id"),
-            (entry["id"] for entry in entries),
-        ))})
+        timeline, where = (entry["result"] for entry in entries[:2])
+        event = next(e for e in timeline["events"] if e["kind"] == "kill" and e["t"] == t
+                     and e["killer"] == snap.names.get(kill.get("killer"))
+                     and e["victim"] == snap.names.get(kill["victim"]))
+        own = next(p for p in where["players"] if p["slot"] == slot)
+        players = []
+        for player in where["players"]:
+            if player["slot"] == slot or (player["slot"] in (kill.get("killer"), kill["victim"])
+                                          and player["side"] == own["side"]):
+                shown = {"name": player["name"]}
+                if player.get("area") is not None:
+                    shown["area"] = player["area"]["name"]
+                if "health" in player:
+                    shown["health"] = player["health"]
+                players.append(shown)
+        rows.append({
+            "round": timeline["round"], "t": event["t"],
+            "killer": event["killer"], "victim": event["victim"], "players": players,
+            "flags": [{"id": flag["id"], **flag["result"]} for flag in flags
+                      if flag["args"][0] == n and abs(flag["args"][1] - t) < 0.006],
+            "timeline_id": entries[0]["id"], "where_id": entries[1]["id"],
+            "knew_a_id": entries[2]["id"], "knew_b_id": entries[3]["id"],
+        })
     return {"moments": rows}
