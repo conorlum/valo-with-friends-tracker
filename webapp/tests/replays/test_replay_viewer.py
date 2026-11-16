@@ -651,6 +651,36 @@ def test_players_panel_gun_and_light_shield():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_gun_icon():
+    """A gun in the icon table gets its silhouette before its name; one not in it (Chamber's) is the name alone."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const table = {Vandal: "/static/img/weapons/vandal.png"};
+        process.stdout.write(JSON.stringify({
+          vandal: R.gunHtml({gun: "Vandal", fired: true}, table),
+          headhunter: R.gunHtml({gun: "Headhunter", fired: false}, table),
+          none: R.gunHtml(null, table)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert "--gun-icon:url('/static/img/weapons/vandal.png')" in got["vandal"]
+    assert got["vandal"].endswith("></span>Vandal</span>")
+    assert "replay-pl-gun-icon" not in got["headhunter"] and "is-unfired" in got["headhunter"]
+    assert got["none"] == ""
+
+
+def test_every_gun_the_replays_name_is_vendored_or_chamber():
+    """Every gun the hearing table names has an icon in weapons.json, except Chamber's abilities (no Riot icon)."""
+    root = Path(__file__).resolve().parents[2] / "app"
+    guns = set(json.loads((root / "control" / "hearing.json").read_text(encoding="utf-8"))["guns"])
+    icons = json.loads((root / "static" / "data" / "weapons.json").read_text(encoding="utf-8"))
+    assert guns - set(icons) <= {"Headhunter", "Tour de Force", "Compact Pistol"}
+    for path in icons.values():
+        assert (root / path.removeprefix("/")).is_file()
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_placed_util_is_off_while_its_owner_is_in_kill_contract():
     """Kill Contract's arena is off the map (z ~ -4990): a sentinel's placed util is off while its owner's live
     track is there, and back on once they are out. Other util, and other owners', are untouched."""

@@ -1799,6 +1799,7 @@ table.compact-table .badge-score {
   .replay.is-linked .replay-board .replay-pl-ability { width: 1.25rem; height: 1.25rem; }
   .replay.is-linked .replay-board .replay-pl-ability img { width: 1rem; height: 1rem; }
   .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.6rem; bottom: -4px; }
+  .replay.is-linked .replay-board .replay-pl-gun-icon { width: 2rem; height: 0.65rem; }
   .replay.is-linked .replay-board .replay-pl-ult { width: 1.35rem; height: 1.35rem; margin-left: 0.1rem; }
   .replay.is-linked .replay-board .replay-pl-ult img { width: 0.95rem; height: 0.95rem; }
   .replay.is-linked .replay-board .replay-pl-nums { font-size: 0.72rem; line-height: 1.15; gap: 0; }
@@ -2006,6 +2007,12 @@ table.compact-table .badge-score {
   margin-left: 0.35rem; color: var(--ink-secondary); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
 }
 .replay-pl-gun.is-unfired { color: var(--ink-muted); font-weight: 400; font-style: italic; }
+.replay-pl-gun { display: inline-flex; align-items: center; gap: 0.25rem; }
+/* The gun's kill-feed silhouette (white on transparency, 96 px tall), drawn in the text colour. */
+.replay-pl-gun-icon {
+  display: inline-block; width: 2.6rem; height: 0.8rem; background: currentColor;
+  -webkit-mask: var(--gun-icon) center / contain no-repeat; mask: var(--gun-icon) center / contain no-repeat;
+}
 /* The shield line sits on top of the health bar: orange, out of heavy shield's 50. */
 .replay { --replay-shield: #f2994a; }
 .replay-pl-shield { display: block; height: 3px; margin-bottom: 1px; border-radius: 2px; overflow: hidden; }
