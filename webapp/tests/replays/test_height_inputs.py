@@ -237,6 +237,7 @@ def test_revision_seven_manifest_keeps_pre_fall_digest(monkeypatch):
     from tests.replays import layout_golden as golden
 
     monkeypatch.setattr(cf, "HEIGHT_RULES_REVISION", 7)
-    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, hi.geometry_identity("Abyss"),
-                           golden._must_block_sha_lf())
+    geometry = hi.geometry_identity("Abyss")
+    geometry.pop("height_paint", None)  # pins the revision-7 format, not Abyss's later hand paint
+    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, geometry, golden._must_block_sha_lf())
     assert hi.digest(manifest) == "d9bae5b3eb533d11"
