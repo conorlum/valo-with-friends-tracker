@@ -14,7 +14,7 @@ from replay_synthetic import AGENT_NAMES, DEFAULT_KILLS, MATCH_UUID, SyntheticMa
 
 from app.replays import condense as cd  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
-from app.replays.contract import GAME_STATE_PATH, PLAYER_STATE_PATH, ContractError  # noqa: E402
+from app.replays.contract import GAME_STATE_PATH, PLAYER_STATE_PATH, ContractError, UnknownAgent  # noqa: E402
 
 MAPS = cd.load_maps()
 ASCENT = MAPS["Ascent"]
@@ -257,6 +257,9 @@ def test_an_unknown_agent_code_refuses(tmp_path):
     with pytest.raises(ContractError) as refused:
         run(tmp_path, SyntheticMatch(agent_codes=codes))
     assert refused.value.reason == "unknown_agent"
+    assert isinstance(refused.value, UnknownAgent)
+    assert refused.value.code == "NotAnAgent"
+    assert refused.value.detail == "agent code name 'NotAnAgent' is not in agents.json"
 
 
 def test_an_unresolved_kill_refuses(tmp_path):

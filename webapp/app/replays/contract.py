@@ -84,6 +84,34 @@ class ContractError(ValueError):
         self.detail = detail
 
 
+class UnknownAgent(ContractError):
+    """The replay names an agent this site does not support yet."""
+
+    def __init__(self, code: str):
+        super().__init__("unknown_agent", f"agent code name {code!r} is not in agents.json")
+        self.code = code
+
+
+WAITING_AGENT_TEXT = (
+    "waiting for support for a new agent (code name {code}): the file is kept "
+    "and will be parsed once the site supports it"
+)
+_WAITING_AGENT_PATTERN = re.compile(
+    re.escape(WAITING_AGENT_TEXT).replace(re.escape("{code}"), r"(?P<code>.+)")
+)
+
+
+def waiting_agent_text(code: str) -> str:
+    return WAITING_AGENT_TEXT.format(code=code)
+
+
+def waiting_agent_code(text: str | None) -> str | None:
+    if text is None:
+        return None
+    match = _WAITING_AGENT_PATTERN.fullmatch(text)
+    return match.group("code") if match else None
+
+
 @dataclass(frozen=True)
 class ParserPin:
     commit: str

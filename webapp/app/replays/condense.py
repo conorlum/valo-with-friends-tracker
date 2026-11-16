@@ -42,6 +42,7 @@ from app.replays.contract import (
     RPC_RESURRECT,
     RPC_SET_PHASE,
     ContractError,
+    UnknownAgent,
     Export,
     ParserPin,
     check_manifest,
@@ -239,7 +240,7 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
             continue
         code = table_key.get(code.lower(), code)
         if code not in agents_by_code:
-            raise ContractError("unknown_agent", f"agent code name {code!r} is not in agents.json")
+            raise UnknownAgent(code)
         guid = int(row.data["actor_net_guid"])
         codes[guid] = code
         spawned_at.setdefault(guid, row.time_ms)
