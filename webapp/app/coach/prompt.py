@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from app.coach import compact
+from app.coach import checker, compact
 from app.coach.notes import NOTES
 from app.coach.query import _APPROXIMATE_AREAS
 
@@ -32,7 +32,7 @@ SHAPE = """\
 
 def run_prompt(book, brief: dict) -> str:
     fixed_notes = "\n\n".join(f"{cmd}: {note}" for cmd, note in NOTES.items())
-    return f"""{book.text}
+    return (f"""{book.text}
 
 # Themes
 
@@ -40,7 +40,10 @@ A point's theme must be one of: {", ".join(book.themes)}
 
 # The query command
 
-Run it from the current directory with no pipes or redirection. Several queries go in one call joined by a lone
+"""
+            # D9 trial (PLAN.md): removed before the PR unless the eval keeps it
+            "Make fewer, bigger calls: put every query a step needs into one `./q` call joined by `+`, because each call re-reads the whole conversation.\n"
+            f"""Run it from the current directory with no pipes or redirection. Several queries go in one call joined by a lone
 `+`, for example `./q where 7 41.5 + knew 7 42 A`. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
 number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name.
@@ -68,6 +71,8 @@ player's side, and its where answer when the caption names the player's place at
 may accompany it when valid for the instance: timed answers count from 30 s before the instance's t through its
 t1 (or t without t1), but a mistake's required knew answer must be no later than its t. The row's timeline is
 tied only to the round.
+Every "to improve" instance, from a row or not, must run `moment <round> <instance t>` and cite that answer's knew id
+for the player's side, unless the round has no team-knowledge data, which the caption must say.
 
 # Fixed notes
 
@@ -104,9 +109,10 @@ For Haunt and Recon, `area` is where the pulse looked and found nobody of that n
 
 When you have checked your points, reply with one JSON object and nothing else, in this shape. "t" is the moment
 in the round; "t1" is optional and ends a span. Exactly three "good" and three "improve".
+"t1" is at most {checker.SPAN_MAX_S:g} s after "t".
 
 {SHAPE}
-"""
+""")
 
 
 def repair_prompt(failed: list[tuple[int, dict, list[str]]], missing: dict | None = None, next_index: int = 0) -> str:

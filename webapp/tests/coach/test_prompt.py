@@ -1,6 +1,7 @@
 import json
+import re
 
-from app.coach import compact, prompt
+from app.coach import checker, compact, prompt
 from app.coach.playbook import Playbook
 
 BOOK = Playbook("4", ("trading", "rotation"), "# Principles\n- Trade your teammate.")
@@ -101,6 +102,45 @@ def test_the_run_prompt_explains_the_ruled_out_pulse_area():
     assert "`area` is where the pulse looked and found nobody of that name" in text
     assert "Neither gives a place" not in text
     assert "time, name, reason only; no place" not in prompt.COMMANDS
+
+
+def test_every_improve_instance_requires_its_own_moment_knowledge():
+    text = " ".join(prompt.run_prompt(BOOK, BRIEF).split())
+    assert (
+        'Every "to improve" instance, from a row or not, must run `moment <round> <instance t>` '
+        "and cite that answer's knew id for the player's side, unless the round has no team-knowledge data, "
+        'which the caption must say.'
+    ) in text
+    assert "or a knew asked" not in text
+
+
+def test_the_run_prompt_states_the_checker_span_limit(monkeypatch):
+    def returned_text():
+        return " ".join(prompt.run_prompt(BOOK, BRIEF).split("# What to return", 1)[1].split())
+
+    assert f'"t1" is at most {checker.SPAN_MAX_S:g} s after "t"' in returned_text()
+    monkeypatch.setattr(checker, "SPAN_MAX_S", 7.5)
+    assert '"t1" is at most 7.5 s after "t"' in returned_text()
+
+
+def test_the_query_command_includes_the_batching_trial_once():
+    text = prompt.run_prompt(BOOK, BRIEF)
+    sentence = (
+        "Make fewer, bigger calls: put every query a step needs into one `./q` call joined by `+`, "
+        "because each call re-reads the whole conversation."
+    )
+    assert text.count(sentence) == 1
+    assert sentence in text.split("# The query command", 1)[1].split(prompt.COMMANDS, 1)[0]
+
+
+def test_fixed_prompt_text_has_no_toy_player_names_or_match_ids():
+    from tests.coach.test_snapshot import CONTEXT
+
+    text = prompt.run_prompt(BOOK, {})
+    for player in CONTEXT["players"].values():
+        assert player["name"] not in text
+    assert BRIEF["subject"]["name"] not in text
+    assert not re.search(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", text, re.IGNORECASE)
 
 
 def test_the_repair_prompt_lists_each_failed_point_with_its_problems():
