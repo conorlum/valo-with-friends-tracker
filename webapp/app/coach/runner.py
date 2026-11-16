@@ -44,6 +44,8 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
     """The brief with each flag logged and given its id, and those flags by id as this process logged them:
     the checker trusts a flag entry only if it matches (checker.trusted_log)."""
     built = brief_module.build(snap, slot)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "subject.json").write_text(json.dumps({"slot": slot}), encoding="utf-8")
     logged = {}
     for r in built["rounds"]:
         for flag in r["flags"]:

@@ -6,6 +6,8 @@
     $PY scripts/coach_query.py --run <dir> control <round> <t0> <t1> "<area>"
     $PY scripts/coach_query.py --run <dir> timeline <round> [<t0> <t1>]
     $PY scripts/coach_query.py --run <dir> impact <round> <player>
+    $PY scripts/coach_query.py --run <dir> deaths|kills|teammate_deaths [<player>]
+    $PY scripts/coach_query.py --run <dir> moment <round> <t>
 
 <dir> holds the snapshot and receives <dir>/log.jsonl. Prints JSON with the call's log id by default;
 --compact prints a header and compact tables, with fixed notes supplied in the run prompt. Times are seconds into
@@ -35,7 +37,7 @@ def main(argv=None) -> int:
         print("refused: --run may be given only once", file=sys.stderr)
         return 2
     args.run = args.run[0]
-    from app.coach import query, snapfile as snapshot
+    from app.coach import compact, patterns, query, snapfile as snapshot
 
     parts = [[]]
     for arg in [args.command, *args.args]:
@@ -53,7 +55,20 @@ def main(argv=None) -> int:
             continue
         command, *query_args = part
         try:
+            if command in patterns.COMMANDS:
+                result = patterns.run(snap, args.run, command, query_args)
+                if command == "moment":
+                    for entry in result["entries"]:
+                        print(query.show(entry) if args.compact
+                              else json.dumps({"id": entry["id"], **entry["result"]}))
+                else:
+                    print(compact.render(result) if args.compact else json.dumps(result))
+                continue
             result = query.run(snap, args.run, command, query_args)
+        except query.QueryError as error:
+            print(f"error: {error}")
+            status = 1
+            continue
         except Exception as error:
             print(f"error: part {position} failed: {type(error).__name__}")
             traceback.print_exc(file=sys.stderr)
