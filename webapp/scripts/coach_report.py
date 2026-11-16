@@ -53,7 +53,7 @@ def write_q(run_dir: Path, python: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n"
                     f'exec "{posix(python)}" "{posix(WEBAPP_ROOT / "scripts" / "coach_query.py")}" '
-                    f'--run "{posix(Path(run_dir).resolve())}" -- "$@"\n', encoding="utf-8", newline="\n")
+                    f'--run "{posix(Path(run_dir).resolve())}" --compact -- "$@"\n', encoding="utf-8", newline="\n")
     return path
 
 

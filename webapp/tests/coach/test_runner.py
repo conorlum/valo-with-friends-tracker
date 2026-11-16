@@ -206,7 +206,7 @@ def test_the_q_script_runs_the_query_tool_against_this_run(tmp_path):
     assert path.name == "q" and "coach_query.py" in text and '--run' in text and '"$@"' in text and "\\" not in text
     assert path == tmp_path / "model" / "q"
     assert [p.name for p in (tmp_path / "model").iterdir()] == ["q"]
-    assert f'--run "{tmp_path.resolve().as_posix()}"' in text
+    assert f'--run "{tmp_path.resolve().as_posix()}" --compact --' in text
 
 
 def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):

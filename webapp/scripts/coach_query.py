@@ -7,7 +7,8 @@
     $PY scripts/coach_query.py --run <dir> timeline <round> [<t0> <t1>]
     $PY scripts/coach_query.py --run <dir> impact <round> <player>
 
-<dir> holds the snapshot and receives <dir>/log.jsonl. Prints JSON with the call's log id. Times are seconds into
+<dir> holds the snapshot and receives <dir>/log.jsonl. Prints JSON with the call's log id by default;
+--compact prints a header and compact tables, with fixed notes supplied in the run prompt. Times are seconds into
 the round. Always exits 0: an error is an answer (`{"id", "error"}`), so the caller reads it instead of retrying
 blind."""
 
@@ -25,6 +26,7 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, type=Path, action="append")
+    parser.add_argument("--compact", action="store_true")
     parser.add_argument("command")
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
@@ -34,7 +36,12 @@ def main() -> int:
     args.run = args.run[0]
     from app.coach import query, snapfile as snapshot
 
-    print(json.dumps(query.run(snapshot.load(args.run), args.run, args.command, args.args)))
+    result = query.run(snapshot.load(args.run), args.run, args.command, args.args)
+    if args.compact:
+        print(query.show({"id": result["id"], "cmd": args.command, "args": args.args,
+                          "result": {k: v for k, v in result.items() if k != "id"}}))
+    else:
+        print(json.dumps(result))
     return 0
 
 

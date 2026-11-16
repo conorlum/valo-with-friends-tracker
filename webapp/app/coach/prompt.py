@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from app.coach.notes import NOTES
+
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
 ./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out (time, name, reason, optional pulse-device area), lost_track (time, name, reason)
@@ -23,6 +25,7 @@ SHAPE = """\
 
 
 def run_prompt(book, brief: dict) -> str:
+    fixed_notes = "\n\n".join(f"{cmd}: {note}" for cmd, note in NOTES.items())
     return f"""{book.text}
 
 # Themes
@@ -33,10 +36,20 @@ A point's theme must be one of: {", ".join(book.themes)}
 
 Run it from the current directory, one call per command, with no pipes or redirection. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
-number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with "error" is not
-evidence. An answer with "available": false means the data is missing for that round.
+number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name.
+Every answer is a compact block with a header giving the id, command and arguments; cite that id as evidence.
+Objects use key:value and scalar lists use brackets. Tables use <key|key; then one row per line, separated by
+semicolons; a blank cell or missing field is null. Empty lists and objects mean none. Strings are quoted when
+ambiguous. An area is ~(name|super|path|approximate), with true marking an approximate area; path is a list.
+An answer with error is not evidence. An answer with available:false means the data is missing for that round.
 
 {COMMANDS}
+
+# Fixed notes
+
+These apply to every answer of the named command. Any additional note appears below its answer.
+
+{fixed_notes}
 
 Each flag in the brief already has an "id" you may cite, and each round's "facts_id" cites that round's economy
 and the score going into it. Each entry of a round's "util_facts" (the player's utility, measured: who it affected,
