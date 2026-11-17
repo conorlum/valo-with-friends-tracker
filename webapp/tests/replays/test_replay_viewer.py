@@ -744,38 +744,86 @@ def test_held_gun_closes_for_abilities_and_stays_within_the_current_life():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abilities():
+def test_held_ability_uses_the_agents_kit_name_and_falls_back_to_the_hold_name():
+    icons = json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8"))
     got = run_node("""
       const R = require(process.argv[1]);
-      const viewer = Object.create(R.ReplayViewer.prototype);
-      const blob = {players: [{slot: 1, agent: "Omen"}], kills: [], t_end: 90,
-                    alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
-      viewer.ui = {board: {}};
-      viewer.options = {};
-      viewer.linked = {players: {"1": {team: "team-1"}}};
-      viewer.slotColor = () => "#ffffff";
-      viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
-        extras: R.extrasFromUtil([
-          {k: "shot", by: 1, t: 3, gun: "Phantom"},
-          {k: "hold", by: 1, t: 0, gun: "Vandal", cat: "rifle", id: "100", gen: 0, seed: true},
-          {k: "hold", by: 1, t: 5, gun: null, cat: "other"},
-          {k: "hold", by: 1, t: 7, gun: null, cat: "rifle", id: "101", gen: 0},
-          {k: "hold", by: 1, t: 9, gun: "Vandal", cat: "rifle", id: "100", gen: 0},
-          {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0}
-        ])};
-      function gun(t) {
-        viewer.t = t;
-        viewer.renderBoard();
-        const match = viewer.ui.board.innerHTML.match(/<span class="replay-pl-gun[^>]*>[^<]*<\\/span>/);
-        return match ? match[0] : null;
-      }
-      const held = [1, 5, 8, 11, 15, 20].map(gun);
-      delete viewer.current.extras.holds;
-      process.stdout.write(JSON.stringify({held, fallback: [1, 4].map(gun)}));
-      """, {})
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const icons = JSON.parse(input);
+        const camera = {slot: 1, t: 5, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"};
+        const holds = [{slot: 1, t: 0, gun: "Vandal", cat: "rifle"}, camera];
+        const at = (hold, agent = "Cypher", table = icons) =>
+          R.gunAt([], 1, 6, [holds[0], hold], undefined, agent, table);
+        process.stdout.write(JSON.stringify({
+          gun: R.gunAt([], 1, 4, holds, undefined, "Cypher", icons), camera: at(camera),
+          label: R.heldAbilityLabel(camera, "Cypher", icons),
+          nullKey: at({...camera, key: null, name: "Wall"}),
+          underscores: at({...camera, key: null, name: "Barrier_Wall"}),
+          noKit: at(camera, "Unknown"), noTable: at(camera, "Cypher", {}),
+          unknownKey: at({...camera, key: "?"}),
+          overdrive: at({...camera, code: null, key: null, name: "Overdrive"}, "Neon"),
+          categories: ["spike", "flex", "defuser", "other"].map(cat => at({slot: 1, t: 5, gun: null, cat}))
+        }));
+      });""", icons)
+    assert got["gun"] == {"gun": "Vandal", "held": True}
+    assert got["camera"] == {"ability": "Spycam", "held": True}
+    assert got["label"] == "Spycam"
+    assert got["nullKey"] == {"ability": "Wall", "held": True}
+    assert got["underscores"] == {"ability": "Barrier Wall", "held": True}
+    for key in ("noKit", "noTable", "unknownKey"):
+        assert got[key] == {"ability": "Camera", "held": True}
+    assert got["overdrive"] == {"ability": "Overdrive", "held": True}
+    assert got["categories"] == [{"ability": "Spike", "held": True}, None, None, None]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abilities():
+    icons = json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8"))
+    got = run_node("""
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const viewer = Object.create(R.ReplayViewer.prototype);
+        const blob = {players: [{slot: 1, agent: "Cypher"}], kills: [], t_end: 90,
+                      alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
+        viewer.ui = {board: {}};
+        viewer.options = {abilityIcons: JSON.parse(input)};
+        viewer.linked = {players: {"1": {team: "team-1"}}};
+        viewer.slotColor = () => "#ffffff";
+        viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
+          extras: R.extrasFromUtil([
+            {k: "shot", by: 1, t: 3, gun: "Phantom"},
+            {k: "hold", by: 1, t: 0, gun: "Vandal", cat: "rifle", id: "100", gen: 0, seed: true},
+            {k: "hold", by: 1, t: 5, gun: null, cat: "other"},
+            {k: "hold", by: 1, t: 7, gun: null, cat: "rifle", id: "101", gen: 0},
+            {k: "hold", by: 1, t: 9, gun: "Vandal", cat: "rifle", id: "100", gen: 0},
+            {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0},
+            {k: "hold", by: 1, t: 25, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"},
+            {k: "hold", by: 1, t: 30, gun: null, cat: "spike"},
+            {k: "ability", by: 1, t: 21, t1: 90, kind: "GameObject", code: "Gumshoe",
+             name: "E_PossessableCamera", possessed: [[27, 28], [32, 33]]},
+            {k: "hold", by: 1, t: 35, gun: null, cat: "ability", code: null, key: null, name: "Wall_<test>"}
+          ])};
+        function gun(t) {
+          viewer.t = t;
+          viewer.renderBoard();
+          const match = viewer.ui.board.innerHTML.match(/<span class="replay-pl-gun[^>]*>[^<]*<\\/span>/);
+          return match ? match[0] : null;
+        }
+        const held = [1, 5, 8, 11, 15, 20].map(gun);
+        const util = [26, 27, 31, 32, 36].map(gun);
+        delete viewer.current.extras.holds;
+        process.stdout.write(JSON.stringify({held, util, fallback: [1, 4].map(gun)}));
+      });""", icons)
     assert got["held"] == ['<span class="replay-pl-gun" title="Held now">Vandal</span>', None,
                            '<span class="replay-pl-gun" title="Held now">?</span>', None, None,
                            '<span class="replay-pl-gun" title="Held now">Knife</span>']
+    assert got["util"] == [
+        '<span class="replay-pl-gun is-util">Spycam out</span>',
+        '<span class="replay-pl-gun is-util" title="Using util now">Watching Spycam</span>',
+        '<span class="replay-pl-gun is-util">Spike out</span>',
+        '<span class="replay-pl-gun is-util" title="Using util now">Watching Spycam</span>',
+        '<span class="replay-pl-gun is-util">Wall &lt;test&gt; out</span>',
+    ]
     assert got["fallback"] == [
         '<span class="replay-pl-gun is-unfired" title="Not fired yet: the gun of their first shot this round">Phantom</span>',
         '<span class="replay-pl-gun" title="Gun of their latest shot (the replay records no live loadout)">Phantom</span>',

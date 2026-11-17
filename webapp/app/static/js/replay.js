@@ -22,6 +22,7 @@
   var SPEEDS = [0.5, 1, 2, 4];
   var STEP_S = 5;
   var UV = 10000;
+  var HELD_SPIKE_LABEL = "Spike";
 
   // ------------------------------------------------------------ decoding (pure; tested in node)
 
@@ -1359,10 +1360,11 @@
     return '<span class="replay-pl-armor" title="Shield left ' + left + " of " + v.armor + ' bought">' + left + "/" + v.armor + "</span>";
   }
 
-  // With hold rows, the latest switch in the current life gives {gun, held: true}; a closing row or no switch
-  // gives null. The optional round state index supplies the same life boundaries as hudVitals. Without hold rows,
-  // preserve the shot-based estimate: latest shot ({gun, fired: true}), else first shot ({gun, fired: false}).
-  function gunAt(shots, slot, t, holds, index) {
+  // With hold rows, the latest switch in the current life gives {gun, held: true} or {ability, held: true};
+  // a closing row or no switch gives null. The optional round state index supplies the same life boundaries as
+  // hudVitals. Without hold rows, preserve the shot-based estimate: latest shot ({gun, fired: true}), else first
+  // shot ({gun, fired: false}).
+  function gunAt(shots, slot, t, holds, index, agent, table) {
     if (holds && holds.length) {
       var life = lifeIndexAt(index, slot, t);
       if (life === null) return null;
@@ -1371,7 +1373,9 @@
       holds.forEach(function (hold) {
         if (hold.slot === slot && hold.t >= from && hold.t <= t && (!latest || hold.t >= latest.t)) latest = hold;
       });
-      if (!latest || latest.cat === "other") return null;
+      if (!latest || latest.cat === "other" || latest.cat === "defuser" || latest.cat === "flex") return null;
+      if (latest.cat === "ability") return { ability: heldAbilityLabel(latest, agent, table), held: true };
+      if (latest.cat === "spike") return { ability: HELD_SPIKE_LABEL, held: true };
       return { gun: latest.cat === "melee" ? "Knife" : (latest.gun || "?"), held: true };
     }
     var last = null, first = null;
@@ -1427,6 +1431,15 @@
     }).filter(function (k) { return k.key; }).sort(function (a, b) {
       return "CQEX".indexOf(a.key) - "CQEX".indexOf(b.key);
     });
+  }
+
+  // Held ability archetypes name a slot letter; prefer the agent's kit name to the internal replay name.
+  function heldAbilityLabel(hold, agent, table) {
+    var kit = abilitySlots(table, agent);
+    for (var i = 0; i < kit.length; i++) {
+      if (kit[i].key === hold.key) return kit[i].name;
+    }
+    return String(hold.name || "").replace(/_/g, " ");
   }
 
   // The ult ring: `cost` arcs round the icon with a small gap between, the first `points` of them filled.
@@ -2385,10 +2398,11 @@
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = life ? armorBadge(v) : "";
-      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
-      // Looking through a camera or flying a drone replaces the gun (the replay records that, not other util held).
+      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state, p.agent, icons) : null;
+      // Looking through a camera or flying a drone takes priority over the held item.
       var using = life ? possessingAt(self.current.extras.abilities, p.slot, t) : null;
       var gun = using ? '<span class="replay-pl-gun is-util" title="Using util now">' + escapeHtml(using.label) + "</span>"
+        : held && held.ability ? '<span class="replay-pl-gun is-util">' + escapeHtml(held.ability) + " out</span>"
         : gunHtml(held, self.options.gunIcons);
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
@@ -4625,7 +4639,7 @@
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
-    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, armorBadge: armorBadge, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt, mapPlaceAt: mapPlaceAt, possessingAt: possessingAt,
+    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, armorBadge: armorBadge, gunAt: gunAt, heldAbilityLabel: heldAbilityLabel, gunHtml: gunHtml, inArenaAt: inArenaAt, mapPlaceAt: mapPlaceAt, possessingAt: possessingAt,
     utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
