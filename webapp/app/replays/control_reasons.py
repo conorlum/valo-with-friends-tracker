@@ -32,6 +32,7 @@ CLASSES = {
     "yoru_beacon": "lost_track",
     "died": "other",
     "omen_channel": "other",
+    "hush_suspension": "found",  # heard hit feedback, like a trip or other heard information cue
 }
 
 TWO_KIND = {"haunt", "recon"}

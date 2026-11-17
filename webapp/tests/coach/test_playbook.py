@@ -52,6 +52,30 @@ def test_the_committed_playbook_names_no_player_and_loads_once_it_has_principles
     assert len(book.themes) >= 4 and "# Rules" in book.text
 
 
+def _squash(text):
+    return re.sub(r"\s+", " ", text)
+
+
+def test_the_shipped_playbook_is_version_12_with_the_gun_and_range_principles():
+    book = playbook.load()
+    assert book.version == "12"
+    principles = _squash(book.text.split("# Rules", 1)[0])
+    assert "# Principles" in principles
+    assert _squash(
+        "- At even or better numbers, don't take a lone fight where losing hands the enemy a better gun (a Vandal to "
+        "someone with a Classic). In a 1v1 it doesn't matter.") in principles
+    assert _squash(
+        "- Fight at your gun's range. When you know an enemy has a close-range gun (you heard the Bucky and had time "
+        "to reposition), don't take the close fight. With a Stinger or another close-range gun, take close fights, "
+        "not long ones.") in principles
+
+
+def test_the_shipped_playbook_has_a_rule_judging_guns_by_what_the_side_knew():
+    rules = _squash(playbook.load().text.split("# Rules", 1)[1])
+    assert "33. Judge a fight's guns only by what the brief's fight says the side knew" in rules
+    assert '"likely"' in rules
+
+
 def test_the_name_check_allows_headings_and_catches_a_riot_id():
     pattern = r"[^\s#]#\S"
     assert not re.search(pattern, "# Principles\n\n## Rules\n\n### Detail\n")

@@ -9,7 +9,9 @@ alone. Exits 1 when any run failed.
 The model runs in the snapshot's own directory under the system temp folder, with an allow-listed environment
 (no DATABASE_URL) and one permitted command, ./q (the logged query tool). `--dry-run` prints the payload and stores
 nothing. `--prompt-only` writes the exact first prompt to <run dir>/prompt.txt, prints its path and length, and
-calls no model. Storing publishes the report on the site. Exits 2 when refused, 1 when the run failed."""
+calls no model. Storing publishes the report on the site. Exits 2 when refused, 1 when the run failed.
+
+Usage: each run prints what its model calls used (tokens in millions, turns, minutes), writes it to <run dir>/usage.json and appends it to ~/.valo-coach/usage.jsonl; a batch prints its total."""
 
 from __future__ import annotations
 
@@ -72,6 +74,24 @@ def find_claude() -> str | None:
     return shutil.which("claude")
 
 
+def failure_reason(done, usage: dict) -> str:
+    """Why a `claude -p --output-format json` call exited non-zero. The CLI puts its reason (a rate or usage
+    limit, an API error) in the JSON on stdout, not on stderr; a failed call's usage still counts."""
+    parts = [done.stderr.strip()[:500]] if (done.stderr or "").strip() else []
+    try:
+        out = json.loads(done.stdout or "")
+    except ValueError:
+        out = None
+    if isinstance(out, dict):
+        add_usage(usage, out)
+        for key in ("subtype", "api_error_status", "result"):
+            if out.get(key) not in (None, ""):
+                parts.append(f"{key}={str(out[key])[:300]}")
+    elif (done.stdout or "").strip():
+        parts.append(done.stdout.strip()[-500:])
+    return "; ".join(parts) or "no output"
+
+
 def claude_call(run_dir: Path, model: str | None):
     exe = find_claude()
     if exe is None:
@@ -81,18 +101,96 @@ def claude_call(run_dir: Path, model: str | None):
         done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
                               encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
-            raise RuntimeError(f"claude exited {done.returncode}: {done.stderr.strip()[:500]}")
+            raise RuntimeError(f"claude exited {done.returncode}: {failure_reason(done, call.usage)}")
         out = json.loads(done.stdout)
         usage = out.get("modelUsage")
         if isinstance(usage, dict):
             call.models.update(str(name) for name in usage)
+        add_usage(call.usage, out)
         denials = out.get("permission_denials")
         call.denials += len(denials) if isinstance(denials, list) else 0
         return str(out.get("result") or ""), out.get("session_id")
 
     call.models = set()
     call.denials = 0        # commands the model tried and was refused: a clean run has none
+    call.usage = new_usage()
     return call
+
+
+# --- usage: what the model runs cost, summed over every call of a run (the first prompt and each repair) ---
+
+USAGE_TOKENS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+# Every run's usage is appended here, one JSON line each, outside the repo (public) and the temp folder (cleared).
+USAGE_LOG = Path.home() / ".valo-coach" / "usage.jsonl"
+
+
+def new_usage() -> dict:
+    return {"calls": 0, "num_turns": 0, "duration_ms": 0, "cost_usd": 0.0, **{k: 0 for k in USAGE_TOKENS},
+            "by_model": {}}
+
+
+def _number(value) -> float:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def add_usage(total: dict, out: dict) -> dict:
+    """Adds one `claude -p --output-format json` result's usage to `total`. Missing or odd fields count 0."""
+    total["calls"] += 1
+    total["num_turns"] += int(_number(out.get("num_turns")))
+    total["duration_ms"] += int(_number(out.get("duration_ms")))
+    total["cost_usd"] += float(_number(out.get("total_cost_usd")))
+    usage = out.get("usage") if isinstance(out.get("usage"), dict) else {}
+    for key in USAGE_TOKENS:
+        total[key] += int(_number(usage.get(key)))
+    models = out.get("modelUsage") if isinstance(out.get("modelUsage"), dict) else {}
+    for name, row in models.items():
+        if not isinstance(row, dict):
+            continue
+        mine = total["by_model"].setdefault(str(name), {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+                                                       "cache_read_input_tokens": 0,
+                                                       "cache_creation_input_tokens": 0})
+        mine["cost_usd"] += float(_number(row.get("costUSD")))
+        for key, field in (("input_tokens", "inputTokens"), ("output_tokens", "outputTokens"),
+                           ("cache_read_input_tokens", "cacheReadInputTokens"),
+                           ("cache_creation_input_tokens", "cacheCreationInputTokens")):
+            mine[key] += int(_number(row.get(field)))
+    return total
+
+
+def merge_usage(total: dict, part: dict) -> dict:
+    for key in ("calls", "num_turns", "duration_ms", "cost_usd", *USAGE_TOKENS):
+        total[key] += part[key]
+    for name, row in part["by_model"].items():
+        mine = total["by_model"].setdefault(name, {k: 0 for k in row})
+        for key, value in row.items():
+            mine[key] = mine.get(key, 0) + value
+    return total
+
+
+def usage_line(usage: dict) -> str:
+    """Tokens in millions (M). Cache reads are cheap against plan limits; fresh input, cache writes and output
+    are what weigh."""
+    m = lambda n: f"{n / 1e6:.2f}M"
+    total = sum(usage[k] for k in USAGE_TOKENS)
+    return (f"{m(total)} tokens: {m(usage['input_tokens'])} input, {m(usage['cache_creation_input_tokens'])} cache "
+            f"writes, {m(usage['cache_read_input_tokens'])} cache reads, {m(usage['output_tokens'])} output; "
+            f"{usage['calls']} call(s), {usage['num_turns']} turns, {usage['duration_ms'] / 60000:.1f} min")
+
+
+def record_usage(run_dir: Path, entry: dict, log: Path | None = None) -> None:
+    """Writes the run's usage to <run dir>/usage.json and appends it to the usage log. Best-effort: a cost
+    record that cannot be written never fails the run."""
+    try:
+        (Path(run_dir) / "usage.json").write_text(json.dumps(entry, indent=1), encoding="utf-8")
+    except OSError as error:
+        print(f"usage not written to the run directory: {error}", file=sys.stderr)
+    log = Path(log or USAGE_LOG)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+    except OSError as error:
+        print(f"usage not appended to {log}: {error}", file=sys.stderr)
 
 
 def main() -> int:
@@ -141,6 +239,7 @@ def main() -> int:
     print(f"coaching {len(resolved)} players, one at a time, from one read of the match: "
           f"{', '.join(name for name, *_ in resolved)}", flush=True)
     failed = []
+    args.usage_total = new_usage()      # run_player adds each player's usage
     for at, entry in enumerate(resolved, start=1):
         name = entry[0]
         print(f"\n== {at} of {len(resolved)}: {name} ==", flush=True)
@@ -157,6 +256,8 @@ def main() -> int:
             failed.append(name)
     print(f"\n{len(resolved) - len(failed)} of {len(resolved)} runs succeeded"
           + (f"; failed: {', '.join(failed)}" if failed else ""))
+    if args.usage_total["calls"]:
+        print(f"usage, all {len(resolved)} players: {usage_line(args.usage_total)}")
     return 1 if failed else 0
 
 
@@ -204,12 +305,22 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
         print(f"{path}\n{len(text)} characters")
         return 0
     call = claude_call(run_dir, args.model)
+    usage_entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "match": uuid,
+                   "player_id": player_id, "player": player, "model": args.model or "default",
+                   "outcome": "failed", "usage": call.usage}
     try:
         payload = runner.generate(snap, slot, run_dir, book, call,
                                   args.model or "claude-code (default model)")
+        usage_entry["outcome"] = "generated"
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
+    finally:      # a failed run's calls cost the same: always recorded
+        if call.usage["calls"]:
+            record_usage(run_dir, usage_entry)
+            print(f"usage: {usage_line(call.usage)}", flush=True)
+            if isinstance(getattr(args, "usage_total", None), dict):
+                merge_usage(args.usage_total, call.usage)
     if call.denials:
         print(f"the model tried {call.denials} command(s) it is not allowed and was refused", file=sys.stderr)
     if not args.model and call.models:

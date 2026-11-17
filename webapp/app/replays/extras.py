@@ -19,9 +19,15 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   to | null]` and `trigger` = the slot whose crossing raised it; Omen's ult marker has `outcome`, `evidence`
   and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it; Veto's Interceptor
   has `active` = when it was set off and `intercepts` = `[[t, u, v], ...]`, inferred: `intercepts`);
-- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
+- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n", ["gid", "gen"]}`;
+- `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}` (revision 30):
+  a firearm or melee switch; `id`/shot `gid` is its actor guid and `gen` its spawn index. A switch
+  to another item closes the hold with `gun: null, cat: "other"`, without `id` or `gen`.
+  `from` names the previous holder of this generation; `seed` marks a surviving round-start carry.
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
-- `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`;
+- `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from", ["friendly"],
+  ["src"]}` (`from` "force" is a status read from an `NetMulticastApplyForceModule` row: Hush's pull and levitation;
+  `src`, on a levitated row only, is the id of the zone's `ability` row);
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
   lifetime, so it is its own kind and not an `ability`.
 - `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
@@ -80,6 +86,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.replays import format as fmt
+from app.replays import guns
 from app.replays.condense import MapInfo, PlayerTable
 from app.replays.contract import RPC_ORB_PICKUP, loads_row
 from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
@@ -251,6 +258,18 @@ def _dm(z: float) -> int:
 
 
 @dataclass
+class _Gun:
+    """One gun actor generation; names learned from shots never cross a guid reuse."""
+    guid: int
+    t_ms: int
+    archetype: str
+    gen: int
+    melee: bool = False
+    other: bool = False
+    end_ms: int | None = None
+
+
+@dataclass
 class _Equip:
     """An equippable (`Default__Ability_<Code>_<Name>_C`): the held item a player places or throws
     an ability with. Its owner comes from `votes`: the continuous effects played on a character
@@ -293,6 +312,8 @@ class _Effect:
 class Raw:
     actors: dict[int, _Actor]
     shots: list[dict]
+    gun_actors: list[_Gun] = field(default_factory=list)
+    holds: list[tuple[int, int, _Gun | None]] = field(default_factory=list)
     equips: list[_Equip] = field(default_factory=list)
     contexts: list[_Context] = field(default_factory=list)
     effects: list[_Effect] = field(default_factory=list)
@@ -343,6 +364,14 @@ class Raw:
     # A push or pull an ability object put on a character (`NetMulticastApplyForceModule` naming it as `Source`):
     # (time, the character, the object). Reckoning's chunks send one on every touch.
     forces: list[tuple[int, int, int]] = field(default_factory=list)
+    # The same rows with what the force module said of itself (CONDENSE 31): (time, the character, the object, the
+    # module's class path, its `Duration` in seconds | None). The path is read from the row before the shared reader
+    # (contract._unwrap_reference) turns the `{"net_guid", "path"}` reference into a bare guid; a module written as a
+    # bare guid (schema 8) has no path and is not kept here. `forces` is unchanged.
+    force_modules: list[tuple[int, int, int, str, float | None]] = field(default_factory=list)
+    # The net guids (per export) of the effect container `CONCUSS_CONTAINER`, found by the path the row writes for it
+    # (A1): a concuss is told apart from the other global effects by its name, which the unwrapped rows no longer carry.
+    concuss_containers: set[int] = field(default_factory=set)
     # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
     # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
@@ -520,10 +549,49 @@ def _float_tags(payload: dict) -> dict[str, float]:
 # plays at one of her bursts in four matches, Waylay's 39 of 39 in three. Jett's updraft has no such play that
 # can be told apart (its one-shot names a context GUID the export never names), nor has Raze's blast pack
 # (its `Clay_Q_Explosion` is an `ability` row already).
+# Hush's Flow (2026-11-15, 31 Flows in two exports): the move starts with `FXC_Paprika_4_FreezeProjectileHUD`, a
+# triggered continuous effect with exactly FXC.TimedStateDuration 0.35, in the same ms as the anchor's spawn and the
+# `ForceModule_Paprika_4_PullDash` force (30 of 30 moves). The 0.7 s windup before it plays `FXC_Paprika_4_Cast`
+# (exactly 0.7, 31 of 31, 698-706 ms before the anchor): the same Flow, not a cast of its own. One anchor of the 31
+# spawned with no move (a cast cut short at 651 ms): it has no cast row and is its own use in Critical Util.
 MOVEMENT_EQUIPPABLES = {
     "Wushu_E_Dash": {"FXC.TimedStateDuration": 0.45},
     "Terra_Q_DoubleDash": {"FXC.Angle": None, "FXC.TimedStateDuration": 0.4},
+    "Paprika_4_PullBlast": {"FXC.TimedStateDuration": 0.35},
 }
+# Hush's (Paprika's) objects that this module reads nothing from, each by name so the inventory
+# (`scripts/newagent.py objects Paprika <export dirs>`) finds it classified (R9, 2026-11-15; the two exports'
+# whole list; the ones it does read are named where it reads them: MOVEMENT_EQUIPPABLES, POP_ARCHETYPES, FORCE_STATUS):
+# - looks and sounds of Flow, none with a float tag that tells one Flow from another and none a cast
+#   (the move's own two are read above): FXC_Paprika_4_PullBlastTelegraph_Audio, FXC_Paprika_4_PullBlast_Anchor_Burst,
+#   FXC_Paprika_4_PullBlast_Anchor_Burst_Audio, FXC_Paprika_4_PullBlast_WhileEquipped, FXC_Paprika_4_Pull_InAirEffect,
+#   FXC_Paprika_4_Pull_StartForce;
+# - looks, sounds and fuse timers of Displacement: FXC_Paprika_E_Ability_Equip, FXC_Paprika_E_Ability_OverhandCast,
+#   FXC_Paprika_E_Ability_RedirectActivatedFeedback, FXC_Paprika_E_Ability_RedirectCast,
+#   FXC_Paprika_E_GameObject_ExplosionCenterDirectionIndicator, FXC_Paprika_E_GameObject_ExplosionWindup,
+#   FXC_Paprika_E_ProjectileSkelMeshProxy, FXC_Paprika_E_Projectile_PreRedirectHoverIdleAudio,
+#   FXC_Paprika_E_Projectile_RedirectActivated, and FXC_Paprika_E_ForceModule_PulledMovementBlocked (a pulled player
+#   stopped by a wall or a player, 3 times: the same ms as the `FXC_Global_ConcussedWavy_Prototype` that IS read, as a
+#   `concussed` status after the pull, see CONCUSS_CONTAINER; the one-shot itself names nothing and is not read),
+#   FXC_Paprika_Global_AbilityInitialFuseTimer (shared
+#   by her thrown abilities);
+# - looks, sounds and windup of Flashbulb (its blind is the export's own `valorant_flash_player_hit` row, whose
+#   BlindConfig_Paprika_Q_Flash and FXC_Paprika_Q_Blinded are the same event; the end of its windup is the pop row):
+#   FXC_Paprika_Q_Ability_Equip, FXC_Paprika_Q_Ability_OverhandCast, FXC_Paprika_Q_Ability_RedirectCast,
+#   FXC_Paprika_Q_Ability_UnderhandCast, FXC_Paprika_Q_ProjectileSkelMeshProxy, FXC_Paprika_Q_Projectile_FlashWindup,
+#   FXC_Paprika_Q_Projectile_PreRedirectHoverIdleAudio, FXC_Paprika_Q_Projectile_RedirectActivated;
+# - looks of Suspension (its victims are the Levitate force rows; the zone is an ability row): FXC_Paprika_X_Equip,
+#   FXC_Paprika_XDOME_Equipped_Idle, FXC_Paprika_X_Equipped_IdleParticles, FXC_Paprika_X_ActivateHUDInputsProduction,
+#   FXC_Paprika_X_BendingAnimation, FXC_Paprika_X_CastBend, FXC_Paprika_X_CastIntro, FXC_Paprika_X_Timer,
+#   FXC_Paprika_X_MultiStateHairEffect, FXC_Paprika_X_Explosion_Hit_Effects, FXC_Paprika_X_Levitating_Gun,
+#   FXC_Paprika_X_Levitation_Bomb_Tendrils, FXC_Paprika_ProjectileCrush (a projectile of hers crushed by the zone);
+# - the passive Telekinesis, pickups only (D10): FXC_Paprika_Passive_CosmeticProjectile_PickUp,
+#   FXC_Paprika_Passive_Telekinesis_Looping_Pull_Pickup, FXC_Paprika_Passive_Telekinesis_Outro_PickUp,
+#   FXC_Paprika_Passive_Telekinesis_Start_PickUp;
+# - Suspension's plumbing (see PLUMBING): Actor_Paprika_X_ForceModuleProxy (160 actors, no ability archetype);
+# - her pawn's own components: Paprika_PC (the pawn, also how a slot is found), Paprika_RangedUsableComponent (her gun);
+# - the thrown Flashbulb's underhand flight, an `ability` row of kind Projectile that the table's Flashbulb entry
+#   pieces: Projectile_Paprika_Q_RedirectFlash_Underhand.
 # A switch to an equippable whose spawn row comes after it is that equippable's only if it spawns this soon after;
 # an older one named an earlier actor under the same GUID.
 EQUIP_EARLY_MS = 2_000
@@ -541,6 +609,27 @@ def movement_cast(code: str | None, floats: dict[str, float]) -> str | None:
     return None
 
 
+def _force_module(line: str) -> tuple[str | None, float | None]:
+    """(the module's class path, its `Duration`) of a `NetMulticastApplyForceModule` row, read from the row as
+    written: the shared reader has already turned `Module` into a bare guid. (None, None) when it names no path."""
+    payload = json.loads(line).get("payload")
+    module = payload.get("Module") if isinstance(payload, dict) else None
+    path = module.get("path") if isinstance(module, dict) else None
+    if not isinstance(path, str) or not path:
+        return None, None
+    length = payload.get("Duration")
+    return path, float(length) if isinstance(length, (int, float)) and not isinstance(length, bool) else None
+
+
+def _effect_container_path(line: str) -> str | None:
+    """The class path a `MulticastPlay*Effect` row writes for its `EffectContainer`, read from the row as written (the
+    shared reader has turned the reference into a bare guid); None when the row names no path (schema 8)."""
+    payload = json.loads(line).get("payload")
+    container = payload.get("EffectContainer") if isinstance(payload, dict) else None
+    path = container.get("path") if isinstance(container, dict) else None
+    return path if isinstance(path, str) and path else None
+
+
 def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     """One streaming pass: ability actors (with instigators and closes), raw shot rows, and the
     evidence Stage 5 reads: equippables with their owners' effects and placements, continuous and
@@ -551,12 +640,14 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     closes: dict[int, int] = {}
     raw = Raw(actors, [])
     equip_now: dict[int, _Equip] = {}      # the equippable alive under each GUID
+    gun_now: dict[int, _Gun] = {}
     bombs: set[int] = set()
     carried: set[int] = set()              # the spike's equippable, alive under each GUID
     walls: set[int] = set()
     orb_now: dict[int, list] = {}          # the ult orb alive under each GUID
     open_effects: dict[tuple[int, int], _Effect] = {}
     holding: dict[int, int] = {}           # each character's current equippable, to see a switch
+    placeholder_at: dict[tuple[int, int, int], int] = {}   # an unresolved switch -> its index in raw.holds
     unresolved: list[tuple[int, int, int]] = []    # switches to an equippable not spawned yet: (ms, character, guid)
     live_trips: dict[int, _Actor] = {}     # the trapwire anchor alive under each GUID
     closed_trips: dict[int, _Actor] = {}   # the last one closed under each GUID (a lethal hit can share its ms)
@@ -582,6 +673,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     ended.replaced_ms = t_ms
                 closed_trips.pop(guid, None)
                 equip_now.pop(guid, None)
+                ended_gun = gun_now.pop(guid, None)
+                if ended_gun is not None:
+                    ended_gun.end_ms = t_ms
                 waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
                 for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:
                     del holding[pawn]           # a reused GUID: holding the new actor is a new switch
@@ -591,6 +685,33 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 raw.device_fx.pop(guid, None)
                 if KJ_DEVICE.match(archetype):
                     raw.device_fx[guid] = []
+                # Inventory actors need no world position. Ability equippables are tracked too:
+                # their shots have generations, but their switches close a firearm hold.
+                held = EQUIPPABLE_ARCHETYPE.match(archetype)
+                melee = guns.is_melee(archetype)
+                known_name, category = guns.lookup(archetype)
+                # Totems and other non-gun items close holds. Unarmed is admitted as melee below;
+                # unknown gun archetypes remain candidates so shots can still teach their names.
+                candidate = (archetype.startswith("Default__") and archetype.endswith("_C")
+                             and not archetype.startswith("Default__Equippable_")
+                             and not ABILITY_ARCHETYPE.match(archetype)
+                             and archetype not in (BOMB_ARCHETYPE, BOMB_EQUIPPABLE_ARCHETYPE,
+                                                   ORB_ARCHETYPE, "Default__EquippableGroundPickup_C",
+                                                   "Default__Bomb_Defuser_C")
+                             and not archetype.endswith("_PC_C"))
+                if held is not None or melee or known_name is not None or candidate:
+                    gun = _Gun(guid, t_ms, archetype, len(raw.gun_actors), melee,
+                               not melee and (held is not None or category == "ability"))
+                    gun_now[guid] = gun
+                    raw.gun_actors.append(gun)
+                    for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
+                        if 0 <= t_ms - at <= EQUIP_EARLY_MS and (at, pawn, waiting) in placeholder_at:
+                            # Resolve in place: moving it to the end would reverse the source order
+                            # of switches sharing this timestamp.
+                            # (the slot is remembered per waiting actor: placeholders can be equal tuples)
+                            raw.holds[placeholder_at.pop((at, pawn, waiting))] = (at, pawn, gun)
+                    if held is None:
+                        unresolved[:] = [u for u in unresolved if u[2] != guid]
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     carried.add(guid)
                     continue
@@ -636,6 +757,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     live_trips[guid] = instance
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
+                ended_gun = gun_now.pop(guid, None)
+                if ended_gun is not None:
+                    ended_gun.end_ms = t_ms
                 instance = live_trips.pop(guid, None)
                 if instance is not None and t_ms >= instance.t_ms:
                     instance.closed_ms = t_ms
@@ -669,6 +793,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     source = int(payload.get("Source") or 0)
                     if source in actors and guid in pawns:
                         raw.forces.append((t_ms, guid, source))
+                        module, length = _force_module(line)
+                        if module is not None:
+                            raw.force_modules.append((t_ms, guid, source, module, length))
                     continue
                 if guid in raw.device_fx and function in _DEVICE_FX:
                     raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
@@ -679,6 +806,11 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if floats:
                             raw.movement_plays.append((t_ms, guid, floats))
                     context = _context_values(payload)
+                    if guid in pawns and CONCUSS_CONTAINER in line:
+                        named = _effect_container_path(line)
+                        if named is not None and module_name(named) == CONCUSS_CONTAINER \
+                                and isinstance(payload.get("EffectContainer"), int):
+                            raw.concuss_containers.add(payload["EffectContainer"])
                     for value in context:
                         if guid in pawns and value in equip_now:
                             equip_now[value].votes[guid] += 1
@@ -746,11 +878,15 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     if mine is not None and mine.instigator is None:
                         mine.instigator = int(payload["Instigator"])
                 held_now = payload.get("NewCurrentEquippable")
+                if isinstance(held_now, dict):
+                    held_now = held_now.get("net_guid")
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
-                    if held_now not in equip_now:          # a gun, or an equippable whose spawn row is still to come
+                    raw.holds.append((t_ms, guid, gun_now.get(held_now)))
+                    if held_now not in equip_now and held_now not in gun_now:
+                        placeholder_at[(t_ms, guid, held_now)] = len(raw.holds) - 1
                         unresolved[:] = [u for u in unresolved if t_ms - u[0] <= EQUIP_EARLY_MS]
                         unresolved.append((t_ms, guid, held_now))   # kept even if they switch again before it spawns
-                    elif equip_now[held_now].name.startswith("X_"):
+                    elif held_now in equip_now and equip_now[held_now].name.startswith("X_"):
                         raw.ult_equips.append((t_ms, guid, equip_now[held_now]))
                     holding[guid] = held_now
                 moved = payload.get("ReplicatedMovement")
@@ -1161,6 +1297,14 @@ def dart_tags(actors: dict[int, _Actor], claims: dict[int, tuple[int, "_Context"
 POP_ARCHETYPES = re.compile(r"^(Terra_C_TimeSlowGrenade_Explosion|Iris_Concuss|Cashew_Q_ShellShockGrenade|"
                             r"Breach_E_SweetSpotFissure|Breach_X_Shockwave|Breach_4_FusionBlast|Rift_Q_FlashBurst|"
                             r"Grenadier_E_SuppressionPulse|Smonk_Q_DecayExplosion)$")
+# Hush (2026-11-15, two exports) adds none: her Displacement area (`Paprika_E_RedirectPullArea`, 35 spawns, 1.30 s
+# lives) and Suspension zone (`Paprika_X_LevitateZone`, 7, 7.0 s lives or none) play no effect on themselves, and her
+# Flow anchor's one-shots (about two each, 30 per export, 2.5 s lives) are its look, not a moment: nothing for `fx`
+# to keep. What the area and the zone do to players is the force rows' `pulled` / `levitated` statuses below, and the
+# Flashbulb's pop is its flash row's `pop`.
+# Not rows at all (the ability-row reader skips them, `PLUMBING`): Suspension's `X_ForceProxyManager` (a bookkeeping
+# object at the origin that lives for many rounds and comes back between them: 8 spawns in the two exports) and `Actor_..._X_ForceModuleProxy` (160, no ability
+# archetype); Hush's passive `Passive_Telekinesis` is an equippable (pickups only: D10), never an ability row.
 FX_GAP_MS = 200
 # Vyse's Arc Rose (2026-10-18): its effects after it's placed are Vyse triggering it, each played in the same ms as an
 # effect on Vyse (8 of 8 on the first Vyse export); the effects in its first seconds are its deploy. `fx` = the
@@ -1234,6 +1378,38 @@ STATUS_MERGE_MS = 300
 # duration where it matters and the replay doesn't carry it (a game value, not measured).
 STATUS_PING_MS = 1000
 STATUS_KNOWN_MS = {"suppressed": 8000}
+# Statuses read from a force row (`Raw.force_modules`, CONDENSE 31): the module's class name -> the status it puts on
+# the character; the row is named by the ability object that is the force's Source. Hush, two exports,
+# 2026-11-15: Displacement's `ContinuousPull` (3 rows, Duration 0.5 s, Source `E_RedirectPullArea`) and Suspension's
+# `Levitate_DOME` (3 rows, Duration 4 s, Source `X_LevitateZone`: the zone itself, spawned in the very ms of the force;
+# the victim also plays `FXC_Paprika_X_LevitationVictim` naming the zone with FXC.Buff.Duration 4, which is not read: the
+# force names the zone and the length by itself). Her other modules are not statuses: `4_PullDash` is Flow's own move
+# (Source: the anchor; read as the cast), `4_StopAerialMovement` is Flow's windup hold on herself (Source: her equippable,
+# no actor), and every other module in a match is a character's own (never read here: `force_modules` keeps only forces
+# whose Source is an ability object).
+FORCE_STATUS = {"ForceModule_Paprika_E_RedirectPull_ContinuousPull": "pulled",
+                "ForceModule_Paprika_Levitate_DOME": "levitated"}
+# A force row without a `Duration`: how long the status lasts. The measured 0.5 s of every Displacement pull; the wiki's
+# 4 s (wiki.playvalorant.com/en-us/Suspension, fetched 2026-11-15; the payload said 4 on 3 of 3).
+FORCE_STATUS_MS = {"pulled": 500, "levitated": 4000}
+# Displacement's pull only concusses a player it stops against something (the owner, 2026-11-15: "either another player
+# or a wall"). The export shows it as `FXC_Global_ConcussedWavy_Prototype` played on the pulled character, naming the
+# area's owner's pawn (context), a continuous effect with no duration tag (`FXC.Buff.Duration` -1: it lasts until its
+# stop), starting in the ms of the first `PulledMovementBlocked` one-shot on that player. Measured on the two Hush exports
+# (3 pulls): the 2 that were stopped concuss, 297 and 414 ms after the force row, for 1.8 and 1.6 s; the 1 stopped by
+# nothing plays neither. The container is found by that name (`Raw.concuss_containers`), its net guid being per export.
+# It is a status of the pull only when it starts within PULL_CONCUSS_AFTER_MS of that pull's force row (the pull's own
+# length, 0.5 s, the longest a pull moves a player) on the same player and names the area's owner; any other concuss
+# in that container (another agent's, with its own source object or a caster-named run) is read as before.
+CONCUSS_CONTAINER = "FXC_Global_ConcussedWavy_Prototype"
+PULL_CONCUSS_AFTER_MS = 500
+# Objects that are bookkeeping, not utility: no ability row (counted as `paprika_plumbing_skipped`).
+PLUMBING = re.compile(r"^Paprika_X_ForceProxyManager$")
+
+
+def module_name(path: str) -> str:
+    """`/Game/.../ForceModule_X.ForceModule_X_C` -> `ForceModule_X`."""
+    return path.rsplit("/", 1)[-1].split(".", 1)[0]
 
 
 # Buffs an agent casts with no object (Miks' Harmonize, revision 22): a continuous effect on the caster's own
@@ -1398,7 +1574,9 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
                   teams: dict[int, str | None] | None = None,
                   forces: list[tuple[int, int, int]] = (), trips: list[_Actor] = (),
                   trip_until: dict[int, int | None] | None = None,
-                  trip_owner: dict[int, int | None] | None = None) -> list[dict]:
+                  trip_owner: dict[int, int | None] | None = None,
+                  force_modules: list[tuple[int, int, int, str, float | None]] = (),
+                  concuss_containers: frozenset[int] | set[int] = frozenset()) -> list[dict]:
     """[{t_ms, t1_ms, by, target, code, name, status, from}]: players an enemy's ability put a status
     on, from when to when. Two shapes, both effects played on the hit player's character:
 
@@ -1407,6 +1585,11 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     - naming the caster ("caster"): the caster's character, player state or owned equippable, in a
       container that plays at least STATUS_SHARE of the time within STATUS_WINDOW_MS after one of
       that caster's status objects spawned (Iso's Fragile, Gekko's concuss). The source is that object.
+
+    A third shape is a force row on the hit player's character whose module is in FORCE_STATUS and whose Source is the
+    ability object (`force_modules`; "force": Hush's pull and levitation). A levitated row also carries `src`. A
+    pull that concussed its victim (the concuss effect named in CONCUSS_CONTAINER, in `concuss_containers`, naming the
+    area's owner within PULL_CONCUSS_AFTER_MS of the force row) adds a `concussed` row from the same area and owner.
 
     Never the applier themself, and with `teams`, only their enemies, except a DEBUFF_ONLY object's debuff,
     which the game puts on teammates too (the export says who). A continuous effect lasts until
@@ -1536,23 +1719,53 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         if first:
             hits.append((t_ms, t_ms + first[0], source, target, status_of(source), "object"))
             counts["status_refreshes"] += 1
+    # A force row (`force_modules`) whose module is a status (FORCE_STATUS) and whose Source is a live ability object:
+    # the status lasts the row's own `Duration`, else FORCE_STATUS_MS. Enemies of the object's owner are kept; a
+    # teammate the owner put it on is kept and flagged `friendly`, as for an object-named effect (revision 22).
+    for t_ms, character, guid, path, length in force_modules:
+        label = FORCE_STATUS.get(module_name(path))
+        target = players.pawn_slot.get(character)
+        source = at(guid, t_ms) if guid in instances else actors.get(guid)
+        if label is None or target is None or source is None:
+            continue
+        by = owner(source)
+        end = t_ms + (round(length * 1000) if length is not None else FORCE_STATUS_MS[label])
+        if enemies(by, target):
+            how = "force"
+        elif teams and by is not None and by != target and teams.get(by) is not None:
+            how = "force_friendly"
+        else:
+            continue
+        hits.append((t_ms, end, source, target, label, how))
+        if label == "pulled" and by is not None:
+            # The pull stopped the player against a wall or a player: the global concuss effect naming the area's owner,
+            # on the pulled character, starting within PULL_CONCUSS_AFTER_MS of the force row. Its own length is its stop.
+            for effect in effects:
+                if effect.actor == character and effect.container in concuss_containers \
+                        and t_ms <= effect.t_ms <= t_ms + PULL_CONCUSS_AFTER_MS \
+                        and any(caster(value, effect.t_ms) == by for value in effect.context):
+                    hits.append((effect.t_ms, effect.t_ms + span(effect, "concussed", source), source, target,
+                                 "concussed", how))
     # One run per (source, target, status): a trip's two anchors count as one source, its tether and
-    # its going off as two statuses.
+    # its going off as two statuses. A levitated run is per zone (its row names it, `src`).
     merged: dict[tuple, list[list]] = defaultdict(list)
     for t, t1, actor, target, label, how in sorted(hits, key=lambda h: (h[0], h[1], h[2].guid, h[3], h[4], h[5])):
-        key = (actor.code, actor.name.replace("_SecondWire", ""), owner(actor), target, label)
+        key = (actor.code, actor.name.replace("_SecondWire", ""), owner(actor), target, label,
+               actor.guid if label == "levitated" else None)
         runs = merged[key]
         if runs and t <= runs[-1][1] + STATUS_MERGE_MS:
             runs[-1][1] = max(runs[-1][1], t1)
         else:
             runs.append([t, t1, how])
     out = []
-    for (code, name, by, target, label), runs in merged.items():
+    for (code, name, by, target, label, src), runs in merged.items():
         for t, t1, how in runs:
             row = {"t_ms": t, "t1_ms": t1, "by": by, "target": target, "code": code,
-                   "name": name, "status": label, "from": "object" if how == "friendly" else how}
-            if how == "friendly":
+                   "name": name, "status": label, "from": {"friendly": "object", "force_friendly": "force"}.get(how, how)}
+            if how in ("friendly", "force_friendly"):
                 row["friendly"] = True
+            if src is not None:
+                row["src"] = src
             out.append(row)
             counts[f"statuses_{how}"] += 1
     return sorted(out, key=lambda r: (r["t_ms"], r["target"]))
@@ -2032,9 +2245,111 @@ def _dizzy_shot_down(t_ms: int, spawners_at: dict[int, list[_Actor]], shots_at: 
     return False
 
 
+def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Counter,
+               alive_by_round):
+    """Write holds and return each shot's generation, resolving by time rather than file order."""
+    by_guid = defaultdict(list)
+    for gun in raw.gun_actors:
+        by_guid[gun.guid].append(gun)
+    for generations in by_guid.values():
+        generations.sort(key=lambda g: (g.t_ms, g.gen))
+    spawn_times = {guid: [g.t_ms for g in generations] for guid, generations in by_guid.items()}
+    shot_guns = {}
+    learned = {}
+    for data in raw.shots:
+        equippable = (data.get("shot") or {}).get("equippable") or {}
+        guid = equippable.get("net_guid")
+        t_ms = int(data.get("time_ms", 0))
+        i = bisect.bisect_right(spawn_times.get(guid, []), t_ms) - 1
+        if i < 0:
+            continue
+        gun = by_guid[guid][i]
+        if gun.end_ms is not None and t_ms >= gun.end_ms:
+            continue
+        shot_guns[id(data)] = gun
+        if equippable.get("name") and equippable.get("category"):
+            learned.setdefault(gun.gen, (equippable["name"], equippable["category"]))
+
+    latest = {}       # slot -> (time, pawn, generation, stored row)
+    owners = {}       # generation -> most recent holder (even after switching away)
+    ordered = sorted(raw.holds, key=lambda h: h[0])
+    at = 0
+    counts.update({"holds": 0, "holds_unnamed": 0, "holds_seeded": 0})
+
+    def pawn_at(slot, t_ms, fallback):
+        changes = [p for t, p in players.pawn_changes.get(slot, []) if t <= t_ms]
+        return changes[-1] if changes else fallback
+
+    def add(n, row):
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("holds", []).append(row)
+        counts["holds"] += 1
+        counts["holds_unnamed"] += row["cat"] is None
+        counts["holds_seeded"] += bool(row.get("seed"))
+
+    def consume(n, start, limit):
+        nonlocal at
+        explicit_zero = set()
+        while at < len(ordered) and ordered[at][0] <= limit:
+            t_ms, pawn, gun = ordered[at]
+            at += 1
+            slot = players.pawn_slot.get(pawn)
+            if slot is None:
+                continue
+            row = {"t": max(0.0, _seconds(t_ms, start)), "slot": slot, "gun": None, "cat": "other"}
+            if gun is not None:
+                name, cat = (("Knife", "melee") if gun.melee else
+                             guns.lookup(gun.archetype, {gun.archetype: learned[gun.gen]}
+                                         if gun.gen in learned else None))
+                if not gun.other and cat != "ability":
+                    row.update(gun=name, cat=cat, id=gun.guid, gen=gun.gen)
+                    before = owners.get(gun.gen)
+                    if before is not None and before != slot:
+                        row["from"] = before
+                    owners[gun.gen] = slot
+            if t_ms <= start:
+                explicit_zero.add(slot)
+            latest[slot] = (t_ms, pawn, gun, row)
+            if _round_of(t_ms, windows, buy_phase=True) == n:
+                add(n, row)
+        return explicit_zero
+
+    for n, (start, _, end) in enumerate(windows, 1):
+        explicit_zero = consume(n, start, start)
+        if n > 1 and alive_by_round is not None:
+            previous_end = windows[n - 2][2]
+            previous_alive = alive_by_round.get(n - 1, {})
+            current_alive = alive_by_round.get(n, {})
+            for slot, state in list(latest.items()):
+                if slot in explicit_zero:
+                    continue
+                t_ms, pawn, gun, row = state
+                spans = previous_alive.get(str(slot), [])
+                now = current_alive.get(str(slot), [])
+                # A death invalidates the carry even after a revive. The pawn must survive
+                # unchanged into this round, and no other holder may have taken this actor.
+                survived = (spans and spans[-1][1] is None and spans[-1][2] == "round_end"
+                            and not any(iv[2] == "kill" for iv in spans))
+                starts_alive = any(iv[0] == 0 and (iv[1] is None or iv[1] > 0) for iv in now)
+                valid = (survived and starts_alive and "gen" in row and gun is not None
+                         and owners.get(gun.gen) == slot
+                         and (gun.end_ms is None or gun.end_ms > start)
+                         and pawn_at(slot, previous_end, pawn) == pawn_at(slot, start, pawn) == pawn)
+                if valid:
+                    seed = {k: v for k, v in row.items() if k not in ("from", "seed")}
+                    seed.update(t=0.0, seed=True)
+                    add(n, seed)
+                else:
+                    del latest[slot]   # a later round cannot revive a stale carry
+        consume(n, start, end)
+        if n in out.rounds and "holds" in out.rounds[n]:
+            out.rounds[n]["holds"].sort(key=lambda row: (row["t"], row["slot"]))
+
+    return shot_guns
+
+
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
                  game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None,
-                 teams: dict[int, str | None] | None = None, pawn_yaws=None) -> Extras:
+                 teams: dict[int, str | None] | None = None, pawn_yaws=None, *, alive_by_round=None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
     `pawn_path(guid)` -> [(t_ms, x, y[, z | None])]: a non-player pawn's movement (a drone), or None.
@@ -2203,6 +2518,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             trip_owner[id(actor)] = slot
         if actor.name == MESH_NODE and actor.code == "Cable":
             counts["mesh_nodes"] += 1      # on its root's row (`arms`), never a row of its own
+            continue
+        if PLUMBING.match(f"{actor.code}_{actor.name}"):
+            counts["paprika_plumbing_skipped"] += 1   # Suspension's bookkeeping object: no row, so no phantom ult use
             continue
         n = _round_of(actor.t_ms, windows, buy_phase=True)
         if n is None:
@@ -2515,7 +2833,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "slot": reveal["by"], "target": reveal["target"], "code": reveal["code"], "name": reveal["name"]})
 
     statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams, raw.forces,
-                             trips=trips, trip_until=trip_until, trip_owner=trip_owner)
+                             trips=trips, trip_until=trip_until, trip_owner=trip_owner,
+                             force_modules=raw.force_modules, concuss_containers=raw.concuss_containers)
     for status in statuses:
         if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed"                 and not status.get("friendly"):
             # Going off reveals the player it caught (it's also a concuss).
@@ -2534,7 +2853,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("statuses", []).append({
             "t0": _seconds(status["t_ms"], start), "t1": _seconds(min(status["t1_ms"], end), start),
             "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
-            "status": status["status"], "from": status["from"], **({"friendly": True} if status.get("friendly") else {})})
+            "status": status["status"], "from": status["from"], **({"friendly": True} if status.get("friendly") else {}),
+            **({"src": status["src"]} if status.get("src") is not None else {})})
 
     for buff in find_buffs(raw.effects, players, code_of_agent, teams):
         n = _round_of(buff["t_ms"], windows)
@@ -2574,6 +2894,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": equip.code, "name": equip.name})
         counts["ult_equips"] += 1
 
+    shot_guns = _held_guns(raw, players, windows, out, counts, alive_by_round)
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
         shot = data.get("shot") or {}
@@ -2595,6 +2916,12 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         u, v = game_map.to_uv(x, y)
         entry = {"t": _seconds(t_ms, start), "slot": slot, "u": u, "v": v,
                  "gun": ((shot.get("equippable") or {}).get("name")), "n": shot.get("num_projectiles") or 1}
+        gid = (shot.get("equippable") or {}).get("net_guid")
+        if gid is not None:
+            entry["gid"] = gid
+            gun = shot_guns.get(id(data))
+            if gun is not None:
+                entry["gen"] = gun.gen
         vectors = shot.get("attack_vectors") or []
         if vectors and vectors[0].get("x") is not None:
             dx, dy = float(vectors[0]["x"]), float(vectors[0]["y"])
@@ -2701,13 +3028,16 @@ def util_entries(round_extras: dict) -> list[dict]:
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
+    for hold in round_extras.get("holds", []):
+        rest = {k: v for k, v in hold.items() if k not in ("t", "slot")}
+        out.append({"k": "hold", "t": hold["t"], "by": hold["slot"], **rest})
     return out
 
 
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses, casts, buffs, equips = [], [], [], [], [], [], []
+    abilities, shots, reveals, statuses, casts, buffs, equips, holds = [], [], [], [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -2724,6 +3054,8 @@ def rounds_extras(util: list[dict]) -> dict:
             buffs.append({"t0": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "equip":
             equips.append({"t": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "hold":
+            holds.append({"t": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
@@ -2735,4 +3067,6 @@ def rounds_extras(util: list[dict]) -> dict:
         out["buffs"] = buffs
     if equips:
         out["equips"] = equips
+    if holds:
+        out["holds"] = holds
     return out

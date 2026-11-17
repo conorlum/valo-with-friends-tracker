@@ -97,10 +97,13 @@ def test_the_revisions_of_this_release():
     # CONDENSE 28: Ascent door reopening
     # Control 24: stored knowledge kind, destroyed trip/camera locates and the optional destroyed header.
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
+    # CONDENSE 30: held gun generations, pickup provenance, survivor seeds and shot gid/gen.
+    # CONDENSE 31: Hush; GAPS 6: Hush in the Critical Util table and extractor.
     # Control 25: every placed device is off while its owner is suppressed (Undercut, Tejo's drone and Kill Contract's
     # arena suppress too), and a Shock Bolt contests for its blast only.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (29, 25)
-    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 5, "mixed ground gap consumers"
+    # Control 26: side-wide one_of knowledge from Hush's Suspension hit feedback.
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (31, 26)
+    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 6, "mixed ground gap consumers"
 
 
 def test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal():

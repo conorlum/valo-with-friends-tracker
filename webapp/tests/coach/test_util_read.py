@@ -287,6 +287,7 @@ def test_commands_exit_two_on_util_refusal(monkeypatch, tmp_path, capsys, script
         monkeypatch.delenv("REPLAY_ADMIN_TOKEN", raising=False)
     monkeypatch.setattr(app.db, "SessionLocal", MagicMock())
     monkeypatch.setattr(playbook, "load", lambda: {})
+    monkeypatch.setattr(coach_report, "find_claude", lambda: "claude")   # CI has no claude on PATH
     monkeypatch.setattr(coach_store_report, "resolve", lambda *a: (7, 100))
     ask = Mock(return_value={})
     monkeypatch.setattr(_admin_client, "request_util_build", ask)

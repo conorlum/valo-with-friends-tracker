@@ -109,6 +109,11 @@ ABILITY_KIND = {  # placed ability name -> kind; agents from the corpus (ability
     "X_TidalWave": "status", "X_TidalWave_Chunk": "status", "4_SplashGrenade": "status",     # Harbor
     "SeekerNade": "status", "RollyPolly": "status",                                          # Gekko
     "DisarmPulse": "status",                                                                 # Vyse
+    # Hush (W9): her Displacement area and Suspension zone are the only placed utility of hers. The Flashbulb reaches
+    # Moments through its `flash` rows (blind), a pull and a levitation through `status` rows (HIT_KIND), her Flow as a
+    # `cast` row (fights._moving): none of those is a placed object. Her Flow anchor (4_PullBlast), her thrown
+    # projectiles and Suspension's bookkeeping are not placed utility, and the passive's pickups are not at all.
+    "E_RedirectPullArea": "status", "X_LevitateZone": "status",                              # Hush
     # blind
     "E_HawkFlash_FlashSource": "blind",                                                      # Skye
     "StealthingTrap_Flash_2": "blind",                                                       # Vyse

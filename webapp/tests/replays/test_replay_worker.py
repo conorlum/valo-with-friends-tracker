@@ -46,6 +46,9 @@ if mode == "fail-unsupported-patch":
     sys.exit(1)
 data = open(vrf, "rb").read()
 match = SyntheticMatch(shape="swiftplay", vrf_bytes=data)
+if mode == "unknown_agent":
+    from replay_synthetic import AGENT_CODES
+    match = SyntheticMatch(shape="swiftplay", vrf_bytes=data, agent_codes=["NotAnAgent"] + list(AGENT_CODES[1:]))
 if mode == "wrong-hash":
     match.manifest_extra = {{"source_sha256": "0" * 64}}
 if mode == "slow":

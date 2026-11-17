@@ -144,6 +144,16 @@
     [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500, pop: 1.0 }],
     // Convergent Paths: 36 by 13.5 m, from 3 m ahead of Waylay (its object spawns 3.5 m ahead), 1 s windup.
     [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "box", len: 3600, width: 1350, sweep: 1.0 }],
+    // Hush. Flow's anchor is the object the dash lands on. Displacement's area is the pull where the dice go off
+    // (windup 0.8 s, then the object stays a moment); wiki.playvalorant.com/en-us/Displacement (fetched 2026-11-15)
+    // gives no radius, so r 600 is provisional: in the two Hush replays players were pulled from 4.0 to 5.3 m of
+    // the object (no cleaner figure; the object carries no radius field). Suspension's zone is 7 m radius, 4 s of
+    // levitation (wiki.playvalorant.com/en-us/Suspension, fetched 2026-11-15). The force-module proxies and the
+    // proxy manager are Suspension's per-player bookkeeping (160 proxies in two replays): ignored, hidden.
+    [/^Paprika_4_PullBlast$/, { ability: "Flow", shape: "badge", label: "Flow (anchor)" }],
+    [/^Paprika_E_RedirectPullArea$/, { ability: "Displacement", shape: "area", r: 600, pop: 1.0 }],
+    [/^Paprika_X_LevitateZone$/, { ability: "Suspension", shape: "area", r: 700 }],
+    [/^Paprika_X_Force(ProxyManager|ModuleProxy)$/, { ability: "Suspension", shape: "hidden" }],
     // Iso
     [/^Sequoia_E_Shield$/, { ability: "Double Tap", shape: "hidden" }],
     [/^Sequoia_E_Orb$/, { ability: "Double Tap", shape: "badge", part: true, label: "Double Tap orb" }],
@@ -360,6 +370,10 @@
     [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
     [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
     [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
+    // Hush: Flashbulb (overhand and underhand throws, styled like Grenadier's FLASH/drive), Displacement's dice, Suspension's missile.
+    [/^Paprika_Q_RedirectFlash(_Underhand)?$/, { ability: "Flashbulb" }],
+    [/^Paprika_E_RedirectPull$/, { ability: "Displacement" }],
+    [/^Paprika_X_FullBendPop$/, { ability: "Suspension" }],
     [/^Cable_4_NetToss$/, { ability: "GravNet" }],
     [/^Cable_E_CableJam$/, { ability: "Barrier Mesh" }]
   ];
@@ -451,7 +465,8 @@
   // A W-e utility cast's ability id ("omen_paranoia", "phoenix_curveball_left") -> {agent, ability}.
   var UTIL_ABILITIES = {
     omen_paranoia: ["Omen", "Paranoia"], skye_guiding_light: ["Skye", "Guiding Light"],
-    phoenix_curveball_left: ["Phoenix", "Curveball"], phoenix_curveball_right: ["Phoenix", "Curveball"]
+    phoenix_curveball_left: ["Phoenix", "Curveball"], phoenix_curveball_right: ["Phoenix", "Curveball"],
+    hush_flashbulb_overhand: ["Hush", "Flashbulb"], hush_flashbulb_underhand: ["Hush", "Flashbulb"]
   };
 
   function utilAbility(id) {
@@ -1172,11 +1187,14 @@
   }
 
   // Each agent's ult cost, from wiki.playvalorant.com/en-us/Abilities (2026-10-18). Agreed with the replays: a full ult
-  // is cast at this many points.
+  // is cast at this many points. Hush's 8 was read from the two Hush replays (2026-11-15: the caster's
+  // NumUltimatePoints went 8 -> 0 at each of the 7 Suspension casts) and agrees with
+  // wiki.playvalorant.com/en-us/Suspension (fetched 2026-11-15).
   var ULT_COST = {
     Astra: 7, Breach: 8, Brimstone: 8, Chamber: 8, Clove: 8, Cypher: 7, Deadlock: 7, Fade: 8, Gekko: 8, Harbor: 7,
     Iso: 7, Jett: 8, "KAY/O": 8, Killjoy: 9, Miks: 8, Neon: 8, Omen: 7, Phoenix: 7, Raze: 8, Reyna: 7, Sage: 7,
-    Skye: 8, Sova: 8, Tejo: 9, Veto: 7, Viper: 9, Vyse: 8, Waylay: 8, Yoru: 8
+    Skye: 8, Sova: 8, Tejo: 9, Veto: 7, Viper: 9, Vyse: 8, Waylay: 8, Yoru: 8,
+    Hush: 8
   };
 
   // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).
@@ -1309,10 +1327,21 @@
     return { dead: false, pct: null, total: null, armor: null, hpPct: null, shieldPct: null };
   }
 
-  // The gun a slot is holding at t, as far as the replay shows it: the gun of its latest shot at or before t
-  // ({gun, fired: true}); before its first shot of the round, the gun of that first shot ({gun, fired: false}); null
-  // when it fires nothing this round. The replay records no live loadout, so a swap shows only once it fires.
-  function gunAt(shots, slot, t) {
+  // With hold rows, the latest switch in the current life gives {gun, held: true}; a closing row or no switch
+  // gives null. The optional round state index supplies the same life boundaries as hudVitals. Without hold rows,
+  // preserve the shot-based estimate: latest shot ({gun, fired: true}), else first shot ({gun, fired: false}).
+  function gunAt(shots, slot, t, holds, index) {
+    if (holds && holds.length) {
+      var life = lifeIndexAt(index, slot, t);
+      if (life === null) return null;
+      var from = life === undefined ? -Infinity : index.alive[String(slot)][life][0];
+      var latest = null;
+      holds.forEach(function (hold) {
+        if (hold.slot === slot && hold.t >= from && hold.t <= t && (!latest || hold.t >= latest.t)) latest = hold;
+      });
+      if (!latest || latest.cat === "other") return null;
+      return { gun: latest.cat === "melee" ? "Knife" : (latest.gun || "?"), held: true };
+    }
     var last = null, first = null;
     (shots || []).forEach(function (sh) {
       if (sh.slot !== slot || !sh.gun) return;
@@ -1325,11 +1354,14 @@
 
   // The players panel's gun: its silhouette (static/img/weapons/, scripts/vendor_weapon_icons.py; a mask filled with
   // the text colour, so it reads in either theme) and its name. A gun with no icon (Chamber's) is the name alone.
+  // A hold row (CONDENSE 30) names the knife "Knife"; the icon table calls it "Melee".
   function gunHtml(held, table) {
     if (!held) return "";
-    var url = (table || {})[held.gun];
+    table = table || {};
+    var url = table[held.gun] || (held.gun === "Knife" ? table.Melee : null);
     var icon = url ? '<span class="replay-pl-gun-icon" style="--gun-icon:url(\'' + escapeHtml(url) + '\')"></span>' : "";
-    return '<span class="replay-pl-gun' + (held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.fired
+    return '<span class="replay-pl-gun' + (held.held || held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.held
+      ? "Held now" : held.fired
       ? "Gun of their latest shot (the replay records no live loadout)"
       : "Not fired yet: the gun of their first shot this round") + '">' + icon + escapeHtml(held.gun) + "</span>";
   }
@@ -1754,22 +1786,24 @@
     return found && found.complete && found.naturalWidth ? found : null;
   };
 
-  // Stored rounds (Stage 2) carry abilities and shots as `util` kinds "ability" and "shot"
+  // Stored rounds (Stage 2) carry abilities, shots and held guns as `util` kinds "ability", "shot" and "hold"
   // (app/replays/extras.py util_entries); the envelope's t/by were the row's t0|t / slot.
   var CAST_KINDS = { flash: true, nearsight: true };
 
   function extrasFromUtil(util) {
-    var abilities = [], shots = [], reveals = [], statuses = [];
+    var abilities = [], shots = [], holds = [], reveals = [], statuses = [];
     var into = { ability: abilities, reveal: reveals, status: statuses };
     (util || []).forEach(function (u) {
-      if (u.k !== "shot" && !into[u.k]) return;
+      if (u.k !== "shot" && u.k !== "hold" && !into[u.k]) return;
       var row = {};
       Object.keys(u).forEach(function (key) { if (key !== "k" && key !== "t" && key !== "by") row[key] = u[key]; });
       row.slot = u.by;
       if (u.k === "shot") { row.t = u.t; shots.push(row); }
+      else if (u.k === "hold") { row.t = u.t; holds.push(row); }
       else { row.t0 = u.t; into[u.k].push(row); }
     });
     var out = { abilities: abilities, shots: shots };
+    if (holds.length) out.holds = holds;
     if (reveals.length) out.reveals = reveals;
     if (statuses.length) out.statuses = statuses;
     return out;
@@ -2300,7 +2334,7 @@
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
-      var held = life ? gunAt(self.current.extras.shots, p.slot, t) : null;
+      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
       var gun = gunHtml(held, self.options.gunIcons);
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);

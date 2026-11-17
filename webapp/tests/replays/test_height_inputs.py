@@ -24,8 +24,9 @@ PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70", 3: "72ed40ed76a5", 4: "72e
                                       # ("29ebe9bc316b"), for the 1 m step ("6d8f90ffeaa2"), then for VIEW_REACH_M
                                       # (was "ef8175ac1844"), then for the crouch key
                 7: "93c941558c40",    # 7 (2026-11-02): the build's code only (box floors side by side)
-                8: "3ff54544c11e"}    # 8 (2026-11-13): box top touching, votes and nearby ground constants;
+                8: "3ff54544c11e",    # 8 (2026-11-13): box top touching, votes and nearby ground constants;
                                       # the fall check and height paint are build code only
+                9: "1df87fe6f73d"}    # 9 (2026-11-15): Hush's Flow, pulled and levitated blackouts
 
 
 @pytest.mark.parametrize("name, value", [("BOX_STEP_M", 0.6), ("BOX_RING_PX", 24), ("BOX_STEADY_DZ_M", 0.2),
@@ -41,6 +42,9 @@ def test_a_box_top_constant_moves_the_rules_hash(monkeypatch, name, value):
 
 
 def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
     for name in ("TOP_REACH_M", "VIEW_REACH_M", "TOP_TOL_M", "CROUCH_DROP_M", "HEAD_M", "FEET_M",
                  "CROUCH_LAG_S", "CROUCH_NEAR_S", "TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE",
                  "GROUND_NEAR_M"):
@@ -52,6 +56,9 @@ def test_without_the_new_stance_constants_the_previous_rules_hash_is_unchanged(m
 
 
 def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
     for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
         monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
@@ -62,6 +69,9 @@ def test_without_view_reach_the_previous_revision_six_hash_is_unchanged(monkeypa
 
 
 def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
     for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
         monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
@@ -71,6 +81,9 @@ def test_with_the_previous_eye_the_revision_six_rules_hash_is_unchanged(monkeypa
 
 
 def test_without_the_crouch_key_constants_the_previous_rules_hash_is_unchanged(monkeypatch):
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
     for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
         monkeypatch.delattr(hc, name, raising=False)
     monkeypatch.delattr(hc, "CROUCH_LAG_S", raising=False)
@@ -86,7 +99,15 @@ def test_the_fall_threshold_is_build_only(monkeypatch):
     before = _constants_digest()
     monkeypatch.setattr(hb, "FELL_BELOW_M", hb.FELL_BELOW_M + 1.0)
     assert _constants_digest() == before
-    assert hc.rules()["constants"] == PINNED_RULES[8]
+    assert hc.rules()["constants"] == PINNED_RULES[9]
+
+
+def test_without_hush_blackouts_revision_eight_rules_are_unchanged(monkeypatch):
+    monkeypatch.setattr(cf, "HEIGHT_RULES_REVISION", 8)
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
+    assert hc.rules() == {"version": cf.HEIGHT_VERSION, "revision": 8, "constants": PINNED_RULES[8]}
 
 
 def test_the_height_rules_are_pinned_to_their_revision(monkeypatch):
@@ -95,6 +116,10 @@ def test_the_height_rules_are_pinned_to_their_revision(monkeypatch):
         f"the height constants changed (hash {digest}): bump HEIGHT_RULES_REVISION in "
         f"app/replays/control_format.py and pin {{{cf.HEIGHT_RULES_REVISION + 1}: '{digest}'}} here")
     assert hc.rules() == {"version": cf.HEIGHT_VERSION, "revision": cf.HEIGHT_RULES_REVISION, "constants": digest}
+    assert cf.HEIGHT_RULES_REVISION == 9
+    monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
+    monkeypatch.setattr(hc, "AIRBORNE_ABILITIES",
+                        ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
     for name in ("TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"):
         monkeypatch.delattr(hc, name)
     assert hc.rules()["constants"] == PINNED_RULES[7]
@@ -237,6 +262,7 @@ def test_revision_seven_manifest_keeps_pre_fall_digest(monkeypatch):
     from tests.replays import layout_golden as golden
 
     monkeypatch.setattr(cf, "HEIGHT_RULES_REVISION", 7)
-    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, hi.geometry_identity("Abyss"),
-                           golden._must_block_sha_lf())
+    geometry = hi.geometry_identity("Abyss")
+    geometry.pop("height_paint", None)  # pins the revision-7 format, not Abyss's later hand paint
+    manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, geometry, golden._must_block_sha_lf())
     assert hi.digest(manifest) == "d9bae5b3eb533d11"

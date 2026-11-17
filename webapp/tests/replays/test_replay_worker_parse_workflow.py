@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[2]))
 
 from fake_render import FakeRender  # noqa: E402
+from app.replays.contract import ContractError, UnknownAgent, waiting_agent_text  # noqa: E402
 from replay_tasks import tasks  # noqa: E402
 from replay_worker import parse_job, server  # noqa: E402
 
@@ -430,6 +431,46 @@ def test_failures_keep_todays_reasons(rig):
         got.append((job.status, job.error, job.detail))
     assert got == [("failed", "parse failed", "Boom"), ("failed", "parse timed out", None),
                    ("failed", "not condensable: x", None)]
+
+
+def test_a_workflow_answer_naming_an_unknown_agent_holds_the_upload(rig):
+    answers = collections.deque([
+        {"status": "failed", "error_kind": "contract", "error": "not condensable: unknown_agent",
+         "agent_code": "NotAnAgent"},
+        {"status": "failed", "error_kind": "contract", "error": "not condensable: unknown_agent"}])
+    rig.render.runner = lambda kind, args: rig.link(args).post_result(answers.popleft())
+    worker = rig.start()
+    held = worker.submit(VRF + b"h")
+    wait_for(lambda: worker.get(held.id).status == "held")
+    assert worker.get(held.id).waiting_agent == "NotAnAgent"
+    assert worker.get(held.id).error == waiting_agent_text("NotAnAgent")
+    assert (rig.disk / "jobs" / held.id / "upload.vrf").exists()
+    assert record_of(rig, held.id)["waiting_agent"] == "NotAnAgent"
+    [failed] = wait_jobs(worker, [worker.submit(VRF + b"f").id])      # no agent_code: fails as today
+    assert (failed.status, failed.error, failed.waiting_agent) == ("failed", "not condensable: unknown_agent", None)
+
+
+def test_the_parse_task_names_the_unknown_agent_in_its_answer(monkeypatch):
+    monkeypatch.setattr(tasks, "_recipe", lambda: "r")
+
+    def refuse(*a, **k):
+        raise UnknownAgent("NotAnAgent")
+    monkeypatch.setattr(parse_job, "parse_file", refuse)
+    link = FakeLink({"vrf": b"x"})
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
+    assert link.result == {"status": "failed", "error_kind": "contract", "error": "not condensable: unknown_agent",
+                           "agent_code": "NotAnAgent"}
+
+
+def test_the_parse_task_answers_another_contract_refusal_without_an_agent_code(monkeypatch):
+    monkeypatch.setattr(tasks, "_recipe", lambda: "r")
+
+    def refuse(*a, **k):
+        raise ContractError("x")
+    monkeypatch.setattr(parse_job, "parse_file", refuse)
+    link = FakeLink({"vrf": b"x"})
+    tasks.parse({"job_id": "j", "token": "t", "recipe": "r", "sha256": X_SHA}, link)
+    assert "agent_code" not in link.result
 
 
 def test_an_expiring_held_upload_is_never_released(rig, monkeypatch):

@@ -291,7 +291,7 @@ def parse(args: dict, link: WorkerLink) -> None:
     """One upload or re-parse: the same parse and condense the worker runs locally (replay_worker/parse_job.py)."""
     link.post_started()      # for /health's by_kind only: a parse's deadline is explicit and never moves
     _app_path()
-    from app.replays.contract import ContractError
+    from app.replays.contract import ContractError, UnknownAgent
     from replay_worker import parse_job
     from replay_worker.server import Settings
 
@@ -326,6 +326,8 @@ def parse(args: dict, link: WorkerLink) -> None:
                       "parse_seconds": failed.seconds}
         except ContractError as refused:
             answer = {"status": "failed", "error_kind": "contract", "error": f"not condensable: {refused.reason}"}
+            if isinstance(refused, UnknownAgent):
+                answer["agent_code"] = refused.code
         except Exception as error:  # noqa: BLE001 - say what happened rather than die silently
             answer = {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}"}
         link.post_result(answer)

@@ -19,7 +19,7 @@ from app.control import engine
 from app.control.stance import line_ends
 from app.critutil import abilities, windows
 from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, ARC_ROSE, ROSE_REPOP_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
-                                    FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
+                                    DASH_ANCHOR_S, FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
                                     SIGHT_RANGE_M, SIGHT_STEP_S, SPIKE_NEAR_M, STOPPED_MPS, THROW_MATCH_S, TRIGGER_WINDOW_S, TURN_AWAY_M,
                                     ULT_SHOT_MATCH_S, ULT_WEAPONS, VERSION, WAIT_RING_M, WALL_PATTERNS, ZONE_DAMAGE_LOOKBACK_S, ZONE_RADIUS_M)
@@ -265,6 +265,14 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         name, by, tt = r.get("name"), r.get("by"), _throw_t(r)
         kinds = _kinds_of([name] if name else [])
         entry, parents = _entry_of(r), _parents_of(r)
+        if entry is not None and entry.get("type") == "dash":
+            # Hush's Flow: its anchor spawns in the ms the move (the `cast` row) starts, so it is that cast's piece
+            mate = next((c for c in reversed(casts) if c.by == by and c.rows[0].get("k") == "cast"
+                         and c.entry is not None and c.entry["match"] == entry["match"]
+                         and abs(float(r["t"]) - c.t) <= DASH_ANCHOR_S), None)
+            if mate is not None:
+                mate.add(r, rnd)
+                continue
         twin = next((c for c in reversed(casts) if c.flash is not None and c.by == by
                      and abs(c.t - tt) <= FLASH_ROW_MATCH_S), None)
         if twin is not None and twin.entry is not None and twin.entry["match"] in parents:
@@ -399,6 +407,8 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
         if k == "damage" and r.get("src") != "ability" and not r.get("code"):
             continue             # a gun hit
         cast = by_id.get(r.get("id")) if r.get("id") is not None else None
+        if cast is None and k == "status" and r.get("src") is not None:
+            cast = by_id.get(r["src"])          # a levitated row names its zone (CONDENSE 31): that zone's cast
         if cast is None:
             name = r.get("name")
             t = float(r["t"])

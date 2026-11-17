@@ -102,7 +102,9 @@ def test_util_reaches_readers_through_known_kinds_and_holds_no_identity(tmp_path
     assert "subject" not in text.lower() and "00000000-0000-4000-8000-0000000000" not in text
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
-    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c29"
+    # CONDENSE 30: held gun generations.
+    # CONDENSE 31: Hush (Flow cast, force-row statuses, Flashbulb pop).
+    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c31"
 
 
 def test_hits_carry_their_own_time_and_duration(tmp_path):

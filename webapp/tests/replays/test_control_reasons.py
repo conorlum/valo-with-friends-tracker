@@ -67,6 +67,10 @@ def test_knowledge_event_kinds_use_control_revision_24():
     assert cf.CONTROL_REVISION >= 24
 
 
+def test_suspension_knowledge_uses_control_revision_26():
+    assert cf.CONTROL_REVISION == 26
+
+
 def test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence():
     b = blob({0: ("A", [(0.0, 104, 200, 180)]), 5: ("B", [(0.0, 400, 200, 0)])}, t_end=10.0)
     infos = [ut.Info(6.2, "A", 5, "broaden", "omen_unheard", x=200, y=200, radius_m=5.0),

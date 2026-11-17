@@ -89,6 +89,46 @@ def test_a_box_someone_dashed_onto_counts_from_three_seconds_on():
     assert after.t0 > t1 - 1e-6 and after.t1 == 10.0
 
 
+def test_flow_cast_starts_a_three_second_blackout_for_its_caster():
+    cast = {"k": "cast", "t": 6.0, "by": 2, "code": "Paprika", "name": "4_PullBlast"}
+    b = fast_blob({}, util=[cast])
+    b["movement_casts"] = 1
+    assert hm.blackouts(b, GEO) == {2: [(6.0, 9.0)]}
+
+
+@pytest.mark.parametrize("status, name, t1, friendly", [
+    ("levitated", "X_LevitateZone", 12.0, False),
+    ("levitated", "X_LevitateZone", 12.0, True),
+    ("pulled", "E_RedirectPullArea", 10.5, False),
+    ("pulled", "E_RedirectPullArea", 10.5, True),
+])
+def test_serialized_airborne_status_blacks_out_its_target_through_landing(status, name, t1, friendly):
+    from app.replays.extras import util_entries
+
+    row = {"t0": 10.0, "t1": t1, "slot": 1, "target": 4, "code": "Paprika", "name": name,
+           "status": status, "from": "force"}
+    if friendly:
+        row["friendly"] = True
+    if status == "levitated":
+        row["src"] = 7
+    entries = util_entries({"statuses": [row]})
+    assert entries == [{"k": "status", "t": 10.0, "by": 1,
+                        **{k: v for k, v in row.items() if k not in ("t0", "slot")}}]
+    b = fast_blob({4: ("B", [(0.0, 160, Y, 0, 0.0), (20.0, 160, Y, 0, 0.0)])},
+                  util=entries, t_end=20.0)
+    skip = hm.blackouts(b, GEO)
+    assert skip == {4: [(10.0, t1 + 3.0)]}
+    pieces = list(hm.tracks(b, skip))
+    assert len(pieces) == 2
+    assert pieces[0][1][-1] < 10.0 and pieces[1][1][0] > t1 + 3.0
+
+
+def test_hindered_status_does_not_start_a_blackout():
+    row = {"k": "status", "t": 10.0, "t1": 12.0, "by": 1, "target": 4,
+           "code": "Paprika", "name": "E_RedirectPullArea", "status": "hindered", "from": "force"}
+    assert hm.blackouts(fast_blob({}, util=[row]), GEO) == {}
+
+
 def test_tracks_cut_a_segment_at_a_blackout_and_overlapping_blackouts_merge():
     b = fast_blob({0: ("A", [(0.0, 160, Y, 0, 0.0), (10.0, 300, Y, 0, 0.0)])})
     whole = list(hm.tracks(b))

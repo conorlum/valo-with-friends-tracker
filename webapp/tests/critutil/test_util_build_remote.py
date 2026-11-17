@@ -22,7 +22,7 @@ from app.models.match import Match, MatchPlayer, MatchSource
 from app.models.player import Player
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel
 from app.models.round import Round, RoundPlayerStat
-from app.services import replay_control_remote, replay_util, util_model, util_store, util_values
+from app.services import replay_control_remote, replay_gaps, replay_util, util_model, util_store, util_values
 from app.services import util_build_remote as remote
 from app.services.replay_control_remote import ControlClient, Conflict, Unreachable, WorkerGone
 
@@ -101,7 +101,7 @@ def add_replay(db, number):
 def put_rows(env, count=1, age=130, status="ok", start=1, size=1):
     for n in range(start, start + count):
         env.db.merge(ReplayRoundUtil(replay_id=1, round_number=n, status=status, fingerprint="f" * 16,
-                                    gaps_revision=5, data={"casts": [], "padding": "x" * size},
+                                    gaps_revision=replay_gaps.GAPS_REVISION, data={"casts": [], "padding": "x" * size},
                                     computed_at=datetime.fromtimestamp(NOW - age, timezone.utc)))
     env.db.commit()
 

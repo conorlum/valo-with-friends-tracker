@@ -30,23 +30,34 @@ def agent_slug(name: str) -> str:
     return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
+def vendor_agent_abilities(agent: dict, static: Path, fetch_bytes=None) -> tuple[dict[str, str], int]:
+    """Vendor one agent, preserving the bulk vendor's slot and name ordering rules."""
+    fetch_bytes = fetch if fetch_bytes is None else fetch_bytes
+    slug = agent_slug(agent["displayName"])
+    entries = {}
+    written = 0
+    for ability in agent.get("abilities") or []:
+        if not ability.get("displayIcon") or ability.get("slot") == "Passive":
+            continue
+        slot = ability["slot"].lower()
+        path = static / "img" / "abilities" / slug / f"{slot}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = fetch_bytes(ability["displayIcon"])
+        if not path.is_file() or path.read_bytes() != content:
+            path.write_bytes(content)
+        entries[ability["displayName"]] = f"/static/img/abilities/{slug}/{slot}.png"
+        written += 1
+    return dict(sorted(entries.items())), written
+
+
 def main() -> int:
     agents = fetch_json(f"{API}/agents?isPlayableCharacter=true")
     index: dict[str, dict[str, str]] = {}
     written = 0
     for agent in sorted(agents, key=lambda a: a["displayName"]):
-        slug = agent_slug(agent["displayName"])
-        entries = {}
-        for ability in agent.get("abilities") or []:
-            if not ability.get("displayIcon") or ability.get("slot") == "Passive":
-                continue
-            slot = ability["slot"].lower()
-            path = STATIC / "img" / "abilities" / slug / f"{slot}.png"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(fetch(ability["displayIcon"]))
-            entries[ability["displayName"]] = f"/static/img/abilities/{slug}/{slot}.png"
-            written += 1
-        index[agent["displayName"]] = dict(sorted(entries.items()))
+        entries, count = vendor_agent_abilities(agent, STATIC)
+        index[agent["displayName"]] = entries
+        written += count
     out = STATIC / "data" / "abilities.json"
     out.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"{written} icons for {len(index)} agents -> {out}")

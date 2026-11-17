@@ -507,9 +507,11 @@ class RoundInputs:
         # readers' and any given ones (tests), in engine order. Only enemies of the learning side count.
         # An Info that needs a capability the enemy is immune to at its time (Veto's Evolution) is dropped.
         self.infos = [] if sight_check else utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
-                                      if self.team.get(i.slot) is not None and self.team.get(i.slot) != i.side
-                                      and 0.0 <= i.t < self.t_end
-                                      and utility.affects(i.detail.get("needs", "sight"), self.evolution, i.slot, i.t)])
+                                      if 0.0 <= i.t < self.t_end and
+                                      ((i.kind in utility.SIDE_KINDS and i.side in self.team.values()) or
+                                       (i.kind not in utility.SIDE_KINDS and self.team.get(i.slot) is not None
+                                        and self.team.get(i.slot) != i.side and utility.affects(
+                                            i.detail.get("needs", "sight"), self.evolution, i.slot, i.t)))])
         if geo.heights is not None:
             if any(np.isnan(z).any() for z in self.heights.values()):
                 self.missing["approximate heights (a player's track has no z: lowest floor used)"] += 1
@@ -2796,6 +2798,12 @@ class Unknown:
             self.reasons[side] = []
             self._fresh[side] = set()
             enemies = self._enemies(tick, side)
+            side_infos = [i for i in infos if i.side == side]
+            first_one_of = next((j for j, i in enumerate(side_infos) if i.kind == "one_of"), len(side_infos))
+            # Every Info already has its exact analytical instant. Advance all enemies to that instant
+            # before resolving side-wide evidence; only operations ordered before it run in this pass.
+            early_infos, late_infos = side_infos[:first_one_of], side_infos[first_one_of:]
+            prepared = {}
             for gone in set(self.reached[side]) - enemies:   # dead: nowhere
                 del self.reached[side][gone]
                 self.seen[side].pop(gone, None)
@@ -2810,6 +2818,9 @@ class Unknown:
                 if locates:
                     self._dead[side].add(gone)
             if not enemies:
+                for info in late_infos:
+                    if info.kind == "one_of":
+                        self.ignored["one_of with no candidate"] += 1
                 self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(n, bool)
@@ -2841,6 +2852,10 @@ class Unknown:
                        and (watched[tick.holders[s].cell] or s in in_cone
                             or any(v.active[tick.holders[s].cell] and not air_pair(v, tick.holders[s])
                                    for v in viewers))}
+            known = {i.slot: self.geo.node_at_px(i.x, i.y, i.z) for i in early_infos
+                     if i.kind == "locate" and i.t == t and i.slot in enemies
+                     and i.x is not None and i.y is not None}
+            known.update({s: tick.holders[s].cell for s in spotted})
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
                 before = np.full(n, np.inf) if reached is None else reached.copy()
@@ -2884,7 +2899,7 @@ class Unknown:
                     self.located[side][slot] = te
                     self.events[side] += [(slot, e[0], e[1]) for e in hits]
                     self.reasons[side] += [(e[0], slot, "locate", e[1], "") for e in hits]
-                mine = [i for i in infos if i.side == side and i.slot == slot]
+                mine = [i for i in early_infos if i.slot == slot]
                 if mine or slot in self.paused[side]:
                     reached, before, sources, area, centre = self._operate(
                         side, slot, mine, reached, before, sources, area, centre, since, t, rnd)
@@ -2937,6 +2952,52 @@ class Unknown:
                     if h is not None:
                         gone[h.cell] = False
                     reached[gone] = np.inf
+                if late_infos:
+                    prepared[slot] = (reached, before, sources, area, centre, parent)
+                else:
+                    self._record(side, slot, before, reached, parent, sources, centre, area)
+                    self.reached[side][slot] = reached
+                    cells |= np.isfinite(reached)
+            for info in late_infos:
+                if info.kind == "one_of":
+                    fp = utility.footprint(info, self.geo)
+                    # D9: the sound says at least one enemy is in the zone. One already seen there
+                    # explains it, so it says nothing about any other enemy's uncertainty region.
+                    # A point locate ordered earlier at this instant counts too; old sightings and
+                    # locating areas do not establish that an enemy is still inside the footprint.
+                    if any(fp[node] for node in known.values()):
+                        self.ignored["one_of explained by a seen enemy"] += 1
+                        continue
+                    candidates = [s for s, state in prepared.items()
+                                  if utility.affects("status", rnd.evolution, s, info.t)
+                                  and (np.isfinite(state[0]) & (state[0] <= info.t) & fp).any()]
+                    if not candidates:
+                        self.ignored["one_of with no candidate"] += 1
+                    derived = [utility.Info(info.t, side, s,
+                                            "restrict" if len(candidates) == 1 else "hypothesis", info.reason,
+                                            x=info.x, y=info.y, radius_m=info.radius_m, mask=info.mask,
+                                            source=info.source, seq=info.seq, z=info.z, detail=info.detail)
+                               for s in candidates]
+                else:
+                    derived = [info] if info.slot in prepared else []
+                for operation in derived:
+                    slot = operation.slot
+                    reached, before, sources, area, centre, parent = prepared[slot]
+                    # No time elapses here: equal-time later operations (including another one_of) see
+                    # these results, without spreading again or counting a pause interval twice.
+                    reached, before, sources, area, centre = self._operate(
+                        side, slot, [operation], reached, before, sources, area, centre, t, t, rnd)
+                    if (operation.kind == "locate" and operation.t == t
+                            and operation.x is not None and operation.y is not None):
+                        known[slot] = self.geo.node_at_px(operation.x, operation.y, operation.z)
+                    reached[~room] = np.inf
+                    for source, node in list(self.protect[side].get(slot, {}).items()):
+                        if not room[node] or not np.isfinite(reached[node]):
+                            del self.protect[side][slot][source]
+                            self.cleared[side].add(source)
+                            self.reasons[side].append((t, slot, "cleanup", "hypothesis_cleared", source))
+                    prepared[slot] = (reached, before, sources, area, centre, parent)
+            for slot, (reached, before, sources, area, centre, parent) in prepared.items():
                 self._record(side, slot, before, reached, parent, sources, centre, area)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
