@@ -1352,6 +1352,20 @@
     return first ? { gun: first.gun, fired: false } : null;
   }
 
+  // The players panel's gun: its silhouette (static/img/weapons/, scripts/vendor_weapon_icons.py; a mask filled with
+  // the text colour, so it reads in either theme) and its name. A gun with no icon (Chamber's) is the name alone.
+  // A hold row (CONDENSE 30) names the knife "Knife"; the icon table calls it "Melee".
+  function gunHtml(held, table) {
+    if (!held) return "";
+    table = table || {};
+    var url = table[held.gun] || (held.gun === "Knife" ? table.Melee : null);
+    var icon = url ? '<span class="replay-pl-gun-icon" style="--gun-icon:url(\'' + escapeHtml(url) + '\')"></span>' : "";
+    return '<span class="replay-pl-gun' + (held.held || held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.held
+      ? "Held now" : held.fired
+      ? "Gun of their latest shot (the replay records no live loadout)"
+      : "Not fired yet: the gun of their first shot this round") + '">' + icon + escapeHtml(held.gun) + "</span>";
+  }
+
   // An agent's abilities in key order, C, Q, E and then the ult X, from the icon table: each icon's file name says its
   // slot (static/img/abilities/<agent>/grenade|ability1|ability2|ultimate.png, scripts/vendor_ability_icons.py).
   var ICON_KEYS = { grenade: "C", ability1: "Q", ability2: "E", ultimate: "X" };
@@ -2321,12 +2335,7 @@
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
       var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
-      var gun = held
-        ? '<span class="replay-pl-gun' + (held.held || held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.held
-          ? "Held now" : held.fired
-          ? "Gun of their latest shot (the replay records no live loadout)"
-          : "Not fired yet: the gun of their first shot this round") + '">' + escapeHtml(held.gun) + "</span>"
-        : "";
+      var gun = gunHtml(held, self.options.gunIcons);
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
@@ -4559,7 +4568,7 @@
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
-    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, inArenaAt: inArenaAt,
+    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt,
     utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,

@@ -1,0 +1,23 @@
+{
+  "Ares": "/static/img/weapons/ares.png",
+  "Bandit": "/static/img/weapons/bandit.png",
+  "Bucky": "/static/img/weapons/bucky.png",
+  "Bulldog": "/static/img/weapons/bulldog.png",
+  "Classic": "/static/img/weapons/classic.png",
+  "Frenzy": "/static/img/weapons/frenzy.png",
+  "Ghost": "/static/img/weapons/ghost.png",
+  "Guardian": "/static/img/weapons/guardian.png",
+  "Judge": "/static/img/weapons/judge.png",
+  "Marshal": "/static/img/weapons/marshal.png",
+  "Melee": "/static/img/weapons/melee.png",
+  "Odin": "/static/img/weapons/odin.png",
+  "Operator": "/static/img/weapons/operator.png",
+  "Outlaw": "/static/img/weapons/outlaw.png",
+  "Phantom": "/static/img/weapons/phantom.png",
+  "Sheriff": "/static/img/weapons/sheriff.png",
+  "Shorty": "/static/img/weapons/shorty.png",
+  "Spectre": "/static/img/weapons/spectre.png",
+  "Stinger": "/static/img/weapons/stinger.png",
+  "Vandal": "/static/img/weapons/vandal.png",
+  "Warden": "/static/img/weapons/warden.png"
+}
