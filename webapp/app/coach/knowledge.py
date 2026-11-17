@@ -23,31 +23,35 @@ ROUGH_BAND_M = 10.0         # the band's width: its middle is within 5 m of any 
 _HEARING = json.loads((Path(__file__).parents[1] / "control" / "hearing.json").read_text(encoding="utf-8"))
 
 
-def _heard_destroying_shot(view, side: str, enemy: int, t: float) -> bool:
-    """A shot by the destroyer in the engine's destruction window, heard by a living teammate.
+def shot_heard(view, side: str, shot: dict) -> bool:
+    """Whether a living teammate heard this shot at its recorded time and gun range.
 
     RoundView has no nearsight/deafening state; this uses the recorded positions and gun range.
     """
-    for shot in view.blob.get("util") or []:
-        if shot.get("k") != "shot" or shot.get("by") != enemy or shot.get("t") is None:
+    if shot.get("t") is None:
+        return False
+    when = float(shot["t"])
+    there = view.position(shot.get("by"), when)
+    if there.get("u") is None or there.get("v") is None:
+        return False
+    gun = shot.get("gun")
+    ranges, default = _HEARING["guns"], _HEARING["default_gun_m"]
+    reach = max(ranges.values(), default=default) if gun is None else ranges.get(gun, default)
+    for mate in view.living(side, when):
+        here = view.position(mate, when)
+        if here.get("u") is None or here.get("v") is None:
             continue
-        when = float(shot["t"])
-        if not t - 0.5 <= when <= t + 0.05:
-            continue
-        there = view.position(enemy, when)
-        if there.get("u") is None or there.get("v") is None:
-            continue
-        gun = shot.get("gun")
-        ranges, default = _HEARING["guns"], _HEARING["default_gun_m"]
-        reach = max(ranges.values(), default=default) if gun is None else ranges.get(gun, default)
-        for mate in view.living(side, when):
-            here = view.position(mate, when)
-            if here.get("u") is None or here.get("v") is None:
-                continue
-            distance = view.metres(math.hypot(there["u"] - here["u"], there["v"] - here["v"]))
-            if distance <= reach:
-                return True
+        distance = view.metres(math.hypot(there["u"] - here["u"], there["v"] - here["v"]))
+        if distance <= reach:
+            return True
     return False
+
+
+def _heard_destroying_shot(view, side: str, enemy: int, t: float) -> bool:
+    """A heard shot by the destroyer in the engine's destruction window."""
+    return any(shot_heard(view, side, shot) for shot in view.blob.get("util") or []
+               if shot.get("k") == "shot" and shot.get("by") == enemy and shot.get("t") is not None
+               and t - 0.5 <= float(shot["t"]) <= t + 0.05)
 
 
 def rough_place(view, side: str, enemy: int, t: float) -> dict | None:

@@ -10,6 +10,7 @@ COMMANDS = """\
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
+./q fight <round> <seconds> <player>       the player's fight containing that time or nearest within 3 s
 ./q impact <round> <player>                the player's stored Impact row for the round"""
 
 SHAPE = """\
@@ -47,6 +48,14 @@ distance in metres from the smoke's centre and its radius), a device's first "tr
 for an ability whose hits the replay records only in part ("none" or "damage only"). "sight_line_s" is seconds of
 enemy sight lines cut, added up over every line, never how long the smoke lasted ("life_s"). Evidence for an instance must be about that instance's round. Every answer is
 recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
+
+Each round's "fights" gives the player's guns and the enemy's guns, with sources showing what was held or
+inferred from shots, metres and range verdicts, the alive man count, and whether the player was "lone".
+"known" gives how the enemy gun was known and how many seconds before the fight. An "econ_guess" is a guess,
+so say "likely". The "death" facts give the dropped gun, the killer's gun at the kill, their tiers and whether
+the dropped gun was better. "picked_up" gives who took it and when, and "kills_with" counts their later kills
+with that gun. Each fight has an "id" to cite. Distances in improve points require sight at the fight's geometry
+time "g", including just before a one-shot kill.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
 a clock time, 0:41); each must be in an answer you cite for that instance. Ground a named area with a cited

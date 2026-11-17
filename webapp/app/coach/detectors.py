@@ -129,6 +129,14 @@ def _stack(view, slot, knew, role):
     return []
 
 
-def flags(view, slot: int, knew: dict | None, role: str | None = None) -> list[dict]:
+def flags(view, slot: int, knew: dict | None, role: str | None = None, *, fights=None) -> list[dict]:
     found = _deaths(view, slot) + _first_contact(view, slot) + _flashes(view, slot) + _stack(view, slot, knew, role)
+    for fight in fights or ():
+        values = {key: fight.get(key) for key in (
+            "enemy", "subject", "side", "t0", "g", "metres", "my_gun", "enemy_gun",
+            "my_gun_source", "enemy_gun_source", "alive", "known", "death", "picked_up",
+            "kills_with", "off_range", "kill_weapon")}
+        for kind in fight.get("flags") or ():
+            if kind in ("gun_handover", "off_range_fight"):
+                found.append(_flag(view, kind, fight["t0"], **values))
     return sorted(found, key=lambda f: (f["t"], f["kind"]))

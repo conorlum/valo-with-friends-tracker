@@ -1309,10 +1309,21 @@
     return { dead: false, pct: null, total: null, armor: null, hpPct: null, shieldPct: null };
   }
 
-  // The gun a slot is holding at t, as far as the replay shows it: the gun of its latest shot at or before t
-  // ({gun, fired: true}); before its first shot of the round, the gun of that first shot ({gun, fired: false}); null
-  // when it fires nothing this round. The replay records no live loadout, so a swap shows only once it fires.
-  function gunAt(shots, slot, t) {
+  // With hold rows, the latest switch in the current life gives {gun, held: true}; a closing row or no switch
+  // gives null. The optional round state index supplies the same life boundaries as hudVitals. Without hold rows,
+  // preserve the shot-based estimate: latest shot ({gun, fired: true}), else first shot ({gun, fired: false}).
+  function gunAt(shots, slot, t, holds, index) {
+    if (holds && holds.length) {
+      var life = lifeIndexAt(index, slot, t);
+      if (life === null) return null;
+      var from = life === undefined ? -Infinity : index.alive[String(slot)][life][0];
+      var latest = null;
+      holds.forEach(function (hold) {
+        if (hold.slot === slot && hold.t >= from && hold.t <= t && (!latest || hold.t >= latest.t)) latest = hold;
+      });
+      if (!latest || latest.cat === "other") return null;
+      return { gun: latest.cat === "melee" ? "Knife" : (latest.gun || "?"), held: true };
+    }
     var last = null, first = null;
     (shots || []).forEach(function (sh) {
       if (sh.slot !== slot || !sh.gun) return;
@@ -1743,22 +1754,24 @@
     return found && found.complete && found.naturalWidth ? found : null;
   };
 
-  // Stored rounds (Stage 2) carry abilities and shots as `util` kinds "ability" and "shot"
+  // Stored rounds (Stage 2) carry abilities, shots and held guns as `util` kinds "ability", "shot" and "hold"
   // (app/replays/extras.py util_entries); the envelope's t/by were the row's t0|t / slot.
   var CAST_KINDS = { flash: true, nearsight: true };
 
   function extrasFromUtil(util) {
-    var abilities = [], shots = [], reveals = [], statuses = [];
+    var abilities = [], shots = [], holds = [], reveals = [], statuses = [];
     var into = { ability: abilities, reveal: reveals, status: statuses };
     (util || []).forEach(function (u) {
-      if (u.k !== "shot" && !into[u.k]) return;
+      if (u.k !== "shot" && u.k !== "hold" && !into[u.k]) return;
       var row = {};
       Object.keys(u).forEach(function (key) { if (key !== "k" && key !== "t" && key !== "by") row[key] = u[key]; });
       row.slot = u.by;
       if (u.k === "shot") { row.t = u.t; shots.push(row); }
+      else if (u.k === "hold") { row.t = u.t; holds.push(row); }
       else { row.t0 = u.t; into[u.k].push(row); }
     });
     var out = { abilities: abilities, shots: shots };
+    if (holds.length) out.holds = holds;
     if (reveals.length) out.reveals = reveals;
     if (statuses.length) out.statuses = statuses;
     return out;
@@ -2289,9 +2302,10 @@
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
-      var held = life ? gunAt(self.current.extras.shots, p.slot, t) : null;
+      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
       var gun = held
-        ? '<span class="replay-pl-gun' + (held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.fired
+        ? '<span class="replay-pl-gun' + (held.held || held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.held
+          ? "Held now" : held.fired
           ? "Gun of their latest shot (the replay records no live loadout)"
           : "Not fired yet: the gun of their first shot this round") + '">' + escapeHtml(held.gun) + "</span>"
         : "";

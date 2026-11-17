@@ -67,6 +67,12 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
             args = [r["round"], fact["t"], "util_fact"]
             fact["id"] = query.append(run_dir, "flag", args, result)
             logged[fact["id"]] = {"cmd": "flag", "args": args, "result": result}
+    for r in built["rounds"]:
+        for fight in r.get("fights") or ():
+            result = {"round": r["round"], "kind": "fight_fact", **fight}
+            args = [r["round"], fight["t0"], "fight_fact"]
+            fight["id"] = query.append(run_dir, "flag", args, result)
+            logged[fight["id"]] = {"cmd": "flag", "args": args, "result": result}
     return built, logged
 
 

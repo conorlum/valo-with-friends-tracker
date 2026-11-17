@@ -1,5 +1,5 @@
 ---
-version: 11
+version: 12
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -62,6 +62,11 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
 - Man count after the plant: attackers who are up play for info and fall back. Attackers who are down look for
   a sneaky kill and fall back, or play to get more than one. Defenders who are up group and fight in together.
   Defenders who are down take riskier timings and fights to even it. In a 1vX both sides look to isolate fights.
+- At even or better numbers, don't take a lone fight where losing hands the enemy a better gun (a Vandal to
+  someone with a Classic). In a 1v1 it doesn't matter.
+- Fight at your gun's range. When you know an enemy has a close-range gun (you heard the Bucky and had time to
+  reposition), don't take the close fight. With a Stinger or another close-range gun, take close fights, not long
+  ones.
 
 # What you are doing
 
@@ -194,3 +199,6 @@ answers questions about any round. Write three things the player did well and th
     the radius) denies less than one at the smoke's edge: that is a placement note in its caption, not a waste.
 32. "sight_line_s" is seconds of enemy sight lines a smoke cut, added up over every line it cut: never write it
     as how long the smoke blocked sight. The smoke's own duration is "life_s".
+33. Judge a fight's guns only by what the brief's fight says the side knew: a gun the team saw or heard is
+    known; an economy guess is a guess, so say "likely". Never name an enemy's gun the team had not seen or heard,
+    unless it killed the player.
