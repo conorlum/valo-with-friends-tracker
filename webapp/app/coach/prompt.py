@@ -39,7 +39,6 @@ A point's theme must be one of: {", ".join(book.themes)}
 # The query command
 
 """
-            # D9 trial (PLAN.md): removed before the PR unless the eval keeps it
             "Make fewer, bigger calls: put every query a step needs into one `./q` call joined by `+`, because each call re-reads the whole conversation.\n"
             f"""Run it from the current directory with no pipes or redirection. Several queries go in one call joined by a lone
 `+`, for example `./q where 7 41.5 + knew 7 42 A`. Times are seconds into
