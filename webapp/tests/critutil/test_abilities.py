@@ -9,7 +9,7 @@ from pathlib import Path
 from app.critutil import abilities
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
-PINNED_EXTRACTOR_HASH = "efa134df85fe245c9fcec575cc2b891dccb6541936b74bd62a0a0cf1bc53ed22"
+PINNED_EXTRACTOR_HASH = "a397dd02ece492660b985e58d1469c6c1295c7a8e1b513e82262c5aaaa5206f5"
 
 
 def _script():
@@ -329,7 +329,7 @@ def test_movement_is_split_into_teleports_and_dashes():
     teleports = {("Chamber", "Rendezvous"), ("Omen", "Shrouded Step"), ("Yoru", "Gatecrash"), ("Veto", "Crosscut"),
                  ("Waylay", "Refract")}
     dashes = {("Jett", "Updraft"), ("Jett", "Tailwind"), ("Neon", "High Gear"), ("Raze", "Blast Pack"),
-              ("Reyna", "Dismiss"), ("Waylay", "Lightspeed")}
+              ("Reyna", "Dismiss"), ("Waylay", "Lightspeed"), ("Hush", "Flow")}
     for key in teleports:
         assert by[key]["type"] == "teleport" and by[key]["kinds"] == ["teleport"], key
     for key in dashes:
@@ -344,3 +344,31 @@ def test_extractor_hash_is_pinned():
         "the extractor-facing fields of app/critutil/abilities.json changed: bump app/critutil/constants.VERSION "
         "and, once this branch has shipped, GAPS_REVISION (stored rows are recomputed only by the gap run); "
         "then re-record this hash")
+
+
+def test_hush_has_four_entries_that_match_her_real_names_and_pieces():
+    """W9, D3: C Flow = dash, Q Flashbulb = blind, E Displacement = status, X Suspension = ult with status. The names are
+    the real `<code>_<name>` of the two exports (code Paprika): the Flow anchor, the thrown Flashbulb flash rows and
+    projectiles, the Displacement projectile and its area, the Suspension projectile and its zone."""
+    import re
+    by = {(e["agent"], e["ability"]): e for e in abilities.load() if e["agent"] == "Hush"}
+    assert sorted(by) == [("Hush", "Displacement"), ("Hush", "Flashbulb"), ("Hush", "Flow"), ("Hush", "Suspension")]
+    got = {name: (abilities.lookup(name) or {}).get("ability") for name in (
+        "Paprika_4_PullBlast", "Paprika_hush_flashbulb_overhand", "Paprika_hush_flashbulb_underhand",
+        "Paprika_E_RedirectPull", "Paprika_X_FullBendPop")}
+    assert got == {"Paprika_4_PullBlast": "Flow", "Paprika_hush_flashbulb_overhand": "Flashbulb",
+                   "Paprika_hush_flashbulb_underhand": "Flashbulb", "Paprika_E_RedirectPull": "Displacement",
+                   "Paprika_X_FullBendPop": "Suspension"}
+    assert abilities.lookup("Paprika_E_RedirectPullArea") is None and abilities.lookup("Paprika_X_LevitateZone") is None
+    shape = {name: (e["slot"], e["type"], e["kinds"], e["rule"]) for (_, name), e in by.items()}
+    assert shape == {"Flow": ("C", "dash", ["dash"], "duration"), "Flashbulb": ("Q", "flash", ["blind"], "flash"),
+                     "Displacement": ("E", "status", ["status"], "status"),
+                     "Suspension": ("X", "ult", ["ult", "status"], "status")}
+    pieces = {name: e["pieces"] for (_, name), e in by.items()}
+    assert pieces["Flow"] == [] and all(re.search(p, "Paprika_Q_RedirectFlash_Underhand") for p in pieces["Flashbulb"])
+    assert any(re.search(p, "Paprika_Q_RedirectFlash") for p in pieces["Flashbulb"])
+    assert [bool(re.search(p, "Paprika_E_RedirectPullArea")) for p in pieces["Displacement"]] == [True]
+    assert [bool(re.search(p, "Paprika_X_LevitateZone")) for p in pieces["Suspension"]] == [True]
+    # no Fandom page exists for her: every duration is the owner's figure from the replays, none provisional
+    assert {name: (e["duration_s"], "provisional" in e) for (_, name), e in by.items()} == {
+        "Flow": (0.4, False), "Flashbulb": (1.5, False), "Displacement": (0.5, False), "Suspension": (4.0, False)}

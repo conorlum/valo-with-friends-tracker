@@ -1176,7 +1176,8 @@ from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
              "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
              "status", "from", "z", "end_z", "off", "full",
-             "id"}   # revision 21: an ability row's actor guid, which damage and heal causes name
+             "id",   # revision 21: an ability row's actor guid, which damage and heal causes name
+             "src"}  # CONDENSE 30: a levitated status's zone (that ability row's "id")
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -1848,3 +1849,328 @@ def test_an_anchor_closed_in_the_buy_phase_never_takes_the_carry_from_the_live_o
                                   *live])
     [wire] = firsts(extras, 2)
     assert wire["end"] == list(GAME_MAP.to_uv(1000, 1400)) and wire["t1"] is None
+
+
+# ---------------------------------------------------------------- Hush (W9, CONDENSE 30): rows cut from two real exports
+
+from app.replays.extras import read_raw  # noqa: E402
+
+HUSH_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "replays" / "utility"
+AGENTS_HUSH = {"Paprika": "Hush"}
+PULL_DASH = "/Game/Characters/Paprika/S0/Ability_4/ForceModule_Paprika_4_PullDash.ForceModule_Paprika_4_PullDash_C"
+
+
+def hush_rows(name: str) -> list[dict]:
+    return [json.loads(line) for line in (HUSH_FIXTURES / f"{name}.ndjson").read_text(encoding="utf-8").splitlines()]
+
+
+def hush_players(pawns: dict[int, int]) -> PlayerTable:
+    """`pawns`: pawn guid -> slot. Slots 0 and 1 play Hush; the rest are other agents."""
+    agents = ["Hush", "Hush", "Sova", "Jett", "Sage", "Omen", "Reyna", "Killjoy", "Breach", "Viper"]
+    return PlayerTable(subjects=[None] * 10, agents=agents, pawn_slot=dict(pawns),
+                       other_slot={200 + s: s for s in range(10)}, pawn_changes={}, gone_ms={})
+
+
+def run_hush(tmp_path, rows, pawns, teams=None, start=340_000, agents=AGENTS_HUSH):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    windows = [(start, start + 40_000, start + 50_000)]
+    return build_extras(path, hush_players(pawns), windows, GAME_MAP, agents, lambda t_ms: {}, teams=teams)
+
+
+def test_a_flow_is_one_cast_row_for_hush_beside_its_anchor_row(tmp_path):
+    # 2026-11-15, 31 Flows in two exports: the move starts with FXC_Paprika_4_FreezeProjectileHUD (float tag
+    # FXC.TimedStateDuration 0.35, triggered by the player) in the ms the anchor spawns. FXC_Paprika_4_Cast (0.7, the
+    # windup) is the same Flow 0.70 s earlier and is not a cast of its own.
+    extras = run_hush(tmp_path, hush_rows("hush_flow"), {708: 0}, start=340_000)
+    rnd = extras.rounds[1]
+    assert rnd["casts"] == [{"t": 17.477, "slot": 0, "code": "Paprika", "name": "4_PullBlast"}]
+    [anchor] = [a for a in rnd["abilities"] if a["name"] == "4_PullBlast"]
+    assert (anchor["id"], anchor["slot"], anchor["t0"], anchor["agent"]) == (9076, 0, 17.477, "Hush")
+    assert extras.report["movement_casts"] == 1 and "statuses" not in rnd
+
+
+def test_hush_effects_that_are_not_the_move_give_no_cast(tmp_path):
+    rows = [r for r in hush_rows("hush_flow") if r["type"] != "actor_spawned"]
+    for row in rows:                                   # the same rows on a player who is not Hush
+        row["actor_net_guid"] = 102 if row["actor_net_guid"] == 708 else row["actor_net_guid"]
+    extras = run_hush(tmp_path, rows, {102: 2})
+    assert "casts" not in extras.rounds.get(1, {})
+    # and without the move's own effect there is no cast: the windup alone (0.7) is not one
+    kept = [r for r in hush_rows("hush_flow") if "FreezeProjectileHUD" not in json.dumps(r)]
+    assert "casts" not in run_hush(tmp_path, kept, {708: 0}).rounds[1]
+
+
+def test_a_force_row_keeps_its_module_path_and_length_while_forces_still_see_the_bare_guid(tmp_path):
+    path = tmp_path / "events.ndjson"
+    rows = hush_rows("hush_flow")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    raw = read_raw(path, frozenset({708}))
+    # the StopAerialMovement row names the equippable (1936), which is no actor: neither list keeps it
+    assert raw.forces == [(357477, 708, 9076)]
+    assert raw.force_modules == [(357477, 708, 9076, PULL_DASH, 0.4)]
+    # schema 9 wrote the module as {"net_guid", "path"}; the shared reader still turns every other reference into a
+    # bare guid, and a module written as a bare guid (schema 8) has no path to keep
+    old = json.loads(json.dumps(rows))
+    for row in old:
+        if row.get("function_name") == "NetMulticastApplyForceModule":
+            row["payload"]["Module"] = row["payload"]["Module"]["net_guid"]
+            row["payload"].pop("Duration", None)
+    path.write_text("".join(json.dumps(r) + "\n" for r in old), encoding="utf-8")
+    raw = read_raw(path, frozenset({708}))
+    assert raw.forces == [(357477, 708, 9076)] and raw.force_modules == []
+    # a path with no length keeps None
+    odd = json.loads(json.dumps(rows))
+    for row in odd:
+        if row.get("function_name") == "NetMulticastApplyForceModule":
+            row["payload"].pop("Duration", None)
+    path.write_text("".join(json.dumps(r) + "\n" for r in odd), encoding="utf-8")
+    assert read_raw(path, frozenset({708})).force_modules == [(357477, 708, 9076, PULL_DASH, None)]
+
+
+def pulled_rows(extras):
+    return [(s["target"], s["t0"], s["t1"], s["status"], s["slot"], s["name"], s["from"], s.get("friendly", False))
+            for s in extras.rounds[1].get("statuses", [])]
+
+
+def test_a_displacement_pulls_each_victim_for_the_modules_own_length(tmp_path):
+    # ee6e0ba7 at 56.073 s: one area (owner pawn 706) pulls two players, Duration 0.5 on each force row
+    teams = {0: "A", 1: "B", 2: "B"}
+    extras = run_hush(tmp_path, hush_rows("hush_displacement"), {706: 0, 1204: 1, 1422: 2}, teams=teams, start=40_000)
+    assert pulled_rows(extras) == [(1, 16.073, 16.573, "pulled", 0, "E_RedirectPullArea", "force", False),
+                                   (2, 16.073, 16.573, "pulled", 0, "E_RedirectPullArea", "force", False)]
+    assert all("src" not in s for s in extras.rounds[1]["statuses"]), "only a levitated row names its zone"
+    [area] = extras.rounds[1]["abilities"]
+    assert (area["name"], area["slot"], area["agent"]) == ("E_RedirectPullArea", 0, "Hush")
+
+
+def test_a_displacement_that_pulls_a_teammate_flags_it_friendly_and_a_second_touch_extends_the_run(tmp_path):
+    rows = hush_rows("hush_displacement")
+    again = json.loads(json.dumps(next(r for r in rows if r.get("actor_net_guid") == 1204 and r["type"] == "rpc_received")))
+    again["time_ms"] += 250
+    teams = {0: "A", 1: "A", 2: "B"}
+    extras = run_hush(tmp_path, [*rows, again], {706: 0, 1204: 1, 1422: 2}, teams=teams, start=40_000)
+    assert pulled_rows(extras) == [(1, 16.073, 16.823, "pulled", 0, "E_RedirectPullArea", "force", True),
+                                   (2, 16.073, 16.573, "pulled", 0, "E_RedirectPullArea", "force", False)]
+
+
+def test_a_pull_row_without_a_length_lasts_the_measured_half_second(tmp_path):
+    rows = hush_rows("hush_displacement")
+    for row in rows:
+        if row["type"] == "rpc_received":
+            row["payload"].pop("Duration")
+    extras = run_hush(tmp_path, rows, {706: 0, 1204: 1, 1422: 2}, teams={0: "A", 1: "B", 2: "B"}, start=40_000)
+    assert [(r[0], r[2]) for r in pulled_rows(extras)] == [(1, 16.573), (2, 16.573)]
+
+
+def concuss_rows(name="hush_displacement_concuss"):
+    return hush_rows(name)
+
+
+def statuses_of(extras, status):
+    return [(s["target"], s["t0"], s["t1"], s["slot"], s["code"], s["name"], s["from"], s.get("friendly", False))
+            for s in extras.rounds[1].get("statuses", []) if s["status"] == status]
+
+
+CONCUSS_PAWNS = {706: 0, 1204: 1, 1422: 2}
+CONCUSS_TEAMS = {0: "A", 1: "B", 2: "B"}
+
+
+def run_concuss(tmp_path, rows, teams=CONCUSS_TEAMS, pawns=CONCUSS_PAWNS, agents=AGENTS_HUSH):
+    return run_hush(tmp_path, rows, pawns, teams=teams, start=40_000, agents=agents)
+
+
+def test_a_pull_that_hits_something_concusses_for_as_long_as_the_effect_plays(tmp_path):
+    # ee6e0ba7 at 56.073 s (A1, 2026-11-15): both pulled players are stopped by a wall; each gets FXC_Global_ConcussedWavy
+    # naming Hush's pawn, in the ms of its first blocked move (+297 and +414 ms after the force row), and it plays 1.8 s
+    # and 1.6 s (its stop). The pulled rows are the same as without the concuss.
+    extras = run_concuss(tmp_path, concuss_rows())
+    assert statuses_of(extras, "concussed") == [
+        (1, 16.370, 18.169, 0, "Paprika", "E_RedirectPullArea", "force", False),
+        (2, 16.487, 18.089, 0, "Paprika", "E_RedirectPullArea", "force", False)]
+    assert [r for r in pulled_rows(extras) if r[3] == "pulled"] == pulled_rows(
+        run_concuss(tmp_path, hush_rows("hush_displacement")))
+    [area] = extras.rounds[1]["abilities"]
+    assert area["name"] == "E_RedirectPullArea"
+    assert all("src" not in s for s in extras.rounds[1]["statuses"])
+
+
+def test_a_pull_that_hits_nothing_is_only_a_pull(tmp_path):
+    # the same two pulls, the second player's concuss and blocked moves removed: pulled twice, concussed once
+    rows = [r for r in concuss_rows() if not (r["actor_net_guid"] == 1422 and r["type"] == "rpc_received"
+                                               and r["function_name"] != "NetMulticastApplyForceModule")]
+    extras = run_concuss(tmp_path, rows)
+    assert [s[0] for s in statuses_of(extras, "concussed")] == [1]
+    assert [s[0] for s in statuses_of(extras, "pulled")] == [1, 2]
+    bare = run_concuss(tmp_path, [r for r in concuss_rows() if "Concussed" not in json.dumps(r)
+                                  and r.get("function_name") != "MulticastStopContinuousEffect"
+                                  and r.get("function_name") != "MulticastPlayOneShotEffect"])
+    assert statuses_of(bare, "concussed") == []
+    assert pulled_rows(bare) == pulled_rows(run_concuss(tmp_path, hush_rows("hush_displacement")))
+
+
+def test_a_concuss_with_no_pull_before_it_or_long_after_it_is_not_displacements(tmp_path):
+    rows = concuss_rows()
+    no_pull = [r for r in rows if r.get("function_name") != "NetMulticastApplyForceModule"]
+    assert statuses_of(run_concuss(tmp_path, no_pull), "concussed") == []
+    late = json.loads(json.dumps(rows))
+    for row in late:                  # every concuss play and stop 600 ms later: past the pull's 0.5 s
+        if row["type"] == "rpc_received" and row["function_name"] != "NetMulticastApplyForceModule":
+            row["time_ms"] += 600
+    assert statuses_of(run_concuss(tmp_path, late), "concussed") == []
+    assert [s[0] for s in statuses_of(run_concuss(tmp_path, late), "pulled")] == [1, 2]
+
+
+def test_a_concuss_from_another_player_is_not_hushs(tmp_path):
+    rows = json.loads(json.dumps(concuss_rows()))
+    for row in rows:
+        for value in (row.get("payload") or {}).get("FunctionObjectValues") or []:
+            if value["Value"]["net_guid"] == 706:
+                value["Value"]["net_guid"] = 303                # slot 3, not the area's owner
+    extras = run_concuss(tmp_path, rows, pawns={**CONCUSS_PAWNS, 303: 3})
+    assert statuses_of(extras, "concussed") == []
+
+
+def test_a_teammate_a_displacement_pulled_and_concussed_is_flagged_friendly(tmp_path):
+    extras = run_concuss(tmp_path, concuss_rows(), teams={0: "A", 1: "A", 2: "B"})
+    assert [(s[0], s[7]) for s in statuses_of(extras, "concussed")] == [(1, True), (2, False)]
+    assert [(s[0], s[7]) for s in statuses_of(extras, "pulled")] == [(1, True), (2, False)]
+
+
+def test_the_concuss_container_is_found_by_its_path_never_by_a_bare_guid(tmp_path):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in concuss_rows()), encoding="utf-8")
+    raw = read_raw(path, frozenset({1204, 1422}))
+    assert raw.concuss_containers == {4771}
+    plain = json.loads(json.dumps(concuss_rows()))
+    for row in plain:                 # schema 8 wrote the container as the bare guid: no path, nothing to find
+        container = (row.get("payload") or {}).get("EffectContainer")
+        if isinstance(container, dict):
+            row["payload"]["EffectContainer"] = container["net_guid"]
+    path.write_text("".join(json.dumps(r) + "\n" for r in plain), encoding="utf-8")
+    assert read_raw(path, frozenset({1204, 1422})).concuss_containers == set()
+    assert statuses_of(run_concuss(tmp_path, plain), "concussed") == []
+
+
+def test_another_agents_concuss_keeps_its_own_shape_beside_hushs(tmp_path):
+    # Tejo's Shock-Wave shape (a caster-named concuss in the 3 s after its grenade spawned, here in its own container)
+    # still comes out as a caster status for the same victims, with Hush's rows added, none of it changed.
+    rows = concuss_rows()
+    for i, victim in enumerate((1204, 1422)):
+        rows += [spawned(57_000, 900 + i, "Default__GameObject_Cashew_Q_ShellShockGrenade_C", 0, 0),
+                 instigated(57_000, 900 + i, 303),
+                 effect(57_200 + i, victim, 60 + i, [303], container=4999), stop(58_000 + i, victim, 60 + i)]
+    extras = run_concuss(tmp_path, rows, pawns={**CONCUSS_PAWNS, 303: 3}, agents={**AGENTS_HUSH, "Cashew": "Tejo"})
+    mine =[r for r in statuses_of(extras, "concussed") if r[4] == "Paprika"]
+    other = [r for r in statuses_of(extras, "concussed") if r[4] == "Cashew"]
+    assert len(mine) == 2
+    assert [(r[0], r[1], r[2], r[3], r[6]) for r in other] == [(1, 17.2, 18.0, 3, "caster"), (2, 17.201, 18.001, 3, "caster")]
+
+
+def levitated(extras):
+    return sorted((s["target"], s["slot"], s["src"], s["t0"], s["t1"], s.get("friendly", False))
+                  for s in extras.rounds[1].get("statuses", []) if s["status"] == "levitated")
+
+
+def test_a_suspension_levitates_for_the_modules_length_and_each_row_names_its_own_zone(tmp_path):
+    # 1d76e723 at 748 s: two Hushes (slots 0 and 1, opposite sides) ult 3.7 s apart; each zone levitates one player.
+    # The force's Source is the zone itself (spawned in the same ms); 4 s is the payload's Duration (wiki: 4 s).
+    pawns = {708: 0, 1422: 1, 1218: 2}
+    teams = {0: "A", 2: "A", 1: "B"}
+    extras = run_hush(tmp_path, hush_rows("hush_suspension"), pawns, teams=teams, start=740_000)
+    zones = {a["id"]: a for a in extras.rounds[1]["abilities"] if a["name"] == "X_LevitateZone"}
+    assert {g: z["slot"] for g, z in zones.items()} == {17052: 1, 17170: 0}
+    assert levitated(extras) == [(1, 0, 17170, 11.894, 15.894, False), (2, 1, 17052, 8.212, 12.212, False)]
+    for target, by, src, *_ in levitated(extras):
+        assert zones[src]["slot"] == by
+
+
+def test_two_suspensions_in_one_round_where_only_one_levitates_anyone(tmp_path):
+    pawns = {708: 0, 1422: 1, 1218: 2}
+    teams = {0: "A", 2: "A", 1: "B"}
+    for zone, victim in ((17052, 2), (17170, 1)):
+        rows = [r for r in hush_rows("hush_suspension")
+                if not (r.get("function_name") == "NetMulticastApplyForceModule"
+                        and r["payload"]["Source"]["net_guid"] != zone)]
+        extras = run_hush(tmp_path, rows, pawns, teams=teams, start=740_000)
+        assert [(t, src) for t, _, src, *_ in levitated(extras)] == [(victim, zone)]
+        assert {a["id"] for a in extras.rounds[1]["abilities"] if a["name"] == "X_LevitateZone"} == {17052, 17170}
+
+
+def test_a_suspension_on_a_teammate_is_flagged_friendly(tmp_path):
+    pawns = {708: 0, 1422: 1, 1218: 2}
+    extras = run_hush(tmp_path, hush_rows("hush_suspension"), pawns, teams={0: "A", 2: "A", 1: "A"}, start=740_000)
+    assert [(t, f) for t, _, _, _, _, f in levitated(extras)] == [(1, True), (2, True)]
+
+
+def test_a_levitate_row_without_a_length_lasts_the_wikis_four_seconds(tmp_path):
+    rows = hush_rows("hush_suspension")
+    for row in rows:
+        if row.get("function_name") == "NetMulticastApplyForceModule":
+            row["payload"].pop("Duration")
+    extras = run_hush(tmp_path, rows, {708: 0, 1422: 1, 1218: 2}, teams={0: "A", 2: "A", 1: "B"}, start=740_000)
+    assert [round(t1 - t0, 3) for _, _, _, t0, t1, _ in levitated(extras)] == [4.0, 4.0]
+
+
+def test_the_plumbing_of_suspension_and_the_telekinesis_pickup_are_no_ability_rows(tmp_path):
+    rows = [{"type": "actor_spawned", "time_ms": 341_000, "actor_net_guid": 2056, "location": {"x": 0, "y": 0, "z": 0},
+             "archetype_path": "Default__GameObject_Paprika_X_ForceProxyManager_C"},
+            {"type": "actor_spawned", "time_ms": 341_000, "actor_net_guid": 2057, "location": {"x": 0, "y": 0, "z": 0},
+             "archetype_path": "Default__Actor_Paprika_X_ForceModuleProxy_C"},
+            {"type": "actor_spawned", "time_ms": 341_000, "actor_net_guid": 2058, "location": {"x": 0, "y": 0, "z": 0},
+             "archetype_path": "Default__Ability_Paprika_Passive_Telekinesis_C"}]
+    extras = run_hush(tmp_path, rows, {708: 0})
+    assert extras.rounds.get(1, {}).get("abilities", []) == []
+    assert extras.report["paprika_plumbing_skipped"] == 1
+
+
+# --- Flashbulb: the condenser's flash rows (hits already extracted; the pop is the new part)
+
+
+def hush_flash(tmp_path, name, hit_slots=(6, 7)):
+    """One Flashbulb cut from a real export, cast by slot 2 at 5 s of round 1, its hits on `hit_slots` in order."""
+    from replay_synthetic import MATCH_UUID
+
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    rows = hush_rows(name)
+    shift = start + 5000 - next(r for r in rows if r["type"] == "valorant_flash_cast")["time_ms"]
+    victims = iter(hit_slots)
+    for row in rows:
+        row["time_ms"] += shift
+        if row["type"] == "valorant_flash_cast":
+            row["caster_character_net_guid"], row["caster_player_state_net_guid"] = match.pawn(1, 2), None
+        elif row["type"] == "valorant_flash_player_hit":
+            row["target_character_net_guid"], row["target_player_state_net_guid"] = match.pawn(1, next(victims)), None
+    match.extra_events += rows
+    out = cd.condense_export_dir(match.write(tmp_path / "export", sorted(match.events(), key=lambda r: r["time_ms"])),
+                                 source_sha256=match.source_sha256,
+                                 vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    [flash] = [u for u in out.rounds[1]["util"] if u["k"] == "flash"]
+    pop = next(r for r in rows if r["type"] == "valorant_flash_exploded")
+    game_map = cd.load_maps()[out.map_name]
+    where = pop["location"]
+    expected = {"t": round((pop["time_ms"] - start) / 1000.0, 3),
+                "u": game_map.to_uv(where["x"] * 100.0, where["y"] * 100.0)[0],
+                "v": game_map.to_uv(where["x"] * 100.0, where["y"] * 100.0)[1],
+                "z": int(round(where["z"] * 100.0 / 10.0)), "src": "flash_windup"}
+    return flash, expected, start
+
+
+@pytest.mark.parametrize("name, hits", [("hush_flashbulb_overhand", 1), ("hush_flashbulb_underhand", 2)])
+def test_a_flashbulb_pops_at_its_windup_row_and_is_proven_complete(tmp_path, name, hits):
+    # 22 of 22 Flashbulbs in two exports: `flash_windup_ended` rows, in metres, equal to the flight's last replicated
+    # sample, 418-502 ms after it (the bulb comes to rest and pops after its windup: older than POP_FRESH_MS, but the
+    # row's own place); any hit is in the pop's ms (+8 ms once)
+    flash, expected, _ = hush_flash(tmp_path, name)
+    assert flash["pop"] == expected
+    assert flash["activation"] == {"state": "completed", "evidence": "flash_windup_ended", "targets_complete": True,
+                                   "diagnostics": []}
+    assert len(flash["hits"]) == hits == len(flash["targets"])
+    assert flash["ability"].startswith("hush_flashbulb_")
+
+
+def test_a_flashbulb_that_hit_nobody_is_a_proven_empty(tmp_path):
+    flash, expected, _ = hush_flash(tmp_path, "hush_flashbulb_empty")
+    assert flash["activation"]["state"] == "completed" and flash["activation"]["targets_complete"] is True
+    assert flash["hits"] == [] and flash["targets"] == [] and flash["pop"] == expected

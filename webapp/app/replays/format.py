@@ -37,7 +37,7 @@ A tripwire's first anchor with an `end` also has `"long": true` when its anchors
 
 Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b): `util` has
 `{"k": "cast", "t", "by", "code", "name"}` per use of a movement ability (app/replays/extras.py
-MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser
+MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes, Hush's Flow), and the blob has `"movement_casts": 1` when the condenser
 looked for them, so a round with that key and no cast had none. A blob without the key was condensed before.
 
 Held guns (revision 30): `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}`
@@ -64,7 +64,7 @@ match. The viewer's timer runs over it, not over the row's own close, so a smoke
 
 Flash rows (2026-10-05) also carry, all optional to a reader: `"id"` (the ability actor: one cast's
 identity within the round), `"z"` (the cast's height), `"pop"` (the explosion: `{"t"}` plus either its place
-`{"u", "v", ["z"], "src": "flash_source" | "replicated_movement", ["age"]}` or `{"place": "stale" |
+`{"u", "v", ["z"], "src": "flash_source" | "flash_windup" | "replicated_movement", ["age"]}` or `{"place": "stale" |
 "unverified", ["age"]}` when the export's position is the cast's or can't be tied to a unit: never a guessed
 place), `"path"` (the flight, `[[t, u, v, z], ...]`, each sample read in its own source's unit) and
 `"activation"`:
@@ -126,7 +126,10 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 30
+CONDENSE_REVISION = 31
+# 31: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
+#     force rows (`from` "force"; a levitated row names its zone in `src`), a Flashbulb's pop is its `flash_windup_ended`
+#     row (`pop.src` "flash_windup", completed), Suspension's bookkeeping object has no row (2026-11-15);
 # 30: held gun generations, pickup provenance, survivor seeds and shot gid/gen.
 # 29: schema 9 placement contexts and DamageOrigin read again; trips over 16 m marked long; carried trips
                          #     paired; ground fragment deltas and LifeChangeEvents read again;

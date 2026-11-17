@@ -4,8 +4,9 @@ and 1b): the tracks of a stored round, the time after a movement ability that is
 
 - **Tracks.** `tracks` gives each stored segment as arrays. With `skip` ({slot: [(t0, t1), ...]}) the samples
   inside those times are left out and the segment is cut there, so nothing downstream joins the two sides.
-- **Blackouts.** `blackouts` is that `skip`: ABILITY_BLACKOUT_S from each cast listed in AIRBORNE_ABILITIES, and
-  from each burst of speed no player makes on foot (BURST_MPS along the ground, BURST_UP_MPS upward, over
+- **Blackouts.** `blackouts` is that `skip`: ABILITY_BLACKOUT_S from each cast listed in AIRBORNE_ABILITIES,
+  each AIRBORNE_STATUSES effect on its target (friendly too) from its start through ABILITY_BLACKOUT_S after
+  its end, and each burst of speed no player makes on foot (BURST_MPS along the ground, BURST_UP_MPS upward, over
   BURST_S). Rounds condensed before revision 14 record no cast for Jett's updraft and dash or Waylay's dash
   (measured 2026-10-05), so there those are told by the burst; a teleport reads as one too, which is harmless.
   From revision 14 (`"movement_casts"`) the dashes are recorded casts and only the upward burst is read, for
@@ -100,14 +101,19 @@ def _merge(spans: list) -> list:
 def blackouts(blob: dict, geo: Geometry) -> dict[int, list[tuple[float, float]]]:
     """{slot: [(t0, t1), ...]}: the times each player's samples are left out, merged and in order.
 
-    Casts (`"cast"` rows) and listed abilities start one always. A round condensed with movement casts
-    (`"movement_casts"`, condenser revision 14) is not read for dashes by speed: its dashes are its casts. A
+    Casts (`"cast"` rows) and listed abilities start one always. Listed statuses (`"status"` rows) exclude
+    their target, friendly too, from serialized `t` through `t1` plus ABILITY_BLACKOUT_S for landing.
+    A round condensed with movement casts (`"movement_casts"`, condenser revision 14) is not read for dashes
+    by speed: its dashes are its casts. A
     round condensed before has none, so there every burst counts."""
     out: dict[int, list] = defaultdict(list)
     for e in blob.get("util") or []:
         if e.get("k") in ("ability", "cast") and e.get("by") is not None \
                 and f"{e.get('code')}_{e.get('name')}" in hc.AIRBORNE_ABILITIES:
             out[int(e["by"])].append((float(e["t"]), float(e["t"]) + hc.ABILITY_BLACKOUT_S))
+        elif e.get("k") == "status" and e.get("target") is not None \
+                and e.get("status") in hc.AIRBORNE_STATUSES:
+            out[int(e["target"])].append((float(e["t"]), float(e["t1"]) + hc.ABILITY_BLACKOUT_S))
     hz = blob["hz"]
     k = max(1, int(round(hc.BURST_S * hz)))
     casts = bool(blob.get("movement_casts"))

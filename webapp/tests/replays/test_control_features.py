@@ -33,7 +33,7 @@ def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]
 
 
-def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch):
+def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch, tmp_path):
     from app.control import engine
     from app.replays import control_format
 
@@ -41,6 +41,12 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
     # The preceding fixture deliberately pinned revision 9, rather than the then-current 21.
     # A map whose masks are re-tagged changes here too (Ascent, with the box-conflict outlines): re-pin that map.
     monkeypatch.setattr(control_format, "CONTROL_REVISION", 9)
+    # W11's radius also enters the fingerprint: disable it when checking the older figures.
+    old_utility = json.loads(control_format.UTILITY_FILE.read_text(encoding="utf-8"))
+    old_utility.pop("hush_suspension_radius_m")
+    old_path = tmp_path / "utility.json"
+    old_path.write_text(json.dumps(old_utility), encoding="utf-8")
+    monkeypatch.setattr(control_format, "UTILITY_FILE", old_path)
     assert {name: row["fingerprint"] for name, row in map_feature_legacy.snapshot()["maps"].items()} == {
         "Abyss": "710180a264b68904", "Ascent": "d276ece98a6a2f89", "Bind": "8746931ce5e1a5a7",
         "Breeze": "df86bef00d2d287d", "Corrode": "93b4718103deb326", "Fracture": "68c12c250f89f0bf",

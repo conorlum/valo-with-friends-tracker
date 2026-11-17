@@ -77,9 +77,10 @@ def test_render_enables_only_the_web_services_util_build_switch():
     addition = '      - key: UTIL_BUILD_REMOTE\n        value: "true"\n'
     assert text.count(addition) == 1
     # W11 changes only this setting. The rest of the Blueprint is pinned (re-pinned when the deploy drain turned
-    # autoDeploy off on both services); any other Blueprint edit must update this digest on purpose.
+    # autoDeploy off on both services, and again for AGENT_CHECK_AUTO); any other Blueprint edit must update this
+    # digest on purpose.
     assert hashlib.sha256(text.replace(addition, "").encode()).hexdigest() == (
-        "8151270e8809d4db476a198b8f33f675e22eedef2770811678149f7e477125cd")
+        "977f91c880e1a9780da2485bf377451bfb19b80d6e706b81bf6fabf0bed68806")
 
 
 @pytest.mark.parametrize("remote", [True, False])

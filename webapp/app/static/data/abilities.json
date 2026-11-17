@@ -59,6 +59,12 @@
     "Reckoning": "/static/img/abilities/harbor/ultimate.png",
     "Storm Surge": "/static/img/abilities/harbor/grenade.png"
   },
+  "Hush": {
+    "Displacement": "/static/img/abilities/hush/ability2.png",
+    "Flashbulb": "/static/img/abilities/hush/ability1.png",
+    "Flow": "/static/img/abilities/hush/grenade.png",
+    "Suspension": "/static/img/abilities/hush/ultimate.png"
+  },
   "Iso": {
     "Contingency": "/static/img/abilities/iso/grenade.png",
     "Double Tap": "/static/img/abilities/iso/ability2.png",

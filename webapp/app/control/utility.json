@@ -7,6 +7,7 @@
   "skye_flash_range_m": 20.0,
   "leer_cast_range_m": 10.0,
   "knife_rim_m": 2.0,
+  "hush_suspension_radius_m": 7.0,
   "hearing_m": {
     "omen_ult": 50.0,
     "yoru_beacon": 50.0,
@@ -26,6 +27,7 @@
     "Grenadier_Q_SemtexBasic": {"radius_m": 4.0, "seconds": 4.0}
   },
   "sources": {
+    "hush_suspension_radius_m": "Sourced: Suspension zone radius 7 m, https://wiki.playvalorant.com/en-us/Suspension (fetched 2026-11-15).",
     "reveal_range_m": "Provisional. How far Fade's Haunt and Sova's Recon Bolt see from where they are; no figure found. In-game test: throw each at a known spot and walk a teammate out along a straight line until they stop being revealed.",
     "skye_flash_range_m": "Provisional. How far from its detonation Skye's Guiding Light flashes someone looking at it; no figure found. In-game test: pop it in a long corridor with a teammate at increasing distances, facing it.",
     "leer_cast_range_m": "Sourced: Leer's deployment distance is 10 m (can shorten against terrain), https://valorant.fandom.com/wiki/Leer (game-file sourced) and https://www.thespike.gg/valorant/agents/reyna. Its terrain/height behaviour is untested.",

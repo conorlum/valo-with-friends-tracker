@@ -92,7 +92,9 @@ ABILITY_BLACKOUT_S = 3.0   # a player's samples are dropped this long after a mo
 # `<code>_<name>` of the casts (`"cast"` rows, condenser revision 14) and abilities (`"ability"` rows: Raze's
 # blast pack lifts teammates who cast nothing) that start a blackout. The updraft is listed for when a cast is
 # recorded for it; none is yet.
-AIRBORNE_ABILITIES = ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion")
+AIRBORNE_ABILITIES = ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion",
+                      "Paprika_4_PullBlast")
+AIRBORNE_STATUSES = ("pulled", "levitated")  # target samples are dropped through the status and landing
 BURST_S = 0.1              # a movement ability with no recorded cast is told by its speed over this long:
 BURST_MPS = 12.0           # faster than this along the ground (a dash), or
 BURST_UP_MPS = 8.0         # rising faster than this (an updraft, a blast pack)

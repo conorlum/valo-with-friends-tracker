@@ -798,6 +798,93 @@
    "replay_s": 13.6
   },
   {
+   "match": "^(Paprika_4_PullBlast)$",
+   "agent": "Hush",
+   "ability": "Flow",
+   "slot": "C",
+   "type": "dash",
+   "kinds": [
+    "dash"
+   ],
+   "rule": "duration",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Flow",
+    "field": "none"
+   },
+   "pieces": [],
+   "replay_s": 2.5,
+   "owner_s": 0.4,
+   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the move's ForceModule_Paprika_4_PullDash Duration is 0.4 s on 30 of 30 moves (a 0.7 s windup comes before it); the anchor object lives 2.5 s"
+  },
+  {
+   "match": "^(Paprika_hush_flashbulb_(overhand|underhand))$",
+   "agent": "Hush",
+   "ability": "Flashbulb",
+   "slot": "Q",
+   "type": "flash",
+   "kinds": [
+    "blind"
+   ],
+   "rule": "flash",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Flashbulb",
+    "field": "none"
+   },
+   "pieces": [
+    "^Paprika_Q_RedirectFlash(_Underhand)?$"
+   ],
+   "replay_s": 2.1,
+   "owner_s": 1.5,
+   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the longest blind of 15 hits is 1.5 s (4 hits at exactly 1.5 s)"
+  },
+  {
+   "match": "^(Paprika_E_RedirectPull)$",
+   "agent": "Hush",
+   "ability": "Displacement",
+   "slot": "E",
+   "type": "status",
+   "kinds": [
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 1,
+   "wiki": {
+    "page": "Displacement",
+    "field": "none"
+   },
+   "pieces": [
+    "^Paprika_E_RedirectPullArea$"
+   ],
+   "replay_s": 1.3,
+   "owner_s": 0.5,
+   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the pull (ForceModule_Paprika_E_RedirectPull_ContinuousPull) has Duration 0.5 s on 3 of 3 rows; the area lives 1.3 s. The collision concuss starts 297-414 ms into a blocked pull, only when the pulled player hits a wall or another player, and is recorded until its effect stops (1.8 s and 1.6 s in the two replays)"
+  },
+  {
+   "match": "^(Paprika_X_FullBendPop)$",
+   "agent": "Hush",
+   "ability": "Suspension",
+   "slot": "X",
+   "type": "ult",
+   "kinds": [
+    "ult",
+    "status"
+   ],
+   "rule": "status",
+   "grace_s": 2,
+   "wiki": {
+    "page": "Suspension",
+    "field": "none"
+   },
+   "pieces": [
+    "^Paprika_X_LevitateZone$"
+   ],
+   "replay_s": 7.0,
+   "owner_s": 4.0,
+   "owner_note": "no wiki page (the Fandom wiki has none for Hush); measured on the two real exports of 2026-11-15: the levitation (ForceModule_Paprika_Levitate_DOME) has Duration 4 s on 3 of 3 rows, as wiki.playvalorant.com/en-us/Suspension says (fetched 2026-11-15); the zone lives 7.0 s"
+  },
+  {
    "match": "^(Sequoia_4_MovingCover)$",
    "agent": "Iso",
    "ability": "Contingency",

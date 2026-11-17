@@ -1,23 +1,29 @@
+import json
 from datetime import datetime
+from pathlib import Path
 
 from app.services import agent_roles as ar
 
 ALL_AGENTS = {
-    "Duelist": ["Iso", "Jett", "Neon", "Phoenix", "Raze", "Reyna", "Waylay", "Yoru"],
+    "Duelist": ["Hush", "Iso", "Jett", "Neon", "Phoenix", "Raze", "Reyna", "Waylay", "Yoru"],
     "Initiator": ["Breach", "Fade", "Gekko", "KAY/O", "Skye", "Sova", "Tejo"],
     "Controller": ["Astra", "Brimstone", "Clove", "Harbor", "Miks", "Omen", "Viper"],
     "Sentinel": ["Chamber", "Cypher", "Deadlock", "Killjoy", "Sage", "Veto", "Vyse"],
 }
 
 
-def test_table_has_four_roles_and_29_agents():
+def test_table_has_four_roles_and_all_playable_agents():
     assert ar.ROLES == ("duelist", "initiator", "controller", "sentinel")
     seen = []
     for role, agents in ALL_AGENTS.items():
         for a in agents:
             assert ar.role_of(a) == role.lower()
             seen.append(a)
-    assert len(seen) == 29 == len(set(seen))
+    assert len(seen) == len(set(seen))
+    agents = json.loads(
+        (Path(__file__).resolve().parents[1] / "app" / "static" / "data" / "agents.json").read_text(encoding="utf-8")
+    )
+    assert set(seen) == set(agents.values())
     assert ar._AGENT_ROLE.keys() == set(seen)
 
 

@@ -8,6 +8,8 @@ An `Info` says, at its own exact time `t`, something `side` learns about enemy `
 - `restrict`: the enemy is somewhere in the footprint: everything outside it is dropped. Disconnected parts that
   survive stay apart; nothing is re-centred. Not locating evidence.
 - `exclude`: the enemy is not in the footprint: it is dropped. Not locating evidence.
+- `one_of`: at least one live enemy of `side` is in the footprint. Uses ONE_OF_SLOT, not an enemy slot;
+  derived per-enemy restrict/hypothesis operations are selected from their regions at this exact time.
 - `hypothesis`: the enemy may also be at (x, y) (a beacon heard, a recall): a second origin, spreading like the
   rest, joined to the region without replacing it. Its source node is protected from the size-only sliver
   cleanup until the team's vision clears it, and never protected again after. Not locating evidence.
@@ -55,9 +57,11 @@ def _numeric(value):
 # Only the numbers (utility.json's `sources` and notes are not consumed): the semantic view W22 fingerprints.
 FIGURES = _numeric(_FIGURES_FILE)
 
-KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden", "retract")
+ONE_OF_SLOT = -1
+SIDE_KINDS = ("one_of",)
+KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden", "retract", "one_of")
 ORDER = {"resume": 0, "pause": 1, "locate": 2, "restrict": 2, "exclude": 2, "hypothesis": 2, "broaden": 2,
-         "retract": 2}
+         "retract": 2, "one_of": 2}
 LOCATING = frozenset({"locate"})
 
 
@@ -65,7 +69,7 @@ LOCATING = frozenset({"locate"})
 class Info:
     t: float
     side: str                     # the team that learns it
-    slot: int                     # the enemy it is about
+    slot: int                     # the enemy it is about; ONE_OF_SLOT for SIDE_KINDS
     kind: str                     # one of KINDS
     reason: str                   # what the reasons list shows: "haunt", "neural_theft", "knife_zero", ...
     x: float | None = None        # px
@@ -80,6 +84,8 @@ class Info:
     def __post_init__(self):
         if self.kind not in KINDS:
             raise ValueError(f"unknown knowledge operation {self.kind!r}")
+        if (self.kind in SIDE_KINDS) != (self.slot == ONE_OF_SLOT):
+            raise ValueError("side-wide knowledge requires ONE_OF_SLOT; per-slot knowledge forbids it")
 
 
 # ---------------------------------------------------------------- Veto's Evolution (W10)
@@ -517,10 +523,41 @@ def read_waylay_recalls(rnd) -> list[Info]:
     return out
 
 
+def read_hush_suspensions(rnd) -> list[Info]:
+    """Suspension's hit feedback says at least one enemy is in this zone (R11/D9).
+
+    The sound is treated as heard by all of Hush's team, with no range check; unverified (D9).
+    Status targets identify enemy hits only, never which enemy the team's knowledge should name.
+    """
+    from app.control import engine as ce
+
+    rows = rnd.blob.get("util") or []
+    hits = {}
+    for e in rows:
+        if (e.get("k") != "status" or e.get("status") != "levitated" or e.get("friendly")
+                or e.get("code") != "Paprika" or e.get("name") != "X_LevitateZone" or not e.get("src")):
+            continue
+        side, target = rnd.team.get(e.get("by")), rnd.team.get(e.get("target"))
+        if side is not None and target is not None and side != target:
+            key = (e["src"], e.get("by"))
+            hits[key] = min(hits.get(key, math.inf), float(e["t"]))
+    out = []
+    for e in rows:
+        if (e.get("k") != "ability" or e.get("code") != "Paprika" or e.get("name") != "X_LevitateZone"
+                or (e.get("id"), e.get("by")) not in hits):
+            continue
+        t = hits[e["id"], e["by"]]
+        out.append(Info(t, rnd.team[e["by"]], ONE_OF_SLOT, "one_of", "hush_suspension",
+                        x=e["u"] * ce.PX / 10000, y=e["v"] * ce.PX / 10000,
+                        radius_m=FIGURES["hush_suspension_radius_m"], source=f"Paprika_X_LevitateZone@{t}",
+                        detail={"needs": "status"}))
+    return out
+
+
 # The readers that run, by name and in order (names, so the list is one of the constants CONTROL_REVISION pins:
 # tests/replays/test_control_format.py).
 READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers", "read_omen_ults",
-           "read_waylay_recalls")
+           "read_waylay_recalls", "read_hush_suspensions")
 
 
 def read_all(rnd) -> list[Info]:

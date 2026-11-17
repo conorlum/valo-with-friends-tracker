@@ -66,6 +66,9 @@ services:
       # Never set it on valomaths (demo mode turns it off anyway).
       - key: MAP_POOL_AUTO
         value: "true"
+      # Daily agent support check. Never set on valomaths, where demo mode disables it.
+      - key: AGENT_CHECK_AUTO
+        value: "true"
       # Map control limits (spec 2026-10-14, D5): rounds in flight, and from how many replays. Only while the
       # worker's REPLAY_CONTROL_RUNNER is workflow; a local runner keeps today's 8 rounds from any replays.
       - key: CONTROL_MAX_RUNS

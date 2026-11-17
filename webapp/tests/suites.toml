@@ -166,6 +166,7 @@ tests = [
   "tests/test_site_modes.py", "tests/test_wide_layout_*.py", "tests/test_page_sections.py",
   "tests/test_auth_navigation.py", "tests/test_demo_http_contract.py", "tests/test_app_lifespan.py",
   "tests/test_maintenance_mode.py", "tests/test_request_trace.py", "tests/test_vendor_map_assets.py",
+  "tests/test_agent_tables.py", "tests/test_newagent.py",
   "tests/test_migration_lifecycle.py",
 ]
 guards = [
@@ -174,12 +175,13 @@ guards = [
   "app/models/__init__.py", "app/routers/__init__.py", "app/services/__init__.py", "app/services/auth.py",
   "app/services/request_trace.py", "app/routers/auth.py", "alembic/**", "../render.yaml",
   "scripts/load_seed_data.py", "scripts/dump_seed_data.py", "seed_data/**",
+  "scripts/newagent.py", "scripts/vendor_ability_icons.py",
 ]
 
 [site-health]
 about = "The stored site health inventory: failures and slow spots recorded in memory, flushed to site_events, scrubbed and pruned."
-tests = ["tests/test_site_health*.py", "tests/test_kill_impact_sweep.py", "tests/test_kill_impact_sweep_db.py"]
-guards = ["app/services/site_health*.py", "app/services/kill_impact_sweep.py", "app/models/site_events.py", "app/data/site_health_resolved.json", "scripts/site_health.py"]
+tests = ["tests/test_agent_check.py", "tests/test_site_health*.py", "tests/test_kill_impact_sweep.py", "tests/test_kill_impact_sweep_db.py"]
+guards = ["app/services/agent_check.py", "app/services/site_health*.py", "app/services/kill_impact_sweep.py", "app/models/site_events.py", "app/data/site_health_resolved.json", "scripts/site_health.py"]
 
 [deploy-drain]
 about = "Deploy ownership, expiry, paused-work clocks and the site/worker readiness contract."
@@ -233,6 +235,7 @@ tests = [
   "tests/replays/test_guns.py",
   "tests/replays/test_replay_activations.py", "tests/replays/test_replay_buffs.py", "tests/replays/test_replay_condense.py",
   "tests/replays/test_replay_contract.py", "tests/replays/test_replay_deadlock.py",
+  "tests/replays/test_waiting_agent.py",
   "tests/replays/test_replay_eligibility.py", "tests/replays/test_replay_extras.py", "tests/replays/test_replay_schema9_reads.py",
   "tests/replays/test_replay_fixture.py",
   "tests/replays/test_replay_format.py", "tests/replays/test_replay_gate.py", "tests/replays/test_replay_header.py",

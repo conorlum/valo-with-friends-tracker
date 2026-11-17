@@ -144,6 +144,16 @@
     [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500, pop: 1.0 }],
     // Convergent Paths: 36 by 13.5 m, from 3 m ahead of Waylay (its object spawns 3.5 m ahead), 1 s windup.
     [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "box", len: 3600, width: 1350, sweep: 1.0 }],
+    // Hush. Flow's anchor is the object the dash lands on. Displacement's area is the pull where the dice go off
+    // (windup 0.8 s, then the object stays a moment); wiki.playvalorant.com/en-us/Displacement (fetched 2026-11-15)
+    // gives no radius, so r 600 is provisional: in the two Hush replays players were pulled from 4.0 to 5.3 m of
+    // the object (no cleaner figure; the object carries no radius field). Suspension's zone is 7 m radius, 4 s of
+    // levitation (wiki.playvalorant.com/en-us/Suspension, fetched 2026-11-15). The force-module proxies and the
+    // proxy manager are Suspension's per-player bookkeeping (160 proxies in two replays): ignored, hidden.
+    [/^Paprika_4_PullBlast$/, { ability: "Flow", shape: "badge", label: "Flow (anchor)" }],
+    [/^Paprika_E_RedirectPullArea$/, { ability: "Displacement", shape: "area", r: 600, pop: 1.0 }],
+    [/^Paprika_X_LevitateZone$/, { ability: "Suspension", shape: "area", r: 700 }],
+    [/^Paprika_X_Force(ProxyManager|ModuleProxy)$/, { ability: "Suspension", shape: "hidden" }],
     // Iso
     [/^Sequoia_E_Shield$/, { ability: "Double Tap", shape: "hidden" }],
     [/^Sequoia_E_Orb$/, { ability: "Double Tap", shape: "badge", part: true, label: "Double Tap orb" }],
@@ -360,6 +370,10 @@
     [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
     [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
     [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
+    // Hush: Flashbulb (overhand and underhand throws, styled like Grenadier's FLASH/drive), Displacement's dice, Suspension's missile.
+    [/^Paprika_Q_RedirectFlash(_Underhand)?$/, { ability: "Flashbulb" }],
+    [/^Paprika_E_RedirectPull$/, { ability: "Displacement" }],
+    [/^Paprika_X_FullBendPop$/, { ability: "Suspension" }],
     [/^Cable_4_NetToss$/, { ability: "GravNet" }],
     [/^Cable_E_CableJam$/, { ability: "Barrier Mesh" }]
   ];
@@ -451,7 +465,8 @@
   // A W-e utility cast's ability id ("omen_paranoia", "phoenix_curveball_left") -> {agent, ability}.
   var UTIL_ABILITIES = {
     omen_paranoia: ["Omen", "Paranoia"], skye_guiding_light: ["Skye", "Guiding Light"],
-    phoenix_curveball_left: ["Phoenix", "Curveball"], phoenix_curveball_right: ["Phoenix", "Curveball"]
+    phoenix_curveball_left: ["Phoenix", "Curveball"], phoenix_curveball_right: ["Phoenix", "Curveball"],
+    hush_flashbulb_overhand: ["Hush", "Flashbulb"], hush_flashbulb_underhand: ["Hush", "Flashbulb"]
   };
 
   function utilAbility(id) {
@@ -1172,11 +1187,14 @@
   }
 
   // Each agent's ult cost, from wiki.playvalorant.com/en-us/Abilities (2026-10-18). Agreed with the replays: a full ult
-  // is cast at this many points.
+  // is cast at this many points. Hush's 8 was read from the two Hush replays (2026-11-15: the caster's
+  // NumUltimatePoints went 8 -> 0 at each of the 7 Suspension casts) and agrees with
+  // wiki.playvalorant.com/en-us/Suspension (fetched 2026-11-15).
   var ULT_COST = {
     Astra: 7, Breach: 8, Brimstone: 8, Chamber: 8, Clove: 8, Cypher: 7, Deadlock: 7, Fade: 8, Gekko: 8, Harbor: 7,
     Iso: 7, Jett: 8, "KAY/O": 8, Killjoy: 9, Miks: 8, Neon: 8, Omen: 7, Phoenix: 7, Raze: 8, Reyna: 7, Sage: 7,
-    Skye: 8, Sova: 8, Tejo: 9, Veto: 7, Viper: 9, Vyse: 8, Waylay: 8, Yoru: 8
+    Skye: 8, Sova: 8, Tejo: 9, Veto: 7, Viper: 9, Vyse: 8, Waylay: 8, Yoru: 8,
+    Hush: 8
   };
 
   // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).

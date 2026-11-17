@@ -36,10 +36,11 @@ async def lifespan(_app: FastAPI):
     # The .vrf archive's sync (acks re-sent, tombstones pushed): on whenever uploads are
     # (app/services/replay_archive_sync.py); it does nothing while the worker's archive is off.
     from app.db import SessionLocal
+    # Daily agent support check (app/services/agent_check.py), off unless AGENT_CHECK_AUTO.
     # The Competitive map pool's daily patch-notes check (app/services/map_pool_refresh.py); off unless MAP_POOL_AUTO.
     # The per-match state table the match lists read (app/services/replay_match_states.py): on whenever not in demo mode.
     # Missing per-kill Impact splits (app/services/kill_impact_sweep.py): on whenever not in demo mode.
-    from app.services import (kill_impact_sweep, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states,
+    from app.services import (kill_impact_sweep, agent_check, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states,
                               util_build_remote)
     # numpy for the map-mask decode every replay freshness check needs (app/services/mask_accel.py): app/replays
     # stays standard library only, so the web app hands it the fast path.
@@ -54,7 +55,7 @@ async def lifespan(_app: FastAPI):
     stops = []
     health_stop = None
     try:
-        for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, replay_match_states,
+        for service in (replay_control_remote, replay_archive_sync, map_pool_refresh, agent_check, replay_match_states,
                         util_build_remote, kill_impact_sweep):
             stops.append(service.start(SessionLocal))
         # The flush thread writes what the site recorded and applies app/data/site_health_resolved.json (once

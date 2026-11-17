@@ -62,8 +62,9 @@ def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
     # R7/R9: crouch spans use revision 24; legacy blobs are witnessed in test_replay_crouch.
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
-    assert fmt.CONDENSE_REVISION == 30 and fmt.FORMAT_VERSION == 1
-    assert ".c30.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
+    assert fmt.CONDENSE_REVISION == 31 and fmt.FORMAT_VERSION == 1
+    assert ".c31.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def test_control_reader_ignores_hold_rows():
