@@ -254,6 +254,125 @@ def cf_stripe() -> int:
     return run_node("function run(p) { return C.STRIPE_PX; }", {})
 
 
+def test_borders_off_preserves_every_legacy_paint_byte():
+    got = run_node("""
+      function run() {
+        const size = 512, colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const walk = Int32Array.from(C.STATE_NAMES.map((_, i) => i));
+        const codes = Uint8Array.from(walk), a = Uint8Array.from(walk, i => i % 2);
+        const b = Uint8Array.from(walk, i => i % 3 ? 1 : 0);
+        const expected = new Uint8Array(size * size * 4), actual = expected.slice();
+        const put = (x, y, rgb, alpha) => expected.set([...rgb, alpha], (y * size + x) * 4);
+        let states = true, unknown = true;
+        for (const borders of [undefined, false]) {
+          expected.fill(0);
+          for (let k = 0; k < walk.length; k++) {
+            const name = C.STATE_NAMES[k];
+            if (name === 'none') continue;
+            const contested = name.startsWith('contested');
+            const alpha = name.endsWith('active') ? 140 : name.endsWith('passive') ? 38 : 77;
+            for (let y = 0; y < 4; y++) for (let x = k * 4; x < k * 4 + 4; x++)
+              put(x, y, contested ? (Math.floor((x + y) / 4) % 2 ? colors.b : colors.a)
+                : colors[name[0]], alpha);
+          }
+          C.paintStates(actual, size, walk, codes, colors, borders);
+          states = states && Buffer.from(actual).equals(Buffer.from(expected));
+          for (const show of ['A', 'B', 'both']) {
+            expected.fill(0);
+            for (let k = 0; k < walk.length; k++)
+              for (let y = 0; y < 4; y++) for (let x = k * 4; x < k * 4 + 4; x++) {
+                if (a[k] && show !== 'B' && (x + y) % 4 === 0) put(x, y, colors.b, 140);
+                else if (b[k] && show !== 'A' && ((x - y) % 4 + 4) % 4 === 0) put(x, y, colors.a, 140);
+              }
+            C.paintUnknown(actual, size, walk, a, b, colors, show, borders);
+            unknown = unknown && Buffer.from(actual).equals(Buffer.from(expected));
+          }
+        }
+        return {states, unknown};
+      }""", {})
+    assert got == {"states": True, "unknown": True}
+
+
+@pytest.mark.parametrize("other", ["b_active", "contested", "none", "a_safe"])
+def test_control_borders_only_shared_sides_between_different_owners(other):
+    got = run_node("""
+      function run(p) {
+        const size = 512, rgba = new Uint8Array(size * size * 4);
+        C.paintStates(rgba, size, Int32Array.from([0, 1]),
+          Uint8Array.from(['a_active', p.other].map(n => C.STATE_NAMES.indexOf(n))),
+          {a: [200, 10, 10], b: [10, 10, 200]}, true);
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        return {a: px(3, 1), b: px(4, 1), outer: px(0, 1), top: px(1, 0), inside: px(2, 1)};
+      }""", {"other": other})
+    assert got["a"] == [200, 10, 10, 140 if other == "a_safe" else 230]
+    assert got["b"] == ([10, 10, 200, 230] if other == "b_active" else
+                        [0, 0, 0, 0] if other == "none" else
+                        [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
+    assert got["outer"] == got["top"] == got["inside"] == [200, 10, 10, 140]
+
+
+@pytest.mark.parametrize("show", ["A", "B", "both"])
+def test_unknown_borders_dash_at_region_edges_in_the_hatch_colour(show):
+    got = run_node("""
+      function run(p) {
+        const size = 1024, rgba = new Uint8Array(size * size * 4);
+        // Two unknown cells vertically: the right edge must continue through their join.
+        const walk = Int32Array.from([0, 1, 128, 129, 256]);
+        const mask = Uint8Array.from([1, 0, 1, 0, 0]), blank = new Uint8Array(5);
+        C.paintUnknown(rgba, size, walk, p.show === 'B' ? blank : mask,
+          p.show === 'B' ? mask : blank, {a: [200, 10, 10], b: [10, 10, 200]}, p.show, true);
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        return {edge: Array.from({length: 16}, (_, y) => px(7, y)),
+          bottom: Array.from({length: 8}, (_, x) => px(x, 15)), join: px(2, 7), outside: px(8, 1)};
+      }""", {"show": show})
+    colour = [200, 10, 10] if show == "B" else [10, 10, 200]
+    for name in ("edge", "bottom"):
+        assert got[name] == [colour + [140] if i % 4 < 2 or (show == "B" and i % 4 == 3) else [0, 0, 0, 0]
+                             for i in range(len(got[name]))]
+    assert got["join"] == got["outside"] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("show", ["A", "B"])
+def test_unknown_border_off_pixels_preserve_underlying_hatch(show):
+    got = run_node("""
+      function run(p) {
+        // Six pixels per cell puts a hatch on the left edge at an off pixel of the dash.
+        const size = 768, rgba = new Uint8Array(size * size * 4);
+        const walk = Int32Array.from([0, 1]), mask = Uint8Array.from([0, 1]), blank = new Uint8Array(2);
+        const a = p.show === 'A' ? mask : blank, b = p.show === 'B' ? mask : blank;
+        const colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        C.paintUnknown(rgba, size, walk, a, b, colors, p.show);
+        const hatch = px(6, 2);
+        C.paintUnknown(rgba, size, walk, a, b, colors, p.show, true);
+        return {hatch, offWithHatch: px(6, 2), offWithoutHatch: px(6, 3), on: px(6, 0)};
+      }""", {"show": show})
+    colour = [10, 10, 200] if show == "A" else [200, 10, 10]
+    assert got["hatch"] == got["offWithHatch"] == got["on"] == colour + [140]
+    assert got["offWithoutHatch"] == [0, 0, 0, 0]
+
+
+def test_unknown_border_off_pixels_preserve_the_other_teams_dash():
+    got = run_node("""
+      function run() {
+        const size = 768, rgba = new Uint8Array(size * size * 4);
+        // In cell 1, A's left edge crosses B's bottom edge at (6, 5): A on, B off.
+        const walk = Int32Array.from([0, 1, 129]);
+        const a = Uint8Array.from([0, 1, 1]), b = Uint8Array.from([1, 1, 0]);
+        const colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'both');
+        const noHatch = px(6, 5);
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'A', true);
+        const aOnly = px(6, 5);
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'both', true);
+        return {noHatch, aOnly, both: px(6, 5), bOn: px(8, 5)};
+      }""", {})
+    assert got["noHatch"] == [0, 0, 0, 0]
+    assert got["aOnly"] == got["both"] == [10, 10, 200, 140]
+    assert got["bOn"] == [200, 10, 10, 140]
+
+
 def test_the_highlight_fills_control_and_outlines_coverage():
     body = """
       function run(p) {

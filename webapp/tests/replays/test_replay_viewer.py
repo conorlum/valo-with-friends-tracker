@@ -168,6 +168,111 @@ def run_node(script: str, payload) -> dict:
     return json.loads(completed.stdout)
 
 
+PALETTE_DOM = """
+  const R = require(process.argv[1]);
+  global.Image = function () {};
+  global.requestAnimationFrame = () => {};
+  const element = () => ({value: '', hidden: true, handlers: {},
+    addEventListener(name, fn) {this.handlers[name] = fn;}, appendChild() {}});
+  global.document = {createElement: element};
+  global.getComputedStyle = () => ({getPropertyValue: () => ''});
+  for (const key of ['loadBulletMask', 'bindHeatmap', 'refreshAreas', 'bindGaps'])
+    R.ReplayViewer.prototype[key] = () => {};
+  function viewer() {
+    const nodes = {};
+    for (const name of ['play', 'speed', 'scrub', 'prev', 'next', 'control-palette', 'control-palette-wrap'])
+      nodes['[data-replay-' + name + ']'] = element();
+    nodes['[data-replay-canvas]'] = Object.assign(element(), {getContext: () => ({})});
+    const vars = {}, root = {style: {setProperty(k, v) {vars[k] = v;}},
+      classList: {contains: () => false}, querySelector: s => nodes[s] || null,
+      querySelectorAll: () => [], addEventListener() {}};
+    const v = new R.ReplayViewer(root, {rounds: [], control: {}, loadControl: () => {}});
+    let draws = 0; v.draw = () => {draws++;};
+    return {v, nodes, vars, draws: () => draws};
+  }
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_control_palette_picker_persists_invalidates_and_updates_swatches():
+    got = run_node(PALETTE_DOM + """
+      const store = {'replay.controlPalette': 'unknown'};
+      global.localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => {store[k] = v;}};
+      const one = viewer(), select = one.nodes['[data-replay-control-palette]'];
+      const initial = {palette: select.value, colors: one.v.controlColors(), vars: {...one.vars}};
+      one.v.controlPaint = 'cached';
+      select.value = 'blue-orange'; select.handlers.change();
+      const changed = {palette: one.v.controlPalette, paint: one.v.controlPaint,
+        colors: one.v.controlColors(), vars: {...one.vars}, draws: one.draws()};
+      const two = viewer();
+      const restored = {palette: two.nodes['[data-replay-control-palette]'].value, colors: two.v.controlColors()};
+      one.v.layers.control = true; one.v.refreshControl();
+      const shown = !one.nodes['[data-replay-control-palette-wrap]'].hidden;
+      one.v.layers.control = false; one.v.refreshControl();
+      process.stdout.write(JSON.stringify({initial, changed, restored, store, shown,
+        hidden: one.nodes['[data-replay-control-palette-wrap]'].hidden}));
+    """, None)
+    assert got["initial"] == {"palette": "green-red", "colors": {"a": [92, 207, 143], "b": [217, 83, 79]},
+                               "vars": {"--replay-ctl-1": "#5ccf8f", "--replay-ctl-2": "#d9534f"}}
+    assert got["changed"] == {"palette": "blue-orange", "paint": None,
+                               "colors": {"a": [57, 135, 229], "b": [217, 89, 38]}, "draws": 1,
+                               "vars": {"--replay-ctl-1": "#3987e5", "--replay-ctl-2": "#d95926"}}
+    assert got["restored"] == {"palette": "blue-orange", "colors": got["changed"]["colors"]}
+    assert got["store"]["replay.controlPalette"] == "blue-orange"
+    assert got["shown"] and got["hidden"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_control_palette_storage_errors_fall_back_without_interrupting_viewer():
+    got = run_node(PALETTE_DOM + """
+      global.localStorage = {getItem() {throw Error('blocked');}, setItem() {throw Error('blocked');}};
+      const one = viewer(), select = one.nodes['[data-replay-control-palette]'];
+      const initial = select.value;
+      select.value = 'blue-orange'; select.handlers.change();
+      const two = viewer();
+      process.stdout.write(JSON.stringify({initial, restored: two.v.controlColors(), draws: one.draws()}));
+    """, None)
+    assert got == {"initial": "green-red", "restored": {"a": [92, 207, 143], "b": [217, 83, 79]}, "draws": 1}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("palette,first,second", [
+    ("green-red", [92, 207, 143], [217, 83, 79]),
+    ("blue-orange", [57, 135, 229], [217, 89, 38]),
+    ("purple-yellow", [155, 107, 255], [242, 194, 48]),
+    ("teal-coral", [31, 184, 201], [255, 122, 89]),
+])
+def test_control_palette_maps_linked_teams_independently_of_side(palette, first, second):
+    got = run_node(PALETTE_DOM + """
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const palette = JSON.parse(input);
+        global.localStorage = {getItem: k => k === 'replay.controlPalette' ? palette : null};
+        const {v} = viewer();
+        const unlinked = v.controlColors();
+        v.linked = {players: {0: {side: 'A', team: 'team-2'}, 5: {side: 'B', team: 'team-1'}}};
+        process.stdout.write(JSON.stringify({unlinked, linked: v.controlColors()}));
+      });
+    """, palette)
+    assert got == {"unlinked": {"a": first, "b": second}, "linked": {"a": second, "b": first}}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_draw_control_enables_borders_on_both_layers():
+    got = run_node(PALETTE_DOM + """
+      const {v} = viewer(), C = require(require('path').join(require('path').dirname(process.argv[1]), 'replay_control.js'));
+      const calls = [];
+      C.paintStates = (...args) => calls.push(['states', args[5]]);
+      C.paintUnknown = (...args) => calls.push(['unknown', args[7]]);
+      const parsed = {times: [0], walk: [0], unknown_a: true, unknown_b: true};
+      v.controlCache = {ready: () => ({parsed, cursor: {states: () => [1], unknown: () => [1]}})};
+      v.layers.control = true;
+      v.controlCanvas = () => ({ctx: {createImageData: () => ({data: []}), putImageData() {}}});
+      v.drawControl({save() {}, restore() {}, drawImage() {}}, 512, []);
+      process.stdout.write(JSON.stringify(calls));
+    """, None)
+    assert got == [["states", True], ["unknown", True]]
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_arena_decoding_room_frame_and_asset_urls():
     room = {"centre": [-5000, 0], "size_m": [18, 28],

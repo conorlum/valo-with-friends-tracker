@@ -337,7 +337,7 @@
 
   // Paints tick states into an RGBA image of size x size (a multiple of GRID) over the whole
   // minimap: colours = {a: [r, g, b], b: [r, g, b]} (side group A's and B's team colours).
-  function paintStates(rgba, size, walk, codes, colors) {
+  function paintStates(rgba, size, walk, codes, colors, borders) {
     var px = size / GRID;
     rgba.fill(0);
     for (var k = 0; k < walk.length; k++) {
@@ -353,7 +353,40 @@
         }
       }
     }
+    if (borders) {
+      var owners = Uint8Array.from(codes, function (code) {
+        var state = STATE_PAINT[code];
+        return !state ? 0 : state.contested ? 3 : state.team === "a" ? 1 : 2;
+      });
+      paintEdges(rgba, size, walk, owners, {1: colors.a, 2: colors.b}, false);
+    }
     return rgba;
+  }
+
+  // Edges belong to the painted cell. Only compare walkable neighbours, never the map's walls.
+  // Owners are 0 (none), 1/2 (teams), 3 (contested); contested cells keep their stripes.
+  function paintEdges(rgba, size, walk, owners, colors, dashed) {
+    var index = cellIndex(walk), px = size / GRID;
+    for (var k = 0; k < walk.length; k++) {
+      var rgb = colors[owners[k]];
+      if (!rgb) continue;
+      var cell = walk[k], gx = cell % GRID, gy = Math.floor(cell / GRID), cx = gx * px, cy = gy * px;
+      var neighbours = [gy > 0 ? cell - GRID : -1, gy < GRID - 1 ? cell + GRID : -1,
+        gx > 0 ? cell - 1 : -1, gx < GRID - 1 ? cell + 1 : -1];
+      for (var edge = 0; edge < 4; edge++) {
+        var neighbour = neighbours[edge] < 0 ? -1 : index[neighbours[edge]];
+        if (neighbour < 0 || owners[neighbour] === owners[k]) continue;
+        for (var p = 0; p < px; p++) {
+          var x = edge < 2 ? cx + p : cx + (edge === 3 ? px - 1 : 0);
+          var y = edge < 2 ? cy + (edge === 1 ? px - 1 : 0) : cy + p;
+          // Dash gaps leave the hatch and any other team's border untouched.
+          if (dashed && (edge < 2 ? x : y) % 4 >= 2) continue;
+          var o = (y * size + x) * 4;
+          rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2];
+          rgba[o + 3] = Math.round((dashed ? HATCH_ALPHA : 0.9) * 255);
+        }
+      }
+    }
   }
 
   // Each side group's unknown as a hatch in the enemy's colour (docs/map-control-unknown-plan.md): A's
@@ -361,7 +394,7 @@
   // unknown is cross-hatched. `show` is "A", "B" or "both"; a or b may be null (no stream).
   var HATCH_PX = 4, HATCH_ALPHA = 0.55;
 
-  function paintUnknown(rgba, size, walk, a, b, colors, show) {
+  function paintUnknown(rgba, size, walk, a, b, colors, show, borders) {
     var px = size / GRID, alpha = Math.round(HATCH_ALPHA * 255);
     rgba.fill(0);
     for (var k = 0; k < walk.length; k++) {
@@ -378,6 +411,10 @@
           rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2]; rgba[o + 3] = alpha;
         }
       }
+    }
+    if (borders) {
+      if (a && show !== "B") paintEdges(rgba, size, walk, a, {1: colors.b}, true);
+      if (b && show !== "A") paintEdges(rgba, size, walk, b, {1: colors.a}, true);
     }
     return rgba;
   }

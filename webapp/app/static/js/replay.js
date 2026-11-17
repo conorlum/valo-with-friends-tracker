@@ -1735,6 +1735,15 @@
                      "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
+  var CONTROL_PALETTES = {
+    "green-red": ["#5ccf8f", "#d9534f"],
+    "blue-orange": ["#3987e5", "#d95926"],
+    "purple-yellow": ["#9b6bff", "#f2c230"],
+    "teal-coral": ["#1fb8c9", "#ff7a59"]
+  };
+  function controlPaletteName(name) {
+    return Object.prototype.hasOwnProperty.call(CONTROL_PALETTES, name) ? name : "green-red";
+  }
   var CONTROL_STATUS = {
     not_ready: "Map control isn't ready for this round yet.",
     failed: "Map control couldn't be computed for this round.",
@@ -2218,6 +2227,19 @@
     if (!this.options.loadAreas) this.layers.areas = false;
     this.refreshAreas();
     this.bindGaps();
+    this.ui.controlPalette = q("[data-replay-control-palette]");
+    this.ui.controlPaletteWrap = q("[data-replay-control-palette-wrap]");
+    var palette = null;
+    try { palette = global.localStorage.getItem("replay.controlPalette"); } catch (err) { /* use the default */ }
+    this.setControlPalette(palette);
+    if (this.ui.controlPaletteWrap) this.ui.controlPaletteWrap.hidden = !this.layers.control;
+    if (this.ui.controlPalette) {
+      this.ui.controlPalette.addEventListener("change", function () {
+        self.setControlPalette(self.ui.controlPalette.value);
+        try { global.localStorage.setItem("replay.controlPalette", self.controlPalette); } catch (err) { /* ignore */ }
+        self.draw();
+      });
+    }
     this.controlView = "true";
     this.ui.controlView = q("[data-replay-control-view]");
     this.ui.controlViewWrap = q("[data-replay-control-view-wrap]");
@@ -3746,6 +3768,7 @@
   // Loads the current round's control when the layer or a highlight needs it, keeps only this
   // round and its neighbours, and prefetches the next round while the layer is on.
   ReplayViewer.prototype.refreshControl = function () {
+    if (this.ui.controlPaletteWrap) this.ui.controlPaletteWrap.hidden = !this.layers.control;
     if (!this.control || !this.current) return;
     var self = this, n = this.number, i = this.rounds.indexOf(n);
     var prev = this.rounds[i - 1], next = this.rounds[i + 1];
@@ -3802,13 +3825,24 @@
     }
   };
 
-  // Group (A/B) -> the RGB its players are drawn in: their team's colour, else the side's.
+  ReplayViewer.prototype.setControlPalette = function (name) {
+    this.controlPalette = controlPaletteName(name);
+    var colors = CONTROL_PALETTES[this.controlPalette];
+    if (this.ui.controlPalette) this.ui.controlPalette.value = this.controlPalette;
+    if (this.root.style) {
+      this.root.style.setProperty("--replay-ctl-1", colors[0]);
+      this.root.style.setProperty("--replay-ctl-2", colors[1]);
+    }
+    this.controlPaint = null;
+  };
+
+  // Group A/B -> its team's palette colour; unlinked groups use the pair in order.
   ReplayViewer.prototype.controlColors = function () {
-    var C = controlApi(), teams = C.groupTeams(this.linked && this.linked.players), self = this, out = {};
+    var C = controlApi(), teams = C.groupTeams(this.linked && this.linked.players), out = {};
+    var palette = CONTROL_PALETTES[controlPaletteName(this.controlPalette)];
     "AB".split("").forEach(function (group) {
-      var css = teams[group] ? self.css(teams[group] === "team-1" ? "--replay-team-1" : "--replay-team-2", "")
-        : self.color(group);
-      out[group.toLowerCase()] = C.hexRgb(css || self.color(group));
+      var first = teams[group] ? teams[group] === "team-1" : group === "A";
+      out[group.toLowerCase()] = C.hexRgb(palette[first ? 0 : 1]);
     });
     return out;
   };
@@ -3841,14 +3875,14 @@
         var img = this.controlCanvas("states");
         img.data = img.data || img.ctx.createImageData(CONTROL_PX, CONTROL_PX);
         var codes = knowing ? value.cursor.knew("knew_" + knowing.toLowerCase(), tick) : value.cursor.states(tick);
-        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors);
+        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors, true);
         img.ctx.putImageData(img.data, 0, 0);
       }
       if (showUnknown) {
         var uk = this.controlCanvas("unknown");
         uk.data = uk.data || uk.ctx.createImageData(CONTROL_PX, CONTROL_PX);
         C.paintUnknown(uk.data.data, CONTROL_PX, parsed.walk, value.cursor.unknown("unknown_a", tick),
-          value.cursor.unknown("unknown_b", tick), colors, this.unknownView);
+          value.cursor.unknown("unknown_b", tick), colors, this.unknownView, true);
         uk.ctx.putImageData(uk.data, 0, 0);
       }
       if (this.highlight !== null) {
