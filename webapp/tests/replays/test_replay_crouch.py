@@ -132,7 +132,7 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
-    assert fmt.CONDENSE_REVISION == 31
+    assert fmt.CONDENSE_REVISION == 32
 
 
 def test_a_legacy_blob_without_crouch_reads_unchanged():

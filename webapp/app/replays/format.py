@@ -32,6 +32,13 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 `thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
 `path` point, `[t, u, v, z]`.
 
+Arena tracks (revision 32): every round has `"arena"`, empty when nobody entered Iso's arena.
+It maps slot strings to segments with `t0`, delta-encoded `x`/`y` in world decimetres and
+shortest-arc delta-encoded `yaw` in world degrees (not minimap space), on the round's `hz` grid.
+Only samples strictly below `ARENA_Z_UNITS` belong; entry, exit, missing heights and the usual
+track gaps/teleports split segments. A kill whose victim's last position is there also has
+`ax`/`ay` in world decimetres. Minimap `tracks` and kill `u`/`v` remain available as before.
+
 A tripwire's first anchor with an `end` also has `"long": true` when its anchors are more than 16 m apart
 (app/replays/extras.py TRIP_MAX_M); the key is left out otherwise, and the viewer reads it, never measures.
 
@@ -126,7 +133,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 31
+CONDENSE_REVISION = 32
+# 32: arena tracks and kill ax/ay; hold rows name abilities, spike, defuser and flex items.
 # 31: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
 #     force rows (`from` "force"; a levitated row names its zone in `src`), a Flashbulb's pop is its `flash_windup_ended`
 #     row (`pop.src` "flash_windup", completed), Suspension's bookkeeping object has no row (2026-11-15);
@@ -164,6 +172,11 @@ CONDENSE_REVISION = 31
                          #     player_state_extract.py, the replay player-state plan's P03)
 
 UV_SCALE = 10000
+
+# Iso's Kill Contract arena is off the map: duellists' tracks sit at z ~ -499 m from 1.33 s
+# after the cast (17 of 17 catching casts in four live matches), so a track below ARENA_Z_M is in it.
+ARENA_Z_M = -250.0
+ARENA_Z_UNITS = ARENA_Z_M * 100  # world units (cm)
 
 # Size budgets: a reported check in the ingest preview, not a refusal. They keep scrubbing between
 # rounds quick (the viewer fetches one round at a time) and flag a condenser change that bloats
@@ -220,6 +233,23 @@ def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int], z: lis
             raise FormatError("a segment's z needs one value per sample")
         segment["z"] = delta_encode(z)
     return segment
+
+
+def encode_arena_segment(t0: float, x: list[int], y: list[int], yaw: list[int]) -> dict:
+    """World x/y in decimetres, yaw in world degrees, on the round's sample grid."""
+    if not (len(x) == len(y) == len(yaw)) or not x:
+        raise FormatError("an arena segment needs equal, non-empty x/y/yaw arrays")
+    return {"t0": round(t0, 3), "x": delta_encode(x), "y": delta_encode(y), "yaw": encode_yaw_deltas(yaw)}
+
+
+def decode_arena_segment(segment: dict, hz: int) -> list[tuple[float, int, int, int]]:
+    """An arena segment's samples as (t, world x dm, world y dm, world yaw)."""
+    x = delta_decode(segment["x"])
+    y = delta_decode(segment["y"])
+    yaw = decode_yaw_deltas(segment["yaw"])
+    if not (len(x) == len(y) == len(yaw)):
+        raise FormatError("arena segment arrays differ in length")
+    return [(round(segment["t0"] + i / hz, 6), x[i], y[i], yaw[i]) for i in range(len(x))]
 
 
 def decode_segment(segment: dict, hz: int) -> list[tuple[float, int, int, int]]:
