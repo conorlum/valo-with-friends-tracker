@@ -2104,6 +2104,12 @@ main:has(.replay.is-linked) { max-width: none; }
 .upload-list li:first-child { border-top: none; }
 .upload-list .upload-name { font-weight: 600; overflow-wrap: anywhere; }
 .upload-list .upload-row-status { color: var(--ink-secondary); font-variant-numeric: tabular-nums; flex: 1 1 16rem; }
+/* The upload page's drop box (replays/upload.html): files dragged in from Explorer. */
+.upload-drop { border: 2px dashed var(--gridline); border-radius: 8px; padding: 1rem; text-align: center; transition: border-color 0.15s, background 0.15s; }
+.upload-drop.is-over { border-color: var(--brand); background: var(--surface-raised); }
+.upload-drop-title { margin: 0 0 0.4rem; font-weight: 600; }
+.upload-drop-chosen { margin: 0 0 0.6rem; overflow-wrap: anywhere; }
+.upload-drop label { display: inline-block; }
 /* The how-to (replays/upload_guide.html): screenshots never wider than the card. */
 .upload-guide img { display: block; max-width: 100%; height: auto; margin: 0.75rem 0; border: 1px solid var(--gridline); border-radius: 6px; }
 .upload-guide h2 { margin-top: 1.75rem; }
