@@ -100,6 +100,14 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
                "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons,
                # the tracer's obstacles, inlined like the map (None for a map without the asset)
                "bullet": data_uri(APP / "static" / "data" / "control" / f"{map_name}.bullet.png")}
+    # Keep the original URLs: abilitySlots derives C/Q/E/X from their file names.
+    payload["abilityIcons"] = json.loads((APP / "static/data/abilities.json").read_text(encoding="utf-8"))
+    payload["gunIcons"] = json.loads((APP / "static/data/weapons.json").read_text(encoding="utf-8"))
+    payload["arenaRoom"] = json.loads((APP / "static/data/arena.json").read_text(encoding="utf-8"))
+    urls = set(payload["gunIcons"].values())
+    for kit in payload["abilityIcons"].values():
+        urls.update(kit.values())
+    payload["assets"] = {url: data_uri(APP / url.removeprefix("/")) for url in sorted(urls)}
     if linked:
         payload["site"] = site["context"]
         payload["control"] = site["control"] if control else {}
@@ -144,6 +152,10 @@ __SCRIPT__
     var options = {
       rounds: rounds,
       mapImage: data.map,
+      abilityIcons: data.abilityIcons,
+      gunIcons: data.gunIcons,
+      arenaRoom: data.arenaRoom,
+      assetUrl: function (url) { return data.assets[url] || url; },
       bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },
       loadRound: function (n) {

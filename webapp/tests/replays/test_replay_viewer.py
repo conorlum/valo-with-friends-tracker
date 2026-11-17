@@ -169,6 +169,132 @@ def run_node(script: str, payload) -> dict:
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_decoding_room_frame_and_asset_urls():
+    room = {"centre": [-5000, 0], "size_m": [18, 28],
+            "starts": {"iso": [-5000, 100], "target": [-5000, -110]}, "outline": None}
+    got = run_node(r"""
+      const R = require(process.argv[1]), fs = require('fs');
+      const v = Object.create(R.ReplayViewer.prototype);
+      v.options = {assetUrl: u => u === '/icon.png' ? 'data:image/png;base64,AA==' : u};
+      const box = {x: 10, y: 20, w: 180, h: 280};
+      const wide = {x: 10, y: 20, w: 280, h: 180};
+      const table = JSON.parse(fs.readFileSync(process.argv[1].replace(/js[\\/]replay.js$/, 'data/abilities.json')));
+      console.log(JSON.stringify({room: R.ARENA_ROOM, decoded: R.decodeArena({hz:2, arena:{'1':[
+        {t0:10,x:[-5000,2,-1],y:[100,-20,5],yaw:[350,20,-5]}]}}), old: R.decodeArena({}),
+        iso:R.arenaPoint(-5000,100,box,R.ARENA_ROOM), target:R.arenaPoint(-5000,-110,box,R.ARENA_ROOM),
+        wideIso:R.arenaPoint(-5000,100,wide,R.ARENA_ROOM),
+        wideTarget:R.arenaPoint(-5000,-110,wide,R.ARENA_ROOM),
+        outside:R.arenaPoint(-99999,99999,box,R.ARENA_ROOM),
+        asset:v.assetSrc('/icon.png'), fallback:v.assetSrc('/other.png'),
+        kit:R.abilitySlots(table,'Cypher').find(k=>k.key==='E')}));
+    """, {})
+    assert got["room"] == room
+    assert json.loads((WEBAPP / "app/static/data/arena.json").read_text()) == room
+    assert got["old"] is None
+    assert got["decoded"] == {"1": [[{"t": 10, "x": -5000, "y": 100, "yaw": 350},
+                                     {"t": 10.5, "x": -4998, "y": 80, "yaw": 10},
+                                     {"t": 11, "x": -4999, "y": 85, "yaw": 5}]]}
+    assert got["iso"]["y"] < got["target"]["y"]
+    assert got["wideIso"]["x"] < got["wideTarget"]["x"]
+    assert 10 <= got["outside"]["x"] <= 190 and 20 <= got["outside"]["y"] <= 300
+    assert got["asset"].startswith("data:image/png;") and got["fallback"] == "/other.png"
+    assert got["kit"]["name"] == "Spycam"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_inset_prefers_corners_then_empty_space_with_pixel_margin():
+    got = run_node(r"""
+      const R = require(process.argv[1]), n=256;
+      const cases = [
+        (x,y)=>x>=125 || y<125,
+        (x,y)=>x<131 || y<125,
+        (x,y)=>x>=125 || y>=125,
+        ()=>true];
+      const results=cases.map(blocked=>{
+        const alpha=Uint8Array.from({length:n*n},(_,i)=>blocked(i%n,Math.floor(i/n))?255:0);
+        const b=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28);
+        let clear=true;
+        if(!b.over_map) for(let y=0;y<n;y++) for(let x=0;x<n;x++)
+          if(alpha[y*n+x]>16 && x+1>b.x-2 && x<b.x+b.w+2 && y+1>b.y-2 && y<b.y+b.h+2) clear=false;
+        return {b,clear};
+      });
+      console.log(JSON.stringify(results));
+    """, {})
+    assert got[0]["b"]["x"] == 0 and got[0]["b"]["y"] > 125
+    assert got[1]["b"]["x"] > 131 and got[1]["b"]["y"] > 125
+    assert got[2]["b"]["x"] < 125 and got[2]["b"]["y"] < 125
+    assert all(r["clear"] for r in got)
+    assert not any(r["b"].get("over_map") for r in got[:3])
+    assert got[3]["b"]["over_map"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_inset_rotates_into_a_wide_gap_and_respects_zoom_and_alpha_threshold():
+    got = run_node(r"""
+      const R=require(process.argv[1]),n=256;
+      // Only a landscape box of usable size fits this central horizontal gap.
+      const alpha=Uint8Array.from({length:n*n},(_,i)=>{
+        const x=i%n,y=Math.floor(i/n);return x>=20&&x<236&&y>=85&&y<155?16:255;
+      });
+      const wide=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28);
+      const zoomAlpha=Uint8Array.from({length:n*n},(_,i)=>{
+        const x=i%n,y=Math.floor(i/n);return x<96&&y>=90?0:255;
+      });
+      const view={k:2,ox:128,oy:64,size:1024};
+      const b=R.placeInset(zoomAlpha,n,view,18/28);
+      let clear=true;
+      for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(zoomAlpha[y*n+x]>16 &&
+        x+1>(b.x/view.k+view.ox)/4-2 && x<(b.x/view.k+view.ox+b.w/view.k)/4+2 &&
+        y+1>(b.y/view.k+view.oy)/4-2 && y<(b.y/view.k+view.oy+b.h/view.k)/4+2)clear=false;
+      console.log(JSON.stringify({wide,b,clear,fallback:R.placeInset(null,n,view,18/28)}));
+    """, {})
+    assert got["wide"]["w"] > got["wide"]["h"] >= 256 * 0.22
+    assert not got["wide"]["over_map"]
+    assert got["b"]["x"] == 0 and got["b"]["y"] + got["b"]["h"] == pytest.approx(1024)
+    assert not got["b"]["over_map"] and got["clear"]
+    assert got["fallback"]["over_map"]
+
+
+def test_standalone_embeds_arena_and_original_icon_tables(condensed):
+    page = standalone.render(condensed.rounds)
+    payload = json.loads(page.split("window.REPLAY_DATA = ", 1)[1].split(";\n", 1)[0])
+    url = "/static/img/abilities/iso/ultimate.png"
+    assert payload["assets"][url].startswith("data:image/png;base64,")
+    assert payload["abilityIcons"]["Iso"]["Kill Contract"] == url
+    assert payload["gunIcons"] and payload["arenaRoom"]["size_m"] == [18, 28]
+    assert "assetUrl: function" in page and "arenaRoom: data.arenaRoom" in page
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_embedded_arena_assets_reach_canvas_kit_guns_and_util_list():
+    got = run_node(r"""
+      const R=require(process.argv[1]), fs=require('fs');
+      global.getComputedStyle=()=>({getPropertyValue:()=>''});
+      global.Image=class {constructor(){this.complete=true;this.naturalWidth=32;}};
+      const tables=JSON.parse(fs.readFileSync(process.argv[1].replace(/js[\\/]replay.js$/, 'data/abilities.json')));
+      const v=Object.create(R.ReplayViewer.prototype);
+      v.options={abilityIcons:tables,gunIcons:{Vandal:'/static/img/weapons/vandal.png'},
+        assetUrl:url=>'data:image/png;base64,'+url.split('/').pop()};
+      v.icons={};v.ui={board:{},util:{}};v.t=5;v.linked={players:{1:{team:'team-1'}}};
+      const blob={players:[{slot:1,agent:'Cypher',side:'A'}],alive:{1:[[0,null,'spawn']]},
+        t_end:90,kills:[],util:[]};
+      v.current={blob,extras:R.extrasFromUtil([{k:'shot',t:1,by:1,gun:'Vandal'}])};
+      v.current.state=R.indexRoundState(blob,[]);
+      v.utilItems=()=>[{t:1,slot:1,agent:'Cypher',ability:'Spycam',label:'Spycam'}];
+      v.renderBoard();v.renderUtilList();
+      const badge=v.abilityIcon('Iso','Kill Contract');
+      console.log(JSON.stringify({board:v.ui.board.innerHTML,util:v.ui.util.innerHTML,src:badge.src,
+        gun:R.gunHtml({gun:'Vandal',held:true},v.options.gunIcons,v.assetSrc.bind(v))}));
+    """, {})
+    assert 'src="data:image/png;base64,ability2.png"' in got["board"]
+    assert 'src="data:image/png;base64,ultimate.png"' in got["board"]
+    assert "data:image/png;base64,vandal.png" in got["board"]
+    assert 'src="data:image/png;base64,ability2.png"' in got["util"]
+    assert got["src"] == "data:image/png;base64,ultimate.png"
+    assert "data:image/png;base64,vandal.png" in got["gun"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_js_decoder_matches_the_python_decoder(condensed):
     blob = condensed.rounds[1]
     expected = {slot: [[list(s) for s in fmt.decode_segment(seg, blob["hz"])] for seg in segments]

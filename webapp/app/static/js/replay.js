@@ -23,6 +23,8 @@
   var STEP_S = 5;
   var UV = 10000;
   var HELD_SPIKE_LABEL = "Spike";
+  var ARENA_ROOM = { centre: [-5000, 0], size_m: [18, 28],
+    starts: { iso: [-5000, 100], target: [-5000, -110] }, outline: null };
 
   // ------------------------------------------------------------ decoding (pure; tested in node)
 
@@ -50,6 +52,93 @@
       tracks[slot] = blob.tracks[slot].map(function (segment) { return decodeSegment(segment, blob.hz); });
     });
     return tracks;
+  }
+
+  function decodeArena(blob) {
+    if (!Object.prototype.hasOwnProperty.call(blob, "arena")) return null;
+    var tracks = {};
+    Object.keys(blob.arena || {}).forEach(function (slot) {
+      tracks[slot] = blob.arena[slot].map(function (seg) {
+        var x = 0, y = 0, yaw = 0;
+        return seg.x.map(function (dx, i) {
+          x = i ? x + dx : dx; y = i ? y + seg.y[i] : seg.y[i];
+          yaw = i ? yaw + seg.yaw[i] : seg.yaw[i];
+          return { t: Math.round((seg.t0 + i / blob.hz) * 1e6) / 1e6,
+            x: x, y: y, yaw: ((yaw % 360) + 360) % 360 };
+        });
+      });
+    });
+    return tracks;
+  }
+
+  // One room frame in dm. Positive world y points toward the first end of the box's long side.
+  // Rotating a portrait box into a landscape box preserves that long axis (and rotates yaw with it).
+  function arenaPoint(x, y, box, room) {
+    room = room || ARENA_ROOM;
+    var u = Math.max(0, Math.min(1, 0.5 + (x - room.centre[0]) / (room.size_m[0] * 10)));
+    var v = Math.max(0, Math.min(1, 0.5 - (y - room.centre[1]) / (room.size_m[1] * 10)));
+    return box.w > box.h ? { x: box.x + v * box.w, y: box.y + (1 - u) * box.h }
+      : { x: box.x + u * box.w, y: box.y + v * box.h };
+  }
+
+  // Search the minimap once, in its alpha grid. An integral image makes each clearance check O(1).
+  // `view` is the map transform plus canvas `size`; returned coordinates are canvas pixels.
+  function placeInset(alpha, n, view, aspect, opts) {
+    opts = opts || {};
+    var size = view.size || n, k = view.k || 1, unit = size / n;
+    var side = n / k, x0 = (view.ox || 0) / unit, y0 = (view.oy || 0) / unit;
+    var margin = opts.margin === undefined ? 2 : opts.margin;
+    var min = side * (opts.minSize === undefined ? 0.22 : opts.minSize);
+    var stride = n + 1, sum = new Int32Array(stride * stride);
+    for (var y = 0; y < n; y++) {
+      var row = 0;
+      for (var x = 0; x < n; x++) {
+        row += !alpha || alpha[y * n + x] > 16 ? 1 : 0;
+        sum[(y + 1) * stride + x + 1] = sum[y * stride + x + 1] + row;
+      }
+    }
+    function clear(x, y, w, h) {
+      var a = Math.max(0, Math.min(n, Math.floor(x - margin)));
+      var b = Math.max(0, Math.min(n, Math.floor(y - margin)));
+      var c = Math.max(0, Math.min(n, Math.ceil(x + w + margin)));
+      var d = Math.max(0, Math.min(n, Math.ceil(y + h + margin)));
+      return sum[d * stride + c] - sum[b * stride + c] - sum[d * stride + a] + sum[b * stride + a] === 0;
+    }
+    function find(w, h, corner) {
+      if (corner) {
+        var x = corner === "left" ? x0 : x0 + side - w, y = y0 + side - h;
+        return clear(x, y, w, h) ? {x: x, y: y, w: w, h: h} : null;
+      }
+      for (var y = y0; y <= y0 + side - h + 1e-8; y += 1) {
+        for (var x = x0; x <= x0 + side - w + 1e-8; x += 1) {
+          if (clear(x, y, w, h)) return {x: x, y: y, w: w, h: h};
+        }
+      }
+      return null;
+    }
+    function largest(ratio, corner) {
+      // Binary search short-side lengths to one alpha cell; existence is monotone.
+      var lo = Math.ceil(min), hi = Math.floor(side * Math.min(ratio, 1 / ratio)), best = null;
+      while (lo <= hi) {
+        var short = (lo + hi) >> 1, w = ratio < 1 ? short : short * ratio;
+        var h = ratio < 1 ? short / ratio : short;
+        var b = find(w, h, corner);
+        if (b) { best = b; lo = short + 1; } else hi = short - 1;
+      }
+      return best;
+    }
+    var box = largest(aspect, "left") || largest(aspect, "right");
+    if (!box) {
+      var a = largest(aspect), b = largest(1 / aspect);
+      box = a && (!b || a.w * a.h >= b.w * b.h) ? a : b;
+    }
+    var over = !box;
+    if (!box) {
+      var w = aspect < 1 ? min : min * aspect, h = aspect < 1 ? min / aspect : min;
+      box = {x: x0, y: y0 + side - h, w: w, h: h};
+    }
+    return {x: (box.x * unit - (view.ox || 0)) * k, y: (box.y * unit - (view.oy || 0)) * k,
+      w: box.w * unit * k, h: box.h * unit * k, over_map: over};
   }
 
   function lerpYaw(a, b, f) {
@@ -1408,10 +1497,11 @@
   // The players panel's gun: its silhouette (static/img/weapons/, scripts/vendor_weapon_icons.py; a mask filled with
   // the text colour, so it reads in either theme) and its name. A gun with no icon (Chamber's) is the name alone.
   // A hold row (CONDENSE 30) names the knife "Knife"; the icon table calls it "Melee".
-  function gunHtml(held, table) {
+  function gunHtml(held, table, assetUrl) {
     if (!held) return "";
     table = table || {};
     var url = table[held.gun] || (held.gun === "Knife" ? table.Melee : null);
+    if (url && assetUrl) url = assetUrl(url);
     var icon = url ? '<span class="replay-pl-gun-icon" style="--gun-icon:url(\'' + escapeHtml(url) + '\')"></span>' : "";
     return '<span class="replay-pl-gun' + (held.held || held.fired ? "" : " is-unfired") + '" title="' + escapeHtml(held.held
       ? "Held now" : held.fired
@@ -1790,6 +1880,8 @@
       var octx = off.getContext("2d");
       octx.drawImage(this.map, 0, 0, n, n);
       var data = octx.getImageData(0, 0, n, n).data;
+      this.mapAlpha = new Uint8Array(n * n);
+      for (var i = 0; i < n * n; i++) this.mapAlpha[i] = data[i * 4 + 3];
       var x0 = n, y0 = n, x1 = -1, y1 = -1;
       for (var y = 0; y < n; y++) {
         for (var x = 0; x < n; x++) {
@@ -1807,6 +1899,8 @@
     } catch (err) {
       this.view = { k: 1, ox: 0, oy: 0 };   // a tainted or unreadable image: show it whole
     }
+    var room = this.options.arenaRoom && this.options.arenaRoom.centre ? this.options.arenaRoom : ARENA_ROOM;
+    this.arenaBox = placeInset(this.mapAlpha, n, Object.assign({size: size}, this.view), room.size_m[0] / room.size_m[1]);
   };
 
   ReplayViewer.prototype.css = function (name, fallback) {
@@ -1880,7 +1974,7 @@
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
-        return { blob: blob, tracks: decodeRound(blob), extras: extras,
+        return { blob: blob, tracks: decodeRound(blob), arena: decodeArena(blob), extras: extras,
                  traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
       });
     }
@@ -2403,13 +2497,13 @@
       var using = life ? possessingAt(self.current.extras.abilities, p.slot, t) : null;
       var gun = using ? '<span class="replay-pl-gun is-util" title="Using util now">' + escapeHtml(using.label) + "</span>"
         : held && held.ability ? '<span class="replay-pl-gun is-util">' + escapeHtml(held.ability) + " out</span>"
-        : gunHtml(held, self.options.gunIcons);
+        : gunHtml(held, self.options.gunIcons, self.assetSrc.bind(self));
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
         var n = used[k.name] || 0;
         return '<span class="replay-pl-ability' + (n ? " is-used" : "") + '" title="' + escapeHtml(k.key + " · " + k.name +
-          " · used " + n + "× so far (as the replay records it)") + '"><img src="' + escapeHtml(k.url) + '" alt=""><b>' + n + "</b></span>";
+          " · used " + n + "× so far (as the replay records it)") + '"><img src="' + escapeHtml(self.assetSrc(k.url)) + '" alt=""><b>' + n + "</b></span>";
       }).join("");
       var ult = kit.filter(function (k) { return k.key === "X"; })[0];
       var points = ultAt(self.current.state, p.slot, t), cost = ULT_COST[p.agent];
@@ -2421,7 +2515,7 @@
         ultHtml = '<span class="replay-pl-ult' + (full ? " is-ready" : "") + (used[ult.name] ? " is-used" : "") +
           (points === null || cost === undefined ? " is-unknown" : "") + '" title="' + escapeHtml(about) + '">' +
           (points === null || cost === undefined ? "" : ultRing(Math.min(points, cost), cost)) +
-          '<img src="' + escapeHtml(ult.url) + '" alt=""></span>';
+          '<img src="' + escapeHtml(self.assetSrc(ult.url)) + '" alt=""></span>';
       }
       var portrait = self.options.agentIcon ? self.options.agentIcon(p.agent) : null;
       rows[team].push(
@@ -2521,7 +2615,7 @@
     list.innerHTML = items.map(function (it) {
       var url = it.agent && it.ability && table[it.agent] && table[it.agent][it.ability];
       var icon = '<span class="replay-util-icon" style="background:' + self.ownerColor(it.slot) + '">' +
-        (url ? '<img src="' + escapeHtml(url) + '" alt="">' : "") + "</span>";
+        (url ? '<img src="' + escapeHtml(self.assetSrc(url)) + '" alt="">' : "") + "</span>";
       var who = it.slot === null || it.slot === undefined ? '<span class="replay-person">owner unknown</span>'
         : self.personHtml(it.slot);
       return '<li class="replay-feed-row replay-util-row" data-kill-t="' + it.t + '" data-seek-t="' + (it.t - 1) + '" tabindex="0">' +
@@ -2584,15 +2678,20 @@
     return worldUnits * ((this.linked && this.linked.uvPerUnit) || 0.75);
   };
 
+  ReplayViewer.prototype.assetSrc = function (url) {
+    return this.options.assetUrl ? this.options.assetUrl(url) : url;
+  };
+
   // An ability's glyph (white on transparency, static/img/abilities/), or null until it loads.
   ReplayViewer.prototype.abilityIcon = function (agent, ability) {
     var table = this.options.abilityIcons || {};
     var url = agent && ability && table[agent] && table[agent][ability];
+    if (!url && agent === "Iso" && ability === "Kill Contract") url = "/static/img/abilities/iso/ultimate.png";
     if (!url) return null;
     if (!(url in this.icons)) {
       var img = new Image();
       img.onload = this.draw.bind(this);
-      img.src = url;
+      img.src = this.assetSrc(url);
       this.icons[url] = img;
     }
     var found = this.icons[url];
@@ -4428,6 +4527,111 @@
     if (panel && panel.innerHTML !== html) panel.innerHTML = html;
   };
 
+  // Shared portrait and facing cone, in whichever coordinate frame the caller has selected.
+  ReplayViewer.prototype.drawPlayerMarker = function (ctx, p, x, y, r, yaw, cone, dim) {
+    var color = this.slotColor(p.slot, p.side), rad = yaw * Math.PI / 180;
+    ctx.fillStyle = color;
+    if (cone) {
+      ctx.globalAlpha = 0.35 * dim;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
+    }
+    ctx.globalAlpha = dim;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
+    var img = this.icon(p.agent);
+    if (img) {
+      ctx.save();
+      ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
+      ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(p.agent.slice(0, 2), x, y);
+    }
+  };
+
+  ReplayViewer.prototype.drawArena = function (ctx, t, hits) {
+    var arena = this.current.arena;
+    if (!arena) return;
+    var spans = [];
+    Object.keys(arena).forEach(function (slot) {
+      arena[slot].forEach(function (seg) {
+        if (seg.length) spans.push({slot: slot, seg: seg, t0: seg[0].t, t1: seg[seg.length - 1].t});
+      });
+    });
+    // Overlapping segments belong to one duel, including the survivor's longer return delay.
+    spans.sort(function (a, b) { return a.t0 - b.t0; });
+    var duels = [];
+    spans.forEach(function (span) {
+      var d = duels[duels.length - 1];
+      if (!d || span.t0 > d.t1) duels.push({t0: span.t0, t1: span.t1, spans: [span]});
+      else { d.t1 = Math.max(d.t1, span.t1); d.spans.push(span); }
+    });
+    var duel = null;
+    duels.forEach(function (d) { if (d.t0 <= t && t < d.t1 + 2) duel = d; });
+    if (!duel) return;
+    var room = this.options.arenaRoom && this.options.arenaRoom.centre ? this.options.arenaRoom : ARENA_ROOM;
+    if (!this.arenaBox) this.arenaBox = placeInset(this.mapAlpha, 256,
+      Object.assign({size: this.canvas.width}, this.view), room.size_m[0] / room.size_m[1]);
+    var box = this.arenaBox, self = this, blob = this.current.blob;
+    var r = Math.min(box.w, box.h) / 12;
+    // Every room element uses exactly this frame. The panel clip contains glyphs at its edges.
+    function point(x, y) {
+      return arenaPoint(x, y, box, room);
+    }
+    var kills = (blob.kills || []).filter(function (k) {
+      return k.t >= duel.t0 && k.t <= duel.t1 && k.t <= t && typeof k.ax === "number" && typeof k.ay === "number" &&
+        duel.spans.some(function (s) { return s.slot === String(k.victim); });
+    });
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.rect(box.x, box.y, box.w, box.h); ctx.clip();
+    ctx.fillStyle = box.over_map ? "#101118" : "rgba(16,17,24,0.94)";
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+    ctx.strokeStyle = "#8b8c96"; ctx.lineWidth = 1.5;
+    if (Array.isArray(room.outline) && room.outline.length) {
+      ctx.beginPath();
+      room.outline.forEach(function (xy, i) {
+        var p = point(room.centre[0] + xy[0] * 10, room.centre[1] + xy[1] * 10);
+        if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y);
+      });
+      ctx.closePath(); ctx.stroke();
+    }
+    Object.keys(room.starts).forEach(function (key) {
+      var xy = room.starts[key], p = point(xy[0], xy[1]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, r / 3, 0, Math.PI * 2); ctx.stroke();
+    });
+    duel.spans.forEach(function (span) {
+      if (t < span.t0 || kills.some(function (k) { return String(k.victim) === span.slot; })) return;
+      var player = blob.players.filter(function (p) { return String(p.slot) === span.slot; })[0];
+      if (!player || !aliveAt(blob.alive[span.slot], t, blob.t_end)) return;
+      var seg = span.seg, at = seg[seg.length - 1];
+      for (var i = 1; i < seg.length; i++) {
+        if (seg[i].t >= t) {
+          var a = seg[i - 1], b = seg[i], f = Math.max(0, (t - a.t) / (b.t - a.t));
+          at = {x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, yaw: lerpYaw(a.yaw, b.yaw, f)};
+          break;
+        }
+      }
+      var p = point(at.x, at.y), rad = at.yaw * Math.PI / 180;
+      var c = arenaPoint(room.centre[0], room.centre[1], box, room);
+      var d = arenaPoint(room.centre[0] + Math.cos(rad) * 10, room.centre[1] + Math.sin(rad) * 10, box, room);
+      var yaw = Math.atan2(d.y - c.y, d.x - c.x) * 180 / Math.PI;
+      self.drawPlayerMarker(ctx, player, p.x, p.y, r, yaw, self.layers.cones, 1);
+      hits.push({x: p.x / self.view.k + self.view.ox, y: p.y / self.view.k + self.view.oy,
+        r: r / self.view.k, slot: player.slot, text: self.nameOf(player.slot) + " · in Iso's duel"});
+    });
+    kills.forEach(function (k) {
+      var p = point(k.ax, k.ay);
+      ctx.strokeStyle = "rgba(230,230,230,0.85)"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(p.x - r * 0.6, p.y - r * 0.6); ctx.lineTo(p.x + r * 0.6, p.y + r * 0.6);
+      ctx.moveTo(p.x + r * 0.6, p.y - r * 0.6); ctx.lineTo(p.x - r * 0.6, p.y + r * 0.6); ctx.stroke();
+    });
+    ctx.restore();
+  };
+
   ReplayViewer.prototype.draw = function () {
     var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -4501,28 +4705,20 @@
       ctx.fillStyle = color;
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(2, r / 5);
-      if (!(at.live && life)) {
+      if (!(life && (at.live || at.arena))) {
         ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.stroke();
         return;
       }
-      var rad = at.yaw * Math.PI / 180;
-      if (self.layers.cones) {
-        ctx.globalAlpha = 0.35 * dim;
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
-        ctx.globalAlpha = dim;
-      }
-      ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
-      var img = self.icon(p.agent);
-      if (img) {
+      self.drawPlayerMarker(ctx, p, x, y, r, at.yaw, self.layers.cones && !at.arena, dim);
+      if (at.arena) {
         ctx.save();
-        ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
-        ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
+        ctx.strokeStyle = color; ctx.setLineDash([r / 3, r / 4]); ctx.lineDashOffset = -t * r;
+        ctx.beginPath(); ctx.arc(x, y, r * 1.5, 0, 2 * Math.PI); ctx.stroke();
+        var badge = self.abilityIcon("Iso", "Kill Contract");
+        self.drawBadge(ctx, x + r * 1.1, y - r * 1.1, r * 0.5, color, badge, dim);
         ctx.restore();
-      } else {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText(p.agent.slice(0, 2), x, y);
+        hits.push({x: x, y: y, r: r * 1.5, slot: p.slot, text: self.nameOf(p.slot) + " · in Iso's duel"});
+        return;
       }
       if (life.flags.length) {
         // An unobserved or uncertain life: a dashed ring says the evidence is incomplete.
@@ -4563,6 +4759,8 @@
     this.drawCarrier(ctx, r, hits, marks, layout, spike);
     this.drawBlocks(ctx, r, hits, marks, layout);
     this.layout = layout;
+
+    this.drawArena(ctx, t, hits);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.hits = hits;
@@ -4628,6 +4826,7 @@
   }
 
   var api = {
+    decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
