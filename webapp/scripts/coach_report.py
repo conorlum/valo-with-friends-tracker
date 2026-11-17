@@ -31,6 +31,7 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 TIMEOUT_S = 1800
+DEFAULT_MODEL = "claude-opus-5-5"
 MODEL_DIR = "model"   # the model's cwd holds only q; snapshot and log stay one level up, where reads are refused (probe 3g).
 
 # What the model's process may inherit. Everything else (database URL, API keys, any other secret) is dropped.
@@ -52,8 +53,8 @@ def write_q(run_dir: Path, python: Path) -> Path:
     path = Path(run_dir) / MODEL_DIR / "q"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n"
-                    f'exec "{posix(python)}" "{posix(WEBAPP_ROOT / "scripts" / "coach_query.py")}" '
-                    f'--run "{posix(Path(run_dir).resolve())}" -- "$@"\n', encoding="utf-8", newline="\n")
+                    f'exec "{posix(python)}" -X utf8 "{posix(WEBAPP_ROOT / "scripts" / "coach_query.py")}" '
+                    f'--run "{posix(Path(run_dir).resolve())}" --compact -- "$@"\n', encoding="utf-8", newline="\n")
     return path
 
 
@@ -98,6 +99,7 @@ def claude_call(run_dir: Path, model: str | None):
         raise SystemExit("refused: the claude command is not on PATH")
 
     def call(text: str, session: str | None):
+        call.attempts += 1
         done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
                               encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
@@ -113,6 +115,7 @@ def claude_call(run_dir: Path, model: str | None):
 
     call.models = set()
     call.denials = 0        # commands the model tried and was refused: a clean run has none
+    call.attempts = 0       # includes calls whose output or usage could not be read
     call.usage = new_usage()
     return call
 
@@ -193,16 +196,20 @@ def record_usage(run_dir: Path, entry: dict, log: Path | None = None) -> None:
         print(f"usage not appended to {log}: {error}", file=sys.stderr)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("match_uuid")
     parser.add_argument("players", nargs="+", metavar="player")
-    parser.add_argument("--model")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--prompt-only", action="store_true",
                       help="write the first prompt to <run dir>/prompt.txt and stop; no model is called")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     from app.coach import playbook, snapshot
     from app.db import SessionLocal
     from scripts import _admin_client
@@ -305,20 +312,27 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
         print(f"{path}\n{len(text)} characters")
         return 0
     call = claude_call(run_dir, args.model)
+    misses = []
     usage_entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "match": uuid,
                    "player_id": player_id, "player": player, "model": args.model or "default",
                    "outcome": "failed", "usage": call.usage}
     try:
         payload = runner.generate(snap, slot, run_dir, book, call,
-                                  args.model or "claude-code (default model)")
+                                  args.model or "claude-code (default model)", misses=misses)
         usage_entry["outcome"] = "generated"
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
     finally:      # a failed run's calls cost the same: always recorded
-        if call.usage["calls"]:
+        usage_entry["number_misses"] = misses
+        if call.attempts:
+            usage_entry["attempts"] = call.attempts
+            usage_entry["usage_missing"] = call.attempts - call.usage["calls"]
             record_usage(run_dir, usage_entry)
-            print(f"usage: {usage_line(call.usage)}", flush=True)
+            if call.usage["calls"]:
+                print(f"usage: {usage_line(call.usage)}", flush=True)
+            else:
+                print(f"usage: none read from {call.attempts} failed call(s)", flush=True)
             if isinstance(getattr(args, "usage_total", None), dict):
                 merge_usage(args.usage_total, call.usage)
     if call.denials:

@@ -7,15 +7,16 @@ from __future__ import annotations
 import json
 import re
 
-from app.coach import knowledge, query
+from app.coach import knowledge, notes, query
 from app.coach.snapfile import SnapshotError
 from app.services.agent_roles import role_of
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
+WINDOW_SLACK_S = 0.5
 AREA_WHERE_WINDOW_S = 1.0   # a where answer can place players up to one second before a moment
-SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
+SPAN_MAX_S = notes.SPAN_MAX_S
 BODY_MAX = 4000             # longer text is refused before the regexes run
 TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
 
@@ -297,12 +298,12 @@ def _round_of(entry: dict):
 
 def _in_moment(entry: dict, t: float, t1) -> bool:
     """P4 review F3: an answer asked for one second (where, distance, knew: a top-level `t`) is evidence only
-    for an instance that second belongs to, from KNEW_WINDOW_S before it starts to its end. Flags and answers
-    over a span (timeline, control) carry no single second and are tied to the round only."""
+    for an instance that second belongs to, from KNEW_WINDOW_S before it starts to WINDOW_SLACK_S past its end.
+    Flags and answers over a span (timeline, control) carry no single second and are tied to the round only."""
     asked = entry["result"].get("t")
     if entry.get("cmd") == "flag" or isinstance(asked, bool) or not isinstance(asked, (int, float)):
         return True
-    return t - KNEW_WINDOW_S <= float(asked) <= float(t1 if t1 is not None else t)
+    return t - KNEW_WINDOW_S <= float(asked) <= float(t1 if t1 is not None else t) + WINDOW_SLACK_S
 
 
 def _matches(x: float, numbers: list[float], shares: list[float]) -> bool:
@@ -363,9 +364,17 @@ def _area_problems(text: str, grounded: set[str], area_names, improve: bool) -> 
     return problems
 
 
-def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
+def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False, *,
+                   misses: list | None = None) -> list[str]:
     problems = _area_problems(text, _grounded_areas(cited), area_names, improve)
     numbers, shares, times, pairs = cited.numbers, cited.shares, cited.times, cited.pairs
+
+    def record(figure: str, value: float, kind: str, pool: list[float]) -> None:
+        if misses is not None:
+            nearest = min(pool, key=lambda y: abs(abs(value) - abs(y)), default=None)
+            misses.append({"figure": figure, "kind": kind, "nearest": nearest,
+                           "gap": None if nearest is None else abs(abs(value) - abs(nearest))})
+
     text = _strip_names(text, names)
     for token in _TAGGED.findall(text):
         problems.append(f"{token} is not a player of this match")
@@ -374,6 +383,7 @@ def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = Fa
         seconds = int(match.group(1)) * 60 + int(match.group(2))
         if not any(abs(seconds - y) <= 1.0 for y in times):
             problems.append(f"the time {match.group(0)} is not within a second of any cited time")
+            record(match.group(0), seconds, "seconds", times)
     text = _CLOCK.sub(" ", text)
     for match in _VERSUS.finditer(text):
         counts = tuple(int(g) if g.isdigit() else _COUNT_WORDS[g.lower()] for g in match.groups())
@@ -381,27 +391,47 @@ def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = Fa
         if counts != (1, 1) and counts not in pairs:
             problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
     text = _VERSUS.sub(" ", text)
-    text = _THOUSANDS.sub("", _ORDINAL.sub(" ", text))      # "2nd" is not a measurement; "12,000" is 12000
+    # Keep source offsets through the substitutions so a rejected token retains its commas and sign.
+    source = text
+    offsets = list(range(len(text)))
+
+    def substitute(pattern, replacement=" ") -> None:
+        nonlocal text
+        for match in reversed(list(pattern.finditer(text))):
+            value = replacement(match) if callable(replacement) else replacement
+            if value != match.group(0):
+                start, end = match.span()
+                text = text[:start] + value + text[end:]
+                offsets[start:end] = [None] * len(value)
+
+    def spelling(match, first=0, last=0) -> str:
+        return source[offsets[match.start(first)]:offsets[match.end(last) - 1] + 1]
+
+    substitute(_ORDINAL)
+    substitute(_THOUSANDS, "")      # "2nd" is not a measurement; "12,000" is 12000
     # The point's own figures, each only in its own form: "round 7", "rounds 4, 9 and 15", "3 times".
     for match in list(_ROUND.finditer(text)) + list(_ROUNDS.finditer(text)):
         for digits in re.findall(r"\d+", match.group(1)):
             if int(digits) not in cited.rounds:
                 problems.append(f"round {digits} is not the round of any instance of this point")
-    text = _ROUNDS.sub(" ", _ROUND.sub(" ", text))
-    text = _TALLY.sub(lambda m: " " if int(m.group(1)) in cited.tallies else m.group(0), text)
+    substitute(_ROUND)
+    substitute(_ROUNDS)
+    substitute(_TALLY, lambda m: " " if int(m.group(1)) in cited.tallies else m.group(0))
 
-    def unit_problem(figure: str, unit: str) -> None:
+    def unit_problem(figure: str, unit: str, original: str) -> None:
         metres = unit.lower().startswith("m")
-        if not _near(float(figure), cited.metres if metres else cited.seconds):
+        pool = cited.metres if metres else cited.seconds
+        if not _near(float(figure), pool):
             problems.append(f"the number {figure} {unit} is not a {'distance' if metres else 'time or duration'} "
                             "in a cited answer")
+            record(original, float(figure), "metres" if metres else "seconds", pool)
 
     for match in _UNIT_RANGE.finditer(text):
-        unit_problem(match.group(1), match.group(3))
-        unit_problem(match.group(2), match.group(3))
-    text = _UNIT_RANGE.sub(" ", text)
+        unit_problem(match.group(1), match.group(3), spelling(match, 1, 1))
+        unit_problem(match.group(2), match.group(3), spelling(match, 2, 2))
+    substitute(_UNIT_RANGE)
     for match in _UNIT_ONE.finditer(text):
-        unit_problem(match.group(1), match.group(2))
+        unit_problem(match.group(1), match.group(2), spelling(match, 1, 1))
     for match in _WORD_UNIT.finditer(text):
         problems.append(f"'{match.group(0)}': write the figure, so it can be checked against an answer")
     for match in _SIGNED.finditer(text):
@@ -414,10 +444,13 @@ def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = Fa
                          and (y < 0) == negative for y in numbers)
         if not agrees:
             problems.append(f"the signed number {match.group(0)} has the opposite sign in every cited answer")
-    text = _UNIT_ONE.sub(" ", text)                         # checked above, against answers of their own kind
+            pool = [y * 100 for y in shares] if match.group(3) else numbers
+            record(spelling(match, 1, 3), size, "signed", [y for y in pool if (y < 0) == negative])
+    substitute(_UNIT_ONE)                         # checked above, against answers of their own kind
     for match in _NUMBER.finditer(text):
         if not _matches(float(match.group(0)), numbers, shares):
             problems.append(f"the number {match.group(0)} is not a measured value in a cited answer")
+            record(spelling(match), float(match.group(0)), "value", numbers + [y * 100 for y in shares])
     return problems
 
 
@@ -461,7 +494,8 @@ def shape_problems(point, snap, themes: tuple[str, ...]) -> list[str]:
     return problems
 
 
-def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int) -> list[str]:
+def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int, *,
+                misses: list | None = None) -> list[str]:
     if not isinstance(point, dict):
         return ["the point is not an object"]
     problems = []
@@ -528,7 +562,7 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 problems.append(f"{label}: {log_id} is about round {_round_of(entry)}, not round {n}")
             elif not _in_moment(entry, t, inst.get("t1")):
                 problems.append(f"{label}: {log_id} was asked for second {entry['result']['t']}, outside this "
-                                f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {inst.get('t1') or t})")
+                                f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {spans[-1] + WINDOW_SLACK_S})")
             else:
                 entries.append(entry)
                 result, hidden = entry["result"], frozenset()
@@ -558,9 +592,9 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                                     f"'({NO_KNOWLEDGE_NOTE})'")
             else:
                 if not any(e["cmd"] == "knew" and "enemies" in e["result"] and e["result"].get("side") == side
-                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t for e in entries):
+                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t + WINDOW_SLACK_S for e in entries):
                     problems.append(f"{label}: a mistake must cite a knew answer for side {side} in round {n}, "
-                                    f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t}")
+                                    f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t + WINDOW_SLACK_S}")
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
     if len(text) > BODY_MAX:
         return problems + [f"the text is over {BODY_MAX} characters"]
@@ -587,4 +621,4 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     for i, inst in enumerate(instances):
         if isinstance(inst, dict):
             problems += _area_problems(str(inst.get("caption") or ""), _grounded_areas(cited, i), area_names, improve)
-    return problems + _text_problems(text, cited, snap.names)
+    return problems + _text_problems(text, cited, snap.names, misses=misses)

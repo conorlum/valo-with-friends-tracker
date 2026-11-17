@@ -1,9 +1,36 @@
+import hashlib
+
 import pytest
 
 from app.coach import areas, query, snapshot
 from tests.coach import toys
 from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT
+
+
+def test_short_display_keeps_the_query_log_bytes(snap, tmp_path):
+    from tests.coach.test_compact import COMMAND_ARGS
+
+    for cmd in query.COMMANDS:
+        query.run(snap, tmp_path, cmd, COMMAND_ARGS[cmd])
+    path = tmp_path / query.LOG
+    before = path.read_bytes()
+    for entry in query.read_log(tmp_path).values():
+        query.show(entry)
+    assert path.read_bytes() == before
+    assert hashlib.sha256(before.replace(b"\r\n", b"\n")).hexdigest() == "4ca7a18c5b3c1b687c8ec3651c4601a53b6a14f1f521df89973799390a71c3f1"
+
+
+@pytest.mark.parametrize("remainder", ["", ". " + query._APPROXIMATE_AREAS,
+                                       ". another caveat", ". " + query._APPROXIMATE_AREAS + "; extra"])
+def test_show_suppresses_only_the_exact_approximate_remainder(remainder):
+    result = {"note": query.NOTES["where"] + remainder}
+    text = query.show({"id": "q1", "cmd": "where", "args": [], "result": result})
+    if remainder in ("", ". " + query._APPROXIMATE_AREAS):
+        assert "\nnote: " not in text
+    else:
+        assert text.endswith("\nnote: " + remainder)
+    assert result["note"] == query.NOTES["where"] + remainder
 
 KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
 SHARES = {"t": [0.0, 10.0], "cells": {"A Site": 2}, "areas": {"A Site": [[2, 0, 0], [0, 2, 0]]},
@@ -69,6 +96,28 @@ def test_knew_answers_for_a_side_or_for_a_players_side(snap):
     assert query.knew(snap, 1, 15.0, "B")["enemies"] == []
 
 
+@pytest.mark.parametrize("painted", [False, True])
+def test_where_uses_short_forms_for_all_usual_query_areas(tmp_path, monkeypatch, painted):
+    from app.coach import compact
+    from tests.coach.test_compact import drop_nulls
+
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    if painted:
+        write_paint(tmp_path, painted_object({areas.cell_at(2000, 2000): 1, areas.cell_at(8000, 8000): 2}))
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "map": "Sunset", "rounds": [1]}}
+    snap = snapshot.Snapshot(snapshot.assemble(context, {1: toys.round_blob(toys.ten())},
+                                               {1: ("ok", False, SHARES)}))
+    result = query.where(snap, 1, 6)
+    assert len(result["players"]) == 10
+    for row in result["players"]:
+        assert set(row["area"]) == {"name", "super", "path", "approximate"}
+        assert row["area"]["approximate"] is (not painted)
+    text = query.show({"id": "q1", "cmd": "where", "args": [1, 6], "result": result})
+    assert "~(" not in text
+    assert compact.parse(text.split("\n", 1)[1], short=True) == drop_nulls(
+        {key: value for key, value in result.items() if key != "note"})
+
+
 def test_where_knew_and_spike_label_approximate_areas_until_painted(tmp_path, monkeypatch):
     monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
     context = {**CONTEXT, "match": {**CONTEXT["match"], "map": "Sunset", "rounds": [1]},
@@ -83,6 +132,10 @@ def test_where_knew_and_spike_label_approximate_areas_until_painted(tmp_path, mo
                           (query.timeline(snap, 1), "events")):
         assert any(item.get("area", {}).get("approximate") is True for item in response[row] if item.get("area"))
         assert note in response["note"]
+        text = query.show({"id": "q1", "cmd": "timeline" if row == "events" else (
+            "where" if row == "players" else "knew"), "args": [], "result": response})
+        assert "\nnote: " not in text
+        assert ")~" in text
 
     cell = areas.cell_at(8000, 8000)
     write_paint(tmp_path, painted_object({cell: 1}, bands={str(cell): [[0, 30, 1], [60, 90, 2]]}))

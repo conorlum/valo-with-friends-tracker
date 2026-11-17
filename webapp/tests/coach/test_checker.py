@@ -90,6 +90,46 @@ def test_a_clock_time_far_from_any_cited_time_is_refused(snap, log):
     assert any("1:30" in p for p in problems(snap, log, body="At 1:30 you were alone."))
 
 
+@pytest.mark.parametrize("body, cited, expected", [
+    ("Held for 12.3 s.", {"seconds": 12.31}, []),
+    ("Held for 12.4 s.", {"seconds": 12.31}, [("12.4", "seconds", 12.31, 0.09)]),
+    ("At 0:45 you held.", {"t": 41.5}, [("0:45", "seconds", 41.5, 3.5)]),
+    ("You stood 12.4 m away.", {"metres": -12.31}, [("12.4", "metres", -12.31, 0.09)]),
+    ("Impact reached 12.4.", {"impact": -12.31}, [("12.4", "value", -12.31, 0.09)]),
+    ("Loadout was 12,500.", {"loadout": 12000}, [("12,500", "value", 12000, 500)]),
+    ("Values were 12500 and 12,500.", {"value": 12000},
+     [("12500", "value", 12000, 500), ("12,500", "value", 12000, 500)]),
+    ("Control reached 50.", {"a": 0.5}, []),
+    ("Control reached 50.", {"a": 0.45}, [("50", "value", 45, 5)]),
+    ("Impact was +250.", {"impact": -250}, [("+250", "signed", None, None)]),
+    ("Impact was +250.", {"impact": -250, "damage": 40}, [("+250", "signed", 40, 210)]),
+    ("Impact was -250.", {"impact": -240, "damage": 250}, [("-250", "signed", -240, 10)]),
+    ("Gained -50% control.", {"a": 0.5, "b": -0.45}, [("-50%", "signed", -45, 5)]),
+    ("Held 35 m away.", {"seconds": 35}, [("35", "metres", None, None)]),
+    ("Impact reached 77.", {}, [("77", "value", None, None)]),
+    ("Held 12.4 to 15.4 s.", {"seconds": 12.31},
+     [("12.4", "seconds", 12.31, 0.09), ("15.4", "seconds", 12.31, 3.09)]),
+])
+def test_number_misses_preserve_problems_and_original_figures(snap, tmp_path, body, cited, expected):
+    log = _flag_log(snap, tmp_path, {"round": 1, **cited})
+    candidate = point(polarity="good", body=body, instances=[
+        {"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}])
+    original = checker.check_point(candidate, log, snap, THEMES, 0)
+    assert checker.check_point(candidate, log, snap, THEMES, 0, misses=None) == original
+    misses = []
+    assert checker.check_point(candidate, log, snap, THEMES, 0, misses=misses) == original
+    assert bool(original) == bool(expected)
+    assert len(misses) == len(expected)
+    for record, (figure, kind, nearest, gap) in zip(misses, expected):
+        assert set(record) == {"figure", "kind", "nearest", "gap"}
+        assert record["kind"] in {"seconds", "metres", "value", "signed"}
+        assert record["figure"] == figure and record["kind"] == kind
+        assert record["nearest"] == (None if nearest is None else pytest.approx(nearest))
+        assert record["gap"] == (None if gap is None else pytest.approx(gap))
+    if body == "Held for 12.4 s.":
+        assert original == ["the number 12.4 s is not a time or duration in a cited answer"]
+
+
 def test_a_number_from_a_cited_flag_is_allowed(snap, log):
     inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q5", "q2"]}]
     assert problems(snap, log, body="Nearest teammate 61 m away.", instances=inst) == []
@@ -253,6 +293,53 @@ def test_a_distance_asked_shortly_before_the_moment_passes(snap, tmp_path):     
     log = checker.trusted_log(query.read_log(tmp_path), snap, {})
     inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1"]}]
     assert checker.check_point(point(polarity="good", instances=inst), log, snap, THEMES, 0) == []
+
+
+@pytest.mark.parametrize("command", ["where", "distance"])
+@pytest.mark.parametrize("t1", [None, 45.0])
+@pytest.mark.parametrize("offset, accepted", [(0.5, True), (0.51, False)])
+def test_moment_answers_have_inclusive_end_slack(snap, tmp_path, command, t1, offset, accepted):
+    end = 40.0 if t1 is None else t1
+    asked = end + offset
+    args = ["1", str(asked)] + (["P1", "P2"] if command == "distance" else [])
+    query.run(snap, tmp_path, command, args)
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = {"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}
+    if t1 is not None:
+        inst["t1"] = t1
+    found = problems(snap, log, polarity="good", title="Keep support close", body="Hold position.",
+                     instances=[inst])
+    assert found == ([] if accepted else [
+        f"instance 1: q1 was asked for second {asked}, outside this moment (10.0 to {end + 0.5})"])
+
+
+@pytest.mark.parametrize("command", ["where", "distance"])
+@pytest.mark.parametrize("asked, accepted", [(10.0, True), (9.99, False)])
+def test_moment_answer_lower_bound_is_unchanged(snap, tmp_path, command, asked, accepted):
+    args = ["1", str(asked)] + (["P1", "P2"] if command == "distance" else [])
+    query.run(snap, tmp_path, command, args)
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = [{"round": 1, "t": 40.0, "caption": "", "evidence": ["q1"]}]
+    found = problems(snap, log, polarity="good", title="Keep support close", body="Hold position.",
+                     instances=inst)
+    assert found == ([] if accepted else [
+        f"instance 1: q1 was asked for second {asked}, outside this moment (10.0 to 40.5)"])
+
+
+@pytest.mark.parametrize("side", ["A", "B"])
+@pytest.mark.parametrize("asked, accepted", [(40.5, True), (40.51, False), (10.0, True), (9.99, False)])
+def test_knew_window_has_inclusive_slack_and_unchanged_lower_bound(snap, tmp_path, side, asked, accepted):
+    query.run(snap, tmp_path, "knew", ["1", str(asked), side])
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    # The span keeps 40.51 inside the moment, so the knew rule must reject it independently.
+    inst = [{"round": 1, "t": 40.0, "t1": 45.0, "caption": "", "evidence": ["q1"]}]
+    found = problems(snap, log, title="Keep support close", body="Hold position.", instances=inst)
+    knew_problems = [p for p in found if "must cite a knew answer" in p]
+    assert knew_problems == ([] if accepted and side == "A" else [
+        "instance 1: a mistake must cite a knew answer for side A in round 1, "
+        "asked for a time from 10.0 to 40.5"])
+    if accepted and side == "A":
+        assert found == []
 
 
 def test_where_reports_health_as_a_word_and_it_grounds_nothing(snap):   # R-F8

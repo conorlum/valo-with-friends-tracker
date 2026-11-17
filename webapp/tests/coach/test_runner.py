@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from app.coach import query, runner, snapshot
+from app.coach import compact, prompt, query, runner, snapshot
 from app.coach.playbook import Playbook
 from scripts import coach_report
 from tests.coach import toys
@@ -60,7 +60,28 @@ def test_the_flags_are_logged_first_and_shown_with_their_ids(snap, tmp_path):
     payload, model = run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
     log = query.read_log(tmp_path)
     assert log["q1"]["cmd"] == "flag"
-    assert '"id": "q1"' in model.prompts[0][0] or '"id":"q1"' in model.prompts[0][0]
+    rendered = model.prompts[0][0].split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    assert any(flag["id"] == "q1" for r in compact.parse(rendered)["rounds"] for flag in r["flags"])
+
+
+def test_the_compact_prompt_keeps_every_runner_evidence_id(snap, tmp_path, monkeypatch):
+    from tests.coach.test_compact import drop_nulls
+
+    monkeypatch.setattr(snap, "util", lambda n: {
+        "casts": [{"slot": 0, "t": 67.35, "ability": "Fakeout", "kind": "device", "value": 0.0,
+                   "trigger": 77.02, "presence": {"life_s": 5.97}}],
+        "unused": [{"slot": 0, "t": 69.25, "kind": "held_at_death", "abilities": ["Blindside"]}]})
+    brief, logged = runner._brief_with_flag_ids(snap, 0, tmp_path)
+    text = prompt.run_prompt(BOOK, brief)
+    rendered = text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]
+    parsed = compact.parse(rendered)
+    assert json.dumps(parsed, sort_keys=True) == json.dumps(drop_nulls(brief), sort_keys=True)
+    flag_ids = [f["id"] for r in parsed["rounds"] for f in r["flags"]]
+    facts_ids = [r["facts_id"] for r in parsed["rounds"] if "facts_id" in r]
+    util_ids = [f["id"] for r in parsed["rounds"] for f in r["util_facts"]]
+    assert flag_ids and facts_ids and util_ids
+    assert set(flag_ids + facts_ids + util_ids) == set(logged)
+    assert all(evidence_id in rendered for evidence_id in logged)
 
 
 def test_a_checked_report_becomes_a_storable_payload(snap, tmp_path):
@@ -77,6 +98,48 @@ def test_a_failed_point_gets_one_repair_and_is_kept_when_fixed(snap, tmp_path):
         lambda q: json.dumps({"points": [{"index": 1, **good_point([q]), "title": "Fixed"}]})])
     assert [p["title"] for p in payload["points"]] == ["Held your ground", "Fixed"] and payload["dropped_points"] == 0
     assert model.prompts[1][1] == "session-1" and "q999" in model.prompts[1][0]
+
+
+def test_number_misses_never_change_the_repair_prompt(snap, tmp_path):
+    replies = [lambda q: json.dumps({"points": [good_point([q]), bad_point()]}), "no fix"]
+    baseline = Model(snap, tmp_path / "baseline", replies)
+    original = runner.generate(snap, 0, tmp_path / "baseline", BOOK, baseline, "test-model")
+    misses = []
+    tracked = Model(snap, tmp_path / "tracked", replies)
+    result = runner.generate(snap, 0, tmp_path / "tracked", BOOK, tracked, "test-model", misses=misses)
+    assert result == original
+    assert tracked.prompts[1][0].encode() == baseline.prompts[1][0].encode()
+    assert misses == [{"stage": "first", "point": 1, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None}]
+
+
+@pytest.mark.parametrize("fixed_index", [1, 4])
+def test_number_misses_keep_sparse_original_and_appended_indices(snap, tmp_path, fixed_index):
+    def first(q):
+        points = [good_point([q]) for _ in range(6)]
+        points[1], points[4] = bad_point(), bad_point()
+        return json.dumps({"points": points})
+
+    repair = {"points": [{"index": fixed_index, **bad_point()}, {"index": 20, **bad_point()}]}
+    model = Model(snap, tmp_path, [first, json.dumps(repair)])
+    misses = []
+    runner.generate(snap, 0, tmp_path, BOOK, model, "test-model", misses=misses)
+    assert [(m["stage"], m["point"]) for m in misses] == [
+        ("first", 1), ("first", 4), ("repair", fixed_index), ("repair", 6)]
+    for record in misses:
+        assert set(record) == {"stage", "point", "figure", "kind", "nearest", "gap"}
+        assert record["figure"] == "35" and record["kind"] == "metres"
+        assert record["nearest"] is None and record["gap"] is None
+
+
+def test_number_misses_survive_a_run_error_after_the_first_check(snap, tmp_path):
+    model = Model(snap, tmp_path, [json.dumps({"points": [bad_point()]})])
+    misses = []
+    with pytest.raises(runner.RunError, match="session"):
+        runner.generate(snap, 0, tmp_path, BOOK, lambda text, session: (model(text, session)[0], None),
+                        "test-model", misses=misses)
+    assert misses == [{"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None}]
 
 
 def test_a_repair_reply_with_the_index_as_a_string_is_still_matched(snap, tmp_path):
@@ -180,6 +243,19 @@ def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, m
         run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
 
 
+@pytest.mark.parametrize("options, expected", [
+    ([], "claude-opus-5-5"), (["--model", "x"], "x"), (["--model", ""], ""),
+])
+def test_the_report_parser_selects_and_passes_the_model(options, expected):
+    args = coach_report.build_parser().parse_args(["abcdef12-0000-4000-8000-000000000000", "0", *options])
+    assert args.model == expected
+    command = coach_report.claude_command("claude", args.model, None)
+    if expected:
+        assert command[-2:] == ["--model", expected]
+    else:
+        assert "--model" not in command
+
+
 def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
     command = coach_report.claude_command("claude", None, None)
     assert command[:4] == ["claude", "-p", "--output-format", "json"]
@@ -206,7 +282,8 @@ def test_the_q_script_runs_the_query_tool_against_this_run(tmp_path):
     assert path.name == "q" and "coach_query.py" in text and '--run' in text and '"$@"' in text and "\\" not in text
     assert path == tmp_path / "model" / "q"
     assert [p.name for p in (tmp_path / "model").iterdir()] == ["q"]
-    assert f'--run "{tmp_path.resolve().as_posix()}"' in text
+    assert f'--run "{tmp_path.resolve().as_posix()}" --compact --' in text
+    assert f'exec "{(tmp_path / "python.exe").as_posix()}" -X utf8 ' in text
 
 
 def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
@@ -305,6 +382,67 @@ def test_usage_is_merged_and_recorded(tmp_path):
     assert json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))["player"] == "B"
 
 
+@pytest.mark.parametrize("failure", ["timeout", "stderr", "plain", "malformed"])
+def test_run_player_records_calls_without_readable_usage(tmp_path, monkeypatch, capsys, failure):
+    make_call = coach_report.claude_call
+    data = make_data()
+    _wire(monkeypatch, tmp_path, [], data)
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    logged = []
+    attempted = []
+
+    def failed_run(command, **kwargs):
+        attempted.append(command)
+        if failure == "timeout":
+            raise coach_report.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return coach_report.subprocess.CompletedProcess(
+            command, 0 if failure == "malformed" else 1,
+            stdout={"stderr": "", "plain": "service unavailable", "malformed": '{"result":'}[failure],
+            stderr="service unavailable" if failure == "stderr" else "")
+
+    monkeypatch.setattr(coach_report.subprocess, "run", failed_run)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    args = coach_report.build_parser().parse_args(["synthetic-match", "0", "--dry-run"])
+    args.usage_total = coach_report.new_usage()
+    assert coach_report.run_player(args, args.match_uuid, BOOK, "0", 7, 100, data) == 1
+    assert len(attempted) == len(logged) == 1
+    entry = logged[0]
+    assert (entry["attempts"], entry["usage_missing"], entry["outcome"]) == (1, 1, "failed")
+    assert entry["usage"] == args.usage_total == coach_report.new_usage()
+    assert entry["number_misses"] == []
+    assert "usage: none read from 1 failed call(s)" in capsys.readouterr().out
+
+
+def test_run_player_records_a_repair_timeout_and_keeps_first_call_usage(tmp_path, monkeypatch, capsys):
+    make_call = coach_report.claude_call
+    data = make_data()
+    _wire(monkeypatch, tmp_path, [], data)
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    logged = []
+    attempted = []
+
+    def repair_times_out(command, **kwargs):
+        attempted.append(command)
+        if len(attempted) == 2:
+            raise coach_report.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        out = {**_cli_out(0.4, 7, 50), "result": json.dumps({"points": [bad_point()]})}
+        return coach_report.subprocess.CompletedProcess(command, 0, stdout=json.dumps(out), stderr="")
+
+    monkeypatch.setattr(coach_report.subprocess, "run", repair_times_out)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    args = coach_report.build_parser().parse_args(["synthetic-match", "0", "--dry-run"])
+    args.usage_total = coach_report.new_usage()
+    assert coach_report.run_player(args, args.match_uuid, BOOK, "0", 7, 100, data) == 1
+    assert len(attempted) == 2 and len(logged) == 1
+    entry = logged[0]
+    assert (entry["attempts"], entry["usage_missing"], entry["outcome"]) == (2, 1, "failed")
+    assert entry["usage"]["calls"] == 1 and entry["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert entry["usage"] == args.usage_total
+    assert entry["number_misses"] == [{"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                                       "nearest": None, "gap": None}]
+    assert "usage: 0.00M tokens" in capsys.readouterr().out
+
+
 def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "0"], make_data())
     logged = []
@@ -313,8 +451,15 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
         raise AssertionError("generate is replaced")
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
+    call.attempts = 1
 
-    def generate(*args):
+    received = []
+
+    def generate(*args, misses=None):
+        assert isinstance(misses, list)
+        received.append(misses)
+        misses.append({"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None})
         coach_report.add_usage(call.usage, _cli_out(0.4, 7, 50))
         raise runner.RunError("no json")
 
@@ -323,6 +468,8 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
     assert logged[0]["outcome"] == "failed" and logged[0]["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert len(logged) == 1 and logged[0]["attempts"] == 1 and logged[0]["usage_missing"] == 0
+    assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
     assert "usage: 0.00M tokens" in capsys.readouterr().out
 
 
@@ -368,6 +515,47 @@ def test_prompt_only_writes_the_first_prompt_and_never_calls_the_model(tmp_path,
     assert str(path) in out and str(len(text)) in out
 
 
+@pytest.mark.parametrize("options, expected", [
+    ([], "claude-opus-5-5"), (["--model", "x"], "x"), (["--model", ""], ""),
+])
+def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeypatch, options, expected):
+    uuid = "abcdef12-0000-4000-8000-000000000000"
+    _wire(monkeypatch, tmp_path, [uuid, "0", "--dry-run", *options], make_data())
+    logged = []
+
+    def call(text, session):
+        raise AssertionError("generate is replaced")
+
+    call.denials, call.models, call.usage = 0, {"cli-model"}, coach_report.new_usage()
+    call.attempts = 1
+    coach_report.add_usage(call.usage, _cli_out(0.1, 1, 10))
+
+    def make_call(run_dir, model):
+        assert model == expected
+        return call
+
+    received = []
+
+    def generate(snap, slot, run_dir, book, model_call, model, *, misses=None):
+        assert model_call is call
+        assert model == (expected or "claude-code (default model)")
+        assert isinstance(misses, list)
+        received.append(misses)
+        misses.append({"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                       "nearest": None, "gap": None})
+        return {"model": model, "points": [], "dropped_points": 0}
+
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    monkeypatch.setattr(runner, "generate", generate)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    assert coach_report.main() == 0
+    assert logged[0]["model"] == (expected or "default")
+    assert len(logged) == 1 and logged[0]["attempts"] == 1 and logged[0]["usage_missing"] == 0
+    assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
+    path = tmp_path / "valo-coach" / f"{uuid}-p100" / "payload.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["model"] == (expected or "cli-model")
+
+
 def test_a_player_not_in_the_snapshot_is_refused_with_2(tmp_path, monkeypatch, capsys):
     _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "nobody", "--prompt-only"], make_data())
     assert coach_report.main() == 2
@@ -379,6 +567,7 @@ def test_a_player_not_in_the_snapshot_is_refused_with_2(tmp_path, monkeypatch, c
 def test_q_ends_its_options_so_the_model_cannot_override_run(tmp_path):
     text = coach_report.write_q(tmp_path, tmp_path / "python.exe").read_text(encoding="utf-8")
     assert '"$@"' in text and '-- "$@"' in text
+    assert '" -X utf8 "' in text
 
 
 def test_coach_query_refuses_a_second_run_option(tmp_path, monkeypatch, capsys):
@@ -460,7 +649,7 @@ def test_each_rounds_economy_and_score_can_be_cited(snap, tmp_path):            
 
     class Facts(Model):
         def __call__(self, text, session):
-            brief = json.loads(text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]) \
+            brief = compact.parse(text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]) \
                 if "# The brief" in text else None
             if brief:
                 self.facts = brief["rounds"][0]["facts_id"]
@@ -531,9 +720,10 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
         raise AssertionError("generate is replaced")
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
+    call.attempts = 0
     monkeypatch.setattr(app.db, "SessionLocal", Db)
     monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
-    monkeypatch.setattr(runner, "generate", lambda *args: payload())
+    monkeypatch.setattr(runner, "generate", lambda *args, misses=None: payload())
     monkeypatch.setattr(coach, "store_report", lambda db, match_id, player_id, body: Report(db))
     assert coach_report.main() == 0
     assert "published version 4 (2 points, 0 dropped)" in capsys.readouterr().out

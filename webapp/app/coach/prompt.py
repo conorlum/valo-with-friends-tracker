@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 
+from app.coach import compact, notes
+
 COMMANDS = """\
 ./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
 ./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out (time, name, reason, optional pulse-device area), lost_track (time, name, reason)
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
-./q impact <round> <player>                the player's stored Impact row for the round"""
+./q impact <round> <player>                the player's stored Impact row for the round
+./q deaths [player]                       the player's deaths across the match
+./q kills [player]                        the player's kills across the match
+./q teammate_deaths [player]              deaths of the player's teammates across the match
+./q moment <round> <t>                    full timeline, where and both sides' knew answers for a moment"""
 
 SHAPE = """\
 {"points": [
@@ -23,7 +29,8 @@ SHAPE = """\
 
 
 def run_prompt(book, brief: dict) -> str:
-    return f"""{book.text}
+    fixed_notes = "\n\n".join(f"{cmd}: {note}" for cmd, note in notes.NOTES.items())
+    return (f"""{book.text}
 
 # Themes
 
@@ -31,12 +38,46 @@ A point's theme must be one of: {", ".join(book.themes)}
 
 # The query command
 
-Run it from the current directory, one call per command, with no pipes or redirection. Times are seconds into
+"""
+            "Make fewer, bigger calls: put every query a step needs into one `./q` call joined by `+`, because each call re-reads the whole conversation.\n"
+            f"""Run it from the current directory with no pipes or redirection. Several queries go in one call joined by a lone
+`+`, for example `./q where 7 41.5 + knew 7 42 A`. Times are seconds into
 the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
-number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with "error" is not
-evidence. An answer with "available": false means the data is missing for that round.
+number. Opponents are named by their agent ("the enemy Neon"): write them that way, never by any other name.
+Every answer is a compact block with a header giving the id, command and arguments. Cite that id as evidence.
+Objects use key:value and scalar lists use brackets. Tables use <key|key; then one row per line, separated by
+semicolons. Rows drop trailing blank cells. A blank cell or missing field is null. Empty lists and objects mean
+none. Strings are quoted when ambiguous. Query areas use (name[path names]^super)~. The bracketed list contains
+the ancestors in path order, followed implicitly by name. It is omitted when path is just [name]. ^super appears
+when super is present. A trailing ~ marks approximate true, and its absence means approximate false.
+Other shapes use the full ~(name|super|path|approximate) form, which the brief also uses.
+A rough place uses @(from direction min-maxm), preserving the nearest teammate, minimap direction and both
+distances in metres, for example @(P0 right 120.0-130.0m). Incomplete or ambiguous shapes keep their full fields.
+An answer with error is not evidence. An answer with available:false means the data is missing for that round.
 
 {COMMANDS}
+
+For deaths, kills and teammate_deaths, player defaults to the subject. A pattern query logs a timeline,
+where (0.5 s before the moment, clamped to 0) and two knew answers (A and B) per moment, and prints one row per
+moment with round, t, killer, victim, player areas and health, matching flags, and the logged answers' ids
+(timeline_id, where_id, knew_a_id, knew_b_id), citable like any answer. moment prints the four full answers
+with their ids. Rows are discovery pointers: their answers are asked at the row's t (where 0.5 s before,
+clamped to 0). An instance keeps the playbook's start: a fight or death about 5 seconds before first damage,
+usually before the row's t. Run `moment <round> <instance t>` for that start and cite its knew answer for the
+player's side, and its where answer when the caption names the player's place at the start. The row's other ids
+may accompany it when valid for the instance: timed answers count from 30 s before the instance's t through its
+t1 (or t without t1), but a mistake's required knew answer must be no later than its t. The row's timeline is
+tied only to the round.
+Every "to improve" instance, from a row or not, must run `moment <round> <instance t>` and cite that answer's knew id
+for the player's side, unless the round has no team-knowledge data, which the caption must say.
+
+# Fixed notes
+
+These apply to every answer of the named command. Any additional note appears below its answer.
+
+{notes._APPROXIMATE_AREAS}
+
+{fixed_notes}
 
 Each flag in the brief already has an "id" you may cite, and each round's "facts_id" cites that round's economy
 and the score going into it. Each entry of a round's "util_facts" (the player's utility, measured: who it affected,
@@ -59,15 +100,16 @@ For Haunt and Recon, `area` is where the pulse looked and found nobody of that n
 
 # The brief
 
-{json.dumps(brief, separators=(",", ":"))}
+{compact.render(brief)}
 
 # What to return
 
 When you have checked your points, reply with one JSON object and nothing else, in this shape. "t" is the moment
 in the round; "t1" is optional and ends a span. Exactly three "good" and three "improve".
+"t1" is at most {notes.SPAN_MAX_S:g} s after "t".
 
 {SHAPE}
-"""
+""")
 
 
 def repair_prompt(failed: list[tuple[int, dict, list[str]]], missing: dict | None = None, next_index: int = 0) -> str:
