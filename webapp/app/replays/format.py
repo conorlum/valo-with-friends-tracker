@@ -50,7 +50,11 @@ looked for them, so a round with that key and no cast had none. A blob without t
 Held guns (revision 30): `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}`
 records inventory switches to firearms or melee. `id` (shot `gid`) and `gen` identify one spawned
 actor generation; `from` names a previous holder and `seed` a surviving round-start carry. Other
-items close a hold with `gun: null, cat: "other"` and no id/gen. Death ends the hold; a revive
+items close a hold with `gun: null` and no id/gen. Revision 32 names abilities with `cat: "ability"`,
+`code`, `key` (C/Q/E/X or null; raw 4 maps to C) and `name`, accepting either code/slot order.
+Known ability weapons outside `Default__Ability_*` have their weapon name and null code/key.
+The spike, defuser and totems use `cat: "spike"`, `"defuser"` and `"flex"`; unknown items keep
+`"other"`. Unarmed stays melee with `item: "unarmed"`; the knife has no `item`. Death ends the hold; a revive
 starts with no held gun until a switch. Shot rows carry `gid` when the equippable supplies it,
 and `gen` when its actor resolves. Older blobs have no `hold` rows: held gun is unknown.
 
