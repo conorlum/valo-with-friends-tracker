@@ -475,6 +475,44 @@ def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
     return problems
 
 
+def _held_at_death_problems(point, moments, slot: int) -> list[str]:
+    """Check explicit held-item claims: shared text uses all cited fights, captions only their moment."""
+    pattern = re.compile(r"\b(?:with|had)\s+(?:your|the)\s+"
+                         r"([^\s.!?]+(?:[ \t]+[^\s.!?]+){0,2}?)\s+out\b(?!\s+of\b)", re.IGNORECASE)
+
+    def claims(text):
+        items = [match.group(1).strip().casefold() for match in pattern.finditer(text)]
+        if re.search(r"\bdied\s+unarmed\b|\bwith\s+nothing\s+in\s+your\s+hands\b", text, re.IGNORECASE):
+            items.append("unarmed")
+        return items
+
+    def supported_items(entries):
+        items = set()
+        for entry in entries:
+            fight = entry["result"]
+            is_fight = entry["cmd"] == "fight" or (
+                entry["cmd"] == "flag" and fight.get("kind") in _FIGHT_FLAGS)
+            death = fight.get("death") or {}
+            lost = fight.get("won") is False or ("won" not in fight and bool(death))
+            item = death.get("out_at_death")
+            if is_fight and fight.get("subject") == slot and lost and isinstance(item, str):
+                items.add(item.casefold())
+        return items
+
+    shared = {item for key in ("title", "body") for item in claims(str(point.get(key) or ""))}
+    supported = supported_items(entry for *_, entries in moments for entry in entries)
+    problems = []
+    for item in sorted(shared - supported):
+        problems.append(f"title/body: held-at-death claim {item!r} has no cited lost fight "
+                        "with that out_at_death in any cited round")
+    for label, n, _, _, _, caption, entries in moments:
+        supported = supported_items(entries)
+        for item in sorted(set(claims(caption)) - supported):
+            problems.append(f"{label}: held-at-death claim {item!r} has no cited lost fight "
+                            f"with that out_at_death in round {n}")
+    return problems
+
+
 def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
     problems = _area_problems(text, _grounded_areas(cited), area_names, improve)
     numbers, shares, times, pairs = cited.numbers, cited.shares, cited.times, cited.pairs
@@ -710,4 +748,5 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
         if isinstance(inst, dict):
             problems += _area_problems(str(inst.get("caption") or ""), _grounded_areas(cited, i), area_names, improve)
     problems += _gun_problems(point, moments, improve, snap, slot)
+    problems += _held_at_death_problems(point, moments, slot)
     return problems + _text_problems(text, cited, snap.names)

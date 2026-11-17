@@ -56,6 +56,7 @@ so say "likely". The "death" facts give the dropped gun, the killer's gun at the
 the dropped gun was better. "picked_up" gives who took it and when, and "kills_with" counts their later kills
 with that gun. Each fight has an "id" to cite. Distances in improve points require sight at the fight's geometry
 time "g", including just before a one-shot kill.
+"out_at_death" says what the player had out when they died, "no_gun_deaths" tallies those deaths with each fight's id; a point about them cites those fight ids.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
 a clock time, 0:41); each must be in an answer you cite for that instance. Ground a named area with a cited

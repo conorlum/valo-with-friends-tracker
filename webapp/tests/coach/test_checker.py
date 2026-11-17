@@ -467,6 +467,50 @@ def test_gun_vocabulary_excludes_abilities_knife_and_partial_words(tmp_path):
     assert problems(snap, log, body="Knife Overdrive Tour de Force Ghosted", instances=instances) == []
 
 
+@pytest.mark.parametrize("section", ["title", "body", "caption"])
+def test_held_at_death_check_is_narrow_and_checks_every_text_section(tmp_path, section):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    log["f"]["result"]["death"]["out_at_death"] = "Knife"
+    over = {"title": "Weapon choice", "body": "Reposition.", "instances": instances}
+
+    def check(text):
+        if section == "caption":
+            instances[0]["caption"] = text
+        else:
+            over[section] = text
+        return problems(snap, log, **over)
+
+    assert check("You died with your knife out.") == []
+    assert check("You had the Spycam out.")
+    assert check("Spycam Knife Overdrive") == []
+    assert check("You died with your made up item out.")
+
+
+@pytest.mark.parametrize("text", [
+    "You swung with the enemy Raze out of position.",
+    "You had the spike out of sight.",
+    "You had the spike out OF sight.",
+    "You died with your made up fourth item out.",
+])
+def test_held_at_death_ignores_out_of_and_items_longer_than_three_words(tmp_path, text):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    assert problems(snap, log, title="Weapon choice", body=text, instances=instances) == []
+
+
+@pytest.mark.parametrize("item", ["Spycam", "flex item", "Tour de Force"])
+def test_held_at_death_still_checks_items_of_up_to_three_words(tmp_path, item):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    found = problems(snap, log, title="Weapon choice", body=f"You died with your {item} out.", instances=instances)
+    assert len(found) == 1 and "held-at-death" in found[0]
+
+
+def test_held_death_does_not_relax_the_existing_firearm_check(tmp_path):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    log["f"]["result"].update(my_gun="Knife")
+    log["f"]["result"]["death"].update(dropped_gun=None, out_at_death="Knife")
+    assert problems(snap, log, body="Your Vandal was exposed.", instances=instances)
+
+
 @pytest.mark.parametrize("body,gun", [("The enemy Chamber's Tour de Force", "Tour de Force"),
                                      ("Their Headhunter", "Headhunter"), ("Their Overdrive", "Overdrive")])
 @pytest.mark.parametrize("shot", [False, True])
