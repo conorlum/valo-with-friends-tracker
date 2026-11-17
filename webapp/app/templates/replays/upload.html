@@ -15,7 +15,7 @@
     <button type="submit">Continue</button>
   </form>
   {% else %}
-  <p class="page-meta">Pick a competitive match's <code>.vrf</code> file from
+  <p class="page-meta">Pick or drag in a competitive match's <code>.vrf</code> file from
     <code data-demos-path>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker into the minimap
     replay. If the match is on this site, the replay links to it; if not, it plays on its own and links after the match
     is crawled.</p>
@@ -31,7 +31,13 @@
     runs out, the oldest matches are deleted first. If you want a match removed, ask, and its file and its replay are
     both deleted (a copy in the worker's automatic disk backups can outlive that until the backup expires).</p>
   <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form>
-    <label>Replay files (up to {{ max_files }}) <input type="file" name="file" accept=".vrf" multiple required></label>
+    {# Files can be dragged in from an Explorer window on the Demos folder (Win+R, paste the path, Enter) or picked
+       with the plain input inside the box. #}
+    <div class="upload-drop" data-drop-zone>
+      <p class="upload-drop-title">Drop replay files here (up to {{ max_files }})</p>
+      <p class="page-meta upload-drop-chosen" data-drop-chosen aria-live="polite">No files chosen yet.</p>
+      <label class="page-meta">or pick them: <input type="file" name="file" accept=".vrf" multiple required></label>
+    </div>
     <button type="submit">Upload</button>
   </form>
   <p class="upload-error" role="alert" data-upload-error hidden></p>
@@ -260,9 +266,9 @@
 </script>
 <script>
   // Finding the Demos folder. "Copy folder path" puts the path on the clipboard for the file dialog's File name box.
-  // Where the browser has showOpenFilePicker (Chrome, Edge), the file input opens it instead, with its own id, so
-  // the browser remembers the Demos folder for this button apart from every other upload. The picked files go back
-  // into the input, so the form and the upload script below are unchanged; any other browser keeps the plain input.
+  // Never swap the plain input for showOpenFilePicker: its blocklist refuses AppData ("can't open files in this
+  // folder because it contains system files"), which is where Valorant keeps replays. The plain input has no such
+  // block.
   (function () {
     var copyButton = document.querySelector("[data-demos-copy]");
     var copyStatus = document.querySelector("[data-demos-copy-status]");
@@ -280,30 +286,6 @@
       navigator.clipboard.writeText(path).then(function () {
         done("Copied. In the file picker, paste it into the File name box (Ctrl+V) and press Enter.");
       }, function () { done("Couldn't copy: select the folder path above and press Ctrl+C."); });
-    });
-
-    var input = document.querySelector("[data-upload-form] input[type=file]");
-    if (!input || typeof window.showOpenFilePicker !== "function" || typeof DataTransfer !== "function") return;
-    var usePicker = true;
-    input.addEventListener("click", function (event) {
-      if (!usePicker) return;
-      event.preventDefault();
-      window.showOpenFilePicker({
-        id: "valorant-replays",
-        multiple: true,
-        types: [{description: "Valorant replays", accept: {"application/octet-stream": [".vrf"]}}],
-      }).then(function (handles) {
-        return Promise.all(handles.map(function (handle) { return handle.getFile(); }));
-      }).then(function (files) {
-        var picked = new DataTransfer();
-        files.forEach(function (file) { picked.items.add(file); });
-        input.files = picked.files;
-        input.dispatchEvent(new Event("change", {bubbles: true}));
-      }).catch(function (error) {
-        if (error && error.name === "AbortError") return;  // the picker was closed without choosing
-        usePicker = false;  // this browser refused the picker: the plain input from now on
-        input.click();
-      });
     });
   })();
 </script>
@@ -391,6 +373,31 @@
       });
     }
 
+    // The drop box: dropped files become the input's files, so the submit below sends them as if picked.
+    var zone = form.querySelector("[data-drop-zone]"), chosen = form.querySelector("[data-drop-chosen]");
+    function showChosen() {
+      var files = Array.prototype.slice.call(input.files);
+      chosen.textContent = files.length ? files.length + (files.length === 1 ? " file" : " files") + " ready: " +
+        files.map(function (f) { return f.name; }).join(", ") + ". Press Upload." : "No files chosen yet.";
+    }
+    function hasFiles(e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, "Files") >= 0; }
+    // A file dropped beside the box must not make the browser open it in place of this page.
+    ["dragover", "drop"].forEach(function (type) {
+      window.addEventListener(type, function (e) { if (hasFiles(e)) e.preventDefault(); });
+    });
+    var depth = 0;
+    zone.addEventListener("dragenter", function (e) { if (hasFiles(e)) { depth++; zone.classList.add("is-over"); } });
+    zone.addEventListener("dragleave", function () { if (--depth <= 0) { depth = 0; zone.classList.remove("is-over"); } });
+    zone.addEventListener("dragover", function (e) { if (hasFiles(e)) e.dataTransfer.dropEffect = "copy"; });
+    zone.addEventListener("drop", function (e) {
+      depth = 0; zone.classList.remove("is-over");
+      if (!hasFiles(e) || !e.dataTransfer.files.length) return;
+      input.files = e.dataTransfer.files;
+      errorLine.hidden = true;
+      showChosen();
+    });
+    input.addEventListener("change", showChosen);
+
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       var files = Array.prototype.slice.call(input.files), problem = null;
@@ -410,7 +417,7 @@
       });
       files.reduce(function (chain, file, i) {
         return chain.then(function () { return send(file, rows[i]); });
-      }, Promise.resolve()).then(function () { button.disabled = false; form.reset(); });
+      }, Promise.resolve()).then(function () { button.disabled = false; form.reset(); showChosen(); });
     });
 
     // Rows the server listed: local times, then the current state of each, polling the unfinished ones.

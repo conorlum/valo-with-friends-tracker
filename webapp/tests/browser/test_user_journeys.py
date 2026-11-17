@@ -104,6 +104,28 @@ def test_site_health_card_shows_group_heading_and_event_row(browser_page, monkey
     expect(page.locator('[data-errors-body]').get_by_text('GET /browser-probe')).to_be_visible()
 
 
+def test_upload_drop_box_takes_dropped_files_and_input_stays_plain(browser_page, monkeypatch):
+    from app.config import settings
+    from app.routers import replays as routes
+    page, base, _ = browser_page
+    monkeypatch.setattr(settings, 'replay_upload_code', 'test-code')
+    monkeypatch.setattr(settings, 'replay_worker_url', 'http://127.0.0.1:9')
+    monkeypatch.setattr(routes.uploads, 'batch_limit', lambda worker: 5)
+    page.goto(base+'/replays/upload')
+    page.locator('input[name=code]').fill('test-code')
+    with page.expect_navigation(): page.locator('input[name=code]').press('Enter')
+    # showOpenFilePicker's blocklist refuses AppData, where replays live: the input must open the plain picker.
+    assert 'showOpenFilePicker(' not in page.content()
+    count = page.evaluate("""() => {
+        const zone = document.querySelector('[data-drop-zone]'), dt = new DataTransfer();
+        dt.items.add(new File(['x'], 'a.vrf')); dt.items.add(new File(['y'], 'b.vrf'));
+        zone.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true}));
+        return document.querySelector('[data-upload-form] input[type=file]').files.length;
+    }""")
+    assert count == 2
+    expect(page.locator('[data-drop-chosen]')).to_contain_text('2 files ready: a.vrf, b.vrf')
+
+
 def marker_pixels(page, seconds):
     # SyntheticMatch's slot 0 starts at (-1700, 500) and walks +40 x/s.
     # Ascent maps world y to u and world x to v. These expectations come from
