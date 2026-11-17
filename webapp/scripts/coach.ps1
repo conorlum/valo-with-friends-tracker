@@ -14,7 +14,6 @@ Needs webapp/.env.remote (see scripts/with_friends_db.py) and the claude command
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Match,
     [Parameter(Mandatory = $true, Position = 1, ValueFromRemainingArguments = $true)][object[]]$Player,
-    [string]$Model = "",
     [switch]$DryRun,
     [switch]$PromptOnly,
     [switch]$Team
@@ -29,7 +28,6 @@ $python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
 $entry = if ($Team) { "scripts\coach_team.py" } else { "scripts\coach_report.py" }
 if ($Team -and $Player.Count -ne 1) { [Console]::Error.WriteLine("refused: -Team takes one player"); exit 2 }
 $command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", $entry, $Match) + $Player
-if ($Model) { $command += @("--model", $Model) }
 if ($DryRun) { $command += "--dry-run" }
 if ($PromptOnly) { $command += "--prompt-only" }
 & $python @command

@@ -200,15 +200,26 @@ def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, m
 
 
 def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
-    command = coach_report.claude_command("claude", None, None)
+    command = coach_report.claude_command("claude", None)
     assert command[:4] == ["claude", "-p", "--output-format", "json"]
     for flag in ("--restricted", "--safe-mode", "--strict-mcp-config"):
         assert flag in command
     assert command[command.index("--tools") + 1] == "Bash"
     assert command[command.index("--allowedTools") + 1] == "Bash(./q:*)"
     assert not any("skip" in part or "bypass" in part.lower() for part in command)
-    resumed = coach_report.claude_command("claude", "opus", "session-1")
-    assert resumed[-4:] == ["--model", "opus", "--resume", "session-1"]
+    resumed = coach_report.claude_command("claude", "session-1")
+    assert resumed[-2:] == ["--resume", "session-1"]
+
+
+def test_every_run_is_opus_at_medium_effort_and_nothing_changes_it():
+    # The owner's rule: never the CLI's default model, which switched mid-batch on 2026-11-17.
+    assert (coach_report.MODEL, coach_report.EFFORT) == ("claude-opus-5-5", "medium")
+    for session in (None, "session-1"):
+        command = coach_report.claude_command("claude", session)
+        assert command.count("--model") == 1 and command[command.index("--model") + 1] == "claude-opus-5-5"
+        assert command.count("--effort") == 1 and command[command.index("--effort") + 1] == "medium"
+    from scripts import coach_team
+    assert "--model" not in coach_team.report_command("abc", ["A#1"], None)
 
 
 def test_the_models_environment_is_an_allow_list():
@@ -241,7 +252,7 @@ def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", fake_run)
     (tmp_path / "model").mkdir()
-    assert coach_report.claude_call(tmp_path, None)("x", None) == ("hi", "s")
+    assert coach_report.claude_call(tmp_path)("x", None) == ("hi", "s")
     assert seen["cwd"] == tmp_path / "model"
 
 
@@ -265,7 +276,7 @@ def test_usage_is_summed_over_every_call_of_a_run(tmp_path, monkeypatch):
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
     (tmp_path / "model").mkdir()
-    call = coach_report.claude_call(tmp_path, None)
+    call = coach_report.claude_call(tmp_path)
     call("first", None)
     call("repair", "s")
     usage = call.usage
@@ -290,7 +301,7 @@ def test_a_failed_call_says_why_from_stdout_and_counts_its_usage(tmp_path, monke
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
     (tmp_path / "model").mkdir()
-    call = coach_report.claude_call(tmp_path, None)
+    call = coach_report.claude_call(tmp_path)
     with pytest.raises(RuntimeError, match="api_error_status=429.*rate limited"):
         call("x", None)
     assert call.usage["calls"] == 1 and call.usage["cost_usd"] == pytest.approx(0.1)
@@ -337,7 +348,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
         coach_report.add_usage(call.usage, _cli_out(0.4, 7, 50))
         raise runner.RunError("no json")
 
-    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir: call)
     monkeypatch.setattr(runner, "generate", generate)
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
@@ -551,7 +562,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
     monkeypatch.setattr(app.db, "SessionLocal", Db)
-    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir: call)
     monkeypatch.setattr(runner, "generate", lambda *args: payload())
     monkeypatch.setattr(coach, "store_report", lambda db, match_id, player_id, body: Report(db))
     assert coach_report.main() == 0
@@ -578,13 +589,15 @@ def _team(monkeypatch, argv, results):
 
 
 def test_the_team_command_hands_every_teammate_to_one_report_process(monkeypatch):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--dry-run"], {})
     assert coach_team.main() == 0
-    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--model", "opus",
-                                                 "--dry-run"]]
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--dry-run"]]
     assert ran[0][1].endswith("coach_report.py")
     with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
         monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
+        coach_team.main()
+    with pytest.raises(SystemExit):                 # and no option that picks another model
+        monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--model", "sonnet"])
         coach_team.main()
 
 
