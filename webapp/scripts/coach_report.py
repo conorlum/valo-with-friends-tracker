@@ -99,6 +99,7 @@ def claude_call(run_dir: Path, model: str | None):
         raise SystemExit("refused: the claude command is not on PATH")
 
     def call(text: str, session: str | None):
+        call.attempts += 1
         done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
                               encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
@@ -114,6 +115,7 @@ def claude_call(run_dir: Path, model: str | None):
 
     call.models = set()
     call.denials = 0        # commands the model tried and was refused: a clean run has none
+    call.attempts = 0       # includes calls whose output or usage could not be read
     call.usage = new_usage()
     return call
 
@@ -323,9 +325,14 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
         return 1
     finally:      # a failed run's calls cost the same: always recorded
         usage_entry["number_misses"] = misses
-        if call.usage["calls"]:
+        if call.attempts:
+            usage_entry["attempts"] = call.attempts
+            usage_entry["usage_missing"] = call.attempts - call.usage["calls"]
             record_usage(run_dir, usage_entry)
-            print(f"usage: {usage_line(call.usage)}", flush=True)
+            if call.usage["calls"]:
+                print(f"usage: {usage_line(call.usage)}", flush=True)
+            else:
+                print(f"usage: none read from {call.attempts} failed call(s)", flush=True)
             if isinstance(getattr(args, "usage_total", None), dict):
                 merge_usage(args.usage_total, call.usage)
     if call.denials:

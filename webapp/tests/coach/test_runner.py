@@ -382,6 +382,67 @@ def test_usage_is_merged_and_recorded(tmp_path):
     assert json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))["player"] == "B"
 
 
+@pytest.mark.parametrize("failure", ["timeout", "stderr", "plain", "malformed"])
+def test_run_player_records_calls_without_readable_usage(tmp_path, monkeypatch, capsys, failure):
+    make_call = coach_report.claude_call
+    data = make_data()
+    _wire(monkeypatch, tmp_path, [], data)
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    logged = []
+    attempted = []
+
+    def failed_run(command, **kwargs):
+        attempted.append(command)
+        if failure == "timeout":
+            raise coach_report.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return coach_report.subprocess.CompletedProcess(
+            command, 0 if failure == "malformed" else 1,
+            stdout={"stderr": "", "plain": "service unavailable", "malformed": '{"result":'}[failure],
+            stderr="service unavailable" if failure == "stderr" else "")
+
+    monkeypatch.setattr(coach_report.subprocess, "run", failed_run)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    args = coach_report.build_parser().parse_args(["synthetic-match", "0", "--dry-run"])
+    args.usage_total = coach_report.new_usage()
+    assert coach_report.run_player(args, args.match_uuid, BOOK, "0", 7, 100, data) == 1
+    assert len(attempted) == len(logged) == 1
+    entry = logged[0]
+    assert (entry["attempts"], entry["usage_missing"], entry["outcome"]) == (1, 1, "failed")
+    assert entry["usage"] == args.usage_total == coach_report.new_usage()
+    assert entry["number_misses"] == []
+    assert "usage: none read from 1 failed call(s)" in capsys.readouterr().out
+
+
+def test_run_player_records_a_repair_timeout_and_keeps_first_call_usage(tmp_path, monkeypatch, capsys):
+    make_call = coach_report.claude_call
+    data = make_data()
+    _wire(monkeypatch, tmp_path, [], data)
+    monkeypatch.setattr(coach_report, "claude_call", make_call)
+    logged = []
+    attempted = []
+
+    def repair_times_out(command, **kwargs):
+        attempted.append(command)
+        if len(attempted) == 2:
+            raise coach_report.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        out = {**_cli_out(0.4, 7, 50), "result": json.dumps({"points": [bad_point()]})}
+        return coach_report.subprocess.CompletedProcess(command, 0, stdout=json.dumps(out), stderr="")
+
+    monkeypatch.setattr(coach_report.subprocess, "run", repair_times_out)
+    monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
+    args = coach_report.build_parser().parse_args(["synthetic-match", "0", "--dry-run"])
+    args.usage_total = coach_report.new_usage()
+    assert coach_report.run_player(args, args.match_uuid, BOOK, "0", 7, 100, data) == 1
+    assert len(attempted) == 2 and len(logged) == 1
+    entry = logged[0]
+    assert (entry["attempts"], entry["usage_missing"], entry["outcome"]) == (2, 1, "failed")
+    assert entry["usage"]["calls"] == 1 and entry["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert entry["usage"] == args.usage_total
+    assert entry["number_misses"] == [{"stage": "first", "point": 0, "figure": "35", "kind": "metres",
+                                       "nearest": None, "gap": None}]
+    assert "usage: 0.00M tokens" in capsys.readouterr().out
+
+
 def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "0"], make_data())
     logged = []
@@ -390,6 +451,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
         raise AssertionError("generate is replaced")
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
+    call.attempts = 1
 
     received = []
 
@@ -406,6 +468,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
     assert logged[0]["outcome"] == "failed" and logged[0]["usage"]["cost_usd"] == pytest.approx(0.4)
+    assert len(logged) == 1 and logged[0]["attempts"] == 1 and logged[0]["usage_missing"] == 0
     assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
     assert "usage: 0.00M tokens" in capsys.readouterr().out
 
@@ -464,6 +527,7 @@ def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeyp
         raise AssertionError("generate is replaced")
 
     call.denials, call.models, call.usage = 0, {"cli-model"}, coach_report.new_usage()
+    call.attempts = 1
     coach_report.add_usage(call.usage, _cli_out(0.1, 1, 10))
 
     def make_call(run_dir, model):
@@ -486,6 +550,7 @@ def test_the_selected_model_reaches_the_call_usage_and_payload(tmp_path, monkeyp
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry: logged.append(entry))
     assert coach_report.main() == 0
     assert logged[0]["model"] == (expected or "default")
+    assert len(logged) == 1 and logged[0]["attempts"] == 1 and logged[0]["usage_missing"] == 0
     assert logged[0]["number_misses"] is received[0] and len(received[0]) == 1
     path = tmp_path / "valo-coach" / f"{uuid}-p100" / "payload.json"
     assert json.loads(path.read_text(encoding="utf-8"))["model"] == (expected or "cli-model")
@@ -655,6 +720,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
         raise AssertionError("generate is replaced")
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
+    call.attempts = 0
     monkeypatch.setattr(app.db, "SessionLocal", Db)
     monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
     monkeypatch.setattr(runner, "generate", lambda *args, misses=None: payload())
