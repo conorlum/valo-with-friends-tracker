@@ -33,11 +33,12 @@
     "walk": "42d1d3f29a3c"
    },
    "height_geometry_identity": {
+    "height_paint": "79bd771f7ff2",
     "scale": 8.1e-05,
     "sight": "8342f6714685",
     "walk": "42d1d3f29a3c"
    },
-   "height_manifest_digest": "b16bd65b3ad37881",
+   "height_manifest_digest": "fab4b3edbb80a0d9",
    "map_layer_sha256": "428d46d7e20fc5076736434f3ca5a25f27f52ce00f21d63d939c68c2d53081a0"
   },
   "Ascent": {

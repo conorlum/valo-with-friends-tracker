@@ -4,6 +4,34 @@ from tests.coach import toys
 from tests.coach.test_areas import painted_object, write_paint
 
 
+def test_gun_flags_keep_fight_geometry_knowledge_and_death_time_guns():
+    from app.coach import fights
+    from tests.coach.test_fights import hold, shot, snapshot
+
+    rows = [hold(0, "Vandal"), hold(5, "Classic"), hold(5, "Bucky", 6),
+            shot(5, "Bucky", 7), hold(5, "Sheriff", 9),
+            {"k": "damage", "t": 8, "t1": 8, "by": 0, "target": 5, "src": "gun", "wall": False, "n": 1}]
+    snap = snapshot(util=rows, metres=5)
+    fight = fights.for_round(snap, 1, 0)[0]
+    # Both flags use the same factual payload even when a caller supplies both pointers.
+    fight["flags"] = ["gun_handover", "off_range_fight"]
+    view = snap.view(1)
+    original = detectors.flags(view, 0, None, "attack")
+    assert detectors.flags(view, 0, None, "attack", fights=[]) == original
+    found = detectors.flags(view, 0, None, "attack", fights=[fight])
+    gun_flags = [f for f in found if f["kind"] in fight["flags"]]
+    assert {f["kind"] for f in gun_flags} == set(fight["flags"])
+    for flag in gun_flags:
+        assert flag["t"] == 8
+        values = flag["values"]
+        for key in ("enemy", "subject", "side", "t0", "g", "metres", "my_gun", "enemy_gun",
+                    "alive", "known", "death", "picked_up", "kills_with", "off_range", "kill_weapon"):
+            assert values[key] == fight[key]
+        assert values["enemy_gun"] == "Bucky"
+        assert values["death"]["killer_gun_at_kill"] == "Sheriff"
+        assert values["death"]["dropped_gun"] == "Vandal"
+
+
 def run(blob, slot=0, knew=None, role=None):
     view = RoundView(blob, toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS)
     return detectors.flags(view, slot, knew, role)

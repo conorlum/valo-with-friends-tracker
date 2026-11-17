@@ -232,6 +232,7 @@ guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/mom
 [replay-format]
 about = "Reading a replay export: the contract, condensing, linking to a match, the stored format, player state and utility events."
 tests = [
+  "tests/replays/test_guns.py",
   "tests/replays/test_replay_activations.py", "tests/replays/test_replay_buffs.py", "tests/replays/test_replay_condense.py",
   "tests/replays/test_replay_contract.py", "tests/replays/test_replay_deadlock.py",
   "tests/replays/test_waiting_agent.py",
@@ -247,6 +248,7 @@ tests = [
 ]
 guards = [
   "app/replays/__init__.py", "app/replays/condense.py", "app/replays/contract.py", "app/replays/format.py",
+  "app/replays/guns.py", "app/replays/guns.json", "app/replays/gun_ranges.json",
   "app/replays/extras.py", "app/replays/header.py", "app/replays/link.py", "app/replays/causes.py",
   "app/replays/player_state*.py", "app/replays/status_intervals.py", "app/services/replay_impact.py",
   "scripts/make_replay_fixture.py", "scripts/ingest_replay.py", "scripts/reingest_replays.py","scripts/inspect_replay_utility.py",

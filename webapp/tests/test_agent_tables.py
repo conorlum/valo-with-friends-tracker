@@ -15,9 +15,6 @@ STATIC = APP / "static"
 EXCEPTIONS = {
     ("Chamber", "critutil_abilities", "Q"): "Headhunter is a gun, not util (constants.py).",
     ("Chamber", "agent_keys", "Q"): "Headhunter is a gun, not util (constants.py).",
-    ("Miks", "agent_keys", None): "Slot map unresolved, out of scope for this coverage check.",
-    ("Miks", "critutil_abilities", "C"): "Abilities have unresolved '?' slots in critutil/abilities.json.",
-    ("Miks", "critutil_abilities", "Q"): "Abilities have unresolved '?' slots in critutil/abilities.json.",
 }
 
 

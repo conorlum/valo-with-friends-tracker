@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.coach import areas, control_areas, knowledge
+from app.coach import areas, control_areas, fights, knowledge
 from app.coach.snapfile import SnapshotError
 from app.replays import player_state
 from app.replays.player_state_extract import PROVEN_PLANTER
@@ -222,13 +222,29 @@ def impact(snap, n, player) -> dict:
     return {"round": int(n), "player": snap.names[slot], **{k: stats[k] for k in keys if k in stats}}
 
 
+def fight(snap, n: int, t: float, player) -> dict:
+    """The player's fight containing the asked time, or the closest span within three seconds."""
+    _view(snap, n, t)
+    slot = _slot(snap, player)
+    candidates = fights.for_round(snap, int(n), slot)
+
+    def gap(row):
+        return max(row["t0"] - t, t - row["t"], 0.0)
+
+    nearest = min(candidates, key=gap, default=None)
+    if nearest is None or gap(nearest) > 3.0:
+        return _missing(f"no fight of {player} near {t:g}")
+    return {**{key: value for key, value in nearest.items() if key != "flags"}, "round": int(n), "t": t}
+
+
 COMMANDS = {"where": where, "knew": knew, "distance": distance, "control": control, "timeline": timeline,
-            "impact": impact}
+            "impact": impact, "fight": fight}
 
 # Which positions of each command's arguments are whole numbers or seconds (converted before the call).
 _INT, _SEC, _TXT = int, float, str
 _SIGNATURES = {"where": (_INT, _SEC), "knew": (_INT, _SEC, _TXT), "distance": (_INT, _SEC, _TXT, _TXT),
-               "control": (_INT, _SEC, _SEC, _TXT), "timeline": (_INT, _SEC, _SEC), "impact": (_INT, _TXT)}
+               "control": (_INT, _SEC, _SEC, _TXT), "timeline": (_INT, _SEC, _SEC), "impact": (_INT, _TXT),
+               "fight": (_INT, _SEC, _TXT)}
 
 
 def read_log(directory: Path) -> dict[str, dict]:

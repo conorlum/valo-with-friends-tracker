@@ -408,7 +408,7 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
             continue             # a gun hit
         cast = by_id.get(r.get("id")) if r.get("id") is not None else None
         if cast is None and k == "status" and r.get("src") is not None:
-            cast = by_id.get(r["src"])          # a levitated row names its zone (CONDENSE 30): that zone's cast
+            cast = by_id.get(r["src"])          # a levitated row names its zone (CONDENSE 31): that zone's cast
         if cast is None:
             name = r.get("name")
             t = float(r["t"])

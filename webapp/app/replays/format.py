@@ -40,6 +40,13 @@ Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-sl
 MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes, Hush's Flow), and the blob has `"movement_casts": 1` when the condenser
 looked for them, so a round with that key and no cast had none. A blob without the key was condensed before.
 
+Held guns (revision 30): `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}`
+records inventory switches to firearms or melee. `id` (shot `gid`) and `gen` identify one spawned
+actor generation; `from` names a previous holder and `seed` a surviving round-start carry. Other
+items close a hold with `gun: null, cat: "other"` and no id/gen. Death ends the hold; a revive
+starts with no held gun until a switch. Shot rows carry `gid` when the equippable supplies it,
+and `gen` when its actor resolves. Older blobs have no `hold` rows: held gun is unknown.
+
 Crouch (revision 24): `"crouch": {"0": [[from, to], ...], ...}` keeps the raw `CrouchHeld` spans per
 slot in round seconds, clipped to the playback window. An empty dict means crouch was looked for;
 a blob without the key predates this revision and reads as before.
@@ -119,10 +126,11 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 30
-# 30: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
+CONDENSE_REVISION = 31
+# 31: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
 #     force rows (`from` "force"; a levitated row names its zone in `src`), a Flashbulb's pop is its `flash_windup_ended`
 #     row (`pop.src` "flash_windup", completed), Suspension's bookkeeping object has no row (2026-11-15);
+# 30: held gun generations, pickup provenance, survivor seeds and shot gid/gen.
 # 29: schema 9 placement contexts and DamageOrigin read again; trips over 16 m marked long; carried trips
                          #     paired; ground fragment deltas and LifeChangeEvents read again;
 # 28: Ascent doors read opening/open (the shared door-evidence rule), so a reopened door is no longer

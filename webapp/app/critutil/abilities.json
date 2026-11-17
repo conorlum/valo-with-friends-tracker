@@ -1813,7 +1813,7 @@
    "match": "^(Iris_Q_Harmonize)$",
    "agent": "Miks",
    "ability": "Harmonize",
-   "slot": "?",
+   "slot": "Q",
    "type": "stim",
    "kinds": [
     "stim"
@@ -1839,7 +1839,7 @@
    "match": "^(Iris_Concuss)$",
    "agent": "Miks",
    "ability": "M-pulse",
-   "slot": "?",
+   "slot": "C",
    "type": "status",
    "kinds": [
     "status"
@@ -1868,7 +1868,7 @@
    "match": "^(Iris_Heal)$",
    "agent": "Miks",
    "ability": "M-pulse (heal)",
-   "slot": "?",
+   "slot": "C",
    "type": "heal",
    "kinds": [
     "heal"

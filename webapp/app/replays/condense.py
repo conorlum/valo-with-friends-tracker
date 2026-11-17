@@ -1876,7 +1876,8 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     first = replay.rounds[min(replay.rounds)] if replay.rounds else {"players": []}
     teams = {row["slot"]: row.get("side") for row in first.get("players", [])}
     extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
-                          teams=teams, pawn_yaws=positions.yaws)
+                          teams=teams, pawn_yaws=positions.yaws,
+                          alive_by_round={n: blob.get("alive", {}) for n, blob in replay.rounds.items()})
     spike_counts: dict[str, int] = {}
     joins: Counter[str] = Counter()
     for n, blob in replay.rounds.items():

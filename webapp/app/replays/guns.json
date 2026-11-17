@@ -1,0 +1,31 @@
+{
+  "archetypes": {
+    "Default__AssaultRifle_ACR_C": {"name": "Phantom", "category": "rifle"},
+    "Default__AssaultRifle_AK_C": {"name": "Vandal", "category": "rifle"},
+    "Default__SubMachineGun_MP5_C": {"name": "Spectre", "category": "smg"},
+    "Default__BasePistol_C": {"name": "Classic", "category": "sidearm"},
+    "Default__Vector_C": {"name": "Stinger", "category": "smg"},
+    "Default__HeavyMachineGun_C": {"name": "Odin", "category": "machine_gun"},
+    "Default__LugerPistol_C": {"name": "Ghost", "category": "sidearm"},
+    "Default__RevolverPistol_C": {"name": "Sheriff", "category": "sidearm"},
+    "Default__AssaultRifle_Burst_C": {"name": "Bulldog", "category": "rifle"},
+    "Default__CompactPistol_C": {"name": "Bandit", "category": "sidearm"},
+    "Default__DMR_C": {"name": "Guardian", "category": "rifle"},
+    "Default__AutomaticPistol_C": {"name": "Frenzy", "category": "sidearm"},
+    "Default__AutomaticShotgun_C": {"name": "Judge", "category": "shotgun"},
+    "Default__LightMachineGun_C": {"name": "Ares", "category": "machine_gun"},
+    "Default__BattleRifle_C": {"name": "Warden", "category": "rifle"},
+    "Default__LeverSniperRifle_C": {"name": "Marshal", "category": "sniper_rifle"},
+    "Default__PumpShotgun_C": {"name": "Bucky", "category": "shotgun"},
+    "Default__Gun_Sprinter_X_HeavyLightningGun_Production_C": {"name": "Overdrive", "category": "ability"},
+    "Default__SawedOffShotgun_C": {"name": "Shorty", "category": "shotgun"}
+  },
+  "tiers": {
+    "sidearm": 0,
+    "smg": 1,
+    "shotgun": 1,
+    "rifle": 2,
+    "machine_gun": 2,
+    "sniper_rifle": 2
+  }
+}

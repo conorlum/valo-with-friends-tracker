@@ -639,6 +639,7 @@ def test_players_panel_gun_and_light_shield():
                                           player_state: ps2}, []);
         process.stdout.write(JSON.stringify({
           guns: [3, 10, 15, 25].map(t => R.gunAt(shots, 1, t)), none: R.gunAt(shots, 3, 50),
+          emptyHolds: [3, 10, 15, 25].map(t => R.gunAt(shots, 1, t, [])),
           light: R.hudVitals(index, 1, 3).shieldPct, later: R.hudVitals(index2, 1, 10)
         }));
       });"""
@@ -646,8 +647,86 @@ def test_players_panel_gun_and_light_shield():
     assert got["guns"] == [{"gun": "Classic", "fired": False}, {"gun": "Classic", "fired": True},
                            {"gun": "Classic", "fired": True}, {"gun": "Vandal", "fired": True}]
     assert got["none"] is None
+    assert got["emptyHolds"] == got["guns"]
     assert got["light"] == 50
     assert got["later"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_held_gun_overrides_shots_and_waits_for_each_slots_first_hold():
+    got = run_node("""
+      const R = require(process.argv[1]);
+      const shots = [{slot: 1, t: 10, gun: "Phantom"}, {slot: 2, t: 1, gun: "Ghost"}];
+      const holds = [{slot: 1, t: 2, gun: "Classic"}, {slot: 1, t: 9, gun: "Vandal"},
+                     {slot: 1, t: 20, gun: "Knife"}];
+      process.stdout.write(JSON.stringify({
+        guns: [3, 10, 21].map(t => R.gunAt(shots, 1, t, holds)),
+        before: R.gunAt(shots, 1, 1, holds), otherSlot: R.gunAt(shots, 2, 10, holds),
+        unsorted: R.gunAt(shots, 1, 10, holds.slice().reverse())
+      }));""", {})
+    assert got["guns"] == [{"gun": "Classic", "held": True}, {"gun": "Vandal", "held": True},
+                           {"gun": "Knife", "held": True}]
+    assert got["before"] is None
+    assert got["otherSlot"] is None
+    assert got["unsorted"] == got["guns"][1]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_held_gun_closes_for_abilities_and_stays_within_the_current_life():
+    got = run_node("""
+      const R = require(process.argv[1]);
+      const holds = [{slot: 1, t: 0, gun: "Vandal", cat: "rifle", seed: true},
+                     {slot: 1, t: 5, gun: null, cat: "other"},
+                     {slot: 1, t: 7, gun: null, cat: "rifle"},
+                     {slot: 1, t: 9, gun: "Vandal", cat: "rifle"},
+                     {slot: 1, t: 20, gun: "Knife", cat: "melee"}];
+      const index = R.indexRoundState({alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]},
+                                      t_end: 90}, []);
+      const shots = [{slot: 1, t: 16, gun: "Phantom"}];
+      process.stdout.write(JSON.stringify(
+        [0, 5, 8, 10, 11, 15, 19, 20].map(t => R.gunAt(shots, 1, t, holds, index))));
+      """, {})
+    assert got == [{"gun": "Vandal", "held": True}, None, {"gun": "?", "held": True},
+                   {"gun": "Vandal", "held": True}, None, None, None, {"gun": "Knife", "held": True}]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abilities():
+    got = run_node("""
+      const R = require(process.argv[1]);
+      const viewer = Object.create(R.ReplayViewer.prototype);
+      const blob = {players: [{slot: 1, agent: "Omen"}], kills: [], t_end: 90,
+                    alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
+      viewer.ui = {board: {}};
+      viewer.options = {};
+      viewer.linked = {players: {"1": {team: "team-1"}}};
+      viewer.slotColor = () => "#ffffff";
+      viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
+        extras: R.extrasFromUtil([
+          {k: "shot", by: 1, t: 3, gun: "Phantom"},
+          {k: "hold", by: 1, t: 0, gun: "Vandal", cat: "rifle", id: "100", gen: 0, seed: true},
+          {k: "hold", by: 1, t: 5, gun: null, cat: "other"},
+          {k: "hold", by: 1, t: 7, gun: null, cat: "rifle", id: "101", gen: 0},
+          {k: "hold", by: 1, t: 9, gun: "Vandal", cat: "rifle", id: "100", gen: 0},
+          {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0}
+        ])};
+      function gun(t) {
+        viewer.t = t;
+        viewer.renderBoard();
+        const match = viewer.ui.board.innerHTML.match(/<span class="replay-pl-gun[^>]*>[^<]*<\\/span>/);
+        return match ? match[0] : null;
+      }
+      const held = [1, 5, 8, 11, 15, 20].map(gun);
+      delete viewer.current.extras.holds;
+      process.stdout.write(JSON.stringify({held, fallback: [1, 4].map(gun)}));
+      """, {})
+    assert got["held"] == ['<span class="replay-pl-gun" title="Held now">Vandal</span>', None,
+                           '<span class="replay-pl-gun" title="Held now">?</span>', None, None,
+                           '<span class="replay-pl-gun" title="Held now">Knife</span>']
+    assert got["fallback"] == [
+        '<span class="replay-pl-gun is-unfired" title="Not fired yet: the gun of their first shot this round">Phantom</span>',
+        '<span class="replay-pl-gun" title="Gun of their latest shot (the replay records no live loadout)">Phantom</span>',
+    ]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -919,7 +998,13 @@ def test_the_js_reads_stored_abilities_and_shots_back_from_util():
 
     extras = {"abilities": [{"t0": 1.5, "t1": 9.0, "kind": "Zone", "code": "Wraith", "name": "4_Smoke",
                              "agent": "Omen", "slot": 6, "owner_by": "agent", "u": 10, "v": 20}],
-              "shots": [{"t": 3.25, "slot": 2, "u": 1, "v": 2, "gun": "Vandal", "n": 1}]}
+              "shots": [{"t": 3.25, "slot": 2, "u": 1, "v": 2, "gun": "Vandal", "n": 1,
+                         "gid": "100", "gen": 0}],
+              "holds": [{"t": 0, "slot": 2, "gun": "Vandal", "cat": "rifle", "id": "100", "gen": 0,
+                         "seed": True},
+                        {"t": 4, "slot": 6, "gun": "Vandal", "cat": "rifle", "id": "100", "gen": 0,
+                         "from": 2},
+                        {"t": 5, "slot": 6, "gun": None, "cat": "other"}]}
     util = [{"k": "flash", "t": 1.0, "by": 0, "u": 5, "v": 5, "ability": "x", "targets": []}, *util_entries(extras)]
     script = """
       const R = require(process.argv[1]);

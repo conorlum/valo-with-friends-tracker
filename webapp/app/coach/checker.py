@@ -5,6 +5,7 @@ round it is talking about, and only on the measured values in them."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 
 from app.coach import knowledge, query
@@ -19,6 +20,17 @@ SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first v
 BODY_MAX = 4000             # longer text is refused before the regexes run
 TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
 
+_APP_DIR = Path(__file__).parents[1]
+_GUN_CATEGORIES = {row["name"].casefold(): (row["name"], row["category"]) for row in json.loads(
+    (_APP_DIR / "replays" / "guns.json").read_text(encoding="utf-8")
+)["archetypes"].values()}
+# Stored shots have no category; Chamber's ability guns also appear in the hearing table.
+_ABILITY_GUN_NAMES = frozenset({name for name, (_, category) in _GUN_CATEGORIES.items()
+                              if category == "ability"} | {"headhunter", "tour de force"})
+_HEARING_GUNS = json.loads((_APP_DIR / "control" / "hearing.json").read_text(encoding="utf-8"))["guns"]
+_FIGHT_FLAGS = frozenset({"fight_fact", "gun_handover", "off_range_fight"})
+_GUN_HEDGE = re.compile(r"\b(?:likely|probably|may|might|could)\b", re.IGNORECASE)
+
 # The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
 # is an identifier or a coordinate and grounds nothing.
 _TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at", "trigger"})
@@ -28,12 +40,12 @@ _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining",
     "spike_left_s", "value", "enemies_affected", "teammates_hit", "teammate_died_affected", "sight_line_s",
-    "sight_lines", "life_s", "radius_m", "waiting_s", "points"})
+    "sight_lines", "life_s", "radius_m", "waiting_s", "points", "before_s", "kills_with"})
 # A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
 # round that happens to be 20 (PR 132 review, finding 1).
 _METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max", "radius_m"})
 _SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s", "sight_line_s", "life_s",
-                                       "waiting_s"})
+                                       "waiting_s", "before_s"})
 # A util fact's landing area names where that cast landed, so it grounds the name like a timely `where`.
 _AREA_KEYS = frozenset({"area", "landed_area"})
 SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
@@ -281,9 +293,10 @@ def _pairs(entry: dict) -> set[tuple[int, int]]:
             if p.get("alive") and p.get("side") in alive:
                 alive[p["side"]] += 1
         out |= {(alive["A"], alive["B"]), (alive["B"], alive["A"])}
-    before = result.get("alive_before")
-    if isinstance(before, dict) and "own" in before and "enemy" in before:
-        out |= {(before["own"], before["enemy"]), (before["enemy"], before["own"])}
+    for key in ("alive_before", "alive"):
+        before = result.get(key)
+        if isinstance(before, dict) and "own" in before and "enemy" in before:
+            out |= {(before["own"], before["enemy"]), (before["enemy"], before["own"])}
     return out
 
 
@@ -360,6 +373,105 @@ def _area_problems(text: str, grounded: set[str], area_names, improve: bool) -> 
             if area in mentioned and area not in grounded:
                 problems.append(f"the area {area} is not in a cited answer"
                                 + (" (an enemy's place counts only while your side could see them)" if improve else ""))
+    return problems
+
+
+def _gun_vocabulary(snap) -> dict[str, tuple[str, str | None]]:
+    vocabulary = dict(_GUN_CATEGORIES)
+    excluded = _ABILITY_GUN_NAMES | {"knife"}
+    # These hearing-table firearms have no archetype row in guns.json yet.
+    hearing_categories = {"operator": "sniper_rifle", "outlaw": "sniper_rifle", "compact pistol": "sidearm"}
+    for name in _HEARING_GUNS:
+        vocabulary.setdefault(name.casefold(), (name, hearing_categories.get(name.casefold())))
+    for n in snap.round_numbers:
+        for row in snap.view(n).blob.get("util") or []:
+            name = row.get("gun")
+            if row.get("k") != "shot" or not isinstance(name, str) or not name.strip():
+                continue
+            vocabulary.setdefault(name.casefold(), (name, None))
+    return {name: value for name, value in vocabulary.items() if name not in excluded}
+
+
+def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
+    """R10: captions use their own fights; shared text may cite any instance's usable fights."""
+    from app.replays.guns import is_close_range
+
+    if not improve or not moments:
+        return []
+    vocabulary = _gun_vocabulary(snap)
+    categories = {"sidearm": "sidearm", "pistol": "sidearm", "smg": "smg", "shotgun": "shotgun",
+                  "rifle": "rifle", "sniper": "sniper_rifle", "sniper rifle": "sniper_rifle",
+                  "sniper-rifle": "sniper_rifle", "machine gun": "machine_gun", "machine-gun": "machine_gun",
+                  "lmg": "machine_gun", "close-range gun": "close_range", "close range gun": "close_range",
+                  "close-range-gun": "close_range"}
+    claims = {**vocabulary, **{word: (word, category) for word, category in categories.items()}}
+    ordinary_words = {"classic", "ghost", "judge", "guardian", "phantom", "marshal", "operator", "outlaw",
+                      "stinger", "frenzy", "spectre", "sheriff", "bulldog", "bandit", "warden", "shorty"}
+    names = re.compile(r"\b(?:" + "|".join(re.escape(name) for name in sorted(
+        claims, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+    all_fights, texts = [], []
+    for label, n, t, t1, side, caption, entries in moments:
+        fights = []
+        for entry in entries:
+            result = entry["result"]
+            is_fight = entry["cmd"] == "fight" or (
+                entry["cmd"] == "flag" and result.get("kind") in _FIGHT_FLAGS)
+            start = result.get("t0")
+            if (is_fight and result.get("subject") == slot and type(start) in (int, float)
+                    and start <= (t1 if t1 is not None else t)):
+                fights.append(result)
+        all_fights.extend(fights)
+        texts.append((label, side, caption, fights))
+    texts.extend((key, moments[0][4], str(point.get(key) or ""), all_fights) for key in ("title", "body"))
+
+    def matches(value, gun):
+        if not isinstance(value, str):
+            return False
+        if gun not in categories:
+            return value.casefold() == gun
+        canonical, category = vocabulary.get(value.casefold(), (value, None))
+        if categories[gun] == "close_range":
+            return is_close_range(canonical)
+        return category is not None and category == categories[gun]
+
+    problems = []
+    for label, side, text, fights in texts:
+        text = _strip_names(text, snap.names)
+        for sentence in re.finditer(r"[^.!?\n]+", text):
+            sentence = sentence.group()
+            for match in names.finditer(sentence):
+                gun = match.group().casefold()
+                if gun in ordinary_words and not match.group()[0].isupper():
+                    continue
+                canonical, category = claims[gun]
+                prefix = sentence[:match.start()].casefold()
+                preceding = re.findall(r"\b\w+\b", prefix)
+                own_words = preceding and (preceding[-1] == "your" or "you" in preceding[-3:])
+                owners = list(re.finditer(r"\b(?:you|your)\b", prefix))
+                ownership = prefix[owners[-1].end():] if owners else prefix
+                # A stripped player's name still leaves its possessive suffix.
+                enemy_owned = re.search(r"\b(?:their|his|her|its|enemy|enemies|opponents?)\b|['\u2019]s\b",
+                                        ownership)
+                if own_words and not enemy_owned and any(matches(f.get("my_gun"), gun) or matches(
+                        (f.get("death") or {}).get("dropped_gun"), gun) for f in fights):
+                    continue
+                supported = False
+                for fight in fights:
+                    known = fight.get("known") or {}
+                    # RV3-b: a held gun cannot reveal what killed the player; use tracker.gg's weapon.
+                    lost = fight.get("won") is False or ("won" not in fight and fight.get("death") is not None)
+                    killed_by = lost and matches(fight.get("kill_weapon"), gun)
+                    # Knowledge at t0 describes enemy_gun, never a later held gun.
+                    observed = matches(fight.get("enemy_gun"), gun) and known.get("how") in ("seen", "heard")
+                    guessed = (known.get("how") == "econ_guess" and category == "sidearm"
+                               and known.get("gun_class") == "sidearm" and _GUN_HEDGE.search(sentence))
+                    if killed_by or observed or guessed:
+                        supported = True
+                        break
+                if not supported:
+                    problem = f"{label}: names the enemy's {canonical}, which side {side} had not seen or heard by then"
+                    if problem not in problems:
+                        problems.append(problem)
     return problems
 
 
@@ -545,7 +657,17 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                     hidden = frozenset(p.get("name") for p in result.get("players") or [] if isinstance(p, dict)
                                        and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
                 asked = result.get("t")
-                cmd = "util_fact" if entry["cmd"] == "flag" and result.get("kind") == "util_fact" else entry["cmd"]
+                cmd = entry["cmd"]
+                if cmd == "flag":
+                    if result.get("kind") == "util_fact":
+                        cmd = "util_fact"
+                    elif result.get("kind") in _FIGHT_FLAGS:
+                        cmd = "fight_fact"
+                # A one-shot victim is still alive at the geometry time just before the kill.
+                # Keep gun knowledge and counts usable when the enemy's distance was unseen.
+                if (guarded and cmd in ("fight", "fight_fact") and "metres" in result and "g" in result
+                        and _unseen_enemy(snap, n, side, result.get("enemy"), float(result["g"]))):
+                    result = {key: value for key, value in result.items() if key != "metres"}
                 source = (cmd, n, asked if type(asked) in (int, float) else None, i)
                 _collect(result, None, cited, source, hidden)
                 cited.pairs |= _pairs(entry)
@@ -587,4 +709,5 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     for i, inst in enumerate(instances):
         if isinstance(inst, dict):
             problems += _area_problems(str(inst.get("caption") or ""), _grounded_areas(cited, i), area_names, improve)
+    problems += _gun_problems(point, moments, improve, snap, slot)
     return problems + _text_problems(text, cited, snap.names)

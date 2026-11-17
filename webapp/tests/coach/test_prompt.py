@@ -6,6 +6,14 @@ BRIEF = {"v": 1, "subject": {"name": "Owner#1"}, "match": {"map": "Ascent"}, "ro
          "areas": ["A Main"], "data_gaps": {}, "players": []}
 
 
+def test_prompt_explains_citable_fights_and_gun_knowledge():
+    text = prompt.run_prompt(BOOK, BRIEF)
+    assert "./q fight <round> <seconds> <player>" in text
+    for word in ('"fights"', '"id"', "held", "shots", "metres", "range", "lone", "known",
+                 "econ_guess", "likely", "death", "picked_up", "kills_with"):
+        assert word in text
+
+
 def test_the_run_prompt_carries_the_playbook_brief_and_the_command():
     text = prompt.run_prompt(BOOK, BRIEF)
     assert "Trade your teammate." in text and '"Owner#1"' in text
