@@ -305,9 +305,9 @@ def test_control_borders_only_shared_sides_between_different_owners(other):
         return {a: px(3, 1), a2: px(2, 1), b: px(4, 1), b2: px(5, 1), b3: px(6, 1),
           outer: px(0, 1), top: px(1, 0), inside: px(1, 1)};
       }""", {"other": other})
-    # Edges are two pixels deep, inside the cell that owns them.
-    assert got["a"] == got["a2"] == [200, 10, 10, 140 if other == "a_safe" else 230]
-    assert got["b"] == got["b2"] == ([10, 10, 200, 230] if other == "b_active" else
+    # Edges are two pixels deep, inside the cell that owns them, opaque, in the team colour at full brightness.
+    assert got["a"] == got["a2"] == ([200, 10, 10, 140] if other == "a_safe" else [255, 13, 13, 255])
+    assert got["b"] == got["b2"] == ([13, 13, 255, 255] if other == "b_active" else
                                      [0, 0, 0, 0] if other == "none" else
                                      [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
     assert got["b3"] == ([10, 10, 200, 140] if other == "b_active" else [0, 0, 0, 0] if other == "none" else
@@ -336,13 +336,14 @@ def test_unknown_borders_dash_at_region_edges_in_the_hatch_colour(show):
     def hatch(x, y):
         return (x - y) % 4 == 0 if show == "B" else (x + y) % 4 == 0
 
-    # Dashes are two pixels deep: on for two pixels, off for two, along the edge; the hatch shows in the gaps.
-    on = colour + [140]
+    # Dashes are two pixels deep: on for two pixels, off for two, along the edge, in the hatch colour at full
+    # brightness; the hatch shows in the gaps.
+    on, hatched, blank = [13 if c == 10 else 255 for c in colour] + [217], colour + [140], [0, 0, 0, 0]
     for x in (7, 6):
-        assert got[f"edge{x}"] == [on if y % 4 < 2 or hatch(x, y) else [0, 0, 0, 0] for y in range(16)]
+        assert got[f"edge{x}"] == [on if y % 4 < 2 else hatched if hatch(x, y) else blank for y in range(16)]
     for y in (15, 14):
-        assert got[f"bottom{y}"] == [on if x % 4 < 2 or hatch(x, y) else [0, 0, 0, 0] for x in range(8)]
-    assert got["inner"][:14] == [on if hatch(5, y) else [0, 0, 0, 0] for y in range(14)]  # 14-15: bottom edge
+        assert got[f"bottom{y}"] == [on if x % 4 < 2 else hatched if hatch(x, y) else blank for x in range(8)]
+    assert got["inner"][:14] == [hatched if hatch(5, y) else blank for y in range(14)]  # 14-15: bottom edge
     assert got["join"] == got["outside"] == [0, 0, 0, 0]
 
 
@@ -362,7 +363,8 @@ def test_unknown_border_off_pixels_preserve_underlying_hatch(show):
         return {hatch, offWithHatch: px(6, 2), offWithoutHatch: px(6, 3), on: px(6, 0)};
       }""", {"show": show})
     colour = [10, 10, 200] if show == "A" else [200, 10, 10]
-    assert got["hatch"] == got["offWithHatch"] == got["on"] == colour + [140]
+    assert got["hatch"] == got["offWithHatch"] == colour + [140]
+    assert got["on"] == [13 if c == 10 else 255 for c in colour] + [217]
     assert got["offWithoutHatch"] == [0, 0, 0, 0]
 
 
@@ -383,8 +385,8 @@ def test_unknown_border_off_pixels_preserve_the_other_teams_dash():
         return {noHatch, aOnly, both: px(6, 5), bOn: px(8, 5)};
       }""", {})
     assert got["noHatch"] == [0, 0, 0, 0]
-    assert got["aOnly"] == got["both"] == [10, 10, 200, 140]
-    assert got["bOn"] == [200, 10, 10, 140]
+    assert got["aOnly"] == got["both"] == [13, 13, 255, 217]
+    assert got["bOn"] == [255, 13, 13, 217]
 
 
 def test_the_highlight_fills_control_and_outlines_coverage():

@@ -260,7 +260,7 @@ def test_control_palette_maps_linked_teams_independently_of_side(palette, first,
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_borders_toggle_defaults_off_persists_and_reaches_both_layers():
+def test_borders_toggle_defaults_on_persists_and_reaches_both_layers():
     got = run_node(PALETTE_DOM + """
       const store = {};
       global.localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => {store[k] = v;}};
@@ -278,7 +278,7 @@ def test_borders_toggle_defaults_off_persists_and_reaches_both_layers():
       const box = one.nodes['[data-replay-control-borders]'], wrap = one.nodes['[data-replay-control-borders-wrap]'];
       const initial = {checked: box.checked, hidden: wrap.hidden};
       paint(one.v);
-      box.checked = true; box.handlers.change();
+      box.checked = false; box.handlers.change();
       const after = {paint: one.v.controlPaint, draws: one.draws(), stored: store['replay.controlBorders']};
       paint(one.v);
       const two = viewer();
@@ -287,10 +287,10 @@ def test_borders_toggle_defaults_off_persists_and_reaches_both_layers():
       const shown = !wrap.hidden;
       process.stdout.write(JSON.stringify({initial, after, restored, shown, calls}));
     """, None)
-    assert got["initial"] == {"checked": False, "hidden": True}
-    assert got["after"] == {"paint": None, "draws": 1, "stored": "on"}
-    assert got["restored"] is True and got["shown"] is True
-    assert got["calls"] == [["states", False], ["unknown", False], ["states", True], ["unknown", True]]
+    assert got["initial"] == {"checked": True, "hidden": True}
+    assert got["after"] == {"paint": None, "draws": 1, "stored": "off"}
+    assert got["restored"] is False and got["shown"] is True
+    assert got["calls"] == [["states", True], ["unknown", True], ["states", False], ["unknown", False]]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")

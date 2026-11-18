@@ -365,13 +365,22 @@
 
   // Edges belong to the painted cell and run EDGE_PX deep into it. Only compare walkable neighbours,
   // never the map's walls. Owners are 0 (none), 1/2 (teams), 3 (contested); contested cells keep their stripes.
-  var EDGE_PX = 2;
+  // Edges use the team colour at full brightness (same hue, brightest channel at 255) so they stand out
+  // from the fill: solid edges opaque, dashed ones at EDGE_DASH_ALPHA.
+  var EDGE_PX = 2, EDGE_ALPHA = 1, EDGE_DASH_ALPHA = 0.85;
+
+  function edgeColour(rgb) {
+    var top = Math.max(rgb[0], rgb[1], rgb[2]);
+    if (!top) return rgb;
+    return rgb.map(function (c) { return Math.round(c * 255 / top); });
+  }
 
   function paintEdges(rgba, size, walk, owners, colors, dashed) {
-    var index = cellIndex(walk), px = size / GRID, depth = Math.min(EDGE_PX, px);
+    var index = cellIndex(walk), px = size / GRID, depth = Math.min(EDGE_PX, px), bright = {};
+    var alpha = Math.round((dashed ? EDGE_DASH_ALPHA : EDGE_ALPHA) * 255);
     for (var k = 0; k < walk.length; k++) {
-      var rgb = colors[owners[k]];
-      if (!rgb) continue;
+      if (!colors[owners[k]]) continue;
+      var rgb = bright[owners[k]] || (bright[owners[k]] = edgeColour(colors[owners[k]]));
       var cell = walk[k], gx = cell % GRID, gy = Math.floor(cell / GRID), cx = gx * px, cy = gy * px;
       var neighbours = [gy > 0 ? cell - GRID : -1, gy < GRID - 1 ? cell + GRID : -1,
         gx > 0 ? cell - 1 : -1, gx < GRID - 1 ? cell + 1 : -1];
@@ -386,7 +395,7 @@
             if (dashed && (edge < 2 ? x : y) % 4 >= 2) continue;
             var o = (y * size + x) * 4;
             rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2];
-            rgba[o + 3] = Math.round((dashed ? HATCH_ALPHA : 0.9) * 255);
+            rgba[o + 3] = alpha;
           }
         }
       }
@@ -568,7 +577,8 @@
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
     HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
-    STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA
+    STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA,
+    edgeColour: edgeColour
   };
   global.ReplayControl = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

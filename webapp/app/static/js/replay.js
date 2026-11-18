@@ -2242,11 +2242,11 @@
         self.draw();
       });
     }
-    // Borders between owners and around unknown: off unless the viewer turned them on.
+    // Borders between owners and around unknown: on unless the viewer turned them off.
     this.ui.controlBorders = q("[data-replay-control-borders]");
     this.ui.controlBordersWrap = q("[data-replay-control-borders-wrap]");
-    this.controlBorders = false;
-    try { this.controlBorders = global.localStorage.getItem("replay.controlBorders") === "on"; } catch (err) { /* off */ }
+    this.controlBorders = true;
+    try { this.controlBorders = global.localStorage.getItem("replay.controlBorders") !== "off"; } catch (err) { /* on */ }
     if (this.ui.controlBorders) {
       this.ui.controlBorders.checked = this.controlBorders;
       this.ui.controlBorders.addEventListener("change", function () {
