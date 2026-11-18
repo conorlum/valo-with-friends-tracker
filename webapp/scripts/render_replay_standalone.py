@@ -104,6 +104,7 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     payload["abilityIcons"] = json.loads((APP / "static/data/abilities.json").read_text(encoding="utf-8"))
     payload["gunIcons"] = json.loads((APP / "static/data/weapons.json").read_text(encoding="utf-8"))
     payload["arenaRoom"] = json.loads((APP / "static/data/arena.json").read_text(encoding="utf-8"))
+    payload["heldAbilities"] = json.loads((APP / "static/data/held_abilities.json").read_text(encoding="utf-8"))
     urls = set(payload["gunIcons"].values())
     for kit in payload["abilityIcons"].values():
         urls.update(kit.values())
@@ -155,6 +156,7 @@ __SCRIPT__
       abilityIcons: data.abilityIcons,
       gunIcons: data.gunIcons,
       arenaRoom: data.arenaRoom,
+      heldAbilities: data.heldAbilities,
       assetUrl: function (url) { return data.assets[url] || url; },
       bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },

@@ -649,6 +649,29 @@ def note_trip_lengths(result, report, match_uuid):
         logger.exception("site health: could not note trip lengths for %s", match_uuid)
 
 
+HELD_KIND = "held_ability_unnamed"
+
+
+def note_held_names(result, report, match_uuid):
+    """The one policy for `held_ability_unnamed` (app/replays/held_names.py), called beside `note_trip_lengths` by
+    every path that stores a condensed replay, after its commit: a stored or replaced condense whose
+    `report["extras"]["held_unnamed"]` lists held abilities without a kit name records the match (the viewer and the
+    coach can't name them); one with none resolves it. Other actions leave the row alone. Never raises."""
+    try:
+        if getattr(result, "action", None) not in ("stored", "replaced"):
+            return
+        names = list(((report or {}).get("extras") or {}).get("held_unnamed") or ())
+        key = str(match_uuid).lower()
+        replay_id = getattr(result, "replay_id", None)
+        if names:
+            record(HELD_KIND, key, f"{len(names)} held abilities without a kit name: {', '.join(names[:5])}",
+                   {"replay_id": replay_id, "names": names}, replay_id=replay_id)
+        else:
+            resolve(HELD_KIND, key, replay_id=replay_id)
+    except Exception:
+        logger.exception("site health: could not note held ability names for %s", match_uuid)
+
+
 def _flush_prune(session_factory):
     try:
         with session_factory() as session:
@@ -775,6 +798,7 @@ CACHE_FALLBACK_KEYS = frozenset({
 RECORDED_KINDS = frozenset({
     "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
     "slow_page", "warm_vanished", "map_layout_walls", "agent_unsupported", "trip_too_long", "forced_deploy",
+    "held_ability_unnamed",
 })
 KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)

@@ -1048,35 +1048,39 @@ def test_held_gun_closes_for_abilities_and_stays_within_the_current_life():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_held_ability_uses_the_agents_kit_name_and_falls_back_to_the_hold_name():
-    icons = json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8"))
+def test_held_ability_names_come_from_the_held_table_never_the_slot_letter():
+    tables = {"icons": json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8")),
+              "held": json.loads((WEBAPP / "app/static/data/held_abilities.json").read_text(encoding="utf-8"))}
     got = run_node("""
       const R = require(process.argv[1]);
       let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
-        const icons = JSON.parse(input);
+        const {icons, held} = JSON.parse(input);
         const camera = {slot: 1, t: 5, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"};
         const holds = [{slot: 1, t: 0, gun: "Vandal", cat: "rifle"}, camera];
-        const at = (hold, agent = "Cypher", table = icons) =>
-          R.gunAt([], 1, 6, [holds[0], hold], undefined, agent, table);
+        const at = (hold, agent = "Cypher", table = held) =>
+          R.gunAt([], 1, 6, [holds[0], hold], undefined, agent, icons, table);
+        const row = (code, key, name) => ({...camera, code, key, name});
         process.stdout.write(JSON.stringify({
-          gun: R.gunAt([], 1, 4, holds, undefined, "Cypher", icons), camera: at(camera),
-          label: R.heldAbilityLabel(camera, "Cypher", icons),
-          nullKey: at({...camera, key: null, name: "Wall"}),
-          underscores: at({...camera, key: null, name: "Barrier_Wall"}),
-          noKit: at(camera, "Unknown"), noTable: at(camera, "Cypher", {}),
-          unknownKey: at({...camera, key: "?"}),
-          overdrive: at({...camera, code: null, key: null, name: "Overdrive"}, "Neon"),
+          gun: R.gunAt([], 1, 4, holds, undefined, "Cypher", icons, held), camera: at(camera),
+          label: R.heldAbilityLabel(camera, "Cypher", icons, held),
+          // The replay's letter is not the key: Omen's C/Smoke is Dark Cover (E), Phoenix's C/Molotov Hot Hands.
+          omen: at(row("Wraith", "C", "Smoke"), "Omen"), phoenix: at(row("Phoenix", "C", "Molotov_Production"), "Phoenix"),
+          raze: at(row("Clay", "C", "ClusterGrenade"), "Raze"), vyse: at(row("Nox", null, "BarbedWire"), "Vyse"),
+          passive: at(row("Wushu", null, "Passive_Glide"), "Jett"),
+          missing: at(row("Wraith", "C", "Unheard"), "Omen"), noTable: at(camera, "Cypher", {}),
           categories: ["spike", "flex", "defuser", "other"].map(cat => at({slot: 1, t: 5, gun: null, cat}))
         }));
-      });""", icons)
+      });""", tables)
     assert got["gun"] == {"gun": "Vandal", "held": True}
     assert got["camera"] == {"ability": "Spycam", "held": True}
     assert got["label"] == "Spycam"
-    assert got["nullKey"] == {"ability": "Wall", "held": True}
-    assert got["underscores"] == {"ability": "Barrier Wall", "held": True}
-    for key in ("noKit", "noTable", "unknownKey"):
-        assert got[key] == {"ability": "Camera", "held": True}
-    assert got["overdrive"] == {"ability": "Overdrive", "held": True}
+    assert got["omen"] == {"ability": "Dark Cover", "held": True}
+    assert got["phoenix"] == {"ability": "Hot Hands", "held": True}
+    assert got["raze"] == {"ability": "Paint Shells", "held": True}
+    assert got["vyse"] == {"ability": "Razorvine", "held": True}
+    assert got["passive"] is None
+    # Missing from the table: the generic label, which condense reports to Site health.
+    assert got["missing"] == got["noTable"] == {"ability": "Ability", "held": True}
     assert got["categories"] == [{"ability": "Spike", "held": True}, None, None, None]
 
 
@@ -1090,7 +1094,10 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
         const blob = {players: [{slot: 1, agent: "Cypher"}], kills: [], t_end: 90,
                       alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
         viewer.ui = {board: {}};
-        viewer.options = {abilityIcons: JSON.parse(input)};
+        const tables = JSON.parse(input);
+        // One made-up entry whose kit name holds markup, to check the label is escaped.
+        tables.held.Gumshoe["E/<test>"] = "Wall <test>";
+        viewer.options = {abilityIcons: tables.icons, heldAbilities: tables.held};
         viewer.linked = {players: {"1": {team: "team-1"}}};
         viewer.slotColor = () => "#ffffff";
         viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
@@ -1105,7 +1112,7 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
             {k: "hold", by: 1, t: 30, gun: null, cat: "spike"},
             {k: "ability", by: 1, t: 21, t1: 90, kind: "GameObject", code: "Gumshoe",
              name: "E_PossessableCamera", possessed: [[27, 28], [32, 33]]},
-            {k: "hold", by: 1, t: 35, gun: null, cat: "ability", code: null, key: null, name: "Wall_<test>"}
+            {k: "hold", by: 1, t: 35, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "<test>"}
           ])};
         function gun(t) {
           viewer.t = t;
@@ -1117,7 +1124,8 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
         const util = [26, 27, 31, 32, 36].map(gun);
         delete viewer.current.extras.holds;
         process.stdout.write(JSON.stringify({held, util, fallback: [1, 4].map(gun)}));
-      });""", icons)
+      });""", {"icons": icons,
+               "held": json.loads((WEBAPP / "app/static/data/held_abilities.json").read_text(encoding="utf-8"))})
     assert got["held"] == ['<span class="replay-pl-gun" title="Held now">Vandal</span>', None,
                            '<span class="replay-pl-gun" title="Held now">?</span>', None, None,
                            '<span class="replay-pl-gun" title="Held now">Knife</span>']

@@ -1455,7 +1455,7 @@
   // a closing row or no switch gives null. The optional round state index supplies the same life boundaries as
   // hudVitals. Without hold rows, preserve the shot-based estimate: latest shot ({gun, fired: true}), else first
   // shot ({gun, fired: false}).
-  function gunAt(shots, slot, t, holds, index, agent, table) {
+  function gunAt(shots, slot, t, holds, index, agent, table, heldTable) {
     if (holds && holds.length) {
       var life = lifeIndexAt(index, slot, t);
       if (life === null) return null;
@@ -1465,7 +1465,10 @@
         if (hold.slot === slot && hold.t >= from && hold.t <= t && (!latest || hold.t >= latest.t)) latest = hold;
       });
       if (!latest || latest.cat === "other" || latest.cat === "defuser" || latest.cat === "flex") return null;
-      if (latest.cat === "ability") return { ability: heldAbilityLabel(latest, agent, table), held: true };
+      if (latest.cat === "ability") {
+        var label = heldAbilityLabel(latest, agent, table, heldTable);
+        return label === null ? null : { ability: label, held: true };   // null: a passive, nothing to name
+      }
       if (latest.cat === "spike") return { ability: HELD_SPIKE_LABEL, held: true };
       return { gun: latest.cat === "melee" ? "Knife" : (latest.gun || "?"), held: true };
     }
@@ -1525,13 +1528,16 @@
     });
   }
 
-  // Held ability archetypes name a slot letter; prefer the agent's kit name to the internal replay name.
-  function heldAbilityLabel(hold, agent, table) {
-    var kit = abilitySlots(table, agent);
-    for (var i = 0; i < kit.length; i++) {
-      if (kit[i].key === hold.key) return kit[i].name;
-    }
-    return String(hold.name || "").replace(/_/g, " ");
+  // A held ability's kit name, from static/data/held_abilities.json (app/replays/held_names.py): the row's slot
+  // letter is the replay's, not the key pressed (Omen's smoke is "C/Smoke", Dark Cover on E), so it never picks
+  // the name. Null for a known item that is no ability (a passive). An item missing from the table shows as
+  // "Ability": that is a bug, reported to Site health as held_ability_unnamed when the replay is stored.
+  function heldAbilityLabel(hold, agent, table, heldTable) {
+    // No code: an ability gun already named for display (Neon's Overdrive), kept when it is the agent's kit name.
+    if (!hold.code) return abilitySlots(table, agent).some(function (k) { return k.name === hold.name; }) ? hold.name : "Ability";
+    var kit = (heldTable || {})[hold.code], key = (hold.key || "") + "/" + (hold.name || "");
+    if (kit && Object.prototype.hasOwnProperty.call(kit, key)) return kit[key];
+    return "Ability";
   }
 
   // The ult ring: `cost` arcs round the icon with a small gap between, the first `points` of them filled.
@@ -2531,7 +2537,8 @@
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
       var armor = life ? armorBadge(v) : "";
-      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state, p.agent, icons) : null;
+      var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state, p.agent, icons,
+        self.options.heldAbilities) : null;
       // Looking through a camera or flying a drone takes priority over the held item.
       var using = life ? possessingAt(self.current.extras.abilities, p.slot, t) : null;
       var gun = using ? '<span class="replay-pl-gun is-util" title="Using util now">' + escapeHtml(using.label) + "</span>"

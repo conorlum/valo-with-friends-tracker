@@ -3,26 +3,30 @@
 from functools import lru_cache
 import json
 from pathlib import Path
+import re
 
-from app.replays import guns
+from app.replays import guns, held_names
+
+UNNAMED = "an ability"   # a held ability the kit-name table lacks: Site health's held_ability_unnamed
 
 
 @lru_cache(maxsize=1)
-def _kit_names() -> dict:
-    icons = {"grenade": "C", "ability1": "Q", "ability2": "E", "ultimate": "X"}
-    table = json.loads((Path(__file__).parents[1] / "static/data/abilities.json").read_text(encoding="utf-8"))
-    return {agent: {icons[Path(icon).stem]: name for name, icon in kit.items()
-                    if Path(icon).stem in icons} for agent, kit in table.items()}
+def _cast_names() -> list:
+    """(pattern, kit name) from the Critical Util table, whose cast rows match `<code>_<name>`."""
+    table = json.loads((Path(__file__).parents[1] / "critutil/abilities.json").read_text(encoding="utf-8"))
+    return [(re.compile(a["match"]), a["ability"]) for a in table["abilities"] if a.get("match")]
 
 
 def ability_name(agent: str | None, row: dict) -> str | None:
+    """The kit name of a held ability (a hold row) or of a placed camera/drone being looked through (a cast row).
+    Never from the slot letter, which is the replay's and not the key pressed (held_names). None for a passive."""
     name = row.get("name") or ""
-    key = row.get("key")
-    if key is None and row.get("k") == "ability":
-        # Placed camera/drone rows keep the archetype key in their name.
-        key = name.split("_", 1)[0] if "_" in name else None
-        key = "C" if key == "4" else key
-    return _kit_names().get(agent, {}).get(key) or name.replace("_", " ").strip() or None
+    if row.get("k") == "ability":
+        cast = f"{row.get('code') or ''}_{name}"
+        found = next((kit for pattern, kit in _cast_names() if pattern.match(cast)), None)
+        return found or name.replace("_", " ").strip() or None
+    known, kit = held_names.lookup(row.get("code"), row.get("key"), name)
+    return kit if known else UNNAMED
 
 
 def item_name(agent: str | None, row: dict | None) -> str | None:

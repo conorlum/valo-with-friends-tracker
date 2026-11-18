@@ -20,7 +20,7 @@ def held_death_run(tmp_path, request):
     context["players"]["0"]["agent"] = "Cypher"
     items = {
         3: {"gun": "Vandal", "cat": "rifle"},
-        5: {"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "PossessableCamera"},
+        5: {"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"},
         6: {"gun": "Knife", "cat": "melee"},
         7: {"gun": None, "cat": "ability", "code": None, "key": None, "name": "Overdrive"},
         8: {"gun": "Knife", "cat": "melee", "item": "unarmed"},

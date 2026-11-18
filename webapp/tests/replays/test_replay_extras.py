@@ -965,6 +965,22 @@ def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
     assert len(extras.rounds[1]["equips"]) == 1
 
 
+def test_held_abilities_without_a_kit_name_are_reported_not_named(tmp_path):
+    # held_names: Omen's smoke is named; an archetype the table lacks is counted and listed for Site health.
+    extras = held_run(tmp_path, [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                 spawned(12_000, 902, "Default__Ability_Wraith_4_Unheard_C", 0, 0),
+                                 spawned(12_000, 903, OVERDRIVE, 0, 0),
+                                 held(14_000, 101, 901), held(15_000, 101, 902), held(16_000, 101, 903)])
+    assert [(r["code"], r["key"], r["name"]) for r in holds(extras)] == [
+        ("Wraith", "C", "Smoke"), ("Wraith", "C", "Unheard"), (None, None, "Overdrive")]
+    assert extras.report["holds_ability_unnamed"] == 1
+    assert extras.report["held_unnamed"] == ["Wraith C/Unheard"]
+    (tmp_path / "clean").mkdir()
+    clean = held_run(tmp_path / "clean", [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                          held(14_000, 101, 901)])
+    assert "held_unnamed" not in clean.report and not clean.report.get("holds_ability_unnamed")
+
+
 @pytest.mark.parametrize("archetype,category", [
     ("Default__Equippable_Snake_Totem_C", "flex"),
     ("Default__Equippable_Sequoia_X_ArenaTeleport_C", "other"),

@@ -90,6 +90,7 @@ from pathlib import Path
 
 from app.replays import format as fmt
 from app.replays import guns
+from app.replays import held_names
 from app.replays.condense import MapInfo, PlayerTable
 from app.replays.contract import RPC_ORB_PICKUP, loads_row
 from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
@@ -183,6 +184,8 @@ class Extras:
     # round number -> {"abilities": [...], "shots": [...]}
     rounds: dict[int, dict] = field(default_factory=dict)
     report: dict = field(default_factory=dict)
+    # "<code> <key>/<name>" of held abilities without a kit name (held_names): reported, never stored in a round
+    held_unnamed: set = field(default_factory=set)
 
 
 def _round_of(t_ms: int, windows: list[tuple[int, int, int]], buy_phase: bool = False) -> int | None:
@@ -2314,19 +2317,19 @@ def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Cou
                         row["from"] = before
                     owners[gun.gen] = slot
             if row["cat"] == "other":
-                held = EQUIPPABLE_ARCHETYPE.match(archetype or "")
+                held = held_names.parts(archetype)
                 if held is not None:
-                    tokens = [held[1], *held[2].split("_")]
-                    slots = {"C", "Q", "E", "X", "4"}
-                    if tokens[0] in slots:
-                        key, code, *rest = tokens
-                    else:
-                        code, *rest = tokens
-                        key = rest.pop(0) if rest[0] in slots else None
-                    row.update(cat="ability", code=code, key="C" if key == "4" else key,
-                               name="_".join(rest))
+                    code, key, held_name = held
+                    row.update(cat="ability", code=code, key=key, name=held_name)
+                    # A held ability the kit-name table lacks would show unnamed: a bug, reported to Site health.
+                    if not held_names.lookup(code, key, held_name)[0]:
+                        counts["holds_ability_unnamed"] += 1
+                        out.held_unnamed.add(f"{code} {held_names.entry(key, held_name)}")
                 elif gun is not None and cat == "ability" and name is not None:
                     row.update(cat="ability", code=None, key=None, name=name)
+                    if not held_names.lookup(None, None, name)[0]:
+                        counts["holds_ability_unnamed"] += 1
+                        out.held_unnamed.add(f"gun {name}")
                 elif archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     row["cat"] = "spike"
                 elif archetype == "Default__Bomb_Defuser_C":
@@ -2959,6 +2962,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["shots"].append(entry)
         counts["shots"] += 1
     out.report = dict(sorted(counts.items()))
+    if out.held_unnamed:
+        out.report["held_unnamed"] = sorted(out.held_unnamed)
     if counts_unknown:
         out.report["skipped_not_agent"] = dict(sorted(counts_unknown.items()))
     return out

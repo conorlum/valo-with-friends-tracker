@@ -45,7 +45,7 @@ def first(snap):
 
 
 @pytest.mark.parametrize("item,expected", [
-    ({"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "PossessableCamera"}, "Spycam"),
+    ({"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"}, "Spycam"),
     ({"gun": "Knife", "cat": "melee"}, "Knife"),
     ({"gun": "Knife", "cat": "melee", "item": "unarmed"}, "unarmed"),
     ({"gun": "Vandal", "cat": "rifle"}, None),
@@ -54,7 +54,8 @@ def first(snap):
     ({"gun": None, "cat": "flex"}, "flex item"),
     ({"gun": None, "cat": "other"}, None),
     ({"gun": None, "cat": "ability", "code": None, "key": None, "name": "Overdrive"}, "Overdrive"),
-    ({"gun": None, "cat": "ability", "key": None, "name": "Unknown_Ability"}, "Unknown Ability"),
+    # Not in the held table: the unnamed label, which Site health reports (held_ability_unnamed).
+    ({"gun": None, "cat": "ability", "key": None, "name": "Unknown_Ability"}, "an ability"),
     (None, None),
 ])
 def test_out_at_death_uses_the_last_hold_not_the_best_gun(item, expected):
@@ -65,8 +66,8 @@ def test_out_at_death_uses_the_last_hold_not_the_best_gun(item, expected):
 
 
 @pytest.mark.parametrize("agent,item,expected", [
-    ("Sova", {"gun": None, "cat": "ability", "key": "E", "name": "Bow"}, "Recon Bolt"),
-    ("Omen", {"gun": None, "cat": "ability", "key": "Q", "name": "Blind"}, "Paranoia"),
+    ("Sova", {"gun": None, "cat": "ability", "code": "Hunter", "key": "Q", "name": "RevealBolt_Signature"}, "Recon Bolt"),
+    ("Omen", {"gun": None, "cat": "ability", "code": "Wraith", "key": "Q", "name": "NearsightMissile"}, "Paranoia"),
     ("Cypher", {"gun": "Knife", "cat": "melee"}, "Knife"),
     ("Cypher", {"gun": "Knife", "cat": "melee", "item": "unarmed"}, "unarmed"),
     ("Cypher", {"gun": None, "cat": "spike"}, "Spike"),
@@ -134,11 +135,15 @@ def test_out_at_death_does_not_reuse_a_previous_lifes_hold_or_a_future_hold():
     assert first(snap)["death"]["out_at_death"] is None
 
 
-@pytest.mark.parametrize("key,expected", [("C", "Trapwire"), ("Q", "Cyber Cage"),
-                                          ("E", "Spycam"), ("X", "Neural Theft")])
-def test_out_at_death_uses_the_snapshots_agent_and_the_kit_key(key, expected):
+@pytest.mark.parametrize("code,key,name,expected", [
+    ("Gumshoe", "C", "TripWire", "Trapwire"), ("Gumshoe", "Q", "CageTrap", "Cyber Cage"),
+    ("Gumshoe", "E", "Camera", "Spycam"), ("Gumshoe", "X", "InterrogateV2", "Neural Theft"),
+    # The replay's slot letter is not the key: Omen's smoke is stored as C, and is Dark Cover (E).
+    ("Wraith", "C", "Smoke", "Dark Cover"),
+])
+def test_out_at_death_names_the_held_ability_from_the_held_table(code, key, name, expected):
     snap = snapshot(util=[{"k": "hold", "t": 9, "by": 0, "gun": None, "cat": "ability",
-                           "code": "Gumshoe", "key": key, "name": "Fallback_Name"}])
+                           "code": code, "key": key, "name": name}])
     snap.context["players"] = {"0": {"agent": "Cypher"}}
     assert first(snap)["death"]["out_at_death"] == expected
 
