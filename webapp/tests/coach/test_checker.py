@@ -481,9 +481,66 @@ def test_held_at_death_check_is_narrow_and_checks_every_text_section(tmp_path, s
         return problems(snap, log, **over)
 
     assert check("You died with your knife out.") == []
-    assert check("You had the Spycam out.")
+    assert check("You had the Spycam out.") == []
+    assert check("You had the Spycam out when you died.")
     assert check("Spycam Knife Overdrive") == []
     assert check("You died with your made up item out.")
+
+
+@pytest.mark.parametrize("section", ["title", "body", "caption"])
+@pytest.mark.parametrize("polarity", ["good", "improve"])
+@pytest.mark.parametrize("claim,gun", [(name, name) for name in (
+    "Vandal", "Phantom", "Classic", "Ghost", "Judge", "Guardian", "Marshal", "Operator", "Outlaw",
+    "Stinger", "Frenzy", "Spectre", "Sheriff", "Bulldog", "Bandit", "Warden", "Shorty", "Odin", "Ares",
+    "Bucky", "Compact Pistol")] + [*GUN_CATEGORY_CASES,
+    ("sniper-rifle", "Operator"), ("machine-gun", "Odin"), ("Replay Carbine", "Replay Carbine")])
+def test_firearm_out_claims_stay_with_the_gun_checker(tmp_path, section, polarity, claim, gun):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    snap.view(1).blob.setdefault("util", []).append({"k": "shot", "t": 2, "by": 0, "gun": gun})
+    fight = log["f"]["result"]
+    fight.update(my_gun=gun)
+    fight["death"].update(dropped_gun=gun, out_at_death=None)
+    over = {"title": "Weapon choice", "body": "Reposition.", "instances": instances, "polarity": polarity}
+    for text in (f"You died with your {claim} out.", f"You had your {claim} out when you died."):
+        if section == "caption":
+            instances[0]["caption"] = text
+        else:
+            over[section] = text
+        assert problems(snap, log, **over) == []
+        fight.update(my_gun="Knife")
+        fight["death"]["dropped_gun"] = None
+        found = problems(snap, log, **over)
+        assert not any("held-at-death" in problem for problem in found)
+        assert bool(found) is (polarity == "improve")
+        fight.update(my_gun=gun)
+        fight["death"]["dropped_gun"] = gun
+
+
+@pytest.mark.parametrize("section", ["title", "body", "caption"])
+@pytest.mark.parametrize("polarity", ["good", "improve"])
+@pytest.mark.parametrize("text,is_death", [
+    ("You had your Spycam out while rotating.", False),
+    ("You died elsewhere. You had your Spycam out while rotating.", False),
+    ("You had your Spycam out while rotating! A death followed.", False),
+    ("You died with your Spycam out.", True),
+    ("You had your Spycam out when you DIED.", True),
+    ("You had your Spycam out as you were killed.", True),
+    ("You had your Spycam out while dying.", True),
+    ("Your death came with your Spycam out.", True),
+    ("One dies with the Spycam out.", True),
+])
+def test_held_item_claims_require_a_death_in_the_same_sentence(tmp_path, section, polarity, text, is_death):
+    snap, log, instances = gun_evidence(tmp_path, won=False)
+    over = {"title": "Weapon choice", "body": "Reposition.", "instances": instances, "polarity": polarity}
+    if section == "caption":
+        instances[0]["caption"] = text
+    else:
+        over[section] = text
+    found = problems(snap, log, **over)
+    assert bool(found) is is_death
+    assert all("held-at-death" in problem for problem in found)
+    log["f"]["result"]["death"]["out_at_death"] = "Spycam"
+    assert problems(snap, log, **over) == []
 
 
 @pytest.mark.parametrize("text", [

@@ -30,6 +30,11 @@ _ABILITY_GUN_NAMES = frozenset({name for name, (_, category) in _GUN_CATEGORIES.
 _HEARING_GUNS = json.loads((_APP_DIR / "control" / "hearing.json").read_text(encoding="utf-8"))["guns"]
 _FIGHT_FLAGS = frozenset({"fight_fact", "gun_handover", "off_range_fight"})
 _GUN_HEDGE = re.compile(r"\b(?:likely|probably|may|might|could)\b", re.IGNORECASE)
+_GUN_CLASS_WORDS = {"sidearm": "sidearm", "pistol": "sidearm", "smg": "smg", "shotgun": "shotgun",
+                    "rifle": "rifle", "sniper": "sniper_rifle", "sniper rifle": "sniper_rifle",
+                    "sniper-rifle": "sniper_rifle", "machine gun": "machine_gun", "machine-gun": "machine_gun",
+                    "lmg": "machine_gun", "close-range gun": "close_range", "close range gun": "close_range",
+                    "close-range-gun": "close_range"}
 
 # The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
 # is an identifier or a coordinate and grounds nothing.
@@ -399,11 +404,7 @@ def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
     if not improve or not moments:
         return []
     vocabulary = _gun_vocabulary(snap)
-    categories = {"sidearm": "sidearm", "pistol": "sidearm", "smg": "smg", "shotgun": "shotgun",
-                  "rifle": "rifle", "sniper": "sniper_rifle", "sniper rifle": "sniper_rifle",
-                  "sniper-rifle": "sniper_rifle", "machine gun": "machine_gun", "machine-gun": "machine_gun",
-                  "lmg": "machine_gun", "close-range gun": "close_range", "close range gun": "close_range",
-                  "close-range-gun": "close_range"}
+    categories = _GUN_CLASS_WORDS
     claims = {**vocabulary, **{word: (word, category) for word, category in categories.items()}}
     ordinary_words = {"classic", "ghost", "judge", "guardian", "phantom", "marshal", "operator", "outlaw",
                       "stinger", "frenzy", "spectre", "sheriff", "bulldog", "bandit", "warden", "shorty"}
@@ -475,15 +476,22 @@ def _gun_problems(point, moments, improve: bool, snap, slot: int) -> list[str]:
     return problems
 
 
-def _held_at_death_problems(point, moments, slot: int) -> list[str]:
-    """Check explicit held-item claims: shared text uses all cited fights, captions only their moment."""
+def _held_at_death_problems(point, moments, snap, slot: int) -> list[str]:
+    """Check non-firearm death claims; shared text uses all fights, captions only their moment."""
     pattern = re.compile(r"\b(?:with|had)\s+(?:your|the)\s+"
                          r"([^\s.!?]+(?:[ \t]+[^\s.!?]+){0,2}?)\s+out\b(?!\s+of\b)", re.IGNORECASE)
 
+    firearms = set(_gun_vocabulary(snap)) | set(_GUN_CLASS_WORDS)
+
     def claims(text):
-        items = [match.group(1).strip().casefold() for match in pattern.finditer(text)]
-        if re.search(r"\bdied\s+unarmed\b|\bwith\s+nothing\s+in\s+your\s+hands\b", text, re.IGNORECASE):
-            items.append("unarmed")
+        items = []
+        for sentence in re.findall(r"[^.!?\n]+", text):
+            if not re.search(r"\b(?:died|dies|death|killed|dying)\b", sentence, re.IGNORECASE):
+                continue
+            items.extend(match.group(1).strip().casefold() for match in pattern.finditer(sentence)
+                         if match.group(1).strip().casefold() not in firearms)
+            if re.search(r"\bdied\s+unarmed\b|\bwith\s+nothing\s+in\s+your\s+hands\b", sentence, re.IGNORECASE):
+                items.append("unarmed")
         return items
 
     def supported_items(entries):
@@ -748,5 +756,5 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
         if isinstance(inst, dict):
             problems += _area_problems(str(inst.get("caption") or ""), _grounded_areas(cited, i), area_names, improve)
     problems += _gun_problems(point, moments, improve, snap, slot)
-    problems += _held_at_death_problems(point, moments, slot)
+    problems += _held_at_death_problems(point, moments, snap, slot)
     return problems + _text_problems(text, cited, snap.names)

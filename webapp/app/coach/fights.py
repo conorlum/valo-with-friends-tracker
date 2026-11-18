@@ -93,11 +93,15 @@ def _death(view, slot, enemy, t, holds, shots, *, agent=None):
     history = _life_rows(view, slot, t, holds)
     if agent is None:
         agent = next((p.get("agent") for p in view.blob["players"] if int(p["slot"]) == slot), None)
-    out_at_death = held.item_name(agent, history[-1] if history else None)
+    # Death tears down the equipped item with an unknown, actor-less close. Keep the
+    # living state, but retain earlier unknown switches and real switches at death.
+    last_held = next((row for row in reversed(history)
+                      if not (row["t"] >= t and row.get("cat") == "other" and row.get("id") is None)), None)
+    out_at_death = held.item_name(agent, last_held)
     possessed = [row for row in view.blob.get("util") or []
                  if row.get("k") == "ability" and row.get("by") == slot and row["t"] <= t
                  and (row.get("t1") is None or t <= row["t1"])
-                 and any(lo <= t and (hi is None or t < hi) for lo, hi in row.get("possessed") or [])]
+                 and any(lo <= t and (hi is None or t <= hi) for lo, hi in row.get("possessed") or [])]
     if possessed:
         out_at_death = held.ability_name(agent, max(possessed, key=lambda row: row["t"]))
     firearms = [row for row in history
