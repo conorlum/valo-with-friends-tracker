@@ -363,10 +363,12 @@
     return rgba;
   }
 
-  // Edges belong to the painted cell. Only compare walkable neighbours, never the map's walls.
-  // Owners are 0 (none), 1/2 (teams), 3 (contested); contested cells keep their stripes.
+  // Edges belong to the painted cell and run EDGE_PX deep into it. Only compare walkable neighbours,
+  // never the map's walls. Owners are 0 (none), 1/2 (teams), 3 (contested); contested cells keep their stripes.
+  var EDGE_PX = 2;
+
   function paintEdges(rgba, size, walk, owners, colors, dashed) {
-    var index = cellIndex(walk), px = size / GRID;
+    var index = cellIndex(walk), px = size / GRID, depth = Math.min(EDGE_PX, px);
     for (var k = 0; k < walk.length; k++) {
       var rgb = colors[owners[k]];
       if (!rgb) continue;
@@ -376,14 +378,16 @@
       for (var edge = 0; edge < 4; edge++) {
         var neighbour = neighbours[edge] < 0 ? -1 : index[neighbours[edge]];
         if (neighbour < 0 || owners[neighbour] === owners[k]) continue;
-        for (var p = 0; p < px; p++) {
-          var x = edge < 2 ? cx + p : cx + (edge === 3 ? px - 1 : 0);
-          var y = edge < 2 ? cy + (edge === 1 ? px - 1 : 0) : cy + p;
-          // Dash gaps leave the hatch and any other team's border untouched.
-          if (dashed && (edge < 2 ? x : y) % 4 >= 2) continue;
-          var o = (y * size + x) * 4;
-          rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2];
-          rgba[o + 3] = Math.round((dashed ? HATCH_ALPHA : 0.9) * 255);
+        for (var d = 0; d < depth; d++) {
+          for (var p = 0; p < px; p++) {
+            var x = edge < 2 ? cx + p : cx + (edge === 3 ? px - 1 - d : d);
+            var y = edge < 2 ? cy + (edge === 1 ? px - 1 - d : d) : cy + p;
+            // Dash gaps leave the hatch and any other team's border untouched.
+            if (dashed && (edge < 2 ? x : y) % 4 >= 2) continue;
+            var o = (y * size + x) * 4;
+            rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2];
+            rgba[o + 3] = Math.round((dashed ? HATCH_ALPHA : 0.9) * 255);
+          }
         }
       }
     }

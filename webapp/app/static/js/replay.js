@@ -2242,6 +2242,21 @@
         self.draw();
       });
     }
+    // Borders between owners and around unknown: off unless the viewer turned them on.
+    this.ui.controlBorders = q("[data-replay-control-borders]");
+    this.ui.controlBordersWrap = q("[data-replay-control-borders-wrap]");
+    this.controlBorders = false;
+    try { this.controlBorders = global.localStorage.getItem("replay.controlBorders") === "on"; } catch (err) { /* off */ }
+    if (this.ui.controlBorders) {
+      this.ui.controlBorders.checked = this.controlBorders;
+      this.ui.controlBorders.addEventListener("change", function () {
+        self.controlBorders = !!self.ui.controlBorders.checked;
+        self.controlPaint = null;
+        try { global.localStorage.setItem("replay.controlBorders", self.controlBorders ? "on" : "off"); } catch (err) { /* ignore */ }
+        self.draw();
+      });
+    }
+    if (this.ui.controlBordersWrap) this.ui.controlBordersWrap.hidden = !this.layers.control;
     this.controlView = "true";
     this.ui.controlView = q("[data-replay-control-view]");
     this.ui.controlViewWrap = q("[data-replay-control-view-wrap]");
@@ -3771,6 +3786,7 @@
   // round and its neighbours, and prefetches the next round while the layer is on.
   ReplayViewer.prototype.refreshControl = function () {
     if (this.ui.controlPaletteWrap) this.ui.controlPaletteWrap.hidden = !this.layers.control;
+    if (this.ui.controlBordersWrap) this.ui.controlBordersWrap.hidden = !this.layers.control;
     if (!this.control || !this.current) return;
     var self = this, n = this.number, i = this.rounds.indexOf(n);
     var prev = this.rounds[i - 1], next = this.rounds[i + 1];
@@ -3868,7 +3884,8 @@
     var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
     if (tick < 0) return;
     var knowing = this.knowingGroup(value);
-    var key = [this.number, tick, this.layers.control, this.highlight, knowing, this.unknownView].join(":");
+    var borders = !!this.controlBorders;
+    var key = [this.number, tick, this.layers.control, this.highlight, knowing, this.unknownView, borders].join(":");
     var showUnknown = !!(this.layers.control && this.unknownView !== "off" && parsed.unknown_a && parsed.unknown_b);
     if (this.controlPaint !== key) {
       this.controlPaint = key;
@@ -3877,14 +3894,14 @@
         var img = this.controlCanvas("states");
         img.data = img.data || img.ctx.createImageData(CONTROL_PX, CONTROL_PX);
         var codes = knowing ? value.cursor.knew("knew_" + knowing.toLowerCase(), tick) : value.cursor.states(tick);
-        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors, true);
+        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors, borders);
         img.ctx.putImageData(img.data, 0, 0);
       }
       if (showUnknown) {
         var uk = this.controlCanvas("unknown");
         uk.data = uk.data || uk.ctx.createImageData(CONTROL_PX, CONTROL_PX);
         C.paintUnknown(uk.data.data, CONTROL_PX, parsed.walk, value.cursor.unknown("unknown_a", tick),
-          value.cursor.unknown("unknown_b", tick), colors, this.unknownView, true);
+          value.cursor.unknown("unknown_b", tick), colors, this.unknownView, borders);
         uk.ctx.putImageData(uk.data, 0, 0);
       }
       if (this.highlight !== null) {

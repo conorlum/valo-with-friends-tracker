@@ -302,12 +302,16 @@ def test_control_borders_only_shared_sides_between_different_owners(other):
           Uint8Array.from(['a_active', p.other].map(n => C.STATE_NAMES.indexOf(n))),
           {a: [200, 10, 10], b: [10, 10, 200]}, true);
         const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
-        return {a: px(3, 1), b: px(4, 1), outer: px(0, 1), top: px(1, 0), inside: px(2, 1)};
+        return {a: px(3, 1), a2: px(2, 1), b: px(4, 1), b2: px(5, 1), b3: px(6, 1),
+          outer: px(0, 1), top: px(1, 0), inside: px(1, 1)};
       }""", {"other": other})
-    assert got["a"] == [200, 10, 10, 140 if other == "a_safe" else 230]
-    assert got["b"] == ([10, 10, 200, 230] if other == "b_active" else
-                        [0, 0, 0, 0] if other == "none" else
-                        [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
+    # Edges are two pixels deep, inside the cell that owns them.
+    assert got["a"] == got["a2"] == [200, 10, 10, 140 if other == "a_safe" else 230]
+    assert got["b"] == got["b2"] == ([10, 10, 200, 230] if other == "b_active" else
+                                     [0, 0, 0, 0] if other == "none" else
+                                     [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
+    assert got["b3"] == ([10, 10, 200, 140] if other == "b_active" else [0, 0, 0, 0] if other == "none" else
+                         [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
     assert got["outer"] == got["top"] == got["inside"] == [200, 10, 10, 140]
 
 
@@ -322,13 +326,23 @@ def test_unknown_borders_dash_at_region_edges_in_the_hatch_colour(show):
         C.paintUnknown(rgba, size, walk, p.show === 'B' ? blank : mask,
           p.show === 'B' ? mask : blank, {a: [200, 10, 10], b: [10, 10, 200]}, p.show, true);
         const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
-        return {edge: Array.from({length: 16}, (_, y) => px(7, y)),
-          bottom: Array.from({length: 8}, (_, x) => px(x, 15)), join: px(2, 7), outside: px(8, 1)};
+        const col = x => Array.from({length: 16}, (_, y) => px(x, y));
+        const row = y => Array.from({length: 8}, (_, x) => px(x, y));
+        return {edge7: col(7), edge6: col(6), bottom15: row(15), bottom14: row(14),
+          inner: col(5), join: px(2, 7), outside: px(8, 1)};
       }""", {"show": show})
     colour = [200, 10, 10] if show == "B" else [10, 10, 200]
-    for name in ("edge", "bottom"):
-        assert got[name] == [colour + [140] if i % 4 < 2 or (show == "B" and i % 4 == 3) else [0, 0, 0, 0]
-                             for i in range(len(got[name]))]
+
+    def hatch(x, y):
+        return (x - y) % 4 == 0 if show == "B" else (x + y) % 4 == 0
+
+    # Dashes are two pixels deep: on for two pixels, off for two, along the edge; the hatch shows in the gaps.
+    on = colour + [140]
+    for x in (7, 6):
+        assert got[f"edge{x}"] == [on if y % 4 < 2 or hatch(x, y) else [0, 0, 0, 0] for y in range(16)]
+    for y in (15, 14):
+        assert got[f"bottom{y}"] == [on if x % 4 < 2 or hatch(x, y) else [0, 0, 0, 0] for x in range(8)]
+    assert got["inner"][:14] == [on if hatch(5, y) else [0, 0, 0, 0] for y in range(14)]  # 14-15: bottom edge
     assert got["join"] == got["outside"] == [0, 0, 0, 0]
 
 

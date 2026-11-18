@@ -182,7 +182,8 @@ PALETTE_DOM = """
     R.ReplayViewer.prototype[key] = () => {};
   function viewer() {
     const nodes = {};
-    for (const name of ['play', 'speed', 'scrub', 'prev', 'next', 'control-palette', 'control-palette-wrap'])
+    for (const name of ['play', 'speed', 'scrub', 'prev', 'next', 'control-palette', 'control-palette-wrap',
+                        'control-borders', 'control-borders-wrap'])
       nodes['[data-replay-' + name + ']'] = element();
     nodes['[data-replay-canvas]'] = Object.assign(element(), {getContext: () => ({})});
     const vars = {}, root = {style: {setProperty(k, v) {vars[k] = v;}},
@@ -259,20 +260,37 @@ def test_control_palette_maps_linked_teams_independently_of_side(palette, first,
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_draw_control_enables_borders_on_both_layers():
+def test_borders_toggle_defaults_off_persists_and_reaches_both_layers():
     got = run_node(PALETTE_DOM + """
-      const {v} = viewer(), C = require(require('path').join(require('path').dirname(process.argv[1]), 'replay_control.js'));
+      const store = {};
+      global.localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => {store[k] = v;}};
+      const one = viewer(), C = require(require('path').join(require('path').dirname(process.argv[1]), 'replay_control.js'));
       const calls = [];
       C.paintStates = (...args) => calls.push(['states', args[5]]);
       C.paintUnknown = (...args) => calls.push(['unknown', args[7]]);
       const parsed = {times: [0], walk: [0], unknown_a: true, unknown_b: true};
-      v.controlCache = {ready: () => ({parsed, cursor: {states: () => [1], unknown: () => [1]}})};
-      v.layers.control = true;
-      v.controlCanvas = () => ({ctx: {createImageData: () => ({data: []}), putImageData() {}}});
-      v.drawControl({save() {}, restore() {}, drawImage() {}}, 512, []);
-      process.stdout.write(JSON.stringify(calls));
+      const paint = v => {
+        v.controlCache = {ready: () => ({parsed, cursor: {states: () => [1], unknown: () => [1]}})};
+        v.layers.control = true;
+        v.controlCanvas = () => ({ctx: {createImageData: () => ({data: []}), putImageData() {}}});
+        v.drawControl({save() {}, restore() {}, drawImage() {}}, 512, []);
+      };
+      const box = one.nodes['[data-replay-control-borders]'], wrap = one.nodes['[data-replay-control-borders-wrap]'];
+      const initial = {checked: box.checked, hidden: wrap.hidden};
+      paint(one.v);
+      box.checked = true; box.handlers.change();
+      const after = {paint: one.v.controlPaint, draws: one.draws(), stored: store['replay.controlBorders']};
+      paint(one.v);
+      const two = viewer();
+      const restored = two.nodes['[data-replay-control-borders]'].checked;
+      one.v.layers.control = true; one.v.refreshControl();
+      const shown = !wrap.hidden;
+      process.stdout.write(JSON.stringify({initial, after, restored, shown, calls}));
     """, None)
-    assert got == [["states", True], ["unknown", True]]
+    assert got["initial"] == {"checked": False, "hidden": True}
+    assert got["after"] == {"paint": None, "draws": 1, "stored": "on"}
+    assert got["restored"] is True and got["shown"] is True
+    assert got["calls"] == [["states", False], ["unknown", False], ["states", True], ["unknown", True]]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
