@@ -4638,8 +4638,16 @@
       var xy = room.starts[key], p = point(xy[0], xy[1]);
       ctx.beginPath(); ctx.arc(p.x, p.y, r / 3, 0, Math.PI * 2); ctx.stroke();
     });
+    // One position per slot: a current span, otherwise the most recently ended span.
+    var selected = {};
     duel.spans.forEach(function (span) {
-      if (t < span.t0 || kills.some(function (k) { return String(k.victim) === span.slot; })) return;
+      if (t < span.t0) return;
+      var previous = selected[span.slot];
+      if (!previous || span.t1 >= t || (previous.t1 < t && span.t1 > previous.t1)) selected[span.slot] = span;
+    });
+    Object.keys(selected).forEach(function (slot) {
+      var span = selected[slot];
+      if (kills.some(function (k) { return String(k.victim) === span.slot; })) return;
       var player = blob.players.filter(function (p) { return String(p.slot) === span.slot; })[0];
       if (!player || !aliveAt(blob.alive[span.slot], t, blob.t_end)) return;
       var seg = span.seg, at = seg[seg.length - 1];

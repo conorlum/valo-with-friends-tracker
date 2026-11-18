@@ -192,6 +192,49 @@ def inset_calls(out):
 
 
 @needs_node
+@pytest.mark.parametrize("iso_spans,opponent_end", [
+    ([(10, 10.5), (12, 14.5)], 12),
+    ([(10, 10.5), (12, 12.5), (14, 14.5)], 14),
+])
+def test_arena_split_slot_draws_one_current_or_frozen_marker_and_hit(iso_spans, opponent_end):
+    blob = round_blob([(1, "A", "Iso", 3000, 3000), (6, "B", "Sova", 7000, 7000)])
+    # Isolate inset hits from map hits; keep the real delta-encoded arena row shape.
+    blob["tracks"] = {}
+
+    def segment(start, end, x, y):
+        n = int((end - start) * blob["hz"]) + 1
+        return {"t0": start, "x": [x] + [10] * (n - 1),
+                "y": [y] + [0] * (n - 1), "yaw": [90] + [0] * (n - 1)}
+
+    blob["arena"] = {
+        "1": [segment(start, end, -5040 + i * 40, 100 - i * 60)
+              for i, (start, end) in enumerate(iso_spans)],
+        "6": [segment(9, opponent_end, -5060, -110)],
+    }
+    for t in (9, 10, 10.25, 10.5, 11, 12, 12.25, 12.5, 13, 14, 14.25, 14.5, 16.4):
+        out = draw(blob, t, linked=None, portraits=True)
+        portraits = [c for c in inset_calls(out) if c["op"] == "drawImage"]
+        expected_slots = [1, 6] if t >= 10 else [6]
+        assert sorted(h["slot"] for h in out["hits"]) == expected_slots, t
+        assert sorted(c["src"] for c in portraits) == (["Iso", "Sova"] if t >= 10 else ["Sova"]), t
+        box = out["arenaBox"]
+        expected = {6: (-5060 + (min(t, opponent_end) - 9) * 20, -110)}
+        started = [(i, start, end) for i, (start, end) in enumerate(iso_spans) if start <= t]
+        if started:
+            i, start, end = started[-1]
+            expected[1] = (-5040 + i * 40 + (min(t, end) - start) * 20, 100 - i * 60)
+        for slot, (x, y) in expected.items():
+            portrait = next(c for c in portraits if c["src"] == ("Iso" if slot == 1 else "Sova"))
+            px = box["x"] + box["w"] * (0.5 + (x + 5000) / 180)
+            py = box["y"] + box["h"] * (0.5 - y / 280)
+            assert portrait["x"] + portrait["w"] / 2 == pytest.approx(px), t
+            assert portrait["y"] + portrait["h"] / 2 == pytest.approx(py), t
+            hit = next(h for h in out["hits"] if h["slot"] == slot)
+            assert hit["x"] == pytest.approx(px), t
+            assert hit["y"] == pytest.approx(py), t
+
+
+@needs_node
 def test_arena_inset_lives_through_survivor_tail_then_hides_and_old_blobs_draw_none():
     blob = arena_round()
     inside = draw(blob, 11, linked=None, portraits=True)
