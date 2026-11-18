@@ -211,7 +211,7 @@ def test_arena_split_slot_draws_one_current_or_frozen_marker_and_hit(iso_spans, 
               for i, (start, end) in enumerate(iso_spans)],
         "6": [segment(9, opponent_end, -5060, -110)],
     }
-    closes = min(iso_spans[-1][1], opponent_end)   # the inset closes when the first duellist leaves
+    closes = max(iso_spans[-1][1], opponent_end)   # the inset closes when the last duellist is back
     for t in (9, 10, 10.25, 10.5, 11, 12, 12.25, 12.5, 13, 14, 14.25, 14.5, 16.4):
         out = draw(blob, t, linked=None, portraits=True)
         if t >= closes:
@@ -239,7 +239,7 @@ def test_arena_split_slot_draws_one_current_or_frozen_marker_and_hit(iso_spans, 
 
 
 @needs_node
-def test_arena_inset_closes_when_the_first_duellist_leaves_and_old_blobs_draw_none():
+def test_arena_inset_closes_when_the_survivor_is_back_and_old_blobs_draw_none():
     blob = arena_round()
     inside = draw(blob, 11, linked=None, portraits=True)
     calls = inset_calls(inside)
@@ -256,16 +256,20 @@ def test_arena_inset_closes_when_the_first_duellist_leaves_and_old_blobs_draw_no
             if p[0] in ("A", "M", "L"):
                 assert box["x"] <= p[1] <= box["x"] + box["w"]
                 assert box["y"] <= p[2] <= box["y"] + box["h"]
-    # The victim dies at 12: the inset is gone then, though Iso's track runs on to 14.5.
+    # The victim dies at 12; Iso stays in the room until the track ends at 14.5 (the return delay): the inset
+    # shows Iso alone beside the kill's cross, then closes with no grace.
     assert len([c for c in inset_calls(draw(blob, 11.9, linked=None, portraits=True)) if c["op"] == "drawImage"]) == 2
-    for t in (12, 13, 14.5, 16.4):
+    for t in (12, 13, 14.4):
+        calls = inset_calls(draw(blob, t, linked=None, portraits=True))
+        assert [c["src"] for c in calls if c["op"] == "drawImage"] == ["Iso"], t
+    for t in (14.5, 16.4):
         assert not inset_calls(draw(blob, t, linked=None, portraits=True)), t
-    # No death: Iso leaves at 11 while the target's track runs to 12, and the inset goes with Iso.
+    # No death: Iso's track ends at 11 while the target's runs to 12; the inset stays until the last one is back.
     early = arena_round()
     early["kills"] = []
     early["arena"]["1"][0] = {k: v[:3] if isinstance(v, list) else v for k, v in early["arena"]["1"][0].items()}
-    assert inset_calls(draw(early, 10.9, linked=None, portraits=True))
-    assert not inset_calls(draw(early, 11, linked=None, portraits=True))
+    assert inset_calls(draw(early, 11.5, linked=None, portraits=True))
+    assert not inset_calls(draw(early, 12, linked=None, portraits=True))
     del blob["arena"]
     assert not inset_calls(draw(blob, 11, linked=None))
 
