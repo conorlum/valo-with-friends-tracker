@@ -4621,8 +4621,19 @@
       if (!d || span.t0 > d.t1) duels.push({t0: span.t0, t1: span.t1, spans: [span]});
       else { d.t1 = Math.max(d.t1, span.t1); d.spans.push(span); }
     });
+    // The inset closes as soon as either duellist leaves: the earlier of a slot's last arena sample and a
+    // duellist's death, not the survivor's return.
+    var blobKills = this.current.blob.kills || [];
+    duels.forEach(function (d) {
+      var last = {};
+      d.spans.forEach(function (s) { last[s.slot] = Math.max(last[s.slot] || -Infinity, s.t1); });
+      d.end = Math.min.apply(null, Object.keys(last).map(function (slot) { return last[slot]; }));
+      blobKills.forEach(function (k) {
+        if (k.t >= d.t0 && k.t < d.end && last.hasOwnProperty(String(k.victim))) d.end = k.t;
+      });
+    });
     var duel = null;
-    duels.forEach(function (d) { if (d.t0 <= t && t < d.t1 + 2) duel = d; });
+    duels.forEach(function (d) { if (d.t0 <= t && t < d.end) duel = d; });
     if (!duel) return;
     var room = this.options.arenaRoom && this.options.arenaRoom.centre ? this.options.arenaRoom : ARENA_ROOM;
     if (!this.arenaBox) this.arenaBox = placeInset(this.mapAlpha, 256,
