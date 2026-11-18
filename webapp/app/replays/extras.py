@@ -24,7 +24,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   a firearm or melee switch; `id`/shot `gid` is its actor guid and `gen` its spawn index. A switch
   to another item closes the hold with `gun: null`, without `id` or `gen`. Revision 32 names
   `cat: "ability"` with `code`, `key` (C/Q/E/X or null), `name`; spike, defuser and totems have
-  `cat: "spike"`, `"defuser"` and `"flex"`; unknown items keep `"other"`. Known ability weapons
+  `cat: "spike"`, `"defuser"` and `"flex"` (with the flex's `name`, e.g. `Snake`); unknown items keep `"other"`
+  (one with an archetype is reported in `held_unnamed`). Known ability weapons
   outside `Default__Ability_*` have null code/key. Unarmed is melee with `item: "unarmed"`.
   `from` names the previous holder of this generation; `seed` marks a surviving round-start carry.
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
@@ -2334,8 +2335,12 @@ def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Cou
                     row["cat"] = "spike"
                 elif archetype == "Default__Bomb_Defuser_C":
                     row["cat"] = "defuser"
-                elif (archetype or "").startswith("Default__Equippable_") and archetype.endswith("_Totem_C"):
-                    row["cat"] = "flex"
+                elif held_names.flex_name(archetype) is not None:
+                    row.update(cat="flex", name=held_names.flex_name(archetype))
+                elif archetype:
+                    # A spawned item with no name is a bug too (the owner: name whatever is out).
+                    counts["holds_item_unnamed"] += 1
+                    out.held_unnamed.add(f"item {archetype}")
             if t_ms <= start:
                 explicit_zero.add(slot)
             latest[slot] = (t_ms, pawn, gun, row)

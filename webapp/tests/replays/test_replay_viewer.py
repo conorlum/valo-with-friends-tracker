@@ -1068,7 +1068,9 @@ def test_held_ability_names_come_from_the_held_table_never_the_slot_letter():
           raze: at(row("Clay", "C", "ClusterGrenade"), "Raze"), vyse: at(row("Nox", null, "BarbedWire"), "Vyse"),
           passive: at(row("Wushu", null, "Passive_Glide"), "Jett"),
           missing: at(row("Wraith", "C", "Unheard"), "Omen"), noTable: at(camera, "Cypher", {}),
-          categories: ["spike", "flex", "defuser", "other"].map(cat => at({slot: 1, t: 5, gun: null, cat}))
+          categories: ["spike", "flex", "defuser", "other"].map(cat => at({slot: 1, t: 5, gun: null, cat})),
+          snake: at({slot: 1, t: 5, gun: null, cat: "flex", name: "Snake"}),
+          kill_contract: at(row("Sequoia", "X", "ArenaTeleport"), "Iso")
         }));
       });""", tables)
     assert got["gun"] == {"gun": "Vandal", "held": True}
@@ -1081,7 +1083,12 @@ def test_held_ability_names_come_from_the_held_table_never_the_slot_letter():
     assert got["passive"] is None
     # Missing from the table: the generic label, which condense reports to Site health.
     assert got["missing"] == got["noTable"] == {"ability": "Ability", "held": True}
-    assert got["categories"] == [{"ability": "Spike", "held": True}, None, None, None]
+    # Whatever is out is named as specifically as the row allows (the owner, Lotus round 1 after the round was
+    # decided): the flex by its own name, the defuser; only an unknown item shows nothing.
+    assert got["categories"] == [{"ability": "Spike", "held": True}, {"ability": "Flex", "held": True},
+                                 {"ability": "Defuser", "held": True}, None]
+    assert got["snake"] == {"ability": "Snake flex", "held": True}
+    assert got["kill_contract"] == {"ability": "Kill Contract", "held": True}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -1110,6 +1117,7 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
             {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0},
             {k: "hold", by: 1, t: 25, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"},
             {k: "hold", by: 1, t: 30, gun: null, cat: "spike"},
+            {k: "hold", by: 1, t: 37, gun: null, cat: "flex", name: "Tactibear"},
             {k: "ability", by: 1, t: 21, t1: 90, kind: "GameObject", code: "Gumshoe",
              name: "E_PossessableCamera", possessed: [[27, 28], [32, 33]]},
             {k: "hold", by: 1, t: 35, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "<test>"}
@@ -1121,7 +1129,7 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
           return match ? match[0] : null;
         }
         const held = [1, 5, 8, 11, 15, 20].map(gun);
-        const util = [26, 27, 31, 32, 36].map(gun);
+        const util = [26, 27, 31, 32, 36, 38].map(gun);
         delete viewer.current.extras.holds;
         process.stdout.write(JSON.stringify({held, util, fallback: [1, 4].map(gun)}));
       });""", {"icons": icons,
@@ -1135,6 +1143,7 @@ def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abili
         '<span class="replay-pl-gun is-util">Spike out</span>',
         '<span class="replay-pl-gun is-util" title="Using util now">Watching Spycam</span>',
         '<span class="replay-pl-gun is-util">Wall &lt;test&gt; out</span>',
+        '<span class="replay-pl-gun is-util">Tactibear flex out</span>',
     ]
     assert got["fallback"] == [
         '<span class="replay-pl-gun is-unfired" title="Not fired yet: the gun of their first shot this round">Phantom</span>',

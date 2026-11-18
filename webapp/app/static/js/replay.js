@@ -23,6 +23,8 @@
   var STEP_S = 5;
   var UV = 10000;
   var HELD_SPIKE_LABEL = "Spike";
+  var HELD_FLEX_LABEL = "Flex";   // the cosmetic flex item, "<its name> flex out" (e.g. "Snake flex out")
+  var HELD_DEFUSER_LABEL = "Defuser";
   var ARENA_ROOM = { centre: [-5000, 0], size_m: [18, 28],
     starts: { iso: [-5000, 100], target: [-5000, -110] }, outline: null };
   // Owner's ruling: fit clear of the map with a visible gap.
@@ -1464,7 +1466,13 @@
       holds.forEach(function (hold) {
         if (hold.slot === slot && hold.t >= from && hold.t <= t && (!latest || hold.t >= latest.t)) latest = hold;
       });
-      if (!latest || latest.cat === "other" || latest.cat === "defuser" || latest.cat === "flex") return null;
+      // Name whatever is out as specifically as the row allows (the owner); an unknown item shows nothing and
+      // condense reports it to Site health.
+      if (!latest || latest.cat === "other") return null;
+      if (latest.cat === "defuser") return { ability: HELD_DEFUSER_LABEL, held: true };
+      if (latest.cat === "flex") {
+        return { ability: latest.name ? latest.name + " " + HELD_FLEX_LABEL.toLowerCase() : HELD_FLEX_LABEL, held: true };
+      }
       if (latest.cat === "ability") {
         var label = heldAbilityLabel(latest, agent, table, heldTable);
         return label === null ? null : { ability: label, held: true };   // null: a passive, nothing to name

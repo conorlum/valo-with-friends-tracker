@@ -55,9 +55,32 @@ def test_every_agent_has_entries_unless_awaiting_a_replay():
     ("Default__Ability_Nox_BarbedWire_C", ("Nox", None, "BarbedWire")),
     ("Default__Ability_Cashew_X_Airstrike_C", ("Cashew", "X", "Airstrike")),
     ("Default__BombEquippable_C", None),
+    # Iso's teleport into the Kill Contract room is an Equippable_, slot second.
+    ("Default__Equippable_Sequoia_X_ArenaTeleport_C", ("Sequoia", "X", "ArenaTeleport")),
+    ("Default__Equippable_Unarmed_C", None),
+    ("Default__Equippable_Totem_PDA_C", None),
 ])
 def test_parts_split_an_archetype_as_the_hold_row_stores_it(archetype, expected):
     assert held_names.parts(archetype) == expected
+
+
+# Every flex archetype in the owner's Lotus replay, named as the panel shows it ("<name> flex out").
+@pytest.mark.parametrize("archetype,expected", [
+    ("Default__Equippable_Totem_PDA_C", "PDA"),
+    ("Default__Equippable_Skymage_Totem_C", "Skymage"),
+    ("Default__Equippable_Snake_Totem_C", "Snake"),
+    ("Default__Equippable_Totem_Tactibear_C", "Tactibear"),
+    ("Default__Equippable_DuosDay26_Duck_Totem_C", "Duck"),
+    ("Default__Equippable_SoccerBall_Totem_C", "Soccer Ball"),
+    ("Default__Equippable_Unarmed_C", None),
+    ("Default__Bomb_Defuser_C", None),
+])
+def test_flex_items_keep_their_own_name(archetype, expected):
+    assert held_names.flex_name(archetype) == expected
+
+
+def test_kill_contract_teleport_is_named():
+    assert held_names.lookup(*held_names.parts("Default__Equippable_Sequoia_X_ArenaTeleport_C")) == (True, "Kill Contract")
 
 
 def test_the_replay_slot_letter_is_not_the_key():
@@ -75,6 +98,8 @@ def test_the_coach_names_held_and_possessed_items_from_the_tables():
     assert held.item_name("Jett", {"cat": "ability", "code": "Wushu", "key": None, "name": "Passive_Glide"}) is None
     camera = {"k": "ability", "code": "Gumshoe", "name": "E_PossessableCamera"}
     assert held.ability_name("Cypher", camera) == "Spycam"
+    assert held.item_name("Omen", {"cat": "flex", "name": "Snake"}) == "Snake flex"
+    assert held.item_name("Omen", {"cat": "flex"}) == "flex item"
 
 
 # Condense's report of an unnamed hold: tests/replays/test_replay_extras.py,

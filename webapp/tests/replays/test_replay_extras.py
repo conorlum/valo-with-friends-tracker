@@ -981,23 +981,28 @@ def test_held_abilities_without_a_kit_name_are_reported_not_named(tmp_path):
     assert "held_unnamed" not in clean.report and not clean.report.get("holds_ability_unnamed")
 
 
-@pytest.mark.parametrize("archetype,category", [
-    ("Default__Equippable_Snake_Totem_C", "flex"),
-    ("Default__Equippable_Sequoia_X_ArenaTeleport_C", "other"),
-    ("Default__Equippable_Totem_PDA_C", "other"),
-    ("Default__Equippable_Skymage_Totem_C", "flex"),
-    ("Default__Equippable_DuosDay26_Duck_Totem_C", "flex"),
-    ("Default__Equippable_FutureItem_C", "other"),
-    ("Default__Bomb_Defuser_C", "defuser"),
-    ("Default__BombEquippable_C", "spike"),
+@pytest.mark.parametrize("archetype,named", [
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
+    ("Default__Equippable_Sequoia_X_ArenaTeleport_C",
+     {"cat": "ability", "code": "Sequoia", "key": "X", "name": "ArenaTeleport"}),
+    ("Default__Equippable_Totem_PDA_C", {"cat": "flex", "name": "PDA"}),
+    ("Default__Equippable_Skymage_Totem_C", {"cat": "flex", "name": "Skymage"}),
+    ("Default__Equippable_DuosDay26_Duck_Totem_C", {"cat": "flex", "name": "Duck"}),
+    ("Default__Equippable_FutureItem_C", {"cat": "other"}),
+    ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
+    ("Default__BombEquippable_C", {"cat": "spike"}),
 ])
-def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype, category):
+def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype, named):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
     assert holds(extras) == [
         {"k": "hold", "t": 4.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0},
-        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": category}]
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, **named}]
     assert extras.report["holds_unnamed"] == 0
+    # Whatever is out is named (the owner); a spawned item with no name goes to Site health.
+    unknown = named == {"cat": "other"}
+    assert extras.report.get("held_unnamed", []) == ([f"item {archetype}"] if unknown else [])
+    assert extras.report.get("holds_item_unnamed", 0) == (1 if unknown else 0)
 
 
 @pytest.mark.parametrize("archetype,code,key,name", [
@@ -1020,7 +1025,7 @@ def test_ability_holds_parse_both_slot_orders_and_missing_slots(tmp_path, archet
      {"cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"}),
     ("Default__BombEquippable_C", {"cat": "spike"}),
     ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
-    ("Default__Equippable_Snake_Totem_C", {"cat": "flex"}),
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
 ])
 @pytest.mark.parametrize("lead", [1_500, 2_000, 2_001])
 def test_early_item_switch_resolves_in_place_within_equip_window(tmp_path, archetype, fields, lead):

@@ -18,11 +18,29 @@ from pathlib import Path
 
 TABLE_PATH = Path(__file__).resolve().parents[1] / "static" / "data" / "held_abilities.json"
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
+# An agent's equippable outside Default__Ability_* names its slot second: Iso's Kill Contract teleport is
+# `Default__Equippable_Sequoia_X_ArenaTeleport_C`.
+AGENT_EQUIPPABLE = re.compile(r"^Default__Equippable_([A-Za-z0-9]+)_([CQEX4])_(.+)_C$")
+# Flex (cosmetic) items: `Default__Equippable_Totem_PDA_C`, `Default__Equippable_Snake_Totem_C`.
+FLEX_ARCHETYPE = re.compile(r"^Default__Equippable_(.*_)?Totem(_.*)?_C$")
 SLOTS = frozenset({"C", "Q", "E", "X", "4"})
+
+
+def flex_name(archetype: str | None) -> str | None:
+    """The flex item's own name from its archetype (`Snake`, `Tactibear`, `PDA`; an event tag with digits such as
+    `DuosDay26` is dropped, so `DuosDay26_Duck` is `Duck`); None for anything else."""
+    flex = FLEX_ARCHETYPE.match(archetype or "")
+    if flex is None:
+        return None
+    words = [part for part in f"{flex[1] or ''}{flex[2] or ''}".split("_") if part and not re.search(r"\d", part)]
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", " ".join(words)) or "Flex"   # SoccerBall -> Soccer Ball
 
 
 def parts(archetype: str | None) -> tuple[str, str | None, str] | None:
     """(code, key, name) of a held-ability archetype, as a hold row stores them; None for anything else."""
+    agent = AGENT_EQUIPPABLE.match(archetype or "")
+    if agent is not None:
+        return agent[1], ("C" if agent[2] == "4" else agent[2]), agent[3]
     held = EQUIPPABLE_ARCHETYPE.match(archetype or "")
     if held is None:
         return None

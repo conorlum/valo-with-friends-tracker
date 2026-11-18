@@ -160,7 +160,8 @@
     "E/WreckingBall": "Double Tap",
     "/Passive": null,
     "Q/FragileMissilePrototypeEquipped": "Undercut",
-    "X/ArenaLineCapture": "Kill Contract"
+    "X/ArenaLineCapture": "Kill Contract",
+    "X/ArenaTeleport": "Kill Contract"
   },
   "Sprinter": {
     "C/Tunnel_Production": "Fast Lane",

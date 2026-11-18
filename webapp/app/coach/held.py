@@ -37,4 +37,6 @@ def item_name(agent: str | None, row: dict | None) -> str | None:
         return "unarmed" if row.get("item") == "unarmed" else "Knife"
     if category == "ability":
         return ability_name(agent, row)
-    return {"spike": "Spike", "flex": "flex item"}.get(category)
+    if category == "flex":
+        return f"{row['name']} flex" if row.get("name") else "flex item"
+    return {"spike": "Spike"}.get(category)
