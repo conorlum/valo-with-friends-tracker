@@ -4,6 +4,31 @@ from tests.coach import toys
 from tests.coach.test_areas import painted_object, write_paint
 
 
+def test_no_gun_deaths_thresholds_use_only_lost_fights():
+    for count, total, flagged in ((3, 12, True), (2, 4, False), (3, 13, False), (0, 0, False)):
+        rounds = [{"round": n + 1, "fights": [
+            {"won": True, "t0": 5, "t": 7, "death": None},
+            {"won": False, "t0": 5, "t": 9, "death": {"out_at_death": "Knife" if n < count else None}},
+        ]} for n in range(total)]
+        assert detectors.no_gun_deaths(rounds) == {
+            "deaths": [{"round": n + 1, "fight": 1, "t": 9, "item": "Knife"} for n in range(count)],
+            "count": count, "of_deaths": total, "flag": flagged,
+        }
+
+
+def test_no_gun_deaths_excludes_friendly_self_environment_and_decided_deaths():
+    from app.coach import fights
+    from tests.coach.test_fights import snapshot
+
+    rounds = []
+    for n, killer, decided in ((1, 5, 60), (2, 1, 60), (3, 5, 9), (4, 0, 60), (5, None, 60)):
+        snap = snapshot(my="Knife", kills=[{"t": 10, "killer": killer, "victim": 0}], t_decided=decided)
+        rounds.append({"round": n, "fights": fights.for_round(snap, 1, 0)})
+    tally = detectors.no_gun_deaths(rounds)
+    assert (tally["count"], tally["of_deaths"]) == (1, 1)
+    assert tally["deaths"] == [{"round": 1, "fight": 0, "t": 10, "item": "Knife"}]
+
+
 def test_gun_flags_keep_fight_geometry_knowledge_and_death_time_guns():
     from app.coach import fights
     from tests.coach.test_fights import hold, shot, snapshot

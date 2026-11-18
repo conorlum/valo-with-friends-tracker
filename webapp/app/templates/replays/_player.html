@@ -65,6 +65,14 @@
         {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
         {% if control %}
         <label><input type="checkbox" data-replay-layer="control"> Map control</label>
+        <label class="replay-control-view" data-replay-control-palette-wrap hidden>Palette
+          <select data-replay-control-palette aria-label="Map control colours">
+            <option value="green-red" selected>Green/Red</option>
+            <option value="blue-orange">Blue/Orange</option>
+            <option value="purple-yellow">Purple/Yellow</option>
+            <option value="teal-coral">Teal/Coral</option>
+          </select></label>
+        <label class="replay-control-view" data-replay-control-borders-wrap hidden><input type="checkbox" data-replay-control-borders checked> Borders</label>
         <label class="replay-control-view" data-replay-control-view-wrap hidden>as
           <select data-replay-control-view aria-label="Whose picture of the round">
             <option value="true" selected>the true positions</option>
@@ -93,7 +101,7 @@
         <span class="replay-key replay-key-ctl-passive">Seen (passive)</span>
         <span class="replay-key replay-key-ctl-contested">Contested (both teams)</span>
         <span class="replay-key replay-key-ctl-unknown">Unknown (an enemy could be here; hatched in the enemy's colour)</span>
-        <span class="replay-control-legend-note">Team colours as the players. Control is computed from true positions.</span>
+        <span class="replay-control-legend-note">Palette colours follow Team 1 / Team 2. Control is computed from true positions.</span>
       </p>
       {% endif %}
       {% if gaps %}

@@ -955,27 +955,107 @@ def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
         held(17_000, 101, 903), held(18_000, 101, 904)])
     rows = holds(extras)
     assert (rows[1]["gun"], rows[1]["cat"]) == ("Knife", "melee")
-    assert rows[2:] == [{"k": "hold", "t": t, "by": 1, "gun": None, "cat": "other"}
-                        for t in (6.0, 7.0, 8.0)]
+    assert "item" not in rows[1]
+    assert rows[2:] == [
+        {"k": "hold", "t": 6.0, "by": 1, "gun": None, "cat": "ability",
+         "code": "Vampire", "key": "X", "name": "Frenzy"},
+        {"k": "hold", "t": 7.0, "by": 1, "gun": None, "cat": "spike"},
+        {"k": "hold", "t": 8.0, "by": 1, "gun": None, "cat": "ability",
+         "code": None, "key": None, "name": "Overdrive"}]
     assert len(extras.rounds[1]["equips"]) == 1
 
 
-@pytest.mark.parametrize("archetype", [
-    "Default__Equippable_Snake_Totem_C",
-    "Default__Equippable_Sequoia_X_ArenaTeleport_C",
-    "Default__Equippable_Totem_PDA_C",
-    "Default__Equippable_Skymage_Totem_C",
-    "Default__Equippable_DuosDay26_Duck_Totem_C",
-    "Default__Equippable_FutureItem_C",
-    "Default__Bomb_Defuser_C",
+def test_held_abilities_without_a_kit_name_are_reported_not_named(tmp_path):
+    # held_names: Omen's smoke is named; an archetype the table lacks is counted and listed for Site health.
+    extras = held_run(tmp_path, [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                 spawned(12_000, 902, "Default__Ability_Wraith_4_Unheard_C", 0, 0),
+                                 spawned(12_000, 903, OVERDRIVE, 0, 0),
+                                 held(14_000, 101, 901), held(15_000, 101, 902), held(16_000, 101, 903)])
+    assert [(r["code"], r["key"], r["name"]) for r in holds(extras)] == [
+        ("Wraith", "C", "Smoke"), ("Wraith", "C", "Unheard"), (None, None, "Overdrive")]
+    assert extras.report["holds_ability_unnamed"] == 1
+    assert extras.report["held_unnamed"] == ["Wraith C/Unheard"]
+    (tmp_path / "clean").mkdir()
+    clean = held_run(tmp_path / "clean", [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                          held(14_000, 101, 901)])
+    assert "held_unnamed" not in clean.report and not clean.report.get("holds_ability_unnamed")
+
+
+@pytest.mark.parametrize("archetype,named", [
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
+    ("Default__Equippable_Sequoia_X_ArenaTeleport_C",
+     {"cat": "ability", "code": "Sequoia", "key": "X", "name": "ArenaTeleport"}),
+    ("Default__Equippable_Totem_PDA_C", {"cat": "flex", "name": "PDA"}),
+    ("Default__Equippable_Skymage_Totem_C", {"cat": "flex", "name": "Skymage"}),
+    ("Default__Equippable_DuosDay26_Duck_Totem_C", {"cat": "flex", "name": "Duck"}),
+    ("Default__Equippable_FutureItem_C", {"cat": "other"}),
+    ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
+    ("Default__BombEquippable_C", {"cat": "spike"}),
 ])
-def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype):
+def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype, named):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
     assert holds(extras) == [
         {"k": "hold", "t": 4.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0},
-        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "other"}]
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, **named}]
     assert extras.report["holds_unnamed"] == 0
+    # Whatever is out is named (the owner); a spawned item with no name goes to Site health.
+    unknown = named == {"cat": "other"}
+    assert extras.report.get("held_unnamed", []) == ([f"item {archetype}"] if unknown else [])
+    assert extras.report.get("holds_item_unnamed", 0) == (1 if unknown else 0)
+
+
+@pytest.mark.parametrize("archetype,code,key,name", [
+    ("Default__Ability_Gumshoe_E_Camera_C", "Gumshoe", "E", "Camera"),
+    ("Default__Ability_E_Aggrobot_DiscTurret_C", "Aggrobot", "E", "DiscTurret"),
+    ("Default__Ability_Sequoia_4_Wave_C", "Sequoia", "C", "Wave"),
+    ("Default__Ability_Terra_C_Barrier_Mesh_C", "Terra", "C", "Barrier_Mesh"),
+    ("Default__Ability_Nox_Wall_C", "Nox", None, "Wall"),
+    ("Default__Ability_Wraith_X_GlobalTeleport_C", "Wraith", "X", "GlobalTeleport"),
+])
+def test_ability_holds_parse_both_slot_orders_and_missing_slots(tmp_path, archetype, code, key, name):
+    extras = held_run(tmp_path, [spawned(12_000, 900, archetype, 0, 0), held(15_000, 101, 900)])
+    assert holds(extras) == [{"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "ability",
+                              "code": code, "key": key, "name": name}]
+    assert extras.report["holds_unnamed"] == 0
+
+
+@pytest.mark.parametrize("archetype,fields", [
+    ("Default__Ability_Gumshoe_E_Camera_C",
+     {"cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"}),
+    ("Default__BombEquippable_C", {"cat": "spike"}),
+    ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
+])
+@pytest.mark.parametrize("lead", [1_500, 2_000, 2_001])
+def test_early_item_switch_resolves_in_place_within_equip_window(tmp_path, archetype, fields, lead):
+    # Include a different slot between this slot's simultaneous switches, and no spawn location.
+    spawn = spawned(15_000 + lead, 901, archetype, 0, 0)
+    del spawn["location"]
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+        held(15_000, 101, 901), held(15_000, 106, 900), held(15_000, 101, 900), spawn])
+    mine = [r for r in holds(extras) if r["by"] == 1]
+    assert mine == [
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None,
+         **(fields if lead <= 2_000 else {"cat": "other"})},
+        {"k": "hold", "t": 5.0, "by": 1, "gun": "Vandal", "cat": "rifle",
+         "id": 900, "gen": 0, "from": 6}]
+
+
+def test_pending_hold_uses_first_spawn_even_when_guid_is_reused(tmp_path):
+    extras = held_run(tmp_path, [held(15_000, 101, 901),
+        spawned(15_500, 901, "Default__Equippable_FutureItem_C", 0, 0),
+        spawned(16_000, 901, "Default__Bomb_Defuser_C", 0, 0), held(16_100, 101, 901)])
+    assert holds(extras) == [
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "other"},
+        {"k": "hold", "t": 6.1, "by": 1, "gun": None, "cat": "defuser"}]
+
+
+def test_closed_item_does_not_name_a_pending_hold_for_its_reused_guid(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 901, "Default__Bomb_Defuser_C", 0, 0),
+        closed(13_000, 901), held(15_000, 101, 901),
+        spawned(15_500, 901, "Default__BombEquippable_C", 0, 0)])
+    assert holds(extras) == [{"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "spike"}]
 
 
 def test_unarmed_equippable_still_opens_a_melee_hold(tmp_path):
@@ -986,7 +1066,7 @@ def test_unarmed_equippable_still_opens_a_melee_hold(tmp_path):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
     assert holds(extras)[1] == {"k": "hold", "t": 5.0, "by": 1, "gun": "Knife", "cat": "melee",
-                                "id": 901, "gen": 1}
+                                "id": 901, "gen": 1, "item": "unarmed"}
     assert extras.report["holds_unnamed"] == 0
 
 
@@ -1024,7 +1104,9 @@ def test_ability_gun_shots_have_distinct_generations_and_close_holds(tmp_path):
         spawned(16_000, 900, OVERDRIVE, 0, 0), held(17_000, 101, 900),
         gun_shot(18_000, name="Overdrive", category="ability")])
     assert [(s["gid"], s["gen"]) for s in extras.rounds[1]["shots"]] == [(900, 0), (900, 1)]
-    assert all(r["cat"] == "other" and "gen" not in r and "id" not in r for r in holds(extras))
+    assert holds(extras) == [
+        {"k": "hold", "t": t, "by": 1, "gun": None, "cat": "ability",
+         "code": None, "key": None, "name": "Overdrive"} for t in (3.0, 7.0)]
 
 
 def test_shot_without_equippable_has_no_guid_or_generation(tmp_path):

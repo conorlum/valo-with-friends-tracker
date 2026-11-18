@@ -214,12 +214,11 @@ DAMAGE_ZONE_LIFE_S = {"Hunter_4_ExplosiveBolt_Explosion": 0.4}
 # Suppression turns off its target's placed devices (revision 25): Cypher's trips and camera, Killjoy's turret and
 # alarmbot, Chamber's trap. Besides KAY/O's `suppressed` statuses, these suppress (wiki, 2026-11-14): Undercut, for
 # its Fragile's 4 s (its `fragile` status row); Tejo's Stealth Drone pulse, for 8 s from its reveal row; and Iso's Kill
-# Contract, both duellists while in its arena. The arena is off the map: their tracks sit at z ~ -499 m from 1.33 s
-# after the cast (17 of 17 catching casts in four live matches), so a track below ARENA_Z_M is in it.
+# Contract, both duellists while in its arena (the shared arena line in app.replays.format).
 SUPPRESSED_DEVICE_KINDS = ("trip", "camera", "turret", "area")
 SUPPRESSING_STATUS_ROWS = ("Sequoia_Q_FragileMissile_TrajectoryWarning",)
 SUPPRESSING_REVEAL_S = {"Cashew_4_SonarPing": 8.0}
-ARENA_Z_M = -250.0
+from app.replays.format import ARENA_Z_M  # noqa: E402,F401 - keep the public control constant
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)

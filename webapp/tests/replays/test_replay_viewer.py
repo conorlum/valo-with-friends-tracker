@@ -2,6 +2,7 @@
 page renders every round with no identities. The JS checks need Node; they skip without it."""
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 WEBAPP = HERE.parents[1]
@@ -166,6 +168,308 @@ def run_node(script: str, payload) -> dict:
                                text=True, encoding="utf-8", timeout=60, check=False)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
+
+
+PALETTE_DOM = """
+  const R = require(process.argv[1]);
+  global.Image = function () {};
+  global.requestAnimationFrame = () => {};
+  const element = () => ({value: '', hidden: true, handlers: {},
+    addEventListener(name, fn) {this.handlers[name] = fn;}, appendChild() {}});
+  global.document = {createElement: element};
+  global.getComputedStyle = () => ({getPropertyValue: () => ''});
+  for (const key of ['loadBulletMask', 'bindHeatmap', 'refreshAreas', 'bindGaps'])
+    R.ReplayViewer.prototype[key] = () => {};
+  function viewer() {
+    const nodes = {};
+    for (const name of ['play', 'speed', 'scrub', 'prev', 'next', 'control-palette', 'control-palette-wrap',
+                        'control-borders', 'control-borders-wrap'])
+      nodes['[data-replay-' + name + ']'] = element();
+    nodes['[data-replay-canvas]'] = Object.assign(element(), {getContext: () => ({})});
+    const vars = {}, root = {style: {setProperty(k, v) {vars[k] = v;}},
+      classList: {contains: () => false}, querySelector: s => nodes[s] || null,
+      querySelectorAll: () => [], addEventListener() {}};
+    const v = new R.ReplayViewer(root, {rounds: [], control: {}, loadControl: () => {}});
+    let draws = 0; v.draw = () => {draws++;};
+    return {v, nodes, vars, draws: () => draws};
+  }
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_control_palette_picker_persists_invalidates_and_updates_swatches():
+    got = run_node(PALETTE_DOM + """
+      const store = {'replay.controlPalette': 'unknown'};
+      global.localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => {store[k] = v;}};
+      const one = viewer(), select = one.nodes['[data-replay-control-palette]'];
+      const initial = {palette: select.value, colors: one.v.controlColors(), vars: {...one.vars}};
+      one.v.controlPaint = 'cached';
+      select.value = 'blue-orange'; select.handlers.change();
+      const changed = {palette: one.v.controlPalette, paint: one.v.controlPaint,
+        colors: one.v.controlColors(), vars: {...one.vars}, draws: one.draws()};
+      const two = viewer();
+      const restored = {palette: two.nodes['[data-replay-control-palette]'].value, colors: two.v.controlColors()};
+      one.v.layers.control = true; one.v.refreshControl();
+      const shown = !one.nodes['[data-replay-control-palette-wrap]'].hidden;
+      one.v.layers.control = false; one.v.refreshControl();
+      process.stdout.write(JSON.stringify({initial, changed, restored, store, shown,
+        hidden: one.nodes['[data-replay-control-palette-wrap]'].hidden}));
+    """, None)
+    assert got["initial"] == {"palette": "green-red", "colors": {"a": [92, 207, 143], "b": [217, 83, 79]},
+                               "vars": {"--replay-ctl-1": "#5ccf8f", "--replay-ctl-2": "#d9534f"}}
+    assert got["changed"] == {"palette": "blue-orange", "paint": None,
+                               "colors": {"a": [57, 135, 229], "b": [217, 89, 38]}, "draws": 1,
+                               "vars": {"--replay-ctl-1": "#3987e5", "--replay-ctl-2": "#d95926"}}
+    assert got["restored"] == {"palette": "blue-orange", "colors": got["changed"]["colors"]}
+    assert got["store"]["replay.controlPalette"] == "blue-orange"
+    assert got["shown"] and got["hidden"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_control_palette_storage_errors_fall_back_without_interrupting_viewer():
+    got = run_node(PALETTE_DOM + """
+      global.localStorage = {getItem() {throw Error('blocked');}, setItem() {throw Error('blocked');}};
+      const one = viewer(), select = one.nodes['[data-replay-control-palette]'];
+      const initial = select.value;
+      select.value = 'blue-orange'; select.handlers.change();
+      const two = viewer();
+      process.stdout.write(JSON.stringify({initial, restored: two.v.controlColors(), draws: one.draws()}));
+    """, None)
+    assert got == {"initial": "green-red", "restored": {"a": [92, 207, 143], "b": [217, 83, 79]}, "draws": 1}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("palette,first,second", [
+    ("green-red", [92, 207, 143], [217, 83, 79]),
+    ("blue-orange", [57, 135, 229], [217, 89, 38]),
+    ("purple-yellow", [155, 107, 255], [242, 194, 48]),
+    ("teal-coral", [31, 184, 201], [255, 122, 89]),
+])
+def test_control_palette_maps_linked_teams_independently_of_side(palette, first, second):
+    got = run_node(PALETTE_DOM + """
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const palette = JSON.parse(input);
+        global.localStorage = {getItem: k => k === 'replay.controlPalette' ? palette : null};
+        const {v} = viewer();
+        const unlinked = v.controlColors();
+        v.linked = {players: {0: {side: 'A', team: 'team-2'}, 5: {side: 'B', team: 'team-1'}}};
+        process.stdout.write(JSON.stringify({unlinked, linked: v.controlColors()}));
+      });
+    """, palette)
+    assert got == {"unlinked": {"a": first, "b": second}, "linked": {"a": second, "b": first}}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_borders_toggle_defaults_on_persists_and_reaches_both_layers():
+    got = run_node(PALETTE_DOM + """
+      const store = {};
+      global.localStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => {store[k] = v;}};
+      const one = viewer(), C = require(require('path').join(require('path').dirname(process.argv[1]), 'replay_control.js'));
+      const calls = [];
+      C.paintStates = (...args) => calls.push(['states', args[5]]);
+      C.paintUnknown = (...args) => calls.push(['unknown', args[7]]);
+      const parsed = {times: [0], walk: [0], unknown_a: true, unknown_b: true};
+      const paint = v => {
+        v.controlCache = {ready: () => ({parsed, cursor: {states: () => [1], unknown: () => [1]}})};
+        v.layers.control = true;
+        v.controlCanvas = () => ({ctx: {createImageData: () => ({data: []}), putImageData() {}}});
+        v.drawControl({save() {}, restore() {}, drawImage() {}}, 512, []);
+      };
+      const box = one.nodes['[data-replay-control-borders]'], wrap = one.nodes['[data-replay-control-borders-wrap]'];
+      const initial = {checked: box.checked, hidden: wrap.hidden};
+      paint(one.v);
+      box.checked = false; box.handlers.change();
+      const after = {paint: one.v.controlPaint, draws: one.draws(), stored: store['replay.controlBorders']};
+      paint(one.v);
+      const two = viewer();
+      const restored = two.nodes['[data-replay-control-borders]'].checked;
+      one.v.layers.control = true; one.v.refreshControl();
+      const shown = !wrap.hidden;
+      process.stdout.write(JSON.stringify({initial, after, restored, shown, calls}));
+    """, None)
+    assert got["initial"] == {"checked": True, "hidden": True}
+    assert got["after"] == {"paint": None, "draws": 1, "stored": "off"}
+    assert got["restored"] is False and got["shown"] is True
+    assert got["calls"] == [["states", True], ["unknown", True], ["states", False], ["unknown", False]]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_decoding_room_frame_and_asset_urls():
+    room = {"centre": [-5000, 0], "size_m": [18, 28],
+            "starts": {"iso": [-5000, 100], "target": [-5000, -110]}, "outline": None}
+    got = run_node(r"""
+      const R = require(process.argv[1]), fs = require('fs');
+      const v = Object.create(R.ReplayViewer.prototype);
+      v.options = {assetUrl: u => u === '/icon.png' ? 'data:image/png;base64,AA==' : u};
+      const box = {x: 10, y: 20, w: 180, h: 280};
+      const wide = {x: 10, y: 20, w: 280, h: 180};
+      const table = JSON.parse(fs.readFileSync(process.argv[1].replace(/js[\\/]replay.js$/, 'data/abilities.json')));
+      console.log(JSON.stringify({room: R.ARENA_ROOM, decoded: R.decodeArena({hz:2, arena:{'1':[
+        {t0:10,x:[-5000,2,-1],y:[100,-20,5],yaw:[350,20,-5]}]}}), old: R.decodeArena({}),
+        iso:R.arenaPoint(-5000,100,box,R.ARENA_ROOM), target:R.arenaPoint(-5000,-110,box,R.ARENA_ROOM),
+        wideIso:R.arenaPoint(-5000,100,wide,R.ARENA_ROOM),
+        wideTarget:R.arenaPoint(-5000,-110,wide,R.ARENA_ROOM),
+        outside:R.arenaPoint(-99999,99999,box,R.ARENA_ROOM),
+        asset:v.assetSrc('/icon.png'), fallback:v.assetSrc('/other.png'),
+        kit:R.abilitySlots(table,'Cypher').find(k=>k.key==='E')}));
+    """, {})
+    assert got["room"] == room
+    assert json.loads((WEBAPP / "app/static/data/arena.json").read_text()) == room
+    assert got["old"] is None
+    assert got["decoded"] == {"1": [[{"t": 10, "x": -5000, "y": 100, "yaw": 350},
+                                     {"t": 10.5, "x": -4998, "y": 80, "yaw": 10},
+                                     {"t": 11, "x": -4999, "y": 85, "yaw": 5}]]}
+    assert got["iso"]["y"] < got["target"]["y"]
+    assert got["wideIso"]["x"] < got["wideTarget"]["x"]
+    assert 10 <= got["outside"]["x"] <= 190 and 20 <= got["outside"]["y"] <= 300
+    assert got["asset"].startswith("data:image/png;") and got["fallback"] == "/other.png"
+    assert got["kit"]["name"] == "Spycam"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("map_name", ["Lotus", "Ascent"])
+def test_arena_inset_real_minimaps_default_to_bottom_left_with_visible_gap(map_name):
+    n, size = 256, 768
+    with Image.open(WEBAPP / "app/static/img/maps" / f"{map_name}.png") as image:
+        alpha = list(image.convert("RGBA").resize((n, n), Image.BILINEAR).getchannel("A").getdata())
+    opaque = [(i % n, i // n) for i, value in enumerate(alpha) if value > 16]
+    x0, x1 = min(x for x, _ in opaque), max(x for x, _ in opaque)
+    y0, y1 = min(y for _, y in opaque), max(y for _, y in opaque)
+    side = max(x1 - x0, y1 - y0) + 2 * 0.04 * n
+    unit = size / n
+    view = {"size": size, "k": min(3, n / side),
+            "ox": max(0, (x0 + x1 - side) / 2) * unit,
+            "oy": max(0, (y0 + y1 - side) / 2) * unit}
+    box = run_node(r"""
+      const R = require(process.argv[1]);
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const p = JSON.parse(input);
+        console.log(JSON.stringify(R.placeInset(p.alpha, 256, p.view, 18/28)));
+      });
+    """, {"alpha": alpha, "view": view})
+    assert not box["over_map"]
+    assert box["x"] == pytest.approx(0)
+    assert box["y"] + box["h"] == pytest.approx(size)
+    assert min(box["w"], box["h"]) >= 0.15 * size
+    left = (box["x"] / view["k"] + view["ox"]) / unit
+    top = (box["y"] / view["k"] + view["oy"]) / unit
+    right = left + box["w"] / view["k"] / unit
+    bottom = top + box["h"] / view["k"] / unit
+    assert not any(math.floor(left - 8) <= x < math.ceil(right + 8)
+                   and math.floor(top - 8) <= y < math.ceil(bottom + 8) for x, y in opaque)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("distance, at_left", [(5, False), (9, True)])
+def test_arena_inset_default_margin_is_eight_cells(distance, at_left):
+    got = run_node(r"""
+      const R = require(process.argv[1]), n = 256;
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const distance = JSON.parse(input), alpha = new Uint8Array(n*n);
+        alpha[(n-1)*n + Math.ceil(n*0.15) + distance] = 255;
+        const view = {k:1, ox:0, oy:0, size:n};
+        // Hold the minimum fixed to isolate the default clearance margin.
+        console.log(JSON.stringify({box:R.placeInset(alpha,n,view,18/28,{minSize:0.15}),
+          narrow:R.placeInset(alpha,n,view,18/28,{minSize:0.15,margin:2})}));
+      });
+    """, distance)
+    assert not got["box"]["over_map"]
+    assert (got["box"]["x"] == 0) is at_left
+    assert got["narrow"]["x"] == 0
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_inset_prefers_corners_then_empty_space_with_pixel_margin():
+    got = run_node(r"""
+      const R = require(process.argv[1]), n=256;
+      const cases = [
+        (x,y)=>x>=125 || y<125,
+        (x,y)=>x<131 || y<125,
+        (x,y)=>x>=125 || y>=125,
+        ()=>true];
+      const results=cases.map(blocked=>{
+        const alpha=Uint8Array.from({length:n*n},(_,i)=>blocked(i%n,Math.floor(i/n))?255:0);
+        const b=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28);
+        let clear=true;
+        if(!b.over_map) for(let y=0;y<n;y++) for(let x=0;x<n;x++)
+          if(alpha[y*n+x]>16 && x+1>b.x-8 && x<b.x+b.w+8 && y+1>b.y-8 && y<b.y+b.h+8) clear=false;
+        return {b,clear};
+      });
+      console.log(JSON.stringify(results));
+    """, {})
+    assert got[0]["b"]["x"] == 0 and got[0]["b"]["y"] > 125
+    assert got[1]["b"]["x"] > 131 and got[1]["b"]["y"] > 125
+    assert got[2]["b"]["x"] < 125 and got[2]["b"]["y"] < 125
+    assert all(r["clear"] for r in got)
+    assert not any(r["b"].get("over_map") for r in got[:3])
+    assert got[3]["b"]["over_map"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_arena_inset_rotates_into_a_wide_gap_and_respects_zoom_and_alpha_threshold():
+    got = run_node(r"""
+      const R=require(process.argv[1]),n=256;
+      // Only a landscape box of usable size fits this central horizontal gap.
+      const alpha=Uint8Array.from({length:n*n},(_,i)=>{
+        const x=i%n,y=Math.floor(i/n);return x>=20&&x<236&&y>=85&&y<155?16:255;
+      });
+      const wide=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28,{minSize:0.22,margin:2});
+      const zoomAlpha=Uint8Array.from({length:n*n},(_,i)=>{
+        const x=i%n,y=Math.floor(i/n);return x<96&&y>=90?0:255;
+      });
+      const view={k:2,ox:128,oy:64,size:1024};
+      const b=R.placeInset(zoomAlpha,n,view,18/28);
+      let clear=true;
+      for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(zoomAlpha[y*n+x]>16 &&
+        x+1>(b.x/view.k+view.ox)/4-8 && x<(b.x/view.k+view.ox+b.w/view.k)/4+8 &&
+        y+1>(b.y/view.k+view.oy)/4-8 && y<(b.y/view.k+view.oy+b.h/view.k)/4+8)clear=false;
+      console.log(JSON.stringify({wide,b,clear,fallback:R.placeInset(null,n,view,18/28)}));
+    """, {})
+    assert got["wide"]["w"] > got["wide"]["h"] >= 256 * 0.22
+    assert not got["wide"]["over_map"]
+    assert got["b"]["x"] == 0 and got["b"]["y"] + got["b"]["h"] == pytest.approx(1024)
+    assert not got["b"]["over_map"] and got["clear"]
+    assert got["fallback"]["over_map"]
+    assert min(got["fallback"]["w"], got["fallback"]["h"]) == pytest.approx(1024 * 0.15)
+
+
+def test_standalone_embeds_arena_and_original_icon_tables(condensed):
+    page = standalone.render(condensed.rounds)
+    payload = json.loads(page.split("window.REPLAY_DATA = ", 1)[1].split(";\n", 1)[0])
+    url = "/static/img/abilities/iso/ultimate.png"
+    assert payload["assets"][url].startswith("data:image/png;base64,")
+    assert payload["abilityIcons"]["Iso"]["Kill Contract"] == url
+    assert payload["gunIcons"] and payload["arenaRoom"]["size_m"] == [18, 28]
+    assert "assetUrl: function" in page and "arenaRoom: data.arenaRoom" in page
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_embedded_arena_assets_reach_canvas_kit_guns_and_util_list():
+    got = run_node(r"""
+      const R=require(process.argv[1]), fs=require('fs');
+      global.getComputedStyle=()=>({getPropertyValue:()=>''});
+      global.Image=class {constructor(){this.complete=true;this.naturalWidth=32;}};
+      const tables=JSON.parse(fs.readFileSync(process.argv[1].replace(/js[\\/]replay.js$/, 'data/abilities.json')));
+      const v=Object.create(R.ReplayViewer.prototype);
+      v.options={abilityIcons:tables,gunIcons:{Vandal:'/static/img/weapons/vandal.png'},
+        assetUrl:url=>'data:image/png;base64,'+url.split('/').pop()};
+      v.icons={};v.ui={board:{},util:{}};v.t=5;v.linked={players:{1:{team:'team-1'}}};
+      const blob={players:[{slot:1,agent:'Cypher',side:'A'}],alive:{1:[[0,null,'spawn']]},
+        t_end:90,kills:[],util:[]};
+      v.current={blob,extras:R.extrasFromUtil([{k:'shot',t:1,by:1,gun:'Vandal'}])};
+      v.current.state=R.indexRoundState(blob,[]);
+      v.utilItems=()=>[{t:1,slot:1,agent:'Cypher',ability:'Spycam',label:'Spycam'}];
+      v.renderBoard();v.renderUtilList();
+      const badge=v.abilityIcon('Iso','Kill Contract');
+      console.log(JSON.stringify({board:v.ui.board.innerHTML,util:v.ui.util.innerHTML,src:badge.src,
+        gun:R.gunHtml({gun:'Vandal',held:true},v.options.gunIcons,v.assetSrc.bind(v))}));
+    """, {})
+    assert 'src="data:image/png;base64,ability2.png"' in got["board"]
+    assert 'src="data:image/png;base64,ultimate.png"' in got["board"]
+    assert "data:image/png;base64,vandal.png" in got["board"]
+    assert 'src="data:image/png;base64,ability2.png"' in got["util"]
+    assert got["src"] == "data:image/png;base64,ultimate.png"
+    assert "data:image/png;base64,vandal.png" in got["gun"]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -744,38 +1048,103 @@ def test_held_gun_closes_for_abilities_and_stays_within_the_current_life():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abilities():
+def test_held_ability_names_come_from_the_held_table_never_the_slot_letter():
+    tables = {"icons": json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8")),
+              "held": json.loads((WEBAPP / "app/static/data/held_abilities.json").read_text(encoding="utf-8"))}
     got = run_node("""
       const R = require(process.argv[1]);
-      const viewer = Object.create(R.ReplayViewer.prototype);
-      const blob = {players: [{slot: 1, agent: "Omen"}], kills: [], t_end: 90,
-                    alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
-      viewer.ui = {board: {}};
-      viewer.options = {};
-      viewer.linked = {players: {"1": {team: "team-1"}}};
-      viewer.slotColor = () => "#ffffff";
-      viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
-        extras: R.extrasFromUtil([
-          {k: "shot", by: 1, t: 3, gun: "Phantom"},
-          {k: "hold", by: 1, t: 0, gun: "Vandal", cat: "rifle", id: "100", gen: 0, seed: true},
-          {k: "hold", by: 1, t: 5, gun: null, cat: "other"},
-          {k: "hold", by: 1, t: 7, gun: null, cat: "rifle", id: "101", gen: 0},
-          {k: "hold", by: 1, t: 9, gun: "Vandal", cat: "rifle", id: "100", gen: 0},
-          {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0}
-        ])};
-      function gun(t) {
-        viewer.t = t;
-        viewer.renderBoard();
-        const match = viewer.ui.board.innerHTML.match(/<span class="replay-pl-gun[^>]*>[^<]*<\\/span>/);
-        return match ? match[0] : null;
-      }
-      const held = [1, 5, 8, 11, 15, 20].map(gun);
-      delete viewer.current.extras.holds;
-      process.stdout.write(JSON.stringify({held, fallback: [1, 4].map(gun)}));
-      """, {})
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const {icons, held} = JSON.parse(input);
+        const camera = {slot: 1, t: 5, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"};
+        const holds = [{slot: 1, t: 0, gun: "Vandal", cat: "rifle"}, camera];
+        const at = (hold, agent = "Cypher", table = held) =>
+          R.gunAt([], 1, 6, [holds[0], hold], undefined, agent, icons, table);
+        const row = (code, key, name) => ({...camera, code, key, name});
+        process.stdout.write(JSON.stringify({
+          gun: R.gunAt([], 1, 4, holds, undefined, "Cypher", icons, held), camera: at(camera),
+          label: R.heldAbilityLabel(camera, "Cypher", icons, held),
+          // The replay's letter is not the key: Omen's C/Smoke is Dark Cover (E), Phoenix's C/Molotov Hot Hands.
+          omen: at(row("Wraith", "C", "Smoke"), "Omen"), phoenix: at(row("Phoenix", "C", "Molotov_Production"), "Phoenix"),
+          raze: at(row("Clay", "C", "ClusterGrenade"), "Raze"), vyse: at(row("Nox", null, "BarbedWire"), "Vyse"),
+          passive: at(row("Wushu", null, "Passive_Glide"), "Jett"),
+          missing: at(row("Wraith", "C", "Unheard"), "Omen"), noTable: at(camera, "Cypher", {}),
+          categories: ["spike", "flex", "defuser", "other"].map(cat => at({slot: 1, t: 5, gun: null, cat})),
+          snake: at({slot: 1, t: 5, gun: null, cat: "flex", name: "Snake"}),
+          kill_contract: at(row("Sequoia", "X", "ArenaTeleport"), "Iso")
+        }));
+      });""", tables)
+    assert got["gun"] == {"gun": "Vandal", "held": True}
+    assert got["camera"] == {"ability": "Spycam", "held": True}
+    assert got["label"] == "Spycam"
+    assert got["omen"] == {"ability": "Dark Cover", "held": True}
+    assert got["phoenix"] == {"ability": "Hot Hands", "held": True}
+    assert got["raze"] == {"ability": "Paint Shells", "held": True}
+    assert got["vyse"] == {"ability": "Razorvine", "held": True}
+    assert got["passive"] is None
+    # Missing from the table: the generic label, which condense reports to Site health.
+    assert got["missing"] == got["noTable"] == {"ability": "Ability", "held": True}
+    # Whatever is out is named as specifically as the row allows (the owner, Lotus round 1 after the round was
+    # decided): the flex by its own name, the defuser; only an unknown item shows nothing.
+    assert got["categories"] == [{"ability": "Spike", "held": True}, {"ability": "Flex", "held": True},
+                                 {"ability": "Defuser", "held": True}, None]
+    assert got["snake"] == {"ability": "Snake flex", "held": True}
+    assert got["kill_contract"] == {"ability": "Kill Contract", "held": True}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_renders_current_holds_and_clears_them_on_revive_and_abilities():
+    icons = json.loads((WEBAPP / "app/static/data/abilities.json").read_text(encoding="utf-8"))
+    got = run_node("""
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const viewer = Object.create(R.ReplayViewer.prototype);
+        const blob = {players: [{slot: 1, agent: "Cypher"}], kills: [], t_end: 90,
+                      alive: {"1": [[0, 10, "kill"], [15, null, "round_end"]]}};
+        viewer.ui = {board: {}};
+        const tables = JSON.parse(input);
+        // One made-up entry whose kit name holds markup, to check the label is escaped.
+        tables.held.Gumshoe["E/<test>"] = "Wall <test>";
+        viewer.options = {abilityIcons: tables.icons, heldAbilities: tables.held};
+        viewer.linked = {players: {"1": {team: "team-1"}}};
+        viewer.slotColor = () => "#ffffff";
+        viewer.current = {blob, state: R.indexRoundState(blob, []), utilList: [],
+          extras: R.extrasFromUtil([
+            {k: "shot", by: 1, t: 3, gun: "Phantom"},
+            {k: "hold", by: 1, t: 0, gun: "Vandal", cat: "rifle", id: "100", gen: 0, seed: true},
+            {k: "hold", by: 1, t: 5, gun: null, cat: "other"},
+            {k: "hold", by: 1, t: 7, gun: null, cat: "rifle", id: "101", gen: 0},
+            {k: "hold", by: 1, t: 9, gun: "Vandal", cat: "rifle", id: "100", gen: 0},
+            {k: "hold", by: 1, t: 20, gun: "Knife", cat: "melee", id: "102", gen: 0},
+            {k: "hold", by: 1, t: 25, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "Camera"},
+            {k: "hold", by: 1, t: 30, gun: null, cat: "spike"},
+            {k: "hold", by: 1, t: 37, gun: null, cat: "flex", name: "Tactibear"},
+            {k: "ability", by: 1, t: 21, t1: 90, kind: "GameObject", code: "Gumshoe",
+             name: "E_PossessableCamera", possessed: [[27, 28], [32, 33]]},
+            {k: "hold", by: 1, t: 35, gun: null, cat: "ability", code: "Gumshoe", key: "E", name: "<test>"}
+          ])};
+        function gun(t) {
+          viewer.t = t;
+          viewer.renderBoard();
+          const match = viewer.ui.board.innerHTML.match(/<span class="replay-pl-gun[^>]*>[^<]*<\\/span>/);
+          return match ? match[0] : null;
+        }
+        const held = [1, 5, 8, 11, 15, 20].map(gun);
+        const util = [26, 27, 31, 32, 36, 38].map(gun);
+        delete viewer.current.extras.holds;
+        process.stdout.write(JSON.stringify({held, util, fallback: [1, 4].map(gun)}));
+      });""", {"icons": icons,
+               "held": json.loads((WEBAPP / "app/static/data/held_abilities.json").read_text(encoding="utf-8"))})
     assert got["held"] == ['<span class="replay-pl-gun" title="Held now">Vandal</span>', None,
                            '<span class="replay-pl-gun" title="Held now">?</span>', None, None,
                            '<span class="replay-pl-gun" title="Held now">Knife</span>']
+    assert got["util"] == [
+        '<span class="replay-pl-gun is-util">Spycam out</span>',
+        '<span class="replay-pl-gun is-util" title="Using util now">Watching Spycam</span>',
+        '<span class="replay-pl-gun is-util">Spike out</span>',
+        '<span class="replay-pl-gun is-util" title="Using util now">Watching Spycam</span>',
+        '<span class="replay-pl-gun is-util">Wall &lt;test&gt; out</span>',
+        '<span class="replay-pl-gun is-util">Tactibear flex out</span>',
+    ]
     assert got["fallback"] == [
         '<span class="replay-pl-gun is-unfired" title="Not fired yet: the gun of their first shot this round">Phantom</span>',
         '<span class="replay-pl-gun" title="Gun of their latest shot (the replay records no live loadout)">Phantom</span>',

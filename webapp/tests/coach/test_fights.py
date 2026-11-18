@@ -44,6 +44,110 @@ def first(snap):
     return fights.for_round(snap, 1, 0)[0]
 
 
+@pytest.mark.parametrize("item,expected", [
+    ({"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"}, "Spycam"),
+    ({"gun": "Knife", "cat": "melee"}, "Knife"),
+    ({"gun": "Knife", "cat": "melee", "item": "unarmed"}, "unarmed"),
+    ({"gun": "Vandal", "cat": "rifle"}, None),
+    ({"gun": None, "cat": "defuser"}, None),
+    ({"gun": None, "cat": "spike"}, "Spike"),
+    ({"gun": None, "cat": "flex"}, "flex item"),
+    ({"gun": None, "cat": "other"}, None),
+    ({"gun": None, "cat": "ability", "code": None, "key": None, "name": "Overdrive"}, "Overdrive"),
+    # Not in the held table: the unnamed label, which Site health reports (held_ability_unnamed).
+    ({"gun": None, "cat": "ability", "key": None, "name": "Unknown_Ability"}, "an ability"),
+    (None, None),
+])
+def test_out_at_death_uses_the_last_hold_not_the_best_gun(item, expected):
+    rows = [] if item is None else [hold(0, "Vandal"), {"k": "hold", "by": 0, "t": 9, **item}]
+    snap = snapshot(util=rows)
+    snap.view(1).blob["players"][0]["agent"] = "Cypher"
+    assert first(snap)["death"]["out_at_death"] == expected
+
+
+@pytest.mark.parametrize("agent,item,expected", [
+    ("Sova", {"gun": None, "cat": "ability", "code": "Hunter", "key": "Q", "name": "RevealBolt_Signature"}, "Recon Bolt"),
+    ("Omen", {"gun": None, "cat": "ability", "code": "Wraith", "key": "Q", "name": "NearsightMissile"}, "Paranoia"),
+    ("Cypher", {"gun": "Knife", "cat": "melee"}, "Knife"),
+    ("Cypher", {"gun": "Knife", "cat": "melee", "item": "unarmed"}, "unarmed"),
+    ("Cypher", {"gun": None, "cat": "spike"}, "Spike"),
+    ("Cypher", {"gun": None, "cat": "flex"}, "flex item"),
+    ("Cypher", {"gun": "Vandal", "cat": "rifle"}, None),
+    ("Cypher", {"gun": None, "cat": "defuser"}, None),
+])
+@pytest.mark.parametrize("close_t", [10.0, 10.001])
+def test_death_teardown_does_not_erase_the_last_living_item(agent, item, expected, close_t):
+    # Same close shape as test_replay_extras.test_hold_python_round_trip_preserves_all_fields.
+    close = {"k": "hold", "t": close_t, "by": 0, "gun": None, "cat": "other"}
+    snap = snapshot(util=[hold(0, "Vandal"), {"k": "hold", "t": 9, "by": 0, **item}, close])
+    snap.view(1).blob["players"][0]["agent"] = agent
+    death = first(snap)["death"]
+    assert death["out_at_death"] == expected
+    assert death["dropped_gun"] == "Vandal"
+
+
+@pytest.mark.parametrize("switch,expected", [
+    ({"t": 9.5, "cat": "other"}, None),  # An earlier unknown switch is real.
+    ({"t": 10, "cat": "other", "id": 901}, None),  # A real unknown actor.
+    ({"t": 10, "cat": "spike"}, "Spike"),
+    ({"t": 10, "cat": "rifle", "gun": "Vandal"}, None),
+    ({"t": 10, "cat": "defuser"}, None),
+    ({"t": 10.001, "cat": "spike"}, "Knife"),  # Future real switches do not count.
+])
+def test_death_teardown_preserves_genuine_switches(switch, expected):
+    snap = snapshot(util=[hold(0, "Knife", 8), {"k": "hold", "by": 0, "gun": None, **switch},
+                          {"k": "hold", "t": 10, "by": 0, "gun": None, "cat": "other"}])
+    assert first(snap)["death"]["out_at_death"] == expected
+
+
+def test_death_teardown_does_not_reuse_a_previous_lifes_item():
+    snap = snapshot(util=[hold(0, "Knife", 1),
+                          {"k": "hold", "t": 10, "by": 0, "gun": None, "cat": "other"}])
+    snap.view(1).blob["alive"]["0"] = [[0, 5, "kill"], [7, 10, "kill"]]
+    assert first(snap)["death"]["out_at_death"] is None
+
+
+@pytest.mark.parametrize("span,owner,expected", [
+    ([8, None], 0, "Spycam"), ([8, 11], 0, "Spycam"), ([8, 9], 0, None),
+    ([8, 10], 0, "Spycam"), ([10, 10], 0, "Spycam"), ([8, 9.999], 0, None),
+    ([11, None], 0, None), ([8, None], 1, None),
+])
+def test_out_at_death_counts_only_current_own_possession(span, owner, expected):
+    camera = {"k": "ability", "t": 2, "t1": None, "by": owner, "kind": "Pawn",
+              "code": "Gumshoe", "name": "E_PossessableCamera", "possessed": [span]}
+    snap = snapshot(util=[hold(0, "Vandal"), camera])
+    snap.view(1).blob["players"][0]["agent"] = "Cypher"
+    assert first(snap)["death"]["out_at_death"] == expected
+
+
+@pytest.mark.parametrize("end", [None, 10])
+def test_out_at_death_keeps_possession_when_the_camera_closes_at_death(end):
+    camera = {"k": "ability", "t": 2, "t1": 10, "by": 0, "kind": "Pawn",
+              "code": "Gumshoe", "name": "E_PossessableCamera", "possessed": [[8, end]]}
+    snap = snapshot(util=[hold(0, "Vandal"), camera])
+    snap.context["players"] = {"0": {"agent": "Cypher"}}
+    assert first(snap)["death"]["out_at_death"] == "Spycam"
+
+
+def test_out_at_death_does_not_reuse_a_previous_lifes_hold_or_a_future_hold():
+    snap = snapshot(util=[hold(0, "Knife", 1), hold(0, "Knife", 11)])
+    snap.view(1).blob["alive"]["0"] = [[0, 5, "kill"], [7, 10, "kill"]]
+    assert first(snap)["death"]["out_at_death"] is None
+
+
+@pytest.mark.parametrize("code,key,name,expected", [
+    ("Gumshoe", "C", "TripWire", "Trapwire"), ("Gumshoe", "Q", "CageTrap", "Cyber Cage"),
+    ("Gumshoe", "E", "Camera", "Spycam"), ("Gumshoe", "X", "InterrogateV2", "Neural Theft"),
+    # The replay's slot letter is not the key: Omen's smoke is stored as C, and is Dark Cover (E).
+    ("Wraith", "C", "Smoke", "Dark Cover"),
+])
+def test_out_at_death_names_the_held_ability_from_the_held_table(code, key, name, expected):
+    snap = snapshot(util=[{"k": "hold", "t": 9, "by": 0, "gun": None, "cat": "ability",
+                           "code": code, "key": key, "name": name}])
+    snap.context["players"] = {"0": {"agent": "Cypher"}}
+    assert first(snap)["death"]["out_at_death"] == expected
+
+
 def test_lone_even_death_hands_over_better_gun_and_has_provenance():
     f = first(snapshot())
     assert (f["subject"], f["side"], f["enemy"], f["won"]) == (0, "A", "P5", False)
@@ -54,7 +158,8 @@ def test_lone_even_death_hands_over_better_gun_and_has_provenance():
         "Vandal", "Classic", "held", "held")
     assert f["handover"] == {"my_best_tier": 2, "killer_tier": 0, "better": True}
     assert f["death"] == {"dropped_gun": "Vandal", "dropped_id": "gun-0", "dropped_gen": 0,
-                          "dropped_tier": 2, "killer_gun_at_kill": "Classic", "killer_tier": 0, "better": True}
+                          "dropped_tier": 2, "killer_gun_at_kill": "Classic", "killer_tier": 0, "better": True,
+                          "out_at_death": None}
     assert f["flags"] == ["gun_handover"]
     assert f["kill_weapon"] == "Classic"
 

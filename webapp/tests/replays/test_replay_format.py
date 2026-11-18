@@ -63,8 +63,8 @@ def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
-    assert fmt.CONDENSE_REVISION == 31 and fmt.FORMAT_VERSION == 1
-    assert ".c31.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    assert fmt.CONDENSE_REVISION == 32 and fmt.FORMAT_VERSION == 1
+    assert ".c32.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def test_control_reader_ignores_hold_rows():
@@ -182,3 +182,29 @@ def test_bad_player_state_entries_are_dropped_on_read():
     stored["spike"].append({"t": 90.0, "s": "juggled"})
     raw = gzip.compress(json.dumps(_blob(player_state=stored)).encode())
     assert fmt.decode_blob(raw)["player_state"] == PLAYER_STATE
+
+
+def test_arena_segment_round_trip():
+    segment = fmt.encode_arena_segment(1.25, [-5000, -4999, -4998], [100, 100, 99], [359, 0, 1])
+    assert segment == {"t0": 1.25, "x": [-5000, 1, 1], "y": [100, 0, -1], "yaw": [359, 1, 1]}
+    assert fmt.decode_arena_segment(segment, 4) == [(1.25, -5000, 100, 359), (1.5, -4999, 100, 0),
+                                                   (1.75, -4998, 99, 1)]
+
+
+@pytest.mark.parametrize("x, y, yaw", [([], [], []), ([1, 2], [1], [1, 2])])
+def test_arena_segment_arrays_must_be_equal_and_nonempty(x, y, yaw):
+    with pytest.raises(fmt.FormatError):
+        fmt.encode_arena_segment(0, x, y, yaw)
+
+
+def test_arena_decode_rejects_mismatched_arrays():
+    with pytest.raises(fmt.FormatError):
+        fmt.decode_arena_segment({"t0": 0, "x": [1], "y": [], "yaw": [0]}, 4)
+
+
+def test_arena_line_has_one_source_and_keeps_the_control_value():
+    from app.control import engine
+
+    assert engine.ARENA_Z_M is fmt.ARENA_Z_M
+    assert fmt.ARENA_Z_M == -250.0
+    assert fmt.ARENA_Z_UNITS == -25000

@@ -153,4 +153,5 @@ def build(snap, slot: int) -> dict:
             "subject": subject,
             "players": [_player(players[s]) for s in sorted(players, key=int)],
             "areas": names,
-            "rounds": rounds, "ranked": ranked, "data_gaps": gaps}
+            "rounds": rounds, "ranked": ranked, "data_gaps": gaps,
+            "no_gun_deaths": detectors.no_gun_deaths(rounds)}
