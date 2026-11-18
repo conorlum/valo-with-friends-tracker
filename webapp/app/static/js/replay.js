@@ -25,6 +25,8 @@
   var HELD_SPIKE_LABEL = "Spike";
   var ARENA_ROOM = { centre: [-5000, 0], size_m: [18, 28],
     starts: { iso: [-5000, 100], target: [-5000, -110] }, outline: null };
+  // Owner's ruling: fit clear of the map with a visible gap.
+  var INSET_MIN_SIZE = 0.15, INSET_MARGIN_CELLS = 8;
 
   // ------------------------------------------------------------ decoding (pure; tested in node)
 
@@ -87,8 +89,8 @@
     opts = opts || {};
     var size = view.size || n, k = view.k || 1, unit = size / n;
     var side = n / k, x0 = (view.ox || 0) / unit, y0 = (view.oy || 0) / unit;
-    var margin = opts.margin === undefined ? 2 : opts.margin;
-    var min = side * (opts.minSize === undefined ? 0.22 : opts.minSize);
+    var margin = opts.margin === undefined ? INSET_MARGIN_CELLS : opts.margin;
+    var min = side * (opts.minSize === undefined ? INSET_MIN_SIZE : opts.minSize);
     var stride = n + 1, sum = new Int32Array(stride * stride);
     for (var y = 0; y < n; y++) {
       var row = 0;

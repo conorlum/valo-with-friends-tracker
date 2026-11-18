@@ -2,6 +2,7 @@
 page renders every round with no identities. The JS checks need Node; they skip without it."""
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 WEBAPP = HERE.parents[1]
@@ -307,6 +309,58 @@ def test_arena_decoding_room_frame_and_asset_urls():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("map_name", ["Lotus", "Ascent"])
+def test_arena_inset_real_minimaps_default_to_bottom_left_with_visible_gap(map_name):
+    n, size = 256, 768
+    with Image.open(WEBAPP / "app/static/img/maps" / f"{map_name}.png") as image:
+        alpha = list(image.convert("RGBA").resize((n, n), Image.BILINEAR).getchannel("A").getdata())
+    opaque = [(i % n, i // n) for i, value in enumerate(alpha) if value > 16]
+    x0, x1 = min(x for x, _ in opaque), max(x for x, _ in opaque)
+    y0, y1 = min(y for _, y in opaque), max(y for _, y in opaque)
+    side = max(x1 - x0, y1 - y0) + 2 * 0.04 * n
+    unit = size / n
+    view = {"size": size, "k": min(3, n / side),
+            "ox": max(0, (x0 + x1 - side) / 2) * unit,
+            "oy": max(0, (y0 + y1 - side) / 2) * unit}
+    box = run_node(r"""
+      const R = require(process.argv[1]);
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const p = JSON.parse(input);
+        console.log(JSON.stringify(R.placeInset(p.alpha, 256, p.view, 18/28)));
+      });
+    """, {"alpha": alpha, "view": view})
+    assert not box["over_map"]
+    assert box["x"] == pytest.approx(0)
+    assert box["y"] + box["h"] == pytest.approx(size)
+    assert min(box["w"], box["h"]) >= 0.15 * size
+    left = (box["x"] / view["k"] + view["ox"]) / unit
+    top = (box["y"] / view["k"] + view["oy"]) / unit
+    right = left + box["w"] / view["k"] / unit
+    bottom = top + box["h"] / view["k"] / unit
+    assert not any(math.floor(left - 8) <= x < math.ceil(right + 8)
+                   and math.floor(top - 8) <= y < math.ceil(bottom + 8) for x, y in opaque)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("distance, at_left", [(5, False), (9, True)])
+def test_arena_inset_default_margin_is_eight_cells(distance, at_left):
+    got = run_node(r"""
+      const R = require(process.argv[1]), n = 256;
+      let input = ''; process.stdin.on('data', d => input += d).on('end', () => {
+        const distance = JSON.parse(input), alpha = new Uint8Array(n*n);
+        alpha[(n-1)*n + Math.ceil(n*0.15) + distance] = 255;
+        const view = {k:1, ox:0, oy:0, size:n};
+        // Hold the minimum fixed to isolate the default clearance margin.
+        console.log(JSON.stringify({box:R.placeInset(alpha,n,view,18/28,{minSize:0.15}),
+          narrow:R.placeInset(alpha,n,view,18/28,{minSize:0.15,margin:2})}));
+      });
+    """, distance)
+    assert not got["box"]["over_map"]
+    assert (got["box"]["x"] == 0) is at_left
+    assert got["narrow"]["x"] == 0
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_arena_inset_prefers_corners_then_empty_space_with_pixel_margin():
     got = run_node(r"""
       const R = require(process.argv[1]), n=256;
@@ -320,7 +374,7 @@ def test_arena_inset_prefers_corners_then_empty_space_with_pixel_margin():
         const b=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28);
         let clear=true;
         if(!b.over_map) for(let y=0;y<n;y++) for(let x=0;x<n;x++)
-          if(alpha[y*n+x]>16 && x+1>b.x-2 && x<b.x+b.w+2 && y+1>b.y-2 && y<b.y+b.h+2) clear=false;
+          if(alpha[y*n+x]>16 && x+1>b.x-8 && x<b.x+b.w+8 && y+1>b.y-8 && y<b.y+b.h+8) clear=false;
         return {b,clear};
       });
       console.log(JSON.stringify(results));
@@ -341,7 +395,7 @@ def test_arena_inset_rotates_into_a_wide_gap_and_respects_zoom_and_alpha_thresho
       const alpha=Uint8Array.from({length:n*n},(_,i)=>{
         const x=i%n,y=Math.floor(i/n);return x>=20&&x<236&&y>=85&&y<155?16:255;
       });
-      const wide=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28);
+      const wide=R.placeInset(alpha,n,{k:1,ox:0,oy:0,size:256},18/28,{minSize:0.22,margin:2});
       const zoomAlpha=Uint8Array.from({length:n*n},(_,i)=>{
         const x=i%n,y=Math.floor(i/n);return x<96&&y>=90?0:255;
       });
@@ -349,8 +403,8 @@ def test_arena_inset_rotates_into_a_wide_gap_and_respects_zoom_and_alpha_thresho
       const b=R.placeInset(zoomAlpha,n,view,18/28);
       let clear=true;
       for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(zoomAlpha[y*n+x]>16 &&
-        x+1>(b.x/view.k+view.ox)/4-2 && x<(b.x/view.k+view.ox+b.w/view.k)/4+2 &&
-        y+1>(b.y/view.k+view.oy)/4-2 && y<(b.y/view.k+view.oy+b.h/view.k)/4+2)clear=false;
+        x+1>(b.x/view.k+view.ox)/4-8 && x<(b.x/view.k+view.ox+b.w/view.k)/4+8 &&
+        y+1>(b.y/view.k+view.oy)/4-8 && y<(b.y/view.k+view.oy+b.h/view.k)/4+8)clear=false;
       console.log(JSON.stringify({wide,b,clear,fallback:R.placeInset(null,n,view,18/28)}));
     """, {})
     assert got["wide"]["w"] > got["wide"]["h"] >= 256 * 0.22
@@ -358,6 +412,7 @@ def test_arena_inset_rotates_into_a_wide_gap_and_respects_zoom_and_alpha_thresho
     assert got["b"]["x"] == 0 and got["b"]["y"] + got["b"]["h"] == pytest.approx(1024)
     assert not got["b"]["over_map"] and got["clear"]
     assert got["fallback"]["over_map"]
+    assert min(got["fallback"]["w"], got["fallback"]["h"]) == pytest.approx(1024 * 0.15)
 
 
 def test_standalone_embeds_arena_and_original_icon_tables(condensed):
