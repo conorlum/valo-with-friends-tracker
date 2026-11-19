@@ -63,6 +63,33 @@ def test_exempt_boxes_drop_only_the_pixels_inside_the_inclusive_box(last):
     assert np.array_equal(m.wall, expected)
 
 
+BAD_EXEMPT = {
+    "float": [[100.0, 100, 110, 110]],
+    "float_fraction": [[100, 100, 110.5, 110]],
+    "inverted_x": [[110, 100, 100, 110]],
+    "inverted_y": [[100, 110, 110, 100]],
+    "too_short": [[100, 100, 110]],
+    "too_long": [[100, 100, 110, 110, 5]],
+    "bool": [[True, 100, 110, 110]],
+    "string": [["100", 100, 110, 110]],
+    "not_a_list_box": [{"x0": 1}],
+    "box_is_a_number": [5],
+    "not_a_list": {"x0": 100},
+    "string_value": "100,100,110,110",
+}
+
+
+@pytest.mark.parametrize("bad", BAD_EXEMPT.values(), ids=BAD_EXEMPT.keys())
+def test_malformed_thin_wall_exempt_is_refused_naming_the_box(bad):
+    with pytest.raises(cg.GeometryError, match="thin_wall_exempt"):
+        cg.masks(floor(), {"thin_wall_exempt": bad})
+
+
+def test_well_formed_thin_wall_exempt_still_builds():
+    cg.masks(floor(), {"thin_wall_exempt": []})
+    cg.masks(floor(), {"thin_wall_exempt": [[100, 100, 100, 100], [0, 0, 5, 5]]})
+
+
 def test_directional_pieces_are_eight_connected_and_not_pooled():
     raw = np.zeros((cg.PX, cg.PX), bool)
     coords = np.arange(100, 112)

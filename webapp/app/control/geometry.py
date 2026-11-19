@@ -241,6 +241,22 @@ class MapMasks:
     gate_wall: np.ndarray | None = None   # the same build without wall tags, for Risk 1
 
 
+def checked_thin_wall_exempt(boxes) -> list:
+    """`thin_wall_exempt` as a list of [x0, y0, x1, y1] boxes: four ints (not bools) with x0 <= x1 and y0 <= y1.
+    Anything else raises GeometryError; the tagger page (control_tagger_core.js) refuses the same inputs."""
+    if boxes is None:
+        return []
+    if not isinstance(boxes, list):
+        raise GeometryError(f"thin_wall_exempt must be a list of [x0, y0, x1, y1] boxes, got {boxes!r}")
+    for box in boxes:
+        if not (isinstance(box, list) and len(box) == 4
+                and all(type(v) is int for v in box)):
+            raise GeometryError(f"thin_wall_exempt box {box!r} must be a list of four ints [x0, y0, x1, y1]")
+        if box[0] > box[2] or box[1] > box[3]:
+            raise GeometryError(f"thin_wall_exempt box {box!r} is inverted: need x0 <= x1 and y0 <= y1")
+    return boxes
+
+
 def thin_padding(wall: np.ndarray, exempt_boxes) -> np.ndarray:
     """Extra pixels across enclosed thin runs, filtered by 8-connected piece length per direction.
 
@@ -386,7 +402,7 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     if entry.get("see_across_paint"):
         see_across |= unpack_paint(entry["see_across_paint"])
     base_wall = ~base["opaque"] & ~see_across
-    exempt = entry.get("thin_wall_exempt") or []
+    exempt = checked_thin_wall_exempt(entry.get("thin_wall_exempt"))
     gate_wall = base_wall | (thin_padding(base_wall, exempt) & ~see_across)
     wall = base_wall.copy()
     wall_tags = [tag for tag in entry.get("tags") or [] if tag["tag"] == "wall"]

@@ -100,7 +100,17 @@
   // kept at a 12-pixel bbox span. Exemptions remove source pixels before padding to 4.
   function thinPadding(wall, boxes) {
     var size = PX * PX, exempt = new Uint8Array(size), out = new Uint8Array(size);
-    (boxes || []).forEach(function (b) {
+    // geometry.checked_thin_wall_exempt: a list of [x0, y0, x1, y1] integers with x0 <= x1 and y0 <= y1.
+    function refuse(message) { var err = new Error(message); err.name = "GeometryError"; throw err; }
+    if (boxes === undefined || boxes === null) boxes = [];
+    if (!Array.isArray(boxes)) refuse("thin_wall_exempt must be a list of [x0, y0, x1, y1] boxes, got " + JSON.stringify(boxes));
+    boxes.forEach(function (b) {
+      if (!Array.isArray(b) || b.length !== 4 || !b.every(function (v) { return typeof v === "number" && Number.isInteger(v); }))
+        refuse("thin_wall_exempt box " + JSON.stringify(b) + " must be a list of four ints [x0, y0, x1, y1]");
+      if (b[0] > b[2] || b[1] > b[3])
+        refuse("thin_wall_exempt box " + JSON.stringify(b) + " is inverted: need x0 <= x1 and y0 <= y1");
+    });
+    boxes.forEach(function (b) {
       for (var y = Math.max(0, b[1]); y <= Math.min(PX - 1, b[3]); y++)
         for (var x = Math.max(0, b[0]); x <= Math.min(PX - 1, b[2]); x++) exempt[y * PX + x] = 1;
     });

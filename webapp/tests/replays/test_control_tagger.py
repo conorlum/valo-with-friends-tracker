@@ -358,6 +358,45 @@ def test_haven_nine_wall_tags_and_thin_wall_exemption_compose_like_python():
     check("Haven", {**TAGS["maps"]["Haven"], "tags": rows, "thin_wall_exempt": [[400, 600, 410, 700]]})
 
 
+def _committed_maps():
+    names = set(TAGS["maps"]) | {p.name.split(".")[0] for p in cg.ASSET_DIR.glob("*.sight.png")}
+    return sorted(n for n in names if (cg.MINIMAP_DIR / f"{n}.png").exists())
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", _committed_maps())
+def test_every_committed_map_composes_alike_in_js_and_python(name):
+    # The whole committed entry (tags, paints, params), or an empty one for a map with only a base sight asset.
+    check(name, TAGS["maps"].get(name, {}))
+
+
+BAD_EXEMPT = {
+    "float": [[400.5, 600, 410, 700]],
+    "inverted_x": [[410, 600, 400, 700]],
+    "inverted_y": [[400, 700, 410, 600]],
+    "too_short": [[400, 600, 410]],
+    "too_long": [[400, 600, 410, 700, 1]],
+    "bool": [[True, 600, 410, 700]],
+}
+
+
+@pytest.mark.parametrize("bad", BAD_EXEMPT.values(), ids=BAD_EXEMPT.keys())
+def test_malformed_thin_wall_exempt_is_refused_by_the_page_as_by_python(bad):
+    base = np.zeros((cg.PX, cg.PX), bool)
+    base[600:700, 405] = True
+    line = np.zeros_like(base)
+    line[50, 100:120] = True
+    with pytest.raises(cg.GeometryError, match="thin_wall_exempt"):
+        cg.masks(np.full((cg.PX, cg.PX, 4), 255, np.uint8), {"thin_wall_exempt": bad})
+    got = run_node("""
+      function run(p) {
+        try { T.compose(load(p.map), T.editsFrom(p.entry)); return {refused: false}; }
+        catch (e) { return {refused: /thin_wall_exempt/.test(e.message), name: e.name}; }
+      }
+    """, {"map": synthetic_map(base, line), "entry": {"thin_wall_exempt": bad}})
+    assert got["refused"] and got["name"] == "GeometryError"
+
+
 @pytest.mark.parametrize("vertical", [False, True])
 def test_thin_padding_runs_components_exemptions_and_see_across(vertical):
     base = np.zeros((cg.PX, cg.PX), bool)
