@@ -2,12 +2,20 @@
 
 Two masks per map, both 1024 x 1024 over the square minimap (the replay's u/v, 0..10000):
 
-- **sight** (True blocks sight): alpha 0, plus colour glyphs (opaque pixels with saturation over
-  GLYPH_SATURATION, such as Bind's teleporter lanes), plus shapes tagged `cover`, minus shapes tagged
-  `seeacross` and the map's see-across paint (Abyss's drops). `seeover`, `walkable` and `glyph` tags
+- **sight** (True blocks sight): the padded wall from alpha 0, colour glyphs (opaque pixels with saturation
+  over GLYPH_SATURATION, such as Bind's teleporter lanes) and `wall` tags, plus shapes tagged `cover`.
+  Shapes tagged `seeacross` and the map's see-across paint (Abyss's drops) open walls, while cover stays
+  blocking. `seeover`, `walkable` and `glyph` tags
   never block (a `glyph` shape is only a drawing on the floor).
 - **walk** (True is walkable): opaque minus glyphs, minus `cover` shapes. See-across areas stay
   unwalkable: they are drops.
+
+Walls with enclosed runs 1-3 pixels wide are padded across their width to 4 pixels when their
+8-connected thin piece spans at least 12 pixels; inclusive `thin_wall_exempt` boxes suppress padding.
+A `wall` tag accepts only a line candidate: its integer-exact 2-pixel growth is cut at its farthest
+ends and joined to nearby base walls. Neither rule changes walking or the ray engine, and see-across
+always opens these wall pixels. Sight combines the padded wall with cover; the kill-line gate uses
+the independently padded base wall without wall tags.
 
 A third, optional mask, **barrier** (`<Map>.barrier.png`, from the `barrier_paint`), marks the
 buy-phase barrier lines. It changes neither sight nor walking: the engine uses it once a round, to
@@ -67,7 +75,12 @@ GRID = 128
 CELL = PX // GRID
 GLYPH_SATURATION = 80          # Bind's lanes are ~144; spike-site tints reach 41
 PAINT_GRID = 256               # see-across paint: 256 x 256 cells of 4 px
-TAG_KINDS = ("cover", "seeover", "walkable", "glyph", "seeacross")
+TAG_KINDS = ("cover", "seeover", "walkable", "glyph", "seeacross", "wall")
+THIN_WALL_MAX_PX = 3
+THIN_WALL_TARGET_PX = 4
+THIN_WALL_MIN_LEN_PX = 12
+WALL_TAG_GROW_PX = 2
+WALL_JOIN_PX = 5
 # The 0a candidate detector's parameters (geometry.py), used when a map's entry names none.
 DETECTOR_DEFAULTS = {"glyph_saturation": GLYPH_SATURATION, "line_lum": 175, "edge_px": 3, "min_closed_px": 4,
                      "min_line_px": 12, "min_edge_closed_px": 60, "min_void_px": 20}
@@ -213,6 +226,8 @@ def tag_shapes(rgba: np.ndarray, entry: dict) -> dict[str, np.ndarray]:
                 or cand["px"] != tag.get("px"):
             raise GeometryError(f"tagged candidate {tag['id']} ({tag.get('kind')}, bbox {tag.get('bbox')}) no longer "
                                 f"matches the detector's shape; re-tag this map")
+        if tag["tag"] == "wall" and cand["kind"] != "line":
+            raise GeometryError(f"wall tag on candidate {tag['id']} requires a line, got {cand['kind']}")
         shapes[tag["tag"]] |= labels == tag["id"]
     return shapes
 
@@ -222,6 +237,112 @@ class MapMasks:
     sight: np.ndarray   # PX x PX, True blocks sight
     walk: np.ndarray    # PX x PX, True is walkable
     cover: np.ndarray | None = None   # PX x PX, the cover boxes (tags and paint), as they block sight
+    wall: np.ndarray | None = None   # PX x PX, padded walls, excluding cover
+    gate_wall: np.ndarray | None = None   # the same build without wall tags, for Risk 1
+
+
+def thin_padding(wall: np.ndarray, exempt_boxes) -> np.ndarray:
+    """Extra pixels across enclosed thin runs, filtered by 8-connected piece length per direction.
+
+    Slices keep border-touching runs out of the thin set without wrapping to the opposite edge.
+    Exemptions remove source thin pixels after the piece-length test, before padding.
+    """
+    exempt = np.zeros_like(wall, dtype=bool)
+    height, width = wall.shape
+    for x0, y0, x1, y1 in exempt_boxes:
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(width, x1 + 1), min(height, y1 + 1)
+        if x0 < x1 and y0 < y1:
+            exempt[y0:y1, x0:x1] = True
+    out = np.zeros_like(wall, dtype=bool)
+    for vertical in (False, True):
+        view = wall.T if vertical else wall
+        excluded = exempt.T if vertical else exempt
+        extra = out.T if vertical else out
+        runs = []
+        thin = np.zeros_like(view, dtype=bool)
+        for length in range(1, min(THIN_WALL_MAX_PX + 1, view.shape[1] - 1)):
+            starts = ~view[:, :-(length + 1)] & ~view[:, length + 1:]
+            for offset in range(length):
+                starts &= view[:, 1 + offset:view.shape[1] - length + offset]
+            yy, xx = np.nonzero(starts)
+            run = np.zeros_like(view, dtype=bool)
+            for offset in range(length):
+                run[yy, xx + 1 + offset] = True
+            runs.append(run)
+            thin |= run
+        labels, count = ndimage.label(thin, structure=np.ones((3, 3), bool))
+        kept = np.zeros(count + 1, bool)
+        for label, box in enumerate(ndimage.find_objects(labels), 1):
+            if box is not None and max(axis.stop - axis.start for axis in box) >= THIN_WALL_MIN_LEN_PX:
+                kept[label] = True
+        eligible = kept[labels] & ~excluded
+        for length, run in enumerate(runs, 1):
+            source = run & eligible
+            missing = THIN_WALL_TARGET_PX - length
+            before, after = missing // 2, missing - missing // 2
+            for shift in range(-before, after + 1):
+                if shift < 0:
+                    extra[:, :shift] |= source[:, -shift:]
+                elif shift > 0:
+                    extra[:, shift:] |= source[:, :-shift]
+    return out & ~wall
+
+
+def wall_tag_pixels(line: np.ndarray, base_wall: np.ndarray) -> np.ndarray:
+    """Grow a tagged line across its integer farthest ends and join nearby base walls.
+
+    Pixels and ties are row-major (y, x). The farthest-pair search uses O(n) scratch space,
+    and each join search is bounded to the endpoint's 11 x 11 neighbourhood.
+    """
+    yy, xx = np.nonzero(line)
+    points = np.column_stack((xx, yy)).astype(np.int64)
+    out = np.zeros_like(line, dtype=bool)
+    if not len(points):
+        return out
+    best = -1
+    for point in points:
+        distances = ((points - point) ** 2).sum(axis=1)
+        second = int(np.argmax(distances))
+        if int(distances[second]) > best:
+            best = int(distances[second])
+            e1, e2 = point, points[second]
+    direction = e2 - e1
+    kernel = np.ones((3, 3), bool)
+    grown = ndimage.binary_dilation(line, structure=kernel, iterations=WALL_TAG_GROW_PX)
+    gy, gx = np.nonzero(grown)
+    pixels = np.column_stack((gx, gy)).astype(np.int64)
+    keep = (((pixels - e1) @ direction) >= 0) & (((pixels - e2) @ direction) <= 0)
+    out[gy[keep], gx[keep]] = True
+    for end in (e1, e2):
+        ex, ey = map(int, end)
+        x0, y0 = max(0, ex - WALL_JOIN_PX), max(0, ey - WALL_JOIN_PX)
+        x1, y1 = min(line.shape[1], ex + WALL_JOIN_PX + 1), min(line.shape[0], ey + WALL_JOIN_PX + 1)
+        wy, wx = np.nonzero(base_wall[y0:y1, x0:x1])
+        if not len(wx):
+            continue
+        wx, wy = wx + x0, wy + y0
+        distances = (wx - ex) ** 2 + (wy - ey) ** 2
+        nearest = int(np.argmin(distances))
+        if distances[nearest] > WALL_JOIN_PX ** 2:
+            continue
+        tx, ty = int(wx[nearest]), int(wy[nearest])
+        segment = np.zeros_like(line, dtype=bool)
+        dx, dy = abs(tx - ex), -abs(ty - ey)
+        sx, sy = 1 if ex < tx else -1, 1 if ey < ty else -1
+        error = dx + dy
+        while True:
+            segment[ey, ex] = True
+            if ex == tx and ey == ty:
+                break
+            twice = 2 * error
+            if twice >= dy:
+                error += dy
+                ex += sx
+            if twice <= dx:
+                error += dx
+                ey += sy
+        out |= ndimage.binary_dilation(segment, structure=kernel, iterations=WALL_TAG_GROW_PX)
+    return out
 
 
 # Risk 1 (docs/replay-map-control-plan.md): a map's geometry is usable when at most this share of its judged kill
@@ -261,29 +382,34 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     cover = shapes["cover"] & ~base["line"]
     if entry.get("cover_paint"):
         cover = cover | unpack_paint(entry["cover_paint"])
-    sight = ~base["opaque"] | cover
     see_across = shapes["seeacross"].copy()
     if entry.get("see_across_paint"):
         see_across |= unpack_paint(entry["see_across_paint"])
-    sight &= ~see_across | cover
+    base_wall = ~base["opaque"] & ~see_across
+    exempt = entry.get("thin_wall_exempt") or []
+    gate_wall = base_wall | (thin_padding(base_wall, exempt) & ~see_across)
+    wall = base_wall.copy()
+    wall_tags = [tag for tag in entry.get("tags") or [] if tag["tag"] == "wall"]
+    if wall_tags:
+        labels, _ = candidates(rgba, entry.get("params") or {})
+        for tag in wall_tags:
+            wall |= wall_tag_pixels(labels == tag["id"], base_wall) & ~see_across
+        wall |= thin_padding(wall, exempt) & ~see_across
+    else:
+        wall = gate_wall.copy()
+    sight = wall | cover
     walk = base["opaque"] & ~cover
     if entry.get("cant_walk_paint"):
         walk &= ~unpack_paint(entry["cant_walk_paint"])
-    return MapMasks(sight, walk, cover)
+    return MapMasks(sight, walk, cover, wall, gate_wall)
 
 
 def see_over_cover(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
-    """The pixels that block sight only because of a cover tag or paint (`cover & ~wall_without_cover`): a
+    """The pixels that block sight only because of a cover tag or paint (`cover & ~wall`): a
     cover outline drawn over a real wall never erases that wall. These are the boxes a player can stand on
     and see over; masks()'s sight and walk are unchanged by it."""
-    entry = entry or {}
     m = masks(rgba, entry)
-    base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
-    see_across = tag_shapes(rgba, entry)["seeacross"].copy()
-    if entry.get("see_across_paint"):
-        see_across |= unpack_paint(entry["see_across_paint"])
-    wall_without_cover = ~base["opaque"] & ~see_across
-    return m.cover & ~wall_without_cover
+    return m.cover & ~m.wall
 
 
 def bullet_mask(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:

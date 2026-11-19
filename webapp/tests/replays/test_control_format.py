@@ -106,6 +106,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
 # HEIGHT_RULES_REVISION (tests/replays/test_height_inputs.py), never the engine, so they are not digested here.
 HEIGHT_BUILD_ONLY = frozenset({"TOP_TOUCH_M", "TOP_VOTES_INSIDE", "TOP_VOTES_OUTSIDE", "GROUND_NEAR_M"})
+MASK_BUILD_ONLY = frozenset({"THIN_WALL_MAX_PX", "THIN_WALL_TARGET_PX", "THIN_WALL_MIN_LEN_PX",
+                             "WALL_TAG_GROW_PX", "WALL_JOIN_PX", "TAG_KINDS"})
 
 
 def _constants_digest() -> str:
@@ -122,12 +124,15 @@ def _constants_digest() -> str:
             return [plain(v) for v in value]
         return value
 
-    constants = {}
+    # Released digests included this historical schema slot. Keep its frozen value so removing
+    # the live mask-build setting from the digest preserves every existing revision's pin.
+    constants = {"app.control.geometry.TAG_KINDS": ("cover", "seeover", "walkable", "glyph", "seeacross")}
     # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list; fs since 20
     for module in (ce, cg, hc, ct, ut, mo) + ((fs,) if cf.CONTROL_REVISION >= 20 else ()):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION" \
-                    and not (module is hc and name in HEIGHT_BUILD_ONLY):
+                    and not (module is hc and name in HEIGHT_BUILD_ONLY) \
+                    and not (module is cg and name in MASK_BUILD_ONLY):
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
                     constants[f"{module.__name__}.{name}"] = plain(value)
     text = json.dumps(constants, sort_keys=True, default=str)
@@ -177,6 +182,29 @@ def test_the_height_build_only_constants_are_read_only_by_the_build():
     assert _reads(height_build.__file__, HEIGHT_BUILD_ONLY).keys() <= {"build"}
     for module in (ce, cg, stance):
         assert not _reads(module.__file__, HEIGHT_BUILD_ONLY), module.__name__
+
+
+def test_the_mask_build_only_constants_are_not_engine_constants(monkeypatch):
+    import ast
+    from pathlib import Path
+
+    before = _constants_digest()
+    for name in MASK_BUILD_ONLY:
+        assert hasattr(cg, name), name
+        monkeypatch.setattr(cg, name, None)
+    assert _constants_digest() == before
+    allowed = {"masks", "thin_padding", "wall_tag_pixels", "tag_shapes", "see_over_cover", "bullet_mask"}
+    for path in Path(cg.__file__).parent.glob("*.py"):
+        # Ignore declarations themselves; any runtime load (including an import) must be build-only.
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for top in tree.body:
+            where = top.name if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else None
+            for node in ast.walk(top):
+                name = node.id if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) else \
+                    node.attr if isinstance(node, ast.Attribute) else \
+                    node.name if isinstance(node, ast.alias) else None
+                if name in MASK_BUILD_ONLY:
+                    assert path.name == "geometry.py" and where in allowed, (path.name, where, name)
 
 
 REVISION_25_CONSTANTS = ("DAMAGE_ZONE_LIFE_S", "SUPPRESSED_DEVICE_KINDS", "SUPPRESSING_STATUS_ROWS",

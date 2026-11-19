@@ -118,10 +118,22 @@ def _paint_cells(*cells):
 
 
 @pytest.mark.parametrize("name", MAPS)
-def test_cover_is_its_own_asset_and_sight_is_wall_plus_cover(name):
+def test_sight_is_wall_plus_cover(name):
+    image, entry = rgba(name), TAGS.get(name, {})
+    m = cg.masks(image, entry)
+    base = cg._base_masks(image, cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
+    see_across = cg.tag_shapes(image, entry)["seeacross"].copy()
+    if entry.get("see_across_paint"):
+        see_across |= cg.unpack_paint(entry["see_across_paint"])
+    assert (m.sight == (m.wall | m.cover)).all()
+    assert (cg.see_over_cover(image, entry) == (m.cover & ~m.wall)).all()
+    assert m.wall[~base["opaque"] & ~see_across].all()
+
+
+@pytest.mark.parametrize("name", MAPS)
+def test_committed_cover_matches_a_fresh_build(name):
     path = cg.ASSET_DIR / f"{name}.cover.png"
     fresh = cg.see_over_cover(rgba(name), TAGS.get(name, {}))
-    m = cg.masks(rgba(name), TAGS.get(name, {}))
     geo = cg.load_geometry(name, height_mode="flat")
     row = INDEX["maps"][name]
     if not fresh.any():
@@ -130,13 +142,6 @@ def test_cover_is_its_own_asset_and_sight_is_wall_plus_cover(name):
         return
     png = cg.read_mask_png(path)
     assert (png == fresh).all()
-    entry = TAGS.get(name, {})
-    base = cg._base_masks(rgba(name), cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
-    see_across = cg.tag_shapes(rgba(name), entry)["seeacross"].copy()
-    if entry.get("see_across_paint"):
-        see_across |= cg.unpack_paint(entry["see_across_paint"])
-    wall_without_cover = ~base["opaque"] & ~see_across
-    assert (m.sight == (wall_without_cover | png)).all()
     assert row["cover_sha"] == geo.cover_sha
     assert (geo.cover_px > 0).sum() == png.sum() and (geo.cover_px[~png] == 0).all()
     assert geo.cover_px.dtype == np.int16
