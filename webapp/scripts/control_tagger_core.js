@@ -3,10 +3,10 @@
  * S6.2). Pure functions, inlined into the page and tested in node against app/control/geometry.py
  * (tests/replays/test_control_tagger.py):
  *
- * - `compose(map, edits)`: the sight and walk masks, exactly as geometry.masks builds them, from the
+ * - `compose(map, edits)`: the sight, walk, cover, wall and gate_wall masks, as geometry.masks builds them, from the
  *   Python-computed base masks the page embeds (`opaque`, the candidate `labels`), the tags and the
  *   paints. The page never reads colours from a canvas.
- * - `riskOne(sight, lines)`: the kill-line test (geometry.line_blocked: numpy's linspace and
+ * - `riskOne(wall, lines, cover)`: the kill-line test (geometry.line_blocked: numpy's linspace and
  *   round-half-to-even, 3 px trimmed at each end) against the 2% bar.
  * - `exportTags(original, maps, edits)`: the whole tags.json, every map, with untouched maps and
  *   unknown fields exactly as loaded.
@@ -19,7 +19,7 @@
   var PX = 1024, P = 256, END_SKIP = 3, BAR = 0.02;
   var PAINTS = ["see_across_paint", "cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint"];
   var HEIGHT_PAINTS = ["open", "ground", "top"];
-  var TAG_KINDS = ["cover", "seeover", "walkable", "glyph", "seeacross"];
+  var TAG_KINDS = ["cover", "seeover", "walkable", "glyph", "seeacross", "wall"];
 
   function base64Bytes(text) {
     if (typeof atob !== "undefined") {
@@ -96,18 +96,124 @@
     return cells ? cells[((i >> 10) >> 2) * P + ((i & 1023) >> 2)] : 0;
   }
 
-  // The masks: sight (1 blocks) = cover | (not opaque and not see-across); walk (1 walkable) =
-  // opaque and not cover and not can't-walk (app/control/geometry.py `masks`).
+  // geometry.thin_padding: enclosed runs of 1-3 pixels, 8-connected per direction,
+  // kept at a 12-pixel bbox span. Exemptions remove source pixels before padding to 4.
+  function thinPadding(wall, boxes) {
+    var size = PX * PX, exempt = new Uint8Array(size), out = new Uint8Array(size);
+    (boxes || []).forEach(function (b) {
+      for (var y = Math.max(0, b[1]); y <= Math.min(PX - 1, b[3]); y++)
+        for (var x = Math.max(0, b[0]); x <= Math.min(PX - 1, b[2]); x++) exempt[y * PX + x] = 1;
+    });
+    var queue = new Int32Array(size);
+    for (var vertical = 0; vertical < 2; vertical++) {
+      var thin = new Uint8Array(size), seen = new Uint8Array(size), step = vertical ? PX : 1;
+      for (var row = 0; row < PX; row++) {
+        var col = 0, origin = vertical ? row : row * PX;
+        while (col < PX) {
+          if (!wall[origin + col * step]) { col++; continue; }
+          var start = col;
+          while (col < PX && wall[origin + col * step]) col++;
+          var length = col - start;
+          if (start > 0 && col < PX && length <= 3)
+            for (var at = start; at < col; at++) thin[origin + at * step] = length;
+        }
+      }
+      for (var i = 0; i < size; i++) {
+        if (!thin[i] || seen[i]) continue;
+        var head = 0, tail = 1, minX = i & 1023, maxX = minX, minY = i >> 10, maxY = minY;
+        queue[0] = i; seen[i] = 1;
+        while (head < tail) {
+          var p = queue[head++], px = p & 1023, py = p >> 10;
+          minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+          minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+          for (var yy = Math.max(0, py - 1); yy <= Math.min(PX - 1, py + 1); yy++)
+            for (var xx = Math.max(0, px - 1); xx <= Math.min(PX - 1, px + 1); xx++) {
+              var q = yy * PX + xx;
+              if (thin[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; }
+            }
+        }
+        if (Math.max(maxX - minX + 1, maxY - minY + 1) < 12) continue;
+        for (var j = 0; j < tail; j++) {
+          p = queue[j];
+          if (exempt[p]) continue;
+          var missing = 4 - thin[p], before = missing >> 1, after = missing - before;
+          var axis = vertical ? p >> 10 : p & 1023;
+          for (var shift = -before; shift <= after; shift++)
+            if (axis + shift >= 0 && axis + shift < PX) out[p + shift * step] = 1;
+        }
+      }
+    }
+    for (var k = 0; k < size; k++) if (wall[k]) out[k] = 0;
+    return out;
+  }
+
+  // geometry.wall_tag_pixels: points arrive in row-major order. Strict improvements
+  // preserve both farthest-pair and nearest-wall ties. All cuts and joins are integer-only.
+  function wallTagPixels(points, baseWall) {
+    var out = new Uint8Array(PX * PX);
+    if (!points.length) return out;
+    var best = -1, e1, e2;
+    for (var i = 0; i < points.length; i++) {
+      var ax = points[i] & 1023, ay = points[i] >> 10;
+      for (var j = 0; j < points.length; j++) {
+        var bx = points[j] & 1023, by = points[j] >> 10;
+        var distance = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
+        if (distance > best) { best = distance; e1 = [ax, ay]; e2 = [bx, by]; }
+      }
+    }
+    var vx = e2[0] - e1[0], vy = e2[1] - e1[1];
+    function grow(x, y, cut) {
+      for (var yy = Math.max(0, y - 2); yy <= Math.min(PX - 1, y + 2); yy++)
+        for (var xx = Math.max(0, x - 2); xx <= Math.min(PX - 1, x + 2); xx++)
+          if (!cut || ((xx - e1[0]) * vx + (yy - e1[1]) * vy >= 0 &&
+                       (xx - e2[0]) * vx + (yy - e2[1]) * vy <= 0)) out[yy * PX + xx] = 1;
+    }
+    points.forEach(function (p) { grow(p & 1023, p >> 10, true); });
+    [e1, e2].forEach(function (end) {
+      var ex = end[0], ey = end[1], nearest = 26, tx, ty;
+      for (var y = Math.max(0, ey - 5); y <= Math.min(PX - 1, ey + 5); y++)
+        for (var x = Math.max(0, ex - 5); x <= Math.min(PX - 1, ex + 5); x++) {
+          if (!baseWall[y * PX + x]) continue;
+          var d = (x - ex) * (x - ex) + (y - ey) * (y - ey);
+          if (d < nearest) { nearest = d; tx = x; ty = y; }
+        }
+      if (nearest > 25) return;
+      var dx = Math.abs(tx - ex), dy = -Math.abs(ty - ey);
+      var sx = ex < tx ? 1 : -1, sy = ey < ty ? 1 : -1, error = dx + dy;
+      while (true) {
+        grow(ex, ey, false);
+        if (ex === tx && ey === ty) break;
+        var twice = 2 * error;
+        if (twice >= dy) { error += dy; ex += sx; }
+        if (twice <= dx) { error += dx; ey += sy; }
+      }
+    });
+    return out;
+  }
+
+  // Compose in the same order as geometry.masks. The gate omits wall tags; cover
+  // blocks sight and walking, but never enters either wall mask.
   function compose(map, edits) {
     var tags = edits.tags || {}, paints = edits.paints || {};
-    var maxId = 0, id;
-    for (var c = 0; c < map.candidates.length; c++) maxId = Math.max(maxId, map.candidates[c].id);
+    var maxId = 0, id, wallLines = {};
+    for (var c = 0; c < map.candidates.length; c++) {
+      var candidate = map.candidates[c];
+      maxId = Math.max(maxId, candidate.id);
+      if (tags[candidate.id] === "wall") {
+        if (candidate.kind !== "line") {
+          var err = new Error("wall tag on candidate " + candidate.id + " requires a line, got " + candidate.kind);
+          err.name = "GeometryError"; throw err;
+        }
+        wallLines[candidate.id] = [];
+      }
+    }
     var tagOf = new Uint8Array(maxId + 1);   // 0 none, 1 cover, 2 see-across, 3 other
     Object.keys(tags).forEach(function (key) {
       id = Number(key);
       if (id <= maxId) tagOf[id] = tags[key] === "cover" ? 1 : tags[key] === "seeacross" ? 2 : 3;
     });
     var sight = new Uint8Array(PX * PX), walk = new Uint8Array(PX * PX), coverOut = new Uint8Array(PX * PX);
+    var baseWall = new Uint8Array(PX * PX), seeAcross = new Uint8Array(PX * PX);
     var labels = map.labels, opaque = map.opaque, outline = map.outline;
     var cover = paints.cover_paint, across = paints.see_across_paint, cantWalk = paints.cant_walk_paint;
     for (var i = 0; i < PX * PX; i++) {
@@ -115,11 +221,25 @@
       // a cover tag is the box inside its drawn outline (geometry `masks`, 2026-10-26); paint covers what it covers
       var isCover = (t === 1 && !(outline && outline[i])) || paintAt(cover, i) === 1;
       var isAcross = t === 2 || paintAt(across, i) === 1;
-      sight[i] = isCover || (!opaque[i] && !isAcross) ? 1 : 0;
+      baseWall[i] = !opaque[i] && !isAcross ? 1 : 0;
+      seeAcross[i] = isAcross ? 1 : 0;
+      if (wallLines[labels[i]]) wallLines[labels[i]].push(i);
       walk[i] = opaque[i] && !isCover && !paintAt(cantWalk, i) ? 1 : 0;
       coverOut[i] = isCover ? 1 : 0;
     }
-    return { sight: sight, walk: walk, cover: coverOut };
+    var extra = thinPadding(baseWall, edits.thin_wall_exempt), gateWall = new Uint8Array(baseWall);
+    for (i = 0; i < PX * PX; i++) if (!seeAcross[i] && extra[i]) gateWall[i] = 1;
+    var wall = new Uint8Array(baseWall), ids = Object.keys(wallLines);
+    if (ids.length) {
+      ids.forEach(function (key) {
+        var grown = wallTagPixels(wallLines[key], baseWall);
+        for (var j = 0; j < PX * PX; j++) if (grown[j] && !seeAcross[j]) wall[j] = 1;
+      });
+      extra = thinPadding(wall, edits.thin_wall_exempt);
+      for (i = 0; i < PX * PX; i++) if (!seeAcross[i] && extra[i]) wall[i] = 1;
+    } else wall.set(gateWall);
+    for (i = 0; i < PX * PX; i++) sight[i] = wall[i] || coverOut[i] ? 1 : 0;
+    return { sight: sight, walk: walk, cover: coverOut, wall: wall, gate_wall: gateWall };
   }
 
   function roundHalfEven(v) {
@@ -185,6 +305,7 @@
         return { id: id, tag: e.tags[id], kind: c.kind, bbox: c.bbox, px: c.px };
       });
       if (rows.length || entry.tags) entry.tags = rows;
+      if (e.thin_wall_exempt !== undefined) entry.thin_wall_exempt = clone(e.thin_wall_exempt);
       var packed = {};
       PAINTS.forEach(function (key) {
         packed[key] = e.paints[key] ? packPaint(e.paints[key]) : null;
@@ -204,6 +325,7 @@
     var e = { touched: false, heightTouched: false, tags: {}, paints: {}, heightPaints: {},
               cover_reviewed: !!(entry && entry.cover_reviewed) };
     ((entry && entry.tags) || []).forEach(function (row) { e.tags[row.id] = row.tag; });
+    if (entry && entry.thin_wall_exempt !== undefined) e.thin_wall_exempt = clone(entry.thin_wall_exempt);
     PAINTS.forEach(function (key) { e.paints[key] = entry && entry[key] ? unpackPaint(entry[key]) : null; });
     HEIGHT_PAINTS.forEach(function (key) { e.heightPaints[key] = heightEntry && heightEntry[key] ? unpackPaint(heightEntry[key]) : null; });
     return e;
