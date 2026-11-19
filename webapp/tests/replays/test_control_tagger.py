@@ -60,8 +60,11 @@ def run_node(body: str, payload):
 
 COMPOSE = """
   function run(p) {
-    const map = load(p.map), e = T.editsFrom(p.entry), m = T.compose(map, e), r = T.riskOne(m.sight, map.lines, m.cover);
-    return {sight: packBits(m.sight), walk: packBits(m.walk), blocked: r.blocked, share: r.share, passes: r.passes};
+    const map = load(p.map), e = T.editsFrom(p.entry), m = T.compose(map, e), r = T.riskOne(m.gate_wall, map.lines, m.cover);
+    const withWalls = T.riskOne(m.wall, map.lines, m.cover);
+    return {sight: packBits(m.sight), walk: packBits(m.walk), cover: packBits(m.cover),
+            wall: packBits(m.wall), gate_wall: packBits(m.gate_wall), with_walls: withWalls.blocked,
+            blocked: r.blocked, share: r.share, passes: r.passes};
   }
 """
 
@@ -83,10 +86,14 @@ def check(name, entry):
     got = run_node(COMPOSE, {"map": control_tagger.map_data(name, entry, lines), "entry": entry})
     assert got["sight"] == base64.b64encode(np.packbits(m.sight)).decode(), f"{name} sight"
     assert got["walk"] == base64.b64encode(np.packbits(m.walk)).decode(), f"{name} walk"
+    for key in ("cover", "wall", "gate_wall"):
+        assert got[key] == base64.b64encode(np.packbits(getattr(m, key))).decode(), f"{name} {key}"
     on = (lambda x, y: m.cover is not None and bool(m.cover[min(1023, int(y)), min(1023, int(x))]))
     expected = [k for k, (ax, ay, bx, by) in enumerate(lines) if not (on(ax, ay) or on(bx, by))
-                and cg.line_blocked(m.sight, (ax, ay), (bx, by))]
+                and cg.line_blocked(m.gate_wall, (ax, ay), (bx, by))]
     assert got["blocked"] == expected, f"{name} kill lines"
+    assert got["with_walls"] == [k for k, (ax, ay, bx, by) in enumerate(lines)
+                                 if not (on(ax, ay) or on(bx, by)) and cg.line_blocked(m.wall, (ax, ay), (bx, by))]
     return got
 
 
@@ -123,7 +130,15 @@ def test_every_paint_composes_exactly_like_geometry():
              "cant_walk_paint": paint_rect(300, 300, 360, 420), "uncertain_paint": paint_rect(0, 0, 1024, 1024),
              "see_across_paint": paint_rect(430, 370, 600, 600), "barrier_paint": paint_rect(0, 0, 1024, 1024)}
     got = check("Ascent", entry)
-    assert len(got["blocked"]) > 2, "the cover paint should block some kill lines"
+    no_cover = {k: v for k, v in entry.items() if k != "cover_paint"}
+    unpainted = check("Ascent", no_cover)
+    painted_masks, unpainted_masks = python_masks("Ascent", entry), python_masks("Ascent", no_cover)
+    assert np.any(painted_masks.sight != unpainted_masks.sight)
+    assert np.any(painted_masks.walk != unpainted_masks.walk)
+    assert np.array_equal(painted_masks.gate_wall, unpainted_masks.gate_wall)
+    on = lambda x, y: painted_masks.cover[min(1023, max(0, int(y))), min(1023, max(0, int(x)))]
+    assert got["blocked"] == [k for k in unpainted["blocked"]
+                              if not (on(*LINES["Ascent"][k][:2]) or on(*LINES["Ascent"][k][2:]))]
     # a barrier paint changes neither mask
     bare = {k: v for k, v in entry.items() if k != "barrier_paint"}
     rgba = np.array(Image.open(cg.MINIMAP_DIR / "Ascent.png").convert("RGBA"))
@@ -157,13 +172,16 @@ EXPORT = """
 
 
 def test_an_unchanged_page_exports_the_loaded_tags():
+    tags = json.loads(json.dumps(TAGS))
+    tags["maps"]["Ascent"]["thin_wall_exempt"] = [[400, 600, 410, 700]]
     names = ["Abyss", "Ascent"]
     maps = {n: control_tagger.map_data(n, TAGS["maps"][n], LINES.get(n) or []) for n in names}
     candidate = next(c for c in maps["Ascent"]["candidates"] if c["kind"] == "closed")
-    got = run_node(EXPORT, {"tags": TAGS, "maps": maps, "newId": candidate["id"]})
-    assert got["untouched"] == TAGS
-    assert got["touched"] == TAGS, "re-packed paint and kept rows must round-trip"
+    got = run_node(EXPORT, {"tags": tags, "maps": maps, "newId": candidate["id"]})
+    assert got["untouched"] == tags
+    assert got["touched"] == tags, "re-packed paint and kept rows must round-trip"
     ascent = got["edited"]["maps"]["Ascent"]
+    assert ascent["thin_wall_exempt"] == tags["maps"]["Ascent"]["thin_wall_exempt"]
     assert ascent["tags"] == [{"id": candidate["id"], "tag": "cover", "kind": "closed", "bbox": candidate["bbox"],
                                "px": candidate["px"]}]
     assert ascent["params"] == maps["Ascent"]["params"] and ascent["image_sha"] == maps["Ascent"]["image_sha"]
@@ -293,6 +311,219 @@ def page_function(page, name):
     match = re.search(r"^  function " + name + r"\([^\n]*\) \{.*?^  \}", page, re.M | re.S)
     assert match, name
     return match.group(0)
+
+
+def synthetic_map(base_wall, line):
+    labels = line.astype(np.int32)
+    yy, xx = np.nonzero(line)
+    candidate = {"id": 1, "kind": "line", "bbox": [int(xx.min()), int(yy.min()), int(xx.max()), int(yy.max())],
+                 "px": int(line.sum())}
+    return {"labels": control_tagger.rle(labels), "opaque": control_tagger.rle(~base_wall),
+            "candidates": [candidate], "params": {}, "image_sha": "synthetic", "lines": [[90, 60, 130, 60]]}
+
+
+@pytest.mark.parametrize("case", ["join3", "join5", "none6", "diagonal", "pixel", "ends_tie", "join_tie"])
+def test_wall_tag_r3_composes_integer_exactly(case):
+    line = np.zeros((cg.PX, cg.PX), bool)
+    base = np.zeros_like(line)
+    line[50, 100:120] = True
+    if case in ("join3", "join5", "none6"):
+        base[30:70, {"join3": 122, "join5": 124, "none6": 125}[case]:] = True
+    elif case == "join_tie":
+        base[46, 122] = base[54, 122] = True
+    else:
+        line[:] = False
+        if case == "diagonal":
+            line[np.arange(50, 70), np.arange(100, 120)] = True
+        elif case == "pixel":
+            line[50, 100] = True
+        else:
+            line[[50, 50, 52, 52], [100, 102, 100, 102]] = True
+    map_data = synthetic_map(base, line)
+    entry = {"tags": [{**map_data["candidates"][0], "tag": "wall"}]}
+    got = run_node(COMPOSE, {"map": map_data, "entry": entry})
+    wall = base | cg.wall_tag_pixels(line, base)
+    wall |= cg.thin_padding(wall, [])
+    gate = base | cg.thin_padding(base, [])
+    for key, expected in (("wall", wall), ("sight", wall), ("gate_wall", gate), ("walk", ~base)):
+        assert got[key] == base64.b64encode(np.packbits(expected)).decode(), key
+
+
+def test_haven_nine_wall_tags_and_thin_wall_exemption_compose_like_python():
+    boxes = [[698, 413, 716, 431], [734, 440, 739, 448], [327, 444, 339, 456],
+             [734, 466, 739, 475], [327, 564, 348, 585], [563, 627, 572, 642],
+             [552, 648, 561, 663], [404, 696, 409, 699], [735, 780, 739, 787]]
+    rows = [{"id": i, "kind": "line", "bbox": box, "px": px, "tag": "wall"}
+            for i, box, px in zip(range(41, 50), boxes, [19, 40, 13, 46, 22, 22, 19, 14, 22])]
+    check("Haven", {**TAGS["maps"]["Haven"], "tags": rows, "thin_wall_exempt": [[400, 600, 410, 700]]})
+
+
+def _committed_maps():
+    names = set(TAGS["maps"]) | {p.name.split(".")[0] for p in cg.ASSET_DIR.glob("*.sight.png")}
+    return sorted(n for n in names if (cg.MINIMAP_DIR / f"{n}.png").exists())
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", _committed_maps())
+def test_every_committed_map_composes_alike_in_js_and_python(name):
+    # The whole committed entry (tags, paints, params), or an empty one for a map with only a base sight asset.
+    check(name, TAGS["maps"].get(name, {}))
+
+
+BAD_EXEMPT = {
+    "float": [[400.5, 600, 410, 700]],
+    "inverted_x": [[410, 600, 400, 700]],
+    "inverted_y": [[400, 700, 410, 600]],
+    "too_short": [[400, 600, 410]],
+    "too_long": [[400, 600, 410, 700, 1]],
+    "bool": [[True, 600, 410, 700]],
+}
+
+
+@pytest.mark.parametrize("bad", BAD_EXEMPT.values(), ids=BAD_EXEMPT.keys())
+def test_malformed_thin_wall_exempt_is_refused_by_the_page_as_by_python(bad):
+    base = np.zeros((cg.PX, cg.PX), bool)
+    base[600:700, 405] = True
+    line = np.zeros_like(base)
+    line[50, 100:120] = True
+    with pytest.raises(cg.GeometryError, match="thin_wall_exempt"):
+        cg.masks(np.full((cg.PX, cg.PX, 4), 255, np.uint8), {"thin_wall_exempt": bad})
+    got = run_node("""
+      function run(p) {
+        try { T.compose(load(p.map), T.editsFrom(p.entry)); return {refused: false}; }
+        catch (e) { return {refused: /thin_wall_exempt/.test(e.message), name: e.name}; }
+      }
+    """, {"map": synthetic_map(base, line), "entry": {"thin_wall_exempt": bad}})
+    assert got["refused"] and got["name"] == "GeometryError"
+
+
+@pytest.mark.parametrize("vertical", [False, True])
+def test_thin_padding_runs_components_exemptions_and_see_across(vertical):
+    base = np.zeros((cg.PX, cg.PX), bool)
+    for width in range(1, 5):
+        base[100:140, 100 * width:100 * width + width] = True
+    base[200:211, 100] = True  # too short
+    base[200:212, 200] = True  # exactly long enough
+    base[300:320, :2] = True  # touches the border
+    base[np.arange(400, 412), np.arange(400, 412)] = True  # 8-connected
+    if vertical:
+        base = base.T.copy()
+    line = np.zeros_like(base)
+    line[50, 50] = True
+    exempt = [[99, 110, 101, 115], [200, 200, 200, 211]]
+    across = paint_rect(300, 120, 304, 132)
+    entry = {"thin_wall_exempt": exempt, "see_across_paint": across}
+    got = run_node(COMPOSE, {"map": synthetic_map(base, line), "entry": entry})
+    opened = cg.unpack_paint(across)
+    actual_base = base & ~opened
+    wall = actual_base | (cg.thin_padding(actual_base, exempt) & ~opened)
+    for key in ("wall", "gate_wall", "sight"):
+        assert got[key] == base64.b64encode(np.packbits(wall)).decode(), key
+    assert got["walk"] == base64.b64encode(np.packbits(~base)).decode()
+
+
+def test_closed_candidate_refuses_wall_and_picker_kinds_have_colours():
+    rgba = np.full((cg.PX, cg.PX, 4), (80, 80, 80, 255), np.uint8)
+    rgba[50:70, [100, 119], :3] = 230
+    rgba[[50, 69], 100:120, :3] = 230
+    labels, candidates = cg.candidates(rgba, {})
+    candidate = next(c for c in candidates if c["kind"] == "closed")
+    entry = {"tags": [{**candidate, "tag": "wall"}]}
+    with pytest.raises(cg.GeometryError, match="requires a line"):
+        cg.masks(rgba, entry)
+    data = {"labels": control_tagger.rle(labels), "opaque": control_tagger.rle(rgba[..., 3] > 0),
+            "candidates": candidates, "lines": []}
+    got = run_node("""
+      function run(p) {
+        try { T.compose(load(p.map), T.editsFrom(p.entry)); return {refused: false}; }
+        catch (e) { return {refused: /requires a line/.test(e.message)}; }
+      }
+    """, {"map": data, "entry": entry})
+    assert got["refused"]
+    page = control_tagger.TEMPLATE.read_text(encoding="utf-8")
+    colours = re.search(r"  var COLOURS = (.*?);", page, re.S).group(0)
+    offered = set(re.findall(r'data-tag="([^"]+)"', page))
+    got = run_node("function run(p) { eval(p.colours); return {kinds: T.TAG_KINDS, colours: Object.keys(COLOURS)}; }",
+                   {"colours": colours})
+    assert "wall" in offered
+    assert offered == set(got["kinds"])
+    assert offered <= set(got["colours"])
+    # The page restricts the visible picker as the selection changes, and setTag validates keyboard edits too.
+    assert 'c.kind !== "line"' in page_function(page, "showSelected")
+    assert 'c.kind !== "line"' in page_function(page, "setTag")
+
+
+def test_thin_wall_exemption_survives_page_undo_and_draft_restore():
+    base = np.zeros((cg.PX, cg.PX), bool)
+    base[600:700, 405] = True
+    line = np.zeros_like(base)
+    line[50, 100:120] = True
+    map_data = synthetic_map(base, line)
+    entry = {"thin_wall_exempt": [[400, 600, 410, 700]], "tags": []}
+    page = control_tagger.TEMPLATE.read_text(encoding="utf-8")
+    functions = "\n".join(page_function(page, name) for name in
+                          ["cellsCopy", "snapshot", "save", "restore", "mapEdits", "beforeChange", "changed", "doUndo", "setTag"])
+    got = run_node("""
+      function run(p) {
+        var maps = {Test: load(p.map)}, edits = {Test: T.editsFrom(p.entry)};
+        var state = {map: 'Test', selected: 1, byId: {1: p.map.candidates[0]}};
+        var undo = [], chokeState = {}, STORE = 'test-exempt';
+        var memory = {}, localStorage = {setItem: (k,v) => memory[k] = v, getItem: k => memory[k]};
+        var $ = () => ({}), recompute = () => {}, saveChokes = () => {};
+        eval(p.functions);
+        function capture() {
+          const m = T.compose(maps.Test, edits.Test);
+          return {wall: packBits(m.wall), gate_wall: packBits(m.gate_wall), sight: packBits(m.sight),
+                  walk: packBits(m.walk), exempt: edits.Test.thin_wall_exempt,
+                  exported: T.exportTags({maps: {Test: p.entry}}, maps, edits)};
+        }
+        const original = capture(); setTag('wall'); const edited = capture();
+        doUndo(); const undone = capture(); setTag('wall'); save();
+        edits.Test = T.editsFrom({}); restore(); const restored = capture();
+        // A draft from before exemptions were saved must retain the loaded source's exemptions.
+        const legacy = JSON.parse(memory[STORE]); delete legacy.Test.thin_wall_exempt;
+        memory[STORE] = JSON.stringify(legacy); edits.Test = T.editsFrom(p.entry); restore();
+        return {original, edited, undone, restored, legacy: capture()};
+      }
+    """, {"map": map_data, "entry": entry, "functions": functions})
+    assert got["original"]["exempt"] == entry["thin_wall_exempt"]
+    assert got["undone"] == got["original"]
+    assert got["restored"] == got["edited"] == got["legacy"]
+    assert got["edited"]["wall"] != got["original"]["wall"]
+    assert got["edited"]["gate_wall"] == got["original"]["gate_wall"]
+    assert got["edited"]["exported"]["maps"]["Test"]["thin_wall_exempt"] == entry["thin_wall_exempt"]
+
+
+def test_page_gate_stays_passing_when_wall_tags_block_kills():
+    base = np.zeros((cg.PX, cg.PX), bool)
+    line = np.zeros_like(base)
+    line[50, 100:120] = True
+    map_data = synthetic_map(base, line)
+    map_data["lines"] = [[110, 40, 110, 60], [80, 80, 110, 50]]
+    entry = {"tags": [{**map_data["candidates"][0], "tag": "wall"}],
+             "cover_paint": paint_rect(80, 80, 84, 84), "see_across_paint": paint_rect(100, 48, 104, 56)}
+    page = control_tagger.TEMPLATE.read_text(encoding="utf-8")
+    functions = "\n".join(page_function(page, name) for name in ["recompute", "updateStats", "paintedCells"])
+    got = run_node("""
+      function run(p) {
+        var maps = {Test: load(p.map)}, edits = {Test: T.editsFrom(p.entry)}, loaded = {Test: T.editsFrom(p.entry)};
+        var state = {map: 'Test'}, elements = {}, PAINT_NAMES = {};
+        var $ = id => elements[id] || (elements[id] = {}), mapEdits = () => edits.Test;
+        var paintHeights = () => {}, paintTint = () => {}, paintOverlay = () => {}, showSelected = () => {}, showChoke = () => {};
+        eval(p.functions); recompute();
+        return {gate: state.risk, withWalls: state.riskWithWalls, note: $('statNote').textContent,
+                statClass: $('stat').className, counts: $('counts').innerHTML, sight: packBits(state.masks.sight)};
+      }
+    """, {"functions": functions, "entry": entry, "map": map_data})
+    assert got["gate"]["passes"] is True and got["gate"]["blocked"] == []
+    assert got["withWalls"]["passes"] is False and got["withWalls"]["blocked"] == [0]
+    assert got["gate"]["on_cover"] == got["withWalls"]["on_cover"] == 1
+    assert got["statClass"] == "big ok"
+    assert "With wall tags: 1 of 1 blocked (information only)" in got["note"]
+    assert "<td>Wall</td><td>1</td>" in got["counts"]
+    wall = cg.wall_tag_pixels(line, base) & ~cg.unpack_paint(entry["see_across_paint"])
+    wall |= cg.thin_padding(wall, []) & ~cg.unpack_paint(entry["see_across_paint"])
+    assert got["sight"] == base64.b64encode(np.packbits(wall | cg.unpack_paint(entry["cover_paint"]))).decode()
 
 
 @pytest.fixture

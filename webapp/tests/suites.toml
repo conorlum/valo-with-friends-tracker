@@ -308,6 +308,7 @@ guards = [
 [control-geometry]
 about = "Map-control geometry: masks, sight casting, heights and floors, the height build and its jobs, ropes, terrain, routes and topology."
 tests = [
+  "tests/replays/test_control_thin_walls.py",
   "tests/replays/test_control_geometry.py", "tests/replays/test_control_floors.py", "tests/replays/test_control_sight.py",
   "tests/replays/test_control_heights.py", "tests/replays/test_control_heights_db.py", "tests/replays/test_height_paint.py",
   "tests/replays/test_control_height_job.py", "tests/replays/test_height_*.py", "tests/replays/test_heights_remote.py",
@@ -340,6 +341,7 @@ guards = [
 [control-store-web]
 about = "Map control outside the engine: committed assets and barriers, storage and freshness, the worker dispatcher, views, viewer, tagger, reference bytes."
 tests = [
+  "tests/replays/test_haven_walls.py",
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
   "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_areas_tagger_core.py",

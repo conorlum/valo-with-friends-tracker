@@ -65,7 +65,8 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path, *, pn
            "walkable_cells": int(geo.walk.sum()), "cell_m": round(geo.cell_m, 3),
            "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
            "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
-           "kill_lines": kill_line_result(m.sight, lines, m.cover) if lines else None}
+           "kill_lines": kill_line_result(m.gate_wall, lines, m.cover) if lines else None,
+           "kill_lines_with_walls": kill_line_result(m.wall, lines, m.cover) if lines else None}
     # The buy-phase barriers (their own mask; neither sight nor walk): only when painted.
     barrier_path = asset_dir / f"{name}.barrier.png"
     if entry.get("barrier_paint"):
@@ -135,7 +136,13 @@ def main() -> None:
             print(warning, flush=True)
         index["maps"][name] = row
         kl = row["kill_lines"]
-        verdict = f"kill lines {kl['blocked']}/{kl['qualifying']} blocked ({kl['share']:.1%})" if kl else "no kill lines"
+        if kl:
+            share = f"{kl['share']:.1%}" if kl['share'] is not None else "unjudged"
+            with_walls = row["kill_lines_with_walls"]
+            verdict = (f"kill lines {kl['blocked']}/{kl['qualifying']} blocked ({share}); "
+                       f"with walls {with_walls['blocked']}/{with_walls['qualifying']} blocked")
+        else:
+            verdict = "no kill lines"
         print(f"{name}: {row['walkable_cells']} walkable cells, {row['tags']} tags, {verdict}", flush=True)
         if args.bitsets:
             geo = cg.load_geometry(name, asset_dir)

@@ -306,6 +306,7 @@
         <button data-tag="walkable"><span class="sw" style="background:var(--walkable)"></span>Walkable <kbd>3</kbd></button>
         <button data-tag="glyph"><span class="sw" style="background:var(--glyph)"></span>Glyph <kbd>4</kbd></button>
         <button data-tag="seeacross"><span class="sw" style="background:var(--seeacross)"></span>See-across <kbd>5</kbd></button>
+        <button data-tag="wall" hidden><span class="sw" style="background:rgb(90,100,120)"></span>Wall <kbd>6</kbd></button>
         <button data-tag=""><span class="sw" style="background:var(--untagged)"></span>Untag <kbd>0</kbd></button>
         <button id="next">Next untagged <kbd>N</kbd></button>
       </div>
@@ -340,7 +341,8 @@
       <table id="counts"></table>
     </div>
     <div class="card note" data-legacy-card>
-      Walls (transparent pixels) always block sight. A shape blocks only once tagged <b>cover</b>. Edits stay in
+      Void and padded thin walls block sight unless opened by see-across. <b>Cover</b> and <b>wall</b> tags
+      also block sight; wall tags keep walking unchanged. Edits stay in
       this browser until you export. Then copy the file over <code>app/static/data/control/tags.json</code> and run
       <code>scripts/build_control_geometry.py</code>; changed maps' stored rounds go stale until
       <code>scripts/compute_control.py</code> runs.
@@ -356,7 +358,7 @@
   var DATA = /*DATA*/null;
   var T = window.TaggerCore, PX = T.PX, P = T.P;
   var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
-                  seeacross: [190, 110, 255], "": [58, 160, 255], "void": [70, 40, 40] };
+                  seeacross: [190, 110, 255], wall: [90, 100, 120], "": [58, 160, 255], "void": [70, 40, 40] };
   var PAINT_COLOURS = { see_across_paint: [190, 110, 255], cover_paint: [229, 72, 77], cant_walk_paint: [255, 209, 102],
                         uncertain_paint: [44, 213, 196], barrier_paint: [255, 122, 217],
                         open: [66, 180, 255], ground: [100, 210, 100], top: [255, 150, 60] };
@@ -390,7 +392,8 @@
     T.PAINTS.forEach(function (k) { paints[k] = cellsCopy(e.paints[k]); });
     T.HEIGHT_PAINTS.forEach(function (k) { heightPaints[k] = cellsCopy(e.heightPaints[k]); });
     return { touched: e.touched, heightTouched: e.heightTouched, tags: Object.assign({}, e.tags),
-             paints: paints, heightPaints: heightPaints, cover_reviewed: e.cover_reviewed };
+             paints: paints, heightPaints: heightPaints, cover_reviewed: e.cover_reviewed,
+             thin_wall_exempt: e.thin_wall_exempt && e.thin_wall_exempt.map(function (box) { return box.slice(); }) };
   }
   function save() {
     try {
@@ -402,7 +405,8 @@
         T.PAINTS.forEach(function (k) { paints[k] = e.paints[k] ? T.packPaint(e.paints[k]) : null; });
         T.HEIGHT_PAINTS.forEach(function (k) { heightPaints[k] = e.heightPaints[k] ? T.packPaint(e.heightPaints[k]) : null; });
         out[name] = { touched: e.touched, heightTouched: e.heightTouched, tags: e.tags, paints: paints,
-                      heightPaints: heightPaints, cover_reviewed: e.cover_reviewed };
+                      heightPaints: heightPaints, cover_reviewed: e.cover_reviewed,
+                      thin_wall_exempt: e.thin_wall_exempt && e.thin_wall_exempt.map(function (box) { return box.slice(); }) };
       });
       localStorage.setItem(STORE, JSON.stringify(out));
     } catch (err) { /* private window: edits last until the page closes */ }
@@ -423,8 +427,10 @@
           heightPaints[k] = !legacy && r.heightPaints ? (r.heightPaints[k] ? T.unpackPaint(r.heightPaints[k]) : null)
             : cellsCopy(edits[name].heightPaints[k]);
         });
+        var exempt = r.thin_wall_exempt === undefined ? edits[name].thin_wall_exempt : r.thin_wall_exempt;
         edits[name] = { touched: r.touched !== false, heightTouched: !legacy && !!r.heightTouched,
                         tags: r.tags, paints: paints, heightPaints: heightPaints,
+                        thin_wall_exempt: exempt && exempt.map(function (box) { return box.slice(); }),
                         cover_reviewed: r.cover_reviewed };
       });
       if (legacy) save();
@@ -500,7 +506,8 @@
   function recompute() {
     var map = maps[state.map];
     state.masks = T.compose(map, mapEdits());
-    state.risk = T.riskOne(state.masks.sight, map.lines, state.masks.cover);
+    state.risk = T.riskOne(state.masks.gate_wall, map.lines, state.masks.cover);
+    state.riskWithWalls = T.riskOne(state.masks.wall, map.lines, state.masks.cover);
     state.blocked = {};
     state.risk.blocked.forEach(function (k) { state.blocked[k] = true; });
     paintHeights(); paintTint(); paintOverlay(); updateStats(); showSelected(); showChoke();
@@ -690,15 +697,18 @@
     } else {
       $("stat").textContent = (100 * r.share).toFixed(1) + "% blocked";
       $("stat").className = "big " + (r.passes ? "ok" : "bad");
-      $("statNote").textContent = r.blocked.length + " of " + r.qualifying + " non-wallbang bullet kills from the replays are blocked by this geometry (drawn thick red). " +
+      $("statNote").textContent = r.blocked.length + " of " + r.qualifying + " non-wallbang bullet kills from the replays are blocked by the gate walls (drawn thick red). " +
         (r.passes ? "Passes the 2% bar." : "Over the 2% bar: the map would lose the layer.");
     }
-    var counts = { cover: 0, seeover: 0, walkable: 0, glyph: 0, seeacross: 0, "": 0 };
+    var withWalls = state.riskWithWalls;
+    $("statNote").textContent += " With wall tags: " + withWalls.blocked.length + " of " + withWalls.qualifying +
+      " blocked (information only).";
+    var counts = { cover: 0, seeover: 0, walkable: 0, glyph: 0, seeacross: 0, wall: 0, "": 0 };
     map.candidates.forEach(function (c) { counts[e.tags[c.id] || ""]++; });
     var before = loaded[state.map], changedTags = 0;
     Object.keys(Object.assign({}, before.tags, e.tags)).forEach(function (id) { if ((before.tags[id] || "") !== (e.tags[id] || "")) changedTags++; });
     var rows = [["Shapes", map.candidates.length], ["Untagged", counts[""]], ["Cover", counts.cover], ["See-over", counts.seeover],
-                ["Walkable", counts.walkable], ["Glyph", counts.glyph], ["See-across", counts.seeacross]];
+                ["Walkable", counts.walkable], ["Glyph", counts.glyph], ["See-across", counts.seeacross], ["Wall", counts.wall]];
     T.PAINTS.forEach(function (k) { rows.push(["Painted " + PAINT_NAMES[k] + " (cells of 4 px)", paintedCells(e.paints[k])]); });
     rows.push(["Tags changed since loading", changedTags]);
     $("counts").innerHTML = rows.map(function (r) { return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>"; }).join("");
@@ -706,6 +716,7 @@
 
   function showSelected() {
     var c = state.byId[state.selected];
+    document.querySelector('[data-tag="wall"]').hidden = !c || c.kind !== "line";
     if (!c) { $("sel").textContent = "Click a shape on the map (Select tool)."; return; }
     var kinds = { closed: "closed shape", line: "drawn line", "void": "black area inside the map (a wall unless see-across)" };
     $("sel").innerHTML = "<b>#" + c.id + "</b> " + kinds[c.kind] + ", " + c.px + " px<br>Tag: <b>" +
@@ -714,6 +725,8 @@
 
   function setTag(tag) {
     if (!state.selected) return;
+    var c = state.byId[state.selected];
+    if (tag === "wall" && (!c || c.kind !== "line")) return;
     beforeChange();
     if (tag) mapEdits().tags[state.selected] = tag; else delete mapEdits().tags[state.selected];
     changed();
@@ -878,7 +891,7 @@
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
-    var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
+    var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "6": "wall", "0": "" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
     if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
