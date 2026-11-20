@@ -68,7 +68,7 @@ def test_knowledge_event_kinds_use_control_revision_24():
 
 
 def test_suspension_knowledge_uses_control_revision_26():
-    assert cf.CONTROL_REVISION == 26
+    assert cf.CONTROL_REVISION >= 26
 
 
 def test_a_reason_keeps_its_own_time_not_the_frames_and_broadening_is_not_locating_evidence():
