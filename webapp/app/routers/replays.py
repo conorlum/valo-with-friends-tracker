@@ -70,7 +70,7 @@ from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.auth import get_current_player
-from app.services.coach import coached_external_ids
+from app.services.coach import coach_feedback_share, coached_external_ids
 from app.services.matches import get_match_or_404
 from app.templates import templates
 
@@ -483,9 +483,10 @@ def replay_list(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404)
     replays = replay_service.list_watchable_replays(db)
     uuids = [r["uuid"] for r in replays]
+    coached = coached_external_ids(db, [r["match"].external_id for r in replays if r["linked"]])
     return templates.TemplateResponse(request, "replays/list.html", {
         "replays": replays, "replay_states": progress.match_states(db, uuids),
-        "coached": coached_external_ids(db, [r["match"].external_id for r in replays if r["linked"]])})
+        "coached": coached, "coach_feedback": coach_feedback_share(db, coached)})
 
 
 @router.get("/replays/{match_uuid}")

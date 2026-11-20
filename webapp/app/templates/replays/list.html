@@ -13,7 +13,8 @@
       <th>Score</th>
       <th>Match</th>
       <th title="Every round computed under the site's current parser, rules, heights and figures">Up to date</th>{% if coached %}
-      <th>Coach</th>{% endif %}
+      <th>Coach</th>
+      <th title="Share of points with any feedback, over the latest version of each coached player's report">Feedback</th>{% endif %}
     </tr>
   </thead>
   <tbody>
@@ -23,10 +24,11 @@
       <td>{% if r.linked %}<span class="badge badge-score">{{ r.match.team1_rounds_won }} &ndash; {{ r.match.team2_rounds_won }}</span>{% else %}<span class="muted" title="{{ r.rounds }} rounds">{{ r.rounds }} rounds</span>{% endif %}</td>
       <td class="watch-cell">{% if r.linked %}<a class="watch-link" href="/matches/{{ r.match.external_id }}" onclick="event.stopPropagation()">Stats</a>{% else %}<span class="muted" title="Not linked: {{ r.reason }}">Not linked</span>{% endif %}</td>
       {% include "replays/_up_to_date_cell.html" %}{% if coached %}
-      <td class="watch-cell">{% if r.linked and r.uuid in coached %}<a class="watch-link" href="/replays/{{ r.uuid }}/coach" onclick="event.stopPropagation()">Coach</a>{% else %}<span class="muted" title="No coaching report for this match">&mdash;</span>{% endif %}</td>{% endif %}
+      <td class="watch-cell">{% if r.linked and r.uuid in coached %}<a class="watch-link" href="/replays/{{ r.uuid }}/coach" onclick="event.stopPropagation()">Coach</a>{% else %}<span class="muted" title="No coaching report for this match">&mdash;</span>{% endif %}</td>
+      {% set fb = coach_feedback.get(r.uuid) if (r.linked and r.uuid in coached) else none %}<td class="watch-cell">{% if fb and fb[1] %}<span{% if not fb[0] %} class="muted"{% endif %} title="{{ fb[0] }} of {{ fb[1] }} points have feedback (latest version of each player's report)">{{ (100 * fb[0] / fb[1]) | round | int }}%</span>{% else %}<span class="muted">&mdash;</span>{% endif %}</td>{% endif %}
     </tr>
     {% else %}
-    <tr><td colspan="{{ 4 + (1 if coached else 0) }}">No replays yet.</td></tr>
+    <tr><td colspan="{{ 4 + (2 if coached else 0) }}">No replays yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
