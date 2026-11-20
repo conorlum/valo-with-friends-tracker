@@ -155,6 +155,11 @@
     return [(e.clientX - rect.left) / rect.width * element.width, (e.clientY - rect.top) / rect.height * element.height];
   }
 
+  function toMapPoint(e, element) {
+    var p = window.TaggerCore.pointerToMap(element.getBoundingClientRect(), e.clientX, e.clientY, PX, TG.turns());
+    return [p.x, p.y];
+  }
+
   function cellAt(point, grid) {
     function axis(p) { return Math.max(0, Math.min(grid - 1, Math.floor(p / PX * grid))); }
     return axis(point[1]) * grid + axis(point[0]);
@@ -188,7 +193,10 @@
     ctx.font = "bold " + (radius + 3) + "px system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, x, y);
+    ctx.translate(x, y);
+    // The reference preview is outside the rotated map wrapper.
+    if (ctx === canvas.getContext("2d")) ctx.rotate(-TG.turns() * Math.PI / 2);
+    ctx.fillText(label, 0, 0);
     ctx.restore();
   }
 
@@ -240,9 +248,11 @@
       var place = positions.get(row.id);
       if (!place) return;
       var x = place[0] / place[2] * size, y = place[1] / place[2] * size;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(-TG.turns() * Math.PI / 2);
       ctx.fillStyle = row.id === state.selected ? "#ffffff" : "#e5edf7";
-      ctx.strokeText(row.name, x, y);
-      ctx.fillText(row.name, x, y);
+      ctx.strokeText(row.name, 0, 0);
+      ctx.fillText(row.name, 0, 0);
+      ctx.restore();
     });
     state.pins.forEach(function (pin) {
       mark(ctx, pin.u * PX / 10000, pin.v * PX / 10000, pin.ok ? "#63e1a2" : "#ff828a", pin.ok ? "✓" : "×", 10);
@@ -265,7 +275,7 @@
 
   canvas.addEventListener("pointerdown", function (e) {
     if (!active() || e.button !== 0 || ui.stroke) return;
-    var state = current(), model = state.model, point = toCanvas(e, canvas), cell = cellAt(point, model.grid);
+    var state = current(), model = state.model, point = toMapPoint(e, canvas), cell = cellAt(point, model.grid);
     if (ui.alignment) {
       matchMapPoint(point);
       return;
@@ -292,7 +302,7 @@
 
   canvas.addEventListener("pointermove", function (e) {
     if (!active()) return;
-    var state = current(), p = toCanvas(e, canvas);
+    var state = current(), p = toMapPoint(e, canvas);
     ui.hover = p;
     renderFloorHint();
     if (ui.stroke && ui.stroke.pointer === e.pointerId) {

@@ -188,6 +188,29 @@ def test_the_page_builds_with_every_map(tmp_path):
     assert all("height_overlay" not in m for m in data["maps"].values())
 
 
+def test_built_page_rotates_inner_canvases_and_uses_inverse_map_pointers(tmp_path):
+    out = tmp_path / "tagger.html"
+    control_tagger.main(["--out", str(out), "--map", "Abyss", "--map", "Breeze"])
+    page = out.read_text(encoding="utf-8")
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+    from app.services.map_rotation import quarter_turns
+
+    assert all(m["rotation"] == quarter_turns(name) for name, m in data["maps"].items())
+    wrapper = re.search(r'<div id="mapRotation">(.*?)</div>', page, re.S).group(1)
+    assert all(f'id="{name}"' in wrapper for name in ("base", "heightOverlay", "tint", "overlay", "feat", "areasCanvas"))
+    assert page.index('id="zoom"') < page.index('id="mapRotation"') < page.index('id="featLabels"')
+    assert '#mapRotation { position: absolute; inset: 0; transform-origin: 50% 50%; }' in page
+    template = (WEBAPP / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    assert "pointerToMap" in re.search(r'function toMap\(e\) \{(.*?)\n  }', template, re.S).group(1)
+    assert '$("mapRotation").style.transform' in template
+    assert 'turns: turns' in template
+    areas = (WEBAPP / "scripts/control_tagger_areas.js").read_text(encoding="utf-8")
+    assert "pointerToMap" in re.search(r'function toMapPoint\(e, element\) \{(.*?)\n  }', areas, re.S).group(1)
+    assert areas.count("toMapPoint(e, canvas)") == 2
+    preview = areas.split('preview.addEventListener("click"', 1)[1].split('\n  });', 1)[0]
+    assert "toCanvas(e, preview)" in preview and "toMapPoint" not in preview
+
+
 @pytest.fixture
 def exported_height_page(tmp_path):
     floors = np.full((cg.GRID, cg.GRID, hc.MAX_FLOORS), -1, np.int16)

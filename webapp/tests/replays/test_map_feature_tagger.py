@@ -778,6 +778,24 @@ def run_page(body: str, payload):
     return json.loads(completed.stdout)
 
 
+def test_rotated_feature_pointer_places_same_stored_pixel_and_exports_identically():
+    got = run_page('''function run(p) {
+      function act(k) {
+        const page=openPage(p.data,{map:'Ascent',turns:k}), A=page.api;
+        A.createPreset('trigger'); A.setTool('point');
+        const canvas=page.el('feat');
+        canvas.getBoundingClientRect=()=>({left:40,top:30,width:2048,height:2048});
+        const d=k?[824,300]:[300,200];
+        canvas.dispatch('pointerdown',{button:0,pointerId:1,clientX:40+d[0]*2,clientY:30+d[1]*2});
+        page.click('featExport');
+        return {text:page.downloads.at(-1).text, feature:page.F.find(A.fe.Ascent.mf,A.ui.sel)};
+      }
+      return [act(0),act(1)];
+    }''', {'data': page_data(future=False)})
+    assert got[0] == got[1]
+    assert got[0]['feature']['geometry']['uv'] == [2929.69, 1953.13]
+
+
 def test_guided_placement_issue_selects_exact_state_and_field_without_editing():
     data = page_data(future=False)
     feature = data['tags']['maps']['Ascent']['map_features']['features'][0]
