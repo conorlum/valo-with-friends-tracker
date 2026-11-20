@@ -15,6 +15,16 @@ STALE_SAMPLE_S = 1.0    # a living player's nearest earlier sample older than th
                         # condensed at sub-second steps, so a real track never trips it)
 _UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
+_UNPLACED = ("Projectile", "Bomb")      # a throw's u/v is the thrower's own place; the spike has its own events
+
+
+_PULSES = ("ConcussPulse",)             # stored with no end though each lasts a moment: never "still standing"
+
+
+def _placed(e: dict) -> bool:
+    """An ability that came to rest somewhere: a smoke, a wall, a trip, a camera."""
+    return (e.get("k") == "ability" and e.get("kind") is not None and e["kind"] not in _UNPLACED
+            and e.get("name") not in _PULSES and e.get("u") is not None and e.get("v") is not None)
 
 
 class RoundView:
@@ -134,6 +144,10 @@ class RoundView:
             ability = e.get("name") or e.get("code") or e.get("ability")
             if ability:
                 row["ability"] = ability
+            if _placed(e):
+                row["area"] = self.area(e["u"], e["v"])
+                if e.get("t1") is not None:
+                    row["until"] = e["t1"]
             if e.get("hits") is not None:
                 proof = e.get("activation") or {}
                 row["hits"] = [{"name": self.names.get(h[0]), "seconds": h[2] if len(h) > 2 else None}
@@ -141,6 +155,19 @@ class RoundView:
                 row["hits_complete"] = bool(proof.get("state") == "completed" and proof.get("targets_complete"))
             out.append(row)
         return out
+
+    def placed_util(self, t: float) -> list[dict]:
+        """The stored events of the placed util standing at `t`. One with no stored end stands to the round's end."""
+        return [e for e in self.blob.get("util", [])
+                if _placed(e) and e["t"] <= t < (math.inf if e.get("t1") is None else e["t1"])]
+
+    def guns(self, slot: int) -> list[dict]:
+        """Each gun the slot fired in the round, with the time of its first shot, in that order."""
+        first: dict[str, float] = {}
+        for e in self.blob.get("util", []):
+            if e.get("k") == "shot" and e.get("by") == slot and e.get("gun"):
+                first[e["gun"]] = min(e["t"], first.get(e["gun"], math.inf))
+        return [{"gun": gun, "first_shot": t} for gun, t in sorted(first.items(), key=lambda item: item[1])]
 
     def damage(self) -> list[dict]:
         return [{"t": e["t"], "kind": "damage", "by": self.names.get(e.get("by")),

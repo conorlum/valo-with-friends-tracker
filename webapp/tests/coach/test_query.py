@@ -185,3 +185,14 @@ def test_answer_computes_without_logging(snap, tmp_path):
 def test_distance_without_a_position_says_so(snap):
     snap.view(1).blob["tracks"]["5"] = []                  # alive, and no track sample
     assert query.distance(snap, 1, 10.0, "P0", "P5") == {"available": False, "reason": "no position for one of them at 10.0"}
+
+
+def test_where_lists_the_standing_util_near_each_living_player_and_their_guns(snap):
+    snap.view(1).blob["util"] += [
+        {"k": "ability", "kind": "GameObject", "name": "E_Smoke", "t": 10.0, "t1": 28.0, "by": 5, "u": 2000, "v": 2280},
+        {"k": "shot", "t": 12.0, "by": 5, "gun": "Spectre", "n": 1}]
+    rows = query.where(snap, 1, 15.0)["players"]
+    assert rows[1]["util_near"] == [{"ability": "E_Smoke", "by": "P5#T5", "metres": 4.0, "since": 10.0, "until": 28.0}]
+    assert rows[5]["util_near"] == [] and rows[5]["guns"] == [{"gun": "Spectre", "first_shot": 12.0}]
+    assert query.where(snap, 1, 5.0)["players"][1]["util_near"] == []           # not thrown yet
+    assert "util_near" not in query.where(snap, 1, 25.0)["players"][0]          # dead by then

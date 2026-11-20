@@ -246,6 +246,7 @@ def _wire(monkeypatch, tmp_path, argv, data):
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
     monkeypatch.setattr(playbook, "load", lambda: BOOK)
     monkeypatch.setattr(coach_store_report, "resolve", lambda db, uuid, player: (7, 8))
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name != "Random#0")
     monkeypatch.setattr(snapshot, "read", lambda db, uuid: data)
     monkeypatch.setattr(coach, "active_notes", lambda db, kind: ["Plain words."])
     monkeypatch.setattr(coach_report.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -439,7 +440,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
 
 # --- the team command: one coach_report.py run per player of the named player's team ---
 
-def _team(monkeypatch, argv, results):
+def _team(monkeypatch, argv, results, off_roster=()):
     import app.db
     from scripts import coach_store_report, coach_team
 
@@ -452,8 +453,47 @@ def _team(monkeypatch, argv, results):
     monkeypatch.setattr(sys, "argv", ["coach_team.py", *argv])
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
     monkeypatch.setattr(coach_store_report, "team_names", lambda db, uuid, player: ["Owner#1", "Friend#2", "Third#3"])
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name not in off_roster)
     monkeypatch.setattr(coach_team, "run_one", run_one)
     return coach_team, ran
+
+
+def test_the_team_command_gives_a_teammate_off_the_roster_no_run(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {}, off_roster=("Friend#2",))
+    assert coach_team.main() == 0
+    assert [command[3] for command in ran] == ["Owner#1", "Third#3"]
+    out = capsys.readouterr().out
+    assert "not on the roster, no run: Friend#2" in out and "2 of 2 runs succeeded" in out
+
+
+def test_the_team_command_refuses_a_team_with_nobody_on_the_roster(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {}, off_roster=("Owner#1", "Friend#2", "Third#3"))
+    assert coach_team.main() == 2 and ran == []
+
+
+def test_a_player_off_the_roster_is_refused_before_anything_is_read(tmp_path, monkeypatch, capsys):
+    _wire(monkeypatch, tmp_path, ["ABCDEF12-0000-4000-8000-000000000000", "Random#0"], make_data())
+    assert coach_report.main() == 2
+    assert "not on the roster" in capsys.readouterr().err and not (tmp_path / "valo-coach").exists()
+
+
+def test_the_roster_is_the_tracked_players_file_whatever_the_case():
+    from scripts import coach_store_report
+
+    assert coach_store_report.on_roster(" nprightdolphin#na1 ") and not coach_store_report.on_roster("Jello#meoww")
+
+
+def test_a_runs_usage_adds_up_over_its_calls():
+    total = {}
+    one = {"total_cost_usd": 1.25, "num_turns": 30, "duration_ms": 90000,
+           "usage": {"input_tokens": 100, "output_tokens": 2000, "cache_read_input_tokens": 50000,
+                     "cache_creation_input_tokens": 7000}}
+    coach_report.add_usage(total, one)
+    coach_report.add_usage(total, {**one, "total_cost_usd": None, "usage": "broken"})
+    assert total == {"calls": 2, "cost_usd": 1.25, "turns": 60, "seconds": 180.0, "input": 100, "output": 2000,
+                     "cache_read": 50000, "cache_write": 7000}
+    assert coach_report.usage_line(total).startswith("usage: $1.25 at API prices, 2 call(s), 60 turns, 3.0 min")
+    assert coach_report.usage_line({}) == "usage: no model call finished"
 
 
 def test_the_team_command_runs_every_teammate_in_order_and_passes_the_options_on(monkeypatch, capsys):

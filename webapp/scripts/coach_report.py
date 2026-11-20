@@ -63,6 +63,32 @@ def claude_command(exe: str, model: str | None, session: str | None) -> list[str
     return command
 
 
+_USAGE = {"input_tokens": "input", "output_tokens": "output", "cache_read_input_tokens": "cache_read",
+          "cache_creation_input_tokens": "cache_write"}
+
+
+def add_usage(total: dict, out: dict) -> None:
+    """Adds one model call's cost to the run's total: a run is the first call plus any repair."""
+    def number(value) -> float:
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+    total["calls"] = total.get("calls", 0) + 1
+    total["cost_usd"] = total.get("cost_usd", 0.0) + number(out.get("total_cost_usd"))
+    total["turns"] = total.get("turns", 0) + int(number(out.get("num_turns")))
+    total["seconds"] = total.get("seconds", 0.0) + number(out.get("duration_ms")) / 1000.0
+    tokens = out.get("usage") if isinstance(out.get("usage"), dict) else {}
+    for key, name in _USAGE.items():
+        total[name] = total.get(name, 0) + int(number(tokens.get(key)))
+
+
+def usage_line(total: dict) -> str:
+    if not total:
+        return "usage: no model call finished"
+    return (f"usage: ${total['cost_usd']:.2f} at API prices, {total['calls']} call(s), {total['turns']} turns, "
+            f"{total['seconds'] / 60:.1f} min; tokens: {total['input']:,} in, {total['output']:,} out, "
+            f"{total['cache_read']:,} cache read, {total['cache_write']:,} cache write")
+
+
 def claude_call(run_dir: Path, model: str | None):
     exe = shutil.which("claude")
     if exe is None:
@@ -79,8 +105,10 @@ def claude_call(run_dir: Path, model: str | None):
             call.models.update(str(name) for name in usage)
         denials = out.get("permission_denials")
         call.denials += len(denials) if isinstance(denials, list) else 0
+        add_usage(call.usage, out)
         return str(out.get("result") or ""), out.get("session_id")
 
+    call.usage = {}
     call.models = set()
     call.denials = 0        # commands the model tried and was refused: a clean run has none
     return call
@@ -100,18 +128,22 @@ def main() -> int:
     from app.coach import playbook, prompt, runner, snapshot
     from app.db import SessionLocal
     from app.services import coach
-    from scripts.coach_store_report import resolve
+    from scripts.coach_store_report import on_roster, resolve
 
     try:
         uuid = str(uuid_module.UUID(args.match_uuid))
     except ValueError:
         print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
         return 2
+    if not on_roster(args.player):
+        print(f"refused: {args.player!r} is not on the roster (scripts/tracked_players.json)", file=sys.stderr)
+        return 2
     with SessionLocal() as db:
         try:
             book = playbook.load()
             match_id, player_id = resolve(db, uuid, args.player)
             data = snapshot.read(db, uuid)
+            snapshot.hide_enemy_names(data, args.player)
         except (ValueError, snapshot.SnapshotError) as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
@@ -153,7 +185,10 @@ def main() -> int:
                                   args.model or "claude-code (default model)")
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
+        print(usage_line(getattr(call, "usage", {})), flush=True)
         return 1
+    print(usage_line(getattr(call, "usage", {})), flush=True)
+    (run_dir / "usage.json").write_text(json.dumps(getattr(call, "usage", {}), indent=1), encoding="utf-8")
     if call.denials:
         print(f"the model tried {call.denials} command(s) it is not allowed and was refused", file=sys.stderr)
     if not args.model and call.models:

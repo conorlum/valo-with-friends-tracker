@@ -68,6 +68,25 @@ def read(db, match_uuid: str) -> dict:
     return assemble(context, blobs, controls, links)
 
 
+def hide_enemy_names(data: dict, player: str) -> None:
+    """Names every player on the coached player's other team "enemy <agent>" ("enemy Reyna"), in place, before the
+    snapshot is saved: the brief, the query answers and the checker all read names from here, so the model never
+    sees an opponent's Riot ID. Raises SnapshotError when `player` is not in the match."""
+    players = data["context"]["players"]
+    team = players[str(Snapshot(data).slot_of(player))]["team"]
+    taken: set[str] = set()
+    for slot in sorted(players, key=int):
+        p = players[slot]
+        if p["team"] == team:
+            continue
+        name = base = f"enemy {p.get('agent') or 'player'}"
+        n = 2
+        while name.lower() in taken:          # one agent twice on a team (a custom game): keep the names unique
+            name, n = f"{base} {n}", n + 1
+        taken.add(name.lower())
+        p["name"] = name
+
+
 def save(data: dict, directory: Path) -> None:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)

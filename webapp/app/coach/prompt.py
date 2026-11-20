@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 
 COMMANDS = """\
-./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
+./q where <round> <t>                      every player's position, area, facing, role, health, whether alive, the placed util standing near them, and the guns they fired in the round
 ./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), other signals (a rough direction and distance only)
 ./q distance <round> <t> <player> <player> metres between two living players
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
-./q timeline <round> [<t0> <t1>]           kills, damage, utility, plant and defuse in order
+./q timeline <round> [<t0> <t1>]           kills, damage, utility (placed util with its area and how long it stood), plant and defuse in order
 ./q impact <round> <player>                the player's stored Impact row for the round"""
 
 SHAPE = """\
