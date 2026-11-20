@@ -50,7 +50,7 @@ def image_urls(html):
         pytest.skip("node is not installed")
     match = json.loads(re.search(r'<script id="replay-data"[^>]*>(.*?)</script>', html, re.S)[1])["match"]
     expressions = [re.search(rf"^\s*{name}: (.*),$", html, re.M)[1]
-                   for name in ("mapImage", "bulletMask")]
+                   for name in ("mapImage", "sightMask")]
     script = "const match = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify([" + ",".join(expressions) + "]));"
     result = subprocess.run([node, "-e", script, json.dumps(match)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -58,11 +58,11 @@ def image_urls(html):
 
 
 @pytest.mark.parametrize("branch,key", [("release-13.10", "Toy_13_10"), ("release-13.08", "Toy")])
-def test_page_loads_the_layout_minimap_and_bullet_mask(db, toy, branch, key):
+def test_page_loads_the_layout_minimap_and_sight_mask(db, toy, branch, key):
     toy.game_branch = branch
     html = page(db, toy)
     assert image_urls(html) == [f"/static/img/maps/{key}.png",
-                                f"/static/data/control/{key}.bullet.png?v={templates.env.globals['static_version']()}"]
+                                f"/static/data/control/{key}.sight.png?v={templates.env.globals['static_version']()}"]
     assert "The map changed in" not in html
     assert "map has several layouts" not in html
 
@@ -92,7 +92,7 @@ def test_unavailable_layout_explains_why_control_is_hidden(db, toy, layout_asset
         assert context["control"] is None
         assert 'data-replay-layer="control"' not in html
     assert image_urls(html) == ["/static/img/maps/Toy.png",
-                                f"/static/data/control/Toy.bullet.png?v={templates.env.globals['static_version']()}"]
+                                f"/static/data/control/Toy.sight.png?v={templates.env.globals['static_version']()}"]
     response = routes.replay_round_gaps(request(), str(toy.match_uuid), 1, db)
     assert response.status_code == 404 and json.loads(response.body) == {"status": state}
 

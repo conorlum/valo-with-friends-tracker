@@ -1606,7 +1606,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "areas", "gaps", "features"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "aim", "control", "areas", "gaps", "features"];
   var AREA_GRID = 128;     // control_format.GRID; area payload cells cover the full grid
   var AREA_COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4",
                      "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff"];
@@ -1652,7 +1652,7 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
+    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, aim: true, control: false,
                     gaps: false, features: true, areas: false };
     this.areas = null;
     this.areasPromise = null;
@@ -1678,7 +1678,7 @@
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
-    this.loadBulletMask();
+    this.loadSightMask();
     this.bindControls();
     this.bindHeatmap();
     this.lastFrame = null;
@@ -3426,7 +3426,7 @@
   };
 
   // Where a shot's tracer ends (the 2026-10-05 review, item 11): from (u, v) along its recorded direction (towards
-  // u1, v1) to the first pixel of the bullet mask that stops it (walls and low boxes), or the map's edge. `mask` is
+  // u1, v1) to the first pixel of the sight mask that stops it (walls), or the map's edge. `mask` is
   // `size` x `size` bytes, non-zero stops a shot. A shooter standing against (or just inside) an obstacle starts
   // past it: blocking pixels are skipped until the ray is first in the open, for at most START_SKIP_PX.
   var START_SKIP_PX = 12;
@@ -3448,10 +3448,10 @@
     return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
   }
 
-  // The map's bullet mask as bytes (1 stops a shot), from its image; null while loading, without one, or on failure.
-  ReplayViewer.prototype.loadBulletMask = function () {
-    var self = this, url = this.options.bulletMask;
-    this.bullet = null;
+  // The map's sight mask as bytes (1 blocks sight), from its image; null while loading, without one, or on failure.
+  ReplayViewer.prototype.loadSightMask = function () {
+    var self = this, url = this.options.sightMask;
+    this.sight = null;
     if (!url || typeof Image === "undefined" || typeof document === "undefined") return;
     var img = new Image();
     img.onload = function () {
@@ -3462,21 +3462,21 @@
         octx.drawImage(img, 0, 0, n, n);
         var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
         for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
-        self.bullet = { mask: mask, size: n };
+        self.sight = { mask: mask, size: n };
         self.draw();
-      } catch (err) { self.bullet = null; }     // unreadable: the fixed-length tracer stays
+      } catch (err) { self.sight = null; }     // unreadable: fixed-length aim and tracers stay
     };
-    img.onerror = function () { self.bullet = null; };
+    img.onerror = function () { self.sight = null; };
     img.src = url;
   };
 
   ReplayViewer.prototype.drawTracers = function (ctx, s, r) {
-    var t = this.t, self = this, bullet = this.bullet;
+    var t = this.t, self = this, sight = this.sight;
     (this.current.extras.shots || []).forEach(function (shot) {
       var age = t - shot.t;
       if (age < 0 || age > TRACER_S || shot.u1 === undefined) return;
-      // to the first wall or low box when the map's bullet mask is loaded; else the stored fixed length
-      var end = bullet ? tracerEnd(bullet.mask, bullet.size, shot.u, shot.v, shot.u1, shot.v1) : null;
+      // to the first wall when the map's sight mask is loaded; else the stored fixed length
+      var end = sight ? tracerEnd(sight.mask, sight.size, shot.u, shot.v, shot.u1, shot.v1) : null;
       var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;
       ctx.save();
       ctx.globalAlpha = 0.9 * (1 - age / TRACER_S);
@@ -4505,6 +4505,17 @@
         ctx.globalAlpha = 0.35 * dim;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
         ctx.globalAlpha = dim;
+      }
+      if (self.layers.aim) {
+        var cos = Math.cos(rad), sin = Math.sin(rad), sight = self.sight;
+        var end = sight ? tracerEnd(sight.mask, sight.size, at.u, at.v, at.u + cos * 20000, at.v + sin * 20000) : null;
+        ctx.save();
+        ctx.globalAlpha = 0.8 * dim;
+        ctx.lineWidth = Math.max(1, r / 10);
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.lineTo(end ? end.u * s : x + cos * r * 2.4 * 3, end ? end.v * s : y + sin * r * 2.4 * 3);
+        ctx.stroke();
+        ctx.restore();
       }
       ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
       var img = self.icon(p.agent);
