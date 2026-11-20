@@ -8,6 +8,7 @@ sections 3-4; the plan's P02 and its amendments). Stdlib only: the upload worker
       "spike": [{"t", "s", ["slot"], ["u", "v"]}, ...],
       "ult": {"<slot>": [{"t", "n"}, ...]},
       "orbs": [{"u", "v", "t0", "t1", "end", ["slot"], ["tries"]}, ...],
+      "plants": [[t, t1, slot], ...],
       "charges": {"<slot>": {"C" | "Q" | "E" | "X": [{"t", "n"}, ...]}}
     }
 
@@ -40,6 +41,11 @@ look-back start), then each change. `orbs`: the round's ult orbs, `u`/`v` where 
 "plant" or "round". `tries`: captures started on it and let go, [t, t1, slot] each (`t1` when let go, null if never
 seen); a bad one is dropped.
 
+`plants`: spike plant attempts, [t, t1, slot] each, in round seconds (stored to two decimals), sorted by `t`.
+`t1` is when the attempt ended, null when unseen; `slot` is the planter (0..9). Entries use the orb-try rules:
+`t` and non-null `t1` are in [T_MIN, T_MAX], with `t1` >= `t`. A bad attempt is dropped; more than MAX_PLANTS
+makes the part unavailable. Absent when the round has no attempts; an explicit empty list is kept.
+
 `charges` (revision 21): each slot's ability charges held, `n`, per ability key: "C", "Q", "E" (the inventory's
 GrenadeAbilitySlot, Ability1Slot, Ability2Slot) and "X" (UltimateSlot; no export has had one yet), only where the
 export proves whose they are. Like `ult`, the value before the round (its `t` the look-back start) when known, then
@@ -66,6 +72,7 @@ VALUE_MAX = 1000.0                 # HP or shield: far above any agent's (an ove
 LIFE_MAX = 63
 MAX_EVENTS = 512                   # per slot per round: a round has tens of hits on one player
 MAX_SPIKE = 128
+MAX_PLANTS = 32
 
 
 def _num(value, lo: float, hi: float) -> float | None:
@@ -224,13 +231,18 @@ def _orb_try(entry) -> list | None:
     return [t, t1, slot]
 
 
+def plant_entry(entry) -> list | None:
+    """A normalized plant attempt [t, t1 (null when unseen), slot], or None if invalid."""
+    return _orb_try(entry)
+
+
 def validate(obj, diagnostics: dict | None = None) -> dict | None:
     """A normalized copy of a `player_state` subsection, or None when it is unavailable. `diagnostics`, when
     given, counts what was dropped."""
     if not isinstance(obj, dict) or isinstance(obj.get("version"), bool) or obj.get("version") != VERSION:
         return None
     for key, kind in (("vitals", dict), ("damage_taken", dict), ("spike", list), ("ult", dict), ("orbs", list),
-                      ("charges", dict)):
+                      ("plants", list), ("charges", dict)):
         if key in obj and not isinstance(obj[key], kind):
             return None
     out: dict = {"version": VERSION}
@@ -297,6 +309,14 @@ def validate(obj, diagnostics: dict | None = None) -> dict | None:
             if len(kept) < len(obj["orbs"]):
                 _count(diagnostics, "orbs: bad orb")
             out["orbs"] = sorted(kept, key=lambda o: o["t0"])
+    if "plants" in obj:
+        if len(obj["plants"]) > MAX_PLANTS:
+            _count(diagnostics, "plants: too many (unavailable)")
+        else:
+            kept = [p for p in (plant_entry(e) for e in obj["plants"]) if p is not None]
+            if len(kept) < len(obj["plants"]):
+                _count(diagnostics, "plants: bad attempt")
+            out["plants"] = sorted(kept, key=lambda p: p[0])
     if "charges" in obj:
         charges = {}
         for slot, keys in obj["charges"].items():

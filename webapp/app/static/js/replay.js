@@ -940,7 +940,7 @@
   var PLAYER_STATE = {
     version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
     t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000,
-    ult_max: 20, max_orbs: 16, orb_ends: ["taken", "plant", "round"], charge_keys: ["C", "Q", "E", "X"], charge_max: 9
+    ult_max: 20, max_orbs: 16, max_plants: 32, orb_ends: ["taken", "plant", "round"], charge_keys: ["C", "Q", "E", "X"], charge_max: 9
   };
   var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
 
@@ -1060,7 +1060,8 @@
     if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
     if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
         (psHas(obj, "spike") && !Array.isArray(obj.spike)) || (psHas(obj, "ult") && !condIsRow(obj.ult)) ||
-        (psHas(obj, "orbs") && !Array.isArray(obj.orbs)) || (psHas(obj, "charges") && !condIsRow(obj.charges))) return null;
+        (psHas(obj, "orbs") && !Array.isArray(obj.orbs)) || (psHas(obj, "plants") && !Array.isArray(obj.plants)) ||
+        (psHas(obj, "charges") && !condIsRow(obj.charges))) return null;
     var out = { version: PLAYER_STATE.version };
     if (psHas(obj, "vitals")) {
       out.vitals = {};
@@ -1098,6 +1099,9 @@
     }
     if (psHas(obj, "orbs") && obj.orbs.length <= PLAYER_STATE.max_orbs) {
       out.orbs = obj.orbs.map(psOrb).filter(function (e) { return e !== null; }).sort(function (a, b) { return a.t0 - b.t0; });
+    }
+    if (psHas(obj, "plants") && obj.plants.length <= PLAYER_STATE.max_plants) {
+      out.plants = obj.plants.map(psOrbTry).filter(function (e) { return e !== null; }).sort(function (a, b) { return a[0] - b[0]; });
     }
     if (psHas(obj, "charges")) {
       out.charges = {};
@@ -1158,12 +1162,13 @@
     }
     if (ps && ps.damage_taken) damage = ps.damage_taken;
     if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
-    var ult = null, orbs = null;
+    var ult = null, orbs = null, plants = null;
     if (ps && ps.ult) {
       ult = {};
       Object.keys(ps.ult).forEach(function (slot) { ult[slot] = psTimeline(ps.ult[slot], "t"); });
     }
     if (ps && ps.orbs) orbs = ps.orbs;
+    if (ps && ps.plants) plants = ps.plants;
     if (condIsRow(blob.alive)) {
       alive = {};
       Object.keys(blob.alive).forEach(function (slot) {
@@ -1182,7 +1187,7 @@
     return Object.freeze({
       available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
       alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs),
-      ult: psFreeze(ult), orbs: psFreeze(orbs)
+      ult: psFreeze(ult), orbs: psFreeze(orbs), plants: psFreeze(plants)
     });
   }
 

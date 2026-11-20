@@ -151,6 +151,15 @@ def test_a_player_state_subsection_round_trips():
     assert fmt.encode_blob(fmt.decode_blob(data)) == data
 
 
+def test_plant_attempts_survive_the_storage_validation_round_trip():
+    state = {"version": 1, "plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [30.0, None, 9]]}
+    blob = _blob(player_state=state)
+    data = fmt.encode_blob(blob)
+    assert json.loads(gzip.decompress(data))["player_state"] == state
+    assert fmt.decode_blob(data) == blob
+    assert fmt.encode_blob(fmt.decode_blob(data)) == data
+
+
 def test_a_blob_without_player_state_is_unchanged():
     blob = _blob()
     assert "player_state" not in fmt.decode_blob(fmt.encode_blob(blob))

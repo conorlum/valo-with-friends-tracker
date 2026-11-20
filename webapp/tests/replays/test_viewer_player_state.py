@@ -189,11 +189,12 @@ def test_answers_do_not_depend_on_query_order():
 def test_missing_unsupported_and_malformed_player_state_is_unavailable_never_a_number():
     bad = [None, "x", [], {"version": 2, **{k: v for k, v in PLAYER_STATE.items() if k != "version"}},
            {"version": True}, {**PLAYER_STATE, "vitals": []}, {**PLAYER_STATE, "damage_taken": None},
-           {**PLAYER_STATE, "spike": {}}]
+           {**PLAYER_STATE, "spike": {}}, {**PLAYER_STATE, "plants": {}}]
     for player_state in bad:
         got = ask(make_blob(player_state=player_state), [["valid"], ["health", 0, 5], ["health", 1, 13],
                                                          ["spike", 26], ["spike", 52], ["cond", 1, 10]])
         assert got[0] is None, player_state
+        assert got[0] == ps_py.validate(player_state)
         assert [brief(h) for h in got[1:3]] == [("none", False, None)] * 2
         assert got[3]["state"] == "unknown" and got[3]["source"] == "none"
         assert got[4]["state"] == "planted" and got[4]["source"] == "ability"
@@ -203,6 +204,19 @@ def test_missing_unsupported_and_malformed_player_state_is_unavailable_never_a_n
     got = ask(make_blob(player_state=no_vitals), [["health", 0, 5], ["spike", 16]])
     assert brief(got[0]) == ("unavailable", True, None)
     assert got[1]["state"] == "carried" and got[1]["slot"] == 2
+    # Optional plants: valid, malformed, empty, absent and excessive parts mirror Python.
+    plants_cases = [
+        [[25.47, 25.53, 3], [22.39, 23.76, 3], [25.47, None, 9]],
+        [[-200, 1000, 0], [0, 0, 3.0]], [], [[0, None, 0]] * 32, [[0, None, 0]] * 33,
+    ]
+    bad_attempts = [[25.47, 25.46, 3], [25.47, None, 10], [25.47, None, True], ["25.47", None, 3],
+                    [25.47, None], [25.47, None, 3, 4], None, {}, [True, None, 3], [0, False, 3],
+                    [-201, None, 3], [1001, None, 3], [0, 1001, 3], [0, "1", 3], [0, None, -1],
+                    [0, None, 1.5]]
+    plants_cases.extend([[bad_attempt, [22.39, None, 3]] for bad_attempt in bad_attempts])
+    states = [{"version": 1}, *({"version": 1, "plants": part} for part in plants_cases)]
+    for state in states:
+        assert ask(make_blob(player_state=state), [["valid"]])[0] == ps_py.validate(state)
     no_damage = {k: v for k, v in PLAYER_STATE.items() if k != "damage_taken"}
     assert brief(ask(make_blob(player_state=no_damage), [["health", 0, 5]])[0]) == ("none", False, None)
     no_spike = {k: v for k, v in PLAYER_STATE.items() if k != "spike"}
@@ -339,6 +353,32 @@ def test_the_index_is_frozen_built_once_per_round_and_round_switching_carries_no
 
 
 @needs_node
+def test_plants_index_is_sorted_frozen_and_unavailable_when_absent():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const states = JSON.parse(input);
+        const out = states.map(player_state => {
+          const idx = R.indexRoundState({player_state}, []);
+          const plants = idx.plants;
+          const frozen = plants === null ? null : [Object.isFrozen(plants), ...plants.map(Object.isFrozen)];
+          if (player_state && Array.isArray(player_state.plants) && player_state.plants.length) {
+            player_state.plants[0][0] = 999;
+          }
+          return {plants, frozen};
+        });
+        process.stdout.write(JSON.stringify(out));
+      });"""
+    states = [{"version": 1, "plants": [[25.47, 25.53, 3], [22.39, 23.76, 3], [25.47, None, 9]]},
+              {"version": 1, "plants": []}, {"version": 1}, None,
+              {"version": 1, "plants": [[0, None, 0]] * 33}, {"version": 1, "plants": {}}]
+    assert run_node(script, states) == [
+        {"plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [25.47, None, 9]], "frozen": [True] * 4},
+        {"plants": [], "frozen": [True]}, *[{"plants": None, "frozen": None}] * 4,
+    ]
+
+
+@needs_node
 def test_a_stale_round_load_cannot_install_its_state():
     # The existing loadSeq token: round 1 is asked for, then round 2; round 1 lands last and is ignored.
     other = {"version": 1, "damage_taken": {"0": [1]}, "spike": [{"t": 0, "s": "dropped"}]}
@@ -436,7 +476,8 @@ def test_the_js_contract_constants_are_player_state_py_s():
                    "t_max": ps_py.T_MAX, "value_max": ps_py.VALUE_MAX, "life_max": ps_py.LIFE_MAX,
                    "max_events": ps_py.MAX_EVENTS, "max_spike": ps_py.MAX_SPIKE, "uv_max": ps_py.UV_MAX,
                    "ult_max": ps_py.ULT_MAX, "max_orbs": ps_py.MAX_ORBS, "orb_ends": sorted(ps_py.ORB_ENDS, key=["taken", "plant", "round"].index),
-                   "charge_keys": list(ps_py.CHARGE_KEYS), "charge_max": ps_py.CHARGE_MAX}
+                   "charge_keys": list(ps_py.CHARGE_KEYS), "charge_max": ps_py.CHARGE_MAX,
+                   "max_plants": ps_py.MAX_PLANTS}
 
 
 @needs_node
