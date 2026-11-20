@@ -161,5 +161,34 @@ def test_parity_with_heals_causes_and_charges(tmp_path):
     assert len(kept) == 2, "an inventory row naming no ability slot and a slot row with no contents are skipped"
 
 
+def test_parity_with_overheal_decay_rows(tmp_path):
+    # W2: `MulticastNotifyOverhealDecay` rows (a streaming needle, like heals) teach the overheal section; the
+    # heal ticks and the drain give the same `overheal` part from both loaders.
+    from replay_synthetic import heal_notify, player_state_events
+
+    def decay(t_ms, res):
+        return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 33, "actor_net_guid": 1005,
+                "object_net_guid": 1057, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
+                "function_name": "MulticastNotifyOverhealDecay",
+                "payload": {"Amount": 0.5, "Causer": 0, "EventInstigator": 0, "EventInstigatorPawn": 0,
+                            "LifeChanges": [{"ChangedComponent": 1080, "DeltaLife": 0.5, "LifeResult": res}]}}
+
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    match.extra_events += player_state_events(match) + noise(match) + [
+        *(heal_notify(start + 2_000 + 8 * i, 1005, 1002, 41, [(1080, 0.5, 0.5 * (i + 1))]) for i in range(10)),
+        decay(start + 4_000, 5.0), decay(start + 4_300, 2.0)]      # slot 5 dies at 10.0 s: both inside its life
+    events = match.events()
+    random.Random(5).shuffle(events)
+    directory = match.write(tmp_path / "export", events)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    streamed, in_memory = both(directory, source_sha256=match.source_sha256, vrf_path=vrf)
+    assert_parity(streamed, in_memory)
+    points = streamed.rounds[1]["player_state"]["overheal"]["5"]
+    assert [(p["t"], p["oh"]) for p in points][0] == (2.0, 0.5) and points[-1]["oh"] == 2.0
+    assert any(row.data.get("function_name") == "MulticastNotifyOverhealDecay"
+               for row in contract.load_export_streaming(directory).events)
+
+
 def test_parity_on_the_committed_real_fixture():
     assert_parity(*both(REAL_FIXTURE, source_sha256=None, pin=fixture_pin(REAL_FIXTURE)))

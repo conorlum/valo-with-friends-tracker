@@ -56,6 +56,9 @@ RPC_DAMAGE = frozenset({"MulticastNotifyDamage_Point", "MulticastNotifyDamage_Ba
 # `EventInstigatorPawn`, `LifeChanges`: [{ChangedComponent, DeltaLife, LifeResult, AliveAfterChange}]); the RPC's
 # actor is the healed pawn.
 RPC_HEAL = "MulticastNotifyHeal"
+# The overheal section's drain (Clove's Pick-Me-Up, Reyna's Devour): a row each ~8 ms for 2.0 s, starting 10.0 s after
+# the last heal tick. Same actor as a heal (the pawn's DamageableComponent); `LifeChanges` carries the section's value.
+RPC_OVERHEAL_DECAY = "MulticastNotifyOverhealDecay"
 # An ability's charges (`AuthResourceAmount`), on a component whose outer is the ability's equippable; a signature
 # ability's is the subclass. A player's inventory names its slot objects (`GrenadeAbilitySlot`, ...), and a slot
 # object's `Contents` is the equippable in it: together they prove whose charges they are (player_state_extract).
@@ -341,7 +344,7 @@ UTIL_EVENT_TYPES = frozenset({"valorant_flash_cast", "valorant_flash_player_hit"
 STREAM_EVENT_TYPES = frozenset({"actor_spawned", "actor_closed", *UTIL_EVENT_TYPES})
 STREAM_PAYLOAD_KEYS = frozenset({CHARACTER_PLAYER_STATE, "Subject", "SpawnedCharacter", "PossessedCharacter"})
 STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT,
-                         RPC_ORB_PICKUP, RPC_HEAL})
+                         RPC_ORB_PICKUP, RPC_HEAL, RPC_OVERHEAL_DECAY})
 STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH, *CHARGE_GROUP_PATHS})
 PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
 # Substrings that every kept row's line contains; a line with none of them can't be kept, so it

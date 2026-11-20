@@ -11,8 +11,20 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   never named, so it is learned: the section that every lethal hit on that pawn leaves dead (Clove's extra
   sections sometimes also report dead; only the HP section is in all). Another is the armor, when the player has
   one: its component is the armor item's actor guid + 2, and the item's archetype gives its capacity (the max
-  shield). A hit with no armor section has no armor (a depleted armor keeps its section at 0, and armored players
-  had one on every hit, falls included). Max HP has no field: MAX_HP is the measured pre-hit value (below).
+  shield). A hit lists only the sections it changed, plus sections at 0 that the pawn has (a depleted armor, Clove's
+  overheal at 0): the HP section never appears with delta 0 (0 of 1,467 hits in ee6e0ba7), and 12 hits had no HP
+  section at all (9 fully soaked by armor, 3 by overheal, and then the armor section is unlisted too although armor
+  was up). So a section a hit doesn't list is unchanged by it: HP after a hit without the HP section is the life's
+  last snapshot's, or MAX_HP when the life began at the round's start and has had no snapshot yet; an unlisted armor
+  keeps the life's known shield and capacity, whatever other section took damage. Max HP has no field: MAX_HP is
+  the measured pre-hit value (below).
+- **Overheal (revision 32).** Clove's Pick-Me-Up and Reyna's Devour fill a section of their own. `MulticastNotifyHeal`
+  rows tick it every ~8 ms (+0.39 for Clove, +0.13 for Reyna) up to 50, and `MulticastNotifyOverhealDecay` rows
+  drain it: every drain starts 10.0 s after the last heal tick and takes 2.0 s (256 rows; 1,132 rows in ee6e0ba7,
+  379 in 6f12db3e). A decay row's `LifeChanges` names the section (a bare guid after `loads_row`) and its value, so
+  a pawn's overheal section is the one component its decay rows change, learnt over the whole export (more than one:
+  none, counted). Heal rows, decay rows and hits on that section give its value over time, `player_state.overheal`,
+  its own part and not a key in `vitals`. `MulticastSectionLifeChange` rows are round and respawn resets, not read.
 - **Heals (revision 21; corrects D4).** Decision D4 said the export had no heal rows. It has them, just not as
   AresAttributeSet properties: `MulticastNotifyHeal` on the healed pawn's DamageableComponent, with `Amount`, `Causer`,
   `EventInstigatorPawn` and `LifeChanges`, one {ChangedComponent, DeltaLife, LifeResult} per section changed (the
@@ -60,7 +72,9 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from app.replays.contract import (ABILITY_SLOT_KEYS, CHARGE_GROUP_PATHS, GAME_STATE_PATH, INVENTORY_PATH,
-                                  ITEM_SLOT_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_HEAL, RPC_ORB_PICKUP)
+                                  ITEM_SLOT_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_HEAL, RPC_ORB_PICKUP,
+                                  RPC_OVERHEAL_DECAY)
+from app.replays.player_state import MAX_EVENTS
 
 # W3 EVIDENCE B: the HP section's value before a slot's first hit of a round was 100 on 202 of 202; the export
 # has no MaxLife field. Measured, not a game constant typed in.
@@ -86,6 +100,8 @@ ULT_MAX = 20                      # ult points above this are unreadable (every 
 # An inventory's ability slot -> its key as the game binds it by default.
 SLOT_KEYS = dict(zip(ABILITY_SLOT_KEYS, ("C", "Q", "E", "X")))
 CHARGE_MAX = 9                    # charges above this are unreadable (the most measured was 2)
+OVERHEAL_GAP_MS = 100             # overheal points closer than this to the last kept one are dropped; a gap wider than
+                                  # this ends a run (a rise or a drain)
 
 # LifeChangeEvents handles (the parser's export of the struct).
 H_COMPONENT, H_RESULT, H_DELTA, H_ALIVE = 11, 12, 13, 14
@@ -215,6 +231,10 @@ class PlayerStateInputs:
     # for a later orb, so each spawn is its own entry and a capture goes on the one open under that guid.
     orbs: list[list] = field(default_factory=list)
     heals: list[_Heal] = field(default_factory=list)
+    # Overheal-decay rows, (ms, order, slot, pawn, component, value after), and each pawn's overheal section: the one
+    # component its decay rows change.
+    overheal_rows: list[tuple] = field(default_factory=list)
+    overheal_section: dict[int, int] = field(default_factory=dict)
     # (slot, key) -> [(ms, charges)], changes only, from the proven components of that slot.
     charges: dict[tuple[int, str], list[tuple[int, int]]] = field(default_factory=dict)
     has_life_changes: bool = False
@@ -286,6 +306,9 @@ def read_player_state(export, players) -> PlayerStateInputs:
             continue
         if kind == "rpc_received" and data.get("function_name") == RPC_HEAL:
             _read_heal(row, players, out)
+            continue
+        if kind == "rpc_received" and data.get("function_name") == RPC_OVERHEAL_DECAY:
+            _read_overheal_decay(row, players, out)
             continue
         if kind == "actor_spawned":
             archetype = str(data.get("archetype_path") or "")
@@ -393,6 +416,15 @@ def read_player_state(export, players) -> PlayerStateInputs:
             state = "unknown"
         out.spike.append((t_ms, state))       # repeats collapse per round (round_player_state)
     out.heals.sort(key=lambda h: (h.t_ms, h.order))
+    components: dict[int, set[int]] = defaultdict(set)
+    for _, _, _, pawn, g, _ in out.overheal_rows:
+        components[pawn].add(g)
+    for pawn, gs in components.items():
+        if len(gs) == 1:
+            out.overheal_section[pawn] = next(iter(gs))
+        else:
+            out.diagnostics["overheal: decay rows change more than one section (none)"] += 1
+    out.overheal_rows.sort(key=lambda r: (r[0], r[1]))
     _prove_charges(out, players, named_slots, holders, outers, amounts)
     return out
 
@@ -423,6 +455,25 @@ def _read_heal(row, players, out: PlayerStateInputs) -> None:
     by = players.resolve(instigator, row.time_ms) if instigator else None
     for g, res, d in sections:
         out.heals.append(_Heal(row.time_ms, row.index, slot, pawn, by, int(payload.get("Causer") or 0), g, res, d))
+
+
+def _read_overheal_decay(row, players, out: PlayerStateInputs) -> None:
+    """A `MulticastNotifyOverhealDecay` on a player's own pawn: one overheal row per section its `LifeChanges` name."""
+    data = row.data
+    payload = data.get("payload")
+    pawn = int(data.get("actor_net_guid") or 0)
+    slot = players.pawn_slot.get(pawn)
+    if slot is None or not isinstance(payload, dict):
+        out.diagnostics["overheal: decay not on a player's pawn"] += 1
+        return
+    changes = payload.get("LifeChanges")
+    for change in changes if isinstance(changes, list) else []:
+        change = change if isinstance(change, dict) else {}
+        g, res = change.get("ChangedComponent"), _number(change.get("LifeResult"))
+        if isinstance(g, bool) or not isinstance(g, int) or res is None:
+            out.diagnostics["overheal: unreadable decay LifeChanges (dropped)"] += 1
+            continue
+        out.overheal_rows.append((row.time_ms, row.index, slot, pawn, g, res))
 
 
 def _prove_charges(out: PlayerStateInputs, players, named_slots, holders, outers, amounts) -> None:
@@ -460,34 +511,37 @@ def _seconds(t_ms: int, start: int) -> float:
     return round((t_ms - start) / 1000.0, 3)
 
 
-def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: dict, life_key) -> dict | None:
-    """The snapshot after `hit`, or None when its HP section is missing. `life_armor[life_key]` remembers this
-    life's armor (capacity, last value) for hits that don't carry its section."""
+def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: dict, life_key,
+           carried_hp: float | None = None) -> dict | None:
+    """The snapshot after `hit`. A hit lists only the sections it changed, so one without the HP section left HP
+    as `carried_hp` (the life's last known HP, else MAX_HP for a life that began at the round's start with no
+    snapshot yet: the caller's rule), and None when that is unknown. `life_armor[life_key]` remembers this life's
+    armor (capacity, last value): a hit that doesn't list its section left it as it was."""
     diagnostics = inputs.diagnostics
     hp = next((s for s in hit.sections if s["g"] == hp_section), None)
     if hp is None:
-        diagnostics["vitals: hit without the HP section"] += 1
-        return None
-    if hp["res"] - hp["d"] > MAX_HP + VALUE_TOLERANCE:
-        # Phoenix's ult: the "lethal" hit returns him at 100 (LifeResult 100, alive). The snapshot is still exact.
-        diagnostics["vitals: HP above max before the hit (a respawn)"] += 1
-    if hp["res"] > MAX_HP + VALUE_TOLERANCE:
-        diagnostics["vitals: HP above the measured max"] += 1
-    armors, unknown = [], False
+        if carried_hp is None:
+            diagnostics["vitals: hit without the HP section"] += 1
+            return None
+        hp_value = carried_hp
+    else:
+        hp_value = hp["res"]
+        if hp["res"] - hp["d"] > MAX_HP + VALUE_TOLERANCE:
+            # Phoenix's ult: the "lethal" hit returns him at 100 (LifeResult 100, alive). The snapshot is still exact.
+            diagnostics["vitals: HP above max before the hit (a respawn)"] += 1
+        if hp["res"] > MAX_HP + VALUE_TOLERANCE:
+            diagnostics["vitals: HP above the measured max"] += 1
+    armors = []
     for s in hit.sections:
         if s["g"] == hp_section:
             continue
         capacity = inputs.capacity(s["g"], hit.t_ms)
         if capacity is not None:
             armors.append((s, capacity))
-        elif abs(s["d"]) > VALUE_TOLERANCE:
-            unknown = True
+        # any other section (the overheal, an unknown one) is no armor; its damage is not shown
     sh: float | None
     msh: float | None
-    if unknown:
-        diagnostics["shield: an unknown section took damage"] += 1
-        sh = msh = None
-    elif len(armors) > 1:
+    if len(armors) > 1:
         diagnostics["shield: two armor sections"] += 1
         sh = msh = None
     elif armors:
@@ -499,15 +553,12 @@ def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: di
             sh, msh = max(0.0, section["res"]), capacity
             life_armor[life_key] = (capacity, sh)
     elif life_key in life_armor:
-        capacity, last = life_armor[life_key]
-        if last > VALUE_TOLERANCE:
-            diagnostics["shield: armor section missing while shield > 0"] += 1
-            sh = msh = None
-        else:
-            sh, msh = 0.0, capacity
+        msh, sh = life_armor[life_key]            # unlisted: unchanged by this hit
+    elif hp is not None:
+        sh, msh = 0.0, 0.0                        # HP listed and no armor: none proven (as before)
     else:
-        sh, msh = 0.0, 0.0
-    return {"hp": round(max(0.0, hp["res"]), 3), "sh": None if sh is None else round(sh, 3), "mhp": MAX_HP,
+        sh = msh = None                           # neither listed: nothing proves the armor either way
+    return {"hp": round(max(0.0, hp_value), 3), "sh": None if sh is None else round(sh, 3), "mhp": MAX_HP,
             "msh": msh}
 
 
@@ -538,15 +589,67 @@ def _healed(heal: _Heal, inputs: PlayerStateInputs, last: dict | None, life_armo
     return None
 
 
+def _overheal_line(points: list[tuple], start: int) -> list[dict]:
+    """One slot's overheal points [(t_ms, life, oh, from_a_hit)], in order, thinned: a point less than
+    OVERHEAL_GAP_MS after the previous kept one is dropped, except each run's first and last (a run ends at a gap
+    wider than OVERHEAL_GAP_MS) and every hit's. Over MAX_EVENTS, the spacing doubles until it fits."""
+    n = len(points)
+    essential = [points[i][3] or i == 0 or i == n - 1 or points[i][0] - points[i - 1][0] > OVERHEAL_GAP_MS
+                 or points[i + 1][0] - points[i][0] > OVERHEAL_GAP_MS for i in range(n)]
+    spacing = OVERHEAL_GAP_MS
+    while True:
+        kept, last_ms = [], None
+        for point, must in zip(points, essential):
+            if must or last_ms is None or point[0] - last_ms >= spacing:
+                kept.append(point)
+                last_ms = point[0]
+        if len(kept) <= MAX_EVENTS or sum(essential) >= len(kept):
+            break
+        spacing *= 2
+    return [{"t": _seconds(t_ms, start), "life": life, "oh": round(max(0.0, oh), 3)} for t_ms, life, oh, _ in kept]
+
+
+def _overheal_part(inputs: PlayerStateInputs, hits: list[_Hit], start: int, end: int, life_of) -> dict:
+    """`player_state.overheal`: each slot's overheal section value after every heal tick, decay row and hit on it,
+    inside lives."""
+    section = inputs.overheal_section
+    rows: dict[int, list[tuple]] = defaultdict(list)          # slot -> [(ms, order, oh, from_a_hit)]
+    for h in inputs.heals:
+        if start <= h.t_ms <= end and section.get(h.pawn) == h.g:
+            rows[h.slot].append((h.t_ms, h.order, h.res, False))
+    for t_ms, order, slot, pawn, g, res in inputs.overheal_rows:
+        if start <= t_ms <= end and section.get(pawn) == g:
+            rows[slot].append((t_ms, order, res, False))
+    for h in hits:
+        if h.sections is None or h.pawn not in section:
+            continue
+        for s in h.sections:
+            if s["g"] == section[h.pawn]:
+                rows[h.slot].append((h.t_ms, h.order, s["res"], True))
+    line: dict[str, list] = {}
+    for slot, items in sorted(rows.items()):
+        points = []
+        for t_ms, _, oh, from_hit in sorted(items, key=lambda r: (r[0], r[1])):
+            life = life_of(slot, t_ms)
+            if life is not None:
+                points.append((t_ms, life, oh, from_hit))
+        if points:
+            line[str(slot)] = _overheal_line(points, start)
+    return line
+
+
 def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end: int | None, life_of,
-                       to_uv=None) -> dict | None:
+                       to_uv=None, life_start=None) -> dict | None:
     """One round's `player_state` (format version 1), or None when the export has none of its sources.
 
-    `life_of(slot, t_ms)` -> the life index (the round's alive interval holding `t_ms`) or None. Hits count from
+    `life_of(slot, t_ms)` -> the life index (the round's alive interval holding `t_ms`) or None. `life_start(slot,
+    life)` -> the ms that life's interval began (default: life 0 began at the round's start, any later life didn't);
+    it decides whether a hit without the HP section may start from MAX_HP. Hits count from
     InRound to the window's end, like the blob's other rows; spike transitions from after the previous round's
     window (the buy phase, negative times). A part is present when the export has its source at all, so an empty
     part means "none this round", and a missing one "never decoded". Orbs need `to_uv(x, y)` -> (u, v)."""
-    if not (inputs.has_damage or inputs.has_spike or inputs.has_ult or inputs.orbs or inputs.has_charges):
+    if not (inputs.has_damage or inputs.has_spike or inputs.has_ult or inputs.orbs or inputs.has_charges
+            or inputs.overheal_section):
         return None
     out: dict = {"version": 1}
     hits = [h for h in inputs.hits if start <= h.t_ms <= end]
@@ -554,17 +657,19 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
         vitals: dict[str, list] = defaultdict(list)
         life_armor: dict = {}
         last: dict[tuple[int, int], dict] = {}        # (slot, life) -> its latest snapshot's values
+        touched: set[tuple[int, int]] = set()         # lives with any hit or snapshot so far, readable or not
         heals = [h for h in inputs.heals if start <= h.t_ms <= end]
         for item in sorted([*hits, *heals], key=lambda e: (e.t_ms, e.order)):      # stable: a heal's sections in order
             hp_section = inputs.hp_section.get(item.pawn)
             if hp_section is None:
                 continue
             if isinstance(item, _Hit) and item.sections is None:
-                # Unreadable, so no snapshot; it may still have changed the shield, so a later heal can't carry the
-                # last one's (a heal row says nothing of armor).
+                # Unreadable, so no snapshot; it may still have changed the shield and HP, so a later heal can't carry
+                # the last one's (a heal row says nothing of armor) and a later hit without the HP section has none.
                 life = life_of(item.slot, item.t_ms)
                 if life is not None:
                     last.pop((item.slot, life), None)
+                    touched.add((item.slot, life))
                 continue
             life = life_of(item.slot, item.t_ms)
             if life is None:
@@ -572,15 +677,26 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
                 continue
             key = (item.slot, life)
             if isinstance(item, _Hit):
-                values = _vital(item, hp_section, inputs, life_armor, key)
+                if key in last:
+                    carried = last[key]["hp"]
+                elif key not in touched and life == 0 and (life_start is None
+                                                           or life_start(item.slot, life) <= start):
+                    carried = MAX_HP                  # the life began with the round and nothing hit it yet
+                else:
+                    carried = None
+                touched.add(key)
+                values = _vital(item, hp_section, inputs, life_armor, key, carried)
             else:
                 values = _healed(item, inputs, last.get(key), life_armor, key)
             if values is not None:
                 last[key] = values
+                touched.add(key)
                 vitals[str(item.slot)].append({"t": _seconds(item.t_ms, start), "life": life, **values})
             elif isinstance(item, _Hit):
                 last.pop(key, None)         # a hit that left no snapshot: the last one's shield is no longer known
         out["vitals"] = dict(sorted(vitals.items(), key=lambda kv: int(kv[0])))
+    if inputs.overheal_section:
+        out["overheal"] = _overheal_part(inputs, hits, start, end, life_of)
     if inputs.has_damage:
         taken: dict[str, set] = defaultdict(set)
         for hit in hits:

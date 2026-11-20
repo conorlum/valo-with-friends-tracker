@@ -144,21 +144,20 @@ def test_a_broken_armor_keeps_its_max_for_the_life():
     assert [(e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(0.0, 50.0), (0.0, 50.0)]
 
 
-def test_a_missing_armor_section_while_shield_was_up_is_unproven_not_zero():
+def test_r3_an_unlisted_armor_section_keeps_the_known_shield():
     rows = [armor(80_000, ARMOR0), *lethal_hits(),
             damage_notify(110_000, 1000, 1005, 10.0, [(ARMOR0 + 2, 18.0, -7.0, 1), (HP0, 97.0, -3.0, 1)], index=1),
             damage_notify(111_000, 1000, 1005, 20.0, [(HP0, 77.0, -20.0, 1)], index=2)]
     got, inputs = extract(rows)
-    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(97.0, 18.0, 25.0), (77.0, None, None)]
-    assert inputs.diagnostics["shield: armor section missing while shield > 0"] == 1
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(97.0, 18.0, 25.0), (77.0, 18.0, 25.0)]
+    assert inputs.diagnostics["shield: armor section missing while shield > 0"] == 0
 
 
-def test_an_unknown_section_taking_damage_leaves_the_shield_unproven():
+def test_r3_hp_listed_with_unknown_section_and_no_known_armor_proves_zero_shield():
     rows = [*lethal_hits(),
             damage_notify(110_000, 1000, 1005, 10.0, [(9000, 40.0, -5.0, 1), (HP0, 95.0, -5.0, 1)], index=1)]
     got, inputs = extract(rows)
-    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, None, None)]
-    assert inputs.diagnostics["shield: an unknown section took damage"] == 1
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, 0.0, 0.0)]
 
 
 def test_shield_above_its_armors_capacity_is_an_invalid_max():
@@ -573,14 +572,20 @@ def test_a_hit_after_a_heal_is_its_own_snapshot():
                                                                          (31.0, 92.0, 0.0)]
 
 
-@pytest.mark.parametrize("unread", ["undecodable", "no HP section"])
-def test_a_hit_that_left_no_snapshot_makes_a_later_heals_shield_unknown(unread):
+def test_an_undecodable_hit_makes_a_later_heals_shield_unknown():
     # the hit at 29 s took shield too, so carrying 27.363 s's 7.666 into the heal would be a guess
     hit = damage_notify(129_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 2.666, -5.0, 1)], index=54)
-    if unread == "undecodable":
-        hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
     got, _ = extract([*armored_hit(), hit, heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
     assert got["vitals"]["0"][-1] == {"t": 30.0, "life": 0, "hp": 94.334, "sh": None, "mhp": 100.0, "msh": None}
+
+
+def test_r2_r3_an_armor_only_hit_leaves_a_snapshot_for_the_next_heal():
+    hit = damage_notify(129_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 2.666, -5.0, 1)], index=54)
+    got, _ = extract([*armored_hit(), hit, heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
+    assert got["vitals"]["0"][-2:] == [
+        {"t": 29.0, "life": 0, "hp": 91.334, "sh": 2.666, "mhp": 100.0, "msh": 25.0},
+        {"t": 30.0, "life": 0, "hp": 94.334, "sh": 2.666, "mhp": 100.0, "msh": 25.0}]
 
 
 def test_a_heal_with_no_earlier_snapshot_in_its_life_has_an_unproven_shield():
@@ -620,6 +625,165 @@ def test_a_heal_whose_changes_dont_sum_to_its_amount_or_isnt_on_a_player_is_drop
 def test_a_heal_nobody_instigated_is_kept_with_no_healer():
     _, inputs = extract([*lethal_hits(), heal_notify(130_000, 1001, None, None, [(HP1, 87.6, 87.6)])])   # KAY/O's ult
     assert [(h.slot, h.by, h.causer) for h in inputs.heals] == [(1, None, 0)]
+
+
+# ---------------------------------------------------------------- unlisted sections and the overheal timeline (W2)
+
+OH0 = 960                  # slot 0's overheal section (Clove's / Reyna's), learnt from its decay rows
+
+
+def decay_notify(t_ms, pawn, g, res):
+    """A `MulticastNotifyOverhealDecay` on `pawn`'s DamageableComponent: the section's value after the row."""
+    return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 33, "actor_net_guid": pawn,
+            "object_net_guid": pawn + 52, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
+            "function_name": "MulticastNotifyOverhealDecay",
+            "payload": {"Amount": 0.2, "Causer": 0, "EventInstigator": 0, "EventInstigatorPawn": 0,
+                        "LifeChanges": [{"ChangedComponent": g, "DeltaLife": 0.2, "LifeResult": res}]}}
+
+
+def learn_overheal(pawn=1000, g=OH0):
+    return [decay_notify(2_000, pawn, g, 0.0)]
+
+
+def test_r2_an_armor_only_hit_after_a_hit_keeps_that_hits_hp():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 80.0, -20.0, 1)], index=1),
+            damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][-1] == {"t": 11.0, "life": 0, "hp": 80.0, "sh": 15.0, "mhp": 100.0, "msh": 25.0}
+
+
+def test_r2_an_armor_only_first_hit_at_the_rounds_start_is_full_hp_the_clove_case():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), *learn_overheal(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(OH0, 0.0, 0.0, 1), (ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    got, inputs = extract(rows)
+    assert got["vitals"]["0"] == [{"t": 17.84, "life": 0, "hp": 100.0, "sh": 20.0, "mhp": 100.0, "msh": 25.0}]
+    assert "vitals: hit without the HP section" not in inputs.diagnostics
+    assert ps.validate(got) == got
+
+
+def test_r2_the_same_hit_in_a_revived_life_makes_no_snapshot():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    life_of = lambda slot, t_ms: 1 if START <= t_ms <= END else None     # noqa: E731
+    got, inputs = extract(rows, life_of=life_of)
+    assert got["vitals"] == {}
+    assert inputs.diagnostics["vitals: hit without the HP section"] == 1
+
+
+def test_r2_a_life_that_began_after_the_rounds_start_makes_no_snapshot():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    inputs = pse.read_player_state(export(rows), table())
+    late = pse.round_player_state(inputs, START, END, None, lives_whole_round, life_start=lambda slot, i: START + 3_000)
+    on_time = pse.round_player_state(inputs, START, END, None, lives_whole_round, life_start=lambda slot, i: START)
+    assert late["vitals"] == {}
+    assert [e["hp"] for e in on_time["vitals"]["0"]] == [100.0]
+
+
+def test_r2_an_unreadable_hit_makes_hp_unknown_so_a_later_armor_only_hit_is_not_100():
+    bad = damage_notify(110_500, 1000, 1005, 5.0, [(HP0, 70.0, -5.0, 1)], index=2)
+    bad["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 80.0, -20.0, 1)], index=1),
+            bad, damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=3)]
+    got, _ = extract(rows)
+    assert [e["t"] for e in got["vitals"]["0"]] == [10.0]
+
+
+def test_r2_an_unreadable_first_hit_also_stops_a_later_armor_only_hit_from_being_100():
+    bad = damage_notify(110_500, 1000, 1005, 5.0, [(HP0, 70.0, -5.0, 1)], index=2)
+    bad["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), bad,
+            damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=3)]
+    got, _ = extract(rows)
+    assert got["vitals"] == {}
+
+
+def test_r3_an_overheal_only_hit_keeps_hp_and_the_known_shield_and_adds_an_overheal_point():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), *learn_overheal(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 23.33, -1.67, 1), (HP0, 80.0, -23.33, 1)], index=1),
+            heal_notify(112_000, 1000, 1000, 960, [(OH0, 50.0, 50.0)]),
+            damage_notify(113_000, 1000, 1005, 39.0, [(OH0, 11.0, -39.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][-1] == {"t": 13.0, "life": 0, "hp": 80.0, "sh": 23.33, "mhp": 100.0, "msh": 25.0}
+    assert got["overheal"]["0"][-1] == {"t": 13.0, "life": 0, "oh": 11.0}
+    assert ps.validate(got) == got
+
+
+def test_r3_an_overheal_only_hit_with_no_armor_known_carries_hp_and_leaves_the_shield_null():
+    rows = [*lethal_hits(), *learn_overheal(),
+            damage_notify(110_000, 1000, 1005, 20.0, [(HP0, 80.0, -20.0, 1)], index=1),
+            damage_notify(113_000, 1000, 1005, 9.0, [(OH0, 11.0, -9.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][0]["sh"] == 0.0
+    # armor here is "proven absent" only by the first hit's HP-listed-and-no-armor; the life has no armor remembered
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]][-1] == (80.0, None, None)
+
+
+def test_r3_an_unknown_section_taking_damage_keeps_the_known_shield():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 10.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 95.0, -5.0, 1)], index=1),
+            damage_notify(111_000, 1000, 1005, 15.0, [(9000, 40.0, -5.0, 1), (HP0, 85.0, -10.0, 1)], index=2)]
+    got, inputs = extract(rows)
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, 20.0, 25.0), (85.0, 20.0, 25.0)]
+    assert "shield: an unknown section took damage" not in inputs.diagnostics
+
+
+def overheal_run(first_ms=130_000, ticks=100):
+    """Heal ticks every 8 ms, +0.5 each, to 50; then the drain: 256 decay rows over 2.0 s, 10.0 s after the last tick."""
+    rows = [heal_notify(first_ms + 8 * i, 1000, 1000, 960, [(OH0, 0.5, 0.5 * (i + 1))]) for i in range(ticks)]
+    last = first_ms + 8 * (ticks - 1)
+    start = last + 10_000
+    rows += [decay_notify(start + round(2000 * i / 255), 1000, OH0, 50.0 * (1 - i / 255)) for i in range(256)]
+    return rows, last, start
+
+
+def test_r5_the_overheal_rise_and_drain_are_thinned_but_keep_their_ends():
+    run, last, start = overheal_run()
+    got, _ = extract([*lethal_hits(), *run])
+    points = got["overheal"]["0"]
+    assert len(points) <= 512 and len(points) < 80
+    rise = [p for p in points if p["t"] <= (last - START) / 1000.0]
+    drain = [p for p in points if p["t"] >= (start - START) / 1000.0]
+    assert len(rise) + len(drain) == len(points)
+    assert (rise[0]["t"], rise[0]["oh"]) == (30.0, 0.5)
+    assert (rise[-1]["t"], rise[-1]["oh"]) == ((last - START) / 1000.0, 50.0)
+    assert (drain[0]["t"], drain[0]["oh"]) == ((start - START) / 1000.0, 50.0)
+    assert (drain[-1]["t"], drain[-1]["oh"]) == (round((start + 2000 - START) / 1000.0, 3), 0.0)
+    for run_points in (rise, drain):
+        assert [p["oh"] for p in run_points] == sorted((p["oh"] for p in run_points),
+                                                       reverse=run_points is drain)
+        for a, b in zip(run_points[:-2], run_points[1:-1]):
+            assert b["t"] - a["t"] >= 0.1 - 1e-9
+    assert all(p["life"] == 0 for p in points)
+    assert ps.validate(got) == got
+
+
+def test_r5_a_hit_into_overheal_keeps_its_point_inside_100_ms_of_another():
+    run, _, _ = overheal_run()
+    hit = damage_notify(130_050, 1000, 1005, 39.0, [(OH0, 11.0, -39.0, 1)], index=7)
+    got, _ = extract([*lethal_hits(), *run, hit])
+    assert {"t": 30.05, "life": 0, "oh": 11.0} in got["overheal"]["0"]
+
+
+def test_r5_the_part_is_absent_when_the_export_has_no_overheal_section():
+    got, _ = extract([*armored_hit(), heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
+    assert "overheal" not in got
+
+
+def test_r5_points_outside_every_life_are_dropped():
+    run, _, _ = overheal_run()
+    got, _ = extract([*lethal_hits(), *run], life_of=lambda slot, t_ms: None)
+    assert got["overheal"] == {}
+
+
+def test_r4_a_pawn_whose_decay_rows_change_two_components_has_no_overheal():
+    rows = [*lethal_hits(), decay_notify(120_000, 1000, OH0, 10.0), decay_notify(121_000, 1000, OH0 + 6, 9.0),
+            heal_notify(122_000, 1000, 1000, 960, [(OH0, 5.0, 15.0)])]
+    got, inputs = extract(rows)
+    assert "overheal" not in got
+    assert inputs.diagnostics["overheal: decay rows change more than one section (none)"] == 1
 
 
 # ---------------------------------------------------------------- ability charges (revision 21)

@@ -1663,7 +1663,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         state = round_player_state(state_inputs, start, end, game.windows[n - 2][2] if n > 1 else None,
                                    lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
                                                                                              t_ms, _end),
-                                   to_uv=game_map.to_uv)
+                                   to_uv=game_map.to_uv,
+                                   life_start=lambda slot, i, _lives=lives: _lives[slot][i][0])
         if state is not None:
             # D5: a drop right after one death lies at that death's place, and that player carried it.
             attribute_death_drops(state, kill_rows, state_inputs.diagnostics)
