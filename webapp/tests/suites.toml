@@ -248,7 +248,7 @@ tests = [
 ]
 guards = [
   "app/replays/__init__.py", "app/replays/condense.py", "app/replays/contract.py", "app/replays/format.py",
-  "app/replays/guns.py", "app/replays/guns.json", "app/replays/gun_ranges.json",
+  "app/replays/guns.py", "app/replays/guns.json", "app/replays/gun_ranges.json", "app/replays/decay_figures.json",
   "app/replays/extras.py", "app/replays/header.py", "app/replays/link.py", "app/replays/causes.py",
   "app/replays/player_state*.py", "app/replays/status_intervals.py", "app/services/replay_impact.py",
   "scripts/make_replay_fixture.py", "scripts/ingest_replay.py", "scripts/reingest_replays.py","scripts/inspect_replay_utility.py",

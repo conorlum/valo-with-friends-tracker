@@ -1,0 +1,81 @@
+{
+  "_doc": {
+    "_about": "Figures for each decay source in extras.STATUS_OBJECTS, keyed by '<code>_<name>' of the status object. A curve over a status's own t..t1 (t = first contact, t1 = last contact or the status's end): onset at t, rate while applied, hold after t1, then restore. null = the wiki gives no figure (do not guess one). Every source in the table has an entry; a source whose page has no figures stays out of the table (R8). Amounts are HP; times are seconds.",
+    "onset_hp": "HP decayed at once on first contact, or reached by the end of build_s.",
+    "build_s": "Seconds the onset takes to reach onset_hp (0 = at once).",
+    "rate_hp_s": "Further HP per second decayed for as long as the source keeps applying (0 = none).",
+    "max_hp": "Most HP this source can decay in all (null = no cap but the game's own: HP - 1).",
+    "hold_s": "Seconds the decay stays at its level after the source stops applying (t1), before restoring.",
+    "restore_s": "Seconds a full onset_hp takes to restore (null = the wiki gives only restore_hp_s).",
+    "restore_hp_s": "HP per second restored after the hold, up to what the player would have had (null = the wiki gives only restore_s, or none: see note).",
+    "total_s": "Seconds from application to the decay being gone, for a one-off hit (null = the wiki gives none).",
+    "wiki": "The valorant.fandom.com page the figures were read from, through its MediaWiki API (action=parse, prop=wikitext).",
+    "fetched": "The date the page was fetched (YYYY-MM-DD).",
+    "note": "Where a figure is derived, conflicts with another page, or is missing."
+  },
+  "Smonk_Q_DecayExplosion": {
+    "onset_hp": 90,
+    "build_s": 0.75,
+    "rate_hp_s": 0,
+    "max_hp": 90,
+    "hold_s": 2.5,
+    "restore_s": 1.75,
+    "restore_hp_s": 51,
+    "total_s": 5,
+    "wiki": "https://valorant.fandom.com/wiki/Meddle",
+    "fetched": "2026-11-20",
+    "note": "Clove's Meddle. Wiki: decay 90 HP over 0.75 s (120 HP/s), restoration 90 HP over 1.75 s (51 HP/s), 5 s in all including both. hold_s 2.5 is derived: total_s - build_s - restore_s. Measured 5.005 s status spans on 2 of 2 plays in ee6e0ba7."
+  },
+  "Pandemic_X_Circular": {
+    "onset_hp": 30,
+    "build_s": 0,
+    "rate_hp_s": 10,
+    "max_hp": null,
+    "hold_s": 1.5,
+    "restore_s": null,
+    "restore_hp_s": 25,
+    "total_s": null,
+    "wiki": "https://valorant.fandom.com/wiki/Viper%27s_Pit",
+    "fetched": "2026-11-20",
+    "note": "Viper's Pit: 30 HP at once on contact, then 1 HP per 0.1 s while inside, 1.5 s hold after leaving, then 25 HP/s restore (1 HP per 0.04 s). CONFLICT: the Passive Effects page (Toxin) says initial contact decay was cut 30 to 10 HP in patch 11.08 for all three of Viper's decaying abilities; the Pit's own page still says 30, as does the owner. 30 kept here; the owner to decide."
+  },
+  "Pandemic_E_SmokeScreenManager": {
+    "onset_hp": 10,
+    "build_s": 0,
+    "rate_hp_s": 10,
+    "max_hp": null,
+    "hold_s": 1.5,
+    "restore_s": null,
+    "restore_hp_s": 25,
+    "total_s": null,
+    "wiki": "https://valorant.fandom.com/wiki/Passive_Effects#Toxin",
+    "fetched": "2026-11-20",
+    "note": "Viper's Toxic Screen, through her Toxin passive (the Toxic Screen page gives no numbers, only 'instantly decay upon contact, then continue to decay'; its Toxin section points to Passive Effects). Toxin: 10 HP on contact (since patch 11.08), then 1 HP per 0.1 s, 1.5 s hold, then 1 HP per 0.04 s restore. Each contact in the export is short (0.06-0.7 s), so a status is usually the onset plus a little."
+  },
+  "BountyHunter_Q_Tether_SphereExpansion": {
+    "onset_hp": 75,
+    "build_s": 0,
+    "rate_hp_s": 0,
+    "max_hp": 75,
+    "hold_s": 0,
+    "restore_s": 5,
+    "restore_hp_s": 15,
+    "total_s": 5,
+    "wiki": "https://valorant.fandom.com/wiki/Seize",
+    "fetched": "2026-11-20",
+    "note": "Fade's Seize. Wiki: decay 75 HP, health restored over 5 seconds, 'at irregular rates' (restore_hp_s 15 is 75 / 5, an average). The wave decays on contact, a little before the tether the export's status spans, so the real curve starts earlier than t."
+  },
+  "BountyHunter_X_WaveForm": {
+    "onset_hp": 80,
+    "build_s": 0,
+    "rate_hp_s": 0,
+    "max_hp": 80,
+    "hold_s": 0,
+    "restore_s": null,
+    "restore_hp_s": null,
+    "total_s": 8,
+    "wiki": "https://valorant.fandom.com/wiki/Nightfall",
+    "fetched": "2026-11-20",
+    "note": "Fade's Nightfall. Wiki: decay 80 HP; the decayed health 'will immediately start and stay until the duration is over'; debuff duration 8 s. No restore rate is given, so none is: the 80 HP is held for total_s and then gone."
+  }
+}
