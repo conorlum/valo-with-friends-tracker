@@ -1349,7 +1349,7 @@ STATUS_OBJECTS = (
     (re.compile(r"^Pandemic_X_Circular$"), "decayed"),
     # Viper's Toxic Screen (W3, 2026-11-20, 6f12db3e): an enemy touching the wall gets `FXC_Pandemic_Ability_E_SmokeScreen_Blind`
     # naming the wall's manager (`GameObject_Pandemic_E_SmokeScreenManager`) for the span of the touch, and a one-shot heavy
-    # application on them within 50-100 ms (the first decay hit). 35 statuses in 13 rounds (26 enemy, 9 friendly), spans
+    # application on them within 50-100 ms (the first decay hit). 35 contacts in 13 rounds (26 enemy, 9 harmless friendly), spans
     # 0.06-0.71 s, median 0.20 s: each is one contact, and the curve's hold and restore run on after it.
     (re.compile(r"^Pandemic_E_SmokeScreenManager$"), "decayed"),
     # Not here: Poison Cloud (`Pandemic_4_SmokeZone`): 0 enemy plays in the two exports (3 effects, all on Viper or a
@@ -1752,9 +1752,9 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             continue
         counts["status_containers"] += 1
         for effect, target, source in inside:
-            label = status_of(source)
-            hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
-                         "caster"))
+            for label in statuses_of(source, effect.oneshot):
+                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
+                             "caster"))
     # A DEBUFF_ONLY object's later touches restart the debuff of a player its owner's object already debuffed.
     debuffs = sorted((t, owner(source), target, t1 - t) for t, t1, source, target, _, how in hits
                      if how == "object" and DEBUFF_ONLY.match(f"{source.code}_{source.name}"))
@@ -1767,7 +1767,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         first = [length for t, who, hit, length in debuffs
                  if who == by and hit == target and t <= t_ms <= t + DEBUFF_REFRESH_MS]
         if first:
-            hits.append((t_ms, t_ms + first[0], source, target, status_of(source), "object"))
+            for label in statuses_of(source):
+                hits.append((t_ms, t_ms + first[0], source, target, label, "object"))
             counts["status_refreshes"] += 1
     # A force row (`force_modules`) whose module is a status (FORCE_STATUS) and whose Source is a live ability object:
     # the status lasts the row's own `Duration`, else FORCE_STATUS_MS. Enemies of the object's owner are kept; a
@@ -1800,6 +1801,10 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     # its going off as two statuses. A levitated run is per zone (its row names it, `src`).
     merged: dict[tuple, list[list]] = defaultdict(list)
     for t, t1, actor, target, label, how in sorted(hits, key=lambda h: (h[0], h[1], h[2].guid, h[3], h[4], h[5])):
+        # Decay never affects teammates, even when the export plays contact effects on them. Filter each label
+        # independently: Seize still tethers a teammate, and genuine friendly stuns/slows remain harmful.
+        if label == "decayed" and not enemies(owner(actor), target):
+            continue
         key = (actor.code, actor.name.replace("_SecondWire", ""), owner(actor), target, label,
                actor.guid if label == "levitated" else None)
         runs = merged[key]

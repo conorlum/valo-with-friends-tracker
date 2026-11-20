@@ -18,6 +18,33 @@ def test_server_still_exports_the_moved_names():
     assert (server.REASON_TIMEOUT, server.REASON_PARSE) == ("parse timed out", "parse failed")
 
 
+def test_player_state_diagnostics_survive_worker_result_and_site_storage(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from app.replays.condense import CondensedReplay
+    from app.replays.store import _insert
+    from app.services.replay_upload import condensed_from_result
+
+    check = {"round": 2, "slot": 0, "t": 10.5, "dtype": "DmgType_BountyHunter_Decay_Nightfall_C",
+             "booked": 54.0, "computed": 50.0, "verdict": "too low"}
+    diagnostics = {"decay: too low": 1, "decay_checks": [check],
+                   "decay_tightest": {check["dtype"]: {k: check[k] for k in ("round", "slot", "t", "booked", "computed")}}}
+    replay = CondensedReplay("synthetic-match", "Ascent", "release-11.10", "sha", "recipe", 10, {}, [], {},
+                             {"player_state": {**diagnostics, "per_hit": [{"hp": 100}]}})
+    out = tmp_path / "export"
+    out.mkdir()
+    (out / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(parse_job.subprocess, "Popen", lambda *a, **k: Mock(wait=lambda **kw: 0))
+    monkeypatch.setattr(parse_job, "condense_export_dir", lambda *a, **k: replay)
+    result, _ = parse_job.parse_file(tmp_path / "upload.vrf", tmp_path, "sha", parser_cmd=["parser"],
+                                    timeout_s=30, memory_cap_mb=0, parser_build=None)
+    assert result["report"]["player_state"] == diagnostics
+    restored = condensed_from_result(result)
+    assert restored.report["player_state"] == diagnostics
+    row = _insert(Mock(), restored, "upload")
+    assert row.link_inputs["player_state"] == diagnostics
+    assert not out.exists()
+
+
 def test_a_parser_that_exits_nonzero_is_parse_failed_with_its_last_lines(tmp_path):
     script = tmp_path / "bad_parser.py"
     script.write_text("import sys; print('Reading header'); print('Boom: bad chunk'); sys.exit(3)", encoding="utf-8")

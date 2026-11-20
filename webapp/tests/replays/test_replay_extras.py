@@ -747,7 +747,7 @@ def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
     rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
             fragments,
             effect(25_000, 100, 7, [pit, 109], container=8263), stop(30_000, 100, 7),      # enemy (team A): decayed
-            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: friendly
+            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: harmless contact
             closed(40_000, pit)]
     out = build_extras_rows(tmp_path, rows, {**AGENTS7, "Pandemic": "Viper"}).rounds[1]
     [row] = [a for a in out["abilities"] if a["name"] == "X_Circular"]
@@ -755,7 +755,7 @@ def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
     assert row["area"][1][1] == list(GAME_MAP.to_uv(400, 0))
     decayed = [s for s in out.get("statuses", []) if s["status"] == "decayed"]
     assert [(s["slot"], s["target"], s["t0"], s["t1"], bool(s.get("friendly"))) for s in decayed] == [
-        (9, 0, 15.0, 20.0, False), (9, 1, 15.0, 20.0, True)]
+        (9, 0, 15.0, 20.0, False)]
 
 
 def _ground(t_ms, guid, updates=(), deleted=()):
@@ -2201,11 +2201,11 @@ def test_toxic_screen_decays_the_enemy_it_touches_for_the_span_of_the_touch(tmp_
     wall = 60
     rows = [spawned(20_000, wall, "Default__GameObject_Pandemic_E_SmokeScreenManager_C", 0, 0), instigated(20_000, wall, 109),
             effect(25_000, 100, 7, [wall, 109], container=8263), stop(25_300, 100, 7),      # enemy: decayed
-            effect(26_000, 101, 8, [wall, 109], container=8263), stop(26_200, 101, 8),      # teammate: friendly
+            effect(26_000, 101, 8, [wall, 109], container=8263), stop(26_200, 101, 8),      # teammate: harmless contact
             effect(27_000, 109, 9, [wall, 109], container=8263), stop(27_200, 109, 9),      # Viper herself: nothing
             closed(40_000, wall)]
     out = run_decay(tmp_path, rows)
-    assert _statuses(out, "E_SmokeScreenManager", "decayed") == [(9, 0, 15.0, 15.3, False), (9, 1, 16.0, 16.2, True)]
+    assert _statuses(out, "E_SmokeScreenManager", "decayed") == [(9, 0, 15.0, 15.3, False)]
 
 
 def test_nightfall_decays_the_enemy_its_wave_hits_for_the_debuffs_eight_seconds(tmp_path):
@@ -2215,7 +2215,48 @@ def test_nightfall_decays_the_enemy_its_wave_hits_for_the_debuffs_eight_seconds(
     rows = [spawned(20_000, wave, "Default__GameObject_BountyHunter_X_WaveForm_C", 0, 0), instigated(20_000, wave, 108),
             oneshot(22_000, 100, [wave, 108], 9001), oneshot(22_100, 101, [wave, 108], 9001), closed(23_000, wave)]
     out = run_decay(tmp_path, rows)
-    assert _statuses(out, "X_WaveForm", "decayed") == [(8, 0, 12.0, 20.0, False), (8, 1, 12.1, 20.1, True)]
+    assert _statuses(out, "X_WaveForm", "decayed") == [(8, 0, 12.0, 20.0, False)]
+
+
+@pytest.mark.parametrize("code,name", [("Pandemic", "E_SmokeScreenManager"), ("Pandemic", "X_Circular"),
+                                      ("BountyHunter", "X_WaveForm"), ("BountyHunter", "Q_Tether_SphereExpansion"),
+                                      ("Smonk", "Q_DecayExplosion"), ("Breach", "E_SweetSpotFissure")])
+def test_friendly_contacts_never_decay_but_keep_other_statuses(tmp_path, code, name):
+    from app.replays.status_intervals import normalize_conditions
+
+    rows = [spawned(20_000, 80, f"Default__GameObject_{code}_{name}_C", 0, 0), instigated(20_000, 80, 108),
+            effect(22_000, 101, 7, [80, 108]), stop(22_300, 101, 7), closed(30_000, 80)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    agents = {**AGENTS_DECAY, "Smonk": "Clove", "Breach": "Breach"}
+    out = build_extras(path, table7(), WINDOWS, GAME_MAP, agents, lambda t: {}, teams=TEAMS7).rounds[1]
+    statuses = out.get("statuses", [])
+    assert all(s["status"] != "decayed" for s in statuses)
+    expected = "tethered" if name == "Q_Tether_SphereExpansion" else "concussed" if code == "Breach" else None
+    assert [(s["status"], s.get("friendly")) for s in statuses] == ([(expected, True)] if expected else [])
+    util = [{**s, "k": "status", "t": s["t0"], "by": s["slot"]} for s in statuses]
+    assert all(c["c"] != "decayed" for line in normalize_conditions(util).values() for c in line)
+
+
+@pytest.mark.parametrize("one_shot", [False, True])
+@pytest.mark.parametrize("named", [False, True])
+def test_secondary_statuses_expand_on_both_attribution_paths(tmp_path, one_shot, named):
+    rows = []
+    for i, t in enumerate((20_000, 40_000)):
+        sphere = 80 + i
+        rows += [spawned(t, sphere, "Default__GameObject_Q_BountyHunter_Tether_SphereExpansion_C", 0, 0),
+                 instigated(t, sphere, 108)]
+        for target in (100, 101):  # an enemy and a teammate
+            context = [sphere, 108] if named else [108]
+            rows += ([oneshot(t + 600, target, context, 9101)] if one_shot else
+                     [effect(t + 600, target, i + target, context, 9101), stop(t + 1600, target, i + target)])
+        rows.append(closed(t + 2000, sphere))
+    out = run_decay(tmp_path, rows)
+    tether = _statuses(out, "Q_Tether_SphereExpansion", "tethered")
+    decay = _statuses(out, "Q_Tether_SphereExpansion", "decayed")
+    assert len(decay) == 2
+    assert decay == [s for s in tether if not s[-1]]
+    assert len(tether) == (4 if named else 2)
 
 
 def test_seize_gives_both_tethered_and_decayed_over_the_tether_span(tmp_path):

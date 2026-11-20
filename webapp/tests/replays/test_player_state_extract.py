@@ -838,14 +838,58 @@ def test_r3_an_overheal_only_hit_keeps_hp_and_the_known_shield_and_adds_an_overh
     assert ps.validate(got) == got
 
 
-def test_r3_an_overheal_only_hit_with_no_armor_known_carries_hp_and_leaves_the_shield_null():
+def test_r3_an_overheal_only_hit_keeps_the_proven_zero_shield():
     rows = [*lethal_hits(), *learn_overheal(),
             damage_notify(110_000, 1000, 1005, 20.0, [(HP0, 80.0, -20.0, 1)], index=1),
             damage_notify(113_000, 1000, 1005, 9.0, [(OH0, 11.0, -9.0, 1)], index=2)]
     got, _ = extract(rows)
     assert got["vitals"]["0"][0]["sh"] == 0.0
-    # armor here is "proven absent" only by the first hit's HP-listed-and-no-armor; the life has no armor remembered
-    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]][-1] == (80.0, None, None)
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]][-1] == (80.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("invalid", ["unreadable", "two", "above", "below", "capacity_unknown"])
+@pytest.mark.parametrize("healed", [False, True])
+def test_invalid_shield_evidence_stays_unknown_until_readable_armor(invalid, healed):
+    # The initial row has the measured 7.666/25 shield and 91.334 HP shape.
+    sections = [(ARMOR0 + 2, 2.666, -5.0, 1)]
+    if invalid == "two":
+        sections.append((602, 20.0, -5.0, 1))
+    elif invalid in ("above", "below"):
+        sections = [(ARMOR0 + 2, 40.0 if invalid == "above" else -2.0, -5.0, 1)]
+    elif invalid == "capacity_unknown":
+        sections = [(702, 20.0, -5.0, 1)]  # an armor item whose spawn is later
+    hit = damage_notify(129_000, 1000, 1005, -sum(s[2] for s in sections), sections, index=54)
+    if invalid == "unreadable":
+        hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [*armored_hit(), armor(80_000, 600), armor(150_000, 700), hit]
+    if healed:
+        rows.append(heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)]))
+    rows += [damage_notify(131_000, 1000, 1005, 10.0, [(HP0, 80.0, -10.0, 1)], index=55),
+             damage_notify(132_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 1.0, -5.0, 1)], index=56)]
+    got, _ = extract(rows)
+    line = got["vitals"]["0"]
+    assert [(e["sh"], e["msh"]) for e in line if 29 <= e["t"] < 32] == [(None, None)] * (len(line) - 2)
+    assert (line[-1]["sh"], line[-1]["msh"]) == (1.0, 25.0)
+
+
+@pytest.mark.parametrize("first", ["hit", "heal"])
+@pytest.mark.parametrize("second", ["hit", "heal"])
+def test_independent_shield_evidence_survives_without_an_hp_snapshot(first, second):
+    rows = [armor(80_000, ARMOR0), *lethal_hits()]
+    rows.append(damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)
+                if first == "hit" else heal_notify(117_840, 1000, 1003, SAGE_ORB, [(ARMOR0 + 2, 5.0, 20.0)]))
+    rows.append(damage_notify(120_000, 1000, 1005, 10.0, [(HP0, 80.0, -10.0, 1)], index=2)
+                if second == "hit" else heal_notify(120_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 80.0)]))
+    got, _ = extract(rows, life_of=lambda slot, t: 1 if START <= t <= END else None)
+    assert got["vitals"]["0"] == [{"t": 20.0, "life": 1, "hp": 80.0, "sh": 20.0, "mhp": 100.0, "msh": 25.0}]
+
+
+def test_shield_evidence_does_not_cross_lives_and_neither_section_does_not_prove_zero():
+    rows = [*armored_hit(), *learn_overheal(),
+            damage_notify(140_000, 1000, 1005, 5.0, [(OH0, 15.0, -5.0, 1)], index=54),
+            heal_notify(141_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 80.0)])]
+    got, _ = extract(rows, life_of=lambda slot, t: int(t >= 140_000) if START <= t <= END else None)
+    assert got["vitals"]["0"][-1] == {"t": 41.0, "life": 1, "hp": 80.0, "sh": None, "mhp": 100.0, "msh": None}
 
 
 def test_r3_an_unknown_section_taking_damage_keeps_the_known_shield():

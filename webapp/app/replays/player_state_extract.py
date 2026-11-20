@@ -522,10 +522,45 @@ def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: di
            carried_hp: float | None = None) -> dict | None:
     """The snapshot after `hit`. A hit lists only the sections it changed, so one without the HP section left HP
     as `carried_hp` (the life's last known HP, else MAX_HP for a life that began at the round's start with no
-    snapshot yet: the caller's rule), and None when that is unknown. `life_armor[life_key]` remembers this life's
-    armor (capacity, last value): a hit that doesn't list its section left it as it was."""
+    snapshot yet: the caller's rule), and None when that is unknown. `life_armor` independently remembers shield
+    evidence: an absent key is never observed, None is invalidated, and (capacity, value) is known, including 0/0.
+    Read armor before the HP gate so even a hit without a complete snapshot can prove it."""
     diagnostics = inputs.diagnostics
     hp = next((s for s in hit.sections if s["g"] == hp_section), None)
+    armors = []
+    for s in hit.sections:
+        if s["g"] == hp_section:
+            continue
+        capacity = inputs.capacity(s["g"], hit.t_ms)
+        if capacity is not None or s["g"] - ARMOR_SECTION_OFFSET in inputs.armor:
+            armors.append((s, capacity))
+        # any other section (the overheal, an unknown one) is no armor; its damage is not shown
+    sh: float | None
+    msh: float | None
+    if len(armors) > 1:
+        diagnostics["shield: two armor sections"] += 1
+        life_armor[life_key] = None
+        sh = msh = None
+    elif armors:
+        section, capacity = armors[0]
+        if capacity is None:
+            diagnostics["shield: armor section without a known capacity"] += 1
+            life_armor[life_key] = None
+            sh = msh = None
+        elif section["res"] > capacity + VALUE_TOLERANCE or section["res"] < -VALUE_TOLERANCE:
+            diagnostics["shield: above its armor's capacity"] += 1
+            life_armor[life_key] = None
+            sh = msh = None
+        else:
+            sh, msh = max(0.0, section["res"]), capacity
+            life_armor[life_key] = (capacity, sh)
+    elif life_key in life_armor:
+        msh, sh = life_armor[life_key] or (None, None)  # unlisted: keep known or unknown evidence
+    elif hp is not None:
+        sh, msh = 0.0, 0.0                        # HP listed and no armor: proven absent
+        life_armor[life_key] = (msh, sh)
+    else:
+        sh = msh = None                           # neither listed: nothing proves the armor either way
     if hp is None:
         if carried_hp is None:
             diagnostics["vitals: hit without the HP section"] += 1
@@ -538,40 +573,13 @@ def _vital(hit: _Hit, hp_section: int, inputs: PlayerStateInputs, life_armor: di
             diagnostics["vitals: HP above max before the hit (a respawn)"] += 1
         if hp["res"] > MAX_HP + VALUE_TOLERANCE:
             diagnostics["vitals: HP above the measured max"] += 1
-    armors = []
-    for s in hit.sections:
-        if s["g"] == hp_section:
-            continue
-        capacity = inputs.capacity(s["g"], hit.t_ms)
-        if capacity is not None:
-            armors.append((s, capacity))
-        # any other section (the overheal, an unknown one) is no armor; its damage is not shown
-    sh: float | None
-    msh: float | None
-    if len(armors) > 1:
-        diagnostics["shield: two armor sections"] += 1
-        sh = msh = None
-    elif armors:
-        section, capacity = armors[0]
-        if section["res"] > capacity + VALUE_TOLERANCE or section["res"] < -VALUE_TOLERANCE:
-            diagnostics["shield: above its armor's capacity"] += 1
-            sh = msh = None
-        else:
-            sh, msh = max(0.0, section["res"]), capacity
-            life_armor[life_key] = (capacity, sh)
-    elif life_key in life_armor:
-        msh, sh = life_armor[life_key]            # unlisted: unchanged by this hit
-    elif hp is not None:
-        sh, msh = 0.0, 0.0                        # HP listed and no armor: none proven (as before)
-    else:
-        sh = msh = None                           # neither listed: nothing proves the armor either way
     return {"hp": round(max(0.0, hp_value), 3), "sh": None if sh is None else round(sh, 3), "mhp": MAX_HP,
             "msh": msh}
 
 
 def _healed(heal: _Heal, inputs: PlayerStateInputs, last: dict | None, life_armor: dict, life_key) -> dict | None:
     """The snapshot after a heal, or None when it makes none. A heal on HP sets `hp` to its result and keeps the
-    life's last shield (null when the life has no snapshot yet: the heal row says nothing of armor); one on the
+    life's shield evidence (null when never observed or invalidated); one on the
     armor sets `sh` and keeps the last HP (none without an earlier snapshot). A heal of any other section (an
     overheal, Clove's Pick-Me-Up) or of an unproven one changes no vitals."""
     diagnostics = inputs.diagnostics
@@ -579,17 +587,18 @@ def _healed(heal: _Heal, inputs: PlayerStateInputs, last: dict | None, life_armo
     if pool == "hp":
         if heal.res > MAX_HP + VALUE_TOLERANCE:
             diagnostics["vitals: HP above the measured max"] += 1
-        if last is None:
+        msh, sh = life_armor.get(life_key) or (None, None)
+        if last is None and sh is None:
             diagnostics["vitals: heal with no earlier snapshot in its life (shield unknown)"] += 1
         diagnostics["vitals: snapshot after a heal"] += 1
-        return {"hp": round(max(0.0, heal.res), 3), "sh": last["sh"] if last else None, "mhp": MAX_HP,
-                "msh": last["msh"] if last else None}
+        return {"hp": round(max(0.0, heal.res), 3), "sh": None if sh is None else round(sh, 3), "mhp": MAX_HP,
+                "msh": msh}
     if pool == "armor":
+        capacity = inputs.capacity(heal.g, heal.t_ms)
+        life_armor[life_key] = (capacity, max(0.0, heal.res))
         if last is None:
             diagnostics["vitals: armor heal with no earlier snapshot (dropped)"] += 1
             return None
-        capacity = inputs.capacity(heal.g, heal.t_ms)
-        life_armor[life_key] = (capacity, max(0.0, heal.res))
         diagnostics["vitals: snapshot after a heal"] += 1
         return {**last, "sh": round(max(0.0, heal.res), 3), "msh": capacity}
     diagnostics[f"vitals: heal of a section that is {pool} (no snapshot)"] += 1
@@ -667,7 +676,7 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
                       for h in hits if h.dtype is not None and "Decay" in h.dtype)
     if inputs.has_life_changes:
         vitals: dict[str, list] = defaultdict(list)
-        life_armor: dict = {}
+        life_armor: dict[tuple[int, int], tuple[float, float] | None] = {}
         last: dict[tuple[int, int], dict] = {}        # (slot, life) -> its latest snapshot's values
         touched: set[tuple[int, int]] = set()         # lives with any hit or snapshot so far, readable or not
         heals = [h for h in inputs.heals if start <= h.t_ms <= end]
@@ -681,6 +690,7 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
                 life = life_of(item.slot, item.t_ms)
                 if life is not None:
                     last.pop((item.slot, life), None)
+                    life_armor[(item.slot, life)] = None
                     touched.add((item.slot, life))
                 continue
             life = life_of(item.slot, item.t_ms)
@@ -705,7 +715,7 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
                 touched.add(key)
                 vitals[str(item.slot)].append({"t": _seconds(item.t_ms, start), "life": life, **values})
             elif isinstance(item, _Hit):
-                last.pop(key, None)         # a hit that left no snapshot: the last one's shield is no longer known
+                last.pop(key, None)         # HP is unknown; independently observed shield evidence still stands
         out["vitals"] = dict(sorted(vitals.items(), key=lambda kv: int(kv[0])))
     if inputs.overheal_section:
         out["overheal"] = _overheal_part(inputs, hits, start, end, life_of)
