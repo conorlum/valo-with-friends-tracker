@@ -888,7 +888,12 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
+    if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) {
+      e.preventDefault();
+      var delta = T.unrotatePoint(arrows[e.key][0], arrows[e.key][1], 0, turns());
+      chokeMove(delta.x, delta.y);
+      return;
+    }
     if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
     if (CHOKE_MODES[state.mode] && (e.key in keys || e.key === "n" || e.key === "N")) return;   // shape tags need the Select tool
     if (e.key in keys) setTag(keys[e.key]);
