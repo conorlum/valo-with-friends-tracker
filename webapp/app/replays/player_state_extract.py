@@ -30,7 +30,8 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   from the last pickup to a completed plant, by the planter (the spike can't change hands without a drop), and
   from the last pickup to a drop that follows one death, by the player who died; that drop lies at their death
   place (D5, answered 2026-10-09). A voluntary drop's place and the carrier before it are not decoded, so they
-  stay absent. Never a pickup by distance.
+  stay absent. Never a pickup by distance. Every plant attempt, held or let go, is stored separately in `plants`
+  as [start, stop or null, planter slot], from the character's effects naming the carried spike.
 
 - **Ult points (2026-10-18).** Each player state's `NumUltimatePoints`, as the game replicates it (a change, not
   a timeline): the round's seed is the value before the round's window, then every change in it.
@@ -654,6 +655,19 @@ def attach_orb_tries(state: dict | None, tries: list[dict], diagnostics: Counter
         diagnostics[key] = diagnostics.get(key, 0) + 1
         if orb is not None:
             orb.setdefault("tries", []).append([attempt["t"], attempt["t1"], attempt["slot"]])
+
+
+def attach_plant_tries(state: dict | None, tries: list[dict], diagnostics: Counter | dict) -> dict | None:
+    """Attach every plant attempt as `plants` [[t, t1, slot], ...], starting a minimal state when needed."""
+    if not tries:
+        return state
+    if state is None:
+        state = {"version": 1}
+        key = "plants: player_state started for plants"
+        diagnostics[key] = diagnostics.get(key, 0) + 1
+    state["plants"] = sorted([[a["t"], a["t1"], a["slot"]] for a in tries], key=lambda a: a[0])
+    diagnostics["plants: attempts"] = diagnostics.get("plants: attempts", 0) + len(tries)
+    return state
 
 
 def attribute_planter(state: dict | None, util: list[dict], diagnostics: Counter | dict) -> None:

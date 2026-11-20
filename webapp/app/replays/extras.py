@@ -336,6 +336,8 @@ class Raw:
     destroyed: dict[int, int] = field(default_factory=dict)
     # A plant starting: (time, the planter's pawn), an effect naming the carried spike on its character.
     plant_starts: list[tuple[int, int]] = field(default_factory=list)
+    # Effects on a character naming the carried spike; keep the same objects so RPC_STOP fills their stops.
+    plant_effects: list[_Effect] = field(default_factory=list)
     # Every effect on a Killjoy turret or alarmbot (KJ_DEVICE), for `device_off_spans`: guid ->
     # [(time, "play" | "stop" | "oneshot", effect id | None, container | None)], from its latest spawn.
     device_fx: dict[int, list[tuple[int, str, int | None, int | None]]] = field(default_factory=dict)
@@ -811,15 +813,19 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if named is not None and module_name(named) == CONCUSS_CONTAINER \
                                 and isinstance(payload.get("EffectContainer"), int):
                             raw.concuss_containers.add(payload["EffectContainer"])
+                    plant_effect = False
                     for value in context:
                         if guid in pawns and value in equip_now:
                             equip_now[value].votes[guid] += 1
                         if guid in pawns and value in carried:
                             raw.plant_starts.append((t_ms, guid))
+                            plant_effect = True
                     if context:
                         effect = _Effect(t_ms, guid, payload.get("EffectId"), payload.get("EffectContainer"), context,
                                          buff=_float_tags(payload).get("FXC.Buff.Duration"))
                         raw.effects.append(effect)
+                        if plant_effect:
+                            raw.plant_effects.append(effect)
                         open_effects[(guid, effect.effect_id)] = effect
                 elif function == RPC_PLAY and guid in actors:
                     raw.object_effects[guid].append(t_ms)
@@ -1775,6 +1781,21 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
 DEFUSE_ONESHOT_MS = 150
 
 
+def plant_attempts(effects: list[_Effect], pawn_slot: dict[int, int]) -> list[tuple[int, int | None, int | None]]:
+    """One attempt per (start ms, pawn), sorted by start; the latest stop, or None if any effect never stopped."""
+    stops: dict[tuple[int, int], int | None] = {}
+    for effect in effects:
+        key = (effect.t_ms, effect.actor)
+        if key not in stops:
+            stops[key] = effect.stop_ms
+        elif stops[key] is None or effect.stop_ms is None:
+            stops[key] = None
+        else:
+            stops[key] = max(stops[key], effect.stop_ms)
+    return [(t_ms, stop_ms, pawn_slot.get(pawn))
+            for (t_ms, pawn), stop_ms in sorted(stops.items(), key=lambda item: item[0][0])]
+
+
 def defuse_attempts(bomb: _Actor, effects: list[_Effect], oneshots: dict[int, list[int]],
                     players: PlayerTable) -> list[tuple[int, int | None, int, bool]]:
     """[(start ms, stop ms | None, defuser slot, finished)]: the continuous effects played on the
@@ -2480,6 +2501,20 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             {"t": _seconds(t_ms, start), "t1": None if stop_ms is None else _seconds(min(stop_ms, end), start), "slot": slot,
              "u": u, "v": v})
         counts["orb tries"] += 1
+    # Every plant attempt starting in playback, including taps and completed plants (never buy phase).
+    for t_ms, stop_ms, slot in plant_attempts(raw.plant_effects, players.pawn_slot):
+        n = _round_of(t_ms, windows)
+        if n is None:
+            counts["plant tries: outside a round"] += 1
+            continue
+        if slot is None:
+            counts["plant tries: no slot"] += 1
+            continue
+        start, _, end = windows[n - 1]
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("plant_tries", []).append(
+            {"t": _seconds(t_ms, start), "t1": None if stop_ms is None else _seconds(min(stop_ms, end), start),
+             "slot": slot})
+        counts["plant tries"] += 1
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
     owner_of: dict[int, int | None] = {}
