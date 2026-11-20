@@ -155,6 +155,15 @@ def test_the_replay_list_page_links_every_replay_and_skips_incomplete_ones(db, c
     assert status_of(lambda: routes.replay_list(request(), db)) == 404
 
 
+def test_the_replay_list_shows_the_share_of_coach_points_with_feedback(db, condensed, monkeypatch):
+    add_match(db)
+    store.store_replay(db, condensed, source="local")
+    monkeypatch.setattr(routes, "coached_external_ids", lambda db_, ids: {MATCH_UUID})
+    monkeypatch.setattr(routes, "coach_feedback_share", lambda db_, ids: {MATCH_UUID: (1, 3)})
+    html = routes.replay_list(Request({**request().scope, "session": {}}), db).body.decode()
+    assert ">Feedback</th>" in html and 'title="1 of 3 points have feedback' in html and ">33%</span>" in html
+
+
 def _round_detail_html(replay_url):
     detail = SimpleNamespace(round_number=3, outcome="Team A Elimination Win", events=[], players=[],
                              team_totals={}, impact_rows=[])
