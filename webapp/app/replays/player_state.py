@@ -41,7 +41,7 @@ look-back start), then each change. `orbs`: the round's ult orbs, `u`/`v` where 
 "plant" or "round". `tries`: captures started on it and let go, [t, t1, slot] each (`t1` when let go, null if never
 seen); a bad one is dropped.
 
-`plants`: spike plant attempts, [t, t1, slot] each, in round seconds (stored to two decimals), sorted by `t`.
+`plants`: spike plant attempts, [t, t1, slot] each, in round seconds (milliseconds: three decimals, like the other parts), sorted by `t`.
 `t1` is when the attempt ended, null when unseen; `slot` is the planter (0..9). Entries use the orb-try rules:
 `t` and non-null `t1` are in [T_MIN, T_MAX], with `t1` >= `t`. A bad attempt is dropped; more than MAX_PLANTS
 makes the part unavailable. Absent when the round has no attempts; an explicit empty list is kept.
