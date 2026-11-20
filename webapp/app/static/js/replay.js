@@ -931,12 +931,13 @@
 
   // ------------------------------------------------------------ player state at t (pure; tested in node)
   // The round blob's optional `player_state` (app/replays/player_state.py, version 1). validatePlayerState mirrors
-  // player_state.validate line for line: an unsupported version or a part of the wrong shape is unavailable (null),
-  // a bad entry is dropped. indexRoundState indexes one loaded round once (fetchRound) into frozen, sorted arrays
+  // player_state.validate line for line: an unsupported version or malformed legacy part is unavailable (null),
+  // a malformed overheal/decay part is dropped alone, as is a bad entry. indexRoundState indexes one loaded round
+  // once (fetchRound) into frozen, sorted arrays
   // that the selectors binary-search, so a frame never rescans the round and no other round's data can reach it.
-  // Every selector is right-continuous and never looks past t: the latest entry at or before t (vitalsAt,
-  // damagedBy, playerSpikeAt and healthPct mirror vitals_at, damaged_by, spike_at and health_pct; the parity test
-  // in tests/replays/test_viewer_player_state.py runs both).
+  // Selectors are right-continuous: the latest entry at or before t, or linear between decay knots of one life.
+  // vitalsAt, overhealAt, decayAt, damagedBy, playerSpikeAt and healthPct mirror the Python queries; the parity
+  // test in tests/replays/test_viewer_player_state.py runs both.
   var PLAYER_STATE = {
     version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
     t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000,
@@ -970,6 +971,21 @@
     if (psHas(e, "q")) {
       if (e.q !== "start") return null;
       out.q = e.q;
+    }
+    return out;
+  }
+
+  // Revision 32: an overheal point or combined decay knot, including its life.
+  function psHealthPoint(e, key) {
+    if (!condIsRow(e)) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    var value = psNum(e[key], 0, PLAYER_STATE.value_max);
+    if (t === null || !psInt(e.life, 0, PLAYER_STATE.life_max) || value === null) return null;
+    var out = { t: t, life: e.life };
+    out[key] = value;
+    if (key === "dec") {
+      if (typeof e.unk !== "boolean") return null;
+      out.unk = e.unk;
     }
     return out;
   }
@@ -1071,6 +1087,18 @@
         out.vitals[slot] = kept.sort(function (a, b) { return a.t - b.t; });  // stable: source order within a time
       });
     }
+    [["overheal", "oh"], ["decay", "dec"]].forEach(function (pair) {
+      var part = pair[0], key = pair[1];
+      if (!psHas(obj, part) || !condIsRow(obj[part])) return;
+      var lines = {};
+      Object.keys(obj[part]).forEach(function (slot) {
+        var events = obj[part][slot];
+        if (!psSlotKey(slot) || !Array.isArray(events) || events.length > PLAYER_STATE.max_events) return;
+        lines[slot] = events.map(function (e) { return psHealthPoint(e, key); })
+          .filter(function (e) { return e !== null; }).sort(function (a, b) { return a.t - b.t; });
+      });
+      out[part] = lines;
+    });
     if (psHas(obj, "damage_taken")) {
       out.damage_taken = {};
       Object.keys(obj.damage_taken).forEach(function (slot) {
@@ -1131,6 +1159,18 @@
     return { t: events.map(function (e) { return key ? e[key] : e; }), ev: events };
   }
 
+  function psLifeTimelines(part) {
+    if (!part) return null;
+    var out = {};
+    Object.keys(part).forEach(function (slot) {
+      var lives = {};
+      part[slot].forEach(function (e) { (lives[e.life] = lives[e.life] || []).push(e); });
+      Object.keys(lives).forEach(function (life) { lives[life] = psTimeline(lives[life], "t"); });
+      out[slot] = { all: psTimeline(part[slot], "t"), lives: lives };
+    });
+    return out;
+  }
+
   function psFreeze(x) {
     if (x !== null && typeof x === "object" && !Object.isFrozen(x)) {
       Object.keys(x).forEach(function (k) { psFreeze(x[k]); });
@@ -1146,16 +1186,9 @@
   function indexRoundState(blob, abilities) {
     blob = condIsRow(blob) ? blob : {};
     var ps = validatePlayerState(blob.player_state);
-    var vitals = null, damage = null, spike = null, alive = null, conditions = {}, starts = {};
-    if (ps && ps.vitals) {
-      vitals = {};
-      Object.keys(ps.vitals).forEach(function (slot) {
-        var lives = {};
-        ps.vitals[slot].forEach(function (e) { (lives[e.life] = lives[e.life] || []).push(e); });
-        Object.keys(lives).forEach(function (life) { lives[life] = psTimeline(lives[life], "t"); });
-        vitals[slot] = { all: psTimeline(ps.vitals[slot], "t"), lives: lives };
-      });
-    }
+    var vitals = psLifeTimelines(ps && ps.vitals), overheal = psLifeTimelines(ps && ps.overheal);
+    var decay = psLifeTimelines(ps && ps.decay);
+    var damage = null, spike = null, alive = null, conditions = {}, starts = {};
     if (ps && ps.damage_taken) damage = ps.damage_taken;
     if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
     var ult = null, orbs = null;
@@ -1182,7 +1215,7 @@
     return Object.freeze({
       available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
       alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs),
-      ult: psFreeze(ult), orbs: psFreeze(orbs)
+      ult: psFreeze(ult), orbs: psFreeze(orbs), overheal: psFreeze(overheal), decay: psFreeze(decay)
     });
   }
 
@@ -1236,6 +1269,34 @@
     if (!line) return null;
     var i = psBisect(line.t, t);
     return i ? line.ev[i - 1] : null;
+  }
+
+  function psLifeLine(part, slot, life) {
+    var entry = part ? condOwn(part, String(slot)) : undefined;
+    if (!entry) return null;
+    return life === null || life === undefined ? entry.all : condOwn(entry.lives, String(life));
+  }
+
+  // The latest overheal point at or before t, or null; with life, only that life's points.
+  function overhealAt(index, slot, t, life) {
+    var line = psLifeLine(index && index.overheal, slot, life);
+    if (!line) return null;
+    var i = psBisect(line.t, t);
+    return i ? line.ev[i - 1] : null;
+  }
+
+  // Combined decay: linear within a life, the preceding knot's unknown flag, later knot at a jump.
+  // Null before the first knot or after the closing 0/false knot.
+  function decayAt(index, slot, t, life) {
+    var line = psLifeLine(index && index.decay, slot, life);
+    if (!line) return null;
+    var i = psBisect(line.t, t);
+    if (!i) return null;
+    var previous = line.ev[i - 1], following = line.ev[i], value = previous.dec;
+    if (following && following.life === previous.life) {
+      value += (following.dec - value) * ((t - previous.t) / (following.t - previous.t));
+    } else if (t > previous.t && value === 0 && !previous.unk) return null;
+    return { dec: value, unk: previous.unk };
   }
 
   // Whether the slot took confirmed damage at or before t this round.
@@ -4568,6 +4629,7 @@
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
+    overhealAt: overhealAt, decayAt: decayAt,
     healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt,
     utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,

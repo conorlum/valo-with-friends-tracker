@@ -57,14 +57,17 @@ def test_a_segments_heights_must_cover_every_sample():
         fmt.decode_segment_z({"t0": 0.0, "u": [1, 1], "v": [1, 1], "yaw": [0, 0], "z": [5]}, hz=4)
 
 
-def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
+def test_health_parts_invalidate_the_old_condensed_recipe(monkeypatch):
     # Revision 21 (damage causes, heals, charges) is a new recipe too: replay_reparse_auto re-parses every upload.
     # R7/R9: crouch spans use revision 24; legacy blobs are witnessed in test_replay_crouch.
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
-    assert fmt.CONDENSE_REVISION == 31 and fmt.FORMAT_VERSION == 1
-    assert ".c31.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # R9: CONDENSE 32 stores overheal and combined decay timelines.
+    assert fmt.CONDENSE_REVISION == 32 and fmt.FORMAT_VERSION == 1
+    assert ".c32.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    monkeypatch.setattr(fmt, "CONDENSE_REVISION", 31)
+    assert fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789") == "2b66c65a7b11.c31.f1.aabcdef01"
 
 
 def test_control_reader_ignores_hold_rows():
@@ -182,3 +185,21 @@ def test_bad_player_state_entries_are_dropped_on_read():
     stored["spike"].append({"t": 90.0, "s": "juggled"})
     raw = gzip.compress(json.dumps(_blob(player_state=stored)).encode())
     assert fmt.decode_blob(raw)["player_state"] == PLAYER_STATE
+
+
+def test_overheal_and_decay_parts_round_trip():
+    state = dict(PLAYER_STATE,
+                 overheal={"0": [{"t": 1, "life": 0, "oh": 50}]},
+                 decay={"0": [{"t": 1, "life": 0, "dec": 20, "unk": True},
+                              {"t": 2, "life": 0, "dec": 0, "unk": False}]})
+    blob = _blob(player_state=state)
+    assert fmt.decode_blob(fmt.encode_blob(blob)) == blob
+
+
+@pytest.mark.parametrize("part", ["overheal", "decay"])
+def test_a_malformed_health_part_leaves_the_rest_of_the_round_intact(part):
+    base = _blob(player_state=PLAYER_STATE)
+    malformed = _blob(player_state={**PLAYER_STATE, part: []})
+    raw = gzip.compress(json.dumps(malformed).encode())
+    assert fmt.decode_blob(raw) == base
+    assert fmt.decode_blob(fmt.encode_blob(malformed)) == base
