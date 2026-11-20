@@ -1344,16 +1344,14 @@
     return out;
   }
 
-  // A player row's health at t, for the players panel: {dead, pct, total, armor}. `total` is HP plus shield and
-  // `armor` the shield bought (25 or 50; 0 none), both null unless proven: after a hit, from that hit; before any,
-  // from a round-start seed (full). `pct` is null when there's a timeline but no proven figure.
-  // `hpPct` is HP alone (of its max) and `shieldPct` the shield left out of heavy shield's 50 (light shield fills
-  // half), drawn as the bar and the orange line above it; both null unless proven, like `total`.
+  // The panel keeps HP and shield evidence separately. Total is HP + shield + overheal only when HP and shield
+  // are both proven. hpPct draws HP after decay; shieldPct and ohPct are out of 50. Missing parts stay null.
   var FULL_SHIELD = 50;
 
   function splitPct(hp, mhp, sh) {
     var clamp = function (x) { return Math.max(0, Math.min(100, x)); };
-    return { hpPct: mhp > 0 ? clamp(100 * hp / mhp) : null, shieldPct: clamp(100 * sh / FULL_SHIELD) };
+    return { hpPct: typeof hp === "number" && mhp > 0 ? clamp(100 * hp / mhp) : null,
+             shieldPct: typeof sh === "number" ? clamp(100 * sh / FULL_SHIELD) : null };
   }
 
   // The first event of a known life that carries both maxima ({mhp, msh}), or null. Only with a life index: across
@@ -1368,24 +1366,32 @@
   }
 
   function hudVitals(index, slot, t) {
-    var h = healthAt(index, slot, t);
-    if (h.state === "dead") return { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null };
-    if (h.state === "known") {
-      var split = splitPct(h.hp, h.mhp, h.sh);
-      return { dead: false, pct: h.pct, total: Math.round(h.hp + h.sh), armor: h.msh, hpPct: split.hpPct,
-               shieldPct: split.shieldPct };
-    }
+    var h = healthAt(index, slot, t), life = lifeIndexAt(index, slot, t);
+    var out = { dead: h.state === "dead" || life === null, pct: h.pct, total: null, armor: null,
+                hpPct: null, shieldPct: null, ohPct: index && index.overheal ? 0 : null, decay: null };
+    if (out.dead) { out.pct = 0; return out; }
+    var oh = overhealAt(index, slot, t, life), dec = decayAt(index, slot, t, life);
+    var overheal = oh ? oh.oh : 0;
+    if (out.ohPct !== null) out.ohPct = 100 * overheal / FULL_SHIELD;
+    var hp = h.hp, mhp = h.mhp, sh = h.sh, msh = h.msh;
     if (h.state === "undamaged") {
-      var seed = vitalsAt(index, slot, t, h.life === null ? undefined : h.life);
+      var seed = vitalsAt(index, slot, t, life);
       var proven = !!seed && healthPct(seed) !== null;
       // No round-start seed: the shield bought is fixed for the life, and nothing has hit them yet, so they are at
       // full; this life's first later hit proves the maxima.
-      if (!proven) seed = laterMaxima(index, slot, h.life);
-      proven = !!seed;
-      return { dead: false, pct: 100, total: proven ? Math.round(seed.mhp + seed.msh) : null, armor: proven ? seed.msh : null,
-               hpPct: proven ? 100 : null, shieldPct: proven ? splitPct(seed.mhp, seed.mhp, seed.msh).shieldPct : null };
+      if (!proven) seed = laterMaxima(index, slot, life) || seed;
+      hp = mhp = seed ? seed.mhp : null;
+      sh = msh = seed ? seed.msh : null;
+      out.pct = 100;
     }
-    return { dead: false, pct: null, total: null, armor: null, hpPct: null, shieldPct: null };
+    if (dec && (dec.dec > 0 || dec.unk)) {
+      var amount = typeof hp === "number" ? Math.min(dec.dec, Math.max(0, hp - 1)) : dec.dec;
+      out.decay = { hp: amount, pct: mhp > 0 ? 100 * amount / mhp : null, unk: dec.unk };
+    }
+    var split = splitPct(typeof hp === "number" ? hp - (out.decay ? out.decay.hp : 0) : null, mhp, sh);
+    out.hpPct = split.hpPct; out.shieldPct = split.shieldPct; out.armor = msh;
+    if (typeof hp === "number" && typeof sh === "number") out.total = Math.round(hp + sh + overheal);
+    return out;
   }
 
   // With hold rows, the latest switch in the current life gives {gun, held: true}; a closing row or no switch
@@ -2384,20 +2390,31 @@
         ? '<span class="replay-pl-impact ' + (value > 0 ? "pos" : value < 0 ? "neg" : "") + '" title="' +
           escapeHtml(impactTitle) + '">' + signed(value) + "</span>" : "";
       var v = life ? hudVitals(self.current.state, p.slot, t)
-        : { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null };
+        : { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null, ohPct: null, decay: null };
       var fill = v.hpPct !== null && v.hpPct !== undefined ? v.hpPct : v.pct;
       // The orange line above the bar: the shield left, out of heavy shield's 50; empty with no shield left.
       var shield = life && v.shieldPct !== null && v.shieldPct !== undefined
         ? '<span class="replay-pl-shield" title="Shield ' + Math.round(v.shieldPct * FULL_SHIELD / 100) + " of " +
           (v.armor || 0) + ' bought"><span style="width:' + v.shieldPct.toFixed(1) + '%"></span></span>'
         : '<span class="replay-pl-shield is-unknown"></span>';
-      var bar = shield + (fill === null
-        ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
-        : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
+      // Overheal shares the bar with HP: while present, its width represents the game's 150 HP cap.
+      var scale = v.ohPct > 0 ? 100 / 150 : 1;
+      var decay = v.decay, decayTitle = [];
+      if (decay && decay.hp > 0) decayTitle.push("Decayed " + Math.round(decay.hp) + " (wiki figures)");
+      if (decay && decay.unk) decayTitle.push("Decayed (amount not in the wiki)");
+      var hpTitle = decay && decay.unk ? "Decayed (amount not in the wiki)" : "Health";
+      var bar = shield + '<span class="replay-pl-bar' + (fill === null ? ' is-unknown' : '') + '" title="' +
+        (fill === null ? 'Health not proven since the last hit' : 'Health') + '">' +
+        '<span class="replay-pl-hp-fill' + (decay && decay.unk ? ' is-decayed' : '') + '" title="' + hpTitle +
+        '" style="width:' + ((fill || 0) * scale).toFixed(1) + '%"></span>' +
+        '<span class="replay-pl-decay" title="' + decayTitle.join("; ") + '" style="width:' +
+        ((decay && decay.pct || 0) * scale).toFixed(1) + '%"></span>' +
+        '<span class="replay-pl-overheal" title="Overheal ' + Math.round((v.ohPct || 0) * FULL_SHIELD / 100) +
+        '" style="width:' + ((v.ohPct || 0) * FULL_SHIELD / 100 * scale).toFixed(1) + '%"></span></span>';
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
       var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
       var gun = gunHtml(held, self.options.gunIcons);
-      var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
+      var hp = '<span class="replay-pl-hp" title="Health plus shield plus overheal">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
         var n = used[k.name] || 0;
@@ -3317,15 +3334,23 @@
     return pct > 50 ? "healthy" : pct > 25 ? "hurt" : "low";
   }
 
-  // Whether the bar is worth drawing: damaged and not back at full (D10: "everyone who isnt damaged is full
-  // health anyway so no point showing that"). An unknown value still shows its "?".
-  function healthShown(health) {
-    return health.visible && !(health.state === "known" && health.pct >= 99.5);
+  // Full health normally needs no bar, but overheal and decay still need an annotation. Unknown HP keeps its "?".
+  function healthShown(health, overheal, decay) {
+    return health.state !== "dead" && (!!(overheal && overheal.oh > 0) || !!(decay && (decay.dec > 0 || decay.unk)) ||
+      (health.visible && !(health.state === "known" && health.pct >= 99.5)));
+  }
+
+  // Both map hit areas describe the same effects, including statuses whose amount is unavailable.
+  function healthEffectsText(overheal, decay) {
+    var text = "";
+    if (overheal && overheal.oh > 0) text += ", overheal " + Math.round(overheal.oh);
+    if (decay && (decay.dec > 0 || decay.unk)) text += ", decayed" + (decay.dec > 0 ? " " + Math.round(decay.dec) : "");
+    return text;
   }
 
   // Each player's health/name block below their circle: a thin health bar coloured by band, no number (or a
   // neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows while the
-  // player is below full after a confirmed hit this round (healthAt, healthShown); the name with the names toggle.
+  // player is below full after a confirmed hit, or has overheal or decay; the name with the names toggle.
   // Either part alone keeps the same place under the circle.
   ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout) {
     var self = this, view = this.viewBounds();
@@ -3333,7 +3358,7 @@
     var barLen = r * 1.6, hb = r * 0.75, hn = r * 1.05;
     ctx.save();
     marks.forEach(function (m) {
-      var hv = healthShown(m.health) ? m.health : null;
+      var hv = healthShown(m.health, m.overheal, m.decay) ? m.health : null;
       var name = null;
       if (self.linked && self.layers.names) {
         name = self.nameOf(m.slot).split("#")[0];
@@ -3341,7 +3366,8 @@
       }
       if (!hv && name === null) return;
       ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
-      var known = hv && hv.state === "known";
+      var known = hv && (hv.state === "known" || hv.state === "undamaged");
+      var pct = hv && hv.state === "undamaged" ? 100 : hv && hv.pct;
       var hw = hv ? r * 0.25 + barLen + (known ? 0 : r * 0.2 + ctx.measureText("?").width) + r * 0.25 : 0;
       ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
       var nw = name !== null ? ctx.measureText(name).width + r * 0.5 : 0;
@@ -3372,16 +3398,17 @@
         var bx = cx - hw / 2 + r * 0.25, by = b.y + hb / 2 - r * 0.11;
         ctx.fillStyle = "#3a3a42"; ctx.fillRect(bx, by, barLen, r * 0.22);
         if (known) {
-          ctx.fillStyle = healthColor(hv.pct); ctx.fillRect(bx, by, barLen * hv.pct / 100, r * 0.22);
+          ctx.fillStyle = healthColor(pct); ctx.fillRect(bx, by, barLen * pct / 100, r * 0.22);
         } else {
           ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
           ctx.textAlign = "left"; ctx.textBaseline = "middle";
           ctx.fillStyle = "#a0a0a8";
           ctx.fillText("?", bx + barLen + r * 0.2, b.y + hb / 2);
         }
-        var why = known ? healthWord(hv.pct) + ", as of the last hit at " + clock(hv.at) :
+        var why = known ? healthWord(pct) + (hv.state === "undamaged" ? "" : ", as of the last hit at " + clock(hv.at)) :
           "health unknown: " + (hv.at === null ? "not hit in this life" : "the hit at " + clock(hv.at) +
           " doesn't record the shield");
+        why += healthEffectsText(m.overheal, m.decay);
         hits.push({ x: cx, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
                     text: self.nameOf(m.slot) + " · " + why });
       }
@@ -4529,9 +4556,13 @@
         ctx.restore();
       }
       var health = healthAt(index, p.slot, t), conditions = playerConditionsAt(index, p.slot, t);
-      marks.push({ slot: p.slot, x: x, y: y, dim: dim, health: health, conditions: conditions });
+      var currentLife = lifeIndexAt(index, p.slot, t);
+      var overheal = overhealAt(index, p.slot, t, currentLife), decay = decayAt(index, p.slot, t, currentLife);
+      marks.push({ slot: p.slot, x: x, y: y, dim: dim, health: health, overheal: overheal, decay: decay,
+                   conditions: conditions });
       var about = [];
-      if (healthShown(health)) about.push(health.state === "known" ? healthWord(health.pct) : "health unknown");
+      if (healthShown(health, overheal, decay)) about.push((health.state === "undamaged" ? "healthy" :
+        health.state === "known" ? healthWord(health.pct) : "health unknown") + healthEffectsText(overheal, decay));
       if (conditions.length) about.push(chipOrder(conditions).map(function (c) { return c.c; }).join(", "));
       if (spike.slot === p.slot && spike.state === "carried") about.push("carrying the spike");
       if (spike.slot === p.slot && spike.state === "planting") about.push("planting the spike");
@@ -4630,7 +4661,7 @@
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
     overhealAt: overhealAt, decayAt: decayAt,
-    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt,
+    healthPct: healthPct, healthAt: healthAt, healthShown: healthShown, hudVitals: hudVitals, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt,
     utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
