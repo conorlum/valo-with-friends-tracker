@@ -126,14 +126,22 @@ def test_upload_drop_box_takes_dropped_files_and_input_stays_plain(browser_page,
     expect(page.locator('[data-drop-chosen]')).to_contain_text('2 files ready: a.vrf, b.vrf')
 
 
+ASCENT_TURNS = 1
+
+
 def marker_pixels(page, seconds):
     # SyntheticMatch's slot 0 starts at (-1700, 500) and walks +40 x/s.
     # Ascent maps world y to u and world x to v. These expectations come from
     # the input geometry, not the viewer's decoded tracks or hit-test metadata.
     uv = [500 * 0.00007 + 0.813895, (-1700 + 40 * seconds) * -0.00007 + 0.573242]
-    return page.evaluate("""uv => {
+    # Ascent turns the map one clockwise quarter (hard-coded, not read from the viewer):
+    # k=1 maps (x, y) to (S - y, x), before the view offset and zoom.
+    return page.evaluate("""([uv, turns]) => {
         const viewer = window.viewer, c = viewer.canvas, size = c.width, view = viewer.view;
-        const x = (uv[0]*size - view.ox)*view.k, y = (uv[1]*size - view.oy)*view.k;
+        const mx = uv[0]*size, my = uv[1]*size;
+        const [rx, ry] = turns === 1 ? [size - my, mx] : turns === 2 ? [size - mx, size - my]
+            : turns === 3 ? [my, size - mx] : [mx, my];
+        const x = (rx - view.ox)*view.k, y = (ry - view.oy)*view.k;
         const radius = size/48*Math.sqrt(view.k);
         const hex = getComputedStyle(viewer.root).getPropertyValue('--replay-team-1').trim();
         const rgb = hex.startsWith('#')
@@ -148,7 +156,7 @@ def marker_pixels(page, seconds):
                 rgb.every((v,k) => Math.abs(rgba[i+k]-v) <= 10)) marker++;
         }
         return {marker, opaque, size, x, y};
-    }""", uv)
+    }""", [uv, ASCENT_TURNS])
 
 
 def test_replay_fetch_canvas_round_seek_and_unavailable_control(browser_page, tmp_path):
@@ -178,6 +186,7 @@ def test_replay_fetch_canvas_round_seek_and_unavailable_control(browser_page, tm
         el.value=String(value); el.dispatchEvent(new Event('input',{bubbles:true}));
     }""", value)
     assert page.evaluate('window.viewer.t') == pytest.approx(35,abs=0.03)
+    assert page.evaluate('window.viewer.turns') == ASCENT_TURNS
     later = marker_pixels(page,35)
     assert later['marker'] > 20, f'player ring did not move to its known 35 s position: {later}'
     assert marker_pixels(page,5)['marker'] < 5, 'the old player ring was not cleared after seeking'
@@ -294,3 +303,78 @@ def test_sending_coach_feedback_keeps_the_page_where_it_is(browser_page, tmp_pat
         rows = {row.instance_index: row for row in db.query(CoachFeedback)}
         assert rows[None].note == 'Stays put'
         assert (rows[0].area_name, rows[0].area_player_id) == ('Market', ids[5])
+
+
+GRAB = """() => { const c = window.viewer.canvas; return Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data); }"""
+
+
+def test_rotated_replay_hover_round_buttons_and_aim_line(browser_page, tmp_path):
+    page, base, factory = browser_page
+    uuid, _, _, _ = stored_replay(factory, tmp_path)
+    page.set_viewport_size({'width': 1920, 'height': 911})
+    page.goto(base+f'/replays/{uuid}?round=1&t=5')
+    page.wait_for_function('window.viewer && window.viewer.current && window.viewer.t === 5')
+    page.wait_for_function('window.viewer.map.complete && window.viewer.map.naturalWidth > 0')
+    page.evaluate(SETTLED)
+    page.locator('[data-replay-layer="names"]').uncheck()
+    page.locator('[data-replay-layer="cones"]').uncheck()
+    # Hover: the pointer over slot 0's projected (rotated) position shows its tooltip.
+    spot = marker_pixels(page, 5)
+    canvas = page.locator('[data-replay-canvas]')
+    canvas.scroll_into_view_if_needed()
+    box = canvas.bounding_box()
+    page.mouse.move(box['x'] + spot['x']*box['width']/spot['size'], box['y'] + spot['y']*box['height']/spot['size'])
+    tip = page.locator('[data-replay-tip]')
+    expect(tip).to_be_visible()
+    assert page.evaluate('window.viewer.nameOf(0)') in tip.inner_text()
+    page.mouse.move(box['x'] + 2, box['y'] + 2)
+    expect(tip).to_be_hidden()
+    # Round buttons: text buttons at the ends of the controls row, no arrows beside the strip.
+    assert page.locator('.replay-controls button').first.get_attribute('data-replay-prev') is not None
+    assert page.locator('.replay-controls button').last.get_attribute('data-replay-next') is not None
+    arrows = page.locator('.replay-rounds button').evaluate_all(
+        "els => els.filter(e => /^[\\u2190\\u2192\\u2039\\u203a<>]$/.test(e.textContent.trim())).length")
+    assert arrows == 0
+    expect(page.locator('[data-replay-prev]')).to_be_disabled()
+    expect(page.locator('[data-replay-next]')).to_be_enabled()
+    page.locator('[data-replay-next]').click()
+    page.wait_for_function('window.viewer.number === 2 && window.viewer.current.blob.round === 2')
+    expect(page.locator('[data-replay-prev]')).to_be_enabled()
+    page.locator('[data-replay-prev]').click()
+    page.wait_for_function('window.viewer.number === 1 && window.viewer.current.blob.round === 1')
+    # Aim line. Slot 0 faces a wall a few pixels away on this fixture, so find a living player whose
+    # line is long (the same sight-mask rule the viewer uses), and look at that moment.
+    aim = page.locator('[data-replay-layer="aim"]')
+    expect(aim).to_be_checked()
+    target = page.evaluate("""() => {
+        const v = window.viewer, T = window.Replay, s = v.sight; let best = null;
+        for (let t = 0; t < 60; t += 1) for (const p of v.current.blob.players) {
+            const at = T.trackAt(v.current.tracks[String(p.slot)], t);
+            if (!at || !at.live) continue;
+            const rad = at.yaw*Math.PI/180;
+            const end = T.tracerEnd(s.mask, s.size, at.u, at.v, at.u+Math.cos(rad)*20000, at.v+Math.sin(rad)*20000);
+            const len = end ? end.steps*v.canvas.width/s.size : 0;
+            if (!best || len > best.len) best = {t, slot: p.slot, u: at.u, v: at.v, len};
+        }
+        return best;
+    }""")
+    assert target and target['len'] > 80, f'no living player with a long line of sight in the fixture: {target}'
+    page.evaluate('t => window.viewer.seek(t)', target['t'])
+    page.wait_for_function('t => window.viewer.t === t', arg=target['t'])
+    page.evaluate(SETTLED)
+    spot = page.evaluate("""([u, v, turns]) => {
+        const c = window.viewer.canvas, size = c.width, view = window.viewer.view;
+        const mx = u*size/10000, my = v*size/10000;
+        const [rx, ry] = turns === 1 ? [size - my, mx] : [mx, my];
+        return {x: (rx - view.ox)*view.k, y: (ry - view.oy)*view.k, size};
+    }""", [target['u'], target['v'], ASCENT_TURNS])
+    with_aim = page.evaluate(GRAB)
+    aim.uncheck(); page.evaluate(SETTLED)
+    without = page.evaluate(GRAB)
+    size, radius = spot['size'], spot['size']/48
+    changed = [i//4 for i in range(0, len(with_aim), 4) if with_aim[i:i+4] != without[i:i+4]]
+    dist2 = lambda p: ((p % size)-spot['x'])**2 + ((p//size)-spot['y'])**2
+    assert len(changed) > 10, 'unchecking Aim lines changed nothing'
+    assert max(map(dist2, changed)) > (radius*2)**2, 'the aim line does not reach past the player circle'
+    aim.check(); page.evaluate(SETTLED)
+    assert page.evaluate(GRAB) == with_aim, 'rechecking Aim lines did not restore the line'
