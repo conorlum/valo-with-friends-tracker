@@ -527,6 +527,37 @@ def test_a_capture_let_go_goes_on_the_orb_at_its_place_that_was_open():
     assert ps.validate(state)["orbs"] == state["orbs"]
 
 
+def test_plant_attempts_attach_in_time_order_to_the_same_state():
+    state = {"version": 1, "spike": []}
+    counts = {"plants: attempts": 1}
+    tries = [{"t": 30.0, "t1": None, "slot": 2}, {"t": 26.0, "t1": 27.37, "slot": 4},
+             {"t": 30.0, "t1": 30.0, "slot": 1}]
+    assert pse.attach_plant_tries(state, tries, counts) is state
+    assert state == {"version": 1, "spike": [], "plants": [[26.0, 27.37, 4], [30.0, None, 2], [30.0, 30.0, 1]]}
+    assert counts == {"plants: attempts": 4}
+    assert ps.validate(state)["plants"] == state["plants"]
+
+
+@pytest.mark.parametrize("state", [None, {"version": 1, "spike": []}])
+def test_no_plant_attempts_leave_the_state_unchanged(state):
+    counts = {}
+    assert pse.attach_plant_tries(state, [], counts) is state
+    assert state is None or "plants" not in state
+    assert counts == {}
+
+
+def test_plant_attempts_start_a_missing_state_and_survive_blob_storage():
+    from app.replays import format as fmt
+
+    counts = {}
+    state = pse.attach_plant_tries(None, [{"t": 26.0, "t1": 27.37, "slot": 4}], counts)
+    assert state == {"version": 1, "plants": [[26.0, 27.37, 4]]}
+    assert counts == {"plants: player_state started for plants": 1, "plants: attempts": 1}
+    assert ps.validate(state)["plants"] == state["plants"]
+    blob = {"v": 1, "player_state": state}
+    assert fmt.decode_blob(fmt.encode_blob(blob))["player_state"] == state
+
+
 def test_the_validator_drops_bad_ult_points_and_orbs():
     checked = ps.validate({"version": 1, "ult": {"0": [{"t": 1.0, "n": 3}, {"t": 2.0, "n": 99}, {"t": 3.0, "n": True}],
                                                  "x": [{"t": 1.0, "n": 1}]},

@@ -189,11 +189,12 @@ def test_answers_do_not_depend_on_query_order():
 def test_missing_unsupported_and_malformed_player_state_is_unavailable_never_a_number():
     bad = [None, "x", [], {"version": 2, **{k: v for k, v in PLAYER_STATE.items() if k != "version"}},
            {"version": True}, {**PLAYER_STATE, "vitals": []}, {**PLAYER_STATE, "damage_taken": None},
-           {**PLAYER_STATE, "spike": {}}]
+           {**PLAYER_STATE, "spike": {}}, {**PLAYER_STATE, "plants": {}}]
     for player_state in bad:
         got = ask(make_blob(player_state=player_state), [["valid"], ["health", 0, 5], ["health", 1, 13],
                                                          ["spike", 26], ["spike", 52], ["cond", 1, 10]])
         assert got[0] is None, player_state
+        assert got[0] == ps_py.validate(player_state)
         assert [brief(h) for h in got[1:3]] == [("none", False, None)] * 2
         assert got[3]["state"] == "unknown" and got[3]["source"] == "none"
         assert got[4]["state"] == "planted" and got[4]["source"] == "ability"
@@ -203,6 +204,19 @@ def test_missing_unsupported_and_malformed_player_state_is_unavailable_never_a_n
     got = ask(make_blob(player_state=no_vitals), [["health", 0, 5], ["spike", 16]])
     assert brief(got[0]) == ("unavailable", True, None)
     assert got[1]["state"] == "carried" and got[1]["slot"] == 2
+    # Optional plants: valid, malformed, empty, absent and excessive parts mirror Python.
+    plants_cases = [
+        [[25.47, 25.53, 3], [22.39, 23.76, 3], [25.47, None, 9]],
+        [[-200, 1000, 0], [0, 0, 3.0]], [], [[0, None, 0]] * 32, [[0, None, 0]] * 33,
+    ]
+    bad_attempts = [[25.47, 25.46, 3], [25.47, None, 10], [25.47, None, True], ["25.47", None, 3],
+                    [25.47, None], [25.47, None, 3, 4], None, {}, [True, None, 3], [0, False, 3],
+                    [-201, None, 3], [1001, None, 3], [0, 1001, 3], [0, "1", 3], [0, None, -1],
+                    [0, None, 1.5]]
+    plants_cases.extend([[bad_attempt, [22.39, None, 3]] for bad_attempt in bad_attempts])
+    states = [{"version": 1}, *({"version": 1, "plants": part} for part in plants_cases)]
+    for state in states:
+        assert ask(make_blob(player_state=state), [["valid"]])[0] == ps_py.validate(state)
     no_damage = {k: v for k, v in PLAYER_STATE.items() if k != "damage_taken"}
     assert brief(ask(make_blob(player_state=no_damage), [["health", 0, 5]])[0]) == ("none", False, None)
     no_spike = {k: v for k, v in PLAYER_STATE.items() if k != "spike"}
@@ -256,6 +270,68 @@ def test_spike_state_drop_pickup_cancelled_plant_carrier_death_and_equal_times()
     for (t, _), state, hud in zip(SPIKE_CASES, got[:n], got[n:]):
         assert state["hud"] == (hud if state["source"] == "ability" else None), t
     assert got[[t for t, _ in SPIKE_CASES].index(52)]["hud"]["defusing"]["slot"] == 0
+
+
+@needs_node
+def test_plant_attempts_override_carried_only_while_held():
+    ps = {"version": 1, "spike": [{"t": 0, "s": "carried"}],
+          "plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [27.02, 31.02, 3]]}
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    times = [23.0, 24.0, 25.5, 25.6, 28.0, 22.39, 23.76, 31.02]
+    got = ask(blob, [["spike", t] for t in times])
+    carried = {"state": "carried", "slot": None, "u": None, "v": None, "since": 0,
+               "source": "player_state", "hud": None}
+
+    def planting(since):
+        return {**carried, "state": "planting", "slot": 3, "since": since, "attempt": True}
+
+    assert got == [planting(22.39), carried, planting(25.47), carried, planting(27.02),
+                   planting(22.39), carried, carried]
+    legacy = {**blob, "player_state": {"version": 1, "spike": ps["spike"]}}
+    assert ask(legacy, [["spike", t] for t in times]) == [carried] * len(times)
+
+
+@needs_node
+@pytest.mark.parametrize("spike", [None, [], [{"t": 20.0, "s": "carried"}]],
+                         ids=["absent", "empty", "future"])
+def test_plant_attempt_needs_no_spike_transition(spike):
+    ps = {"version": 1, "plants": [[5.0, 9.0, 3]]}
+    if spike is not None:
+        ps["spike"] = spike
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    assert ask(blob, [["spike", 6.0]]) == [
+        {"state": "planting", "slot": 3, "u": None, "v": None, "since": 5.0,
+         "source": "player_state", "hud": None, "attempt": True}]
+
+
+@needs_node
+def test_plant_attempt_open_end_lives_latest_attempt_and_bomb_precedence():
+    ps = {"version": 1, "spike": [{"t": 0, "s": "carried"}], "plants": [[30.0, None, 3]]}
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    got = ask(blob, [["spike", t] for t in [33.9, 34.0, 34.1]])
+    assert got[0]["state"] == "planting" and got[0]["since"] == 30.0
+    assert all(s["state"] == "carried" and "attempt" not in s for s in got[1:])
+
+    ps = {**ps, "plants": [[22.39, 26.0, 3]]}
+    blob = {**blob, "player_state": ps}
+    for lives, expected in [({"3": [[0, 23.0]]}, "carried"),
+                            ({"3": [[0, 23.0], [23.25, None]]}, "carried"),
+                            ({"3": [[23.25, None]]}, "carried"),
+                            ({}, "planting")]:
+        [state] = ask({**blob, "alive": lives}, [["spike", 23.5]])
+        assert state["state"] == expected
+        assert ("attempt" in state) == (expected == "planting")
+
+    ps = {**ps, "plants": [[27.02, 33.0, 3], [30.0, None, 3]]}
+    blob = {**blob, "player_state": ps}
+    [latest] = ask(blob, [["spike", 30.5]])
+    assert latest["since"] == 30.0 and latest["attempt"] is True
+    bomb = {**BOMB, "t": 31.02, "by": 3, "defuses": []}
+    state, hud = ask({**blob, "util": [bomb]}, [["spike", 31.5], ["hud", 31.5]])
+    assert state["state"] == "planted" and state["source"] == "ability" and state["hud"] == hud
+    assert "attempt" not in state
+    legacy = {**blob, "player_state": {"version": 1, "spike": ps["spike"]}, "util": [bomb]}
+    assert ask(legacy, [["spike", 31.5]]) == [state]
 
 
 @needs_node
@@ -336,6 +412,32 @@ def test_the_index_is_frozen_built_once_per_round_and_round_switching_carries_no
     assert brief(got["two"]["h0"]) == ("undamaged", False, None)       # nothing from round 1
     assert brief(got["two"]["h1"]) == ("known", True, 20.0)
     assert got["two"]["s"]["state"] == "carried" and got["two"]["s"]["slot"] == 4
+
+
+@needs_node
+def test_plants_index_is_sorted_frozen_and_unavailable_when_absent():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const states = JSON.parse(input);
+        const out = states.map(player_state => {
+          const idx = R.indexRoundState({player_state}, []);
+          const plants = idx.plants;
+          const frozen = plants === null ? null : [Object.isFrozen(plants), ...plants.map(Object.isFrozen)];
+          if (player_state && Array.isArray(player_state.plants) && player_state.plants.length) {
+            player_state.plants[0][0] = 999;
+          }
+          return {plants, frozen};
+        });
+        process.stdout.write(JSON.stringify(out));
+      });"""
+    states = [{"version": 1, "plants": [[25.47, 25.53, 3], [22.39, 23.76, 3], [25.47, None, 9]]},
+              {"version": 1, "plants": []}, {"version": 1}, None,
+              {"version": 1, "plants": [[0, None, 0]] * 33}, {"version": 1, "plants": {}}]
+    assert run_node(script, states) == [
+        {"plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [25.47, None, 9]], "frozen": [True] * 4},
+        {"plants": [], "frozen": [True]}, *[{"plants": None, "frozen": None}] * 4,
+    ]
 
 
 @needs_node
@@ -436,7 +538,8 @@ def test_the_js_contract_constants_are_player_state_py_s():
                    "t_max": ps_py.T_MAX, "value_max": ps_py.VALUE_MAX, "life_max": ps_py.LIFE_MAX,
                    "max_events": ps_py.MAX_EVENTS, "max_spike": ps_py.MAX_SPIKE, "uv_max": ps_py.UV_MAX,
                    "ult_max": ps_py.ULT_MAX, "max_orbs": ps_py.MAX_ORBS, "orb_ends": sorted(ps_py.ORB_ENDS, key=["taken", "plant", "round"].index),
-                   "charge_keys": list(ps_py.CHARGE_KEYS), "charge_max": ps_py.CHARGE_MAX}
+                   "charge_keys": list(ps_py.CHARGE_KEYS), "charge_max": ps_py.CHARGE_MAX,
+                   "max_plants": ps_py.MAX_PLANTS}
 
 
 @needs_node

@@ -155,6 +155,68 @@ def test_a_capture_let_go_is_heard_as_it_starts(monkeypatch):
     assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
 
 
+def _plant_tries(data, *tries):
+    data["player_state"] = {"version": 1, "plants": [list(x) for x in tries]}
+    return data
+
+
+def test_a_plant_attempt_with_another_enemy_unseen_names_nobody(monkeypatch):
+    _sounds(monkeypatch)
+    data = _plant_tries(blob(_players(), t_end=10.0), [6.0, 7.37, 5])
+    assert 5 not in _run(data, 6.5, monkeypatch)
+
+
+def test_a_plant_attempt_with_the_other_enemy_dead_names_the_tapper(monkeypatch):
+    _sounds(monkeypatch)
+    data = _plant_tries(blob(_players(), t_end=10.0, deaths={6: 3.0}), [6.0, 7.37, 5])
+    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
+
+
+def test_a_plant_attempt_let_go_is_heard_as_it_starts(monkeypatch):
+    _sounds(monkeypatch)
+    data = _plant_tries(blob(_players(), t_end=10.0, deaths={6: 3.0}), [6.0, 6.06, 5])
+    assert _run(data, 6.5, monkeypatch)[5] == pytest.approx(6.0)
+
+
+def test_a_plant_attempt_out_of_hearing_names_nobody(monkeypatch):
+    _sounds(monkeypatch, heard_m=1.0)
+    data = _plant_tries(blob(_players(), t_end=10.0, deaths={6: 3.0}), [6.0, 7.37, 5])
+    assert 5 not in _run(data, 6.5, monkeypatch)
+
+
+def test_a_buy_phase_plant_attempt_is_never_heard_at_round_start(monkeypatch):
+    _sounds(monkeypatch)
+    data = _plant_tries(blob(_players(), t_end=10.0, deaths={6: 0.0}), [-3.0, -2.0, 5])
+    assert 5 not in _run(data, 1.0, monkeypatch)
+
+
+@pytest.mark.parametrize("entry", [
+    [6.0], ["x", 7.0, 5], [6.0, "bad", 5], [6.0, 5.0, 5],
+    [6.0, 7.0, True], [6.0, 7.0, 12], {"t": 6.0, "t1": 7.0, "slot": 5},
+])
+def test_a_malformed_plant_attempt_is_skipped(monkeypatch, entry):
+    _sounds(monkeypatch)
+    data = blob(_players(), t_end=10.0, deaths={6: 3.0})
+    data["player_state"] = {"version": 1, "plants": [entry]}
+    assert 5 not in _run(data, 6.5, monkeypatch)
+
+
+def test_plant_attempts_must_be_a_list(monkeypatch):
+    _sounds(monkeypatch)
+    data = blob(_players(), t_end=10.0, deaths={6: 3.0})
+    data["player_state"] = {"version": 1, "plants": {"t": 6.0, "t1": 7.0, "slot": 5}}
+    assert 5 not in _run(data, 6.5, monkeypatch)
+
+
+def test_player_state_without_plants_keeps_the_same_located_map(monkeypatch):
+    _sounds(monkeypatch)
+    data = _gunfire([_shot(5.0, 5)], deaths={6: 3.0})
+    before = dict(_run(data, 6.5, monkeypatch))
+    assert before[5] == pytest.approx(5.0)
+    data["player_state"] = {"version": 1}
+    assert _run(data, 6.5, monkeypatch) == before
+
+
 def test_a_kill_still_names_the_killer_with_the_other_unseen(monkeypatch):
     data = blob({**_players(), 1: ("A", [(0.0, 200, 120, 180)])}, t_end=12.0, deaths={1: 8.0})
     data["kills"] = [{"i": 0, "t": 8.0, "killer": 5, "victim": 1, "u": uv(200, 120)[0], "v": uv(200, 120)[1]}]

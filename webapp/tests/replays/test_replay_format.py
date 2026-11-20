@@ -63,8 +63,9 @@ def test_door_state_witnesses_invalidate_the_old_condensed_recipe():
     # CONDENSE 28: Ascent door reopening
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
-    assert fmt.CONDENSE_REVISION == 31 and fmt.FORMAT_VERSION == 1
-    assert ".c31.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
+    assert fmt.CONDENSE_REVISION == 32 and fmt.FORMAT_VERSION == 1
+    assert ".c32.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def test_control_reader_ignores_hold_rows():
@@ -147,6 +148,15 @@ PLAYER_STATE = {"version": 1,
 def test_a_player_state_subsection_round_trips():
     blob = _blob(player_state=json.loads(json.dumps(PLAYER_STATE)))
     data = fmt.encode_blob(blob)
+    assert fmt.decode_blob(data) == blob
+    assert fmt.encode_blob(fmt.decode_blob(data)) == data
+
+
+def test_plant_attempts_survive_the_storage_validation_round_trip():
+    state = {"version": 1, "plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [30.0, None, 9]]}
+    blob = _blob(player_state=state)
+    data = fmt.encode_blob(blob)
+    assert json.loads(gzip.decompress(data))["player_state"] == state
     assert fmt.decode_blob(data) == blob
     assert fmt.encode_blob(fmt.decode_blob(data)) == data
 

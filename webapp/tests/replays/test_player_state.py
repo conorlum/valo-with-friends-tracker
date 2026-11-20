@@ -47,6 +47,46 @@ def test_an_unsupported_version_or_malformed_structure_is_unavailable(bad):
     assert ps.validate(bad) is None
 
 
+def test_plants_are_sorted_stably_without_mutating_the_input():
+    state = {"version": 1, "plants": [[25.47, 25.53, 3], [22.39, 23.76, 3], [25.47, None, 9]]}
+    original = copy.deepcopy(state)
+    got = ps.validate(state)
+    assert got == {"version": 1, "plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [25.47, None, 9]]}
+    assert state == original
+    assert ps.validate(got) == got
+
+
+@pytest.mark.parametrize("entry", [[22.39, None, 3], [25.47, 25.47, 0], [-200, 1000, 9], [0, 1, 3.0]])
+def test_plant_entry_keeps_valid_attempts(entry):
+    assert ps.plant_entry(entry) == entry
+    assert ps.validate({"version": 1, "plants": [entry]})["plants"] == [entry]
+
+
+@pytest.mark.parametrize("entry", [
+    [25.47, 25.46, 3], [25.47, None, 10], [25.47, None, True], ["25.47", None, 3],
+    [25.47, None], [25.47, None, 3, 4], None, {}, [True, None, 3], [0, False, 3],
+    [-201, None, 3], [1001, None, 3], [0, 1001, 3], [0, "1", 3], [0, None, -1],
+    [0, None, 1.5], [math.nan, None, 3], [0, math.inf, 3],
+])
+def test_bad_plant_attempts_are_dropped_and_counted(entry):
+    diagnostics = {}
+    good = [22.39, 23.76, 3]
+    assert ps.validate({"version": 1, "plants": [entry, good]}, diagnostics) == {"version": 1, "plants": [good]}
+    assert diagnostics == {"plants: bad attempt": 1}
+    assert ps.plant_entry(entry) is None
+
+
+def test_plants_wrong_shape_is_unavailable_and_excess_count_drops_only_the_part():
+    assert ps.validate({"version": 1, "plants": {}}) is None
+    assert ps.validate({"version": 1, "plants": []}) == {"version": 1, "plants": []}
+    assert "plants" not in ps.validate({"version": 1})
+    assert len(ps.validate({"version": 1, "plants": [[0, None, 0]] * 32})["plants"]) == 32
+    diagnostics = {}
+    assert ps.validate({"version": 1, "plants": [[0, None, 0]] * 33, "orbs": []}, diagnostics) == {
+        "version": 1, "orbs": []}
+    assert diagnostics == {"plants: too many (unavailable)": 1}
+
+
 def test_missing_parts_are_unavailable_not_zero():
     got = ps.validate({"version": 1})
     assert got == {"version": 1}

@@ -54,7 +54,7 @@ from app.replays.contract import (
     map_codes_in_file,
 )
 from app.replays.causes import Archetypes, cause_key, cause_of
-from app.replays.player_state_extract import (attach_orb_tries, attribute_death_drops, attribute_planter,
+from app.replays.player_state_extract import (attach_orb_tries, attach_plant_tries, attribute_death_drops, attribute_planter,
                                               read_player_state, round_player_state)
 
 # EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
@@ -1889,6 +1889,9 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
         attach_orb_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("orb_tries", []), spike_counts)
+        state = attach_plant_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("plant_tries", []), spike_counts)
+        if state is not None:
+            blob["player_state"] = state
     replay.report["extras"] = extras.report
     replay.report["cause_joins"] = dict(sorted(joins.items()))
     replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))

@@ -5,7 +5,7 @@
   "Abyss": {
    "callouts_sha256": "79d785f87833e8096730e608a6daf2d589d71b8cb3fc7b3a021416648ae44c23",
    "choke_asset_hash": "52137509cc9e968e",
-   "control_fingerprint": "d16a08bd2ae1d48b",
+   "control_fingerprint": "3279b89b94f5cf61",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -24,7 +24,7 @@
     "state": "ready"
    },
    "engine_key": "75422a2cfbdfafbc",
-   "gap_fingerprint": "138118203a9c3d9d",
+   "gap_fingerprint": "1a05e962f0f374bc",
    "geometry_inputs": {
     "barrier": "06d022399053",
     "scale": 8.1e-05,
@@ -44,7 +44,7 @@
   "Ascent": {
    "callouts_sha256": "0fd802b1658c27441a8fb623aff4a7c7566ba2bcff83f7ebbc7290efc53295f9",
    "choke_asset_hash": "6dcf88e6769966f4",
-   "control_fingerprint": "4f4e8d0f32087e48",
+   "control_fingerprint": "7462ba20df42d85d",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -64,7 +64,7 @@
     "state": "ready"
    },
    "engine_key": "f4d56d40428ce2ae",
-   "gap_fingerprint": "6ec95fa7f4fe88bd",
+   "gap_fingerprint": "79a5d63ac309ddb3",
    "geometry_inputs": {
     "barrier": "77b049460968",
     "cover": "03d6b7c14536",
@@ -85,7 +85,7 @@
   "Bind": {
    "callouts_sha256": "cfafdf8d2f343d10169e2e0b04cc123d6a3c435b4df954af19dd4e5c8ddc92bd",
    "choke_asset_hash": "cf12930d2890cc67",
-   "control_fingerprint": "9eb3fb7daec95652",
+   "control_fingerprint": "6bc2b093bc60f83b",
    "current_geometry": {
     "feature_key": null,
     "geometry": {
@@ -98,7 +98,7 @@
     "state": "ready"
    },
    "engine_key": "2dd72468998bb3f2",
-   "gap_fingerprint": "4945465c2530fe4a",
+   "gap_fingerprint": "81b270426fcc3ba0",
    "geometry_inputs": {
     "barrier": "17f178122d9f",
     "scale": 5.9e-05,
@@ -117,14 +117,14 @@
   "Breeze": {
    "callouts_sha256": "c445f5a1630cb4d623a1b652313574c52d850ef524aee2fb8a96cb0f9f118635",
    "choke_asset_hash": "d1623f65967fa8a8",
-   "control_fingerprint": "f62265252db79a79",
+   "control_fingerprint": "e4ece7b3bf286e21",
    "current_geometry": {
     "feature_key": null,
     "geometry": null,
     "state": "no_map"
    },
    "engine_key": "bdc3b1ff08bff908",
-   "gap_fingerprint": "165c980411644a13",
+   "gap_fingerprint": "b3ade714dd9e5ebf",
    "geometry_inputs": {
     "barrier": "72fcdd722d37",
     "scale": 7e-05,
@@ -143,7 +143,7 @@
   "Corrode": {
    "callouts_sha256": "8de928289051ba7425149e68463c28f576159a74641811595dad6e6b0c53b98f",
    "choke_asset_hash": "3a802b5bc10d4881",
-   "control_fingerprint": "32511825d2d8dd10",
+   "control_fingerprint": "5a2a832116eb9b60",
    "current_geometry": {
     "feature_key": null,
     "geometry": {
@@ -156,7 +156,7 @@
     "state": "ready"
    },
    "engine_key": "ef8aa0a4142e4928",
-   "gap_fingerprint": "0ae2d8e0f135b0b1",
+   "gap_fingerprint": "681a03a003490e12",
    "geometry_inputs": {
     "barrier": "2b9ac9333692",
     "scale": 7e-05,
@@ -175,14 +175,14 @@
   "Fracture": {
    "callouts_sha256": "ef550f63ca2a5ebf4967173ae8f5b818750d650cdf42cdc700bd05afd29aa5e5",
    "choke_asset_hash": "cf29f40eb951fd24",
-   "control_fingerprint": "0d02ea0bc83827ca",
+   "control_fingerprint": "ac60c886a3b7ce8d",
    "current_geometry": {
     "feature_key": null,
     "geometry": null,
     "state": "no_map"
    },
    "engine_key": "5ff3fbbe653de195",
-   "gap_fingerprint": "7aaedb08929e9091",
+   "gap_fingerprint": "ab3c40f4f81ee42e",
    "geometry_inputs": {
     "barrier": "a2716b8b2641",
     "scale": 7.8e-05,
@@ -201,7 +201,7 @@
   "Haven": {
    "callouts_sha256": "609752f70ef84394750d776e14aa688daf890cf3e17bf7684bea269e8058a0d4",
    "choke_asset_hash": "cd42d00d68e45418",
-   "control_fingerprint": "76ddeda855348956",
+   "control_fingerprint": "4cbf6d712bd37996",
    "current_geometry": {
     "feature_key": null,
     "geometry": {
@@ -214,7 +214,7 @@
     "state": "ready"
    },
    "engine_key": "255cbdf4e688c343",
-   "gap_fingerprint": "7618df636cddeeb1",
+   "gap_fingerprint": "004d70fc3e387182",
    "geometry_inputs": {
     "barrier": "531ebcdcc30b",
     "scale": 7.5e-05,
@@ -233,14 +233,14 @@
   "Icebox": {
    "callouts_sha256": "c888805efea70eae80dcfab08694cab77024638d77aff5fbdb7854e747304a59",
    "choke_asset_hash": "22d54e50e75e6ba3",
-   "control_fingerprint": "b1556e4e6436620c",
+   "control_fingerprint": "a5a0bb8f192445ae",
    "current_geometry": {
     "feature_key": null,
     "geometry": null,
     "state": "no_map"
    },
    "engine_key": "e0860f2b57687a8c",
-   "gap_fingerprint": "5c4d7a03fc5c4d4e",
+   "gap_fingerprint": "deef3462a6bc3163",
    "geometry_inputs": {
     "barrier": "1458d8224f08",
     "scale": 7.2e-05,
@@ -259,7 +259,7 @@
   "Lotus": {
    "callouts_sha256": "00f80f2113009dddc2c89ee056569ab8da21b2c269b854bba6a601458406227c",
    "choke_asset_hash": "07eda3d5eedce617",
-   "control_fingerprint": "2e56df3412ae57c9",
+   "control_fingerprint": "192c0d1a2c191798",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -278,7 +278,7 @@
     "state": "ready"
    },
    "engine_key": "e2390fd73a26bb11",
-   "gap_fingerprint": "eb44c9c78aa081cd",
+   "gap_fingerprint": "35e30f16055ee662",
    "geometry_inputs": {
     "barrier": "0799f99c0abb",
     "scale": 7.2e-05,
@@ -297,14 +297,14 @@
   "Pearl": {
    "callouts_sha256": "4a5dc93d8bdbc27f77764ec8221f7c05a391f267638b730450ca863b3b6e623c",
    "choke_asset_hash": "ec6233dff419dc5c",
-   "control_fingerprint": "17b2a3b30a624a31",
+   "control_fingerprint": "50a69cd755380dc3",
    "current_geometry": {
     "feature_key": null,
     "geometry": null,
     "state": "no_map"
    },
    "engine_key": "0889cfd0fd3c226f",
-   "gap_fingerprint": "bb40ae4be9db8f09",
+   "gap_fingerprint": "e821c2f1b01e22fd",
    "geometry_inputs": {
     "barrier": "5f42c32c5c72",
     "scale": 7.8e-05,
@@ -323,7 +323,7 @@
   "Split": {
    "callouts_sha256": "31bfb4050e35d9b6265fa28a4a970bf76e246cec48f8e73702f6fc5bd74a897a",
    "choke_asset_hash": "fe6f881e51e009e7",
-   "control_fingerprint": "5a5af2643dccffbe",
+   "control_fingerprint": "f17d78b0475d37f0",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -342,7 +342,7 @@
     "state": "ready"
    },
    "engine_key": "ea8ad81b63ad60da",
-   "gap_fingerprint": "a84359eb036f773d",
+   "gap_fingerprint": "31f852512815e385",
    "geometry_inputs": {
     "barrier": "22e3b2d9539a",
     "scale": 7.8e-05,
@@ -361,7 +361,7 @@
   "Summit": {
    "callouts_sha256": "3745f525b9b30ef0ef65a05d0a09cda63b2cf8b9e9992e191146c8e32eecab3a",
    "choke_asset_hash": "2934fc8174d06a42",
-   "control_fingerprint": "8a2b3d85fd452654",
+   "control_fingerprint": "8eefaa133094d449",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -381,7 +381,7 @@
     "state": "ready"
    },
    "engine_key": "208da10f15461319",
-   "gap_fingerprint": "1341e67ee0f5a8dd",
+   "gap_fingerprint": "0679141521a42b9a",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
     "cover": "4ca7d497b029",
@@ -402,7 +402,7 @@
   "Sunset": {
    "callouts_sha256": "d5b735c7838aecb8abb012beecf75bd680105de40497503f17a65225398da6e1",
    "choke_asset_hash": "1df00ac42172e82c",
-   "control_fingerprint": "17f31e7ac6921af8",
+   "control_fingerprint": "b3ccdaefc150db12",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
@@ -422,7 +422,7 @@
     "state": "ready"
    },
    "engine_key": "d10300c55c1de697",
-   "gap_fingerprint": "0f2596fc94bbb2b3",
+   "gap_fingerprint": "17a0657165389ea1",
    "geometry_inputs": {
     "barrier": "02adc35320f7",
     "cover": "ca4caf841b49",

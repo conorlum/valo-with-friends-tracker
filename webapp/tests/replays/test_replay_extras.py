@@ -512,6 +512,86 @@ def test_the_planter_is_whoever_started_planting_four_seconds_before(tmp_path):
     assert (spike["slot"], spike["owner_by"]) == (4, "planted")
 
 
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    (36_000, 37_370, {"t": 26.0, "t1": 27.37, "slot": 4}),
+    (36_000, None, {"t": 26.0, "t1": None, "slot": 4}),
+    (59_000, 61_500, {"t": 49.0, "t1": 50.0, "slot": 4}),
+    (36_000, 36_000, {"t": 26.0, "t1": 26.0, "slot": 4}),
+])
+def test_every_plant_attempt_is_kept_even_without_a_plant(tmp_path, start, end, expected):
+    from app.replays.extras import util_entries
+
+    rows = [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0), effect(start, 104, 1, [80])]
+    if end is not None:
+        rows.append(stop(end, 104, 1))
+    extras = run6(tmp_path, rows)
+    assert extras.rounds[1]["plant_tries"] == [expected]
+    assert extras.report["plant tries"] == 1
+    assert util_entries(extras.rounds[1]) == [], "attempts belong in player_state, not util"
+
+
+def test_two_effects_at_one_plant_start_keep_the_latest_stop_and_the_planter(tmp_path):
+    from app.replays.extras import read_raw
+
+    rows = [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0),
+            effect(36_000, 104, 1, [80, 80]), stop(36_000, 104, 1),
+            effect(36_000, 104, 2, [80]), stop(40_000, 104, 2),
+            spawned(40_000, 81, "Default__TimedBomb_C", 0, 0)]
+    extras = run6(tmp_path, rows)
+    assert extras.rounds[1]["plant_tries"] == [{"t": 26.0, "t1": 30.0, "slot": 4}]
+    assert extras.report["plant tries"] == 1
+    [spike] = extras.rounds[1]["abilities"]
+    assert (spike["slot"], spike["owner_by"]) == (4, "planted")
+    raw = read_raw(tmp_path / "events.ndjson", frozenset(table6().pawn_slot))
+    assert len(raw.plant_effects) == 2, "record each effect once, even when its context repeats the spike"
+    assert raw.plant_starts == [(36_000, 104)] * 3, "legacy planter attribution stays unchanged"
+
+
+def test_a_buy_phase_plant_attempt_is_outside_the_playback_window(tmp_path):
+    extras = run6(tmp_path, [spawned(1_000, 80, "Default__BombEquippable_C", 0, 0),
+                             effect(5_000, 104, 1, [80]), stop(6_000, 104, 1)])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report["plant tries: outside a round"] == 1
+
+
+def test_an_effect_that_does_not_name_the_spike_is_not_a_plant_attempt(tmp_path):
+    extras = run6(tmp_path, [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0),
+                             effect(36_000, 104, 1, [999]), stop(37_370, 104, 1)])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report.get("plant tries", 0) == 0
+
+
+def test_plant_attempts_group_by_start_and_pawn_and_sort_by_start():
+    from app.replays.extras import _Effect, plant_attempts
+
+    effects = [_Effect(8, 104, 1, 500, (80,), stop_ms=9),
+               _Effect(3, 105, 2, 500, (80,), stop_ms=4),
+               _Effect(8, 104, 3, 500, (80,), stop_ms=12),
+               _Effect(8, 105, 4, 500, (80,), stop_ms=10),
+               _Effect(15, 104, 5, 500, (80,), stop_ms=16)]
+    assert plant_attempts(effects, {104: 4, 105: 5}) == [
+        (3, 4, 5), (8, 12, 4), (8, 10, 5), (15, 16, 4)]
+
+
+@pytest.mark.parametrize("stops", [(None, 5), (5, None)])
+def test_a_plant_attempt_with_any_unstopped_effect_has_no_stop(stops):
+    from app.replays.extras import _Effect, plant_attempts
+
+    effects = [_Effect(3, 104, i, 500, (80,), stop_ms=end) for i, end in enumerate(stops)]
+    assert plant_attempts(effects, {104: 4}) == [(3, None, 4)]
+
+
+def test_a_plant_attempt_without_a_slot_is_counted_and_dropped(tmp_path, monkeypatch):
+    from app.replays import extras as ex
+
+    assert ex.plant_attempts([ex._Effect(36_000, 999, 1, 500, (80,), stop_ms=37_000)], {}) == [
+        (36_000, 37_000, None)]
+    monkeypatch.setattr(ex, "plant_attempts", lambda effects, pawn_slot: [(36_000, 37_000, None)])
+    extras = run6(tmp_path, [])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report["plant tries: no slot"] == 1
+
+
 def test_only_a_throw_gets_the_nearest_guess(tmp_path):
     rows = [spawned(20_000, 90, "Default__GameObject_Hunter_E_Drone_RevealDart_C", 0, 0),
             spawned(20_000, 91, "Default__Projectile_Hunter_Q_RevealBolt_C", 0, 0)]
