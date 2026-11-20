@@ -273,6 +273,68 @@ def test_spike_state_drop_pickup_cancelled_plant_carrier_death_and_equal_times()
 
 
 @needs_node
+def test_plant_attempts_override_carried_only_while_held():
+    ps = {"version": 1, "spike": [{"t": 0, "s": "carried"}],
+          "plants": [[22.39, 23.76, 3], [25.47, 25.53, 3], [27.02, 31.02, 3]]}
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    times = [23.0, 24.0, 25.5, 25.6, 28.0, 22.39, 23.76, 31.02]
+    got = ask(blob, [["spike", t] for t in times])
+    carried = {"state": "carried", "slot": None, "u": None, "v": None, "since": 0,
+               "source": "player_state", "hud": None}
+
+    def planting(since):
+        return {**carried, "state": "planting", "slot": 3, "since": since, "attempt": True}
+
+    assert got == [planting(22.39), carried, planting(25.47), carried, planting(27.02),
+                   planting(22.39), carried, carried]
+    legacy = {**blob, "player_state": {"version": 1, "spike": ps["spike"]}}
+    assert ask(legacy, [["spike", t] for t in times]) == [carried] * len(times)
+
+
+@needs_node
+@pytest.mark.parametrize("spike", [None, [], [{"t": 20.0, "s": "carried"}]],
+                         ids=["absent", "empty", "future"])
+def test_plant_attempt_needs_no_spike_transition(spike):
+    ps = {"version": 1, "plants": [[5.0, 9.0, 3]]}
+    if spike is not None:
+        ps["spike"] = spike
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    assert ask(blob, [["spike", 6.0]]) == [
+        {"state": "planting", "slot": 3, "u": None, "v": None, "since": 5.0,
+         "source": "player_state", "hud": None, "attempt": True}]
+
+
+@needs_node
+def test_plant_attempt_open_end_lives_latest_attempt_and_bomb_precedence():
+    ps = {"version": 1, "spike": [{"t": 0, "s": "carried"}], "plants": [[30.0, None, 3]]}
+    blob = {**make_blob(player_state=ps, util=[]), "alive": {"3": [[0, None]]}}
+    got = ask(blob, [["spike", t] for t in [33.9, 34.0, 34.1]])
+    assert got[0]["state"] == "planting" and got[0]["since"] == 30.0
+    assert all(s["state"] == "carried" and "attempt" not in s for s in got[1:])
+
+    ps = {**ps, "plants": [[22.39, 26.0, 3]]}
+    blob = {**blob, "player_state": ps}
+    for lives, expected in [({"3": [[0, 23.0]]}, "carried"),
+                            ({"3": [[0, 23.0], [23.25, None]]}, "carried"),
+                            ({"3": [[23.25, None]]}, "carried"),
+                            ({}, "planting")]:
+        [state] = ask({**blob, "alive": lives}, [["spike", 23.5]])
+        assert state["state"] == expected
+        assert ("attempt" in state) == (expected == "planting")
+
+    ps = {**ps, "plants": [[27.02, 33.0, 3], [30.0, None, 3]]}
+    blob = {**blob, "player_state": ps}
+    [latest] = ask(blob, [["spike", 30.5]])
+    assert latest["since"] == 30.0 and latest["attempt"] is True
+    bomb = {**BOMB, "t": 31.02, "by": 3, "defuses": []}
+    state, hud = ask({**blob, "util": [bomb]}, [["spike", 31.5], ["hud", 31.5]])
+    assert state["state"] == "planted" and state["source"] == "ability" and state["hud"] == hud
+    assert "attempt" not in state
+    legacy = {**blob, "player_state": {"version": 1, "spike": ps["spike"]}, "util": [bomb]}
+    assert ask(legacy, [["spike", 31.5]]) == [state]
+
+
+@needs_node
 def test_a_round_without_player_state_gives_exactly_todays_planted_hud():
     times = [x / 4 for x in range(-40, 440)]
     for player_state in (None, {"version": 9}):
