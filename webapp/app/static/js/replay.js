@@ -2502,8 +2502,7 @@
     this.ui.scrub.value = String(Math.round(1000 * t / blob.t_end));
     this.ui.play.textContent = this.playing ? "Pause" : "Play";
     this.ui.play.setAttribute("aria-pressed", this.playing ? "true" : "false");
-    var phase = t > blob.t_decided ? " · round decided" : "";
-    this.ui.clock.textContent = "Round " + blob.round + " · " + t.toFixed(1) + " s" + phase;
+    this.ui.clock.textContent = "Round " + blob.round + " · " + t.toFixed(1) + " s";
     this.renderReasons();
     if (this.ui.feed) {
       Array.prototype.forEach.call(this.root.querySelectorAll("[data-kill-t]"), function (row) {
@@ -3448,6 +3447,33 @@
     return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
   }
 
+  // How far along a ray (from u,v, unit direction du,dv) its line of sight runs before a smoke stops it, in uv; null
+  // when no smoke is in the way. A ray starting inside a smoke stops where it leaves that smoke.
+  function smokeCut(smokes, u, v, du, dv) {
+    var best = null;
+    (smokes || []).forEach(function (c) {
+      var ox = u - c.u, oy = v - c.v;
+      var b = ox * du + oy * dv, q = ox * ox + oy * oy - c.r * c.r;
+      var disc = b * b - q;
+      if (disc < 0) return;
+      var root = Math.sqrt(disc), d = q <= 0 ? -b + root : -b - root;
+      if (d < 0) return;   // behind the ray (outside the smoke and facing away)
+      if (best === null || d < best) best = d;
+    });
+    return best;
+  }
+
+  // The smokes up at t as circles in uv ({u, v, r}): what an aim line stops at.
+  ReplayViewer.prototype.smokesAt = function (t) {
+    var self = this, blob = this.current.blob;
+    return abilitiesAt(this.current.extras.abilities, t, blob.t_end).filter(function (a) {
+      return abilityStyle(a).shape === "smoke";
+    }).map(function (a) {
+      var at = self.abilityPoint(a, t, 1);
+      return { u: at.x, v: at.y, r: self.uvRadius(abilityStyle(a).r) };
+    });
+  };
+
   // The map's sight mask as bytes (1 blocks sight), from its image; null while loading, without one, or on failure.
   ReplayViewer.prototype.loadSightMask = function () {
     var self = this, url = this.options.sightMask;
@@ -3478,9 +3504,17 @@
       // to the first wall when the map's sight mask is loaded; else the stored fixed length
       var end = sight ? tracerEnd(sight.mask, sight.size, shot.u, shot.v, shot.u1, shot.v1) : null;
       var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;
+      // A shot reads apart from an aim line (thin, the player's colour): a wide glow in the shooter's colour with a
+      // bright, near-white core down it.
+      var fade = 1 - age / TRACER_S;
       ctx.save();
-      ctx.globalAlpha = 0.9 * (1 - age / TRACER_S);
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.55 * fade;
       ctx.strokeStyle = self.slotColor(shot.slot);
+      ctx.lineWidth = Math.max(4, r / 3);
+      ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(eu * s, ev * s); ctx.stroke();
+      ctx.globalAlpha = fade;
+      ctx.strokeStyle = self.css("--replay-tracer-core", "#fff8dc");
       ctx.lineWidth = Math.max(1.5, r / 8);
       ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(eu * s, ev * s); ctx.stroke();
       ctx.restore();
@@ -4482,7 +4516,7 @@
         (k.weapon ? " with " + k.weapon : "") + " at " + k.t.toFixed(1) + " s" + gain });
     });
 
-    var marks = [];
+    var marks = [], smokes;   // smokes: the smokes up now, read once on the first aim line
     // In a team's picture (R3.3) the true enemy dots are dimmed: that team didn't see them all.
     var knowing = this.layers.control && this.controlCache ? this.knowingGroup(this.controlCache.ready(this.number)) : null;
     blob.players.forEach(function (p) {
@@ -4509,11 +4543,16 @@
       if (self.layers.aim) {
         var cos = Math.cos(rad), sin = Math.sin(rad), sight = self.sight;
         var end = sight ? tracerEnd(sight.mask, sight.size, at.u, at.v, at.u + cos * 20000, at.v + sin * 20000) : null;
+        // Uv length: to the sight wall, or three cone radii without a mask; a smoke on the way stops it sooner.
+        var reach = end ? Math.hypot(end.u - at.u, end.v - at.v) : r * 2.4 * 3 / s;
+        if (smokes === undefined) smokes = self.smokesAt(t);
+        var cut = smokeCut(smokes, at.u, at.v, cos, sin);
+        if (cut !== null && cut < reach) reach = cut;
         ctx.save();
         ctx.globalAlpha = 0.8 * dim;
         ctx.lineWidth = Math.max(1, r / 10);
         ctx.beginPath(); ctx.moveTo(x, y);
-        ctx.lineTo(end ? end.u * s : x + cos * r * 2.4 * 3, end ? end.v * s : y + sin * r * 2.4 * 3);
+        ctx.lineTo(x + cos * reach * s, y + sin * reach * s);
         ctx.stroke();
         ctx.restore();
       }
@@ -4671,7 +4710,7 @@
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
     meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS,
-    tracerEnd: tracerEnd, START_SKIP_PX: START_SKIP_PX,
+    tracerEnd: tracerEnd, smokeCut: smokeCut, START_SKIP_PX: START_SKIP_PX,
     mapFeatureState: mapFeatureState
   };
   global.Replay = api;

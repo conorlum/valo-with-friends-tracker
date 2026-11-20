@@ -82,7 +82,7 @@ def test_constructor_normalizes_turns(rotation, expected):
 def test_zero_rotation_canvas_calls_match_pinned_base(rotation):
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
     got = node("return H.recordRounds(process.argv[1], p === null ? undefined : p);", rotation)
-    assert expected["base"] == "54e44c74"
+    assert expected["base"] == "b9c958f6"
     assert got == expected["rounds"]
     # Keep the safety net broad: these paths must remain represented when fixtures are maintained.
     calls = [call for row in got for call in row["calls"]]
