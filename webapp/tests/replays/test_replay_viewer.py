@@ -353,6 +353,37 @@ def test_the_page_templates_parse_and_the_partial_renders():
     assert "Not linked to a match on this site" in html and "<nav" not in html
 
 
+@pytest.mark.parametrize("linked", [False, True], ids=["unlinked", "linked"])
+def test_round_navigation_buttons_are_at_the_ends_of_the_controls(linked):
+    import re
+
+    env = Environment(loader=FileSystemLoader(str(WEBAPP / "app" / "templates")))
+    html = env.get_template("replays/_player.html").render(
+        replay={"map_name": "Ascent", "round_numbers": [1, 2]}, linked=linked,
+    )
+    controls = re.search(r'<div class="replay-controls">(.*?)</div>', html, re.S).group(1)
+    buttons = re.findall(r'<button\b([^>]*)>(.*?)</button>', controls, re.S)
+    assert "data-replay-prev" in buttons[0][0].split()
+    assert buttons[0][1].strip() == "Previous round"
+    assert "data-replay-next" in buttons[-1][0].split()
+    assert buttons[-1][1].strip() == "Next round"
+    for attrs, _ in (buttons[0], buttons[-1]):
+        assert 'type="button"' in attrs and 'class="replay-button"' in attrs
+    prev = re.search(r"\bdata-replay-prev(?=[\s>])", controls).start()
+    next_ = re.search(r"\bdata-replay-next(?=[\s>])", controls).start()
+    assert prev < controls.index("data-replay-play")
+    assert next_ > controls.index("data-replay-clock")
+    if linked:
+        assert next_ > controls.index("data-replay-badge")
+    for hook in ("data-replay-prev", "data-replay-next"):
+        assert len(re.findall(rf"\b{hook}(?=[\s>])", html)) == 1
+
+    rounds = html.split('<div class="replay-rounds"', 1)[1].split('\n      </div>', 1)[0]
+    assert "data-replay-strip" in rounds
+    assert "<button" not in rounds
+    assert not any(arrow in rounds for arrow in ("&larr;", "&rarr;", "\u2190", "\u2192"))
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_linked_mode_helpers():
     script = """

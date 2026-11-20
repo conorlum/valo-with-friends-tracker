@@ -37,21 +37,21 @@
       <p class="replay-note">The map changed in {{ replay_data.match.layout.patch }}; this replay's map control is out of date until it is redrawn</p>{% elif replay_data.match.layout.state == "layout_unknown" %}
       <p class="replay-note">This replay's patch is unknown and the map has several layouts; map control is not shown</p>{% endif %}{% endif %}
       <div class="replay-controls">
+        <button type="button" class="replay-button" data-replay-prev>Previous round</button>
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
         <button type="button" class="replay-button" data-replay-prevkill title="Jump to 1 s before the previous kill (B)">Previous kill</button>
         <button type="button" class="replay-button" data-replay-nextkill title="Jump to 1 s before the next kill (N)">Next kill</button>
         <label class="replay-speed">Speed <select data-replay-speed></select></label>
         <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
         <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
+        <button type="button" class="replay-button" data-replay-next>Next round</button>
       </div>
       <div class="replay-scrub-wrap">
         <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
         <div class="replay-ticks" data-replay-ticks aria-hidden="true"></div>
       </div>
       <div class="replay-rounds" role="group" aria-label="Rounds">
-        <button type="button" class="replay-button" data-replay-prev aria-label="Previous round">&larr;</button>
         <div class="replay-strip" data-replay-strip></div>
-        <button type="button" class="replay-button" data-replay-next aria-label="Next round">&rarr;</button>
       </div>
       {% if linked %}
       <fieldset class="replay-layers">
