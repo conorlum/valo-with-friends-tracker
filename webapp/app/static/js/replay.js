@@ -1087,8 +1087,8 @@
         out.vitals[slot] = kept.sort(function (a, b) { return a.t - b.t; });  // stable: source order within a time
       });
     }
-    [["overheal", "oh"], ["decay", "dec"]].forEach(function (pair) {
-      var part = pair[0], key = pair[1];
+    [{ part: "overheal", key: "oh" }, { part: "decay", key: "dec" }].forEach(function (pair) {
+      var part = pair.part, key = pair.key;
       if (!psHas(obj, part) || !condIsRow(obj[part])) return;
       var lines = {};
       Object.keys(obj[part]).forEach(function (slot) {
