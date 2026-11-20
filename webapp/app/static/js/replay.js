@@ -2568,43 +2568,60 @@
     return slot === null || slot === undefined ? this.css("--replay-unknown", "#77787f") : this.slotColor(slot);
   };
 
+  // Draw a map-anchored label or icon in the display frame. Save the caller's transform too: a caller may
+  // already be inside a screen-space pass. Zero turns deliberately adds no canvas calls (the pinned baseline).
+  ReplayViewer.prototype.upright = function (ctx, x, y, fn) {
+    if (!this.turns) return fn(x, y);
+    var point = rotatePoint(x, y, this.canvas.width, this.turns), view = this.view;
+    ctx.save();
+    ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    try { return fn(point.x, point.y); }
+    finally { ctx.restore(); }
+  };
+
   // A team-coloured disc with the ability's white glyph and a dark surface ring, valoplant-style.
   ReplayViewer.prototype.drawBadge = function (ctx, x, y, radius, color, glyph, alpha) {
-    ctx.save();
-    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
-    ctx.beginPath(); ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
-    ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
-    ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
-    ctx.fillStyle = color; ctx.fill();
-    if (glyph) {
-      var g = radius * 1.35;
-      ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
-    } else {
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath(); ctx.arc(x, y, radius * 0.3, 0, 2 * Math.PI); ctx.fill();
-    }
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+      ctx.beginPath(); ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = color; ctx.fill();
+      if (glyph) {
+        var g = radius * 1.35;
+        ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
+      } else {
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.3, 0, 2 * Math.PI); ctx.fill();
+      }
+      ctx.restore();
+    });
   };
 
   // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
   ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
     if (!glyph) return;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
+      ctx.restore();
+    });
   };
 
   // The time left on a timed ability (timeLeft): a light arc from twelve o'clock, clockwise, that runs down to
   // nothing as it closes, over a dark under-stroke so it reads on any floor.
   ReplayViewer.prototype.drawTimer = function (ctx, x, y, radius, left, width, alpha) {
     if (left === null || left <= 0) return;
-    ctx.save();
-    ctx.globalAlpha = alpha; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * left);
-    ctx.strokeStyle = "rgba(12, 12, 16, 0.6)"; ctx.lineWidth = width + 2; ctx.stroke();
-    ctx.strokeStyle = this.css("--replay-timer", "rgba(240, 242, 248, 0.95)"); ctx.lineWidth = width; ctx.stroke();
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * left);
+      ctx.strokeStyle = "rgba(12, 12, 16, 0.6)"; ctx.lineWidth = width + 2; ctx.stroke();
+      ctx.strokeStyle = this.css("--replay-timer", "rgba(240, 242, 248, 0.95)"); ctx.lineWidth = width; ctx.stroke();
+      ctx.restore();
+    }.bind(this));
   };
 
   // Where an ability is drawn at t: a moving pawn follows its path, anything else stays put.
@@ -3044,15 +3061,19 @@
       var x = a.u * s, y = a.v * s;
       var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
       ctx.save();
-      ctx.fillStyle = this.css("--brand", "#ff4655");
-      ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
-      ctx.globalAlpha = 1;
-      this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      this.upright(ctx, x, y, function (x, y) {
+        ctx.fillStyle = this.css("--brand", "#ff4655");
+        ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
+        ctx.globalAlpha = 1;
+        this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      }.bind(this));
       var state = spike.hud;
       if (state && !state.defused && !state.exploded) {
         // The time left to detonation, as a draining ring.
         ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = this.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
-        ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+        this.upright(ctx, x, y, function (x, y) {
+          ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+        });
       }
       if (state && state.defusing) {
         // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
@@ -3062,10 +3083,12 @@
           ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
           ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
         }
-        ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
-        ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
-        ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+        this.upright(ctx, x, y, function (x, y) {
+          ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
+          ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
+          ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
+          ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+        });
       }
       ctx.restore();
       hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
@@ -3075,7 +3098,9 @@
     if (spike.state === "dropped" && spike.u !== null && spike.v !== null) {
       var dx = spike.u * s, dy = spike.v * s, dk = r * 0.55;
       ctx.save();
-      this.spikeGlyph(ctx, dx, dy, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      this.upright(ctx, dx, dy, function (x, y) {
+        self.spikeGlyph(ctx, x, y, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      });
       ctx.restore();
       hits.push({ x: dx, y: dy, r: dk * 1.4, text: "Spike dropped here at " + clock(spike.since) });
     }
@@ -3593,8 +3618,10 @@
     ctx.lineWidth = 3 / Math.sqrt(this.view.k); ctx.strokeStyle = "#111"; ctx.fillStyle = "#fff";
     this.areasPaint.labels.forEach(function (label) {
       var x = label.u / UV * size, y = label.v / UV * size;
-      ctx.strokeText(label.name, x, y); ctx.fillText(label.name, x, y);
-    });
+      this.upright(ctx, x, y, function (x, y) {
+        ctx.strokeText(label.name, x, y); ctx.fillText(label.name, x, y);
+      });
+    }, this);
     if (data.approximate) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.font = "bold 12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.lineWidth = 3;
@@ -4027,10 +4054,12 @@
       ctx.font = "600 " + Math.round(r * 0.7) + "px system-ui, sans-serif";
       ctx.textAlign = "left"; ctx.textBaseline = "middle";
       var w = ctx.measureText(label).width + r * 0.4;
-      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
-      ctx.fillRect(p[0] + r * 0.8, p[1] - r * 0.45, w, r * 0.9);
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(label, p[0] + r, p[1]);
+      self.upright(ctx, p[0], p[1], function (x, y) {
+        ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
+        ctx.fillRect(x + r * 0.8, y - r * 0.45, w, r * 0.9);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(label, x + r, y);
+      });
       ctx.fillStyle = color;
     });
     // An x where a teammate stopped watching (route_released).
@@ -4479,17 +4508,19 @@
       }
       ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
       var img = self.icon(p.agent);
-      if (img) {
-        ctx.save();
-        ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
-        ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
-        ctx.restore();
-      } else {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText(p.agent.slice(0, 2), x, y);
-      }
+      self.upright(ctx, x, y, function (x, y) {
+        if (img) {
+          ctx.save();
+          ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
+          ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
+          ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText(p.agent.slice(0, 2), x, y);
+        }
+      });
       if (life.flags.length) {
         // An unobserved or uncertain life: a dashed ring says the evidence is incomplete.
         ctx.save();
@@ -4525,9 +4556,21 @@
     // The player annotations last, over the circles, whatever the abilities toggle says: condition chips, the
     // carrier's badge, then the health/name blocks on dark plates so they read over any part of the map.
     var layout = [];
+    var annotationStart = hits.length;
+    if (this.turns) {
+      marks.forEach(function (m) {
+        var point = rotatePoint(m.x, m.y, size, self.turns);
+        m.x = point.x; m.y = point.y;
+      });
+      ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    }
     this.drawStatuses(ctx, s, r, hits, marks, layout);
     this.drawCarrier(ctx, r, hits, marks, layout, spike);
     this.drawBlocks(ctx, r, hits, marks, layout);
+    if (this.turns) {
+      for (var hi = annotationStart; hi < hits.length; hi++) hits[hi].disp = true;
+      ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
+    }
     this.layout = layout;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);

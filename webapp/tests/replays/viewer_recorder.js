@@ -118,7 +118,7 @@ function scenes() {
   });
 }
 
-function recordRounds(replayPath, rotation) {
+function recordRounds(replayPath, rotation, highlight = null) {
   const R = environment(replayPath);
   return scenes().map(({blob, view}) => {
     const {v, log} = makeViewer(R, blob, rotation, view);
@@ -139,7 +139,8 @@ function recordRounds(replayPath, rotation) {
     ]}};
     // Warm offscreen layers: exercise real drawControl without rasterizing an unrelated control fixture.
     v.control = {}; v.layers.control = true; v.unknownView = "both";
-    v.controlPaint = [blob.round, 0, true, null, null, "both"].join(":");
+    v.highlight = highlight;
+    v.controlPaint = [blob.round, 0, true, highlight, null, "both"].join(":");
     v.controlCache = {ready: () => ({parsed: {times: [0], unknown_a: [], unknown_b: []}})};
     v.controlCanvas = name => ({canvas: {recordingId: "control-" + name}});
     v.draw();
