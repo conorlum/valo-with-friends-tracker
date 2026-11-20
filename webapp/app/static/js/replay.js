@@ -23,6 +23,35 @@
   var STEP_S = 5;
   var UV = 10000;
 
+  // Clockwise quarter turns in the square map, with screen y pointing down.
+  function rotatePoint(x, y, size, k) {
+    switch (((k % 4) + 4) % 4) {
+      case 1: return { x: size - y, y: x };
+      case 2: return { x: size - x, y: size - y };
+      case 3: return { x: y, y: size - x };
+      default: return { x: x, y: y };
+    }
+  }
+
+  function unrotatePoint(x, y, size, k) {
+    return rotatePoint(x, y, size, -k);
+  }
+
+  function rotateYaw(deg, k) {
+    return deg + 90 * k;
+  }
+
+  // Map pixels -> display pixels -> canvas pixels. The origin is in the display frame.
+  function viewMatrix(view, k, size) {
+    var q = view.k, ox = view.ox, oy = view.oy;
+    switch (((k % 4) + 4) % 4) {
+      case 1: return [0, q, -q, 0, (size - ox) * q, -oy * q];
+      case 2: return [-q, 0, 0, -q, (size - ox) * q, (size - oy) * q];
+      case 3: return [0, -q, q, 0, -ox * q, (size - oy) * q];
+      default: return [q, 0, 0, q, -ox * q, -oy * q];
+    }
+  }
+
   // ------------------------------------------------------------ decoding (pure; tested in node)
 
   function decodeSegment(segment, hz) {
@@ -1614,6 +1643,7 @@
   function ReplayViewer(root, options) {
     this.root = root;
     this.options = options;
+    this.turns = ((options.rotation | 0) % 4 + 4) % 4;
     this.linked = options.linked || null;          // {players: {slot: {name, team}}, uvPerUnit}
     this.rounds = options.rounds;                  // [1, 2, ...]
     this.cache = {};                               // round -> Promise of {blob, tracks}
@@ -1644,7 +1674,7 @@
     this.ctx = this.canvas.getContext("2d");
     fitMapToWindow(root);
     this.map = new Image();
-    this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (map px - o) * k
+    this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (display px - o) * k
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
@@ -1737,6 +1767,9 @@
         }
       }
       if (x1 < 0) return;
+      var a = rotatePoint(x0, y0, n, this.turns), b = rotatePoint(x1, y1, n, this.turns);
+      x0 = Math.min(a.x, b.x); y0 = Math.min(a.y, b.y);
+      x1 = Math.max(a.x, b.x); y1 = Math.max(a.y, b.y);
       var scale = size / n, pad = 0.04 * n;
       var side = Math.max(x1 - x0, y1 - y0) + 2 * pad;
       var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
@@ -3149,7 +3182,7 @@
       .map(function (x) { return x[2]; });
   }
 
-  // The visible part of the map, in map pixels.
+  // The visible part of the map, in display-frame pixels.
   ReplayViewer.prototype.viewBounds = function () {
     var v = this.view, size = this.canvas.width;
     return { x0: v.ox, y0: v.oy, x1: v.ox + size / v.k, y1: v.oy + size / v.k };
@@ -3745,10 +3778,11 @@
     if ((!this.control && !this.options.loadAreas) || !this.hits) return;
     var rect = this.canvas.getBoundingClientRect(), scale = this.canvas.width / rect.width, v = this.view;
     var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
+    var map = unrotatePoint(x, y, this.canvas.width, this.turns);
     var best = null;
     this.hits.forEach(function (h) {
       if (h.slot === undefined || h.slot === null) return;   // annotations never select
-      var d = Math.hypot(h.x - x, h.y - y);
+      var d = Math.hypot(h.x - map.x, h.y - map.y);
       if (d <= h.r && (!best || d < best.d)) best = { slot: h.slot, d: d };
     });
     if (best) this.setHighlight(best.slot);
@@ -4196,7 +4230,7 @@
     var ctx = heat.ctx, size = heat.canvas.width, v = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    ctx.setTransform(v.k, 0, 0, v.k, -v.ox * v.k, -v.oy * v.k);
+    ctx.setTransform.apply(ctx, viewMatrix(v, this.turns, size));
     if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img.canvas, 0, 0, size, size);
@@ -4219,8 +4253,11 @@
     var heat = this.heat, found = this.heatSection();
     if (!found) return;
     var rect = heat.canvas.getBoundingClientRect(), scale = heat.canvas.width / rect.width, v = this.view;
-    var x = ((e.clientX - rect.left) * scale / v.k + v.ox) / heat.canvas.width * controlApi().GRID;
-    var y = ((e.clientY - rect.top) * scale / v.k + v.oy) / heat.canvas.height * controlApi().GRID;
+    var displayX = (e.clientX - rect.left) * scale / v.k + v.ox;
+    var displayY = (e.clientY - rect.top) * scale / v.k + v.oy;
+    var map = unrotatePoint(displayX, displayY, heat.canvas.width, this.turns);
+    var x = map.x / heat.canvas.width * controlApi().GRID;
+    var y = map.y / heat.canvas.height * controlApi().GRID;
     var cell = Math.floor(y) * controlApi().GRID + Math.floor(x), k = found.data.index[cell];
     if (!(x >= 0 && y >= 0 && x < controlApi().GRID && y < controlApi().GRID) || k < 0) { heat.tip.hidden = true; return; }
     var sec = found.section, labels = found.data.labels;
@@ -4364,7 +4401,7 @@
     var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
     if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
     if (!this.current) { ctx.setTransform(1, 0, 0, 1, 0, 0); return; }
     var blob = this.current.blob, tracks = this.current.tracks, t = this.t, self = this;
@@ -4520,11 +4557,14 @@
     var v = this.view;
     this.hover = { x: (e.clientX - rect.left) * scale / v.k + v.ox, y: (e.clientY - rect.top) * scale / v.k + v.oy,
                    px: e.clientX - rect.left, py: e.clientY - rect.top };
+    var map = unrotatePoint(this.hover.x, this.hover.y, this.canvas.width, this.turns);
+    this.hover.mx = map.x; this.hover.my = map.y;
     this.showTip(this.hover);
   };
 
-  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
-  function hitHolds(h, x, y) {
+  // Hits stay in the map frame unless `disp` marks a display-frame annotation.
+  function hitHolds(h, x, y, mx, my) {
+    if (!h.disp) { x = mx; y = my; }
     if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
     return Math.hypot(h.x - x, h.y - y) <= h.r;
   }
@@ -4533,9 +4573,11 @@
   ReplayViewer.prototype.showTip = function (hover) {
     var tip = this.ui.tip;
     if (!tip) return;
+    var map = typeof hover.mx === "number" && typeof hover.my === "number"
+      ? { x: hover.mx, y: hover.my } : unrotatePoint(hover.x, hover.y, this.canvas.width, this.turns);
     var best = null;
     (this.hits || []).forEach(function (h) {
-      if (hitHolds(h, hover.x, hover.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
+      if (hitHolds(h, hover.x, hover.y, map.x, map.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
     });
     if (!best) { this.hideTip(); return; }
     tip.textContent = best.text;
@@ -4557,6 +4599,7 @@
   }
 
   var api = {
+    rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, rotateYaw: rotateYaw, viewMatrix: viewMatrix,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
