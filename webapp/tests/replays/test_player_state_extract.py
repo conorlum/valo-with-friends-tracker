@@ -30,6 +30,111 @@ REAL_FALL = {"BitCount": 507, "Data": "BgIWME0PAhhAAADIQRpAAAAAgBwCAQgsQOIsMIAAA
                                      "zCAQAAA=="}
 
 
+def decay_status(source="Smonk_Q_DecayExplosion", t=10.0, t1=15.0, **more):
+    code, name = source.split("_", 1)
+    return {"k": "status", "t": t, "t1": t1, "target": 0, "by": 5,
+            "code": code, "name": name, "status": "decayed", "from": "object", **more}
+
+
+def decay_state(statuses=None, hp=100, vitals=(), alive=None, figures=None, booked=()):
+    state = {"version": 1, "vitals": {"0": [{"t": 0.0, "life": 0, "hp": float(hp),
+                                            "sh": None, "mhp": 100.0, "msh": None}, *vitals]}}
+    diagnostics = {}
+    checks = pse.attach_decay(state, [decay_status()] if statuses is None else statuses,
+                              {"0": [[0.0, None, "round"]]} if alive is None else alive,
+                              30.0, pse.load_decay_figures() if figures is None else figures,
+                              list(booked), diagnostics)
+    assert ps.validate(state, diagnostics={}) == state
+    return state, checks, diagnostics
+
+
+@pytest.mark.parametrize("hp, expected", [(100, 90), (40, 39)])
+def test_decay_meddle_curve_and_exact_cap_crossing(hp, expected):
+    state, _, _ = decay_state(hp=hp)
+    assert ps.decay_at(state, 0, 10)["dec"] == 0
+    assert ps.decay_at(state, 0, 10.2)["dec"] == pytest.approx(24)
+    assert ps.decay_at(state, 0, 10.75)["dec"] == expected
+    assert ps.decay_at(state, 0, 13.25)["dec"] == expected
+    assert ps.decay_at(state, 0, 14)["dec"] == pytest.approx(min(expected, 90 * 1 / 1.75))
+    assert ps.decay_at(state, 0, 15) == {"dec": 0.0, "unk": False}
+    if hp == 40:
+        assert any(k["t"] == pytest.approx(10.325) and k["dec"] == 39 for k in state["decay"]["0"])
+
+
+def test_decay_vitals_change_inserts_a_jump_and_overlapping_sources_sum():
+    vital = {"t": 11.0, "life": 0, "hp": 60.0, "sh": None, "mhp": 100.0, "msh": None}
+    state, _, _ = decay_state(vitals=[vital])
+    assert [k["dec"] for k in state["decay"]["0"] if k["t"] == 11] == [90, 59]
+    assert ps.decay_at(state, 0, 11.1)["dec"] == 59
+    state, _, _ = decay_state([decay_status(), decay_status(t=10.25, t1=15.25)])
+    assert ps.decay_at(state, 0, 10.5)["dec"] == pytest.approx(90)
+    assert ps.decay_at(state, 0, 10.75)["dec"] == 99
+
+
+def test_decay_pit_onset_rate_hold_and_restore_and_friendly_wall():
+    state, _, _ = decay_state([decay_status("Pandemic_X_Circular", t1=13)])
+    for t, value in [(10, 30), (11, 40), (13, 60), (14.5, 60), (15.5, 35), (16.9, 0)]:
+        assert ps.decay_at(state, 0, t)["dec"] == pytest.approx(value)
+    for flag in ({"from": "friendly"}, {"friendly": True}):
+        state, _, _ = decay_state([decay_status("Pandemic_E_SmokeScreenManager", t1=13, **flag)])
+        assert not state.get("decay", {}).get("0")
+    state, _, _ = decay_state([decay_status("Pandemic_E_SmokeScreenManager", t1=13)])
+    assert ps.decay_at(state, 0, 10)["dec"] == 10
+
+
+def test_decay_ends_at_death_and_resets_in_a_revived_life():
+    state, _, _ = decay_state(alive={"0": [[0, 10.4, "death"], [12, None, "round"]]})
+    assert state["decay"]["0"][-1] == {"t": 10.4, "life": 0, "dec": 0.0, "unk": False}
+    assert ps.decay_at(state, 0, 10.3, life=0)["dec"] == pytest.approx(36)
+    assert ps.decay_at(state, 0, 12, life=1) is None
+    state, _, _ = decay_state([decay_status(t=13, t1=18), decay_status(t=13, t1=18)], hp=20,
+                              alive={"0": [[0, 10.4, "death"], [12, None, "round"]]})
+    assert {k["life"] for k in state["decay"]["0"]} == {1}
+    assert ps.decay_at(state, 0, 13.75, life=1)["dec"] == 99
+
+
+def test_decay_missing_figures_marks_unknown_alone_and_with_meddle():
+    unknown = decay_status("Test_Unknown", t=10.1, t1=11)
+    figures = {"Smonk_Q_DecayExplosion": pse.load_decay_figures()["Smonk_Q_DecayExplosion"]}
+    for statuses, value in [([unknown], 0), ([unknown, decay_status()], 60)]:
+        state, _, _ = decay_state(statuses, figures=figures)
+        assert ps.decay_at(state, 0, 10.5) == {"dec": pytest.approx(value), "unk": True}
+        assert not ps.decay_at(state, 0, 11)["unk"]
+
+
+def test_decay_fixed_total_wins_over_status_end_and_round_end_closes():
+    for source, t1, at, value in [("Smonk_Q_DecayExplosion", 10.4, 14, 90 / 1.75),
+                                 ("BountyHunter_Q_Tether_SphereExpansion", 13, 12, 45),
+                                 ("BountyHunter_X_WaveForm", 11, 17, 80)]:
+        state, _, _ = decay_state([decay_status(source, t1=t1)])
+        assert ps.decay_at(state, 0, at)["dec"] == pytest.approx(value)
+    state, _, _ = decay_state([decay_status(t=29, t1=34)])
+    assert state["decay"]["0"][-1] == {"t": 30.0, "life": 0, "dec": 0.0, "unk": False}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("booked, verdict", [(54, "agree"), (40, "disagree")])
+def test_decay_checks_before_same_ms_lethal_hit_in_both_orders(reverse, booked, verdict):
+    decay = damage_notify(START + 10_500, 1000, 1005, booked,
+                          [(HP0, 0.0, -booked, 0)], index=11, lethal=True)
+    decay["payload"]["DamageTypeName"] = "DmgType_BountyHunter_Decay_Nightfall_C"
+    lethal = damage_notify(START + 10_500, 1000, 1005, 80,
+                           [(HP0, 0.0, -80, 0)], index=12, lethal=True)
+    hits = [decay, lethal] if not reverse else [lethal, decay]
+    inputs = pse.read_player_state(export(hits), table())
+    kept = []
+    state = pse.round_player_state(inputs, START, END, None, lives_whole_round, booked=kept)
+    assert len(kept) == 1
+    state["vitals"]["0"].insert(0, {"t": 9, "life": 0, "hp": 55.5, "sh": None,
+                                     "mhp": 100.0, "msh": None})
+    diagnostics = {}
+    checks = pse.attach_decay(state, [decay_status()], {"0": [[0, 10.5, "death"]]},
+                              30, pse.load_decay_figures(), [{"round": 2, **h} for h in kept], diagnostics)
+    assert checks == [{"round": 2, "slot": 0, "t": 10.5, "dtype": decay["payload"]["DamageTypeName"],
+                       "booked": booked, "computed": 54.5, "verdict": verdict}]
+    assert diagnostics[f"decay: {verdict}"] == 1
+
+
 def _round(sections):
     return [(s["g"], round(s["res"], 3), round(s["d"], 3), s["alive"]) for s in sections]
 

@@ -37,7 +37,7 @@
     "total_s": null,
     "wiki": "https://valorant.fandom.com/wiki/Viper%27s_Pit",
     "fetched": "2026-11-20",
-    "note": "Viper's Pit: 30 HP at once on contact, then 1 HP per 0.1 s while inside, 1.5 s hold after leaving, then 25 HP/s restore (1 HP per 0.04 s). CONFLICT: the Passive Effects page (Toxin) says initial contact decay was cut 30 to 10 HP in patch 11.08 for all three of Viper's decaying abilities; the Pit's own page still says 30, as does the owner. 30 kept here; the owner to decide."
+    "note": "Viper's Pit: 30 HP at once on contact, then 1 HP per 0.1 s while inside, 1.5 s hold after leaving, then 25 HP/s restore (1 HP per 0.04 s). The owner ruled the Pit page's figures (2026-11-20)."
   },
   "Pandemic_E_SmokeScreenManager": {
     "onset_hp": 10,

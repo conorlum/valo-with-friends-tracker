@@ -17,6 +17,20 @@ from app.replays import contract  # noqa: E402
 REAL_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "replay" / "swiftplay"
 
 
+def test_schema9_damage_type_is_kept_by_both_loaders(tmp_path):
+    from replay_synthetic import damage_notify
+
+    match = SyntheticMatch()
+    row = damage_notify(50_000, 1000, 1005, 54.00007, [(70, 0, -54.00007, 0)], index=15, lethal=True)
+    dtype = "DmgType_BountyHunter_Decay_Nightfall_C"
+    row["payload"]["DamageType"] = {"net_guid": 4000, "path": f"/Game/Types/{dtype}.{dtype}"}
+    directory = match.write(tmp_path / "export", events=[row])
+    for loader in (contract.load_export, contract.load_export_streaming):
+        [loaded] = loader(directory).events
+        assert loaded.data["payload"]["DamageTypeName"] == dtype
+        assert loaded.data["payload"]["DamageType"] == 4000
+
+
 def both(directory: Path, **kwargs):
     streamed = cd.condense_export_dir(directory, streaming=True, **kwargs)
     in_memory = cd.condense_export_dir(directory, streaming=False, **kwargs)

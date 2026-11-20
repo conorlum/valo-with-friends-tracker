@@ -275,6 +275,26 @@ def loads_row(line: str | bytes, **kwargs) -> Any:
     Only a line that mentions `"net_guid"` pays for the object hook."""
     needle = b'"net_guid"' if isinstance(line, bytes) else '"net_guid"'
     if needle in line:
+        damage_key = b'"DamageType"' if isinstance(line, bytes) else '"DamageType"'
+        if damage_key in line:
+            # The object hook would discard the class path before visiting the payload. Damage rows alone
+            # need it: save the class name first, then unwrap their references just like every other row.
+            row = json.loads(line, **kwargs)
+            if isinstance(row, dict) and row.get("type") == "rpc_received" and row.get("function_name") in RPC_DAMAGE:
+                payload = row.get("payload")
+                dtype = payload.get("DamageType") if isinstance(payload, dict) else None
+                path = dtype.get("path") if isinstance(dtype, dict) else None
+                if isinstance(path, str) and path:
+                    payload["DamageTypeName"] = path.rsplit(".", 1)[-1]
+
+            def unwrap(value):
+                if isinstance(value, dict):
+                    return _unwrap_reference({k: unwrap(v) for k, v in value.items()})
+                if isinstance(value, list):
+                    return [unwrap(v) for v in value]
+                return value
+
+            return unwrap(row)
         return json.loads(line, object_hook=_unwrap_reference, **kwargs)
     return json.loads(line, **kwargs)
 

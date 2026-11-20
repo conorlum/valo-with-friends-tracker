@@ -66,15 +66,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import bisect
+import json
 import math
 import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 
 from app.replays.contract import (ABILITY_SLOT_KEYS, CHARGE_GROUP_PATHS, GAME_STATE_PATH, INVENTORY_PATH,
                                   ITEM_SLOT_PATH, PLAYER_STATE_PATH, RPC_DAMAGE, RPC_HEAL, RPC_ORB_PICKUP,
                                   RPC_OVERHEAL_DECAY)
-from app.replays.player_state import MAX_EVENTS
+from app.replays.player_state import MAX_EVENTS, decay_at
 
 # W3 EVIDENCE B: the HP section's value before a slot's first hit of a round was 100 on 202 of 202; the export
 # has no MaxLife field. Measured, not a game constant typed in.
@@ -203,6 +207,7 @@ class _Hit:
     pawn: int
     taken: float
     sections: list[dict] | None       # None: no LifeChangeEvents, or unreadable
+    dtype: str | None = None
 
 
 @dataclass
@@ -392,7 +397,9 @@ def read_player_state(export, players) -> PlayerStateInputs:
             elif abs(sum(-s["d"] for s in sections) - taken) > SUM_TOLERANCE:
                 out.diagnostics["vitals: sections don't sum to DamageTaken"] += 1
                 sections = None
-        out.hits.append(_Hit(row.time_ms, row.index, slot, pawn, taken, sections))
+        dtype = payload.get("DamageTypeName")
+        out.hits.append(_Hit(row.time_ms, row.index, slot, pawn, taken, sections,
+                             dtype if isinstance(dtype, str) else None))
         if sections is not None and (payload.get("DamageKilledTarget") is True
                                      or payload.get("AliveAfterDamage") is False):
             lethal[pawn].append({s["g"] for s in sections if s["alive"] == 0})
@@ -639,7 +646,7 @@ def _overheal_part(inputs: PlayerStateInputs, hits: list[_Hit], start: int, end:
 
 
 def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end: int | None, life_of,
-                       to_uv=None, life_start=None) -> dict | None:
+                       to_uv=None, life_start=None, booked=None) -> dict | None:
     """One round's `player_state` (format version 1), or None when the export has none of its sources.
 
     `life_of(slot, t_ms)` -> the life index (the round's alive interval holding `t_ms`) or None. `life_start(slot,
@@ -653,6 +660,11 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
         return None
     out: dict = {"version": 1}
     hits = [h for h in inputs.hits if start <= h.t_ms <= end]
+    if booked is not None:
+        # Internal hand-off to attach_decay, never a blob part. Keep even a death-instant hit, regardless
+        # of the order of the killing hit and the decay notify within that millisecond.
+        booked.extend({"slot": h.slot, "t": _seconds(h.t_ms, start), "dtype": h.dtype, "booked": h.taken}
+                      for h in hits if h.dtype is not None and "Decay" in h.dtype)
     if inputs.has_life_changes:
         vitals: dict[str, list] = defaultdict(list)
         life_armor: dict = {}
@@ -756,6 +768,143 @@ def round_player_state(inputs: PlayerStateInputs, start: int, end: int, prev_end
             orbs.append(entry)
         out["orbs"] = orbs
     return out
+
+
+@lru_cache(maxsize=1)
+def load_decay_figures() -> dict:
+    """One committed wiki table, read once per condenser process."""
+    return json.loads(Path(__file__).with_name("decay_figures.json").read_text(encoding="utf-8"))
+
+
+def _decay_curve(status: dict, figure: dict | None) -> list[tuple[float, float, bool]]:
+    """Uncapped source knots. Fixed total_s wins over t1: Meddle builds/holds/restores within five seconds,
+    Seize restores over five seconds from contact, and Nightfall holds for eight then vanishes. Contact
+    sources (Pit and Screen) instead accumulate through t1, then hold and restore. restore_s takes precedence
+    over a rounded restore_hp_s (Meddle's 90/1.75, not its rounded 51)."""
+    t = status["t"]
+    t1 = status.get("t1") if status.get("t1") is not None else t
+    if figure is None:
+        return [(t, 0.0, False), (t, 0.0, True), (t1, 0.0, True), (t1, 0.0, False)]
+    onset, build = figure["onset_hp"], figure["build_s"]
+    maximum = figure["max_hp"]
+    total = figure["total_s"]
+    restore = figure["restore_s"]
+    rate = onset / restore if restore else figure["restore_hp_s"]
+    knots = [(t, 0.0, False)]
+    knots.append((t + build, float(onset), False))
+    if total is not None:
+        finish = t + total
+        if rate:
+            held_until = finish - onset / rate
+            knots.extend([(held_until, float(onset), False), (finish, 0.0, False)])
+        else:
+            knots.extend([(finish, float(onset), False), (finish, 0.0, False)])
+    else:
+        amount = onset + figure["rate_hp_s"] * max(0.0, t1 - (t + build))
+        if maximum is not None and amount > maximum:
+            crossing = t + build + (maximum - onset) / figure["rate_hp_s"]
+            knots.append((crossing, float(maximum), False))
+            amount = maximum
+        held_until = t1 + figure["hold_s"]
+        knots.extend([(t1, float(amount), False), (held_until, float(amount), False),
+                      (held_until + amount / rate, 0.0, False)])
+    return knots
+
+
+def _decay_value(knots: list[tuple], t: float, left: bool = False) -> tuple[float, bool]:
+    """Exact left/right limit of a source's piecewise linear curve, including its jump pairs."""
+    times = [k[0] for k in knots]
+    i = (bisect.bisect_left if left else bisect.bisect_right)(times, t)
+    if not i:
+        return 0.0, False
+    at, value, unknown = knots[i - 1]
+    if i < len(knots):
+        following, next_value, _ = knots[i]
+        value += (next_value - value) * ((t - at) / (following - at))
+    return value, unknown
+
+
+def _decay_life(curves: list[list[tuple]], vitals: list[dict], life: int, end: float) -> list[dict]:
+    start = min(curve[0][0] for curve in curves)
+    finish = min(end, max(curve[-1][0] for curve in curves))
+    snapshots = [v for v in vitals if v["life"] == life and v["t"] < end]
+    times = sorted({start, finish, *(t for curve in curves for t, _, _ in curve if start <= t <= finish),
+                    *(v["t"] for v in snapshots if start <= v["t"] <= finish)})
+
+    def raw(t, left=False):
+        values = [_decay_value(curve, t, left) for curve in curves]
+        return sum(v for v, _ in values), any(u for _, u in values)
+
+    def cap(t, left=False):
+        before = [v for v in snapshots if v["t"] < t or (not left and v["t"] == t)]
+        return max(0.0, (before[-1]["hp"] if before else MAX_HP) - 1)
+
+    line = []
+
+    def append(t, amount, unknown):
+        knot = {"t": float(t), "life": life, "dec": float(max(0.0, amount)), "unk": unknown}
+        if not line or knot != line[-1]:
+            line.append(knot)
+
+    for i, t in enumerate(times):
+        value, unknown = raw(t, left=True)
+        append(t, min(value, cap(t, left=True)), unknown)
+        value, unknown = raw(t)
+        if t == finish:
+            value, unknown = 0.0, False
+        limit = cap(t)
+        append(t, min(value, limit), unknown)
+        if i + 1 < len(times):
+            next_t = times[i + 1]
+            next_value, _ = raw(next_t, left=True)
+            if (value - limit) * (next_value - limit) < 0:
+                crossing = t + (next_t - t) * (limit - value) / (next_value - value)
+                append(crossing, limit, unknown)
+    return line
+
+
+def attach_decay(state: dict | None, statuses: list[dict], alive: dict, round_end: float,
+                 figures: dict, booked: list[dict], diagnostics: Counter | dict) -> list[dict]:
+    """R8: combine source curves within their starting life, cap against pre-hit HP, and check booked decay.
+    statuses must be the original applications, before their display spans are clipped at death."""
+    curves = defaultdict(list)
+    for status in statuses:
+        if status.get("k") != "status" or status.get("status") != "decayed":
+            continue
+        if status.get("from") == "friendly" or status.get("friendly"):
+            continue
+        slot = str(status["target"])
+        for life, (start, end, *_) in enumerate(alive.get(slot, [])):
+            end = min(round_end, end if end is not None else round_end)
+            if start <= status["t"] < end:
+                key = f"{status['code']}_{status['name']}"
+                curves[slot, life, end].append(_decay_curve(status, figures.get(key)))
+                break
+    lines = defaultdict(list)
+    for (slot, life, end), sources in sorted(curves.items()):
+        vitals = ((state or {}).get("vitals") or {}).get(slot, [])
+        lines[slot].extend(_decay_life(sources, vitals, life, end))
+    if state is not None and lines:
+        state["decay"] = {}
+        for slot, line in lines.items():
+            if len(line) > MAX_EVENTS:
+                key = "decay: too many events (slot unavailable)"
+                diagnostics[key] = diagnostics.get(key, 0) + 1
+            else:
+                state["decay"][slot] = line
+    checks = []
+    for hit in booked:
+        slot, t = hit["slot"], hit["t"]
+        life = next((i for i, (start, end, *_) in enumerate(alive.get(str(slot), []))
+                     if start <= t and (end is None or t <= end)), None)
+        point = decay_at(state, slot, t - 0.001, life=life) if life is not None else None
+        computed = point["dec"] if point else 0.0
+        verdict = "agree" if abs(hit["booked"] - computed) <= 2 else "disagree"
+        checks.append({"round": hit["round"], "slot": slot, "t": t, "dtype": hit["dtype"],
+                       "booked": hit["booked"], "computed": computed, "verdict": verdict})
+        key = f"decay: {verdict}"
+        diagnostics[key] = diagnostics.get(key, 0) + 1
+    return checks
 
 
 def attach_orb_tries(state: dict | None, tries: list[dict], diagnostics: Counter | dict) -> None:

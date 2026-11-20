@@ -182,6 +182,29 @@ def test_schema_9_object_references_load_as_bare_guids():
                                                                                    "payload": {"PlayerState": 42}}
 
 
+@pytest.mark.parametrize("function", [*sorted(contract.RPC_DAMAGE), "UnrelatedNotify"])
+def test_schema9_damage_type_class_is_kept_only_for_damage(function):
+    # The schema-9 reference and decoded sections have the shape in schema9_rows/life_change_events.ndjson.
+    dtype = "DmgType_BountyHunter_Decay_Nightfall_C"
+    row = {"type": "rpc_received", "time_ms": 45899, "packet_id": 12493, "actor_net_guid": 1000,
+           "object_net_guid": 1002, "channel": 250, "function_name": function,
+           "class_path": "/Script/ShooterGame.DamageableComponent",
+           "payload": {"Character": {"net_guid": 1000, "path": None}, "DamageTaken": 54.00007,
+                       "DamageKilledTarget": True, "AliveAfterDamage": False, "LifeChangeEventIndex": 15,
+                       "LifeChangeEvents": [{"AliveAfterChange": False,
+                                             "ChangedComponent": {"net_guid": 70, "path": "HealthDamageSection"},
+                                             "DeltaLife": -54.00007, "LifeResult": 0}],
+                       "EventInstigatorPawn": {"net_guid": 1005, "path": None},
+                       "DamageType": {"net_guid": 4000, "path": f"/Game/Types/{dtype}.{dtype}"}}}
+    for line in (json.dumps(row), json.dumps(row).encode()):
+        got = contract.loads_row(line)
+        assert got["payload"]["DamageType"] == 4000
+        assert got["payload"]["LifeChangeEvents"][0]["ChangedComponent"] == 70
+        assert got["payload"].get("DamageTypeName") == (dtype if function in contract.RPC_DAMAGE else None)
+    row["payload"]["DamageType"] = 4000
+    assert "DamageTypeName" not in contract.loads_row(json.dumps(row))["payload"]
+
+
 def test_equippable_used_reads_either_schema():
     from app.replays.condense import equippable_used_guid
 

@@ -966,6 +966,42 @@ def test_health_and_the_proven_spike_land_in_the_rounds_player_state(tmp_path):
                                                                          "damage_taken": {}, "spike": []}
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_decay_and_checks_are_attached_in_every_round(tmp_path, monkeypatch, streaming):
+    from replay_synthetic import damage_notify
+    from app.replays import extras, player_state as ps
+
+    match = SyntheticMatch(shape="swiftplay")
+    for n in (1, 2):
+        amount = 40 if n == 1 else 60
+        row = damage_notify(match.round_start(n) + 10_000, match.pawn(n, 5), match.pawn(n, 0),
+                            amount, [(1075, 0 if n == 1 else 40, -amount, 0 if n == 1 else 1)],
+                            index=n, lethal=n == 1)
+        row["payload"]["DamageType"] = {"net_guid": 4000, "path": "/Game/Types.DmgType_Test_Decay_C"}
+        match.extra_events.append(row)
+    original = extras.util_entries
+
+    def with_decay(rows):
+        return original(rows) + [{"k": "status", "t": 9.5, "t1": 14.5, "target": 5, "by": 0,
+                                  "code": "Smonk", "name": "Q_DecayExplosion", "status": "decayed",
+                                  "from": "object"}]
+
+    monkeypatch.setattr(extras, "util_entries", with_decay)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    out = run(tmp_path, match, streaming=streaming, vrf_path=vrf)
+    checks = out.report["player_state"]["decay_checks"]
+    assert [c["round"] for c in checks] == [1, 2]
+    assert [c["verdict"] for c in checks] == ["disagree", "agree"]
+    assert out.report["player_state"]["decay: agree"] == 1
+    assert out.report["player_state"]["decay: disagree"] == 1
+    # The original five-second status is needed even when the display clips it at death.
+    for n in (1, 2):
+        state = fmt.decode_blob(out.encoded_rounds()[n])["player_state"]
+        assert ps.validate(state) == state
+        assert state["decay"]["5"][-1]["dec"] == 0
+        assert checks[n - 1]["computed"] == pytest.approx(59.88)
+
+
 def test_without_extras_the_spike_has_no_planter(tmp_path):
     from replay_synthetic import player_state_events
 
