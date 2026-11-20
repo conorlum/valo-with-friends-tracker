@@ -217,7 +217,8 @@ def test_replay_fetch_canvas_round_seek_and_unavailable_control(browser_page, tm
 BOXES = """() => {
     const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return {top: r.top, bottom: r.bottom}; };
     return {map: box('[data-replay-canvas]'), scrub: box('.replay-scrub-wrap'), board: box('[data-replay-board]'),
-            side: box('.replay-side'), inline: document.querySelector('[data-replay]').style.getPropertyValue('--replay-map-h')};
+            side: box('.replay-side'), head: box('.replay-body > .replay-header'), banner: box('[data-replay-banner]'),
+            inline: document.querySelector('[data-replay]').style.getPropertyValue('--replay-map-h')};
 }"""
 SETTLED = '() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))'
 
@@ -240,8 +241,16 @@ def test_wide_replay_fits_the_map_and_its_controls_in_the_window(browser_page, t
     assert b['map']['bottom'] > 911 - 150, f'the map leaves the window unused: {b}'
     assert abs(b['side']['top'] - b['map']['top']) <= 2, f'the tabs do not start with the map: {b}'
     for column in ('board', 'side'):
+        assert abs(b[column]['top'] - b['map']['top']) <= 2, f'{column} does not start with the map: {b}'
         assert abs(b[column]['bottom'] - b['map']['bottom']) <= 2, f'{column} does not end with the map: {b}'
-    assert b['board']['top'] > b['map']['top'], 'the title and banner sit above the players, beside the map'
+    for above in ('head', 'banner'):
+        assert b[above]['bottom'] <= b['map']['top'] + 1, f'the {above} is not above the map: {b}'
+    # The players panel's rows grow with it, and all ten still fit without scrolling.
+    fit = page.evaluate("""() => { const board = document.querySelector('[data-replay-board]');
+        return {font: parseFloat(getComputedStyle(board.querySelector('.replay-pl-team')).fontSize),
+                scroll: board.scrollHeight, client: board.clientHeight}; }""")
+    assert fit['font'] > 0.85 * 16, f'the players panel did not scale up: {fit}'
+    assert fit['scroll'] <= fit['client'] + 1, f'the players panel overflows: {fit}'
     # Resizing into the medium layout hands sizing back to the stylesheet; resizing back measures again.
     page.set_viewport_size({'width': 1300, 'height': 911})
     page.evaluate(SETTLED)
