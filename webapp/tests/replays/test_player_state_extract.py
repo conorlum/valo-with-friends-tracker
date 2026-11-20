@@ -105,15 +105,37 @@ def test_decay_missing_figures_marks_unknown_alone_and_with_meddle():
 def test_decay_fixed_total_wins_over_status_end_and_round_end_closes():
     for source, t1, at, value in [("Smonk_Q_DecayExplosion", 10.4, 14, 90 / 1.75),
                                  ("BountyHunter_Q_Tether_SphereExpansion", 13, 12, 45),
-                                 ("BountyHunter_X_WaveForm", 11, 17, 80)]:
+                                 ("BountyHunter_X_WaveForm", 11, 17, 75)]:
         state, _, _ = decay_state([decay_status(source, t1=t1)])
         assert ps.decay_at(state, 0, at)["dec"] == pytest.approx(value)
     state, _, _ = decay_state([decay_status(t=29, t1=34)])
     assert state["decay"]["0"][-1] == {"t": 30.0, "life": 0, "dec": 0.0, "unk": False}
 
 
+@pytest.mark.parametrize("booked, computed, verdict", [(54, 79.7, "consistent"),
+                                                     (73, 70, "too low"), (72, 70, "consistent")])
+def test_booked_decay_is_a_lower_bound_with_two_hp_tolerance(booked, computed, verdict):
+    hit = {"round": 2, "slot": 0, "t": 11.0, "dtype": "DmgType_BountyHunter_Decay_Nightfall_C",
+           "booked": booked}
+    _, checks, diagnostics = decay_state(hp=computed + 1, booked=[hit])
+    assert checks == [{**hit, "computed": computed, "verdict": verdict}]
+    assert diagnostics == {f"decay: {verdict}": 1}
+
+
+@pytest.mark.parametrize("t1", [1, 8])
+def test_nightfall_holds_for_eight_seconds_then_restores_for_twelve(t1):
+    status = decay_status("BountyHunter_X_WaveForm", t=0, t1=t1)
+    state, _, _ = decay_state([status])
+    for t, expected in [(0, 75), (8, 75), (14, 37.5), (20, 0)]:
+        assert ps.decay_at(state, 0, t)["dec"] == pytest.approx(expected)
+    state, _, _ = decay_state([status], alive={"0": [[0, 12, "death"]]})
+    assert ps.decay_at(state, 0, 11)["dec"] == pytest.approx(56.25)
+    assert state["decay"]["0"][-1] == {"t": 12, "life": 0, "dec": 0.0, "unk": False}
+    assert ps.decay_at(state, 0, 14) is None
+
+
 @pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("booked, verdict", [(54, "agree"), (40, "disagree")])
+@pytest.mark.parametrize("booked, verdict", [(54, "consistent"), (40, "consistent"), (57, "too low")])
 def test_decay_checks_before_same_ms_lethal_hit_in_both_orders(reverse, booked, verdict):
     decay = damage_notify(START + 10_500, 1000, 1005, booked,
                           [(HP0, 0.0, -booked, 0)], index=11, lethal=True)

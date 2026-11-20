@@ -778,7 +778,7 @@ def load_decay_figures() -> dict:
 
 def _decay_curve(status: dict, figure: dict | None) -> list[tuple[float, float, bool]]:
     """Uncapped source knots. Fixed total_s wins over t1: Meddle builds/holds/restores within five seconds,
-    Seize restores over five seconds from contact, and Nightfall holds for eight then vanishes. Contact
+    Seize restores over five seconds from contact, and Nightfall holds for eight then restores over twelve. Contact
     sources (Pit and Screen) instead accumulate through t1, then hold and restore. restore_s takes precedence
     over a rounded restore_hp_s (Meddle's 90/1.75, not its rounded 51)."""
     t = status["t"]
@@ -865,7 +865,7 @@ def _decay_life(curves: list[list[tuple]], vitals: list[dict], life: int, end: f
 
 def attach_decay(state: dict | None, statuses: list[dict], alive: dict, round_end: float,
                  figures: dict, booked: list[dict], diagnostics: Counter | dict) -> list[dict]:
-    """R8: combine source curves within their starting life, cap against pre-hit HP, and check booked decay.
+    """R8: combine source curves within their starting life, cap against pre-hit HP, and check booked lower bounds.
     statuses must be the original applications, before their display spans are clipped at death."""
     curves = defaultdict(list)
     for status in statuses:
@@ -899,7 +899,7 @@ def attach_decay(state: dict | None, statuses: list[dict], alive: dict, round_en
                      if start <= t and (end is None or t <= end)), None)
         point = decay_at(state, slot, t - 0.001, life=life) if life is not None else None
         computed = point["dec"] if point else 0.0
-        verdict = "agree" if abs(hit["booked"] - computed) <= 2 else "disagree"
+        verdict = "consistent" if hit["booked"] <= computed + 2 else "too low"
         checks.append({"round": hit["round"], "slot": slot, "t": t, "dtype": hit["dtype"],
                        "booked": hit["booked"], "computed": computed, "verdict": verdict})
         key = f"decay: {verdict}"

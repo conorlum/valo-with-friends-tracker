@@ -1884,7 +1884,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
                           alive_by_round={n: blob.get("alive", {}) for n, blob in replay.rounds.items()})
     spike_counts: dict[str, int] = {}
     joins: Counter[str] = Counter()
-    decay_counts = {"decay: agree": 0, "decay: disagree": 0}
+    decay_counts = {"decay: consistent": 0, "decay: too low": 0}
     decay_checks = []
     figures = load_decay_figures()
     for n, blob in replay.rounds.items():
@@ -1907,4 +1907,11 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))
     replay.report["player_state"].update(decay_counts)
     replay.report["player_state"]["decay_checks"] = decay_checks
+    tightest = {}
+    for row in sorted(decay_checks, key=lambda r: (-r["booked"], r["computed"] - r["booked"],
+                                                  r["round"], r["t"])):
+        if row["dtype"] not in tightest:
+            tightest[row["dtype"]] = {k: row[k] for k in ("round", "slot", "t", "booked", "computed")}
+            tightest[row["dtype"]]["gap"] = row["computed"] - row["booked"]
+    replay.report["player_state"]["decay_tightest"] = tightest
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())

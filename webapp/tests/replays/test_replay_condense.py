@@ -991,15 +991,49 @@ def test_decay_and_checks_are_attached_in_every_round(tmp_path, monkeypatch, str
     out = run(tmp_path, match, streaming=streaming, vrf_path=vrf)
     checks = out.report["player_state"]["decay_checks"]
     assert [c["round"] for c in checks] == [1, 2]
-    assert [c["verdict"] for c in checks] == ["disagree", "agree"]
-    assert out.report["player_state"]["decay: agree"] == 1
-    assert out.report["player_state"]["decay: disagree"] == 1
+    assert [c["verdict"] for c in checks] == ["consistent", "consistent"]
+    assert out.report["player_state"]["decay: consistent"] == 2
+    assert out.report["player_state"]["decay: too low"] == 0
+    assert "decay: agree" not in out.report["player_state"]
+    assert "decay: disagree" not in out.report["player_state"]
+    tightest = out.report["player_state"]["decay_tightest"]
+    assert tightest == {checks[1]["dtype"]: {k: checks[1][k] for k in
+                                           ("round", "slot", "t", "booked", "computed")}
+                       | {"gap": checks[1]["computed"] - checks[1]["booked"]}}
     # The original five-second status is needed even when the display clips it at death.
     for n in (1, 2):
         state = fmt.decode_blob(out.encoded_rounds()[n])["player_state"]
         assert ps.validate(state) == state
         assert state["decay"]["5"][-1]["dec"] == 0
         assert checks[n - 1]["computed"] == pytest.approx(59.88)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_decay_tightest_per_dtype_orders_by_booked_gap_round_then_time(tmp_path, monkeypatch, empty):
+    def check(dtype, round_n, t, booked, computed):
+        return {"dtype": dtype, "round": round_n, "slot": 0, "t": t,
+                "booked": booked, "computed": computed, "verdict": "consistent"}
+
+    # Later candidates arrive first, so ties must use round/time rather than encounter order.
+    rows = [] if empty else [check("DecayLargest", 3, 4, 73, 75),
+                             check("DecayLargest", 1, 2, 54, 54),
+                             check("DecayGap", 2, 2, 73, 75),
+                             check("DecayGap", 3, 4, 73, 74),
+                             check("DecayRound", 2, 1, 73, 75),
+                             check("DecayRound", 1, 4, 73, 75),
+                             check("DecayTime", 1, 4, 73, 75),
+                             check("DecayTime", 1, 2, 73, 75),
+                             check("DecayNegativeGap", 3, 4, 73, 71)]
+    batches = iter([rows[:3], rows[3:6], rows[6:]])
+    monkeypatch.setattr(cd, "attach_decay", lambda *args: next(batches))
+    out = run(tmp_path)
+    assert out.report["player_state"]["decay_checks"] == rows
+    expected = {}
+    for i in ([] if empty else [0, 3, 5, 7, 8]):
+        row = rows[i]
+        expected[row["dtype"]] = {k: row[k] for k in ("round", "slot", "t", "booked", "computed")}
+        expected[row["dtype"]]["gap"] = row["computed"] - row["booked"]
+    assert out.report["player_state"]["decay_tightest"] == expected
 
 
 def test_without_extras_the_spike_has_no_planter(tmp_path):

@@ -2282,3 +2282,13 @@ def test_meddle_and_the_pit_carry_the_measured_figures():
     assert (meddle["onset_hp"], meddle["build_s"], meddle["restore_s"], meddle["total_s"]) == (90, 0.75, 1.75, 5)
     pit = figures["Pandemic_X_Circular"]
     assert (pit["onset_hp"], pit["rate_hp_s"], pit["hold_s"], pit["restore_hp_s"]) == (30, 10, 1.5, 25)
+
+
+def test_nightfall_carries_the_owners_hold_and_restore_figures():
+    nightfall = _decay_figures()["BountyHunter_X_WaveForm"]
+    assert {k: nightfall[k] for k in ("onset_hp", "build_s", "rate_hp_s", "max_hp", "hold_s",
+                                     "restore_s", "restore_hp_s", "total_s")} == {
+        "onset_hp": 75, "build_s": 0, "rate_hp_s": 0, "max_hp": 75, "hold_s": 8,
+        "restore_s": 12, "restore_hp_s": 6.25, "total_s": 20}
+    assert nightfall["wiki"] == "https://valorant.fandom.com/wiki/Nightfall"
+    assert nightfall["fetched"] == "2026-11-20"

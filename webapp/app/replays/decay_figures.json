@@ -63,19 +63,19 @@
     "total_s": 5,
     "wiki": "https://valorant.fandom.com/wiki/Seize",
     "fetched": "2026-11-20",
-    "note": "Fade's Seize. Wiki: decay 75 HP, health restored over 5 seconds, 'at irregular rates' (restore_hp_s 15 is 75 / 5, an average). The wave decays on contact, a little before the tether the export's status spans, so the real curve starts earlier than t."
+    "note": "Fade's Seize. Wiki: decay 75 HP, health restored over 5 seconds, 'at irregular rates' (restore_hp_s 15 is 75 / 5, an average). 16 booked deaths are all consistent (booked <= the curve), with the curve starting at the tether, about 0.2-0.45 s after the wave lands."
   },
   "BountyHunter_X_WaveForm": {
-    "onset_hp": 80,
+    "onset_hp": 75,
     "build_s": 0,
     "rate_hp_s": 0,
-    "max_hp": 80,
-    "hold_s": 0,
-    "restore_s": null,
-    "restore_hp_s": null,
-    "total_s": 8,
+    "max_hp": 75,
+    "hold_s": 8,
+    "restore_s": 12,
+    "restore_hp_s": 6.25,
+    "total_s": 20,
     "wiki": "https://valorant.fandom.com/wiki/Nightfall",
     "fetched": "2026-11-20",
-    "note": "Fade's Nightfall. Wiki: decay 80 HP; the decayed health 'will immediately start and stay until the duration is over'; debuff duration 8 s. No restore rate is given, so none is: the 80 HP is held for total_s and then gone."
+    "note": "Fade's Nightfall. Owner's in-game figures: 75 HP, restored at 6.25 HP/s (Nightfall wiki stats table, 2026-11-20). The 8 s hold is the debuff duration from the earlier reading of the page, followed by 12 s of restoration. 17 booked Nightfall deaths are all consistent with this curve (largest booked 73.0, 1.2-4.7 s after the hit); restoring from the hit is contradicted by 73 booked where that curve gives 45-55."
   }
 }
