@@ -392,7 +392,8 @@
     g.clearRect(0, 0, w, h);
     g.font = "bold 12px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "bottom"; g.lineWidth = 3;
     labels.forEach(function (l) {
-      var x = ui.pan[0] + l[1][0] * k * ui.zoom, y = ui.pan[1] + l[1][1] * k * ui.zoom - 6 - l[3];
+      var p = T.rotatePoint(l[1][0], l[1][1], PX, TG.turns());
+      var x = ui.pan[0] + p.x * k * ui.zoom, y = ui.pan[1] + p.y * k * ui.zoom - 6 - l[3];
       g.strokeStyle = "rgba(0,0,0,0.85)"; g.strokeText(l[0], x, y);
       g.fillStyle = l[2]; g.fillText(l[0], x, y);
     });
@@ -647,7 +648,10 @@
 
   // ---------------------------------------------------------------- pointer, zoom, keys
   var canvas = $("feat"), stage = $("stage");
-  function toMap(e) { var r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * PX, (e.clientY - r.top) / r.height * PX]; }
+  function toMap(e) {
+    var p = T.pointerToMap(canvas.getBoundingClientRect(), e.clientX, e.clientY, PX, TG.turns());
+    return [p.x, p.y];
+  }
   function applyZoom() {
     $("zoom").style.transform = "translate(" + ui.pan[0] + "px," + ui.pan[1] + "px) scale(" + ui.zoom + ")";
     draw();

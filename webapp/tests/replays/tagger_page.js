@@ -17,6 +17,7 @@ const vm = require("vm");
 const SCRIPTS = path.join(__dirname, "..", "..", "scripts");
 const CORE = fs.readFileSync(path.join(SCRIPTS, "control_tagger_core.js"), "utf8");
 const PANEL = fs.readFileSync(path.join(SCRIPTS, "control_tagger_features.js"), "utf8");
+const AREAS = fs.readFileSync(path.join(SCRIPTS, "control_tagger_areas.js"), "utf8");
 
 // A localStorage stand-in. `failWrites`: every write throws as a full or denied store does.
 function memoryStorage(opts) {
@@ -34,7 +35,20 @@ function memoryStorage(opts) {
 }
 
 function context2d() {
-  const store = {};
+  let matrix = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  const store = {
+    textCalls: [],
+    save() { stack.push(matrix.slice()); },
+    restore() { matrix = stack.pop() || matrix; },
+    setTransform(...m) { matrix = m; },
+    translate(x, y) { matrix[4] += matrix[0]*x + matrix[2]*y; matrix[5] += matrix[1]*x + matrix[3]*y; },
+    rotate(a) {
+      const [b,c,d,e,x,y] = matrix, co = Math.cos(a), si = Math.sin(a);
+      matrix = [b*co+d*si, c*co+e*si, d*co-b*si, e*co-c*si, x, y];
+    },
+    fillText(text, x, y) { this.textCalls.push({text, x, y, matrix:matrix.slice()}); },
+  };
   const image = (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(Math.max(0, w * h * 4)) });
   return new Proxy(store, {
     get(t, p) {
@@ -60,6 +74,7 @@ function element(doc, id, tag) {
       if (this.tagName === "SELECT" && c.tagName === "OPTION" && (c.selected || this.children.length === 1)) this.value = c.value;
       return c;
     },
+    append(...children) { children.forEach(c => this.appendChild(c)); },
     removeChild(c) { this.children = this.children.filter(x => x !== c); return c; },
     insertBefore(c) { this.children.push(c); return c; },
     replaceChildren() { this.children = Array.from(arguments); },
@@ -102,6 +117,7 @@ function openPage(data, opts) {
   opts = opts || {};
   const storage = opts.storage || memoryStorage();
   const blobs = {}, downloads = [];
+  const frames = [];
   let blobN = 0;
   const els = {};
   const document = {
@@ -109,16 +125,24 @@ function openPage(data, opts) {
     getElementById(id) { return els[id] || (els[id] = element(document, id)); },
     createElement(tag) { return element(document, null, tag); },
     createTextNode(t) { return { nodeType: 3, textContent: String(t) }; },
-    querySelectorAll() { return []; },
+    querySelectorAll(s) { return s === "[data-area-tool]" ? areaTools : []; },
     querySelector() { return null; },
     addEventListener() {},
   };
   document.body = element(document, "body");
+  const areaTools = ["brush", "erase", "fill", "pick"].map(tool => {
+    const el = element(document, "areaTool-" + tool, "button");
+    el.dataset.areaTool = tool; els[el.id] = el; return el;
+  });
+  ["areasBrushSize", "areasOpacity", "areasAlignPairs"].forEach((id, i) => {
+    document.getElementById(id).value = ["1", "50", "2"][i];
+  });
   const window = {
     document: document, localStorage: storage, devicePixelRatio: 1, console: console,
     Blob: class { constructor(parts) { this.text = parts.join(""); } },
     URL: { createObjectURL(b) { const k = "blob:" + (++blobN); blobs[k] = b.text; return k; }, revokeObjectURL() {} },
-    addEventListener() {}, removeEventListener() {}, requestAnimationFrame() { return 0; }, setTimeout() { return 0; },
+    Image: class { constructor() { this.naturalWidth = this.naturalHeight = 1024; } set src(v) { this.onload(); } },
+    addEventListener() {}, removeEventListener() {}, requestAnimationFrame(cb) { frames.push(cb); return frames.length; }, setTimeout() { return 0; },
     clearTimeout() {}, getComputedStyle() { return {}; }, atob: atob, btoa: btoa,
   };
   window.window = window;
@@ -146,13 +170,17 @@ function openPage(data, opts) {
   window.tagger = {
     state: state, edits: edits, maps: maps, loaded: loaded, DATA: data, ensureMap: ensureMap,
     save() { saves++; }, recompute() {}, changed() {}, dab() {},
-    setMode(m) { state.mode = m; }, selectMap(n) { state.map = n; },
+    turns() { return opts.turns || 0; },
+    setMode(m) { state.mode = m; window.taggerFeatures.onMode(m); window.taggerAreas.onMode(m); },
+    selectMap(n) { state.map = n; window.taggerFeatures.onMap(n); window.taggerAreas.onMap(n); },
   };
   vm.runInContext(PANEL, window, { filename: "control_tagger_features.js" });
+  vm.runInContext(AREAS, window, { filename: "control_tagger_areas.js" });
   const page = {
     window: window, T: T, F: T.Features, TG: window.tagger, api: window.taggerFeatures, storage: storage,
     downloads: downloads, el: id => document.getElementById(id), saves: () => saves,
     click(id) { document.getElementById(id).click(); },
+    flushFrames() { while (frames.length) frames.shift()(); },
     // the same browser, the page loaded again (same storage, fresh script state)
     reopen(more) { return openPage(data, Object.assign({}, opts, { storage: storage }, more || {})); },
     // a plain copy of an object built inside the page's context

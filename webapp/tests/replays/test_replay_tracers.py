@@ -1,6 +1,5 @@
-"""Tracers end at the first wall or low box (the 2026-10-05 review, item 11): the bullet mask is its own asset
-(sight goes over a low box, a shot doesn't; a shot flies across a drop nobody can walk on), every committed map
-has one, and the viewer's ray helper stops on it."""
+"""Viewer tracers stop at sight walls and pass over low boxes. The separate bullet-mask build and its
+geometry remain unchanged; every committed map still has that asset."""
 
 import hashlib
 import json
@@ -114,8 +113,8 @@ def test_the_ray_stops_at_the_first_obstacle_or_the_maps_edge():
 def test_the_viewer_keeps_the_old_tracer_until_the_mask_is_there_and_both_pages_pass_it():
     source = REPLAY_JS.read_text(encoding="utf-8")
     assert "var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;" in source
-    assert "img.onerror = function () { self.bullet = null; };" in source
+    assert "img.onerror = function () { self.sight = null; };" in source
     page = (WEBAPP / "app" / "templates" / "replays" / "replay.html").read_text(encoding="utf-8")
-    assert '.bullet.png' in page and "bulletMask" in page
+    assert '.sight.png' in page and "sightMask" in page
     standalone = (WEBAPP / "scripts" / "render_replay_standalone.py").read_text(encoding="utf-8")
-    assert "bulletMask: data.bullet || null" in standalone and ".bullet.png" in standalone
+    assert "sightMask: data.sight || null" in standalone and ".sight.png" in standalone

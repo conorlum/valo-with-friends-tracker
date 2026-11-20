@@ -17,6 +17,25 @@
   "use strict";
 
   var PX = 1024, P = 256, END_SKIP = 3, BAR = 0.02;
+
+  function rotatePoint(x, y, size, k) {
+    switch (((k % 4) + 4) % 4) {
+      case 1: return { x: size - y, y: x };
+      case 2: return { x: size - x, y: size - y };
+      case 3: return { x: y, y: size - x };
+      default: return { x: x, y: y };
+    }
+  }
+
+  function unrotatePoint(x, y, size, k) {
+    return rotatePoint(x, y, size, -k);
+  }
+
+  // A quarter-turned square keeps its bounding rect; pan and zoom are already included in it.
+  function pointerToMap(rect, clientX, clientY, size, turns) {
+    return unrotatePoint((clientX - rect.left) / rect.width * size,
+                         (clientY - rect.top) / rect.height * size, size, turns);
+  }
   var PAINTS = ["see_across_paint", "cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint"];
   var HEIGHT_PAINTS = ["open", "ground", "top"];
   var TAG_KINDS = ["cover", "seeover", "walkable", "glyph", "seeacross"];
@@ -2150,6 +2169,7 @@
   };
 
   var api = {
+    rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, pointerToMap: pointerToMap,
     Areas: Areas,
     Features: Features,
     PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, HEIGHT_PAINTS: HEIGHT_PAINTS,

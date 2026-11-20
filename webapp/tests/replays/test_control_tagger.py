@@ -188,6 +188,29 @@ def test_the_page_builds_with_every_map(tmp_path):
     assert all("height_overlay" not in m for m in data["maps"].values())
 
 
+def test_built_page_rotates_inner_canvases_and_uses_inverse_map_pointers(tmp_path):
+    out = tmp_path / "tagger.html"
+    control_tagger.main(["--out", str(out), "--map", "Abyss", "--map", "Breeze"])
+    page = out.read_text(encoding="utf-8")
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+    from app.services.map_rotation import quarter_turns
+
+    assert all(m["rotation"] == quarter_turns(name) for name, m in data["maps"].items())
+    wrapper = re.search(r'<div id="mapRotation">(.*?)</div>', page, re.S).group(1)
+    assert all(f'id="{name}"' in wrapper for name in ("base", "heightOverlay", "tint", "overlay", "feat", "areasCanvas"))
+    assert page.index('id="zoom"') < page.index('id="mapRotation"') < page.index('id="featLabels"')
+    assert '#mapRotation { position: absolute; inset: 0; transform-origin: 50% 50%; }' in page
+    template = (WEBAPP / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    assert "pointerToMap" in re.search(r'function toMap\(e\) \{(.*?)\n  }', template, re.S).group(1)
+    assert '$("mapRotation").style.transform' in template
+    assert 'turns: turns' in template
+    areas = (WEBAPP / "scripts/control_tagger_areas.js").read_text(encoding="utf-8")
+    assert "pointerToMap" in re.search(r'function toMapPoint\(e, element\) \{(.*?)\n  }', areas, re.S).group(1)
+    assert areas.count("toMapPoint(e, canvas)") == 2
+    preview = areas.split('preview.addEventListener("click"', 1)[1].split('\n  });', 1)[0]
+    assert "toCanvas(e, preview)" in preview and "toMapPoint" not in preview
+
+
 @pytest.fixture
 def exported_height_page(tmp_path):
     floors = np.full((cg.GRID, cg.GRID, hc.MAX_FLOORS), -1, np.int16)
@@ -541,6 +564,63 @@ def test_page_missing_height_paint_loads_an_empty_document(tmp_path):
 
 def choke(id, cells, name=None, source="auto", deleted=False):
     return {"id": id, "name": name or str(id), "cells": cells, "source": source, "deleted": deleted}
+
+
+@pytest.fixture(scope="module")
+def choke_keyboard_page():
+    # tagger_page.js loads the feature/area panels with stub page hooks, not this handler.
+    # Extract the real registration and movement functions, stubbing only UI side effects.
+    page = (WEBAPP / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    handler = re.search(r'^  document.addEventListener\("keydown",.*?^  \}\);', page, re.M | re.S).group(0)
+    functions = "\n".join(re.search(r"^  function " + name + r"\([^\n]+", page, re.M).group(0)
+                          for name in ("turns", "mapChokes", "chokeNextId"))
+    functions += "\n" + "\n".join(page_function(page, name) for name in ("setChokes", "chokeMove"))
+    constants = re.search(r"^  var G = T.CHOKE_GRID[^\n]+", page, re.M).group(0)
+    return {"handler": handler, "functions": functions, "constants": constants}
+
+
+CHOKE_KEYBOARD = """
+  function run(p) {
+    var PX = T.PX, state = {map: "Haven", mode: p.mode, choke: p.selected}, window = {};
+    var DATA = {maps: {Haven: {rotation: p.turns}}};
+    var chokeState = {Haven: {chokes: p.chokes, nextId: 2}}, chokeLoaded = {Haven: chokeState.Haven};
+    var chokeHigh = {Haven: 2}, changes = 0, prevented = 0, keydown;
+    var beforeChange = () => changes++, saveChokes = () => {}, paintOverlay = () => {}, showChoke = () => {};
+    var document = {addEventListener(type, fn) { if (type === "keydown") keydown = fn; }};
+    eval(p.constants + "\\n" + p.functions + "\\n" + p.handler);
+    keydown({key: p.key, target: {tagName: p.target}, preventDefault() { prevented++; }});
+    var cs = chokeState.Haven;
+    return {asset: T.exportAsset(state.map, cs.chokes, cs.nextId), changes, prevented};
+  }
+"""
+
+
+@pytest.mark.parametrize("turns", range(4))
+@pytest.mark.parametrize("mode", ["chokes", "choke_paint"])
+@pytest.mark.parametrize("key,dx,dy", [("ArrowRight", 1, 0), ("ArrowDown", 0, 1),
+                                      ("ArrowLeft", -1, 0), ("ArrowUp", 0, -1)])
+def test_choke_arrow_handler_moves_in_screen_direction(choke_keyboard_page, turns, mode, key, dx, dy):
+    cells = [40 * 128 + 50, 40 * 128 + 51, 41 * 128 + 50]
+    got = run_node(CHOKE_KEYBOARD, {**choke_keyboard_page, "turns": turns, "mode": mode, "key": key,
+                                    "selected": 1, "target": "BODY", "chokes": [choke(1, cells)]})
+    # Independent inverse of the displayed clockwise rotation; k=0 keeps the old grid delta.
+    dcol, drow = [(dx, dy), (dy, -dx), (-dx, -dy), (-dy, dx)][turns]
+    expected = [cell + drow * 128 + dcol for cell in cells]
+    assert got["asset"]["chokes"][0] == choke(1, expected, source="hand")
+    assert got["asset"]["chokes"][1] == choke(2, cells, source="hand", deleted=True)
+    assert got["asset"]["next_id"] == 3
+    assert got["changes"] == got["prevented"] == 1
+
+
+@pytest.mark.parametrize("mode,selected,target", [("select", 1, "BODY"), ("chokes", 0, "BODY"),
+                                                  ("chokes", 1, "INPUT"), ("choke_paint", 1, "TEXTAREA"),
+                                                  ("choke_paint", 1, "SELECT")])
+def test_choke_arrow_handler_respects_selection_mode_and_text_inputs(choke_keyboard_page, mode, selected, target):
+    original = [choke(1, [40 * 128 + 50])]
+    got = run_node(CHOKE_KEYBOARD, {**choke_keyboard_page, "turns": 1, "mode": mode, "key": "ArrowRight",
+                                    "selected": selected, "target": target, "chokes": original})
+    assert got["asset"]["chokes"] == original
+    assert got["changes"] == got["prevented"] == 0
 
 
 CHOKE_EDITS = """

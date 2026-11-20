@@ -23,6 +23,35 @@
   var STEP_S = 5;
   var UV = 10000;
 
+  // Clockwise quarter turns in the square map, with screen y pointing down.
+  function rotatePoint(x, y, size, k) {
+    switch (((k % 4) + 4) % 4) {
+      case 1: return { x: size - y, y: x };
+      case 2: return { x: size - x, y: size - y };
+      case 3: return { x: y, y: size - x };
+      default: return { x: x, y: y };
+    }
+  }
+
+  function unrotatePoint(x, y, size, k) {
+    return rotatePoint(x, y, size, -k);
+  }
+
+  function rotateYaw(deg, k) {
+    return deg + 90 * k;
+  }
+
+  // Map pixels -> display pixels -> canvas pixels. The origin is in the display frame.
+  function viewMatrix(view, k, size) {
+    var q = view.k, ox = view.ox, oy = view.oy;
+    switch (((k % 4) + 4) % 4) {
+      case 1: return [0, q, -q, 0, (size - ox) * q, -oy * q];
+      case 2: return [-q, 0, 0, -q, (size - ox) * q, (size - oy) * q];
+      case 3: return [0, -q, q, 0, -ox * q, (size - oy) * q];
+      default: return [q, 0, 0, q, -ox * q, -oy * q];
+    }
+  }
+
   // ------------------------------------------------------------ decoding (pure; tested in node)
 
   function decodeSegment(segment, hz) {
@@ -1577,7 +1606,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "areas", "gaps", "features"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "aim", "control", "areas", "gaps", "features"];
   var AREA_GRID = 128;     // control_format.GRID; area payload cells cover the full grid
   var AREA_COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4",
                      "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff"];
@@ -1614,6 +1643,7 @@
   function ReplayViewer(root, options) {
     this.root = root;
     this.options = options;
+    this.turns = ((options.rotation | 0) % 4 + 4) % 4;
     this.linked = options.linked || null;          // {players: {slot: {name, team}}, uvPerUnit}
     this.rounds = options.rounds;                  // [1, 2, ...]
     this.cache = {};                               // round -> Promise of {blob, tracks}
@@ -1622,7 +1652,7 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
+    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, aim: true, control: false,
                     gaps: false, features: true, areas: false };
     this.areas = null;
     this.areasPromise = null;
@@ -1644,11 +1674,11 @@
     this.ctx = this.canvas.getContext("2d");
     fitMapToWindow(root);
     this.map = new Image();
-    this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (map px - o) * k
+    this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (display px - o) * k
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
-    this.loadBulletMask();
+    this.loadSightMask();
     this.bindControls();
     this.bindHeatmap();
     this.lastFrame = null;
@@ -1737,6 +1767,9 @@
         }
       }
       if (x1 < 0) return;
+      var a = rotatePoint(x0, y0, n, this.turns), b = rotatePoint(x1, y1, n, this.turns);
+      x0 = Math.min(a.x, b.x); y0 = Math.min(a.y, b.y);
+      x1 = Math.max(a.x, b.x); y1 = Math.max(a.y, b.y);
       var scale = size / n, pad = 0.04 * n;
       var side = Math.max(x1 - x0, y1 - y0) + 2 * pad;
       var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
@@ -2535,43 +2568,60 @@
     return slot === null || slot === undefined ? this.css("--replay-unknown", "#77787f") : this.slotColor(slot);
   };
 
+  // Draw a map-anchored label or icon in the display frame. Save the caller's transform too: a caller may
+  // already be inside a screen-space pass. Zero turns deliberately adds no canvas calls (the pinned baseline).
+  ReplayViewer.prototype.upright = function (ctx, x, y, fn) {
+    if (!this.turns) return fn(x, y);
+    var point = rotatePoint(x, y, this.canvas.width, this.turns), view = this.view;
+    ctx.save();
+    ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    try { return fn(point.x, point.y); }
+    finally { ctx.restore(); }
+  };
+
   // A team-coloured disc with the ability's white glyph and a dark surface ring, valoplant-style.
   ReplayViewer.prototype.drawBadge = function (ctx, x, y, radius, color, glyph, alpha) {
-    ctx.save();
-    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
-    ctx.beginPath(); ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
-    ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
-    ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
-    ctx.fillStyle = color; ctx.fill();
-    if (glyph) {
-      var g = radius * 1.35;
-      ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
-    } else {
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath(); ctx.arc(x, y, radius * 0.3, 0, 2 * Math.PI); ctx.fill();
-    }
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+      ctx.beginPath(); ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = color; ctx.fill();
+      if (glyph) {
+        var g = radius * 1.35;
+        ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
+      } else {
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(x, y, radius * 0.3, 0, 2 * Math.PI); ctx.fill();
+      }
+      ctx.restore();
+    });
   };
 
   // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
   ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
     if (!glyph) return;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
+      ctx.restore();
+    });
   };
 
   // The time left on a timed ability (timeLeft): a light arc from twelve o'clock, clockwise, that runs down to
   // nothing as it closes, over a dark under-stroke so it reads on any floor.
   ReplayViewer.prototype.drawTimer = function (ctx, x, y, radius, left, width, alpha) {
     if (left === null || left <= 0) return;
-    ctx.save();
-    ctx.globalAlpha = alpha; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * left);
-    ctx.strokeStyle = "rgba(12, 12, 16, 0.6)"; ctx.lineWidth = width + 2; ctx.stroke();
-    ctx.strokeStyle = this.css("--replay-timer", "rgba(240, 242, 248, 0.95)"); ctx.lineWidth = width; ctx.stroke();
-    ctx.restore();
+    this.upright(ctx, x, y, function (x, y) {
+      ctx.save();
+      ctx.globalAlpha = alpha; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * left);
+      ctx.strokeStyle = "rgba(12, 12, 16, 0.6)"; ctx.lineWidth = width + 2; ctx.stroke();
+      ctx.strokeStyle = this.css("--replay-timer", "rgba(240, 242, 248, 0.95)"); ctx.lineWidth = width; ctx.stroke();
+      ctx.restore();
+    }.bind(this));
   };
 
   // Where an ability is drawn at t: a moving pawn follows its path, anything else stays put.
@@ -3011,15 +3061,19 @@
       var x = a.u * s, y = a.v * s;
       var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
       ctx.save();
-      ctx.fillStyle = this.css("--brand", "#ff4655");
-      ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
-      ctx.globalAlpha = 1;
-      this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      this.upright(ctx, x, y, function (x, y) {
+        ctx.fillStyle = this.css("--brand", "#ff4655");
+        ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
+        ctx.globalAlpha = 1;
+        this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      }.bind(this));
       var state = spike.hud;
       if (state && !state.defused && !state.exploded) {
         // The time left to detonation, as a draining ring.
         ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = this.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
-        ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+        this.upright(ctx, x, y, function (x, y) {
+          ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+        });
       }
       if (state && state.defusing) {
         // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
@@ -3029,10 +3083,12 @@
           ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
           ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
         }
-        ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
-        ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
-        ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+        this.upright(ctx, x, y, function (x, y) {
+          ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
+          ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
+          ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
+          ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+        });
       }
       ctx.restore();
       hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
@@ -3042,7 +3098,9 @@
     if (spike.state === "dropped" && spike.u !== null && spike.v !== null) {
       var dx = spike.u * s, dy = spike.v * s, dk = r * 0.55;
       ctx.save();
-      this.spikeGlyph(ctx, dx, dy, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      this.upright(ctx, dx, dy, function (x, y) {
+        self.spikeGlyph(ctx, x, y, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      });
       ctx.restore();
       hits.push({ x: dx, y: dy, r: dk * 1.4, text: "Spike dropped here at " + clock(spike.since) });
     }
@@ -3149,7 +3207,7 @@
       .map(function (x) { return x[2]; });
   }
 
-  // The visible part of the map, in map pixels.
+  // The visible part of the map, in display-frame pixels.
   ReplayViewer.prototype.viewBounds = function () {
     var v = this.view, size = this.canvas.width;
     return { x0: v.ox, y0: v.oy, x1: v.ox + size / v.k, y1: v.oy + size / v.k };
@@ -3368,7 +3426,7 @@
   };
 
   // Where a shot's tracer ends (the 2026-10-05 review, item 11): from (u, v) along its recorded direction (towards
-  // u1, v1) to the first pixel of the bullet mask that stops it (walls and low boxes), or the map's edge. `mask` is
+  // u1, v1) to the first pixel of the sight mask that stops it (walls), or the map's edge. `mask` is
   // `size` x `size` bytes, non-zero stops a shot. A shooter standing against (or just inside) an obstacle starts
   // past it: blocking pixels are skipped until the ray is first in the open, for at most START_SKIP_PX.
   var START_SKIP_PX = 12;
@@ -3390,10 +3448,10 @@
     return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
   }
 
-  // The map's bullet mask as bytes (1 stops a shot), from its image; null while loading, without one, or on failure.
-  ReplayViewer.prototype.loadBulletMask = function () {
-    var self = this, url = this.options.bulletMask;
-    this.bullet = null;
+  // The map's sight mask as bytes (1 blocks sight), from its image; null while loading, without one, or on failure.
+  ReplayViewer.prototype.loadSightMask = function () {
+    var self = this, url = this.options.sightMask;
+    this.sight = null;
     if (!url || typeof Image === "undefined" || typeof document === "undefined") return;
     var img = new Image();
     img.onload = function () {
@@ -3404,21 +3462,21 @@
         octx.drawImage(img, 0, 0, n, n);
         var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
         for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
-        self.bullet = { mask: mask, size: n };
+        self.sight = { mask: mask, size: n };
         self.draw();
-      } catch (err) { self.bullet = null; }     // unreadable: the fixed-length tracer stays
+      } catch (err) { self.sight = null; }     // unreadable: fixed-length aim and tracers stay
     };
-    img.onerror = function () { self.bullet = null; };
+    img.onerror = function () { self.sight = null; };
     img.src = url;
   };
 
   ReplayViewer.prototype.drawTracers = function (ctx, s, r) {
-    var t = this.t, self = this, bullet = this.bullet;
+    var t = this.t, self = this, sight = this.sight;
     (this.current.extras.shots || []).forEach(function (shot) {
       var age = t - shot.t;
       if (age < 0 || age > TRACER_S || shot.u1 === undefined) return;
-      // to the first wall or low box when the map's bullet mask is loaded; else the stored fixed length
-      var end = bullet ? tracerEnd(bullet.mask, bullet.size, shot.u, shot.v, shot.u1, shot.v1) : null;
+      // to the first wall when the map's sight mask is loaded; else the stored fixed length
+      var end = sight ? tracerEnd(sight.mask, sight.size, shot.u, shot.v, shot.u1, shot.v1) : null;
       var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;
       ctx.save();
       ctx.globalAlpha = 0.9 * (1 - age / TRACER_S);
@@ -3560,8 +3618,10 @@
     ctx.lineWidth = 3 / Math.sqrt(this.view.k); ctx.strokeStyle = "#111"; ctx.fillStyle = "#fff";
     this.areasPaint.labels.forEach(function (label) {
       var x = label.u / UV * size, y = label.v / UV * size;
-      ctx.strokeText(label.name, x, y); ctx.fillText(label.name, x, y);
-    });
+      this.upright(ctx, x, y, function (x, y) {
+        ctx.strokeText(label.name, x, y); ctx.fillText(label.name, x, y);
+      });
+    }, this);
     if (data.approximate) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.font = "bold 12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.lineWidth = 3;
@@ -3745,10 +3805,11 @@
     if ((!this.control && !this.options.loadAreas) || !this.hits) return;
     var rect = this.canvas.getBoundingClientRect(), scale = this.canvas.width / rect.width, v = this.view;
     var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
+    var map = unrotatePoint(x, y, this.canvas.width, this.turns);
     var best = null;
     this.hits.forEach(function (h) {
       if (h.slot === undefined || h.slot === null) return;   // annotations never select
-      var d = Math.hypot(h.x - x, h.y - y);
+      var d = Math.hypot(h.x - map.x, h.y - map.y);
       if (d <= h.r && (!best || d < best.d)) best = { slot: h.slot, d: d };
     });
     if (best) this.setHighlight(best.slot);
@@ -3993,10 +4054,12 @@
       ctx.font = "600 " + Math.round(r * 0.7) + "px system-ui, sans-serif";
       ctx.textAlign = "left"; ctx.textBaseline = "middle";
       var w = ctx.measureText(label).width + r * 0.4;
-      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
-      ctx.fillRect(p[0] + r * 0.8, p[1] - r * 0.45, w, r * 0.9);
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(label, p[0] + r, p[1]);
+      self.upright(ctx, p[0], p[1], function (x, y) {
+        ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
+        ctx.fillRect(x + r * 0.8, y - r * 0.45, w, r * 0.9);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(label, x + r, y);
+      });
       ctx.fillStyle = color;
     });
     // An x where a teammate stopped watching (route_released).
@@ -4196,7 +4259,7 @@
     var ctx = heat.ctx, size = heat.canvas.width, v = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    ctx.setTransform(v.k, 0, 0, v.k, -v.ox * v.k, -v.oy * v.k);
+    ctx.setTransform.apply(ctx, viewMatrix(v, this.turns, size));
     if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img.canvas, 0, 0, size, size);
@@ -4219,8 +4282,11 @@
     var heat = this.heat, found = this.heatSection();
     if (!found) return;
     var rect = heat.canvas.getBoundingClientRect(), scale = heat.canvas.width / rect.width, v = this.view;
-    var x = ((e.clientX - rect.left) * scale / v.k + v.ox) / heat.canvas.width * controlApi().GRID;
-    var y = ((e.clientY - rect.top) * scale / v.k + v.oy) / heat.canvas.height * controlApi().GRID;
+    var displayX = (e.clientX - rect.left) * scale / v.k + v.ox;
+    var displayY = (e.clientY - rect.top) * scale / v.k + v.oy;
+    var map = unrotatePoint(displayX, displayY, heat.canvas.width, this.turns);
+    var x = map.x / heat.canvas.width * controlApi().GRID;
+    var y = map.y / heat.canvas.height * controlApi().GRID;
     var cell = Math.floor(y) * controlApi().GRID + Math.floor(x), k = found.data.index[cell];
     if (!(x >= 0 && y >= 0 && x < controlApi().GRID && y < controlApi().GRID) || k < 0) { heat.tip.hidden = true; return; }
     var sec = found.section, labels = found.data.labels;
@@ -4364,7 +4430,7 @@
     var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
     if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
     if (!this.current) { ctx.setTransform(1, 0, 0, 1, 0, 0); return; }
     var blob = this.current.blob, tracks = this.current.tracks, t = this.t, self = this;
@@ -4440,19 +4506,32 @@
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
         ctx.globalAlpha = dim;
       }
+      if (self.layers.aim) {
+        var cos = Math.cos(rad), sin = Math.sin(rad), sight = self.sight;
+        var end = sight ? tracerEnd(sight.mask, sight.size, at.u, at.v, at.u + cos * 20000, at.v + sin * 20000) : null;
+        ctx.save();
+        ctx.globalAlpha = 0.8 * dim;
+        ctx.lineWidth = Math.max(1, r / 10);
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.lineTo(end ? end.u * s : x + cos * r * 2.4 * 3, end ? end.v * s : y + sin * r * 2.4 * 3);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
       var img = self.icon(p.agent);
-      if (img) {
-        ctx.save();
-        ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
-        ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
-        ctx.restore();
-      } else {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText(p.agent.slice(0, 2), x, y);
-      }
+      self.upright(ctx, x, y, function (x, y) {
+        if (img) {
+          ctx.save();
+          ctx.beginPath(); ctx.arc(x, y, r * 0.86, 0, 2 * Math.PI); ctx.clip();
+          ctx.drawImage(img, x - r * 0.86, y - r * 0.86, r * 1.72, r * 1.72);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "600 " + Math.round(r * 0.95) + "px system-ui, sans-serif";
+          ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText(p.agent.slice(0, 2), x, y);
+        }
+      });
       if (life.flags.length) {
         // An unobserved or uncertain life: a dashed ring says the evidence is incomplete.
         ctx.save();
@@ -4488,9 +4567,21 @@
     // The player annotations last, over the circles, whatever the abilities toggle says: condition chips, the
     // carrier's badge, then the health/name blocks on dark plates so they read over any part of the map.
     var layout = [];
+    var annotationStart = hits.length;
+    if (this.turns) {
+      marks.forEach(function (m) {
+        var point = rotatePoint(m.x, m.y, size, self.turns);
+        m.x = point.x; m.y = point.y;
+      });
+      ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
+    }
     this.drawStatuses(ctx, s, r, hits, marks, layout);
     this.drawCarrier(ctx, r, hits, marks, layout, spike);
     this.drawBlocks(ctx, r, hits, marks, layout);
+    if (this.turns) {
+      for (var hi = annotationStart; hi < hits.length; hi++) hits[hi].disp = true;
+      ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
+    }
     this.layout = layout;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -4520,11 +4611,14 @@
     var v = this.view;
     this.hover = { x: (e.clientX - rect.left) * scale / v.k + v.ox, y: (e.clientY - rect.top) * scale / v.k + v.oy,
                    px: e.clientX - rect.left, py: e.clientY - rect.top };
+    var map = unrotatePoint(this.hover.x, this.hover.y, this.canvas.width, this.turns);
+    this.hover.mx = map.x; this.hover.my = map.y;
     this.showTip(this.hover);
   };
 
-  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
-  function hitHolds(h, x, y) {
+  // Hits stay in the map frame unless `disp` marks a display-frame annotation.
+  function hitHolds(h, x, y, mx, my) {
+    if (!h.disp) { x = mx; y = my; }
     if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
     return Math.hypot(h.x - x, h.y - y) <= h.r;
   }
@@ -4533,9 +4627,11 @@
   ReplayViewer.prototype.showTip = function (hover) {
     var tip = this.ui.tip;
     if (!tip) return;
+    var map = typeof hover.mx === "number" && typeof hover.my === "number"
+      ? { x: hover.mx, y: hover.my } : unrotatePoint(hover.x, hover.y, this.canvas.width, this.turns);
     var best = null;
     (this.hits || []).forEach(function (h) {
-      if (hitHolds(h, hover.x, hover.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
+      if (hitHolds(h, hover.x, hover.y, map.x, map.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
     });
     if (!best) { this.hideTip(); return; }
     tip.textContent = best.text;
@@ -4557,6 +4653,7 @@
   }
 
   var api = {
+    rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, rotateYaw: rotateYaw, viewMatrix: viewMatrix,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,

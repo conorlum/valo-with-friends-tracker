@@ -10,6 +10,19 @@
   var MAP_PX = 1024;
   var COLORS = { predicted: "rgba(255, 176, 32, 0.55)", backshot: "rgba(230, 60, 220, 0.6)" };
 
+  function rotatePoint(x, y, size, k) {
+    switch (((k % 4) + 4) % 4) {
+      case 1: return { x: size - y, y: x };
+      case 2: return { x: size - x, y: size - y };
+      case 3: return { x: y, y: size - x };
+      default: return { x: x, y: y };
+    }
+  }
+
+  function unrotatePoint(x, y, size, k) {
+    return rotatePoint(x, y, size, -k);
+  }
+
   // Route points ([x, y], or a stored route's [t, x, y]) on the 1024-px map -> canvas px for a square canvas.
   function routePath(points, size) {
     return (points || []).map(function (p) {
@@ -84,9 +97,17 @@
 
     function draw() {
       var size = canvas.width;
+      var turns = (((drawing.rotation || 0) % 4) + 4) % 4;
       ctx.clearRect(0, 0, size, size);
+      if (turns) {
+        var matrix = [null, [0, 1, -1, 0, size, 0], [-1, 0, 0, -1, size, size], [0, -1, 1, 0, 0, size]][turns];
+        ctx.setTransform.apply(ctx, matrix);
+      }
       if (image.complete && image.naturalWidth) ctx.drawImage(image, 0, 0, size, size);
-      if (!current) return;
+      if (!current) {
+        if (turns) ctx.setTransform(1, 0, 0, 1, 0, 0);
+        return;
+      }
       ctx.lineWidth = 2;
       ctx.lineJoin = "round";
       current.routes.forEach(function (r) {
@@ -99,10 +120,12 @@
           ctx.stroke();
         });
       });
+      if (turns) ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.font = "12px sans-serif";
       ctx.textAlign = "center";
       current.labels.forEach(function (c) {
-        var xy = routePath([[c.x, c.y]], size)[0];
+        var mapPoint = routePath([[c.x, c.y]], size)[0];
+        var point = rotatePoint(mapPoint[0], mapPoint[1], size, turns), xy = [point.x, point.y];
         ctx.fillStyle = "#ffffff";
         ctx.beginPath();
         ctx.arc(xy[0], xy[1], 3, 0, 2 * Math.PI);
@@ -167,6 +190,7 @@
   }
 
   var api = {
+    rotatePoint: rotatePoint, unrotatePoint: unrotatePoint,
     MAP_PX: MAP_PX, routePath: routePath, routePieces: routePieces, routesUrl: routesUrl, roundLink: roundLink,
     chokeLabels: chokeLabels, seqOf: seqOf, plural: plural, onMapText: onMapText, wire: wire
   };
