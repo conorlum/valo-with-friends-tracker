@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.replay import Replay
 from app.replays import layouts
-from app.services import gap_patterns
+from app.services import gap_patterns, map_rotation
 from app.services import replay_control as control_service
 from app.services import replays as replay_service
 from app.services.auth import get_current_player
@@ -129,6 +129,7 @@ def page_context(data: dict, logged_in: bool) -> dict:
             "shapes": shapes, "cause_words": CAUSE_WORDS, "friends_login_note": FRIENDS_LOGIN_NOTE,
             "thin_data_note": THIN_DATA_NOTE, "layout_links": layout_links,
             "drawing": {"map": data["map"], "asset": data["layout"], "chokes": chokes, "params": data["params"],
+                        "rotation": map_rotation.quarter_turns(data["map"]),
                         "shapes": {f"{s['side']}-{g['index']}": g["rounds"] for s in shapes for g in s["groups"]}}}
 
 

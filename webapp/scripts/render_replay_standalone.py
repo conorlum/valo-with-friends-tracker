@@ -40,6 +40,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E40
 from app.replays import format as fmt  # noqa: E402
 from app.replays.condense import condense_export_dir  # noqa: E402
 from app.replays.contract import ContractError  # noqa: E402
+from app.services import map_rotation  # noqa: E402
 
 APP = WEBAPP_ROOT / "app"
 
@@ -100,6 +101,7 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
                "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons,
                # the tracer's obstacles, inlined like the map (None for a map without the asset)
                "bullet": data_uri(APP / "static" / "data" / "control" / f"{map_name}.bullet.png")}
+    payload["rotation"] = map_rotation.quarter_turns(map_name)
     if linked:
         payload["site"] = site["context"]
         payload["control"] = site["control"] if control else {}
@@ -143,6 +145,7 @@ __SCRIPT__
     var site = data.site, match = site ? site.match : null;
     var options = {
       rounds: rounds,
+      rotation: data.rotation || 0,
       mapImage: data.map,
       bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },

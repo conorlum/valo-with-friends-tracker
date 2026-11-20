@@ -31,7 +31,7 @@ from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.replays import layouts
 from app.replays import link as lk
-from app.services import replay_control, replay_view
+from app.services import map_rotation, replay_control, replay_view
 
 
 def replays_enabled() -> bool:
@@ -136,7 +136,7 @@ def page_context(db, replay: Replay) -> dict:
     else:
         asset = replay.map_name
     base = {"uuid": uuid, "map": replay.map_name, "rounds": list(range(1, replay.round_count + 1)),
-            "asset": asset,
+            "asset": asset, "rotation": map_rotation.quarter_turns(replay.map_name),
             "layout": {"id": layout.display_id if layout else None, "state": selection.state,
                        "patch": layouts.patch_text(layout.start) if layout and layout.start else None},
             "source_sha256": replay.source_sha256, "uv_per_unit": _uv_per_unit().get(replay.map_name),

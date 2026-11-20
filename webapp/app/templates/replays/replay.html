@@ -28,6 +28,7 @@
       var abilityIcons = loaded[0], gunIcons = loaded[1];
       window.viewer = new Replay.ReplayViewer(root, {
         rounds: match.rounds,
+        rotation: match.rotation || 0,
         mapImage: "/static/img/maps/" + match.asset + ".png",
         // What stops a tracer (walls and low boxes); a map without one keeps the fixed-length tracer.
         bulletMask: "/static/data/control/" + match.asset + ".bullet.png?v={{ static_version() }}",
