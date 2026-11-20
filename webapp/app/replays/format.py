@@ -102,14 +102,15 @@ see these rows (app/control/engine.py `control_view`); Critical Util counts them
 (app/critutil/extract.py). Only effects naming the object are kept: the caster-container path stays enemies only.
 
 Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a
-top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike", "ult", "orbs", "charges"}`, defined and
-validated by
-app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized copy, and drop the key when it is an
+top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike", "ult", "orbs", "charges", "overheal",
+"decay"}`, defined and validated by app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized
+copy, and drop the key when it is an
 unsupported version or malformed, so the subsection is unavailable and the rest of the round plays as stored.
 Revision 15 fills it (app/replays/player_state_extract.py) when the export has damage notifies or BombState: a
 part is present when its source is, so an empty part means none this round and a missing key never decoded.
 Revision 21 adds a `vitals` event after each heal of the HP or armor section (HP rises), and `charges`: each player's
 ability charges over time per key (C, Q, E, X), only for the components whose owner and slot the export proves.
+Revision 32 adds `overheal` points and combined `decay` knots, with amounts interpolated within each life.
 
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
@@ -126,7 +127,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 31
+CONDENSE_REVISION = 32
+# 32: hits that leave HP or armor unlisted keep them; `overheal` and `decay` parts; more decay sources
 # 31: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
 #     force rows (`from` "force"; a levitated row names its zone in `src`), a Flashbulb's pop is its `flash_windup_ended`
 #     row (`pop.src` "flash_windup", completed), Suspension's bookkeeping object has no row (2026-11-15);

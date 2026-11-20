@@ -440,6 +440,72 @@ def test_the_js_contract_constants_are_player_state_py_s():
 
 
 @needs_node
+def test_random_health_parts_validators_and_queries_match_python():
+    rng = random.Random(32)
+    cases = []
+    for _ in range(12):
+        state = {"version": 1, "overheal": {}, "decay": {}}
+        times = {-1, 0, 0.375, 0.75, 2, 2.5, 3, 30}
+        for slot in range(3):
+            overheal, decay = [], []
+            for life in range(2):
+                start = life * 10
+                knots = sorted(rng.sample(range(1, 9), 4))
+                for t in [start] + [start + x for x in knots]:
+                    overheal.append({"t": t, "life": life, "oh": rng.randint(0, 100)})
+                    decay.append({"t": t, "life": life, "dec": rng.randint(0, 99), "unk": rng.choice([True, False])})
+                    if rng.random() < 0.6:
+                        decay.append({"t": t, "life": life, "dec": rng.randint(0, 99), "unk": True})
+                decay.append({"t": start + 9, "life": life, "dec": 0, "unk": False})
+            # Shuffle time groups while preserving source order at jumps.
+            groups = {}
+            for knot in decay:
+                groups.setdefault(knot["t"], []).append(knot)
+            shuffled = list(groups.values())
+            rng.shuffle(shuffled)
+            decay = [knot for group in shuffled for knot in group]
+            rng.shuffle(overheal)
+            state["overheal"][str(slot)] = overheal + [{"t": 1, "oh": 20}, {"t": 1, "life": 0, "oh": -1}]
+            state["decay"][str(slot)] = decay + [{"t": 1, "life": 0, "dec": "x", "unk": False},
+                                               {"t": 1, "life": 0, "dec": 0, "unk": 1}]
+            times.update(e["t"] for e in overheal + decay)
+        state["overheal"]["4"] = [{"t": 0, "life": 0, "oh": 0}] * 513
+        state["decay"]["4"] = [{"t": 0, "life": 0, "dec": 0, "unk": False}] * 513
+        state["overheal"]["5"], state["decay"]["5"] = "bad", "bad"
+        state["overheal"]["10"], state["decay"]["10"] = [], []
+        times = sorted(times | {t + 0.125 for t in times} | {t - 1e-9 for t in times})
+        queries = [[slot, t, life] for slot in (0, 1, 2, 3, 4, 5) for t in times for life in (None, 0, 1)]
+        cases.append({"state": state, "queries": queries})
+    cases.extend({"state": state, "queries": [[0, 1, None]]} for state in
+                 ({"version": 1}, {"version": 1, "overheal": [], "decay": {"0": []}},
+                  {"version": 1, "decay": [], "overheal": {"0": []}}))
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const result = JSON.parse(input).map(c => {
+          const index = R.indexRoundState({player_state: c.state}, []);
+          if (index.overheal && !Object.isFrozen(index.overheal)) throw Error("overheal index not frozen");
+          if (index.decay && !Object.isFrozen(index.decay)) throw Error("decay index not frozen");
+          return {valid: R.validatePlayerState(c.state), values: c.queries.map(q =>
+            [R.overhealAt(index, ...q), R.decayAt(index, ...q)])};
+        });
+        process.stdout.write(JSON.stringify(result));
+      });"""
+    results = run_node(script, cases)
+    for case, result in zip(cases, results):
+        valid = ps_py.validate(case["state"])
+        assert result["valid"] == valid
+        for (slot, t, life), (overheal, decay) in zip(case["queries"], result["values"]):
+            assert overheal == ps_py.overheal_at(valid, slot, t, life)
+            expected = ps_py.decay_at(valid, slot, t, life)
+            if expected is None:
+                assert decay is None
+            else:
+                assert decay["dec"] == pytest.approx(expected["dec"], abs=1e-9)
+                assert decay["unk"] is expected["unk"]
+
+
+@needs_node
 def test_the_js_conditions_at_match_status_intervals_py():
     conditions = si.normalize_conditions(UTIL, ALIVE, 100.0)
     times = sorted(set([x / 32 for x in range(-64, 3300)] + [9.5, 10.0, 11.5, 12.5, 13.0, 39.5, 40.0, 45.0, 47.0]))

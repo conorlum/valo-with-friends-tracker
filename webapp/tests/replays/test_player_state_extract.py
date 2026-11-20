@@ -30,6 +30,133 @@ REAL_FALL = {"BitCount": 507, "Data": "BgIWME0PAhhAAADIQRpAAAAAgBwCAQgsQOIsMIAAA
                                      "zCAQAAA=="}
 
 
+def decay_status(source="Smonk_Q_DecayExplosion", t=10.0, t1=15.0, **more):
+    code, name = source.split("_", 1)
+    return {"k": "status", "t": t, "t1": t1, "target": 0, "by": 5,
+            "code": code, "name": name, "status": "decayed", "from": "object", **more}
+
+
+def decay_state(statuses=None, hp=100, vitals=(), alive=None, figures=None, booked=()):
+    state = {"version": 1, "vitals": {"0": [{"t": 0.0, "life": 0, "hp": float(hp),
+                                            "sh": None, "mhp": 100.0, "msh": None}, *vitals]}}
+    diagnostics = {}
+    checks = pse.attach_decay(state, [decay_status()] if statuses is None else statuses,
+                              {"0": [[0.0, None, "round"]]} if alive is None else alive,
+                              30.0, pse.load_decay_figures() if figures is None else figures,
+                              list(booked), diagnostics)
+    assert ps.validate(state, diagnostics={}) == state
+    return state, checks, diagnostics
+
+
+@pytest.mark.parametrize("hp, expected", [(100, 90), (40, 39)])
+def test_decay_meddle_curve_and_exact_cap_crossing(hp, expected):
+    state, _, _ = decay_state(hp=hp)
+    assert ps.decay_at(state, 0, 10)["dec"] == 0
+    assert ps.decay_at(state, 0, 10.2)["dec"] == pytest.approx(24)
+    assert ps.decay_at(state, 0, 10.75)["dec"] == expected
+    assert ps.decay_at(state, 0, 13.25)["dec"] == expected
+    assert ps.decay_at(state, 0, 14)["dec"] == pytest.approx(min(expected, 90 * 1 / 1.75))
+    assert ps.decay_at(state, 0, 15) == {"dec": 0.0, "unk": False}
+    if hp == 40:
+        assert any(k["t"] == pytest.approx(10.325) and k["dec"] == 39 for k in state["decay"]["0"])
+
+
+def test_decay_vitals_change_inserts_a_jump_and_overlapping_sources_sum():
+    vital = {"t": 11.0, "life": 0, "hp": 60.0, "sh": None, "mhp": 100.0, "msh": None}
+    state, _, _ = decay_state(vitals=[vital])
+    assert [k["dec"] for k in state["decay"]["0"] if k["t"] == 11] == [90, 59]
+    assert ps.decay_at(state, 0, 11.1)["dec"] == 59
+    state, _, _ = decay_state([decay_status(), decay_status(t=10.25, t1=15.25)])
+    assert ps.decay_at(state, 0, 10.5)["dec"] == pytest.approx(90)
+    assert ps.decay_at(state, 0, 10.75)["dec"] == 99
+
+
+def test_decay_pit_onset_rate_hold_and_restore_and_friendly_wall():
+    state, _, _ = decay_state([decay_status("Pandemic_X_Circular", t1=13)])
+    for t, value in [(10, 30), (11, 40), (13, 60), (14.5, 60), (15.5, 35), (16.9, 0)]:
+        assert ps.decay_at(state, 0, t)["dec"] == pytest.approx(value)
+    for flag in ({"from": "friendly"}, {"friendly": True}):
+        state, _, _ = decay_state([decay_status("Pandemic_E_SmokeScreenManager", t1=13, **flag)])
+        assert not state.get("decay", {}).get("0")
+    state, _, _ = decay_state([decay_status("Pandemic_E_SmokeScreenManager", t1=13)])
+    assert ps.decay_at(state, 0, 10)["dec"] == 10
+
+
+def test_decay_ends_at_death_and_resets_in_a_revived_life():
+    state, _, _ = decay_state(alive={"0": [[0, 10.4, "death"], [12, None, "round"]]})
+    assert state["decay"]["0"][-1] == {"t": 10.4, "life": 0, "dec": 0.0, "unk": False}
+    assert ps.decay_at(state, 0, 10.3, life=0)["dec"] == pytest.approx(36)
+    assert ps.decay_at(state, 0, 12, life=1) is None
+    state, _, _ = decay_state([decay_status(t=13, t1=18), decay_status(t=13, t1=18)], hp=20,
+                              alive={"0": [[0, 10.4, "death"], [12, None, "round"]]})
+    assert {k["life"] for k in state["decay"]["0"]} == {1}
+    assert ps.decay_at(state, 0, 13.75, life=1)["dec"] == 99
+
+
+def test_decay_missing_figures_marks_unknown_alone_and_with_meddle():
+    unknown = decay_status("Test_Unknown", t=10.1, t1=11)
+    figures = {"Smonk_Q_DecayExplosion": pse.load_decay_figures()["Smonk_Q_DecayExplosion"]}
+    for statuses, value in [([unknown], 0), ([unknown, decay_status()], 60)]:
+        state, _, _ = decay_state(statuses, figures=figures)
+        assert ps.decay_at(state, 0, 10.5) == {"dec": pytest.approx(value), "unk": True}
+        assert not ps.decay_at(state, 0, 11)["unk"]
+
+
+def test_decay_fixed_total_wins_over_status_end_and_round_end_closes():
+    for source, t1, at, value in [("Smonk_Q_DecayExplosion", 10.4, 14, 90 / 1.75),
+                                 ("BountyHunter_Q_Tether_SphereExpansion", 13, 12, 45),
+                                 ("BountyHunter_X_WaveForm", 11, 17, 75)]:
+        state, _, _ = decay_state([decay_status(source, t1=t1)])
+        assert ps.decay_at(state, 0, at)["dec"] == pytest.approx(value)
+    state, _, _ = decay_state([decay_status(t=29, t1=34)])
+    assert state["decay"]["0"][-1] == {"t": 30.0, "life": 0, "dec": 0.0, "unk": False}
+
+
+@pytest.mark.parametrize("booked, computed, verdict", [(54, 79.7, "consistent"),
+                                                     (73, 70, "too low"), (72, 70, "consistent")])
+def test_booked_decay_is_a_lower_bound_with_two_hp_tolerance(booked, computed, verdict):
+    hit = {"round": 2, "slot": 0, "t": 11.0, "dtype": "DmgType_BountyHunter_Decay_Nightfall_C",
+           "booked": booked}
+    _, checks, diagnostics = decay_state(hp=computed + 1, booked=[hit])
+    assert checks == [{**hit, "computed": computed, "verdict": verdict}]
+    assert diagnostics == {f"decay: {verdict}": 1}
+
+
+@pytest.mark.parametrize("t1", [1, 8])
+def test_nightfall_holds_for_eight_seconds_then_restores_for_twelve(t1):
+    status = decay_status("BountyHunter_X_WaveForm", t=0, t1=t1)
+    state, _, _ = decay_state([status])
+    for t, expected in [(0, 75), (8, 75), (14, 37.5), (20, 0)]:
+        assert ps.decay_at(state, 0, t)["dec"] == pytest.approx(expected)
+    state, _, _ = decay_state([status], alive={"0": [[0, 12, "death"]]})
+    assert ps.decay_at(state, 0, 11)["dec"] == pytest.approx(56.25)
+    assert state["decay"]["0"][-1] == {"t": 12, "life": 0, "dec": 0.0, "unk": False}
+    assert ps.decay_at(state, 0, 14) is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("booked, verdict", [(54, "consistent"), (40, "consistent"), (57, "too low")])
+def test_decay_checks_before_same_ms_lethal_hit_in_both_orders(reverse, booked, verdict):
+    decay = damage_notify(START + 10_500, 1000, 1005, booked,
+                          [(HP0, 0.0, -booked, 0)], index=11, lethal=True)
+    decay["payload"]["DamageTypeName"] = "DmgType_BountyHunter_Decay_Nightfall_C"
+    lethal = damage_notify(START + 10_500, 1000, 1005, 80,
+                           [(HP0, 0.0, -80, 0)], index=12, lethal=True)
+    hits = [decay, lethal] if not reverse else [lethal, decay]
+    inputs = pse.read_player_state(export(hits), table())
+    kept = []
+    state = pse.round_player_state(inputs, START, END, None, lives_whole_round, booked=kept)
+    assert len(kept) == 1
+    state["vitals"]["0"].insert(0, {"t": 9, "life": 0, "hp": 55.5, "sh": None,
+                                     "mhp": 100.0, "msh": None})
+    diagnostics = {}
+    checks = pse.attach_decay(state, [decay_status()], {"0": [[0, 10.5, "death"]]},
+                              30, pse.load_decay_figures(), [{"round": 2, **h} for h in kept], diagnostics)
+    assert checks == [{"round": 2, "slot": 0, "t": 10.5, "dtype": decay["payload"]["DamageTypeName"],
+                       "booked": booked, "computed": 54.5, "verdict": verdict}]
+    assert diagnostics[f"decay: {verdict}"] == 1
+
+
 def _round(sections):
     return [(s["g"], round(s["res"], 3), round(s["d"], 3), s["alive"]) for s in sections]
 
@@ -144,21 +271,20 @@ def test_a_broken_armor_keeps_its_max_for_the_life():
     assert [(e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(0.0, 50.0), (0.0, 50.0)]
 
 
-def test_a_missing_armor_section_while_shield_was_up_is_unproven_not_zero():
+def test_r3_an_unlisted_armor_section_keeps_the_known_shield():
     rows = [armor(80_000, ARMOR0), *lethal_hits(),
             damage_notify(110_000, 1000, 1005, 10.0, [(ARMOR0 + 2, 18.0, -7.0, 1), (HP0, 97.0, -3.0, 1)], index=1),
             damage_notify(111_000, 1000, 1005, 20.0, [(HP0, 77.0, -20.0, 1)], index=2)]
     got, inputs = extract(rows)
-    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(97.0, 18.0, 25.0), (77.0, None, None)]
-    assert inputs.diagnostics["shield: armor section missing while shield > 0"] == 1
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(97.0, 18.0, 25.0), (77.0, 18.0, 25.0)]
+    assert inputs.diagnostics["shield: armor section missing while shield > 0"] == 0
 
 
-def test_an_unknown_section_taking_damage_leaves_the_shield_unproven():
+def test_r3_hp_listed_with_unknown_section_and_no_known_armor_proves_zero_shield():
     rows = [*lethal_hits(),
             damage_notify(110_000, 1000, 1005, 10.0, [(9000, 40.0, -5.0, 1), (HP0, 95.0, -5.0, 1)], index=1)]
     got, inputs = extract(rows)
-    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, None, None)]
-    assert inputs.diagnostics["shield: an unknown section took damage"] == 1
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, 0.0, 0.0)]
 
 
 def test_shield_above_its_armors_capacity_is_an_invalid_max():
@@ -573,14 +699,20 @@ def test_a_hit_after_a_heal_is_its_own_snapshot():
                                                                          (31.0, 92.0, 0.0)]
 
 
-@pytest.mark.parametrize("unread", ["undecodable", "no HP section"])
-def test_a_hit_that_left_no_snapshot_makes_a_later_heals_shield_unknown(unread):
+def test_an_undecodable_hit_makes_a_later_heals_shield_unknown():
     # the hit at 29 s took shield too, so carrying 27.363 s's 7.666 into the heal would be a guess
     hit = damage_notify(129_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 2.666, -5.0, 1)], index=54)
-    if unread == "undecodable":
-        hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
     got, _ = extract([*armored_hit(), hit, heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
     assert got["vitals"]["0"][-1] == {"t": 30.0, "life": 0, "hp": 94.334, "sh": None, "mhp": 100.0, "msh": None}
+
+
+def test_r2_r3_an_armor_only_hit_leaves_a_snapshot_for_the_next_heal():
+    hit = damage_notify(129_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 2.666, -5.0, 1)], index=54)
+    got, _ = extract([*armored_hit(), hit, heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
+    assert got["vitals"]["0"][-2:] == [
+        {"t": 29.0, "life": 0, "hp": 91.334, "sh": 2.666, "mhp": 100.0, "msh": 25.0},
+        {"t": 30.0, "life": 0, "hp": 94.334, "sh": 2.666, "mhp": 100.0, "msh": 25.0}]
 
 
 def test_a_heal_with_no_earlier_snapshot_in_its_life_has_an_unproven_shield():
@@ -620,6 +752,209 @@ def test_a_heal_whose_changes_dont_sum_to_its_amount_or_isnt_on_a_player_is_drop
 def test_a_heal_nobody_instigated_is_kept_with_no_healer():
     _, inputs = extract([*lethal_hits(), heal_notify(130_000, 1001, None, None, [(HP1, 87.6, 87.6)])])   # KAY/O's ult
     assert [(h.slot, h.by, h.causer) for h in inputs.heals] == [(1, None, 0)]
+
+
+# ---------------------------------------------------------------- unlisted sections and the overheal timeline (W2)
+
+OH0 = 960                  # slot 0's overheal section (Clove's / Reyna's), learnt from its decay rows
+
+
+def decay_notify(t_ms, pawn, g, res):
+    """A `MulticastNotifyOverhealDecay` on `pawn`'s DamageableComponent: the section's value after the row."""
+    return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 33, "actor_net_guid": pawn,
+            "object_net_guid": pawn + 52, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
+            "function_name": "MulticastNotifyOverhealDecay",
+            "payload": {"Amount": 0.2, "Causer": 0, "EventInstigator": 0, "EventInstigatorPawn": 0,
+                        "LifeChanges": [{"ChangedComponent": g, "DeltaLife": 0.2, "LifeResult": res}]}}
+
+
+def learn_overheal(pawn=1000, g=OH0):
+    return [decay_notify(2_000, pawn, g, 0.0)]
+
+
+def test_r2_an_armor_only_hit_after_a_hit_keeps_that_hits_hp():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 80.0, -20.0, 1)], index=1),
+            damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][-1] == {"t": 11.0, "life": 0, "hp": 80.0, "sh": 15.0, "mhp": 100.0, "msh": 25.0}
+
+
+def test_r2_an_armor_only_first_hit_at_the_rounds_start_is_full_hp_the_clove_case():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), *learn_overheal(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(OH0, 0.0, 0.0, 1), (ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    got, inputs = extract(rows)
+    assert got["vitals"]["0"] == [{"t": 17.84, "life": 0, "hp": 100.0, "sh": 20.0, "mhp": 100.0, "msh": 25.0}]
+    assert "vitals: hit without the HP section" not in inputs.diagnostics
+    assert ps.validate(got) == got
+
+
+def test_r2_the_same_hit_in_a_revived_life_makes_no_snapshot():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    life_of = lambda slot, t_ms: 1 if START <= t_ms <= END else None     # noqa: E731
+    got, inputs = extract(rows, life_of=life_of)
+    assert got["vitals"] == {}
+    assert inputs.diagnostics["vitals: hit without the HP section"] == 1
+
+
+def test_r2_a_life_that_began_after_the_rounds_start_makes_no_snapshot():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)]
+    inputs = pse.read_player_state(export(rows), table())
+    late = pse.round_player_state(inputs, START, END, None, lives_whole_round, life_start=lambda slot, i: START + 3_000)
+    on_time = pse.round_player_state(inputs, START, END, None, lives_whole_round, life_start=lambda slot, i: START)
+    assert late["vitals"] == {}
+    assert [e["hp"] for e in on_time["vitals"]["0"]] == [100.0]
+
+
+def test_r2_an_unreadable_hit_makes_hp_unknown_so_a_later_armor_only_hit_is_not_100():
+    bad = damage_notify(110_500, 1000, 1005, 5.0, [(HP0, 70.0, -5.0, 1)], index=2)
+    bad["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 80.0, -20.0, 1)], index=1),
+            bad, damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=3)]
+    got, _ = extract(rows)
+    assert [e["t"] for e in got["vitals"]["0"]] == [10.0]
+
+
+def test_r2_an_unreadable_first_hit_also_stops_a_later_armor_only_hit_from_being_100():
+    bad = damage_notify(110_500, 1000, 1005, 5.0, [(HP0, 70.0, -5.0, 1)], index=2)
+    bad["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), bad,
+            damage_notify(111_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 15.0, -5.0, 1)], index=3)]
+    got, _ = extract(rows)
+    assert got["vitals"] == {}
+
+
+def test_r3_an_overheal_only_hit_keeps_hp_and_the_known_shield_and_adds_an_overheal_point():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(), *learn_overheal(),
+            damage_notify(110_000, 1000, 1005, 25.0, [(ARMOR0 + 2, 23.33, -1.67, 1), (HP0, 80.0, -23.33, 1)], index=1),
+            heal_notify(112_000, 1000, 1000, 960, [(OH0, 50.0, 50.0)]),
+            damage_notify(113_000, 1000, 1005, 39.0, [(OH0, 11.0, -39.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][-1] == {"t": 13.0, "life": 0, "hp": 80.0, "sh": 23.33, "mhp": 100.0, "msh": 25.0}
+    assert got["overheal"]["0"][-1] == {"t": 13.0, "life": 0, "oh": 11.0}
+    assert ps.validate(got) == got
+
+
+def test_r3_an_overheal_only_hit_keeps_the_proven_zero_shield():
+    rows = [*lethal_hits(), *learn_overheal(),
+            damage_notify(110_000, 1000, 1005, 20.0, [(HP0, 80.0, -20.0, 1)], index=1),
+            damage_notify(113_000, 1000, 1005, 9.0, [(OH0, 11.0, -9.0, 1)], index=2)]
+    got, _ = extract(rows)
+    assert got["vitals"]["0"][0]["sh"] == 0.0
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]][-1] == (80.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("invalid", ["unreadable", "two", "above", "below", "capacity_unknown"])
+@pytest.mark.parametrize("healed", [False, True])
+def test_invalid_shield_evidence_stays_unknown_until_readable_armor(invalid, healed):
+    # The initial row has the measured 7.666/25 shield and 91.334 HP shape.
+    sections = [(ARMOR0 + 2, 2.666, -5.0, 1)]
+    if invalid == "two":
+        sections.append((602, 20.0, -5.0, 1))
+    elif invalid in ("above", "below"):
+        sections = [(ARMOR0 + 2, 40.0 if invalid == "above" else -2.0, -5.0, 1)]
+    elif invalid == "capacity_unknown":
+        sections = [(702, 20.0, -5.0, 1)]  # an armor item whose spawn is later
+    hit = damage_notify(129_000, 1000, 1005, -sum(s[2] for s in sections), sections, index=54)
+    if invalid == "unreadable":
+        hit["payload"]["LifeChangeEvents"] = {"BitCount": 499, "Data": "!!"}
+    rows = [*armored_hit(), armor(80_000, 600), armor(150_000, 700), hit]
+    if healed:
+        rows.append(heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)]))
+    rows += [damage_notify(131_000, 1000, 1005, 10.0, [(HP0, 80.0, -10.0, 1)], index=55),
+             damage_notify(132_000, 1000, 1005, 5.0, [(ARMOR0 + 2, 1.0, -5.0, 1)], index=56)]
+    got, _ = extract(rows)
+    line = got["vitals"]["0"]
+    assert [(e["sh"], e["msh"]) for e in line if 29 <= e["t"] < 32] == [(None, None)] * (len(line) - 2)
+    assert (line[-1]["sh"], line[-1]["msh"]) == (1.0, 25.0)
+
+
+@pytest.mark.parametrize("first", ["hit", "heal"])
+@pytest.mark.parametrize("second", ["hit", "heal"])
+def test_independent_shield_evidence_survives_without_an_hp_snapshot(first, second):
+    rows = [armor(80_000, ARMOR0), *lethal_hits()]
+    rows.append(damage_notify(117_840, 1000, 1005, 5.0, [(ARMOR0 + 2, 20.0, -5.0, 1)], index=1)
+                if first == "hit" else heal_notify(117_840, 1000, 1003, SAGE_ORB, [(ARMOR0 + 2, 5.0, 20.0)]))
+    rows.append(damage_notify(120_000, 1000, 1005, 10.0, [(HP0, 80.0, -10.0, 1)], index=2)
+                if second == "hit" else heal_notify(120_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 80.0)]))
+    got, _ = extract(rows, life_of=lambda slot, t: 1 if START <= t <= END else None)
+    assert got["vitals"]["0"] == [{"t": 20.0, "life": 1, "hp": 80.0, "sh": 20.0, "mhp": 100.0, "msh": 25.0}]
+
+
+def test_shield_evidence_does_not_cross_lives_and_neither_section_does_not_prove_zero():
+    rows = [*armored_hit(), *learn_overheal(),
+            damage_notify(140_000, 1000, 1005, 5.0, [(OH0, 15.0, -5.0, 1)], index=54),
+            heal_notify(141_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 80.0)])]
+    got, _ = extract(rows, life_of=lambda slot, t: int(t >= 140_000) if START <= t <= END else None)
+    assert got["vitals"]["0"][-1] == {"t": 41.0, "life": 1, "hp": 80.0, "sh": None, "mhp": 100.0, "msh": None}
+
+
+def test_r3_an_unknown_section_taking_damage_keeps_the_known_shield():
+    rows = [armor(80_000, ARMOR0), *lethal_hits(),
+            damage_notify(110_000, 1000, 1005, 10.0, [(ARMOR0 + 2, 20.0, -5.0, 1), (HP0, 95.0, -5.0, 1)], index=1),
+            damage_notify(111_000, 1000, 1005, 15.0, [(9000, 40.0, -5.0, 1), (HP0, 85.0, -10.0, 1)], index=2)]
+    got, inputs = extract(rows)
+    assert [(e["hp"], e["sh"], e["msh"]) for e in got["vitals"]["0"]] == [(95.0, 20.0, 25.0), (85.0, 20.0, 25.0)]
+    assert "shield: an unknown section took damage" not in inputs.diagnostics
+
+
+def overheal_run(first_ms=130_000, ticks=100):
+    """Heal ticks every 8 ms, +0.5 each, to 50; then the drain: 256 decay rows over 2.0 s, 10.0 s after the last tick."""
+    rows = [heal_notify(first_ms + 8 * i, 1000, 1000, 960, [(OH0, 0.5, 0.5 * (i + 1))]) for i in range(ticks)]
+    last = first_ms + 8 * (ticks - 1)
+    start = last + 10_000
+    rows += [decay_notify(start + round(2000 * i / 255), 1000, OH0, 50.0 * (1 - i / 255)) for i in range(256)]
+    return rows, last, start
+
+
+def test_r5_the_overheal_rise_and_drain_are_thinned_but_keep_their_ends():
+    run, last, start = overheal_run()
+    got, _ = extract([*lethal_hits(), *run])
+    points = got["overheal"]["0"]
+    assert len(points) <= 512 and len(points) < 80
+    rise = [p for p in points if p["t"] <= (last - START) / 1000.0]
+    drain = [p for p in points if p["t"] >= (start - START) / 1000.0]
+    assert len(rise) + len(drain) == len(points)
+    assert (rise[0]["t"], rise[0]["oh"]) == (30.0, 0.5)
+    assert (rise[-1]["t"], rise[-1]["oh"]) == ((last - START) / 1000.0, 50.0)
+    assert (drain[0]["t"], drain[0]["oh"]) == ((start - START) / 1000.0, 50.0)
+    assert (drain[-1]["t"], drain[-1]["oh"]) == (round((start + 2000 - START) / 1000.0, 3), 0.0)
+    for run_points in (rise, drain):
+        assert [p["oh"] for p in run_points] == sorted((p["oh"] for p in run_points),
+                                                       reverse=run_points is drain)
+        for a, b in zip(run_points[:-2], run_points[1:-1]):
+            assert b["t"] - a["t"] >= 0.1 - 1e-9
+    assert all(p["life"] == 0 for p in points)
+    assert ps.validate(got) == got
+
+
+def test_r5_a_hit_into_overheal_keeps_its_point_inside_100_ms_of_another():
+    run, _, _ = overheal_run()
+    hit = damage_notify(130_050, 1000, 1005, 39.0, [(OH0, 11.0, -39.0, 1)], index=7)
+    got, _ = extract([*lethal_hits(), *run, hit])
+    assert {"t": 30.05, "life": 0, "oh": 11.0} in got["overheal"]["0"]
+
+
+def test_r5_the_part_is_absent_when_the_export_has_no_overheal_section():
+    got, _ = extract([*armored_hit(), heal_notify(130_000, 1000, 1003, SAGE_ORB, [(HP0, 3.0, 94.334)])])
+    assert "overheal" not in got
+
+
+def test_r5_points_outside_every_life_are_dropped():
+    run, _, _ = overheal_run()
+    got, _ = extract([*lethal_hits(), *run], life_of=lambda slot, t_ms: None)
+    assert got["overheal"] == {}
+
+
+def test_r4_a_pawn_whose_decay_rows_change_two_components_has_no_overheal():
+    rows = [*lethal_hits(), decay_notify(120_000, 1000, OH0, 10.0), decay_notify(121_000, 1000, OH0 + 6, 9.0),
+            heal_notify(122_000, 1000, 1000, 960, [(OH0, 5.0, 15.0)])]
+    got, inputs = extract(rows)
+    assert "overheal" not in got
+    assert inputs.diagnostics["overheal: decay rows change more than one section (none)"] == 1
 
 
 # ---------------------------------------------------------------- ability charges (revision 21)

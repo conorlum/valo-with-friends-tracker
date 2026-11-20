@@ -55,6 +55,9 @@ def refuse_demo(session) -> None:
 
 def _insert(session, condensed: CondensedReplay, source: str) -> Replay:
     link_inputs = {**condensed.link_inputs, "dropped_final_round": bool(condensed.report.get("dropped_final_round"))}
+    if "player_state" in condensed.report:
+        # link_inputs is retained across relinks; link_report is replaced by each linking attempt.
+        link_inputs["player_state"] = condensed.report["player_state"]
     row = Replay(match_uuid=condensed.match_uuid.lower(), map_name=condensed.map_name,
                  round_count=condensed.round_count, format_version=fmt.FORMAT_VERSION, recipe=condensed.recipe,
                  game_branch=condensed.game_branch, source_sha256=condensed.source_sha256, source=source,

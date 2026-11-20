@@ -644,10 +644,12 @@ def test_players_panel_kit_uses_and_health():
     assert got["kit"] == ["C:Prowler", "Q:Seize", "E:Haunt", "X:Nightfall"]
     assert got["none"] == []
     assert got["uses"] == [{"1": {"Haunt": 1, "Nightfall": 1}}, {"1": {"Haunt": 2, "Nightfall": 1}}]
-    assert got["before"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100}
-    assert got["after"] == {"dead": False, "pct": 40, "total": 60, "armor": 50, "hpPct": 60, "shieldPct": 0}
-    assert got["unproven"] == {"dead": False, "pct": None, "total": None, "armor": None, "hpPct": None,
-                               "shieldPct": None}
+    assert got["before"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100,
+                             "ohPct": None, "decay": None}
+    assert got["after"] == {"dead": False, "pct": 40, "total": 60, "armor": 50, "hpPct": 60, "shieldPct": 0,
+                            "ohPct": None, "decay": None}
+    assert got["unproven"] == {"dead": False, "pct": None, "total": None, "armor": None, "hpPct": 60,
+                               "shieldPct": None, "ohPct": None, "decay": None}
     assert got["dead"]["dead"] is True
 
 
@@ -680,7 +682,173 @@ def test_players_panel_gun_and_light_shield():
     assert got["none"] is None
     assert got["emptyHolds"] == got["guns"]
     assert got["light"] == 50
-    assert got["later"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100}
+    assert got["later"] == {"dead": False, "pct": 100, "total": 150, "armor": 50, "hpPct": 100, "shieldPct": 100,
+                            "ohPct": None, "decay": None}
+
+
+def _panel_effects(*, hp=100, sh=50, damage=False, overheal=(), decay=(), t=5, alive=None, vitals=None):
+    """Draw the real panel with synthetic state; no DOM or server is needed."""
+    ps = {"version": 1, "vitals": {"1": [{"t": 0, "life": 0, "hp": hp, "sh": sh, "mhp": 100,
+                                          "msh": 50 if sh is not None else None}]},
+          "damage_taken": {"1": [1] if damage else []},
+          "overheal": {"1": list(overheal)}, "decay": {"1": list(decay)}}
+    if vitals is not None:
+        ps["vitals"] = vitals
+    return run_node("""
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const p = JSON.parse(input);
+        const blob = {players: [{slot: 1, agent: "Clove"}], kills: [], t_end: 90,
+                      alive: {"1": p.alive || [[0, null, "spawn", []]]}, player_state: p.ps};
+        const state = R.indexRoundState(blob, []);
+        const v = Object.create(R.ReplayViewer.prototype);
+        Object.assign(v, {ui: {board: {}}, linked: {players: {"1": {team: "team-1"}}}, options: {}, t: p.t,
+          current: {blob, state, utilList: [], extras: {shots: [], holds: []}}});
+        v.slotColor = () => "#fff";
+        v.renderBoard();
+        const h = R.healthAt(state, 1, p.t), life = R.lifeIndexAt(state, 1, p.t);
+        process.stdout.write(JSON.stringify({v: R.hudVitals(state, 1, p.t), html: v.ui.board.innerHTML,
+          shown: R.healthShown(h, R.overhealAt(state, 1, p.t, life), R.decayAt(state, 1, p.t, life))}));
+      });""", {"ps": ps, "t": t, "alive": alive})
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_overheal_scales_with_hp_and_drain_restores_the_scale():
+    points = [{"t": 2, "life": 0, "oh": 50}, {"t": 10, "life": 0, "oh": 0}]
+    full = _panel_effects(overheal=points)
+    assert full["v"] == {"dead": False, "pct": 100, "total": 200, "armor": 50, "hpPct": 100,
+                         "shieldPct": 100, "ohPct": 100, "decay": None}
+    assert full["shown"] is True
+    assert 'class="replay-pl-hp-fill" title="Health" style="width:66.7%"' in full["html"]
+    assert 'class="replay-pl-overheal" title="Overheal 50" style="width:33.3%"' in full["html"]
+    drained = _panel_effects(overheal=points, t=11)
+    assert drained["v"]["ohPct"] == 0 and drained["v"]["total"] == 150
+    assert drained["shown"] is False
+    assert 'class="replay-pl-hp-fill" title="Health" style="width:100.0%"' in drained["html"]
+    hurt = _panel_effects(hp=60, sh=0, damage=True, overheal=points)
+    assert hurt["v"]["total"] == 110
+    assert 'title="Health" style="width:40.0%"' in hurt["html"]
+    assert _panel_effects(t=1)["v"]["ohPct"] == 0
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("dec,unk,shown_hp", [(45, False, 55), (0, True, 100), (30, True, 70), (150, False, 1)])
+def test_panel_decay_segment_unknown_tint_and_text(dec, unk, shown_hp):
+    out = _panel_effects(decay=[{"t": 2, "life": 0, "dec": dec, "unk": unk}])
+    amount = 100 - shown_hp
+    assert out["v"]["decay"] == {"hp": amount, "pct": amount, "unk": unk}
+    assert out["v"]["hpPct"] == shown_hp
+    assert out["v"]["total"] == shown_hp + 50
+    assert f'title="Health after decay, plus shield and overheal">{shown_hp + 50}</span>' in out["html"]
+    assert out["shown"] is True
+    title = (f"Decayed {amount} (wiki figures)" if amount else "")
+    if unk:
+        title += ("; " if title else "") + "Decayed (amount not in the wiki)"
+    hp_title = "Decayed (amount not in the wiki)" if unk else "Health"
+    hp_class = "replay-pl-hp-fill is-decayed" if unk else "replay-pl-hp-fill"
+    assert f'class="{hp_class}" title="{hp_title}" style="width:{shown_hp:.1f}%"' in out["html"]
+    assert f'class="replay-pl-decay" title="{title}" style="width:{amount:.1f}%"' in out["html"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_combines_all_three_segments_without_hiding_overheal():
+    out = _panel_effects(overheal=[{"t": 2, "life": 0, "oh": 50}],
+                         decay=[{"t": 2, "life": 0, "dec": 45, "unk": False}])
+    assert out["v"]["total"] == 155
+    assert 'title="Health" style="width:36.7%"' in out["html"]
+    assert 'title="Decayed 45 (wiki figures)" style="width:30.0%"' in out["html"]
+    assert 'title="Overheal 50" style="width:33.3%"' in out["html"]
+    assert out["html"].index('class="replay-pl-hp-fill"') < out["html"].index('class="replay-pl-decay"') < out["html"].index('class="replay-pl-overheal"')
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("hp", [60, 1])
+@pytest.mark.parametrize("sh", [0, 25, None])
+@pytest.mark.parametrize("oh", [0, 20])
+@pytest.mark.parametrize("dec,unk", [(45, False), (150, False), (30, True), (0, True)])
+def test_panel_decay_total_uses_effective_hp_with_partial_or_unknown_shield(hp, sh, oh, dec, unk):
+    out = _panel_effects(hp=hp, sh=sh, damage=True,
+                         overheal=[{"t": 2, "life": 0, "oh": oh}],
+                         decay=[{"t": 2, "life": 0, "dec": dec, "unk": unk}])
+    amount = min(dec, max(0, hp - 1))
+    assert out["v"]["hpPct"] == hp - amount
+    assert out["v"]["decay"] == {"hp": amount, "pct": amount, "unk": unk}
+    total = None if sh is None else hp - amount + sh + oh
+    assert out["v"]["total"] == total
+    printed = "" if total is None else str(total)
+    assert f'title="Health after decay, plus shield and overheal">{printed}</span>' in out["html"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_decay_total_uses_the_interpolated_bar_amount_before_rounding():
+    out = _panel_effects(decay=[{"t": 2, "life": 0, "dec": 45, "unk": False},
+                                {"t": 8, "life": 0, "dec": 0, "unk": False}])
+    assert out["v"]["decay"] == {"hp": 22.5, "pct": 22.5, "unk": False}
+    assert out["v"]["hpPct"] == 77.5
+    assert out["v"]["total"] == 128
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("oh", [0, 20])
+@pytest.mark.parametrize("dec,unk", [(90, False), (150, False), (0, True), (0, False)])
+def test_panel_undamaged_without_any_vitals_still_shows_decay(oh, dec, unk):
+    out = _panel_effects(vitals={}, overheal=[{"t": 2, "life": 0, "oh": oh}],
+                         decay=[{"t": 2, "life": 0, "dec": dec, "unk": unk}])
+    amount = min(dec, 99)
+    assert out["v"] == {"dead": False, "pct": 100, "total": None, "armor": None,
+                         "hpPct": 100 - amount, "shieldPct": None, "ohPct": 2 * oh,
+                         "decay": {"hp": amount, "pct": amount, "unk": unk} if dec or unk else None}
+    scale = 100 / 150 if oh else 1
+    hp_class = "replay-pl-hp-fill is-decayed" if unk else "replay-pl-hp-fill"
+    hp_title = "Decayed (amount not in the wiki)" if unk else "Health"
+    assert f'class="{hp_class}" title="{hp_title}" style="width:{(100 - amount) * scale:.1f}%"' in out["html"]
+    if dec:
+        assert f'class="replay-pl-decay" title="Decayed {amount} (wiki figures)" style="width:{amount * scale:.1f}%"' in out["html"]
+    assert 'class="replay-pl-shield is-unknown"' in out["html"]
+    assert 'title="Health after decay, plus shield and overheal"></span>' in out["html"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_damaged_without_vitals_keeps_hp_unknown_despite_decay():
+    out = _panel_effects(vitals={}, damage=True, decay=[{"t": 2, "life": 0, "dec": 90, "unk": False}])
+    assert out["v"]["hpPct"] is None and out["v"]["total"] is None
+    assert out["v"]["decay"] == {"hp": 90, "pct": None, "unk": False}
+    assert 'class="replay-pl-bar is-unknown"' in out["html"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_known_hp_and_overheal_survive_unknown_shield():
+    out = _panel_effects(hp=80, sh=None, damage=True, overheal=[{"t": 2, "life": 0, "oh": 20}])
+    assert out["v"]["total"] is None and out["v"]["shieldPct"] is None
+    assert out["v"]["hpPct"] == 80 and out["v"]["ohPct"] == 40
+    assert 'class="replay-pl-shield is-unknown"' in out["html"]
+    assert 'class="replay-pl-hp-fill" title="Health" style="width:53.3%"' in out["html"]
+    assert 'class="replay-pl-overheal" title="Overheal 20" style="width:13.3%"' in out["html"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_panel_effects_do_not_carry_to_a_new_life():
+    out = _panel_effects(t=25, alive=[[0, 10, "spawn", []], [20, None, "revive", []]],
+                         overheal=[{"t": 2, "life": 0, "oh": 50}],
+                         decay=[{"t": 2, "life": 0, "dec": 30, "unk": True}])
+    assert out["v"]["ohPct"] == 0 and out["v"]["decay"] is None
+    assert out["shown"] is False
+
+
+def test_panel_health_spans_use_flex_and_dedicated_colour_tokens():
+    import re
+
+    css = (WEBAPP / "app" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    bar = re.search(r"\.replay-pl-bar\s*\{([^}]+)\}", css)[1]
+    assert "display: flex" in bar and "position: relative" in bar and "overflow: hidden" in bar
+    children = re.search(r"\.replay-pl-bar > span\s*\{([^}]+)\}", css)[1]
+    assert "flex-shrink: 0" in children
+    for kind in ("overheal", "decay"):
+        assert f"--replay-{kind}:" in css
+        rule = re.search(rf"\.replay-pl-{kind}\s*\{{([^}}]+)\}}", css)[1]
+        assert f"var(--replay-{kind})" in rule
+    tint = re.search(r"\.replay-pl-hp-fill\.is-decayed\s*\{([^}]+)\}", css)[1]
+    assert "var(--replay-decay)" in tint
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
