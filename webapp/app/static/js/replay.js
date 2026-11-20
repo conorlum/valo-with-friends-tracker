@@ -1344,9 +1344,10 @@
     return out;
   }
 
-  // The panel keeps HP and shield evidence separately. Total is HP + shield + overheal only when HP and shield
-  // are both proven. hpPct draws HP after decay; shieldPct and ohPct are out of 50. Missing parts stay null.
-  var FULL_SHIELD = 50;
+  // The panel keeps HP and shield evidence separately. Total is HP after shown decay + shield + overheal only
+  // when HP and shield are both proven. hpPct draws HP after decay; shieldPct and ohPct are out of 50.
+  // An undamaged life has FULL_HP (the condenser's MAX_HP) even without shield evidence; missing parts stay null.
+  var FULL_HP = 100, FULL_SHIELD = 50;
 
   function splitPct(hp, mhp, sh) {
     var clamp = function (x) { return Math.max(0, Math.min(100, x)); };
@@ -1380,7 +1381,7 @@
       // No round-start seed: the shield bought is fixed for the life, and nothing has hit them yet, so they are at
       // full; this life's first later hit proves the maxima.
       if (!proven) seed = laterMaxima(index, slot, life) || seed;
-      hp = mhp = seed ? seed.mhp : null;
+      hp = mhp = seed ? seed.mhp : FULL_HP;
       sh = msh = seed ? seed.msh : null;
       out.pct = 100;
     }
@@ -1388,9 +1389,10 @@
       var amount = typeof hp === "number" ? Math.min(dec.dec, Math.max(0, hp - 1)) : dec.dec;
       out.decay = { hp: amount, pct: mhp > 0 ? 100 * amount / mhp : null, unk: dec.unk };
     }
-    var split = splitPct(typeof hp === "number" ? hp - (out.decay ? out.decay.hp : 0) : null, mhp, sh);
+    var effectiveHp = typeof hp === "number" ? hp - (out.decay ? out.decay.hp : 0) : null;
+    var split = splitPct(effectiveHp, mhp, sh);
     out.hpPct = split.hpPct; out.shieldPct = split.shieldPct; out.armor = msh;
-    if (typeof hp === "number" && typeof sh === "number") out.total = Math.round(hp + sh + overheal);
+    if (typeof effectiveHp === "number" && typeof sh === "number") out.total = Math.round(effectiveHp + sh + overheal);
     return out;
   }
 
@@ -2414,7 +2416,7 @@
       var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
       var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
       var gun = gunHtml(held, self.options.gunIcons);
-      var hp = '<span class="replay-pl-hp" title="Health plus shield plus overheal">' + (v.total === null ? "" : v.total) + "</span>";
+      var hp = '<span class="replay-pl-hp" title="Health after decay, plus shield and overheal">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
         var n = used[k.name] || 0;
