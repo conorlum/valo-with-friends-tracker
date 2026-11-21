@@ -4044,6 +4044,7 @@
     if (box) box.checked = on;
     if (this.layers[name] === on) return;
     this.layers[name] = on;
+    this.presetChanged();                       // a layer changed from code is a manual change too (no-op while a preset applies)
     try { global.localStorage.setItem("replay-layer-" + name, on ? "1" : "0"); } catch (err) { /* ignore */ }
     if (name === "gaps") this.refreshGaps();
     if (name === "areas") this.refreshAreas();

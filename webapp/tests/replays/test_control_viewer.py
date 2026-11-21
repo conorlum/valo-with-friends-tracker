@@ -583,6 +583,36 @@ def test_the_control_bar_counts_the_picture_the_map_shows():
     assert got["A"] == {"n1": 75, "n2": 0}
 
 
+def test_a_layer_set_from_code_switches_the_view_picker_to_custom():
+    body = _viewer_script("""
+      function run(p) {
+        const out = {};
+        for (const [name, layer, on, applying, picker] of p.cases) {
+          const store = {"replay-preset": picker};
+          globalThis.localStorage = {getItem: k => (k in store ? store[k] : null), setItem: (k, x) => { store[k] = String(x); }};
+          const {v} = rec.makeViewer(R);
+          v.root = {querySelector: () => ({checked: false})};
+          v.refreshGaps = () => {}; v.refreshAreas = () => {}; v.draw = () => {};
+          v.ui.preset = {value: picker};
+          v.applyingPreset = applying;
+          v.setLayer(layer, on);
+          out[name] = {picker: v.ui.preset.value, saved: store["replay-preset"], layer: v.layers[layer],
+                       stored: store["replay-layer-" + layer]};
+        }
+        return out;
+      }""")
+    cases = [["change", "gaps", True, False, "team-1"],            # gaps starts off: this really changes it
+             ["unchanged", "gaps", False, False, "team-1"],        # already off: nothing changed
+             ["preset", "gaps", True, True, "team-1"],             # a preset is applying: never Custom
+             ["custom", "gaps", True, False, "custom"]]
+    got = run_node(body, {"recorder": _RECORDER, "cases": cases}, js=REPLAY_JS)
+    assert got["change"] == {"picker": "custom", "saved": "custom", "layer": True, "stored": "1"}
+    assert got["unchanged"]["picker"] == "team-1" and got["unchanged"]["saved"] == "team-1"
+    assert got["preset"]["picker"] == "team-1" and got["preset"]["saved"] == "team-1"
+    assert got["preset"]["layer"] is True and got["preset"]["stored"] == "1"
+    assert got["custom"]["picker"] == "custom" and got["custom"]["saved"] == "custom"
+
+
 def test_the_view_presets_are_the_owners_picks():
     body = "function run(p) { return p.names.map(n => C.viewPreset(n, p.teams)); }"
     teams = {"A": "team-2", "B": "team-1"}
