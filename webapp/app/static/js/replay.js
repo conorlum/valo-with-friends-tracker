@@ -370,13 +370,15 @@
     // Fault Line is 8 m wide and 8 to 56 m long over a 1 s charge, taken as even: with the row's `charge` (condenser
     // revision 19, extras.fault_line_charge) that length, solid; without it the full reach, dashed (`reach`). It fires
     // 1.1 s after the cast (its own effect). Rolling Thunder: 32 by 18 m, 8 ticks 0.255 s
-    // apart after a 0.6 s delay. Aftershock's blasts hit 2.2 and 2.8 s after it sticks: 3 s in all.
+    // apart after a 0.6 s delay. Aftershock's blasts hit at +2.2/+2.8 s (wiki); no fx recorded, checked on 88f60040.
     [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "box", len: 5600, width: 800, reach: true, pop: 0.8,
                                                 chargeLen: [800, 5600], label: "Fault Line (reach drawn at full charge)" }],
     [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "box", len: 3200, width: 1800, sweep: 2.6, pop: 3.0 }],
-    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, pop: 3.0 }],
+    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, capsule: 1000, pop: 0.6, pulses: [2.2, 2.8] }],
     // KAY/O: ZERO/point's knife pulses 1 s after it sticks; its object lingers 15 s in the replay.
     [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
+    [/^Grenadier_Q_SemtexBasic_Zone$/, { ability: "FRAG/ment", shape: "area", r: 400, pop: 0.6,
+                                      pulses: [0.5, 1.5, 2.5, 3.5], part: true, unlisted: true }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
     [/^Cashew_4_Spider_LockOn$/, { ability: "Stealth Drone", shape: "badge", life: 6.6 }],
@@ -406,7 +408,8 @@
     // M-pulse pulses at +0, +2 and +4 s (its own effects): a ring each, not a 5 s disc.
     [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8 }],
     [/^Iris_ConcussPulse$/, { ability: "M-pulse", shape: "hidden" }],
-    [/^Iris_Heal$/, { ability: "Harmonize", shape: "area", r: 500 }]
+    // Harmonize is a buff with no object; M-pulse's heal-mode object lives 5.0 s.
+    [/^Iris_Heal$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8, pulses: [0, 2, 4], label: "M-pulse (heal)" }]
   ];
 
   // A line ability's two ends in minimap uv, from its yaw (degrees on the map: 0 = +u, 90 = +v):
@@ -421,6 +424,13 @@
     else if (style.dir === "across") { lo = -style.len * uvPerUnit / 2; hi = style.len * uvPerUnit / 2; }
     else { lo = (style.from || 0) * uvPerUnit; hi = lo + style.len * uvPerUnit; }
     return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
+  }
+
+  // A capsule extends from its stuck point along the map yaw, in the same units as boxes.
+  function capsuleEnds(a, style, uvPerUnit) {
+    if (a.yaw === null || a.yaw === undefined) return null;
+    var rad = a.yaw * Math.PI / 180, len = style.capsule * uvPerUnit;
+    return [[a.u, a.v], [a.u + Math.cos(rad) * len, a.v + Math.sin(rad) * len]];
   }
 
   // A box ability's corners in minimap uv, from its yaw like lineEnds: `from` to `from + len` world units along
@@ -462,6 +472,7 @@
     [/^Wraith_Q_NearsightMissile$/, { ability: "Paranoia", width: 650 }],
     [/^Grenadier_C_Flash(_Underhand)?$/, { ability: "FLASH/drive" }],
     [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
+    [/^Grenadier_Q_SemtexBasic$/, { ability: "FRAG/ment" }],
     [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
     [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
     // Hush: Flashbulb (overhand and underhand throws, styled like Grenadier's FLASH/drive), Displacement's dice, Suspension's missile.
@@ -497,6 +508,20 @@
     return { u: a.u, v: a.v, moving: false };
   }
 
+  // FRAG/ment's area starts at the recorded landing; it is a later part of the projectile's use.
+  function fragmentZones(abilities) {
+    var zones = [];
+    (abilities || []).forEach(function (a, i) {
+      if (a.kind !== "Projectile" || a.code !== "Grenadier" || a.name !== "Q_SemtexBasic" ||
+          !a.flight || !a.flight.length) return;
+      var last = a.flight[a.flight.length - 1];
+      zones.push({ kind: "GameObject", code: "Grenadier", name: "Q_SemtexBasic_Zone", agent: a.agent, slot: a.slot,
+                   u: last[1], v: last[2], t0: last[0], t1: typeof a.t1 === "number" ? a.t1 : last[0] + 3.5,
+                   zoneOf: i });
+    });
+    return zones;
+  }
+
   // A thrown object whose throw is also a projectile row with a recorded flight: that flight is drawn, not the
   // throw's arc too.
   function throwShownAsProjectile(a, abilities) {
@@ -527,6 +552,15 @@
     return up ? "raised" : "set";
   }
 
+  function utilLookOf(style) {
+    var look = style.look, settings = {};
+    if (typeof look === "string") return { kind: look, settings: settings };
+    if (look && typeof look === "object") {
+      Object.keys(look).forEach(function (key) { if (key !== "kind") settings[key] = look[key]; });
+    }
+    return { kind: (look && look.kind) || (style.shape === "smoke" ? "glass" : "grain"), settings: settings };
+  }
+
   function abilityStyle(ability) {
     if (ability.kind === "Bomb") return { label: "Spike", shape: "spike" };
     if (ability.kind === "Projectile") return projectileStyle(ability);
@@ -542,9 +576,10 @@
         if (charged) label = style.ability + " (charged " + ability.charge.toFixed(2) + " s: " + Math.round(len / 100) + " m)";
         return {
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
+          badge: style.badge === undefined ? style.shape !== "smoke" : style.badge, look: utilLookOf(style),
           small: !!style.small, unlisted: !!style.unlisted, label: label,
           faint: !!style.faint, dir: style.dir, len: len, from: style.from, full: !!style.full, aim: !!style.aim,
-          pop: style.pop, burst: style.burst, part: !!style.part,
+          pop: style.pop, pulses: style.pulses, capsule: style.capsule, burst: style.burst, part: !!style.part,
           width: style.width, sweep: style.sweep, trace: style.trace, bare: !!style.bare,
           reach: !!style.reach && !(style.chargeLen && typeof ability.charge === "number"),
           angle: style.angle, untimed: !!style.untimed, tail: style.tail !== false,
@@ -553,7 +588,8 @@
         };
       }
     }
-    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "badge" };
+    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "badge", badge: true,
+      look: utilLookOf({ shape: "badge" }) };
   }
 
   // A W-e utility cast's ability id ("omen_paranoia", "phoenix_curveball_left") -> {agent, ability}.
@@ -584,6 +620,7 @@
   }
 
   // Abilities showing at time t: spawned by t and not yet closed (an unclosed one lasts the round).
+  // Scheduled pulses last through the final pop, even past close, but never past the round's end.
   // A brief one (Regrowth's heal pulse lives 0.3 s) stays for ABILITY_MIN_S, fading after its close.
   var ABILITY_MIN_S = 1.0;
 
@@ -599,7 +636,7 @@
       var close = closeOf(a);
       var until = close === null ? tEnd : Math.max(close, a.t0 + ABILITY_MIN_S);
       var pop = a.kind === "Projectile" || a.kind === "Bomb" || !a.name ? undefined : abilityStyle(a).pop;
-      if (pop !== undefined) until = Math.min(until, popUntil(a, pop));
+      if (pop !== undefined) until = popTimesTimed(a) ? Math.min(tEnd, popUntil(a, pop)) : Math.min(until, popUntil(a, pop));
       // Shot and destroyed before its object closed (a camera, a trip): going off never counts.
       if (typeof a.gone === "number") until = Math.min(until, a.gone + GONE_S);
       return a.t0 <= t && t <= until;
@@ -686,14 +723,28 @@
     return inArenaAt((tracks || {})[String(a.slot)], t);
   }
 
-  // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
+  // True when times come from the style's pulse schedule, even when close clips every pulse.
+  function popTimesTimed(a) {
+    return !(a.fx && a.fx.length) && !!(a.name && abilityStyle(a).pulses);
+  }
+
+  // Recorded effects take precedence; otherwise use the clipped pulse schedule, or spawn for an untimed pop.
   function popTimes(a) {
-    return a.fx && a.fx.length ? a.fx : [a.t0];
+    if (a.fx && a.fx.length) return a.fx;
+    if (popTimesTimed(a)) {
+      var close = closeOf(a);
+      // Stored times have millisecond precision; allow only addition's rounding error at close.
+      return abilityStyle(a).pulses.map(function (offset) { return a.t0 + offset; })
+        .filter(function (t) { return close === null || t <= close + 1e-6; });
+    }
+    return [a.t0];
   }
 
   function popUntil(a, pop) {
     var pops = popTimes(a);
-    return pops[pops.length - 1] + pop;
+    if (pops.length) return pops[pops.length - 1] + pop;
+    var close = closeOf(a);
+    return close === null ? a.t0 : close;
   }
 
   // The statuses on players at t (concussed, hindered, suppressed, fragile, tethered, decayed, slowed, netted, ...).
@@ -862,10 +913,10 @@
   }
 
   // How opaque an ability is at t: fading in over its first 0.25 s, and out after its close
-  // while it lingers (see abilitiesAt).
+  // while it lingers (see abilitiesAt). Scheduled pulses stay opaque past close until their last pop ends.
   function abilityAlpha(a, t) {
     var alpha = Math.min(1, Math.max(0, (t - a.t0) / 0.25)), close = closeOf(a);
-    if (close !== null && t > close) {
+    if (close !== null && t > close && !popTimesTimed(a)) {
       alpha *= Math.max(0, 1 - (t - close) / Math.max(0.2, a.t0 + ABILITY_MIN_S - close));
     }
     return alpha;
@@ -1314,6 +1365,70 @@
     Hush: 8
   };
 
+  // Veto's colour is a stand-in pending the owner's in-game colour (D2).
+  var UTIL_AGENT_COLORS = {
+    "Astra": "#b07cff", "Breach": "#ff8a3d", "Brimstone": "#ff9b54", "Chamber": "#e3c36a", "Clove": "#f07bd8",
+    "Cypher": "#e9edf2", "Deadlock": "#dbe7f5", "Fade": "#7f6ab8", "Gekko": "#b4f05a", "Harbor": "#26c2d0",
+    "Hush": "#ff9fc8", "Iso": "#9a6bff", "Jett": "#f4f7fb", "KAY/O": "#4a95ff", "Killjoy": "#ffd84a",
+    "Miks": "#ff6fb1", "Neon": "#46d2ff", "Omen": "#7a5ad6", "Phoenix": "#ff7b2e", "Raze": "#ff8f3f",
+    "Reyna": "#c35be6", "Sage": "#5fe0d0", "Skye": "#7fe07a", "Sova": "#5fb4ff", "Tejo": "#ffb347",
+    "Veto": "#7fc8b8",
+    "Viper": "#4fe07a", "Vyse": "#b18cff", "Waylay": "#ffd1e6", "Yoru": "#3d7bff"
+  };
+  var UTIL_ABILITY_COLORS = {
+    "Sky Smoke": "#c9b08a", "Stim Beacon": "#ff9b54", "Dark Cover": "#5c46a8",
+    "Nebula  / Dissipate": "#c98bff", "Gravity Well": "#9b6bff", "Cyber Cage": "#d9dee6", "Barrier Orb": "#8ff0e4"
+  };
+
+  function utilColorOf(a, style) {
+    return condOwn(UTIL_ABILITY_COLORS, style.ability) || condOwn(UTIL_AGENT_COLORS, a.agent || style.agent) || null;
+  }
+
+  // Owner colours may come from CSS rather than the fixed utility palette.
+  function utilColorChannels(color) {
+    if (typeof color !== "string") return null;
+    var hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+    if (hex) {
+      var digits = hex[1];
+      if (digits.length === 3) digits = digits.split("").map(function (c) { return c + c; }).join("");
+      var n = parseInt(digits, 16);
+      return [n >> 16 & 255, n >> 8 & 255, n & 255];
+    }
+    var rgb = /^rgb\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)$/i.exec(color.trim());
+    if (!rgb) return null;
+    var channels = rgb.slice(1).map(Number);
+    return channels.every(function (c) { return Number.isFinite(c) && c >= 0 && c <= 255; }) ? channels : null;
+  }
+
+  function withAlpha(color, a) {
+    var channels = utilColorChannels(color);
+    return channels ? "rgba(" + channels.join(", ") + ", " + a + ")" : color;
+  }
+
+  function lighten(color, f) {
+    var channels = utilColorChannels(color);
+    if (!channels) return color;
+    return "#" + channels.map(function (c) {
+      return Math.round(c + (255 - c) * f).toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  var utilNoise = null;
+  function noiseCanvas() {
+    if (typeof document === "undefined") return null;
+    if (!utilNoise) {
+      utilNoise = document.createElement("canvas");
+      utilNoise.width = utilNoise.height = 64;
+      var ctx = utilNoise.getContext("2d"), pixels = ctx.createImageData(64, 64);
+      for (var i = 0; i < pixels.data.length; i += 4) {
+        pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = Math.random() < 0.5 ? 0 : 255;
+        pixels.data[i + 3] = Math.floor(Math.random() * 50);
+      }
+      ctx.putImageData(pixels, 0, 0);
+    }
+    return utilNoise;
+  }
+
   // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).
   function ultAt(index, slot, t) {
     var line = index && index.ult ? condOwn(index.ult, String(slot)) : undefined;
@@ -1760,6 +1875,12 @@
   function controlPaletteName(name) {
     return Object.prototype.hasOwnProperty.call(CONTROL_PALETTES, name) ? name : "green-red";
   }
+  function sideColorOf(paletteName, team, group) {
+    var palette = CONTROL_PALETTES[controlPaletteName(paletteName)];
+    if (team === "team-1" || (!team && group === "A")) return palette[0];
+    if (team === "team-2" || (!team && group === "B")) return palette[1];
+    return null;
+  }
   var CONTROL_STATUS = {
     not_ready: "Map control isn't ready for this round yet.",
     failed: "Map control couldn't be computed for this round.",
@@ -1999,8 +2120,10 @@
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
+        var traces = traceWalls(extras.abilities), state = indexRoundState(blob, extras.abilities);
+        extras = Object.assign({}, extras, { abilities: extras.abilities.concat(fragmentZones(extras.abilities)) });
         return { blob: blob, tracks: decodeRound(blob), arena: decodeArena(blob), extras: extras,
-                 traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
+                 traces: traces, state: state };
       });
     }
     return this.cache[n];
@@ -2756,6 +2879,18 @@
     return slot === null || slot === undefined ? this.css("--replay-unknown", "#77787f") : this.slotColor(slot);
   };
 
+  ReplayViewer.prototype.utilColor = function (a, style) {
+    return utilColorOf(a, style) || this.ownerColor(a.slot);
+  };
+
+  ReplayViewer.prototype.sideColor = function (slot) {
+    var linked = this.linked && this.linked.players && this.linked.players[String(slot)];
+    var players = this.current && this.current.blob && this.current.blob.players || [];
+    var player = players.find(function (p) { return String(p.slot) === String(slot); });
+    return sideColorOf(this.controlPalette, linked && linked.team, player && player.side) ||
+      this.css("--replay-unknown", "#77787f");
+  };
+
   // A team-coloured disc with the ability's white glyph and a dark surface ring, valoplant-style.
   ReplayViewer.prototype.drawBadge = function (ctx, x, y, radius, color, glyph, alpha) {
     ctx.save();
@@ -2774,12 +2909,35 @@
     ctx.restore();
   };
 
-  // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
-  ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
-    if (!glyph) return;
+  var UTIL_SIDE_RING = 1 / 3;   // The owner's "faint", 2026-11-20.
+
+  // Ability colour identifies the piece; the thin ring identifies its side.
+  ReplayViewer.prototype.drawUtilBadge = function (ctx, side, x, y, radius, color, glyph, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = "#151922"; ctx.fill();
+    ctx.globalAlpha *= UTIL_SIDE_RING;
+    ctx.strokeStyle = side; ctx.lineWidth = 2; ctx.stroke();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    if (glyph) {
+      var g = radius * 1.3;
+      ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x, y, radius * 0.38, 0, 2 * Math.PI); ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  // Stroke the current path as a solid bar, preserving its caller's canvas state.
+  ReplayViewer.prototype.utilBar = function (ctx, color, w, alpha) {
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
+    ctx.strokeStyle = "rgba(10, 12, 18, 0.55)"; ctx.lineWidth = w + 2; ctx.stroke();
+    ctx.strokeStyle = withAlpha(color, 0.92); ctx.lineWidth = w; ctx.stroke();
+    ctx.globalAlpha = 0.6 * alpha;
+    ctx.strokeStyle = lighten(color, 0.45); ctx.lineWidth = w / 4; ctx.stroke();
     ctx.restore();
   };
 
@@ -2801,12 +2959,70 @@
     return at ? { x: at.u * s, y: at.v * s } : { x: a.u * s, y: a.v * s };
   };
 
+  // One path for circular and capsule areas. Scale about the centre, padding only the radius for side rings.
+  function utilAreaPath(ctx, x, y, rad, seg, scale, pad) {
+    scale = scale === undefined ? 1 : scale;
+    var radius = rad * scale + (pad || 0);
+    ctx.beginPath();
+    if (!seg) { ctx.arc(x, y, radius, 0, 2 * Math.PI); return; }
+    var cx = (seg[0][0] + seg[1][0]) / 2, cy = (seg[0][1] + seg[1][1]) / 2;
+    var x0 = cx + (seg[0][0] - cx) * scale, y0 = cy + (seg[0][1] - cy) * scale;
+    var x1 = cx + (seg[1][0] - cx) * scale, y1 = cy + (seg[1][1] - cy) * scale;
+    var angle = Math.atan2(seg[1][1] - seg[0][1], seg[1][0] - seg[0][0]);
+    var dx = -Math.sin(angle) * radius, dy = Math.cos(angle) * radius;
+    ctx.arc(x0, y0, radius, angle + Math.PI / 2, angle + 3 * Math.PI / 2);
+    ctx.lineTo(x1 - dx, y1 - dy);
+    ctx.arc(x1, y1, radius, angle - Math.PI / 2, angle + Math.PI / 2);
+    ctx.lineTo(x0 + dx, y0 + dy); ctx.closePath();
+  }
+
+  // An ability picks a look by name and settings in ABILITY_STYLES: two fires can share a look with different
+  // flicker. A new picture is one function here plus a look on the entry.
+  var UTIL_LOOKS = {
+    glass: function (ctx, g, color, strength, settings) {
+      var cx = g.cx, cy = g.cy, rad = g.rad, extent = g.extent;
+      var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
+      grad.addColorStop(0, withAlpha(color, 0.75));
+      grad.addColorStop(0.55, withAlpha(color, 0.45));
+      grad.addColorStop(1, withAlpha(color, 0.3));
+      ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+      var glow = ctx.createRadialGradient(cx - rad * 0.3, cy - rad * 0.3, 0, cx - rad * 0.3, cy - rad * 0.3, rad);
+      glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+      glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+      ctx.fillStyle = glow; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+    },
+    grain: function (ctx, g, color, strength, settings) {
+      var cx = g.cx, cy = g.cy, extent = g.extent;
+      var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
+      grad.addColorStop(0, withAlpha(color, 0.7));
+      grad.addColorStop(0.6, withAlpha(color, 0.5));
+      grad.addColorStop(1, withAlpha(color, 0.12));
+      ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+      var noise = noiseCanvas();
+      if (noise) {
+        ctx.fillStyle = ctx.createPattern(noise, "repeat");
+        ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+      }
+    }
+  };
+
+  // Shared clipped patch, including the dim body between pops. A look only fills inside this path.
+  function drawUtilAreaPatch(ctx, x, y, rad, seg, color, strength, look, shape) {
+    var cx = seg ? (seg[0][0] + seg[1][0]) / 2 : x;
+    var cy = seg ? (seg[0][1] + seg[1][1]) / 2 : y;
+    var extent = rad + (seg ? Math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) / 2 : 0);
+    var paint = Object.prototype.hasOwnProperty.call(UTIL_LOOKS, look.kind) && UTIL_LOOKS[look.kind];
+    if (typeof paint !== "function") paint = UTIL_LOOKS[shape === "smoke" ? "glass" : "grain"];
+    ctx.save(); ctx.globalAlpha = strength;
+    utilAreaPath(ctx, x, y, rad, seg); ctx.clip();
+    paint(ctx, { x: x, y: y, rad: rad, seg: seg, cx: cx, cy: cy, extent: extent }, color, strength, look.settings);
+    ctx.restore();
+  }
+
   ReplayViewer.prototype.drawAbilities = function (ctx, s, r, hits) {
     var blob = this.current.blob, t = this.t, self = this;
     var showing = abilitiesAt(this.current.extras.abilities, t, blob.t_end);
     var all = this.current.extras.abilities;
-    var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
-    var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them. The spike (shape "spike") is not drawn here: drawSpikeGround and
     // the carrier badge own it, outside the abilities toggle.
     var upu = (self.linked && self.linked.uvPerUnit) || 0.75;
@@ -2815,24 +3031,24 @@
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
         var at = self.abilityPoint(a, t, s), x = at.x, y = at.y;
-        var color = self.ownerColor(a.slot);
+        var color = self.utilColor(a, style), side = self.sideColor(a.slot);
         var glyph = self.abilityIcon(style.agent, style.ability);
         var text = self.abilityText(a, style);
         var watching = true;   // a sentinel device that is neither down nor off
         if (utilDownAt(a, blob.alive, t, blob.t_end)) {
-          color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
+          color = side = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
           watching = false;
         } else if (utilSuppressedAt(a, self.current.extras.statuses, t, self.current.extras.reveals)) {
-          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
+          color = side = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
           text += " · off (owner suppressed)";
           watching = false;
         } else if (utilInArenaAt(a, self.current.tracks, t)) {
-          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is in Iso's Kill Contract
+          color = side = self.css("--replay-util-down", "#7d828c");   // off while its owner is in Iso's Kill Contract
           text += " · off (owner in Kill Contract)";
           watching = false;
         } else if (deviceOffAt(a, t)) {
-          color = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
+          color = side = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
           text += " · off (Killjoy out of range)";
           watching = false;
         }
@@ -2849,51 +3065,53 @@
         else if (left !== null) text += " · " + (left * a.full).toFixed(1) + " s of its " + a.full.toFixed(1) + " s left";
         ctx.save();
         if ((pass === "smoke" || pass === "area") && style.pop !== undefined) {
-          // A pop: a dashed outline while it is set (before its first pop), then a burst at each pop.
+          // Windup, then a dim area with a full-shape flash and an opening ring at each pop.
           var prad = self.uvRadius(style.r) * s, pops = popTimes(a);
+          var capsule = style.capsule ? capsuleEnds(a, style, upu) : null;
+          var seg = capsule && capsule.map(function (pt) { return [pt[0] * s, pt[1] * s]; });
           ctx.strokeStyle = color; ctx.fillStyle = color;
-          if (t < pops[0]) {
+          if (!pops.length || t < pops[0]) {
             ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
-            ctx.beginPath(); ctx.arc(x, y, prad, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+            utilAreaPath(ctx, x, y, prad, seg); ctx.stroke(); ctx.setLineDash([]);
+          } else {
+            drawUtilAreaPatch(ctx, x, y, prad, seg, color, 0.4 * fadeIn, style.look, style.shape);
           }
           pops.forEach(function (p) {
             if (t < p || t > p + style.pop) return;
             var f = (t - p) / style.pop;
-            ctx.globalAlpha = 0.35 * (1 - f); ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.fill();
+            ctx.globalAlpha = 0.55 * (1 - f); utilAreaPath(ctx, x, y, prad, seg); ctx.fill();
             ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4);
-            ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.stroke();
+            utilAreaPath(ctx, x, y, prad, seg, 0.35 + 0.65 * f); ctx.stroke();
           });
+          utilAreaPath(ctx, x, y, prad, seg, 1, 1.5);
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn * UTIL_SIDE_RING; ctx.stroke();
           ctx.restore(); ctx.save();
           var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
-          self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
           var popped = pops.filter(function (p) { return p <= t; });
-          hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), area: true, text: text + (popped.length ? " · went off at " +
-            popped.map(function (p) { return p.toFixed(1); }).join(", ") + " s" : "") });
+          var popHit = { x: x, y: y, r: seg ? prad : Math.max(prad, r * 0.6), area: true,
+            text: text + (popped.length ? " · went off at " + popped.map(function (p) { return p.toFixed(1); }).join(", ") +
+              " s" + (popTimesTimed(a) ? " (timed from the ability, not recorded)" : "") : "") };
+          if (seg) popHit.seg = seg;
+          hits.push(popHit);
         } else if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
-          ctx.globalAlpha = fadeIn;
+          var body = (style.faint ? 0.45 : 1) * fadeIn;
+          ctx.globalAlpha = body;
+          drawUtilAreaPatch(ctx, x, y, rad, null, color, body, style.look, style.shape);
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
-          if (pass === "smoke") {
-            var body = (style.faint ? 0.45 : 1) * fadeIn;
-            ctx.globalAlpha = body;
-            var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
-            grad.addColorStop(0, smokeCore);   // a dark tint: a smoke reads apart from other util
-            grad.addColorStop(1, smoke);
-            ctx.fillStyle = grad; ctx.fill();
-            // A wash of the owner's colour, so whose smoke it is reads without a badge.
-            ctx.globalAlpha = 0.22 * body; ctx.fillStyle = color; ctx.fill();
-            ctx.globalAlpha = 0.85 * body; ctx.lineWidth = 1.5;
-          } else {
-            ctx.globalAlpha = 0.3 * fadeIn; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = fadeIn;
-            ctx.lineWidth = 2.5;
-          }
-          ctx.strokeStyle = color;
           if (style.faint) ctx.setLineDash([r / 3, r / 4]);
+          if (pass === "smoke") {
+            ctx.strokeStyle = lighten(color, 0.45); ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, y, rad, -1.2, 0.35);
+            ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.5 * body; ctx.stroke();
+          }
+          ctx.beginPath(); ctx.arc(x, y, rad + 1.5, 0, 2 * Math.PI);
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn * UTIL_SIDE_RING;
           ctx.stroke();
           ctx.restore(); ctx.save();
           self.drawTimer(ctx, x, y, Math.max(tw, rad - tw / 2 - 1), left, tw, fadeIn);
-          if (pass === "smoke") self.drawGlyph(ctx, x, y, r * 0.8, glyph, 0.6 * fadeIn);
-          else self.drawBadge(ctx, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
         } else if (pass === "wall") {
           // A traced wall (High Tide) stands as far as its orb has flown, and stays up until it closes.
@@ -2905,9 +3123,7 @@
             ctx.beginPath(); ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
             pts.slice(1).forEach(function (pt) { ctx.lineTo(pt[0] * s, pt[1] * s); });
             if (up) {
-              // Up: a wide smoke band with the owner's colour down its middle.
-              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(8, r * 1.1); ctx.stroke();
-              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4); ctx.stroke();
+              self.utilBar(ctx, color, Math.max(8, r * 1.1), fadeIn);
             } else {
               // Down: where it would rise, a thin dashed line.
               ctx.strokeStyle = color; ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = Math.max(2, r / 6);
@@ -2915,7 +3131,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (up ? " · up now" : " · down now") });
         } else if (pass === "cone") {
@@ -2933,7 +3149,7 @@
             if (cf > 0) { ctx.globalAlpha = 0.24 * cshown; wedge(reachPx * cf); ctx.fill(); }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, cshown);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, cshown);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "box" || pass === "lanes") {
           // Out to where it pops, then gone over 0.4 s.
@@ -2968,18 +3184,17 @@
               }
             }
           } else if (full) {
-            // Fast Lane: its two long sides, drawn as Viper's screen is (a smoke band, the owner's colour down it).
+            // Fast Lane: its two long sides, drawn as solid bars.
             ctx.globalAlpha = shown; ctx.lineCap = "round";
             [[full[0], full[1]], [full[3], full[2]]].forEach(function (side) {
               ctx.beginPath(); ctx.moveTo(side[0][0] * s, side[0][1] * s); ctx.lineTo(side[1][0] * s, side[1][1] * s);
-              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(6, r * 0.7); ctx.stroke();
-              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r / 5); ctx.stroke();
+              self.utilBar(ctx, color, Math.max(6, r * 0.7), shown);
             });
           }
           ctx.restore(); ctx.save();
           if (!style.bare) {
             // A bare piece (an Armageddon strike) is part of its cast's drawing: no badge or timer of its own.
-            self.drawBadge(ctx, x, y, r * 0.5, color, glyph, shown);
+            if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, shown);
             self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, shown);
           }
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
@@ -2988,7 +3203,7 @@
           ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = 2.5; ctx.strokeStyle = color;
           ctx.beginPath(); ctx.arc(x, y, reach * (0.15 + 0.85 * pulse), 0, 2 * Math.PI); ctx.stroke();
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.6, color, glyph);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
         } else if (pass === "mesh" || pass === "shear") {
           // Deadlock's mesh: an arm from the root to each standing node while solid, dashed before it forms.
@@ -3008,11 +3223,13 @@
           ctx.lineWidth = solid ? Math.max(3, r / 3) : Math.max(1.5, r / 7);
           if (!solid) ctx.setLineDash([r / 3, r / 4]);
           segs.forEach(function (sg) {
-            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s);
+            if (solid) self.utilBar(ctx, color, Math.max(3, r / 3), fadeIn);
+            else ctx.stroke();
           });
           ctx.setLineDash([]);
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
             (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
@@ -3022,13 +3239,14 @@
           var dir = standing.length > 1 ? [standing[1][0] - standing[0][0], standing[1][1] - standing[0][1]] : null;
           if (!dir && a.segments.length > 1) dir = [a.segments[1][0] - a.segments[0][0], a.segments[1][1] - a.segments[0][1]];
           var len = dir ? Math.hypot(dir[0], dir[1]) : 0;
-          ctx.globalAlpha = 0.85 * fadeIn; ctx.strokeStyle = color; ctx.lineCap = "butt"; ctx.lineWidth = Math.max(4, r / 2.2);
+          ctx.lineCap = "butt";
           standing.forEach(function (c) {
             var du = len ? dir[0] / len * sizeUv : sizeUv, dv = len ? dir[1] / len * sizeUv : 0;
-            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s);
+            self.utilBar(ctx, color, Math.max(4, r / 2.2), fadeIn);
           });
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
@@ -3055,8 +3273,8 @@
               ctx.lineTo(x1 - head * Math.cos(ang + 0.45), y1 - head * Math.sin(ang + 0.45));
               ctx.closePath(); ctx.fill();
             } else {
-              ctx.lineWidth = Math.max(4, r / 2.2); ctx.globalAlpha = 0.85 * fadeIn;
-              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+              self.utilBar(ctx, color, Math.max(4, r / 2.2), fadeIn);
             }
             if (style.pop !== undefined) {
               // Where it goes off (Fault Line's fissure, Rolling Thunder's wave): a burst at each pop.
@@ -3069,7 +3287,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
@@ -3089,7 +3307,7 @@
             ctx.beginPath(); ctx.arc(mx, my, r * (0.8 + 2.2 * f), 0, 2 * Math.PI); ctx.stroke();
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.56, color, glyph);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.56, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
@@ -3146,7 +3364,7 @@
             if (started) { ctx.lineTo(x, y); ctx.stroke(); }
             ctx.setLineDash([]); ctx.globalAlpha = 1;
           }
-          self.drawBadge(ctx, x, y, radius, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, radius, color, glyph, fadeIn);
           // A unit's full run from its spawn, or a device's from when it was set off.
           var run = style.life ? runLeft(a.t0, style.life, t)
             : style.activeFor && typeof a.active === "number" ? runLeft(a.active, style.activeFor, t) : null;
@@ -3650,16 +3868,19 @@
     });
   };
 
-  // Projectiles in flight (their own layer): a small team-coloured mark where the recorded flight has it, with
-  // the last 0.3 s of its flight behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
+  // Projectiles in flight (their own layer): a small util-coloured mark with a faint side ring where the recorded
+  // flight has it, with the last 0.3 s behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
   // from its cast row (`path`) and its pop (`pop`, where the export places it) are drawn here too.
   ReplayViewer.prototype.drawProjectiles = function (ctx, s, r, hits) {
     var t = this.t, self = this, uvPerUnit = (this.linked && this.linked.uvPerUnit) || 0.75;
-    (this.current.extras.abilities || []).forEach(function (a) {
+    var abilities = this.current.extras.abilities || [];
+    abilities.forEach(function (a, index) {
       if (a.kind !== "Projectile") return;
+      if (a.code + "_" + a.name === "Grenadier_Q_SemtexBasic" && a.flight && a.flight.length &&
+          t > a.flight[a.flight.length - 1][0] && abilities.some(function (zone) { return zone.zoneOf === index; })) return;
       var at = projectileAt(a, t);
       if (!at) return;
-      var style = projectileStyle(a), color = self.ownerColor(a.slot);
+      var style = projectileStyle(a), color = self.utilColor(a, style);
       ctx.save();
       ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round";
       if (at.moving) {
@@ -3670,6 +3891,8 @@
       }
       ctx.globalAlpha = 0.95;
       ctx.beginPath(); ctx.arc(at.u * s, at.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
+      ctx.globalAlpha = 0.95 * UTIL_SIDE_RING;
+      ctx.strokeStyle = self.sideColor(a.slot); ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
       hits.push({ x: at.u * s, y: at.v * s, r: r * 0.5, text: (style.agent ? style.agent + " · " : "") + style.label +
         " · " + self.nameOf(a.slot) + (at.moving ? "" : " · thrown here (no flight recorded)") });
@@ -4871,9 +5094,15 @@
     this.showTip(this.hover);
   };
 
-  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
+  // A hit holds the point: its box, capsule segment or circle, all in map pixels.
   function hitHolds(h, x, y) {
     if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
+    if (h.seg) {
+      var a = h.seg[0], b = h.seg[1], dx = b[0] - a[0], dy = b[1] - a[1];
+      var len2 = dx * dx + dy * dy;
+      var f = len2 ? Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy) / len2)) : 0;
+      return Math.hypot(x - a[0] - f * dx, y - a[1] - f * dy) <= h.r;
+    }
     return Math.hypot(h.x - x, h.y - y) <= h.r;
   }
 
@@ -4905,6 +5134,9 @@
   }
 
   var api = {
+    UTIL_LOOKS: UTIL_LOOKS, utilLookOf: utilLookOf,
+    withAlpha: withAlpha, lighten: lighten, capsuleEnds: capsuleEnds,
+    utilColorOf: utilColorOf, sideColorOf: sideColorOf, UTIL_AGENT_COLORS: UTIL_AGENT_COLORS,
     decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
@@ -4913,7 +5145,8 @@
     runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
-    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
+    popTimes: popTimes, popUntil: popUntil, popTimesTimed: popTimesTimed, fragmentZones: fragmentZones,
+    statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
