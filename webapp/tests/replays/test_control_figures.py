@@ -104,6 +104,7 @@ def test_the_revisions_of_this_release():
     # Control 26: side-wide one_of knowledge from Hush's Suspension hit feedback.
     # Control 27: each spike plant attempt's start is heard as a spike tap.
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
+    # CONDENSE 32 also: overheal and combined decay timelines (R9).
     assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (32, 27)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 6, "mixed ground gap consumers"
 

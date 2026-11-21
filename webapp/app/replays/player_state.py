@@ -4,6 +4,8 @@ sections 3-4; the plan's P02 and its amendments). Stdlib only: the upload worker
     "player_state": {
       "version": 1,
       "vitals": {"<slot>": [{"t", "life", "hp", "sh", "mhp", "msh", ["q": "start"]}, ...]},
+      "overheal": {"<slot>": [{"t", "life", "oh"}, ...]},
+      "decay": {"<slot>": [{"t", "life", "dec", "unk"}, ...]},
       "damage_taken": {"<slot>": [t, ...]},
       "spike": [{"t", "s", ["slot"], ["u", "v"]}, ...],
       "ult": {"<slot>": [{"t", "n"}, ...]},
@@ -25,6 +27,13 @@ are numbers (`mhp` > 0); `sh` and `msh` are numbers, or both null when the shiel
 unknown): HP is still carried and the bar is unavailable. An event missing a key, or with only one shield value,
 is dropped. `q: "start"` marks a round-start seed, only from valid buy-phase evidence. An event isn't merged with
 earlier ones: a snapshot stands alone.
+
+`overheal` (revision 32): the overheal section's value AFTER the row, `oh` in 0..VALUE_MAX, separate from vitals.
+`decay` (revision 32): one combined timeline per slot, `dec` in 0..VALUE_MAX the total decayed HP from sources
+with figures, `unk` a bool, true while any active source has no figures (its amount isn't included in `dec`).
+Both parts require `t` and `life` and are sorted stably by time. Decay knots are linear between consecutive
+knots of one life; equal-time knots are a jump and the later source order holds from that time. The timeline
+ends at a closing knot with `dec` 0 and `unk` false. A missing or wrongly shaped part is unavailable.
 
 `damage_taken`: the distinct times of confirmed positive damage on the slot (self and fall damage included, zero
 dropped), sorted. Deduplication (by character, respawn number and life-change index) is the extractor's.
@@ -51,9 +60,9 @@ GrenadeAbilitySlot, Ability1Slot, Ability2Slot) and "X" (UltimateSlot; no export
 export proves whose they are. Like `ult`, the value before the round (its `t` the look-back start) when known, then
 each change; nothing is assumed before the first one. A bad point is dropped.
 
-`validate` returns a normalized copy or None (unavailable: not a dict, an unsupported version, a part of the wrong
-shape). A bad entry is dropped; an absurd count makes that slot's list (or the spike) unavailable. Missing parts are
-unavailable, never zero health or a carried spike."""
+`validate` returns a normalized copy or None (unavailable: not a dict, an unsupported version, a legacy part of the
+wrong shape). A wrongly shaped `overheal` or `decay` part is dropped alone. A bad entry is dropped; an absurd count
+makes that slot's list (or the spike) unavailable. Missing parts are unavailable, never zero health or a carried spike."""
 
 from __future__ import annotations
 
@@ -198,6 +207,23 @@ def _charge_point(entry) -> dict | None:
     return {"t": t, "n": n}
 
 
+def _health_point(entry, key: str) -> dict | None:
+    """An overheal point or combined decay knot, including its life."""
+    if not isinstance(entry, dict):
+        return None
+    t = _num(entry.get("t"), T_MIN, T_MAX)
+    life = _whole(entry.get("life"), 0, LIFE_MAX)
+    value = _num(entry.get(key), 0.0, VALUE_MAX)
+    if t is None or life is None or value is None:
+        return None
+    out = {"t": t, "life": life, key: value}
+    if key == "dec":
+        if not isinstance(entry.get("unk"), bool):
+            return None
+        out["unk"] = entry["unk"]
+    return out
+
+
 def _orb(entry) -> dict | None:
     if not isinstance(entry, dict) or not isinstance(entry.get("end"), str) or entry["end"] not in ORB_ENDS:
         return None
@@ -264,6 +290,29 @@ def validate(obj, diagnostics: dict | None = None) -> dict | None:
                     kept.append(checked)
             vitals[slot] = sorted(kept, key=lambda e: e["t"])      # stable: source order within a time
         out["vitals"] = vitals
+    for part, key in (("overheal", "oh"), ("decay", "dec")):
+        if part not in obj:
+            continue
+        if not isinstance(obj[part], dict):
+            _count(diagnostics, f"{part}: wrong shape (unavailable)")
+            continue
+        lines = {}
+        for slot, events in obj[part].items():
+            if slot not in SLOTS or not isinstance(events, list):
+                _count(diagnostics, f"{part}: bad slot")
+                continue
+            if len(events) > MAX_EVENTS:
+                _count(diagnostics, f"{part}: too many events (slot unavailable)")
+                continue
+            kept = []
+            for event in events:
+                checked = _health_point(event, key)
+                if checked is None:
+                    _count(diagnostics, f"{part}: bad event")
+                else:
+                    kept.append(checked)
+            lines[slot] = sorted(kept, key=lambda e: e["t"])
+        out[part] = lines
     if "damage_taken" in obj:
         damage = {}
         for slot, times in obj["damage_taken"].items():
@@ -348,6 +397,34 @@ def vitals_at(ps: dict | None, slot: int, t: float, life: int | None = None) -> 
         events = [e for e in events if e["life"] == life]
     i = bisect.bisect_right([e["t"] for e in events], t)
     return events[i - 1] if i else None
+
+
+def overheal_at(ps: dict | None, slot: int, t: float, life: int | None = None) -> dict | None:
+    """The latest overheal point at or before `t`, or None; with `life`, only that life's points."""
+    events = ((ps or {}).get("overheal") or {}).get(str(slot)) or []
+    if life is not None:
+        events = [e for e in events if e["life"] == life]
+    i = bisect.bisect_right([e["t"] for e in events], t)
+    return events[i - 1] if i else None
+
+
+def decay_at(ps: dict | None, slot: int, t: float, life: int | None = None) -> dict | None:
+    """Combined decay at `t`, linear within a life, with the preceding knot's unknown flag. None before the
+    first knot or after the closing 0/false knot; at a jump the later knot holds. Only `life` when supplied."""
+    events = ((ps or {}).get("decay") or {}).get(str(slot)) or []
+    if life is not None:
+        events = [e for e in events if e["life"] == life]
+    i = bisect.bisect_right([e["t"] for e in events], t)
+    if not i:
+        return None
+    previous = events[i - 1]
+    value = previous["dec"]
+    if i < len(events) and events[i]["life"] == previous["life"]:
+        following = events[i]
+        value += (following["dec"] - value) * ((t - previous["t"]) / (following["t"] - previous["t"]))
+    elif t > previous["t"] and value == 0 and not previous["unk"]:
+        return None
+    return {"dec": float(value), "unk": previous["unk"]}
 
 
 def damaged_by(ps: dict | None, slot: int, t: float) -> bool:

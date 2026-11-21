@@ -133,6 +133,7 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     # CONDENSE 29: schema 9 reads, long and carried trips, ground fragment deltas, LifeChangeEvents.
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
+    # CONDENSE 32: overheal and combined decay timelines (R9).
     assert fmt.CONDENSE_REVISION == 32
 
 

@@ -2058,11 +2058,15 @@ table.compact-table .badge-score {
   -webkit-mask: var(--gun-icon) center / contain no-repeat; mask: var(--gun-icon) center / contain no-repeat;
 }
 /* The shield line sits on top of the health bar: orange, out of heavy shield's 50. */
-.replay { --replay-shield: #f2994a; }
+.replay { --replay-shield: #f2994a; --replay-overheal: #4ade80; --replay-decay: #b084f5; }
 .replay-pl-shield { display: block; height: 3px; margin-bottom: 1px; border-radius: 2px; overflow: hidden; }
 .replay-pl-shield > span { display: block; height: 100%; background: var(--replay-shield); }
-.replay-pl-bar { display: block; height: 5px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
-.replay-pl-bar > span { display: block; height: 100%; background: var(--ink); }
+.replay-pl-bar { position: relative; display: flex; height: 5px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
+.replay-pl-bar > span { display: block; flex-shrink: 0; height: 100%; }
+.replay-pl-hp-fill { background: var(--ink); }
+.replay-pl-decay { background: var(--replay-decay); }
+.replay-pl-hp-fill.is-decayed { background: var(--replay-decay); }
+.replay-pl-overheal { background: var(--replay-overheal); }
 .replay-pl-bar.is-unknown { background: repeating-linear-gradient(45deg, var(--gridline) 0 4px, transparent 4px 8px); }
 .replay-pl-kit { grid-area: kit; display: flex; align-items: center; gap: 0.3rem; }
 .replay-pl-ability {

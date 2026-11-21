@@ -32,6 +32,96 @@ def _state(**extra):
 # ---------------------------------------------------------------- validate
 
 
+@pytest.mark.parametrize("part,key", [("overheal", "oh"), ("decay", "dec")])
+def test_health_parts_normalize_stably_without_mutating(part, key):
+    def point(t, value):
+        return {"t": t, "life": 0, key: value, **({"unk": False} if part == "decay" else {})}
+
+    points = [point(2, 30), point(0, 0), point(2, 10), point(3, 0)]
+    state = _state(**{part: {"0": points}})
+    original = copy.deepcopy(state)
+    got = ps.validate(state)
+    assert got[part] == {"0": [points[1], points[0], points[2], points[3]]}
+    assert ps.validate(got) == got
+    assert state == original
+
+
+@pytest.mark.parametrize("part,point", [
+    ("overheal", {"t": 1, "life": 0, "oh": -1}),
+    ("overheal", {"t": 1, "life": 0, "oh": True}),
+    ("overheal", {"t": 1, "life": 0, "oh": ps.VALUE_MAX + 1}),
+    ("overheal", {"t": 1, "oh": 20}),
+    ("decay", {"t": 1, "life": 0, "dec": "20", "unk": False}),
+    ("decay", {"t": 1, "life": 0, "dec": -1, "unk": False}),
+    ("decay", {"t": 1, "life": 0, "dec": math.nan, "unk": False}),
+    ("decay", {"t": 1, "life": 0, "dec": ps.VALUE_MAX + 1, "unk": False}),
+    ("decay", {"t": 1, "life": 0, "dec": 20, "unk": 1}),
+    ("decay", {"t": 1, "life": 0, "dec": 20}),
+    ("decay", {"t": 1, "dec": 20, "unk": False}),
+])
+def test_health_parts_drop_and_count_each_bad_point(part, point):
+    good = {"t": 2, "life": 0, **({"oh": 0} if part == "overheal" else {"dec": 0, "unk": False})}
+    diagnostics = {}
+    got = ps.validate(_state(**{part: {"0": [point, point, good]}}), diagnostics)
+    assert got[part] == {"0": [good]}
+    assert diagnostics == {f"{part}: bad event": 2}
+
+
+@pytest.mark.parametrize("part", ["overheal", "decay"])
+def test_health_parts_limits_shapes_and_missing(part):
+    good = {"t": 1, "life": 0, **({"oh": 0} if part == "overheal" else {"dec": 0, "unk": False})}
+    diagnostics = {}
+    got = ps.validate(_state(**{part: {"0": [good] * 513, "1": [good] * 512,
+                                        "2": "bad", "10": [good]}}), diagnostics)
+    assert got[part] == {"1": [good] * 512}
+    assert diagnostics[f"{part}: too many events (slot unavailable)"] == 1
+    assert diagnostics[f"{part}: bad slot"] == 2
+    diagnostics = {}
+    assert ps.validate(_state(**{part: []}), diagnostics) == ps.validate(_state())
+    assert diagnostics == {f"{part}: wrong shape (unavailable)": 1}
+    query = ps.overheal_at if part == "overheal" else ps.decay_at
+    assert query(ps.validate(_state()), 0, 1) is None
+    assert query(None, 0, 1) is None
+
+
+def test_overheal_at_points_and_across_lives():
+    points = [{"t": 1, "life": 0, "oh": 100}, {"t": 2, "life": 0, "oh": 40},
+              {"t": 2, "life": 0, "oh": 20}, {"t": 5, "life": 1, "oh": 10}]
+    state = ps.validate(_state(overheal={"0": points}))
+    assert ps.overheal_at(state, 0, 0) is None
+    assert ps.overheal_at(state, 0, 1) == points[0]
+    assert ps.overheal_at(state, 0, 1.5) == points[0]
+    assert ps.overheal_at(state, 0, 2) == points[2]
+    assert ps.overheal_at(state, 0, 10) == points[3]
+    assert ps.overheal_at(state, 0, 4, life=1) is None
+    assert ps.overheal_at(state, 0, 10, life=0) == points[2]
+    assert ps.overheal_at(state, 1, 10) is None
+
+
+def test_decay_at_interpolates_jumps_unknown_and_closure():
+    points = [{"t": 0, "life": 0, "dec": 0, "unk": False},
+              {"t": 0.75, "life": 0, "dec": 90, "unk": False},
+              {"t": 2, "life": 0, "dec": 30, "unk": True},
+              {"t": 2, "life": 0, "dec": 10, "unk": True},
+              {"t": 3, "life": 0, "dec": 0, "unk": False},
+              {"t": 5, "life": 1, "dec": 20, "unk": False},
+              {"t": 6, "life": 1, "dec": 0, "unk": False}]
+    state = ps.validate(_state(decay={"0": points}))
+    for t, expected in [(-1, None), (0, {"dec": 0, "unk": False}),
+                        (0.375, {"dec": 45, "unk": False}),
+                        (1.375, {"dec": 60, "unk": False}),
+                        (2, {"dec": 10, "unk": True}), (2.5, {"dec": 5, "unk": True}),
+                        (3, {"dec": 0, "unk": False}), (4, None),
+                        (5.5, {"dec": 10, "unk": False}), (7, None)]:
+        assert ps.decay_at(state, 0, t) == expected
+    assert ps.decay_at(state, 0, 4, life=1) is None
+    assert ps.decay_at(state, 0, 5, life=0) is None
+    assert ps.decay_at(state, 1, 2) is None
+    # No interpolation into a different life, even when the previous life lacks a closing knot.
+    state["decay"]["0"] = [points[3], points[5]]
+    assert ps.decay_at(state, 0, 4) == {"dec": 10, "unk": True}
+
+
 def test_a_valid_subsection_comes_back_normalized_and_stable():
     got = ps.validate(_state())
     assert got is not None and got["version"] == 1

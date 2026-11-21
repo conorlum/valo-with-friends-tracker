@@ -1346,10 +1346,26 @@ STATUS_OBJECTS = (
     (re.compile(r"^Aggrobot_E_DiscTurret_PowerWave$"), "concussed"),
     (re.compile(r"^Breach_(E_SweetSpotFissure|X_Shockwave)$"), "concussed"),
     (re.compile(r"^Rift_Q_FlashBurst$"), "concussed"),
+    # Clove's Meddle (W3 count, ee6e0ba7): 2 statuses in 2 rounds (the caster shape), both 5.005 s, the wiki's 5 s of
+    # decay, hold and restore. 6f12db3e has 8 Meddles and no status.
     (re.compile(r"^Smonk_Q_DecayExplosion$"), "decayed"),
     # Viper's Pit: an enemy inside it gets an effect naming the Pit (and a debuff naming Viper beside it, for the same
     # span), from stepping in to leaving or the cloud falling (trap-jobs D13: 386 Cypher 5.0 s, Iso 1.3 s; 346 Skye).
+    # W3 count, 6f12db3e: 2 statuses in 1 round, 0.5 s and 4.1 s.
     (re.compile(r"^Pandemic_X_Circular$"), "decayed"),
+    # Viper's Toxic Screen (W3, 2026-11-20, 6f12db3e): an enemy touching the wall gets `FXC_Pandemic_Ability_E_SmokeScreen_Blind`
+    # naming the wall's manager (`GameObject_Pandemic_E_SmokeScreenManager`) for the span of the touch, and a one-shot heavy
+    # application on them within 50-100 ms (the first decay hit). 35 contacts in 13 rounds (26 enemy, 9 harmless friendly), spans
+    # 0.06-0.71 s, median 0.20 s: each is one contact, and the curve's hold and restore run on after it.
+    (re.compile(r"^Pandemic_E_SmokeScreenManager$"), "decayed"),
+    # Not here: Poison Cloud (`Pandemic_4_SmokeZone`): 0 enemy plays in the two exports (3 effects, all on Viper or a
+    # teammate), so it is not proven; Prowler (nearsight only, wiki); Veto's Chokehold (no Veto in the exports).
+    # Fade's Nightfall (W3, 6f12db3e): the wave (`GameObject_BountyHunter_X_WaveForm`) plays one one-shot
+    # `FXC_BountyHunter_X_ApplyBuffVictim` naming it on each enemy it hits, which lasts STATUS_SOURCE_MS (the wiki's 8 s
+    # debuff; the one-shot carries no length). 5 hits on 3 casts in 6f12db3e: 5 statuses, spans 8.0 s, 4.8 s for the one
+    # cut short by the player's death. Its booked decay damage (`DmgType_BountyHunter_Decay_Nightfall_C`, 54.0 HP, 4.8 s
+    # after the hit, player alive) is the one the figures are checked against (R8).
+    (re.compile(r"^BountyHunter_X_WaveForm$"), "decayed"),
     (re.compile(r"^(Deadeye_E_Slow_Large|Thorne_4_SlowField_Production)$"), "slowed"),
     (re.compile(r"^Sprinter_Q_ElectricSphere$"), "concussed"),    # Neon's Relay Bolt (caster-named)
     (re.compile(r"^Cable_Q_SoundSensor_Fissure$"), "concussed"),  # Deadlock's Sonic Sensor (caster-named)
@@ -1358,6 +1374,18 @@ STATUS_OBJECTS = (
     # Harbor's Reckoning nearsights and slows the enemies its wave touches: see DEBUFF_ONLY.
     (re.compile(r"^Mage_X_TidalWave_Chunk$"), "nearsighted"),
 )
+# A second status the same object puts on a player, over the same span as its first. Fade's Seize decays whoever its wave
+# hits and then tethers those it holds (wiki); the export names the object only on the tether's two effects (3 of 3
+# plays in 6f12db3e, 1.2-4.7 s), so its decay is read over the tether's span (it starts a little earlier, when the wave
+# arrives: the curve's onset is that much late). Veto's Chokehold (`Pine_Q_Tether_SphereExpansion`) decays too, but no
+# local export has a Veto: left out until one proves it. Measured (6f12db3e): 3 plays in 3 rounds, spans 1.2-4.7 s,
+# median 3.5 s. Its booked decay damage (`DmgType_BountyHunter_Decay_Seize_C`, 15.3 HP) is on 1 play.
+STATUS_ALSO = (
+    (re.compile(r"^BountyHunter_Q_Tether_SphereExpansion$"), "decayed"),
+)
+# One-shot statuses whose length is a game value the replay doesn't carry, by source (a source's own, before
+# STATUS_KNOWN_MS's per-status one): Nightfall's debuff, 8 s (wiki, "Debuff duration").
+STATUS_SOURCE_MS = {"BountyHunter_X_WaveForm": 8000}
 # Not statuses, though their effects name enemies: Neon's Fast Lane (walking through it does nothing);
 # Harbor's High Tide (Mage_Q_WallManager), whose effect starts on every player at once as the wall goes up
 # and lasts its whole life (its slow is read from the tracks instead: condense.high_tide_slows); and Harbor's
@@ -1475,6 +1503,26 @@ def status_of(actor: _Actor, oneshot: bool = False) -> str | None:
         if pattern.match(key):
             return label
     return None
+
+
+def statuses_of(actor: _Actor, oneshot: bool = False) -> tuple[str, ...]:
+    """Every status the object puts on a player: `status_of`'s, then STATUS_ALSO's."""
+    first = status_of(actor, oneshot)
+    if first is None:
+        return ()
+    key = f"{actor.code}_{actor.name}"
+    return (first, *(label for pattern, label in STATUS_ALSO if pattern.match(key)))
+
+
+def decay_source_keys() -> list[str]:
+    """The `<code>_<name>` of every object the table says decays (the keys `decay_figures.json` must have), read from
+    the patterns that are one exact name (`^Code_Name$`)."""
+    out = []
+    for pattern, label in (*STATUS_OBJECTS, *STATUS_ALSO):
+        text = pattern.pattern
+        if label == "decayed" and text.startswith("^") and text.endswith("$") and re.fullmatch(r"[A-Za-z0-9_]+", text[1:-1]):
+            out.append(text[1:-1])
+    return out
 
 
 def pop_times(actor: _Actor, raw: "Raw") -> list[int]:
@@ -1646,7 +1694,7 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         if DEBUFF_ONLY.match(f"{source.code}_{source.name}") and effect.buff is not None:
             return round(effect.buff * 1000)
         if effect.oneshot:
-            return STATUS_KNOWN_MS.get(label, STATUS_PING_MS)
+            return STATUS_SOURCE_MS.get(f"{source.code}_{source.name}") or STATUS_KNOWN_MS.get(label, STATUS_PING_MS)
         return (effect.stop_ms - effect.t_ms) if effect.stop_ms is not None else STATUS_PING_MS
 
     equip_slot: dict[int, list[tuple[int, int]]] = defaultdict(list)
@@ -1674,21 +1722,23 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         named = [a for v in effect.context if (a := at(v, effect.t_ms)) is not None and status_of(a)]
         if named:
             source = named[0]
-            label = status_of(source, effect.oneshot)
+            labels = statuses_of(source, effect.oneshot)
             if CASTER_ONLY.match(f"{source.code}_{source.name}"):
                 continue
             debuff_only = DEBUFF_ONLY.match(f"{source.code}_{source.name}")
             if debuff_only and (effect.buff is None or effect.buff <= 0):
                 continue
             by = owner(source)
-            if (debuff_only and by != target) or enemies(by, target):
-                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label, "object"))
-            elif teams and by is not None and by != target and teams.get(by) is not None:
-                # Revision 22: a teammate the object put the status on (a Breach stun, a Sage slow on their own
-                # side), kept and flagged `friendly`; readers that count only enemies skip it. Only an effect
-                # naming the object: the caster-container path below stays enemies only.
-                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
-                             "friendly"))
+            for label in labels:
+                if (debuff_only and by != target) or enemies(by, target):
+                    hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
+                                 "object"))
+                elif teams and by is not None and by != target and teams.get(by) is not None:
+                    # Revision 22: a teammate the object put the status on (a Breach stun, a Sage slow on their own
+                    # side), kept and flagged `friendly`; readers that count only enemies skip it. Only an effect
+                    # naming the object: the caster-container path below stays enemies only.
+                    hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
+                                 "friendly"))
             continue
         casters = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
         if not casters or not enemies(casters[0], target):
@@ -1708,9 +1758,9 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
             continue
         counts["status_containers"] += 1
         for effect, target, source in inside:
-            label = status_of(source)
-            hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
-                         "caster"))
+            for label in statuses_of(source, effect.oneshot):
+                hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
+                             "caster"))
     # A DEBUFF_ONLY object's later touches restart the debuff of a player its owner's object already debuffed.
     debuffs = sorted((t, owner(source), target, t1 - t) for t, t1, source, target, _, how in hits
                      if how == "object" and DEBUFF_ONLY.match(f"{source.code}_{source.name}"))
@@ -1723,7 +1773,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         first = [length for t, who, hit, length in debuffs
                  if who == by and hit == target and t <= t_ms <= t + DEBUFF_REFRESH_MS]
         if first:
-            hits.append((t_ms, t_ms + first[0], source, target, status_of(source), "object"))
+            for label in statuses_of(source):
+                hits.append((t_ms, t_ms + first[0], source, target, label, "object"))
             counts["status_refreshes"] += 1
     # A force row (`force_modules`) whose module is a status (FORCE_STATUS) and whose Source is a live ability object:
     # the status lasts the row's own `Duration`, else FORCE_STATUS_MS. Enemies of the object's owner are kept; a
@@ -1756,6 +1807,10 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     # its going off as two statuses. A levitated run is per zone (its row names it, `src`).
     merged: dict[tuple, list[list]] = defaultdict(list)
     for t, t1, actor, target, label, how in sorted(hits, key=lambda h: (h[0], h[1], h[2].guid, h[3], h[4], h[5])):
+        # Decay never affects teammates, even when the export plays contact effects on them. Filter each label
+        # independently: Seize still tethers a teammate, and genuine friendly stuns/slows remain harmful.
+        if label == "decayed" and not enemies(owner(actor), target):
+            continue
         key = (actor.code, actor.name.replace("_SecondWire", ""), owner(actor), target, label,
                actor.guid if label == "levitated" else None)
         runs = merged[key]

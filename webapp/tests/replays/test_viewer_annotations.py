@@ -511,6 +511,29 @@ def test_unavailable_health_is_a_neutral_marker_with_a_tooltip():
 
 
 @needs_node
+@pytest.mark.parametrize("damaged,oh,dec,unk,expected", [
+    (False, 50, 0, False, [", overheal 50"]),
+    (True, 0, 45, False, [", decayed 45"]),
+    (False, 0, 45, False, [", decayed 45"]),
+    (False, 0, 0, True, [", decayed"]),
+    (False, 20, 30, True, [", overheal 20", ", decayed 30"]),
+])
+def test_both_map_tooltips_describe_overheal_and_decay_at_full_health(damaged, oh, dec, unk, expected):
+    ps = {"vitals": {"1": [vit(0, 0, 100, 50)]}, "damage_taken": {"1": [1] if damaged else []},
+          "overheal": {"1": [{"t": 2, "life": 0, "oh": oh}]},
+          "decay": {"1": [{"t": 2, "life": 0, "dec": dec, "unk": unk}]}}
+    blob = round_blob([(1, "A", "Clove", 5000, 5000)], player_state=ps)
+    probe = draw(blob, 5, layers={"names": False})
+    [block] = boxes(probe, "block", 1)
+    centre = [block["x"] + block["w"] / 2, block["y"] + block["h"] / 2]
+    out = draw(blob, 5, layers={"names": False}, tip=[[5000 * probe["s"], 5000 * probe["s"]], centre])
+    for tip in out["tips"]:
+        assert tip is not None
+        assert all(text in tip for text in expected)
+        assert "unknown" not in tip, "undamaged health is full, rather than unproven"
+
+
+@needs_node
 def test_death_hides_the_annotations_and_a_revive_resumes_them():
     alive = {"1": [[-10.0, 20.0, "spawn", []], [30.0, None, "revive", []]], "6": [[-10.0, None, "spawn", []]]}
     ps = {"vitals": {"1": [vit(5.0, 0, 60, 20), vit(30.0, 1, 100, 0, 100, 0), vit(32.0, 1, 40, 0, 100, 0)]},

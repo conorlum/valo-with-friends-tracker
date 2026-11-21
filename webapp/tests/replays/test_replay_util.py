@@ -105,6 +105,7 @@ def test_util_reaches_readers_through_known_kinds_and_holds_no_identity(tmp_path
     # CONDENSE 30: held gun generations.
     # CONDENSE 31: Hush (Flow cast, force-row statuses, Flashbulb pop).
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
+    # CONDENSE 32: overheal and combined decay timelines (R9).
     assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c32"
 
 
