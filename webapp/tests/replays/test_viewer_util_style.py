@@ -260,3 +260,259 @@ def test_fetch_round_appends_zones_after_indexes_without_mutating_extras(own_ext
     if own_extras:
         assert actual["custom"] == "preserved" and actual["originalLength"] == 4
         assert actual["traceCount"] == 1
+
+
+# Recording canvas based on test_viewer_annotations, including gradients and stroke widths.
+UTIL_DRAW = r"""
+  global.getComputedStyle = () => ({getPropertyValue: () => ""});
+  global.Image = class { constructor() { this.complete = false; } };
+  const R = require(process.argv[1]);
+  function mockCtx(log) {
+    function gradient(kind, args) {
+      const g = {kind, args, stops: [], addColorStop(at, color) { this.stops.push([at, color]); }};
+      log.push({op: "gradient", gradient: g}); return g;
+    }
+    const keys = ["fillStyle", "strokeStyle", "globalAlpha", "font", "lineWidth", "textAlign", "textBaseline",
+                  "lineDashOffset", "globalCompositeOperation", "lineCap", "lineJoin", "dash"];
+    let path = [], stack = [], tf = [1, 0, 0, 1, 0, 0];
+    const c = {fillStyle: "#000", strokeStyle: "#000", globalAlpha: 1, font: "10px sans-serif", lineWidth: 1,
+               textAlign: "start", textBaseline: "alphabetic", lineDashOffset: 0, dash: []};
+    const snap = () => ({fill: c.fillStyle, stroke: c.strokeStyle, alpha: c.globalAlpha, font: c.font,
+                        tf: tf.slice(), dash: c.dash.slice(), offset: c.lineDashOffset, lineWidth: c.lineWidth});
+    const rec = (op) => {
+      const pts = path.filter(p => p[0] === "M" || p[0] === "L");
+      const arcs = path.filter(p => p[0] === "A");
+      const row = Object.assign({op: op, path: path.slice()}, snap());
+      if (op === "fill" && pts.length === 4 && arcs.length === 0 && c.fillStyle === "#ff4655") {
+        row.spike = true;
+        row.cx = (pts[0][1] + pts[2][1]) / 2; row.cy = (pts[0][2] + pts[2][2]) / 2;
+      }
+      log.push(row);
+    };
+    Object.assign(c, {
+      save() { const o = {tf: tf.slice()}; keys.forEach(k => { o[k] = c[k]; }); stack.push(o); },
+      restore() { const o = stack.pop(); if (!o) return; tf = o.tf; keys.forEach(k => { c[k] = o[k]; }); },
+      setTransform(a, b, cc, d, e, f) { tf = [a, b, cc, d, e, f]; },
+      beginPath() { path = []; }, closePath() { path.push(["Z"]); },
+      moveTo(x, y) { path.push(["M", x, y]); }, lineTo(x, y) { path.push(["L", x, y]); },
+      arc(x, y, r, a0, a1) { path.push(["A", x, y, r, a0, a1]); }, rect(x, y, w, h) { path.push(["R", x, y, w, h]); },
+      fill() { rec("fill"); }, stroke() { rec("stroke"); },
+      fillRect(x, y, w, h) { log.push(Object.assign({op: "fillRect", x, y, w, h}, snap())); },
+      strokeRect(x, y, w, h) { log.push(Object.assign({op: "strokeRect", x, y, w, h}, snap())); },
+      fillText(text, x, y) { log.push(Object.assign({op: "fillText", text: String(text), x, y}, snap())); },
+      measureText(text) {
+        const m = /(\d+(?:\.\d+)?)px/.exec(c.font); const px = m ? parseFloat(m[1]) : 10;
+        return {width: String(text).length * px * 0.6};
+      },
+      setLineDash(dash) { c.dash = dash.slice(); }, getLineDash() { return c.dash.slice(); },
+      clip() { rec("clip"); }, clearRect() {},
+      createRadialGradient(...args) { return gradient("radial", args); },
+      createLinearGradient(...args) { return gradient("linear", args); },
+      createPattern() { log.push({op: "createPattern"}); return "noise-pattern"; },
+      drawImage(img, x, y, w, h) { log.push(Object.assign({op: "drawImage", src: img.src, x, y, w, h}, snap())); }
+    });
+    return new Proxy(c, {get: (o, k) => (k in o ? o[k] : () => {})});
+  }
+  const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const log = [], hits = [], v = Object.create(R.ReplayViewer.prototype);
+  const row = p.row;
+  Object.assign(v, {root: {}, t: 12, controlPalette: p.palette || "green-red", linked: p.linked || null,
+    current: {blob: {t_end: 40, util: [], players: [{slot: 1, side: "A"}], alive: p.alive || {"1": [[0, 40]]}},
+      tracks: p.tracks || {}, extras: {abilities: [row], statuses: p.statuses || [], reveals: []}}});
+  v.abilityIcon = () => p.glyph ? {src: "glyph"} : null;
+  v.abilityText = () => "utility";
+  v.nameOf = () => "owner";
+  if (p.ownerColor) v.ownerColor = () => p.ownerColor;
+  const ctx = mockCtx(log);
+  if (p.projectile) v.drawProjectiles(ctx, 1000, 20, hits);
+  else v.drawAbilities(ctx, 1000, 20, hits);
+  console.log(JSON.stringify({log, hits, radius: v.uvRadius(410) * 1000}));
+"""
+
+
+def ability(code, name, agent, **kw):
+    return dict(kind="Zone", code=code, name=name, agent=agent, slot=1,
+                u=0.4, v=0.5, t0=10, t1=25, **kw)
+
+
+def util_draw(row, **kw):
+    return run_node(UTIL_DRAW, dict(row=row, **kw))
+
+
+def arc_calls(log, op, radius):
+    return [c for c in log if c["op"] == op and any(
+        p[0] == "A" and p[3] == pytest.approx(radius) for p in c.get("path", []))]
+
+
+@needs_node
+def test_colour_helpers():
+    assert run_node('''const R = require(process.argv[1]); console.log(JSON.stringify([
+      R.withAlpha("#5c46a8", 0.75), R.lighten("#4fe07a", 0.45),
+      R.lighten("#123456", 0), R.lighten("#123456", 1)]));''', None) == [
+        "rgba(92, 70, 168, 0.75)", "#9eeeb6", "#123456", "#ffffff"]
+
+
+@needs_node
+@pytest.mark.parametrize("color,alpha,light", [
+    ("#abc", "rgba(170, 187, 204, 0.5)", "#d5dde6"),
+    ("#AbC", "rgba(170, 187, 204, 0.5)", "#d5dde6"),
+    ("#AAbbCC", "rgba(170, 187, 204, 0.5)", "#d5dde6"),
+    ("#000", "rgba(0, 0, 0, 0.5)", "#808080"),
+    ("rgb(1, 2, 3)", "rgba(1, 2, 3, 0.5)", "#808181"),
+    ("red", "red", "red"),
+    ("#abcd", "#abcd", "#abcd"),
+    ("rgb(no, 2, 3)", "rgb(no, 2, 3)", "rgb(no, 2, 3)"),
+    ("var(--custom-util)", "var(--custom-util)", "var(--custom-util)"),
+])
+def test_colour_helpers_accept_css_fallbacks(color, alpha, light):
+    actual = run_node('''const R = require(process.argv[1]);
+      const color = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      console.log(JSON.stringify([R.withAlpha(color, 0.5), R.lighten(color, 0.5)]));''', color)
+    assert actual == [alpha, light]
+
+
+@needs_node
+def test_smoke_accepts_rgb_owner_colour_fallback():
+    row = ability("Wushu", "4_SmokeZone", "Unlisted")
+    log = util_draw(row, ownerColor="rgb(57, 135, 229)")["log"]
+    assert "NaN" not in json.dumps(log)
+    patch = next(c for c in log if c["op"] == "fillRect")
+    assert patch["fill"]["stops"][0] == [0, "rgba(57, 135, 229, 0.75)"]
+
+
+@needs_node
+@pytest.mark.parametrize("kw,side", [({}, "#5ccf8f"), ({"palette": "teal-coral"}, "#1fb8c9"),
+    ({"linked": {"players": {"1": {"team": "team-2"}}}}, "#d9534f")])
+def test_smoke_glass_body_and_side_badge(kw, side):
+    out = util_draw(ability("Wraith", "4_Smoke", "Omen"), **kw)
+    log, rad = out["log"], out["radius"]
+    assert any(c["op"] == "clip" for c in log)
+    patches = [c for c in log if c["op"] == "fillRect" and isinstance(c["fill"], dict)]
+    assert patches[0]["fill"]["stops"] == [
+        [0, "rgba(92, 70, 168, 0.75)"], [0.55, "rgba(92, 70, 168, 0.45)"],
+        [1, "rgba(92, 70, 168, 0.3)"]]
+    glow = patches[1]["fill"]
+    assert glow["args"][0] < 400 and glow["args"][1] < 500
+    assert glow["stops"][0][1] == "rgba(255, 255, 255, 0.28)"
+    assert any(c["stroke"] == "#a599cf" and c["lineWidth"] == 1.5
+               for c in arc_calls(log, "stroke", rad))
+    assert any(c["stroke"] == side and c["lineWidth"] == 1.5 and c["alpha"] == 0.75
+               for c in arc_calls(log, "stroke", rad + 1.5))
+    assert any(c["fill"] == "#151922" for c in arc_calls(log, "fill", 8.8))
+    assert any(c["stroke"] == side for c in arc_calls(log, "stroke", 8.8))
+    assert "rgba(16, 18, 24" not in json.dumps(log)
+    assert any(c["stroke"] == "#ffffff" and c["lineWidth"] == 2.5 and
+               c["path"][0][4:] == [-1.2, 0.35] for c in log if c["op"] == "stroke")
+
+
+@needs_node
+def test_area_soft_gradient_without_outline_or_node_noise():
+    log = util_draw(ability("Phoenix", "MolotovFire", "Phoenix"))["log"]
+    fills = [c for c in log if c["op"] == "fillRect" and isinstance(c["fill"], dict)]
+    assert fills[0]["fill"]["stops"] == [[0, "rgba(255, 123, 46, 0.7)"],
+        [0.6, "rgba(255, 123, 46, 0.5)"], [1, "rgba(255, 123, 46, 0.12)"]]
+    assert not any(c["stroke"] == "#ff7b2e" for c in arc_calls(log, "stroke", 450 * 0.75 * 1000))
+    assert any(c["stroke"] == "#5ccf8f" for c in arc_calls(log, "stroke", 450 * 0.75 * 1000 + 1.5))
+    assert not any(c["op"] == "createPattern" for c in log)
+
+
+@needs_node
+@pytest.mark.parametrize("state", ["dead", "suppressed", "arena", "off"])
+def test_disabled_device_uses_down_fill_and_ring(state):
+    row = ability("Gumshoe", "E_PossessableCamera", "Cypher")
+    kw = {}
+    if state == "dead":
+        kw["alive"] = {"1": [[0, 11]]}
+    elif state == "suppressed":
+        kw["statuses"] = [{"target": 1, "status": "suppressed", "t0": 11, "t1": 13}]
+    elif state == "arena":
+        kw["tracks"] = {"1": [[{"t": 11, "z": -4990}, {"t": 13, "z": -4990}]]}
+    else:
+        row.update(code="Killjoy", name="E_Turret", agent="Killjoy", off=[[11, 13]])
+    log = util_draw(row, **kw)["log"]
+    assert any(c["fill"] == "#7d828c" for c in log if c["op"] == "fill")
+    assert any(c["stroke"] == "#7d828c" and c["lineWidth"] == 2 for c in log if c["op"] == "stroke")
+    assert "#5ccf8f" not in json.dumps(log)
+
+
+BAR_ROWS = [
+    (ability("Pandemic", "E_SmokeScreenManager", "Viper", points=[[0.2, 0.3], [0.7, 0.8]], on=[[10, 25]]),
+     "#4fe07a", "rgba(79, 224, 122, 0.92)", "#9eeeb6", 22, 1),
+    (ability("Thorne", "E_Wall_Fortifying", "Sage", segments=[[0.3, 0.4, 10, None], [0.4, 0.4, 10, None]]),
+     "#8ff0e4", "rgba(143, 240, 228, 0.92)", "#c1f7f0", 20 / 2.2, 2),
+    (ability("Rift", "X_GlobalWall", "Astra", yaw=0),
+     "#b07cff", "rgba(176, 124, 255, 0.92)", "#d4b7ff", 20 / 2.2, 1),
+    (ability("Sprinter", "4_Tunnel", "Neon", yaw=0),
+     "#46d2ff", "rgba(70, 210, 255, 0.92)", "#99e6ff", 14, 2),
+    (ability("Cable", "E_CableJam_Root", "Deadlock", arms=[[0.7, 0.8, 10, None]], on=[[10, 25]]),
+     "#dbe7f5", "rgba(219, 231, 245, 0.92)", "#ebf2fa", 20 / 3, 1),
+    (ability("Nox", "WallTrap", "Vyse", line=[[0.2, 0.3], [0.7, 0.8]], raised=[11, 20]),
+     "#b18cff", "rgba(177, 140, 255, 0.92)", "#d4c0ff", 20 / 3, 1),
+]
+
+
+@needs_node
+@pytest.mark.parametrize("row,color,body,core,width,paths", BAR_ROWS)
+def test_solid_bars_have_three_strokes_without_side_edge(row, color, body, core, width, paths):
+    log = util_draw(row)["log"]
+    strokes = [c for c in log if c["op"] == "stroke" and any(p[0] == "L" for p in c["path"])]
+    assert len(strokes) == paths * 3
+    for i in range(paths):
+        under, middle, light = strokes[i * 3:i * 3 + 3]
+        assert under["path"] == middle["path"] == light["path"]
+        assert [c["stroke"] for c in (under, middle, light)] == ["rgba(10, 12, 18, 0.55)", body, core]
+        assert [c["lineWidth"] for c in (under, middle, light)] == pytest.approx([width + 2, width, width / 4])
+        assert light["alpha"] == pytest.approx(0.6)
+        assert not any(c["dash"] for c in (under, middle, light))
+
+
+@needs_node
+@pytest.mark.parametrize("row,color", [
+    (ability("Cable", "E_CableJam_Root", "Deadlock", arms=[[0.7, 0.8, 10, None]], on=[[15, 25]]), "#dbe7f5"),
+    (ability("Nox", "WallTrap", "Vyse", line=[[0.2, 0.3], [0.7, 0.8]], raised=[15, 20]), "#b18cff"),
+    (ability("Pandemic", "E_SmokeScreenManager", "Viper", points=[[0.2, 0.3], [0.7, 0.8]], on=[[15, 25]]), "#4fe07a"),
+])
+def test_unraised_bars_stay_single_dashed_util_strokes(row, color):
+    strokes = [c for c in util_draw(row)["log"] if c["op"] == "stroke" and any(p[0] == "L" for p in c["path"])]
+    assert len(strokes) == 1
+    assert strokes[0]["stroke"] == color
+    assert strokes[0]["dash"]
+
+
+@needs_node
+def test_trip_wire_and_end_dot_keep_util_colour():
+    log = util_draw(ability("Gumshoe", "4_TripWire", "Cypher", end=[0.7, 0.8]))["log"]
+    strokes = [c for c in log if c["op"] == "stroke" and any(p[0] == "L" for p in c["path"])]
+    assert len(strokes) == 1 and strokes[0]["stroke"] == "#e9edf2"
+    assert any(c["fill"] == "#e9edf2" for c in arc_calls(log, "fill", 4.4))
+
+
+@needs_node
+@pytest.mark.parametrize("glyph", [True, False])
+def test_util_badge_dark_disc_side_ring_and_glyph_or_dot(glyph):
+    log = util_draw(ability("Gumshoe", "E_PossessableCamera", "Cypher"), glyph=glyph)["log"]
+    rad = 20 * 0.62
+    assert any(c["fill"] == "#151922" for c in arc_calls(log, "fill", rad))
+    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 2 for c in arc_calls(log, "stroke", rad))
+    if glyph:
+        img = next(c for c in log if c["op"] == "drawImage")
+        assert img["w"] == img["h"] == pytest.approx(rad * 1.3)
+    else:
+        assert any(c["fill"] == "#e9edf2" for c in arc_calls(log, "fill", rad * 0.38))
+
+
+@needs_node
+def test_projectile_agent_dot_and_side_ring():
+    row = ability("Grenadier", "C_Flash", "KAY/O", flight=[[10, 0.2, 0.3, 0], [15, 0.7, 0.8, 0]])
+    row["kind"] = "Projectile"
+    log = util_draw(row, projectile=True)["log"]
+    assert any(c["fill"] == "#4a95ff" for c in arc_calls(log, "fill", 4.4))
+    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 1.5 for c in arc_calls(log, "stroke", 4.4))
+
+
+@needs_node
+def test_dissipate_keeps_faint_body_and_dashed_ring():
+    log = util_draw(ability("Rift", "E_SmokeZone_Fake", "Astra"))["log"]
+    patch = next(c for c in log if c["op"] == "fillRect")
+    assert patch["alpha"] == 0.45
+    assert any(c["dash"] for c in arc_calls(log, "stroke", 475 * 0.75 * 1000))

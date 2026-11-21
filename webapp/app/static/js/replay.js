@@ -1365,6 +1365,51 @@
     return condOwn(UTIL_ABILITY_COLORS, style.ability) || condOwn(UTIL_AGENT_COLORS, a.agent || style.agent) || null;
   }
 
+  // Owner colours may come from CSS rather than the fixed utility palette.
+  function utilColorChannels(color) {
+    if (typeof color !== "string") return null;
+    var hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+    if (hex) {
+      var digits = hex[1];
+      if (digits.length === 3) digits = digits.split("").map(function (c) { return c + c; }).join("");
+      var n = parseInt(digits, 16);
+      return [n >> 16 & 255, n >> 8 & 255, n & 255];
+    }
+    var rgb = /^rgb\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)$/i.exec(color.trim());
+    if (!rgb) return null;
+    var channels = rgb.slice(1).map(Number);
+    return channels.every(function (c) { return Number.isFinite(c) && c >= 0 && c <= 255; }) ? channels : null;
+  }
+
+  function withAlpha(color, a) {
+    var channels = utilColorChannels(color);
+    return channels ? "rgba(" + channels.join(", ") + ", " + a + ")" : color;
+  }
+
+  function lighten(color, f) {
+    var channels = utilColorChannels(color);
+    if (!channels) return color;
+    return "#" + channels.map(function (c) {
+      return Math.round(c + (255 - c) * f).toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  var utilNoise = null;
+  function noiseCanvas() {
+    if (typeof document === "undefined") return null;
+    if (!utilNoise) {
+      utilNoise = document.createElement("canvas");
+      utilNoise.width = utilNoise.height = 64;
+      var ctx = utilNoise.getContext("2d"), pixels = ctx.createImageData(64, 64);
+      for (var i = 0; i < pixels.data.length; i += 4) {
+        pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = Math.random() < 0.5 ? 0 : 255;
+        pixels.data[i + 3] = Math.floor(Math.random() * 50);
+      }
+      ctx.putImageData(pixels, 0, 0);
+    }
+    return utilNoise;
+  }
+
   // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).
   function ultAt(index, slot, t) {
     var line = index && index.ult ? condOwn(index.ult, String(slot)) : undefined;
@@ -2845,6 +2890,34 @@
     ctx.restore();
   };
 
+  // Ability colour identifies the piece; the thin ring identifies its side.
+  ReplayViewer.prototype.drawUtilBadge = function (ctx, side, x, y, radius, color, glyph, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = "#151922"; ctx.fill();
+    ctx.strokeStyle = side; ctx.lineWidth = 2; ctx.stroke();
+    if (glyph) {
+      var g = radius * 1.3;
+      ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x, y, radius * 0.38, 0, 2 * Math.PI); ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  // Stroke the current path as a solid bar, preserving its caller's canvas state.
+  ReplayViewer.prototype.utilBar = function (ctx, color, w, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = "rgba(10, 12, 18, 0.55)"; ctx.lineWidth = w + 2; ctx.stroke();
+    ctx.strokeStyle = withAlpha(color, 0.92); ctx.lineWidth = w; ctx.stroke();
+    ctx.globalAlpha = 0.6 * alpha;
+    ctx.strokeStyle = lighten(color, 0.45); ctx.lineWidth = w / 4; ctx.stroke();
+    ctx.restore();
+  };
+
   // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
   ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
     if (!glyph) return;
@@ -2876,8 +2949,6 @@
     var blob = this.current.blob, t = this.t, self = this;
     var showing = abilitiesAt(this.current.extras.abilities, t, blob.t_end);
     var all = this.current.extras.abilities;
-    var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
-    var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them. The spike (shape "spike") is not drawn here: drawSpikeGround and
     // the carrier badge own it, outside the abilities toggle.
     var upu = (self.linked && self.linked.uvPerUnit) || 0.75;
@@ -2886,24 +2957,24 @@
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
         var at = self.abilityPoint(a, t, s), x = at.x, y = at.y;
-        var color = self.ownerColor(a.slot);
+        var color = self.utilColor(a, style), side = self.sideColor(a.slot);
         var glyph = self.abilityIcon(style.agent, style.ability);
         var text = self.abilityText(a, style);
         var watching = true;   // a sentinel device that is neither down nor off
         if (utilDownAt(a, blob.alive, t, blob.t_end)) {
-          color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
+          color = side = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
           watching = false;
         } else if (utilSuppressedAt(a, self.current.extras.statuses, t, self.current.extras.reveals)) {
-          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
+          color = side = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
           text += " · off (owner suppressed)";
           watching = false;
         } else if (utilInArenaAt(a, self.current.tracks, t)) {
-          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is in Iso's Kill Contract
+          color = side = self.css("--replay-util-down", "#7d828c");   // off while its owner is in Iso's Kill Contract
           text += " · off (owner in Kill Contract)";
           watching = false;
         } else if (deviceOffAt(a, t)) {
-          color = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
+          color = side = self.css("--replay-util-down", "#7d828c");   // Killjoy walked out of its range
           text += " · off (Killjoy out of range)";
           watching = false;
         }
@@ -2936,35 +3007,54 @@
           });
           ctx.restore(); ctx.save();
           var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
-          self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
           var popped = pops.filter(function (p) { return p <= t; });
           hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), area: true, text: text + (popped.length ? " · went off at " +
             popped.map(function (p) { return p.toFixed(1); }).join(", ") + " s" : "") });
         } else if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
-          ctx.globalAlpha = fadeIn;
+          var body = (style.faint ? 0.45 : 1) * fadeIn;
+          ctx.globalAlpha = body;
+          ctx.save();
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
+          ctx.clip();
+          var grad = ctx.createRadialGradient(x, y, 0, x, y, rad);
           if (pass === "smoke") {
-            var body = (style.faint ? 0.45 : 1) * fadeIn;
-            ctx.globalAlpha = body;
-            var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
-            grad.addColorStop(0, smokeCore);   // a dark tint: a smoke reads apart from other util
-            grad.addColorStop(1, smoke);
-            ctx.fillStyle = grad; ctx.fill();
-            // A wash of the owner's colour, so whose smoke it is reads without a badge.
-            ctx.globalAlpha = 0.22 * body; ctx.fillStyle = color; ctx.fill();
-            ctx.globalAlpha = 0.85 * body; ctx.lineWidth = 1.5;
+            grad.addColorStop(0, withAlpha(color, 0.75));
+            grad.addColorStop(0.55, withAlpha(color, 0.45));
+            grad.addColorStop(1, withAlpha(color, 0.3));
           } else {
-            ctx.globalAlpha = 0.3 * fadeIn; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = fadeIn;
-            ctx.lineWidth = 2.5;
+            grad.addColorStop(0, withAlpha(color, 0.7));
+            grad.addColorStop(0.6, withAlpha(color, 0.5));
+            grad.addColorStop(1, withAlpha(color, 0.12));
           }
-          ctx.strokeStyle = color;
+          ctx.fillStyle = grad; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+          if (pass === "smoke") {
+            var glow = ctx.createRadialGradient(x - rad * 0.3, y - rad * 0.3, 0, x - rad * 0.3, y - rad * 0.3, rad);
+            glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+            glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+            ctx.fillStyle = glow; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+          } else {
+            var noise = noiseCanvas();
+            if (noise) {
+              ctx.fillStyle = ctx.createPattern(noise, "repeat");
+              ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+            }
+          }
+          ctx.restore();
+          ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (style.faint) ctx.setLineDash([r / 3, r / 4]);
+          if (pass === "smoke") {
+            ctx.strokeStyle = lighten(color, 0.45); ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, y, rad, -1.2, 0.35);
+            ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.5 * body; ctx.stroke();
+          }
+          ctx.beginPath(); ctx.arc(x, y, rad + 1.5, 0, 2 * Math.PI);
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn;
           ctx.stroke();
           ctx.restore(); ctx.save();
           self.drawTimer(ctx, x, y, Math.max(tw, rad - tw / 2 - 1), left, tw, fadeIn);
-          if (pass === "smoke") self.drawGlyph(ctx, x, y, r * 0.8, glyph, 0.6 * fadeIn);
-          else self.drawBadge(ctx, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
         } else if (pass === "wall") {
           // A traced wall (High Tide) stands as far as its orb has flown, and stays up until it closes.
@@ -2976,9 +3066,7 @@
             ctx.beginPath(); ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
             pts.slice(1).forEach(function (pt) { ctx.lineTo(pt[0] * s, pt[1] * s); });
             if (up) {
-              // Up: a wide smoke band with the owner's colour down its middle.
-              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(8, r * 1.1); ctx.stroke();
-              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4); ctx.stroke();
+              self.utilBar(ctx, color, Math.max(8, r * 1.1), fadeIn);
             } else {
               // Down: where it would rise, a thin dashed line.
               ctx.strokeStyle = color; ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = Math.max(2, r / 6);
@@ -2986,7 +3074,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (up ? " · up now" : " · down now") });
         } else if (pass === "cone") {
@@ -3004,7 +3092,7 @@
             if (cf > 0) { ctx.globalAlpha = 0.24 * cshown; wedge(reachPx * cf); ctx.fill(); }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, cshown);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, cshown);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "box" || pass === "lanes") {
           // Out to where it pops, then gone over 0.4 s.
@@ -3039,18 +3127,17 @@
               }
             }
           } else if (full) {
-            // Fast Lane: its two long sides, drawn as Viper's screen is (a smoke band, the owner's colour down it).
+            // Fast Lane: its two long sides, drawn as solid bars.
             ctx.globalAlpha = shown; ctx.lineCap = "round";
             [[full[0], full[1]], [full[3], full[2]]].forEach(function (side) {
               ctx.beginPath(); ctx.moveTo(side[0][0] * s, side[0][1] * s); ctx.lineTo(side[1][0] * s, side[1][1] * s);
-              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(6, r * 0.7); ctx.stroke();
-              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r / 5); ctx.stroke();
+              self.utilBar(ctx, color, Math.max(6, r * 0.7), shown);
             });
           }
           ctx.restore(); ctx.save();
           if (!style.bare) {
             // A bare piece (an Armageddon strike) is part of its cast's drawing: no badge or timer of its own.
-            self.drawBadge(ctx, x, y, r * 0.5, color, glyph, shown);
+            self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, shown);
             self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, shown);
           }
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
@@ -3059,7 +3146,7 @@
           ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = 2.5; ctx.strokeStyle = color;
           ctx.beginPath(); ctx.arc(x, y, reach * (0.15 + 0.85 * pulse), 0, 2 * Math.PI); ctx.stroke();
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.6, color, glyph);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
         } else if (pass === "mesh" || pass === "shear") {
           // Deadlock's mesh: an arm from the root to each standing node while solid, dashed before it forms.
@@ -3079,11 +3166,13 @@
           ctx.lineWidth = solid ? Math.max(3, r / 3) : Math.max(1.5, r / 7);
           if (!solid) ctx.setLineDash([r / 3, r / 4]);
           segs.forEach(function (sg) {
-            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s);
+            if (solid) self.utilBar(ctx, color, Math.max(3, r / 3), fadeIn);
+            else ctx.stroke();
           });
           ctx.setLineDash([]);
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
             (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
@@ -3093,13 +3182,14 @@
           var dir = standing.length > 1 ? [standing[1][0] - standing[0][0], standing[1][1] - standing[0][1]] : null;
           if (!dir && a.segments.length > 1) dir = [a.segments[1][0] - a.segments[0][0], a.segments[1][1] - a.segments[0][1]];
           var len = dir ? Math.hypot(dir[0], dir[1]) : 0;
-          ctx.globalAlpha = 0.85 * fadeIn; ctx.strokeStyle = color; ctx.lineCap = "butt"; ctx.lineWidth = Math.max(4, r / 2.2);
+          ctx.lineCap = "butt";
           standing.forEach(function (c) {
             var du = len ? dir[0] / len * sizeUv : sizeUv, dv = len ? dir[1] / len * sizeUv : 0;
-            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s);
+            self.utilBar(ctx, color, Math.max(4, r / 2.2), fadeIn);
           });
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
@@ -3126,8 +3216,8 @@
               ctx.lineTo(x1 - head * Math.cos(ang + 0.45), y1 - head * Math.sin(ang + 0.45));
               ctx.closePath(); ctx.fill();
             } else {
-              ctx.lineWidth = Math.max(4, r / 2.2); ctx.globalAlpha = 0.85 * fadeIn;
-              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+              self.utilBar(ctx, color, Math.max(4, r / 2.2), fadeIn);
             }
             if (style.pop !== undefined) {
               // Where it goes off (Fault Line's fissure, Rolling Thunder's wave): a burst at each pop.
@@ -3140,7 +3230,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
@@ -3160,7 +3250,7 @@
             ctx.beginPath(); ctx.arc(mx, my, r * (0.8 + 2.2 * f), 0, 2 * Math.PI); ctx.stroke();
           }
           ctx.restore(); ctx.save();
-          self.drawBadge(ctx, x, y, r * 0.56, color, glyph);
+          self.drawUtilBadge(ctx, side, x, y, r * 0.56, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
@@ -3217,7 +3307,7 @@
             if (started) { ctx.lineTo(x, y); ctx.stroke(); }
             ctx.setLineDash([]); ctx.globalAlpha = 1;
           }
-          self.drawBadge(ctx, x, y, radius, color, glyph, fadeIn);
+          self.drawUtilBadge(ctx, side, x, y, radius, color, glyph, fadeIn);
           // A unit's full run from its spawn, or a device's from when it was set off.
           var run = style.life ? runLeft(a.t0, style.life, t)
             : style.activeFor && typeof a.active === "number" ? runLeft(a.active, style.activeFor, t) : null;
@@ -3730,7 +3820,7 @@
       if (a.kind !== "Projectile") return;
       var at = projectileAt(a, t);
       if (!at) return;
-      var style = projectileStyle(a), color = self.ownerColor(a.slot);
+      var style = projectileStyle(a), color = self.utilColor(a, style);
       ctx.save();
       ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round";
       if (at.moving) {
@@ -3741,6 +3831,7 @@
       }
       ctx.globalAlpha = 0.95;
       ctx.beginPath(); ctx.arc(at.u * s, at.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
+      ctx.strokeStyle = self.sideColor(a.slot); ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
       hits.push({ x: at.u * s, y: at.v * s, r: r * 0.5, text: (style.agent ? style.agent + " · " : "") + style.label +
         " · " + self.nameOf(a.slot) + (at.moving ? "" : " · thrown here (no flight recorded)") });
@@ -4976,6 +5067,7 @@
   }
 
   var api = {
+    withAlpha: withAlpha, lighten: lighten,
     utilColorOf: utilColorOf, sideColorOf: sideColorOf, UTIL_AGENT_COLORS: UTIL_AGENT_COLORS,
     decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
