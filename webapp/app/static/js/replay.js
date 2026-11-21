@@ -5415,7 +5415,7 @@
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
         ctx.globalAlpha = dim;
       }
-      if (self.layers.aim) {
+      if (self.layers.aim && !at.arena) {
         var cos = Math.cos(rad), sin = Math.sin(rad), sight = self.sight;
         var end = sight ? tracerEnd(sight.mask, sight.size, at.u, at.v, at.u + cos * 20000, at.v + sin * 20000) : null;
         // Uv length: to the sight wall, or three cone radii without a mask; a smoke on the way stops it sooner.
