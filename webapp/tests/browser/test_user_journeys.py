@@ -37,7 +37,11 @@ def browser_page(site, request):
                 page = browser.new_page()
                 errors, failed = [], []
                 page.on('pageerror', lambda error: errors.append(str(error)))
-                page.on('requestfailed', lambda req: failed.append(req.url))
+                # A reload cancels a 202 control.bin whose body the page never reads: not a failure.
+                def on_failed(req):
+                    if req.url.endswith('/control.bin') and req.failure == 'net::ERR_ABORTED': return
+                    failed.append(req.url)
+                page.on('requestfailed', on_failed)
                 # Any accidental new external resource is refused and reported.
                 def local_only(route):
                     if route.request.url.startswith(f'http://127.0.0.1:{port}/'): route.continue_()
@@ -210,6 +214,53 @@ def test_replay_fetch_canvas_round_seek_and_unavailable_control(browser_page, tm
     stopped = page.evaluate('window.viewer.t')
     after_frames = page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.viewer.t))))')
     assert after_frames == stopped, 'playback advanced after pausing'
+
+
+def test_view_presets_set_the_show_bar_and_a_change_shows_custom(browser_page, tmp_path):
+    page, base, factory = browser_page
+    uuid, _, _, _ = stored_replay(factory, tmp_path)
+    page.goto(base+f'/replays/{uuid}?round=1&t=5')
+    page.wait_for_function('window.viewer && window.viewer.current && window.viewer.map.complete')
+    preset = page.locator('[data-replay-preset]')
+    expect(preset).to_have_value('custom')
+    box = lambda name: page.locator(f'[data-replay-layer="{name}"]')  # noqa: E731
+    preset.select_option('team-1')
+    assert not box('names').is_checked() and box('control').is_checked() and box('bar').is_checked()
+    assert not box('areas').is_checked() and box('abilities').is_checked() and box('aim').is_checked()
+    assert page.locator('[data-replay-control-view]').input_value() == 'true'
+    enemy = page.evaluate("Object.entries(ReplayControl.groupTeams(window.viewer.linked.players))"
+                          ".filter(([g, t]) => t === 'team-2').map(([g]) => g)[0] || 'B'")
+    assert page.locator('[data-replay-control-unknown]').input_value() == enemy
+    assert page.evaluate('window.viewer.layers.names') is False     # the boxes' own handlers ran
+    preset.select_option('all')
+    assert box('names').is_checked() and page.locator('[data-replay-control-unknown]').input_value() == 'both'
+    box('cones').uncheck()
+    expect(preset).to_have_value('custom')
+    # No control data for this round: the bar stays hidden however its box is set.
+    expect(page.locator('[data-replay-ctlbar]')).to_be_hidden()
+    page.reload()
+    page.wait_for_function('window.viewer && window.viewer.current')
+    expect(page.locator('[data-replay-preset]')).to_have_value('custom')
+    assert not page.locator('[data-replay-layer="cones"]').is_checked()
+    # A saved team preset is reapplied on the next page, and stays the picker's value (not Custom).
+    preset = page.locator('[data-replay-preset]')
+    preset.select_option('team-2')
+    expect(preset).to_have_value('team-2')
+    page.reload()
+    page.wait_for_function('window.viewer && window.viewer.current')
+    expect(page.locator('[data-replay-preset]')).to_have_value('team-2')
+    assert not page.locator('[data-replay-layer="names"]').is_checked()
+    assert page.locator('[data-replay-layer="cones"]').is_checked()
+    friend = page.evaluate("Object.entries(ReplayControl.groupTeams(window.viewer.linked.players))"
+                           ".filter(([g, t]) => t === 'team-1').map(([g]) => g)[0] || 'A'")
+    assert page.locator('[data-replay-control-unknown]').input_value() == friend
+    # The two control pickers sit in hidden labels, so the change is fired from the page.
+    for picker, value in (('data-replay-control-view', 'false'), ('data-replay-control-unknown', 'both')):
+        page.locator('[data-replay-preset]').select_option('team-2')
+        expect(page.locator('[data-replay-preset]')).to_have_value('team-2')
+        page.evaluate("([sel, v]) => { const el = document.querySelector('[' + sel + ']');"
+                      " el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); }", [picker, value])
+        expect(page.locator('[data-replay-preset]')).to_have_value('custom')
 
 
 # The replay page's layout (style.css "Replay viewer, linked mode", replay.js fitMapToWindow).
