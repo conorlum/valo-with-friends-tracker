@@ -4,7 +4,7 @@
 
 **Goal:** Every round the replay worker computes map control for also gets its timing gaps, stored by the site with nobody running `compute_control.py`; and a parse arriving on the worker kills one control child, not both, so control keeps one child running beside a parse.
 
-**Architecture:** Three changes to code that exists. (1) `ControlRunner` in `replay_worker/server.py` allows one child while the parse side is busy and two while it is idle; `preempt` kills every running child but the one started first. (2) The control child (`app/control/task.py`, `replay_worker/control_job.py`) computes gaps from keys the site sends, so it never imports the web app's SQLAlchemy code, and deletes its tick cache file when the task ends; the worker image ships `app/gaps`. (3) The site's dispatcher (`app/services/replay_control_remote.py`) adds a `gaps` block to every control task, stores the returned gap run after the control row, and, when no control round is waiting, sends `gaps_only` tasks for rounds whose control is current but whose gaps are not.
+**Architecture:** Three changes to code that exists. (1) `ControlRunner` in `replay_worker/server.py` allows one child while the parse side is busy and two while it is idle; `preempt` kills every running child but the one started first. (2) The control child (`app/control/task.py`, `replay_worker/control_job.py`) computes gaps from keys the site sends, so it never imports the web app's SQLAlchemy code, and deletes its tick cache file when the task ends; the worker image ships `app/gaps`. (3) The worker advertises `control.gaps_protocol=1` in `/health`; the dispatcher sends gaps only to a capable worker and keeps sending plain control to older workers. Returned gaps are validated and written under the replay lock in one transaction, after control. Gaps-only tasks use the same capability gate and queue.
 
 **Tech Stack:** Python 3.13, SQLAlchemy 2.0, stdlib `subprocess`/`threading` on the worker, pytest. No migration, no new dependency.
 
@@ -14,6 +14,10 @@ Two places where this plan departs from the spec, both smaller than what it says
 
 - The spec moves four pure helpers out of `app/services/replay_gaps.py`. Fourteen existing tests monkeypatch those names on that module, so moving them breaks all of them. Here the site sends the gap fingerprint and the cache key in the task, and the child uses them. `replay_gaps.py` is not touched.
 - The spec has `store._delete` delete gap rows explicitly for the SQLite tests. PostgreSQL already cascades them (`fk_replay_gaps_round`, `fk_replay_round_gap_runs_round`), and adding the deletes would break every test fixture that builds its tables from `test_replay_store.TABLES`, which has no gap tables. Left out.
+
+## Review incorporated (2026-10-07)
+
+Findings 1 and 4 of `2026-10-07-auto-reparse-queue-impl-review.md` are addressed by the capability gate and the transactional gap writer. The plan remains five tasks with no migration. Tasks 3-4 below replace the original collector snippets; do not retain their detached freshness precheck or fabricated old-image response. These implementation details supersede the corresponding older design prose.
 
 ## Global Constraints
 
@@ -30,8 +34,8 @@ Two places where this plan departs from the spec, both smaller than what it says
 
 ## Review Focus
 
-1. **A worker image from before this change gets a task with a `gaps` block.** Its child fails the gap run on an import and returns a `failed` run with an empty fingerprint. Expected: the control row is stored, the gap run is not stored as the round's failure, and the round is asked again as gaps only. Pinned in Task 3.
-2. **A gap result that arrives after the round's control moved** (a re-ingest, a new link). Expected: nothing is stored. Pinned in Tasks 3 and 4.
+1. **The site deploys before the worker.** An old image has no `app.gaps`; giving it a gaps block fails the entire control task, including `_CacheGuard(None)`. Expected: its missing capability makes the site send plain control, with no gaps-only work and no gap retry consumption. Once the worker updates, missing gaps are picked up automatically. Pinned in Tasks 2-4.
+2. **Control moves between collection and the gap write** (a re-ingest or relink). Expected: the gap writer checks freshness under the replay advisory lock in the write transaction, stores nothing stale, and preserves any newer gap run. Pinned in Tasks 3 and 4.
 3. **Gap rows after a JSON round trip.** The local command stores rows in-process; the worker's go through JSON, which turns integer dict keys into strings. Expected: they store. Pinned in Task 3.
 4. **A parse arrives while exactly one child runs.** Expected: nothing is killed, and no second child starts until the parse side is idle. Pinned in Task 1.
 5. **A child killed mid-round leaves a tick cache file.** Expected: the next child deletes files older than six hours, so the worker's disk does not fill. Pinned in Task 2.
@@ -42,7 +46,7 @@ Two places where this plan departs from the spec, both smaller than what it says
 
 | File | Change |
 |---|---|
-| `replay_worker/server.py` | Task 1: `ControlRunner._next`, `ControlRunner.preempt`, docstrings |
+| `replay_worker/server.py` | Tasks 1-2: one-child rule and `control.gaps_protocol` in health |
 | `webapp/tests/replays/test_replay_worker_control.py` | Tasks 1-2 |
 | `webapp/app/control/task.py` | Task 2: `_cache_path`, `_gaps` |
 | `replay_worker/control_job.py` | Task 2: `figures`, the tick cache cleanup |
@@ -50,6 +54,7 @@ Two places where this plan departs from the spec, both smaller than what it says
 | `webapp/tests/replays/test_gaps_task.py` | Task 2 |
 | `webapp/app/services/replay_control_remote.py` | Tasks 3-4 |
 | `webapp/tests/replays/test_control_remote.py` | Tasks 3-4 |
+| `webapp/app/services/replay_gaps_store.py`, `webapp/tests/replays/test_gaps_store.py` | Task 3: atomic freshness guard |
 | `docs/superpowers/plans/2026-10-05-control-idle-queue.md`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md` | Task 5 |
 
 ---
@@ -258,12 +263,13 @@ git commit -m "worker: a parse kills one control child, and control keeps one be
 
 ---
 
-### Task 2: The child computes gaps without the web app's code, and keeps no tick cache
+### Task 2: The child computes gaps, cleans its cache, and advertises the capability
 
 **Files:**
 - Modify: `webapp/app/control/task.py` (`_cache_path`, `_gaps`)
 - Modify: `replay_worker/control_job.py`
 - Modify: `replay_worker/Dockerfile`
+- Modify: `replay_worker/server.py` (stdlib protocol constant and health response)
 - Test: `webapp/tests/replays/test_gaps_task.py`, `webapp/tests/replays/test_replay_worker_control.py`
 
 **Interfaces:**
@@ -272,6 +278,7 @@ git commit -m "worker: a parse kills one control child, and control keeps one be
   - A task's `gaps` block may carry `"gap_fingerprint": str` and `"engine_key": str`. With `gap_fingerprint` present, `compute_task` writes it into `result["gaps"]["run"]["fingerprint"]`, takes `gaps_revision` from `app.gaps.detect.GAPS_REVISION`, and never imports `app.services`. Without it, behaviour is unchanged (the local command).
   - `control_job.run(task)` adds `"figures": cf.figures_hash()` to every result.
   - `control_job.run(task)` deletes the round's tick cache file after computing.
+  - `GET /health` exposes `control.gaps_protocol=1`. The server uses a stdlib constant, never a detector import; absent or unsupported versions are treated as incapable by the site.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -416,6 +423,7 @@ import base64
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
 WEBAPP = Path(__file__).resolve().parents[1] / "webapp"
@@ -437,10 +445,13 @@ def _drop_tick_cache(task: dict) -> None:
         files = list(folder.iterdir())
     except OSError:
         return
-    mine = f"{job['replay_id']}-r{job['round']}-"
+    key = job.get("engine_key")
+    mine = None if key is None else f"{job['replay_id']}-r{job['round']}-{key}.ticks.pkl.gz"
     for path in files:
         try:
-            if path.name.startswith(mine) or path.stat().st_mtime < cutoff:
+            owned = mine is not None and path.name in (mine, mine + ".tmp")
+            stale_tick = ".ticks.pkl.gz" in path.name and path.stat().st_mtime < cutoff
+            if owned or stale_tick:
                 path.unlink()
         except OSError:
             pass
@@ -452,6 +463,11 @@ def run(task: dict) -> dict:
     from app.control.task import compute_task
     from app.replays import control_format as cf
 
+    # Worker caches are never reused by another invocation. Distinct task keys for one round
+    # can overlap during a deploy or relink, so isolate each child's temporary cache.
+    if task.get("gaps", {}).get("engine_key"):
+        task = {**task, "gaps": {**task["gaps"],
+                                "engine_key": f"{task['gaps']['engine_key']}-{uuid.uuid4().hex}"}}
     try:
         result = compute_task({**task, "blob": base64.b64decode(task["blob"])})
     finally:
@@ -474,6 +490,8 @@ from another deploy. A task with a `gaps` block also returns the round's timing 
 deleted when the task ends.
 ```
 
+Add a cleanup regression with two live task keys for the same replay/round: each child uses a unique invocation suffix, and one child's cleanup leaves the other's recent cache and temporary file intact. Cleanup removes only its own exact names plus expired tick-cache files, never every file sharing a replay/round prefix. The local command keeps its existing reusable cache key; only the worker wrapper adds the suffix.
+
 - [ ] **Step 5: Ship `app/gaps` in the image**
 
 In `replay_worker/Dockerfile`, after `COPY webapp/app/control /srv/webapp/app/control` add:
@@ -495,284 +513,81 @@ RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, s
 Run: `PY -m pytest tests/replays/test_gaps_task.py tests/replays/test_replay_worker_control.py tests/replays/test_control_isolation.py tests/replays/test_control_task.py -p no:cacheprovider -q`
 Expected: PASS, but for the known Windows failure.
 
+- [ ] **Step 6A: Advertise and test the worker's gap protocol**
+
+Add `GAPS_PROTOCOL = 1` to the stdlib-only worker server and include `gaps_protocol` in the health response's `control` object. This describes the deployed child's task/result protocol; `control.enabled` remains the separate on/off switch. Advertise 1 only in the image that includes the child and `app/gaps` changes above. Add an HTTP health test and extend the isolation test to ensure obtaining health does not import `app.control` or `app.gaps`.
+
+Add a regression reproduction for an old task with `app.gaps` unavailable: the existing `_cache_path` fallback raises again in `_CacheGuard(None)` and the whole result is `failed/infra`. Use the unchanged task implementation or a frozen test fixture from the base revision, not a fake successful control response. Task 3's capability tests must prevent sending this image a gaps block.
+
+Run the worker control tests and isolation tests again. Expected: capability 1 on the new worker, the reproduced old-image failure, and no new imports in the server.
+
 - [ ] **Step 7: Commit**
 
 ```bash
-git add webapp/app/control/task.py replay_worker/control_job.py replay_worker/Dockerfile webapp/tests/replays/test_gaps_task.py webapp/tests/replays/test_replay_worker_control.py
+git add webapp/app/control/task.py replay_worker/control_job.py replay_worker/server.py replay_worker/Dockerfile webapp/tests/replays/test_gaps_task.py webapp/tests/replays/test_replay_worker_control.py
 git commit -m "worker: the control child computes timing gaps from the site's keys and keeps no tick cache"
 ```
 
 ---
 
-### Task 3: The dispatcher asks for gaps with control and stores them
+### Task 3: Capability-gated control tasks and an atomic gap writer
 
 **Files:**
 - Modify: `webapp/app/services/replay_control_remote.py`
-- Test: `webapp/tests/replays/test_control_remote.py`
+- Modify: `webapp/app/services/replay_gaps_store.py`
+- Test: `webapp/tests/replays/test_control_remote.py`, `webapp/tests/replays/test_gaps_store.py`
 
 **Interfaces:**
-- Consumes from Task 2: the `gap_fingerprint` and `engine_key` keys of a task's `gaps` block; `result["figures"]`; `result["gaps"] = {"run": {...}, "rows": [...]}`.
-- Produces, for Task 4 and for the second plan:
-  - `gaps_job(replay_id: int, round_number: int, fingerprint: str, map_name: str) -> dict`
-  - `_gaps_usable(result: dict, f: InFlight) -> bool`
-  - `_store_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool`
-  - `cycle`'s counts gain the keys `gaps_stored`, `gaps_dropped`, `gaps_skipped`.
+- `ControlClient.health() -> dict`, using its existing urllib error handling.
+- `supports_gaps(health) -> bool`: only `control.enabled is True` and `control.gaps_protocol == 1` qualify. Missing, unknown, malformed or unreachable capabilities never qualify.
+- `gaps_job(replay_id, round_number, fingerprint, map_name) -> dict`, containing the existing three job fields plus the site's `gap_fingerprint` and `engine_key`.
+- `InFlight.expect_gaps: bool = False`; it records the capability used at submission, not the capability observed later during collection.
+- `store_gaps(..., expected_control_fingerprint: str | None = None) -> str`. The default preserves the local command's existing API; all remote writes supply the expected fingerprint.
+- Counts gain `gaps_stored`, `gaps_dropped`, `gaps_skipped`, `gaps_unavailable`.
 
-- [ ] **Step 1: Make the fake worker answer with gaps, and write the failing tests**
+- [ ] **Step 1: Write capability and result tests before implementation**
 
-In `webapp/tests/replays/test_control_remote.py`, add to the imports:
+Extend the fake worker with `health`, a configurable gap capability and a count of health reads. It must produce plain control answers for plain tasks, and JSON-round-tripped gap rows only when requested. Preserve the existing task shape assertion for legacy workers; for capable workers expect `gaps` as well.
 
-```python
-import json
+Test absent protocol (the old worker), unsupported protocol, control disabled, and health failure. No gaps block or gaps-only task is sent and no gap retry is consumed. With an absent/unsupported gap protocol but control enabled, plain control is still submitted and stored. A health failure leaves control on its existing best-effort path, using plain tasks. Later health reporting protocol 1 causes the missing gap runs to be scheduled without resetting the site process.
 
-from test_gaps_store import ROW  # noqa: E402
+Test a capable full task carries both keys, stores its control and JSON-round-tripped gaps, stores a genuine current gap failure without changing control's status, and drops gaps with a wrong revision, choke hash or fingerprint. Validate returned control revision, data version, geometry and, for capable tasks, figures before storing control. Missing/wrong figures from a capable result are a control trust failure, not something to label current.
 
-from app.models.replay import ReplayGap, ReplayRoundGapRun  # noqa: E402
-from app.replays import choke_assets  # noqa: E402
-from app.services import replay_gaps  # noqa: E402
-```
+Keep the old-image missing-package reproduction from Task 2 as the reason for the capability gate. Do not simulate it as successful control plus failed gaps.
 
-and change the existing `from app.models.replay import ReplayRoundControl` line so `ReplayRoundControl` is still imported (keep it; the new line adds the two gap models).
+- [ ] **Step 2: Write writer race tests before changing the writer**
 
-Add above `class FakeWorker`:
+For both a full result and a gaps-only result, change the replay's link after result validation but before `store_gaps` enters its write transaction. The old run must be skipped and existing newer rows must survive. Also cover a re-ingest/deletion, missing or failed control, and control with an old data version.
 
-```python
-def gap_answer(task, status="ok", rows=(), **change):
-    """A task's `gaps` result, as replay_worker/control_job.py returns it for this deploy's rules."""
-    run = {"status": status, "fingerprint": task["gaps"]["gap_fingerprint"], "gaps_revision": replay_gaps.GAPS_REVISION,
-           "chokes_hash": choke_assets.asset_hash(task["map"]), "notes": {},
-           "error": None if status == "ok" else "RuntimeError: boom"}
-    run.update(change)
-    return {"run": run, "rows": json.loads(json.dumps(list(rows)))}
-```
+Add a PostgreSQL interleaving test: pause the remote writer after acquiring the replay lock, try a relink/replace from another session, and establish that the complete freshness check and write are serialized. Exercise an already-current gap run written by another writer: the late result must not delete or replace it. Tests may use a narrow seam before invoking the writer; do not simulate freshness with a detached precheck.
 
-Replace `FakeWorker.ok` with:
+- [ ] **Step 3: Extend `store_gaps` with a guarded transaction**
 
-```python
-    def ok(self, task):
-        result = {"status": "ok", "revision": cf.CONTROL_REVISION, "data_version": cf.DATA_VERSION,
-                  "geometry": rc.geometry_inputs(task["map"]), "figures": cf.figures_hash()}
-        if not task.get("gaps_only"):
-            result.update(data=base64.b64encode(gzip.compress(b"d")).decode(),
-                          summary=base64.b64encode(cf.pack_summary({})).decode())
-        if "gaps" in task:
-            result["gaps"] = gap_answer(task)
-        return {"status": "done", "result": result}
-```
+When `expected_control_fingerprint` is supplied:
 
-In `test_missing_rounds_are_sent_then_stored`, change the task-shape assertion to:
+1. Resolve the replay's match UUID using a scalar query, acquire `replay_db.advisory_lock` for it, then reload the replay and round/control rows after obtaining the lock. A deleted/replaced row returns skipped. Do not reuse an ORM snapshot loaded before waiting for the lock.
+2. Recompute current round inputs in that same session. Require current fingerprint = expected fingerprint = the existing `ok` control row's fingerprint, with the current control data version.
+3. Recompute the site's gap fingerprint from those inputs. Require the returned run to carry it, the current gap revision and current choke hash. The remote collector has already checked worker revision, geometry and figures.
+4. If a gap run already exists under this same fingerprint, return skipped without deleting anything (including a current failed run, unless an explicit local retry overrides it).
+5. Only now delete old gap rows, merge the run, insert rows, and commit in this transaction. Any failure rolls the transaction back.
 
-```python
-    assert set(task) == {"key", "map", "blob", "link", "gaps"} and set(task["link"]) == {"sides", "db_deaths"}
-```
+Preserve the existing API and replacement behavior for local callers that omit the new argument, but acquire the replay advisory lock for all gap writers so local and remote writes serialize. Remote callers additionally require the guarded checks above. A foreign-key exception alone is not a freshness guard: a relink retains the replay/round keys. The writer continues to import only database and pure replay helpers.
 
-Add after `def rows(db, replay)`:
+- [ ] **Step 4: Send and collect full tasks with the capability gate**
 
-```python
-def gap_runs(db, replay):
-    db.expire_all()
-    return {r.round_number: r for r in db.query(ReplayRoundGapRun).filter(ReplayRoundGapRun.replay_id == replay.id)}
+Read health once per planning pass and carry the capability through `_submit` and `_send`; do not persist a positive capability across passes or deploys. A plain task keeps the legacy worker key. A full task containing gaps uses a distinct key including protocol 1 and the gap fingerprint, so deduplication cannot hand back the earlier plain task's result. `InFlight.expect_gaps` records this choice.
 
+Build the gap block with the site's pure helpers. Validate the control result as above and call `store_round(require_current=True)`. Only after successful control storage, validate the gap result and call the guarded `store_gaps(expected_control_fingerprint=f.fingerprint)`. A link change in between the two commits is checked by the writer and produces `gaps_skipped`. A plain task's absent gaps are expected and do not count as dropped or failed.
 
-def test_a_control_task_asks_for_gaps_and_both_are_stored(factory, db, linked):
-    def answer(task):
-        job = FakeWorker.ok(worker, task)
-        job["result"]["gaps"] = gap_answer(task, rows=[ROW])     # through JSON, as the worker sends it
-        return job
+A deploy can occur between health and submission. If a task reaches an old worker despite the fresh capability read, its infra failure is retried under the next pass's capability and task key. It must not exhaust the retry budget for subsequent plain tasks or require a restart to recover when the worker updates. Test this interleaving explicitly.
 
-    worker, state = FakeWorker(answer), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    task = next(iter(worker.tasks.values()))
-    [planned] = rc.plan(db, rounds={int(task["key"].split(":")[1])}, force=True)
-    assert task["gaps"] == {"replay_id": linked.id, "round": planned.round_number, "fingerprint": planned.fingerprint,
-                            "gap_fingerprint": replay_gaps.gap_fingerprint(planned.fingerprint, planned.map_name),
-                            "engine_key": replay_gaps.engine_key(planned.fingerprint, planned.map_name)}
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["stored"] == counts["gaps_stored"] == remote.IN_FLIGHT and counts["gaps_dropped"] == 0
-    runs = gap_runs(db, linked)
-    assert sorted(runs) == sorted(rows(db, linked)) and runs[planned.round_number].status == "ok"
-    assert runs[planned.round_number].fingerprint == task["gaps"]["gap_fingerprint"]
-    assert db.query(ReplayGap).filter(ReplayGap.replay_id == linked.id).count() == remote.IN_FLIGHT
-    assert replay_gaps.round_gaps(db, linked, planned.round_number)[0] == "ok"
+- [ ] **Step 5: Validate and commit**
 
+Run: `PY -m pytest tests/replays/test_control_remote.py tests/replays/test_gaps_store.py tests/replays/test_control_isolation.py -p no:cacheprovider -q`.
 
-@pytest.mark.parametrize("change", [
-    lambda job, task: job["result"]["gaps"]["run"].update(gaps_revision=replay_gaps.GAPS_REVISION + 1),
-    lambda job, task: job["result"]["gaps"]["run"].update(chokes_hash="0" * 16),
-    lambda job, task: job["result"]["gaps"]["run"].update(fingerprint="0" * 16),
-    lambda job, task: job["result"].update(figures="0" * 16),
-    lambda job, task: job["result"].pop("figures"),
-    lambda job, task: job["result"].pop("gaps"),
-    # a worker image from before it could compute gaps: the run fails on an import, with nothing filled in
-    lambda job, task: job["result"].update(gaps={"run": {"fingerprint": "", "gaps_revision": 0, "chokes_hash": None,
-                                                         "notes": {}, "status": "failed",
-                                                         "error": "ModuleNotFoundError: No module named 'sqlalchemy'"},
-                                                 "rows": []}),
-])
-def test_gaps_this_deploy_cannot_trust_are_dropped_and_control_is_kept(factory, db, linked, change):
-    def answer(task):
-        job = FakeWorker.ok(worker, task)
-        change(job, task)
-        return job
+Run the guarded-writer interleavings against the test PostgreSQL database when `VALO_TEST_DATABASE_URL` is configured; otherwise record that they were skipped and must pass before release. Never point this suite at either deployed database.
 
-    worker, state = FakeWorker(answer), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["stored"] == counts["gaps_dropped"] == remote.IN_FLIGHT and counts["gaps_stored"] == 0
-    assert len(rows(db, linked)) == remote.IN_FLIGHT and not gap_runs(db, linked)
-
-
-def test_a_gap_failure_is_stored_as_the_gap_runs_and_control_stays_ok(factory, db, linked):
-    def answer(task):
-        job = FakeWorker.ok(worker, task)
-        job["result"]["gaps"] = gap_answer(task, status="failed")
-        return job
-
-    worker, state = FakeWorker(answer), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["gaps_stored"] == remote.IN_FLIGHT
-    assert all(r.status == "ok" for r in rows(db, linked).values())
-    assert all(r.status == "failed" and r.error.startswith("RuntimeError") for r in gap_runs(db, linked).values())
-
-
-def test_gaps_are_not_stored_for_a_round_whose_control_was_skipped(factory, db, linked):
-    worker, state = FakeWorker(), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    linked.recipe = linked.recipe + "x"                          # re-ingested meanwhile: every fingerprint moved
-    db.commit()
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["skipped"] == remote.IN_FLIGHT and counts["gaps_stored"] == 0
-    assert not rows(db, linked) and not gap_runs(db, linked)
-```
-
-- [ ] **Step 2: Run them and see them fail**
-
-Run: `PY -m pytest tests/replays/test_control_remote.py -p no:cacheprovider -q`
-Expected: FAIL. `test_missing_rounds_are_sent_then_stored` fails on the task-shape assertion (no `gaps` key), and the new tests fail with `KeyError: 'gaps'` in `gap_answer` or `KeyError: 'gaps_stored'`.
-
-- [ ] **Step 3: Send the `gaps` block and store what comes back**
-
-In `webapp/app/services/replay_control_remote.py`, add to the imports:
-
-```python
-from app.replays import choke_assets
-from app.services import replay_gaps
-from app.services.replay_gaps_store import STORED as GAPS_STORED
-from app.services.replay_gaps_store import store_gaps
-```
-
-Add after `task_key`:
-
-```python
-def gaps_job(replay_id: int, round_number: int, fingerprint: str, map_name: str) -> dict:
-    """A task's `gaps` block (app/control/task.py): the round, its control fingerprint, and the two keys the
-    worker's child cannot compute for itself, since it has no SQLAlchemy to import app.services with."""
-    return {"replay_id": replay_id, "round": round_number, "fingerprint": fingerprint,
-            "gap_fingerprint": replay_gaps.gap_fingerprint(fingerprint, map_name),
-            "engine_key": replay_gaps.engine_key(fingerprint, map_name)}
-
-
-def _gaps_usable(result: dict, f: InFlight) -> bool:
-    """A gap run this deploy may store: computed under its gap rules, its choke asset and its game figures,
-    for the fingerprint the round was planned with. A worker on other code fails this, and so does one too old
-    to compute gaps (its run comes back failed with nothing filled in); the round is asked again as gaps only."""
-    run = (result.get("gaps") or {}).get("run") or {}
-    return (run.get("status") in ("ok", "failed")
-            and run.get("gaps_revision") == replay_gaps.GAPS_REVISION
-            and run.get("chokes_hash") == choke_assets.asset_hash(f.map_name)
-            and run.get("fingerprint") == replay_gaps.gap_fingerprint(f.fingerprint, f.map_name)
-            and result.get("figures") == cf.figures_hash())
-
-
-def _store_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool:
-    """Stores a result's gap run and rows (app/services/replay_gaps_store.py), or drops them."""
-    if not _gaps_usable(result, f):
-        counts["gaps_dropped"] += 1
-        return False
-    gaps = result["gaps"]
-    outcome = store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps.get("rows") or [])
-    counts["gaps_stored" if outcome == GAPS_STORED else "gaps_skipped"] += 1
-    return outcome == GAPS_STORED
-```
-
-`gaps_job` and `_gaps_usable` name `InFlight`, which is defined above `task_key`; keep that order.
-
-In `_collect`, replace the block from `del state.in_flight[key]` (the one after the `running` branch, just before `if status == "done":`) to the end of the function with:
-
-```python
-        del state.in_flight[key]
-        result = None
-        if status == "done":
-            result = job.get("result") or {}
-            if result.get("revision") != cf.CONTROL_REVISION or result.get("data_version") != cf.DATA_VERSION:
-                state.failed(key, now)
-                counts["dropped_revision"] += 1
-                continue
-            if not _matches_geometry(result, f.map_name):
-                state.failed(key, now)
-                counts["dropped_geometry"] += 1
-                continue
-            row = {"status": "ok", "data": base64.b64decode(result["data"]),
-                   "summary": base64.b64decode(result["summary"])}
-        elif status == "failed" and job.get("error_kind") == "engine":
-            row = {"status": "failed", "error": job.get("error") or "failed on the replay worker"}
-        else:
-            state.failed(key, now)
-            counts["infra_failed"] += 1
-            continue
-        outcome = store_round(session_factory, f.replay_id, f.round_number, f.fingerprint, row, require_current=True)
-        counts["stored" if outcome == STORED else "skipped"] += 1
-        if row["status"] == "failed" and outcome == STORED:
-            counts["stored_failed"] += 1
-        # The round's timing gaps came with it; like the local command, never for a round whose control
-        # wasn't stored. A gap failure is the gap run's and is stored as that.
-        if result is not None and outcome == STORED:
-            _store_gaps(session_factory, f, result, counts)
-```
-
-In `_submit`, replace the line that builds `task`:
-
-```python
-        task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
-                "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
-```
-
-with:
-
-```python
-        task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
-                "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]},
-                "gaps": gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)}
-```
-
-In `cycle`, add the three new keys to the tuple the counts are built from:
-
-```python
-    counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
-                                             "dropped_revision", "dropped_geometry", "infra_failed", "busy",
-                                             "unreachable", "gaps_stored", "gaps_dropped", "gaps_skipped")}
-```
-
-In the module docstring, add to point 1 ("Collect"), after "with BACKOFF_S between.":
-
-```
-   A stored `ok` round's timing gaps come in the same result and are stored after it
-   (app/services/replay_gaps_store.py), when they were computed under this deploy's gap rules, choke asset
-   and game figures; otherwise they are dropped and the round is asked again as gaps only.
-```
-
-- [ ] **Step 4: Run the dispatcher's tests**
-
-Run: `PY -m pytest tests/replays/test_control_remote.py tests/replays/test_control_isolation.py -p no:cacheprovider -q`
-Expected: PASS (the `pg` test is skipped without `VALO_TEST_DATABASE_URL`).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add webapp/app/services/replay_control_remote.py webapp/tests/replays/test_control_remote.py
-git commit -m "control dispatch: ask the worker for each round's timing gaps and store them"
-```
+Commit the dispatcher, writer and tests with a message describing capability-gated gaps and guarded storage.
 
 ---
 
@@ -783,331 +598,38 @@ git commit -m "control dispatch: ask the worker for each round's timing gaps and
 - Test: `webapp/tests/replays/test_control_remote.py`
 
 **Interfaces:**
-- Consumes from Task 3: `gaps_job`, `_gaps_usable`, `_store_gaps`, `FakeWorker.ok` (which already answers a `gaps_only` task without `data`), `gap_answer`, `gap_runs`.
-- Produces, for the second plan:
-  - `InFlight.gaps_only: bool` (default False).
-  - `_submit(session, client, state, now, counts)` sends control rounds first and gaps-only rounds only when every sendable control round has been sent.
-  - `cycle`'s counts gain `gaps_sent`.
+- `InFlight.gaps_only: bool = False` in addition to `expect_gaps`.
+- `_sendable(state, now, planned, gaps_only, gap_prints, ...) -> (todo, keys)` and `_send(...)`, preserved for the second plan's hold-back integration.
+- `_submit(session, client, state, now, counts)` submits control first, then gaps-only work only when every sendable control task has been submitted and the worker supports gaps.
+- Counts gain `gaps_sent`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing scheduling tests**
 
-Append to `webapp/tests/replays/test_control_remote.py`:
+Cover current control with no gaps, stale gap rules/assets, a current gap failure left alone, control-before-gaps ordering, and a pool filled entirely by control work. No gaps-only work is sent to a worker without protocol 1. Upgrade the same fake worker in place and prove gaps are then scheduled without a site restart or manual retry reset.
 
-```python
-# ---------------------------------------------------------------- gaps only: control is current, gaps are not
+Test that a gap result arriving after control moves is skipped by the guarded writer and does not rewrite either control or newer gaps. A returned revision, data version, geometry, figures, gap revision/hash/fingerprint mismatch counts as a retryable trust failure. A genuine current detector failure is stored as the round's gap failure and is not retried by default. Infra job failures back off and consume the normal three-try budget.
 
+- [ ] **Step 2: Implement keys and admission**
 
-def all_control(db, replay):
-    for n in range(1, replay.round_count + 1):
-        put_row(db, replay, n)
+A gaps-only key contains replay id, round, control fingerprint, protocol version and gap fingerprint. Use a prefix distinct from both plain and full-control tasks. The planner uses `replay_control.plan` for control and its forced plan for `replay_gaps.plan_gaps`, as the local command does. Only send gaps-only work with fresh positive capability; an unavailable capability leaves this work pending rather than consuming tries or disabling future planning.
 
+Keep `IN_FLIGHT`, newest-match ordering and backoff behavior. After a planning pass with nothing sendable, retain the existing `PLAN_IDLE_S` throttle. Capability upgrades and a completed/replaced replay must become visible by the next permitted planning pass.
 
-def put_gap_run(factory, db, replay, n, status="ok", fingerprint=None):
-    [planned] = rc.plan(db, rounds={n}, force=True)
-    run = {"status": status, "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": None, "notes": {},
-           "fingerprint": fingerprint or replay_gaps.gap_fingerprint(planned.fingerprint, planned.map_name),
-           "error": None if status == "ok" else "RuntimeError: boom"}
-    assert store_gaps(factory, replay.id, n, run, []) == "stored"
+- [ ] **Step 3: Collect through the guarded writer**
 
+For a done gaps-only job, check the control revision and data version, geometry, figures and gap run metadata, then call the guarded writer with `f.fingerprint`. There is no `_control_is_current` read in a separate session: the check belongs inside the writer's transaction. A skipped stale result is not an engine failure and consumes no retry.
 
-def test_rounds_with_current_control_and_no_gaps_are_sent_gaps_only(factory, db, linked):
-    all_control(db, linked)
-    worker, state = FakeWorker(), remote.State()
-    counts = remote.cycle(factory, worker, state, now=0)
-    assert counts["gaps_sent"] == remote.IN_FLIGHT and counts["sent"] == 0
-    assert all(t["gaps_only"] is True and t["key"].split(":")[3].startswith("g") for t in worker.tasks.values())
-    before = {n: r.computed_at for n, r in rows(db, linked).items()}
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["gaps_stored"] == remote.IN_FLIGHT and counts["stored"] == 0
-    assert sorted(gap_runs(db, linked)) == list(range(1, remote.IN_FLIGHT + 1))
-    assert {n: r.computed_at for n, r in rows(db, linked).items()} == before, "control is not rewritten"
+Delete completed in-flight entries only after choosing the appropriate settlement path. Preserve the existing queued/running timeout semantics and separate genuine detector failures from transport/trust failures.
 
+- [ ] **Step 4: Update existing fixtures and validate**
 
-def test_control_rounds_go_before_gaps_only_ones(factory, db, linked):
-    all_control(db, linked)
-    db.query(ReplayRoundControl).filter(ReplayRoundControl.round_number == 5).delete()
-    db.commit()
-    worker = FakeWorker()
-    counts = remote.cycle(factory, worker, remote.State(), now=0)
-    assert counts["sent"] == 1 and counts["gaps_sent"] == remote.IN_FLIGHT - 1
-    first = worker.tasks["j0"]
-    assert first["key"].split(":")[1] == "5" and "gaps_only" not in first
+Give throttle tests current gap runs where they formerly populated only current control, and count the control and forced planning calls. Distinguish plain/full control from gaps-only tasks in `sent_rounds`. Use `CONTROL_TABLES`, which includes both gap tables.
 
+Run: `PY -m pytest tests/replays/test_control_remote.py tests/replays/test_gaps_store.py tests/replays/test_control_isolation.py tests/replays/test_gaps_task.py -p no:cacheprovider -q`.
 
-def test_no_gaps_only_task_is_sent_while_control_rounds_are_left_over(factory, db, linked):
-    worker = FakeWorker()                                        # nothing has control: more than fits in flight
-    counts = remote.cycle(factory, worker, remote.State(), now=0)
-    assert counts["sent"] == remote.IN_FLIGHT and counts["gaps_sent"] == 0
-
-
-def test_current_gaps_and_a_current_gap_failure_are_left_alone_and_stale_gaps_are_sent(factory, db, linked):
-    all_control(db, linked)
-    for n in range(1, linked.round_count + 1):
-        put_gap_run(factory, db, linked, n)
-    put_gap_run(factory, db, linked, 2, status="failed")         # failed under the current rules: it would repeat
-    put_gap_run(factory, db, linked, 3, fingerprint="0" * 16)    # computed under other rules: stale
-    worker = FakeWorker()
-    remote.cycle(factory, worker, remote.State(), now=0)
-    assert sent_rounds(worker) == [3]
-
-
-def test_a_gaps_only_result_this_deploy_cannot_trust_counts_a_try_and_is_asked_again(factory, db, linked):
-    all_control(db, linked)
-
-    def answer(task):
-        job = FakeWorker.ok(worker, task)
-        job["result"]["gaps"]["run"]["gaps_revision"] = replay_gaps.GAPS_REVISION + 1
-        return job
-
-    worker, state = FakeWorker(answer), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["gaps_dropped"] == remote.IN_FLIGHT and not gap_runs(db, linked)
-    assert all(count == 1 for count, _ in state.tries.values())
-    before = len(worker.tasks)
-    remote.cycle(factory, worker, state, now=2)
-    assert len(worker.tasks) == before, "backoff"
-    remote.cycle(factory, worker, state, now=2 + remote.BACKOFF_S)
-    assert len(worker.tasks) > before
-
-
-def test_a_gaps_only_result_is_not_stored_once_the_rounds_control_moved(factory, db, linked):
-    all_control(db, linked)
-    worker, state = FakeWorker(), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    linked.recipe = linked.recipe + "x"                          # re-ingested meanwhile
-    db.commit()
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["gaps_skipped"] == remote.IN_FLIGHT and counts["gaps_stored"] == 0 and not gap_runs(db, linked)
-
-
-def test_a_failed_gaps_only_job_counts_a_try(factory, db, linked):
-    all_control(db, linked)
-    worker = FakeWorker(lambda task: {"status": "failed", "error_kind": "infra", "error": "MemoryError"})
-    state = remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["infra_failed"] == remote.IN_FLIGHT and not gap_runs(db, linked)
-    assert len(rows(db, linked)) == linked.round_count, "control is untouched"
-```
-
-Add `from app.services.replay_gaps_store import store_gaps  # noqa: E402` to the file's imports.
-
-Three existing tests in this file give rounds control rows but no gap runs, so after this task they would send gaps-only tasks and plan twice. Change them:
-
-Replace `sent_rounds` with a version that tells the two kinds of task apart:
-
-```python
-def sent_rounds(worker, gaps_only=False):
-    return sorted(int(t["key"].split(":")[1]) for t in worker.tasks.values()
-                  if bool(t.get("gaps_only")) == gaps_only)
-```
-
-and in `test_current_gaps_and_a_current_gap_failure_are_left_alone_and_stale_gaps_are_sent` above, the last line is then `assert sent_rounds(worker, gaps_only=True) == [3]`. `test_stale_rounds_are_sent_and_a_current_failure_is_not` keeps `sent_rounds(worker) == [1, 3]`, which now counts control tasks only.
-
-In `test_planning_is_throttled_while_nothing_can_be_sent`, give every round current gaps as well and count two plans per planning pass (the control plan, then the forced one the gap plan reads). Its body becomes:
-
-```python
-    for n in range(1, linked.round_count + 1):
-        put_row(db, linked, n)
-        put_gap_run(factory, db, linked, n)
-    calls = []
-    real = rc.plan
-    monkeypatch.setattr(rc, "plan", lambda session, **kw: calls.append(1) or real(session, **kw))
-    state = remote.State()
-    remote.cycle(factory, FakeWorker(), state, now=0)
-    remote.cycle(factory, FakeWorker(), state, now=remote.CYCLE_S)
-    assert len(calls) == 2, "one planning pass: the control plan and the forced plan for gaps"
-    remote.cycle(factory, FakeWorker(), state, now=remote.PLAN_IDLE_S + 1)
-    assert len(calls) == 4
-```
-
-`put_gap_run` calls `rc.plan` itself, which is why it runs before the `monkeypatch.setattr`.
-
-In `test_rounds_that_can_never_be_sent_dont_defeat_the_throttle`, change the last line to `assert len(calls) == 2`.
-
-- [ ] **Step 2: Run them and see them fail**
-
-Run: `PY -m pytest tests/replays/test_control_remote.py -p no:cacheprovider -q`
-Expected: FAIL. The new tests fail with `KeyError: 'gaps_sent'`; the two throttle tests fail on their new counts (1, not 2).
-
-- [ ] **Step 3: Add `gaps_only` to an in-flight job**
-
-In `webapp/app/services/replay_control_remote.py`, add a field at the end of `InFlight`:
-
-```python
-    gaps_only: bool = False              # the round's control is current; only its timing gaps were asked for
-```
-
-Add to the model imports: `ReplayRoundControl` (the line becomes `from app.models.replay import Replay, ReplayRound, ReplayRoundControl`).
-
-- [ ] **Step 4: Collect a gaps-only job**
-
-Add above `_collect`:
-
-```python
-def _control_is_current(session_factory, f: InFlight) -> bool:
-    """The round still has the `ok` control row its gaps were computed for, under its current inputs."""
-    session = session_factory()
-    try:
-        replay = session.get(Replay, f.replay_id)
-        row = session.get(ReplayRoundControl, (f.replay_id, f.round_number))
-        if replay is None or row is None or row.status != "ok":
-            return False
-        current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), f.round_number)
-        return row.fingerprint == f.fingerprint == current
-    finally:
-        session.rollback()
-        session.close()
-
-
-def _collect_gaps_only(session_factory, state: State, key: str, f: InFlight, job: dict, now: float,
-                       counts: dict) -> None:
-    """A finished gaps-only job: its gaps are stored when the result is this deploy's and the round's control
-    hasn't moved. Any failure of the job is retried like a control job's; a gap run's own failure comes back
-    in a done job and is stored as the round's."""
-    if job.get("status") != "done":
-        state.failed(key, now)
-        counts["infra_failed"] += 1
-        return
-    result = job.get("result") or {}
-    if (result.get("revision") != cf.CONTROL_REVISION or not _matches_geometry(result, f.map_name)
-            or not _gaps_usable(result, f)):
-        state.failed(key, now)
-        counts["gaps_dropped"] += 1
-        return
-    if not _control_is_current(session_factory, f):
-        counts["gaps_skipped"] += 1
-        return
-    _store_gaps(session_factory, f, result, counts)
-```
-
-In `_collect`, right after the `del state.in_flight[key]` that precedes `result = None`, add:
-
-```python
-        if f.gaps_only:
-            _collect_gaps_only(session_factory, state, key, f, job, now, counts)
-            continue
-```
-
-- [ ] **Step 5: Send gaps-only tasks when no control round is waiting**
-
-Replace `_submit` whole with:
-
-```python
-def _key(p, gaps_only: bool, gap_prints: dict) -> str:
-    """A task's key on the worker, which dedupes by it. A gaps-only task's ends in the gap fingerprint, so
-    new gap rules are a new job there and not an old result handed back."""
-    key = task_key(p.replay_id, p.round_number, p.fingerprint)
-    if not gaps_only:
-        return key
-    known = (p.fingerprint, p.map_name)
-    if known not in gap_prints:
-        gap_prints[known] = replay_gaps.gap_fingerprint(p.fingerprint, p.map_name)
-    return f"{key}:g{gap_prints[known]}"
-
-
-def _send(session, client, state: State, now: float, counts: dict, todo: list, keys: dict, gaps_only: bool) -> bool:
-    """Submits `todo` in order while there is room in flight. False when it stopped early (no room, a busy or
-    unreachable worker), having marked that sendable work is left."""
-    for p in todo:
-        if len(state.in_flight) >= IN_FLIGHT:
-            state.last_found = True          # sendable work is left: plan again next cycle
-            return False
-        key = keys[id(p)]
-        row = session.get(ReplayRound, (p.replay_id, p.round_number))
-        if row is None:
-            continue
-        task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
-                "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]},
-                "gaps": gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)}
-        if gaps_only:
-            task["gaps_only"] = True
-        features = (replay_control.geometry_inputs(p.map_name) or {}).get("features")
-        if features:       # only a map with enabled features: an absent key means no verification
-            task["features"] = features
-        try:
-            answer = client.submit(task)
-        except WorkerBusy:
-            counts["busy"] += 1
-            state.last_found = True
-            return False
-        except (WorkerGone, Unreachable):
-            counts["unreachable"] += 1
-            state.last_found = True
-            return False
-        state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
-                                        gaps_only=gaps_only)
-        counts["gaps_sent" if gaps_only else "sent"] += 1
-    return True
-
-
-def _sendable(state: State, now: float, planned: list, gaps_only: bool, gap_prints: dict) -> tuple[list, dict]:
-    """The planned rounds that aren't in flight and haven't used up their tries, and each one's key."""
-    todo, keys = [], {}
-    for p in planned:
-        key = _key(p, gaps_only, gap_prints)
-        if key not in state.in_flight and state.may_try(key, now):
-            todo.append(p)
-            keys[id(p)] = key
-    return todo, keys
-
-
-def _submit(session, client, state: State, now: float, counts: dict) -> None:
-    if len(state.in_flight) >= IN_FLIGHT:
-        return
-    if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
-        return
-    # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
-    planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
-    gap_prints: dict = {}
-    todo, keys = _sendable(state, now, planned, False, gap_prints)
-    state.last_planned, state.last_found = now, False
-    if not _send(session, client, state, now, counts, _order(session, todo), keys, gaps_only=False):
-        return
-    # Every sendable control round is on its way. Now the rounds whose control is current but whose timing
-    # gaps aren't (new gap rules, an edited choke asset, a result that was dropped): gaps only, control kept
-    # (app/services/replay_gaps.py, plan_gaps).
-    every = replay_control.plan(session, force=True)
-    todo, keys = _sendable(state, now, replay_gaps.plan_gaps(session, planned, every), True, gap_prints)
-    _send(session, client, state, now, counts, _order(session, todo), keys, gaps_only=True)
-```
-
-`_order` returns a new sorted list of the same objects, so `keys[id(p)]` still finds each one.
-
-Add `"gaps_sent"` to the counts tuple in `cycle`:
-
-```python
-    counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
-                                             "dropped_revision", "dropped_geometry", "infra_failed", "busy",
-                                             "unreachable", "gaps_sent", "gaps_stored", "gaps_dropped",
-                                             "gaps_skipped")}
-```
-
-In the module docstring, add to point 2 ("Submit"), after "Only a job seen `running` for STALE_JOB_S does.":
-
-```
-   When every sendable control round is on its way, the rounds whose control is current but whose timing
-   gaps are missing or stale (`replay_gaps.plan_gaps`) are sent as `gaps_only` tasks, through the same
-   queue and limit.
-```
-
-- [ ] **Step 6: Run the dispatcher's tests**
-
-Run: `PY -m pytest tests/replays/test_control_remote.py tests/replays/test_control_isolation.py tests/replays/test_gaps_task.py -p no:cacheprovider -q`
-Expected: PASS.
-
-`test_missing_rounds_are_sent_then_stored` ends with `assert remote.cycle(factory, worker, state, now=20)["sent"] == 0`. It still holds: by then every round has control and, since Task 3, its gaps.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add webapp/app/services/replay_control_remote.py webapp/tests/replays/test_control_remote.py
-git commit -m "control dispatch: gaps-only tasks for rounds whose control is current"
-```
+Commit the dispatcher and tests. The second plan consumes these interfaces, not the superseded detached freshness check.
 
 ---
-
 ### Task 5: Docs, the full suite, and the checks only the live services can give
 
 **Files:**
@@ -1145,6 +667,7 @@ web app sends one round at a time and stores the result; the worker has no datab
   to import the web app's own helpers with.
 - The child writes a tick cache file under `CONTROL_CACHE_DIR/gaps` while it runs and deletes it when the
   task ends, along with any file older than six hours.
+- Health advertises `control.gaps_protocol=1`; an older worker receives plain control until it updates.
 - Every result names the engine's revisions and the hash of the game figures it read, so the web app can
   drop a result from another deploy.
 ```
@@ -1155,8 +678,9 @@ In `webapp/RENDER_DEPLOY.md`, add at the end:
 
 ```markdown
 **Timing gaps on the worker (2026-10-07).** The site and the `replay-worker` deploy separately from the same
-merge. In either order nothing breaks: a new site with an old worker gets gap runs it drops (and asks for
-again, up to three times a round until the worker is new); an old site with a new worker asks for no gaps.
+merge. Either deployment order is supported by the health capability gate: a new site with an old worker
+sends plain control and leaves gaps pending; an old site with a new worker asks for no gaps. Once the worker
+advertises control.gaps_protocol=1, the next planning pass picks up missing gaps without a site restart.
 After both are live, the site's log line `map control dispatch: ...` shows `gaps_stored`. A parse and one
 control child now run together, so look at the worker's memory graph on the first upload after the deploy;
 if it nears 4 GB, lower `REPLAY_CONTROL_MEMORY_MB` in the dashboard.
@@ -1184,4 +708,5 @@ These cannot be checked from the tests; list them in the PR for the owner:
 1. The worker image builds (its smoke test imports `app.gaps`).
 2. After both services deploy, the site's dispatch log shows `gaps_stored`, and a round's "Timing" panel on a replay page reads current, not stale.
 3. During one upload: the worker's log shows one control child still running, and its memory graph stays under 4 GB.
-4. A round with gaps finishes inside the child's time and memory caps (`REPLAY_CONTROL_TIMEOUT_S` 900, `REPLAY_CONTROL_MEMORY_MB` 2048): no rise in `infra_failed`.
+4. Deploy-skew check: plain control works before the worker advertises protocol 1, then gap work resumes without resetting retries.
+5. A round with gaps finishes inside the child's time and memory caps (`REPLAY_CONTROL_TIMEOUT_S` 900, `REPLAY_CONTROL_MEMORY_MB` 2048): no rise in `infra_failed`.
