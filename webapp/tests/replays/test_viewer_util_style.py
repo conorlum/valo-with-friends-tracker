@@ -303,7 +303,7 @@ def test_fetch_round_appends_zones_after_indexes_without_mutating_extras(own_ext
 UTIL_DRAW = r"""
   global.getComputedStyle = () => ({getPropertyValue: () => ""});
   global.Image = class { constructor() { this.complete = false; } };
-  const R = require(process.argv[1]);
+  let R = require(process.argv[1]);
   function mockCtx(log) {
     function gradient(kind, args) {
       const g = {kind, args, stops: [], addColorStop(at, color) { this.stops.push([at, color]); }};
@@ -351,6 +351,21 @@ UTIL_DRAW = r"""
     return new Proxy(c, {get: (o, k) => (k in o ? o[k] : () => {})});
   }
   const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  if (p.style) {
+    const base = R.abilityStyle(p.row);
+    delete base.look;
+    const entry = JSON.stringify(Object.assign(base, p.style));
+    const key = JSON.stringify(p.row.code + "_" + p.row.name);
+    const source = require("fs").readFileSync(process.argv[1], "utf8").replace(
+      "var ABILITY_STYLES = [", "var ABILITY_STYLES = [[{test: key => key === " + key + "}, " + entry + "],");
+    const fresh = new (require("module"))(process.argv[1], module);
+    fresh._compile(source, process.argv[1]);
+    R = fresh.exports;
+  }
+  if (p.customLook) R.UTIL_LOOKS.test = function (ctx, g, color, strength, settings) {
+    log.push({op: "customLook", geometry: g, color, strength, settings});
+    ctx.fillRect(1, 2, 3, 4);
+  };
   const log = [], hits = [], v = Object.create(R.ReplayViewer.prototype);
   const row = p.row;
   Object.assign(v, {root: {}, t: p.t === undefined ? 12 : p.t, controlPalette: p.palette || "green-red", linked: p.linked || null,
@@ -373,7 +388,7 @@ UTIL_DRAW = r"""
       v.showTip({x, y, px: 0, py: 0}); return !v.ui.tip.hidden;
     });
   }
-  console.log(JSON.stringify({log, hits, tips, radius: v.uvRadius(410) * 1000}));
+  console.log(JSON.stringify({log, hits, tips, radius: v.uvRadius(410) * 1000, style: R.abilityStyle(row)}));
 """
 
 
@@ -430,8 +445,8 @@ def test_smoke_accepts_rgb_owner_colour_fallback():
 @needs_node
 @pytest.mark.parametrize("kw,side", [({}, "#5ccf8f"), ({"palette": "teal-coral"}, "#1fb8c9"),
     ({"linked": {"players": {"1": {"team": "team-2"}}}}, "#d9534f")])
-def test_smoke_glass_body_and_side_badge(kw, side):
-    out = util_draw(ability("Wraith", "4_Smoke", "Omen"), **kw)
+def test_smoke_glass_body_and_faint_side_ring_without_badge(kw, side):
+    out = util_draw(ability("Wraith", "4_Smoke", "Omen", full=15), glyph=True, **kw)
     log, rad = out["log"], out["radius"]
     assert any(c["op"] == "clip" for c in log)
     patches = [c for c in log if c["op"] == "fillRect" and isinstance(c["fill"], dict)]
@@ -443,10 +458,14 @@ def test_smoke_glass_body_and_side_badge(kw, side):
     assert glow["stops"][0][1] == "rgba(255, 255, 255, 0.28)"
     assert any(c["stroke"] == "#a599cf" and c["lineWidth"] == 1.5
                for c in arc_calls(log, "stroke", rad))
-    assert any(c["stroke"] == side and c["lineWidth"] == 1.5 and c["alpha"] == 0.75
+    assert any(c["stroke"] == side and c["lineWidth"] == 1.5 and
+               c["alpha"] == pytest.approx(0.75 / 3, rel=0, abs=1e-9)
                for c in arc_calls(log, "stroke", rad + 1.5))
-    assert any(c["fill"] == "#151922" for c in arc_calls(log, "fill", 8.8))
-    assert any(c["stroke"] == side for c in arc_calls(log, "stroke", 8.8))
+    assert not any(c.get("fill") == "#151922" or c["op"] == "drawImage" for c in log)
+    assert not arc_calls(log, "fill", 8.8 * 0.38)
+    assert any(c["stroke"] == "rgba(240, 242, 248, 0.95)" for c in log if c["op"] == "stroke")
+    assert len(out["hits"]) == 1 and out["style"]["badge"] is False
+    assert out["style"]["look"] == {"kind": "glass", "settings": {}}
     assert "rgba(16, 18, 24" not in json.dumps(log)
     assert any(c["stroke"] == "#ffffff" and c["lineWidth"] == 2.5 and
                c["path"][0][4:] == [-1.2, 0.35] for c in log if c["op"] == "stroke")
@@ -454,13 +473,97 @@ def test_smoke_glass_body_and_side_badge(kw, side):
 
 @needs_node
 def test_area_soft_gradient_without_outline_or_node_noise():
-    log = util_draw(ability("Phoenix", "MolotovFire", "Phoenix"))["log"]
+    out = util_draw(ability("Phoenix", "MolotovFire", "Phoenix"), glyph=True)
+    log = out["log"]
     fills = [c for c in log if c["op"] == "fillRect" and isinstance(c["fill"], dict)]
     assert fills[0]["fill"]["stops"] == [[0, "rgba(255, 123, 46, 0.7)"],
         [0.6, "rgba(255, 123, 46, 0.5)"], [1, "rgba(255, 123, 46, 0.12)"]]
     assert not any(c["stroke"] == "#ff7b2e" for c in arc_calls(log, "stroke", 450 * 0.75 * 1000))
     assert any(c["stroke"] == "#5ccf8f" for c in arc_calls(log, "stroke", 450 * 0.75 * 1000 + 1.5))
     assert not any(c["op"] == "createPattern" for c in log)
+    assert any(c["fill"] == "#151922" and c["alpha"] == 0.9 for c in arc_calls(log, "fill", 8.8))
+    assert any(c["stroke"] == "#5ccf8f" and c["alpha"] == pytest.approx(0.9 / 3)
+               for c in arc_calls(log, "stroke", 8.8))
+    assert next(c for c in log if c["op"] == "drawImage")["alpha"] == 0.9
+    assert out["style"]["badge"] is True
+    assert out["style"]["look"] == {"kind": "grain", "settings": {}}
+
+
+@needs_node
+def test_util_look_normalisation_is_pure():
+    rows = [{"shape": "smoke"}, {"shape": "area"}, {"shape": "area", "look": "glass"},
+            {"shape": "area", "look": {"kind": "fire", "flicker": "fast"}}]
+    actual = run_node(r"""
+      const R = require(process.argv[1]);
+      const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const before = JSON.stringify(rows);
+      const looks = rows.map(R.utilLookOf);
+      console.log(JSON.stringify({looks, unchanged: before === JSON.stringify(rows), kinds: Object.keys(R.UTIL_LOOKS)}));
+    """, rows)
+    assert actual == {"looks": [{"kind": "glass", "settings": {}}, {"kind": "grain", "settings": {}},
+                                {"kind": "glass", "settings": {}},
+                                {"kind": "fire", "settings": {"flicker": "fast"}}],
+                      "unchanged": True, "kinds": ["glass", "grain"]}
+
+
+@needs_node
+def test_smoke_can_opt_in_to_badge():
+    out = util_draw(ability("Wraith", "4_Smoke", "Omen"), style={"badge": True}, glyph=True)
+    assert out["style"]["badge"] is True
+    assert any(c.get("fill") == "#151922" for c in out["log"])
+    assert any(c["op"] == "drawImage" for c in out["log"])
+
+
+@needs_node
+@pytest.mark.parametrize("row,t", [(ability("Phoenix", "MolotovFire", "Phoenix"), 12),
+    ({"kind": "GameObject", "code": "Breach", "name": "4_FusionBlast", "slot": 1,
+      "u": 0.4, "v": 0.5, "t0": 35.693, "t1": 39.996, "yaw": 77}, 37.893)])
+def test_area_can_disable_badge_without_changing_body_or_hits(row, t):
+    plain = util_draw(row, t=t, linked=UTIL_SCALE, glyph=True)
+    hidden = util_draw(row, t=t, linked=UTIL_SCALE, glyph=True, style={"badge": False})
+    assert hidden["style"]["badge"] is False
+    assert not any(c.get("fill") == "#151922" or c["op"] == "drawImage" for c in hidden["log"])
+    assert [c for c in hidden["log"] if c["op"] == "fillRect"] == [
+        c for c in plain["log"] if c["op"] == "fillRect"]
+    assert hidden["hits"] == plain["hits"]
+
+
+@needs_node
+@pytest.mark.parametrize("row,t,default", [(ability("Phoenix", "MolotovFire", "Phoenix"), 12, "grain"),
+    (ability("Wraith", "4_Smoke", "Omen"), 12, "glass"),
+    ({"kind": "GameObject", "code": "Breach", "name": "4_FusionBlast", "slot": 1,
+      "u": 0.4, "v": 0.5, "t0": 35.693, "t1": 39.996, "yaw": 77}, 37.893, "grain")])
+def test_unknown_look_matches_shape_default(row, t, default):
+    normal = util_draw(row, t=t, linked=UTIL_SCALE)
+    explicit = util_draw(row, t=t, linked=UTIL_SCALE, style={"look": default})
+    unknown = util_draw(row, t=t, linked=UTIL_SCALE, style={"look": {"kind": "nope"}})
+    assert normal["log"] == explicit["log"] == unknown["log"]
+    assert explicit["style"]["look"] == {"kind": default, "settings": {}}
+
+
+@needs_node
+@pytest.mark.parametrize("pop", [False, True])
+def test_custom_look_receives_settings_and_geometry_inside_clip(pop):
+    row = {**AFTERSHOCK, "agent": "Breach"} if pop else ability("Phoenix", "MolotovFire", "Phoenix")
+    out = util_draw(row, t=37.893 if pop else 12, linked=UTIL_SCALE, customLook=True,
+                    style={"look": {"kind": "test", "k": 7}})
+    log = out["log"]
+    index = next(i for i, c in enumerate(log) if c["op"] == "customLook")
+    call = log[index]
+    assert log[index - 1]["op"] == "clip"
+    assert log[index + 1]["op"] == "fillRect" and log[index + 1]["alpha"] == (0.4 if pop else 1)
+    assert call["settings"] == {"k": 7} and call["color"] == ("#ff8a3d" if pop else "#ff7b2e")
+    assert call["strength"] == (0.4 if pop else 1)
+    g = call["geometry"]
+    assert set(g) == {"x", "y", "rad", "seg", "cx", "cy", "extent"}
+    assert [g["x"], g["y"], g["rad"]] == pytest.approx([400, 500, 30 if pop else 45])
+    assert g["extent"] == pytest.approx(80 if pop else 45)
+    if pop:
+        assert g["seg"] == out["hits"][0]["seg"]
+        assert [g["cx"], g["cy"]] == pytest.approx([sum(pt[i] for pt in g["seg"]) / 2 for i in range(2)])
+    else:
+        assert g["seg"] is None and [g["cx"], g["cy"]] == [400, 500]
+    assert out["style"]["look"] == {"kind": "test", "settings": {"k": 7}}
 
 
 @needs_node
@@ -540,7 +643,8 @@ def test_util_badge_dark_disc_side_ring_and_glyph_or_dot(glyph):
     log = util_draw(ability("Gumshoe", "E_PossessableCamera", "Cypher"), glyph=glyph)["log"]
     rad = 20 * 0.62
     assert any(c["fill"] == "#151922" for c in arc_calls(log, "fill", rad))
-    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 2 for c in arc_calls(log, "stroke", rad))
+    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 2 and c["alpha"] == pytest.approx(1 / 3)
+               for c in arc_calls(log, "stroke", rad))
     if glyph:
         img = next(c for c in log if c["op"] == "drawImage")
         assert img["w"] == img["h"] == pytest.approx(rad * 1.3)
@@ -553,8 +657,9 @@ def test_projectile_agent_dot_and_side_ring():
     row = ability("Grenadier", "C_Flash", "KAY/O", flight=[[10, 0.2, 0.3, 0], [15, 0.7, 0.8, 0]])
     row["kind"] = "Projectile"
     log = util_draw(row, projectile=True)["log"]
-    assert any(c["fill"] == "#4a95ff" for c in arc_calls(log, "fill", 4.4))
-    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 1.5 for c in arc_calls(log, "stroke", 4.4))
+    assert any(c["fill"] == "#4a95ff" and c["alpha"] == 0.95 for c in arc_calls(log, "fill", 4.4))
+    assert any(c["stroke"] == "#5ccf8f" and c["lineWidth"] == 1.5 and c["alpha"] == pytest.approx(0.95 / 3)
+               for c in arc_calls(log, "stroke", 4.4))
 
 
 @needs_node
@@ -603,7 +708,7 @@ def test_aftershock_windup_capsule_and_side_ring():
     assert out["hits"][0]["r"] == pytest.approx(30)
     for end, expected in zip(out["hits"][0]["seg"], ends, strict=True):
         assert end == pytest.approx(expected, abs=1e-6)
-    assert any(c["stroke"] == "#5ccf8f" and c["alpha"] == 0.75 and c["lineWidth"] == 1.5
+    assert any(c["stroke"] == "#5ccf8f" and c["alpha"] == pytest.approx(0.75 / 3) and c["lineWidth"] == 1.5
                for c in arc_calls(out["log"], "stroke", 31.5))
     assert not arc_calls(out["log"], "fill", 30)
     assert not any(c["op"] == "fillRect" for c in out["log"])
@@ -619,6 +724,7 @@ def test_aftershock_pulse_flash_dim_area_and_opening_capsule(t, pop):
     f = (t - pop) / 0.6
     assert flashes[0]["alpha"] == pytest.approx(0.55 * (1 - f))
     assert_dim_area(log)
+    assert any(c.get("fill") == "#151922" for c in log)
     clips = [c for c in log if c["op"] == "clip"]
     assert len(clips) == 1 and len([p for p in clips[0]["path"] if p[0] == "A"]) == 2
     rings = arc_calls(log, "stroke", 30 * (0.35 + 0.65 * f))

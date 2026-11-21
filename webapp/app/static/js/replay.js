@@ -552,6 +552,15 @@
     return up ? "raised" : "set";
   }
 
+  function utilLookOf(style) {
+    var look = style.look, settings = {};
+    if (typeof look === "string") return { kind: look, settings: settings };
+    if (look && typeof look === "object") {
+      Object.keys(look).forEach(function (key) { if (key !== "kind") settings[key] = look[key]; });
+    }
+    return { kind: (look && look.kind) || (style.shape === "smoke" ? "glass" : "grain"), settings: settings };
+  }
+
   function abilityStyle(ability) {
     if (ability.kind === "Bomb") return { label: "Spike", shape: "spike" };
     if (ability.kind === "Projectile") return projectileStyle(ability);
@@ -567,6 +576,7 @@
         if (charged) label = style.ability + " (charged " + ability.charge.toFixed(2) + " s: " + Math.round(len / 100) + " m)";
         return {
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
+          badge: style.badge === undefined ? style.shape !== "smoke" : style.badge, look: utilLookOf(style),
           small: !!style.small, unlisted: !!style.unlisted, label: label,
           faint: !!style.faint, dir: style.dir, len: len, from: style.from, full: !!style.full, aim: !!style.aim,
           pop: style.pop, pulses: style.pulses, capsule: style.capsule, burst: style.burst, part: !!style.part,
@@ -578,7 +588,8 @@
         };
       }
     }
-    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "badge" };
+    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "badge", badge: true,
+      look: utilLookOf({ shape: "badge" }) };
   }
 
   // A W-e utility cast's ability id ("omen_paranoia", "phoenix_curveball_left") -> {agent, ability}.
@@ -2897,13 +2908,17 @@
     ctx.restore();
   };
 
+  var UTIL_SIDE_RING = 1 / 3;   // The owner's "faint", 2026-11-20.
+
   // Ability colour identifies the piece; the thin ring identifies its side.
   ReplayViewer.prototype.drawUtilBadge = function (ctx, side, x, y, radius, color, glyph, alpha) {
     ctx.save();
     ctx.globalAlpha = alpha === undefined ? 1 : alpha;
     ctx.beginPath(); ctx.arc(x, y, radius, 0, 2 * Math.PI);
     ctx.fillStyle = "#151922"; ctx.fill();
+    ctx.globalAlpha *= UTIL_SIDE_RING;
     ctx.strokeStyle = side; ctx.lineWidth = 2; ctx.stroke();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
     if (glyph) {
       var g = radius * 1.3;
       ctx.drawImage(glyph, x - g / 2, y - g / 2, g, g);
@@ -2969,30 +2984,46 @@
     ctx.lineTo(x0 + dx, y0 + dy); ctx.closePath();
   }
 
-  // Shared clipped patch: glass for smoke, grain for areas (including the dim body between pops).
-  function drawUtilAreaPatch(ctx, x, y, rad, seg, color, strength, smoke) {
-    var cx = seg ? (seg[0][0] + seg[1][0]) / 2 : x;
-    var cy = seg ? (seg[0][1] + seg[1][1]) / 2 : y;
-    var extent = rad + (seg ? Math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) / 2 : 0);
-    ctx.save(); ctx.globalAlpha = strength;
-    utilAreaPath(ctx, x, y, rad, seg); ctx.clip();
-    var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
-    grad.addColorStop(0, withAlpha(color, smoke ? 0.75 : 0.7));
-    grad.addColorStop(smoke ? 0.55 : 0.6, withAlpha(color, smoke ? 0.45 : 0.5));
-    grad.addColorStop(1, withAlpha(color, smoke ? 0.3 : 0.12));
-    ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
-    if (smoke) {
+  // An ability picks a look by name and settings in ABILITY_STYLES: two fires can share a look with different
+  // flicker. A new picture is one function here plus a look on the entry.
+  var UTIL_LOOKS = {
+    glass: function (ctx, g, color, strength, settings) {
+      var cx = g.cx, cy = g.cy, rad = g.rad, extent = g.extent;
+      var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
+      grad.addColorStop(0, withAlpha(color, 0.75));
+      grad.addColorStop(0.55, withAlpha(color, 0.45));
+      grad.addColorStop(1, withAlpha(color, 0.3));
+      ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
       var glow = ctx.createRadialGradient(cx - rad * 0.3, cy - rad * 0.3, 0, cx - rad * 0.3, cy - rad * 0.3, rad);
       glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
       glow.addColorStop(1, "rgba(255, 255, 255, 0)");
       ctx.fillStyle = glow; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
-    } else {
+    },
+    grain: function (ctx, g, color, strength, settings) {
+      var cx = g.cx, cy = g.cy, extent = g.extent;
+      var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
+      grad.addColorStop(0, withAlpha(color, 0.7));
+      grad.addColorStop(0.6, withAlpha(color, 0.5));
+      grad.addColorStop(1, withAlpha(color, 0.12));
+      ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
       var noise = noiseCanvas();
       if (noise) {
         ctx.fillStyle = ctx.createPattern(noise, "repeat");
         ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
       }
     }
+  };
+
+  // Shared clipped patch, including the dim body between pops. A look only fills inside this path.
+  function drawUtilAreaPatch(ctx, x, y, rad, seg, color, strength, look, shape) {
+    var cx = seg ? (seg[0][0] + seg[1][0]) / 2 : x;
+    var cy = seg ? (seg[0][1] + seg[1][1]) / 2 : y;
+    var extent = rad + (seg ? Math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) / 2 : 0);
+    var paint = Object.prototype.hasOwnProperty.call(UTIL_LOOKS, look.kind) && UTIL_LOOKS[look.kind];
+    if (typeof paint !== "function") paint = UTIL_LOOKS[shape === "smoke" ? "glass" : "grain"];
+    ctx.save(); ctx.globalAlpha = strength;
+    utilAreaPath(ctx, x, y, rad, seg); ctx.clip();
+    paint(ctx, { x: x, y: y, rad: rad, seg: seg, cx: cx, cy: cy, extent: extent }, color, strength, look.settings);
     ctx.restore();
   }
 
@@ -3051,7 +3082,7 @@
             ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
             utilAreaPath(ctx, x, y, prad, seg); ctx.stroke(); ctx.setLineDash([]);
           } else {
-            drawUtilAreaPatch(ctx, x, y, prad, seg, color, 0.4 * fadeIn, false);
+            drawUtilAreaPatch(ctx, x, y, prad, seg, color, 0.4 * fadeIn, style.look, style.shape);
           }
           pops.forEach(function (p) {
             if (t < p || t > p + style.pop) return;
@@ -3061,10 +3092,10 @@
             utilAreaPath(ctx, x, y, prad, seg, 0.35 + 0.65 * f); ctx.stroke();
           });
           utilAreaPath(ctx, x, y, prad, seg, 1, 1.5);
-          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn; ctx.stroke();
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn * UTIL_SIDE_RING; ctx.stroke();
           ctx.restore(); ctx.save();
           var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
-          self.drawUtilBadge(ctx, side, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
           var popped = pops.filter(function (p) { return p <= t; });
           var popHit = { x: x, y: y, r: seg ? prad : Math.max(prad, r * 0.6), area: true,
             text: text + (popped.length ? " · went off at " + popped.map(function (p) { return p.toFixed(1); }).join(", ") +
@@ -3075,7 +3106,7 @@
           var rad = self.uvRadius(style.r) * s;
           var body = (style.faint ? 0.45 : 1) * fadeIn;
           ctx.globalAlpha = body;
-          drawUtilAreaPatch(ctx, x, y, rad, null, color, body, pass === "smoke");
+          drawUtilAreaPatch(ctx, x, y, rad, null, color, body, style.look, style.shape);
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (style.faint) ctx.setLineDash([r / 3, r / 4]);
           if (pass === "smoke") {
@@ -3084,11 +3115,11 @@
             ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.5 * body; ctx.stroke();
           }
           ctx.beginPath(); ctx.arc(x, y, rad + 1.5, 0, 2 * Math.PI);
-          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn;
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn * UTIL_SIDE_RING;
           ctx.stroke();
           ctx.restore(); ctx.save();
           self.drawTimer(ctx, x, y, Math.max(tw, rad - tw / 2 - 1), left, tw, fadeIn);
-          self.drawUtilBadge(ctx, side, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.44, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
         } else if (pass === "wall") {
           // A traced wall (High Tide) stands as far as its orb has flown, and stays up until it closes.
@@ -3108,7 +3139,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (up ? " · up now" : " · down now") });
         } else if (pass === "cone") {
@@ -3126,7 +3157,7 @@
             if (cf > 0) { ctx.globalAlpha = 0.24 * cshown; wedge(reachPx * cf); ctx.fill(); }
           }
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, cshown);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, cshown);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "box" || pass === "lanes") {
           // Out to where it pops, then gone over 0.4 s.
@@ -3171,7 +3202,7 @@
           ctx.restore(); ctx.save();
           if (!style.bare) {
             // A bare piece (an Armageddon strike) is part of its cast's drawing: no badge or timer of its own.
-            self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, shown);
+            if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, shown);
             self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, shown);
           }
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
@@ -3180,7 +3211,7 @@
           ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = 2.5; ctx.strokeStyle = color;
           ctx.beginPath(); ctx.arc(x, y, reach * (0.15 + 0.85 * pulse), 0, 2 * Math.PI); ctx.stroke();
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.6, color, glyph);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
         } else if (pass === "mesh" || pass === "shear") {
           // Deadlock's mesh: an arm from the root to each standing node while solid, dashed before it forms.
@@ -3206,7 +3237,7 @@
           });
           ctx.setLineDash([]);
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
             (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
@@ -3223,7 +3254,7 @@
             self.utilBar(ctx, color, Math.max(4, r / 2.2), fadeIn);
           });
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
@@ -3264,7 +3295,7 @@
             }
           }
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.5, color, glyph, fadeIn);
           self.drawTimer(ctx, x, y, r * 0.5 + 2 + tw / 2 + 1, left, tw * 0.8, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
@@ -3284,7 +3315,7 @@
             ctx.beginPath(); ctx.arc(mx, my, r * (0.8 + 2.2 * f), 0, 2 * Math.PI); ctx.stroke();
           }
           ctx.restore(); ctx.save();
-          self.drawUtilBadge(ctx, side, x, y, r * 0.56, color, glyph);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, r * 0.56, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
@@ -3341,7 +3372,7 @@
             if (started) { ctx.lineTo(x, y); ctx.stroke(); }
             ctx.setLineDash([]); ctx.globalAlpha = 1;
           }
-          self.drawUtilBadge(ctx, side, x, y, radius, color, glyph, fadeIn);
+          if (style.badge !== false) self.drawUtilBadge(ctx, side, x, y, radius, color, glyph, fadeIn);
           // A unit's full run from its spawn, or a device's from when it was set off.
           var run = style.life ? runLeft(a.t0, style.life, t)
             : style.activeFor && typeof a.active === "number" ? runLeft(a.active, style.activeFor, t) : null;
@@ -3868,6 +3899,7 @@
       }
       ctx.globalAlpha = 0.95;
       ctx.beginPath(); ctx.arc(at.u * s, at.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
+      ctx.globalAlpha = 0.95 * UTIL_SIDE_RING;
       ctx.strokeStyle = self.sideColor(a.slot); ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
       hits.push({ x: at.u * s, y: at.v * s, r: r * 0.5, text: (style.agent ? style.agent + " · " : "") + style.label +
@@ -5110,6 +5142,7 @@
   }
 
   var api = {
+    UTIL_LOOKS: UTIL_LOOKS, utilLookOf: utilLookOf,
     withAlpha: withAlpha, lighten: lighten, capsuleEnds: capsuleEnds,
     utilColorOf: utilColorOf, sideColorOf: sideColorOf, UTIL_AGENT_COLORS: UTIL_AGENT_COLORS,
     decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
