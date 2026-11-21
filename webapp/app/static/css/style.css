@@ -1854,6 +1854,28 @@ table.compact-table .badge-score {
 }
 .replay-layers legend { padding: 0 0.3rem; color: var(--ink-muted); }
 .replay-layers input { accent-color: var(--brand); }
+/* The View preset picker leads the Show bar, set apart from the boxes it sets. */
+.replay-preset { font-weight: 600; color: var(--ink); padding-right: 0.75rem; border-right: 1px solid var(--border-strong); }
+.replay-preset select { font: inherit; font-weight: 400; }
+/* The control bar: a strip on the map's left edge, team 2 from the top and team 1 from the bottom (replay.js
+   renderCtlBar), over the map's empty margin. The dashed line marks half. */
+.replay-ctlbar {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 20px; z-index: 2;
+  display: flex; flex-direction: column; background: #2a2b31; border-right: 1px solid var(--border-strong);
+}
+.replay-ctlbar > [data-ctlbar-t2], .replay-ctlbar > [data-ctlbar-mid], .replay-ctlbar > [data-ctlbar-t1] {
+  display: block; flex: 0 1 0; transition: flex-grow 0.25s ease;
+}
+.replay-ctlbar-t2 { background: var(--replay-team-2); }
+.replay-ctlbar-mid { background: #3a3b42; }
+.replay-ctlbar-t1 { background: var(--replay-team-1); }
+.replay-ctlbar::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed rgba(255, 255, 255, 0.4); }
+.replay-ctlbar-num {
+  position: absolute; left: 0; right: 0; text-align: center; font-size: 0.62rem; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.replay-ctlbar-num.is-top { top: 4px; }
+.replay-ctlbar-num.is-bottom { bottom: 4px; }
 .replay-key-t1::before { background: var(--replay-team-1); }
 .replay-key-t2::before { background: var(--replay-team-2); }
 .replay-key-smoke::before { background: var(--replay-smoke-core); border: 2px solid var(--ink-secondary); }

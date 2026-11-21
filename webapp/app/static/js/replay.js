@@ -1606,7 +1606,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "aim", "control", "areas", "gaps", "features"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "aim", "control", "bar", "areas", "gaps", "features"];
   var AREA_GRID = 128;     // control_format.GRID; area payload cells cover the full grid
   var AREA_COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4",
                      "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff"];
@@ -1653,7 +1653,7 @@
     this.current = null;
     this.icons = {};
     this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, aim: true, control: false,
-                    gaps: false, features: true, areas: false };
+                    gaps: false, features: true, areas: false, bar: true };
     this.areas = null;
     this.areasPromise = null;
     this.areasPaint = null;
@@ -1675,7 +1675,12 @@
     fitMapToWindow(root);
     this.map = new Image();
     this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (display px - o) * k
-    this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
+    this.mapDark = null;                          // the minimap with its floor darkened (darkenMap), once loaded
+    this.outlines = null;                         // wall and box outlines from the sight mask, once loaded
+    this.map.onload = (function () {
+      this.mapDark = this.darkMap();
+      this.fitView(); this.draw(); if (this.heat) this.paintHeatmap();
+    }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
     this.loadSightMask();
@@ -1747,6 +1752,21 @@
        root.querySelector("[data-replay-banner]")].forEach(function (el) { if (el) observer.observe(el); });
     }
   }
+
+  // The minimap darkened (darkenMap) on a canvas of its own size; null when it can't be read (the plain map is drawn).
+  ReplayViewer.prototype.darkMap = function () {
+    try {
+      var w = this.map.naturalWidth, h = this.map.naturalHeight;
+      if (!w || !h) return null;
+      var c = document.createElement("canvas"), cctx = c.getContext("2d");
+      c.width = w; c.height = h;
+      cctx.drawImage(this.map, 0, 0);
+      var img = cctx.getImageData(0, 0, w, h);
+      darkenMap(img.data);
+      cctx.putImageData(img, 0, 0);
+      return c;
+    } catch (err) { return null; }
+  };
 
   // The smallest square around the minimap's opaque pixels, with a margin: the view the
   // canvas shows, so the map fills it instead of floating in the image's empty border.
@@ -2031,7 +2051,8 @@
       controlStatus: q("[data-replay-control-status]"), controlLegend: q("[data-replay-control-legend]"),
       controlTable: q("[data-replay-control-table]"), controlReasons: q("[data-replay-control-reasons]"),
       featuresStatus: q("[data-replay-features-status]"), featuresState: q("[data-replay-features-state]"),
-      featuresEvents: q("[data-replay-features-events]")
+      featuresEvents: q("[data-replay-features-events]"), ctlBar: q("[data-replay-ctlbar]"),
+      preset: q("[data-replay-preset]")
     };
     if (this.ui.controlReasons) {
       var toReason = function (e) {
@@ -2083,6 +2104,7 @@
       box.checked = self.layers[name];
       box.addEventListener("change", function () {
         self.layers[name] = box.checked;
+        self.presetChanged();
         try { global.localStorage.setItem("replay-layer-" + name, box.checked ? "1" : "0"); } catch (err) { /* ignore */ }
         if (name === "control") self.refreshControl();
         if (name === "areas") self.refreshAreas();
@@ -2101,6 +2123,7 @@
     if (this.ui.controlView) {
       this.ui.controlView.addEventListener("change", function () {
         self.controlView = self.ui.controlView.value;
+        self.presetChanged();
         self.controlPaint = null;
         self.refreshControl();
         self.draw();
@@ -2112,10 +2135,12 @@
     if (this.ui.controlUnknown) {
       this.ui.controlUnknown.addEventListener("change", function () {
         self.unknownView = self.ui.controlUnknown.value;
+        self.presetChanged();
         self.controlPaint = null;
         self.draw();
       });
     }
+    this.bindPresets();
     Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-control-scope]"), function (button) {
       button.addEventListener("click", function () {
         self.controlScope = button.getAttribute("data-replay-control-scope");
@@ -3448,6 +3473,63 @@
     return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
   }
 
+  // The darker floor: the minimap's grey turned down to a dark blue-grey so team colours and the outlines read
+  // over it; the sites' yellow tint keeps its hue, darkened. Transparent pixels (off the map) stay transparent.
+  var MAP_DIM = 0.42, SITE_TINT = 22;
+  function darkenMap(rgba) {
+    for (var o = 0; o < rgba.length; o += 4) {
+      if (!rgba[o + 3]) continue;
+      var r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      if (r - b > SITE_TINT) { rgba[o] = r * 0.55; rgba[o + 1] = g * 0.55; rgba[o + 2] = b * 0.45; continue; }
+      var l = (r + g + b) / 3 * MAP_DIM;
+      rgba[o] = l * 0.9; rgba[o + 1] = l * 0.95; rgba[o + 2] = Math.min(255, l * 1.12);
+    }
+    return rgba;
+  }
+
+  // Wall and box outlines from the sight mask (`size` x `size` bytes, non-zero blocks sight): every blocking
+  // pixel within OUTLINE_R2 (squared px) of open floor, painted opaque into `rgba`; the rest stays transparent.
+  var OUTLINE_R2 = 10, OUTLINE_RGB = [222, 232, 244];
+  function outlinePixels(mask, size, rgba) {
+    var r = Math.floor(Math.sqrt(OUTLINE_R2));
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        var k = y * size + x, edge = false;
+        if (!mask[k]) continue;
+        for (var dy = -r; dy <= r && !edge; dy++) {
+          var yy = y + dy;
+          if (yy < 0 || yy >= size) continue;
+          for (var dx = -r; dx <= r; dx++) {
+            var xx = x + dx;
+            if (xx < 0 || xx >= size || dx * dx + dy * dy > OUTLINE_R2) continue;
+            if (!mask[yy * size + xx]) { edge = true; break; }
+          }
+        }
+        if (!edge) continue;
+        var o = k * 4;
+        rgba[o] = OUTLINE_RGB[0]; rgba[o + 1] = OUTLINE_RGB[1]; rgba[o + 2] = OUTLINE_RGB[2]; rgba[o + 3] = 255;
+      }
+    }
+    return rgba;
+  }
+
+  // The Show bar's View presets (the owner's picks, 2026-11-20): a team's coach sees the true positions with the
+  // enemy's unknown, i.e. where their own team could be that the enemy can't rule out ("Team 2's" for team 1); All
+  // adds names and both teams' unknown. `groupTeam` is {A: "team-1", B: "team-2"} from the linked players.
+  // Returns null for "custom" (nothing changes) or a name it doesn't know.
+  function viewPreset(name, groupTeam) {
+    if (name !== "team-1" && name !== "team-2" && name !== "all") return null;
+    var layers = { names: name === "all", abilities: true, projectiles: true, tracers: true, cones: true, aim: true,
+      areas: false, features: true, control: true, bar: true, gaps: false };
+    var unknown = "both";
+    if (name !== "all") {
+      var enemy = name === "team-1" ? "team-2" : "team-1";
+      unknown = "AB".split("").filter(function (g) { return (groupTeam || {})[g] === enemy; })[0] ||
+        (enemy === "team-2" ? "B" : "A");
+    }
+    return { layers: layers, view: "true", unknown: unknown };
+  }
+
   // The map's sight mask as bytes (1 blocks sight), from its image; null while loading, without one, or on failure.
   ReplayViewer.prototype.loadSightMask = function () {
     var self = this, url = this.options.sightMask;
@@ -3463,6 +3545,14 @@
         var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
         for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
         self.sight = { mask: mask, size: n };
+        try {                                  // the walls' and boxes' outlines, drawn over map control
+          var lines = document.createElement("canvas"), lctx = lines.getContext("2d");
+          lines.width = lines.height = n;
+          var paint = lctx.createImageData(n, n);
+          outlinePixels(mask, n, paint.data);
+          lctx.putImageData(paint, 0, 0);
+          self.outlines = lines;
+        } catch (err) { self.outlines = null; }   // no outlines: the darker map alone
         self.draw();
       } catch (err) { self.sight = null; }     // unreadable: fixed-length aim and tracers stay
     };
@@ -3676,6 +3766,79 @@
     return team ? team.replace("team-", "Team ") : "side " + group;
   };
 
+  // The Show bar's View picker (viewPreset): a preset sets the Show bar's own boxes and pickers, through their
+  // change events, so each keeps its usual effect and saved setting. Any other change to them shows "Custom".
+  // The choice is remembered per browser and applied again on the next page.
+  ReplayViewer.prototype.bindPresets = function () {
+    var self = this, select = this.ui.preset;
+    this.applyingPreset = false;
+    if (!select) return;
+    select.addEventListener("change", function () {
+      try { global.localStorage.setItem("replay-preset", select.value); } catch (err) { /* ignore */ }
+      self.applyPreset(select.value);
+    });
+    var saved = null;
+    try { saved = global.localStorage && global.localStorage.getItem("replay-preset"); } catch (err) { /* ignore */ }
+    if (saved && select.querySelector('option[value="' + saved + '"]')) {
+      select.value = saved;
+      this.applyPreset(saved);
+    }
+  };
+
+  ReplayViewer.prototype.applyPreset = function (name) {
+    var preset = viewPreset(name, controlApi() ? controlApi().groupTeams(this.linked && this.linked.players) : {});
+    if (!preset) return;
+    var self = this, root = this.root;
+    var set = function (el, prop, value) {
+      if (!el || el[prop] === value) return;
+      el[prop] = value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    this.applyingPreset = true;
+    try {
+      Object.keys(preset.layers).forEach(function (name) {
+        set(root.querySelector('[data-replay-layer="' + name + '"]'), "checked", preset.layers[name]);
+      });
+      set(self.ui.controlView, "value", preset.view);
+      set(self.ui.controlUnknown, "value", preset.unknown);
+    } finally {
+      this.applyingPreset = false;
+    }
+  };
+
+  // A Show-bar change the user made (not a preset's): the picker says "Custom".
+  ReplayViewer.prototype.presetChanged = function () {
+    var select = this.ui && this.ui.preset;
+    if (!select || this.applyingPreset || select.value === "custom") return;
+    select.value = "custom";
+    try { global.localStorage.setItem("replay-preset", "custom"); } catch (err) { /* ignore */ }
+  };
+
+  // The control bar beside the map: team 1's share of the walkable floor from the bottom, team 2's from the top,
+  // contested and unheld ground grey between (controlShares). `shares` null hides it.
+  ReplayViewer.prototype.renderCtlBar = function (shares) {
+    var bar = this.ui && this.ui.ctlBar;
+    if (!bar) return;
+    if (!shares || !shares.total || !this.layers.control || !this.layers.bar) { bar.hidden = true; return; }
+    var teams = controlApi().groupTeams(this.linked && this.linked.players);
+    var one = teams.B === "team-1" ? "b" : "a", two = one === "a" ? "b" : "a";
+    var pct = function (n) { return Math.round(100 * n / shares.total); };
+    var p1 = pct(shares[one]), p2 = pct(shares[two]), pc = pct(shares.contested), rest = Math.max(0, 100 - p1 - p2);
+    var key = [p1, p2, pc].join(":");
+    bar.hidden = false;
+    if (bar.getAttribute("data-shown") === key) return;
+    bar.setAttribute("data-shown", key);
+    bar.querySelector("[data-ctlbar-t2]").style.flexGrow = p2;
+    bar.querySelector("[data-ctlbar-mid]").style.flexGrow = rest;
+    bar.querySelector("[data-ctlbar-t1]").style.flexGrow = p1;
+    bar.querySelector("[data-ctlbar-n1]").textContent = p1;
+    bar.querySelector("[data-ctlbar-n2]").textContent = p2;
+    var text = "Map control now: Team 1 " + p1 + "% · Team 2 " + p2 + "% · contested " + pc + "% · nobody " +
+      Math.max(0, rest - pc) + "% of the walkable floor";
+    bar.setAttribute("title", text);
+    bar.setAttribute("aria-label", text);
+  };
+
   // The "as ... knew it" picker: shown only for a round stored with the knowledge streams.
   ReplayViewer.prototype.showControlViews = function (value) {
     var wrap = this.ui.controlViewWrap, select = this.ui.controlView, self = this;
@@ -3719,11 +3882,11 @@
   // Paints the layer (and the highlight) for the tick at t into offscreen images, only when the
   // round, the tick, the highlight or the switches change, then draws them over the map.
   ReplayViewer.prototype.drawControl = function (ctx, size, hits) {
-    if (!this.control || (!this.layers.control && this.highlight === null)) return;
+    if (!this.control || (!this.layers.control && this.highlight === null)) { this.renderCtlBar(null); return; }
     var value = this.controlCache.ready(this.number);
-    if (!value) return;
+    if (!value) { this.renderCtlBar(null); return; }
     var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
-    if (tick < 0) return;
+    if (tick < 0) { this.renderCtlBar(null); return; }
     var knowing = this.knowingGroup(value);
     var key = [this.number, tick, this.layers.control, this.highlight, knowing, this.unknownView].join(":");
     var showUnknown = !!(this.layers.control && this.unknownView !== "off" && parsed.unknown_a && parsed.unknown_b);
@@ -3736,6 +3899,9 @@
         var codes = knowing ? value.cursor.knew("knew_" + knowing.toLowerCase(), tick) : value.cursor.states(tick);
         C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors);
         img.ctx.putImageData(img.data, 0, 0);
+        this.controlShares = C.controlShares(codes);   // the bar counts the picture the map shows
+      } else {
+        this.controlShares = null;
       }
       if (showUnknown) {
         var uk = this.controlCanvas("unknown");
@@ -3753,6 +3919,7 @@
         hl.ctx.putImageData(hl.data, 0, 0);
       }
     }
+    this.renderCtlBar(this.layers.control ? this.controlShares : null);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     if (this.layers.control) ctx.drawImage(this.controlCanvas("states").canvas, 0, 0, size, size);
@@ -4431,8 +4598,12 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
     ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
-    if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
-    if (!this.current) { ctx.setTransform(1, 0, 0, 1, 0, 0); return; }
+    if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.mapDark || this.map, 0, 0, size, size);
+    if (!this.current) {
+      if (this.outlines) ctx.drawImage(this.outlines, 0, 0, size, size);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      return;
+    }
     var blob = this.current.blob, tracks = this.current.tracks, t = this.t, self = this;
     var r = size / 48 / Math.sqrt(view.k);   // zoomed marks grow, but only by the square root
     var hits = [];
@@ -4440,6 +4611,8 @@
     this.drawControl(ctx, size, hits);   // map control: under everything else
     this.drawAreas(ctx, size);          // named walk cells, under utility and players
     this.drawGaps(ctx, size, hits);      // timing gaps: over control, under utility and players
+    // Walls and boxes outlined over control, areas and gaps, so a box never vanishes under a team's colour.
+    if (this.outlines) ctx.drawImage(this.outlines, 0, 0, size, size);
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);
@@ -4657,6 +4830,7 @@
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
+    darkenMap: darkenMap, outlinePixels: outlinePixels, viewPreset: viewPreset, OUTLINE_RGB: OUTLINE_RGB,
     abilityStyle: abilityStyle, lineEnds: lineEnds, boxCorners: boxCorners, traceWalls: traceWalls, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, timeLeft: timeLeft, closeOf: closeOf, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,

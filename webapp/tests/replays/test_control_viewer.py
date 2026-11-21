@@ -462,3 +462,140 @@ def test_side_groups_map_to_teams():
     got = run_node("function run(p) { return C.groupTeams(p.players); }",
                    {"players": {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}})
     assert got == {"A": "team-2", "B": "team-1"}
+
+
+def test_the_control_bar_counts_each_groups_cells_at_any_level():
+    names = cf.STATE_NAMES
+    codes = [names.index(n) for n in ("a_active", "a_safe", "a_passive", "b_active", "b_passive",
+                                      "contested", "contested_active", "none", "none", "none")]
+    got = run_node("function run(p) { return C.controlShares(Uint8Array.from(p.codes)); }", {"codes": codes})
+    assert got == {"a": 3, "b": 2, "contested": 2, "none": 3, "total": 10}
+    assert run_node("function run(p) { return C.controlShares(null); }", {})["total"] == 0
+
+
+def test_the_darker_map_dims_the_floor_keeps_the_sites_hue_and_the_empty_border():
+    body = "function run(p) { return Array.from(C.darkenMap(Uint8ClampedArray.from(p.px))); }"
+    floor, site, empty = [150, 150, 150, 255], [170, 160, 100, 255], [90, 90, 90, 0]
+    got = run_node(body, {"px": floor + site + empty}, js=REPLAY_JS)
+    f, s, e = got[0:4], got[4:8], got[8:12]
+    assert f == [57, 60, 71, 255]                                         # mean x 0.42, then (0.9, 0.95, 1.12)
+    assert s == [94, 88, 45, 255]                                         # site: (0.55, 0.55, 0.45), still yellow
+    assert e == empty                                                     # off the map: untouched
+
+
+def test_outlines_trace_blocking_pixels_next_to_open_floor():
+    # 12 x 12, everything blocked but one open pixel: painted within squared distance 10 of it, not beyond
+    size = 12
+    body = """
+      function run(p) {
+        const mask = new Uint8Array(p.size * p.size).fill(1);
+        mask[p.open[1] * p.size + p.open[0]] = 0;
+        const rgba = new Uint8ClampedArray(p.size * p.size * 4);
+        C.outlinePixels(mask, p.size, rgba);
+        return Array.from({length: p.size * p.size}, (_, k) => Array.from(rgba.subarray(k * 4, k * 4 + 4)));
+      }"""
+    got = run_node(body, {"size": size, "open": [6, 6]}, js=REPLAY_JS)
+    at = lambda x, y: got[y * size + x]  # noqa: E731
+    ink = [222, 232, 244, 255]                                            # the literal colour, not the constant
+    for x, y in [(7, 6), (9, 6), (9, 7), (8, 8), (6, 5)]:                 # squared distance 1, 9, 10, 8, 1
+        assert at(x, y) == ink, (x, y)
+    for x, y in [(9, 8), (10, 6), (10, 8), (0, 0), (11, 11)]:             # squared distance 13, 16, 20, far
+        assert at(x, y) == [0, 0, 0, 0], (x, y)
+    assert at(6, 6) == [0, 0, 0, 0]                                       # the open floor is never painted
+    got = run_node(body, {"size": size, "open": [1, 0]}, js=REPLAY_JS)    # a blocked pixel on the border
+    assert at(0, 0) == ink and at(11, 11) == [0, 0, 0, 0]                 # no read past the mask's edge
+
+
+def _viewer_script(body: str) -> str:
+    return ("const rec = require(" + json.dumps(_RECORDER) + "); const R = rec.environment(process.argv[1]);\n"
+            "function stubBar() {\n"
+            "  const spans = {}, attrs = {};\n"
+            "  const span = k => spans[k] || (spans[k] = {style: {}, textContent: ''});\n"
+            "  return {hidden: true, spans, attrs, setAttribute: (k, v) => { attrs[k] = v; },\n"
+            "          getAttribute: k => (k in attrs ? attrs[k] : null), querySelector: sel => span(sel)};\n"
+            "}\n" + body)
+
+
+_RECORDER = str(WEBAPP / "tests" / "replays" / "viewer_recorder.js")
+_PLAYERS = {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}
+
+
+def test_the_control_bar_puts_team_1_at_the_bottom_and_hides_without_data():
+    body = _viewer_script("""
+      function run(p) {
+        const {v} = rec.makeViewer(R);
+        v.linked = {players: p.players};
+        const out = {};
+        for (const [name, layers, shares] of p.cases) {
+          v.ui.ctlBar = stubBar();
+          Object.assign(v.layers, layers);
+          v.renderCtlBar(shares);
+          const s = v.ui.ctlBar.spans;
+          out[name] = {hidden: v.ui.ctlBar.hidden, top: s["[data-ctlbar-n2]"] && s["[data-ctlbar-n2]"].textContent,
+                       bottom: s["[data-ctlbar-n1]"] && s["[data-ctlbar-n1]"].textContent,
+                       t2: s["[data-ctlbar-t2]"] && s["[data-ctlbar-t2]"].style.flexGrow,
+                       t1: s["[data-ctlbar-t1]"] && s["[data-ctlbar-t1]"].style.flexGrow,
+                       mid: s["[data-ctlbar-mid]"] && s["[data-ctlbar-mid]"].style.flexGrow};
+        }
+        return out;
+      }""")
+    shares = {"a": 60, "b": 20, "contested": 10, "none": 10, "total": 100}
+    on = {"control": True, "bar": True}
+    cases = [["shown", on, shares], ["no_control", {"control": False, "bar": True}, shares],
+             ["no_bar", {"control": True, "bar": False}, shares], ["null", on, None],
+             ["empty", on, dict(shares, total=0)]]
+    got = run_node(body, {"recorder": _RECORDER, "players": _PLAYERS, "cases": cases}, js=REPLAY_JS)
+    # A is Team 2 (top), B is Team 1 (bottom)
+    assert got["shown"] == {"hidden": False, "top": 60, "bottom": 20, "t2": 60, "t1": 20, "mid": 20}
+    for name in ("no_control", "no_bar", "null", "empty"):
+        assert got[name]["hidden"] is True, name
+
+
+def test_the_control_bar_counts_the_picture_the_map_shows():
+    body = _viewer_script("""
+      function run(p) {
+        const names = ReplayControl.STATE_NAMES;
+        const code = n => names.indexOf(n);
+        const truth = Uint8Array.from([code("a_active"), code("a_active"), code("b_active"), code("none")]);
+        const knew = Uint8Array.from([code("b_safe"), code("b_safe"), code("b_passive"), code("contested")]);
+        const out = {};
+        for (const view of ["true", "A"]) {
+          const {v} = rec.makeViewer(R);
+          v.linked = {players: p.players};
+          v.ui.ctlBar = stubBar();
+          v.control = {}; v.layers.control = true; v.layers.bar = true; v.unknownView = "off";
+          v.controlView = view; v.controlPaint = null; v.t = 0;
+          v.controlCache = {ready: () => ({parsed: {times: [0], walk: [], knew_a: true, header: {}},
+            cursor: {states: () => truth, knew: () => knew}})};
+          v.controlColors = () => ({});
+          v.controlCanvas = () => ({canvas: {}, ctx: {putImageData() {}, createImageData: () => ({data: new Uint8ClampedArray(4)})},
+                                    data: {data: new Uint8ClampedArray(4)}});
+          ReplayControl.paintStates = () => {};
+          v.drawControl(rec.mockCtx([]), 512, []);
+          out[view] = {n1: v.ui.ctlBar.spans["[data-ctlbar-n1]"].textContent,
+                       n2: v.ui.ctlBar.spans["[data-ctlbar-n2]"].textContent};
+        }
+        return out;
+      }""")
+    got = run_node(body, {"recorder": _RECORDER, "players": _PLAYERS}, js=REPLAY_JS)
+    # true picture: A 2 of 4 (Team 2 at the top: 50), B 1 of 4 (Team 1, 25); as A knew it: B holds 3 of 4 (75), A none
+    assert got["true"] == {"n1": 25, "n2": 50}
+    assert got["A"] == {"n1": 75, "n2": 0}
+
+
+def test_the_view_presets_are_the_owners_picks():
+    body = "function run(p) { return p.names.map(n => C.viewPreset(n, p.teams)); }"
+    teams = {"A": "team-2", "B": "team-1"}
+    blue, red, every, custom, odd = run_node(
+        body, {"names": ["team-1", "team-2", "all", "custom", "nope"], "teams": teams}, js=REPLAY_JS)
+    on = {"abilities", "projectiles", "tracers", "cones", "aim", "features", "control", "bar"}
+    for preset in (blue, red, every):
+        assert {k for k, v in preset["layers"].items() if v} - {"names"} == on
+        assert preset["layers"]["areas"] is False and preset["layers"]["gaps"] is False
+        assert preset["view"] == "true"                                   # the true positions, every preset
+    assert blue["layers"]["names"] is False and red["layers"]["names"] is False and every["layers"]["names"] is True
+    assert blue["unknown"] == "A" and red["unknown"] == "B"               # the enemy team's unknown, by group
+    assert every["unknown"] == "both"
+    assert custom is None and odd is None
+    fallback = run_node(body, {"names": ["team-1", "team-2"], "teams": {}}, js=REPLAY_JS)
+    assert [p["unknown"] for p in fallback] == ["B", "A"]
