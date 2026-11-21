@@ -5,9 +5,18 @@ import pytest
 
 from app.coach import query, runner, snapshot
 from app.coach.playbook import Playbook
-from scripts import coach_report
+from scripts import coach_report, coach_store_report
 from tests.coach import toys
 from tests.coach.test_snapshot import CONTEXT
+
+OFF_ROSTER = "Random#0"
+_REAL_ON_ROSTER = coach_store_report.on_roster
+
+
+@pytest.fixture(autouse=True)
+def _roster(monkeypatch):
+    """Every toy player is on the roster except OFF_ROSTER: the real file holds the owner's friends."""
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name != OFF_ROSTER)
 
 
 def test_fight_facts_are_logged_with_trusted_ids(snap, tmp_path):
@@ -591,6 +600,34 @@ def test_the_team_command_hands_every_teammate_to_one_report_process(monkeypatch
 def test_the_team_command_passes_the_report_process_failure_on(monkeypatch):
     coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Owner#1": 1})
     assert coach_team.main() == 1 and len(ran) == 1
+
+
+def test_the_team_command_gives_a_teammate_off_the_roster_no_run(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name != "Friend#2")
+    assert coach_team.main() == 0
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Third#3"]]
+    assert "not on the roster, no run: Friend#2" in capsys.readouterr().out
+
+
+def test_the_team_command_refuses_a_player_off_the_roster(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", OFF_ROSTER], {})
+    assert coach_team.main() == 2 and ran == []
+    assert "not on the roster" in capsys.readouterr().err
+
+
+def test_a_player_off_the_roster_refuses_the_batch_before_anything_is_read(tmp_path, monkeypatch, capsys):
+    _wire(monkeypatch, tmp_path, ["ABCDEF12-0000-4000-8000-000000000000", "0", OFF_ROSTER], make_data())
+    monkeypatch.setattr(snapshot, "read", lambda *a, **kw: pytest.fail("the match must not be read"))
+    assert coach_report.main() == 2
+    assert OFF_ROSTER in capsys.readouterr().err and not (tmp_path / "valo-coach").exists()
+
+
+def test_the_roster_is_the_tracked_players_file_whatever_the_case(tmp_path, monkeypatch):
+    roster = tmp_path / "tracked_players.json"
+    roster.write_text(json.dumps(["Owner#NA1", "Friend#2"]), encoding="utf-8")
+    monkeypatch.setattr(coach_store_report, "ROSTER", roster)
+    assert _REAL_ON_ROSTER(" owner#na1 ") and _REAL_ON_ROSTER("FRIEND#2") and not _REAL_ON_ROSTER("Stranger#9")
 
 
 # --- several players in one coach_report.py: one read of the match, the runs one after another ---

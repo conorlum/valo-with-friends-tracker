@@ -289,6 +289,7 @@ def test_commands_exit_two_on_util_refusal(monkeypatch, tmp_path, capsys, script
     monkeypatch.setattr(playbook, "load", lambda: {})
     monkeypatch.setattr(coach_report, "find_claude", lambda: "claude")   # CI has no claude on PATH
     monkeypatch.setattr(coach_store_report, "resolve", lambda *a: (7, 100))
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: True)      # toy player "0"
     ask = Mock(return_value={})
     monkeypatch.setattr(_admin_client, "request_util_build", ask)
 

@@ -113,7 +113,9 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   one repair is published anyway if it can be stored, and listed with its problems in the command's output
   (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
   the first prompt to `prompt.txt` in the run directory and calls no model. `-Team` does the same for that
-  player and their four teammates (`scripts/coach_team.py`). From `webapp`, run
+  player and their four teammates (`scripts/coach_team.py`). Only players on `scripts/tracked_players.json` are
+  coached: a name off it refuses the whole run, and `-Team` skips teammates off it (the owner's choice,
+  2026-11-20; the one place the roster decides something beyond crawling). From `webapp`, run
   `.\scripts\coach.ps1 <match uuid> "A#1","B#2"` to coach several named players. If you use a `coach` wrapper in
   your PowerShell profile, declare its `$Player` parameter as `[string[]]` to pass multiple names through.
   Several players go through one `coach_report.py` process that reads the match once, then runs them one after another,
