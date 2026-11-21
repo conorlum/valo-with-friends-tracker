@@ -1314,6 +1314,25 @@
     Hush: 8
   };
 
+  // Veto's colour is a stand-in pending the owner's in-game colour (D2).
+  var UTIL_AGENT_COLORS = {
+    "Astra": "#b07cff", "Breach": "#ff8a3d", "Brimstone": "#ff9b54", "Chamber": "#e3c36a", "Clove": "#f07bd8",
+    "Cypher": "#e9edf2", "Deadlock": "#dbe7f5", "Fade": "#7f6ab8", "Gekko": "#b4f05a", "Harbor": "#26c2d0",
+    "Hush": "#ff9fc8", "Iso": "#9a6bff", "Jett": "#f4f7fb", "KAY/O": "#4a95ff", "Killjoy": "#ffd84a",
+    "Miks": "#ff6fb1", "Neon": "#46d2ff", "Omen": "#7a5ad6", "Phoenix": "#ff7b2e", "Raze": "#ff8f3f",
+    "Reyna": "#c35be6", "Sage": "#5fe0d0", "Skye": "#7fe07a", "Sova": "#5fb4ff", "Tejo": "#ffb347",
+    "Veto": "#7fc8b8",
+    "Viper": "#4fe07a", "Vyse": "#b18cff", "Waylay": "#ffd1e6", "Yoru": "#3d7bff"
+  };
+  var UTIL_ABILITY_COLORS = {
+    "Sky Smoke": "#c9b08a", "Stim Beacon": "#ff9b54", "Dark Cover": "#5c46a8",
+    "Nebula  / Dissipate": "#c98bff", "Gravity Well": "#9b6bff", "Cyber Cage": "#d9dee6", "Barrier Orb": "#8ff0e4"
+  };
+
+  function utilColorOf(a, style) {
+    return condOwn(UTIL_ABILITY_COLORS, style.ability) || condOwn(UTIL_AGENT_COLORS, a.agent || style.agent) || null;
+  }
+
   // A slot's ult points at t, or null when the round has no ult points for it (an old blob, or before its first).
   function ultAt(index, slot, t) {
     var line = index && index.ult ? condOwn(index.ult, String(slot)) : undefined;
@@ -1759,6 +1778,12 @@
   };
   function controlPaletteName(name) {
     return Object.prototype.hasOwnProperty.call(CONTROL_PALETTES, name) ? name : "green-red";
+  }
+  function sideColorOf(paletteName, team, group) {
+    var palette = CONTROL_PALETTES[controlPaletteName(paletteName)];
+    if (team === "team-1" || (!team && group === "A")) return palette[0];
+    if (team === "team-2" || (!team && group === "B")) return palette[1];
+    return null;
   }
   var CONTROL_STATUS = {
     not_ready: "Map control isn't ready for this round yet.",
@@ -2754,6 +2779,18 @@
 
   ReplayViewer.prototype.ownerColor = function (slot) {
     return slot === null || slot === undefined ? this.css("--replay-unknown", "#77787f") : this.slotColor(slot);
+  };
+
+  ReplayViewer.prototype.utilColor = function (a, style) {
+    return utilColorOf(a, style) || this.ownerColor(a.slot);
+  };
+
+  ReplayViewer.prototype.sideColor = function (slot) {
+    var linked = this.linked && this.linked.players && this.linked.players[String(slot)];
+    var players = this.current && this.current.blob && this.current.blob.players || [];
+    var player = players.find(function (p) { return String(p.slot) === String(slot); });
+    return sideColorOf(this.controlPalette, linked && linked.team, player && player.side) ||
+      this.css("--replay-unknown", "#77787f");
   };
 
   // A team-coloured disc with the ability's white glyph and a dark surface ring, valoplant-style.
@@ -4905,6 +4942,7 @@
   }
 
   var api = {
+    utilColorOf: utilColorOf, sideColorOf: sideColorOf, UTIL_AGENT_COLORS: UTIL_AGENT_COLORS,
     decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
