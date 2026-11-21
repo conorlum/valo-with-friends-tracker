@@ -206,12 +206,16 @@ def main() -> int:
     from app.coach import playbook, snapshot
     from app.db import SessionLocal
     from scripts import _admin_client
-    from scripts.coach_store_report import resolve
+    from scripts.coach_store_report import on_roster, resolve
 
     try:
         uuid = str(uuid_module.UUID(args.match_uuid))
     except ValueError:
         print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
+        return 2
+    off = [name for name in args.players if not on_roster(name)]
+    if off:     # before any database, model or run-directory work: the whole batch, like a wrong name
+        print(f"refused: not on the roster (scripts/tracked_players.json): {', '.join(off)}", file=sys.stderr)
         return 2
     if not args.prompt_only and find_claude() is None:      # before any database or run-directory work
         print("refused: the claude command is not on PATH", file=sys.stderr)

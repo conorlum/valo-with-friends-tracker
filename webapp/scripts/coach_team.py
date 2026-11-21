@@ -1,5 +1,6 @@
-"""Writes and publishes a coaching report for every player on one player's team: one coach_report.py process
-given every teammate's name, so the match is read from the database once.
+"""Writes and publishes a coaching report for every player on one player's team who is on the roster
+(scripts/tracked_players.json): one coach_report.py process given those teammates' names, so the match is read
+from the database once. A teammate off the roster gets no run.
 
     $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_team.py <match uuid> "<player>" [--model <name>] [--dry-run | --prompt-only]
 
@@ -46,14 +47,21 @@ def main() -> int:
     mode.add_argument("--prompt-only", action="store_const", const="--prompt-only", dest="mode")
     args = parser.parse_args()
     from app.db import SessionLocal
-    from scripts.coach_store_report import team_names
+    from scripts.coach_store_report import on_roster, team_names
 
+    if not on_roster(args.player):
+        print(f"refused: {args.player!r} is not on the roster (scripts/tracked_players.json)", file=sys.stderr)
+        return 2
     with SessionLocal() as db:
         try:
             names = team_names(db, args.match_uuid, args.player)
         except ValueError as error:
             print(f"refused: {error}", file=sys.stderr)
             return 2
+    skipped = [name for name in names if not on_roster(name)]
+    names = [name for name in names if name not in skipped]
+    if skipped:
+        print(f"not on the roster, no run: {', '.join(skipped)}", flush=True)
     return run_one(report_command(args.match_uuid, names, args.model, args.mode))
 
 

@@ -72,10 +72,30 @@ def _health(view, slot: int, t: float) -> str | None:
     return "healthy" if pct > 50 else "hurt" if pct > 25 else "low"
 
 
+UTIL_NEAR_M = 8.0       # a smoke is about 4 to 5 m across its radius: this reaches a player at its edge
+
+
+def _util_near(snap, view, standing: list[dict], position: dict) -> list[dict]:
+    """The placed util standing within UTIL_NEAR_M of a position, nearest first."""
+    if position.get("u") is None:
+        return []
+    out = []
+    for s in standing:
+        metres = view.metres(math.hypot(position["u"] - s["u"], position["v"] - s["v"]))
+        if metres <= UTIL_NEAR_M:
+            e = s["event"]
+            row = {"ability": e.get("name") or e.get("code"), "by": snap.names.get(e.get("by")),
+                   "metres": round(metres, 1), "since": e["t"]}
+            if s["until"] is not None:
+                row["until"] = s["until"]
+            out.append(row)
+    return sorted(out, key=lambda r: r["metres"])
+
+
 def where(snap, n, t) -> dict:
     t = float(t)
     view = _view(snap, n, t)
-    players = []
+    players, standing = [], view.placed_util(t)
     for s in view.slots:
         position = view.position(s, t)
         if position["alive"] and position.get("u") is None:       # alive, no usable sample: alive with no place
@@ -83,10 +103,13 @@ def where(snap, n, t) -> dict:
         row = {"slot": s, "name": snap.names.get(s), "side": view.side(s), "role": snap.role(int(n), s), **position}
         if row["alive"]:
             row["health"] = _health(view, s, t)
+            row["util_near"] = _util_near(snap, view, standing, position)
         players.append(row)
     note = ("health is a word (healthy, hurt, low) after the player's last recorded hit; null means no hit "
             "is recorded so far, not full health; heals are not recorded; a living player with no u/v has "
-            "no usable position at that time")
+            "no usable position at that time. util_near: placed util (a smoke, a wall, a trip, a camera, a cage, "
+            f"a molly) standing at t within {UTIL_NEAR_M:g} m of a living player, nearest first, with metres to "
+            "its centre (not its edge), who placed it, and the span it stood (no until: to the round's end)")
     if _has_approximate_area(players):
         note += ". " + _APPROXIMATE_AREAS
     return {"round": int(n), "t": t, "players": players, "note": note}
