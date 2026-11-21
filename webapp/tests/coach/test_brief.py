@@ -4,6 +4,21 @@ from tests.coach.test_areas import painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT, SHARES
 
 
+def test_no_gun_deaths_is_in_the_brief_with_its_round_fight_and_time(tmp_path, monkeypatch):
+    from tests.coach.test_fights import snapshot as fight_snapshot
+
+    match = snap(tmp_path, {5: 0})
+    toy = fight_snapshot(my="Knife")
+    monkeypatch.setattr(match, "view", toy.view)
+    monkeypatch.setattr(match, "control", toy.control)
+    built = brief.build(match, 0)
+    assert built["no_gun_deaths"] == {
+        "deaths": [{"round": 5, "fight": 0, "t": 10, "item": "Knife"}],
+        "count": 1, "of_deaths": 1, "flag": False,
+    }
+    assert built["rounds"][0]["fights"][0]["t0"] == 10
+
+
 def test_lone_rifle_death_has_a_fight_and_handover_flag(tmp_path, monkeypatch):
     from tests.coach.test_fights import snapshot as fight_snapshot
 

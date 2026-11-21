@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 
-from app.coach import knowledge
+from app.coach import held, knowledge
 from app.moments.constants import GUN_CLASS, TRADE_RANGE_M
 from app.replays import guns
 
@@ -82,7 +82,7 @@ def _known(view, slot, enemy, t0, gun, holds, shots, control, site):
     return None
 
 
-def _death(view, slot, enemy, t, holds, shots):
+def _death(view, slot, enemy, t, holds, shots, *, agent=None):
     def given_away(row):
         # Another slot holding the same actor later in this life proves it left this player's hands.
         actor = (row.get("id"), row.get("gen"))
@@ -90,7 +90,21 @@ def _death(view, slot, enemy, t, holds, shots):
             other["by"] != slot and (other.get("id"), other.get("gen")) == actor
             and row["t"] < other["t"] <= t for other in holds)
 
-    firearms = [row for row in _life_rows(view, slot, t, holds)
+    history = _life_rows(view, slot, t, holds)
+    if agent is None:
+        agent = next((p.get("agent") for p in view.blob["players"] if int(p["slot"]) == slot), None)
+    # Death tears down the equipped item with an unknown, actor-less close. Keep the
+    # living state, but retain earlier unknown switches and real switches at death.
+    last_held = next((row for row in reversed(history)
+                      if not (row["t"] >= t and row.get("cat") == "other" and row.get("id") is None)), None)
+    out_at_death = held.item_name(agent, last_held)
+    possessed = [row for row in view.blob.get("util") or []
+                 if row.get("k") == "ability" and row.get("by") == slot and row["t"] <= t
+                 and (row.get("t1") is None or t <= row["t1"])
+                 and any(lo <= t and (hi is None or t <= hi) for lo, hi in row.get("possessed") or [])]
+    if possessed:
+        out_at_death = held.ability_name(agent, max(possessed, key=lambda row: row["t"]))
+    firearms = [row for row in history
                 if _tier(row) is not None and not given_away(row)]
     best = max(reversed(firearms), key=lambda row: (_tier(row), row["t"]), default=None)
     killer, _ = _gun_at(view, enemy, t, holds, shots)
@@ -100,7 +114,7 @@ def _death(view, slot, enemy, t, holds, shots):
             "dropped_id": best.get("id") if best else None,
             "dropped_gen": best.get("gen") if best else None,
             "dropped_tier": dropped_tier, "killer_gun_at_kill": killer.get("gun") if killer else None,
-            "killer_tier": killer_tier, "better": better}
+            "killer_tier": killer_tier, "better": better, "out_at_death": out_at_death}
 
 
 def _pickup(view, names, slot, t, death, holds, shots, site_kills):
@@ -170,7 +184,8 @@ def for_round(snap, n: int, slot: int) -> list[dict]:
         my_range = guns.range_verdict(my_gun, metres) if _tier(mine) is not None else None
         enemy_range = guns.range_verdict(enemy_gun, metres) if _tier(theirs) is not None else None
         known = _known(view, slot, enemy, t0, enemy_gun, holds, shots, control, site)
-        death = None if won else _death(view, slot, enemy, t, holds, shots)
+        agent = ((context.get("players") or {}).get(str(slot)) or {}).get("agent")
+        death = None if won else _death(view, slot, enemy, t, holds, shots, agent=agent)
         handover = None if won else {"my_best_tier": death["dropped_tier"],
                                     "killer_tier": death["killer_tier"], "better": death["better"]}
         picked_up, kills_with = (None, 0) if won else _pickup(view, snap.names, slot, t, death, holds, shots,

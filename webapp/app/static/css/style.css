@@ -1716,8 +1716,8 @@ table.compact-table .badge-score {
 }
 
 /* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
-/* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
-.replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
+/* Smokes (and Viper's raised wall) use the agent's colour; these dark tints remain as fallbacks. */
+.replay { --replay-ctl-1: #5ccf8f; --replay-ctl-2: #d9534f; --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
   --replay-smoke-core: rgba(16, 18, 24, 0.84); }
 /* --replay-map-h: the map's height (and so its width), and the height of the coach points' box beside it. */
 .replay.is-linked { --replay-side-w: minmax(320px, 400px); --replay-map-h: calc(100vh - 240px); max-width: none; }
@@ -1890,7 +1890,13 @@ table.compact-table .badge-score {
 .replay-ctlbar-num.is-bottom { bottom: 4px; }
 .replay-key-t1::before { background: var(--replay-team-1); }
 .replay-key-t2::before { background: var(--replay-team-2); }
-.replay-key-smoke::before { background: var(--replay-smoke-core); border: 2px solid var(--ink-secondary); }
+.replay-key-smoke::before { background: radial-gradient(circle at 35% 30%, rgba(220, 212, 245, 0.7), rgba(122, 90, 214, 0.18)); border: 1px solid rgba(240, 235, 255, 0.8); }
+.replay-key-side::before {
+  background: transparent;
+  border: 2px solid var(--replay-ctl-1, #5ccf8f);
+  border-right-color: var(--replay-ctl-2, #d9534f);
+  border-bottom-color: var(--replay-ctl-2, #d9534f);
+}
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
 .replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
 .replay { --replay-unknown: #77787f; }
@@ -2190,11 +2196,11 @@ main:has(.replay.is-linked) { max-width: none; }
 .replay-control-status:empty { display: none; }
 .replay-control-legend { margin-top: 0.4rem; }
 .replay-control-legend-note { color: var(--ink-muted); font-size: 0.85rem; }
-.replay-key-ctl-active::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 55%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 55%, transparent) 50%); }
-.replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 30%, transparent) 50%); }
-.replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
-.replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-team-2) 60%, transparent) 3px 6px); }
-.replay-key-ctl-unknown::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 70%, transparent) 0 1px, transparent 1px 4px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--replay-team-2) 70%, transparent) 0 1px, transparent 1px 4px); border: 1px solid var(--border-strong); }
+.replay-key-ctl-active::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 55%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 55%, transparent) 50%); }
+.replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 30%, transparent) 50%); }
+.replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
+.replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-ctl-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-ctl-2) 60%, transparent) 3px 6px); }
+.replay-key-ctl-unknown::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-ctl-1) 70%, transparent) 0 1px, transparent 1px 4px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--replay-ctl-2) 70%, transparent) 0 1px, transparent 1px 4px); border: 1px solid var(--border-strong); }
 .replay-control-switch { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
 .replay-control-switch .replay-button.is-active { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .replay-control-team td.num.pos { color: var(--good); }

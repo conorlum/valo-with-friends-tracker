@@ -22,7 +22,11 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n", ["gid", "gen"]}`;
 - `{"k": "hold", "t", "by", "gun", "cat", "id", "gen", ["from"], ["seed"]}` (revision 30):
   a firearm or melee switch; `id`/shot `gid` is its actor guid and `gen` its spawn index. A switch
-  to another item closes the hold with `gun: null, cat: "other"`, without `id` or `gen`.
+  to another item closes the hold with `gun: null`, without `id` or `gen`. Revision 32 names
+  `cat: "ability"` with `code`, `key` (C/Q/E/X or null), `name`; spike, defuser and totems have
+  `cat: "spike"`, `"defuser"` and `"flex"` (with the flex's `name`, e.g. `Snake`); unknown items keep `"other"`
+  (one with an archetype is reported in `held_unnamed`). Known ability weapons
+  outside `Default__Ability_*` have null code/key. Unarmed is melee with `item: "unarmed"`.
   `from` names the previous holder of this generation; `seed` marks a surviving round-start carry.
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from", ["friendly"],
@@ -87,6 +91,7 @@ from pathlib import Path
 
 from app.replays import format as fmt
 from app.replays import guns
+from app.replays import held_names
 from app.replays.condense import MapInfo, PlayerTable
 from app.replays.contract import RPC_ORB_PICKUP, loads_row
 from app.replays.player_state_extract import ORB_ARCHETYPE, ORB_REACH
@@ -180,6 +185,8 @@ class Extras:
     # round number -> {"abilities": [...], "shots": [...]}
     rounds: dict[int, dict] = field(default_factory=dict)
     report: dict = field(default_factory=dict)
+    # "<code> <key>/<name>" of held abilities without a kit name (held_names): reported, never stored in a round
+    held_unnamed: set = field(default_factory=set)
 
 
 def _round_of(t_ms: int, windows: list[tuple[int, int, int]], buy_phase: bool = False) -> int | None:
@@ -313,7 +320,7 @@ class Raw:
     actors: dict[int, _Actor]
     shots: list[dict]
     gun_actors: list[_Gun] = field(default_factory=list)
-    holds: list[tuple[int, int, _Gun | None]] = field(default_factory=list)
+    holds: list[tuple[int, int, _Gun | None, str | None]] = field(default_factory=list)
     equips: list[_Equip] = field(default_factory=list)
     contexts: list[_Context] = field(default_factory=list)
     effects: list[_Effect] = field(default_factory=list)
@@ -643,6 +650,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
     raw = Raw(actors, [])
     equip_now: dict[int, _Equip] = {}      # the equippable alive under each GUID
     gun_now: dict[int, _Gun] = {}
+    arch_now: dict[int, str] = {}          # every actor's archetype, replaced on re-spawn
     bombs: set[int] = set()
     carried: set[int] = set()              # the spike's equippable, alive under each GUID
     walls: set[int] = set()
@@ -664,6 +672,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
             if kind == "actor_spawned":
                 archetype = str(data.get("archetype_path") or "")
                 archetype = ARCHETYPE_ALIASES.get(archetype, archetype)
+                arch_now[guid] = archetype
                 raw.origins.pop(guid, None)
                 raw.flights.pop(guid, None)
                 raw.typed_walls.pop(guid, None)
@@ -678,7 +687,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 ended_gun = gun_now.pop(guid, None)
                 if ended_gun is not None:
                     ended_gun.end_ms = t_ms
-                waiting_on = {p for at, p, g in unresolved if g == guid and t_ms - at <= EQUIP_EARLY_MS}
+                waiting_switches = [u for u in unresolved if u[2] == guid]
+                waiting_on = {p for at, p, _ in waiting_switches if 0 <= t_ms - at <= EQUIP_EARLY_MS}
                 for pawn in [p for p, g in holding.items() if g == guid and p not in waiting_on]:
                     del holding[pawn]           # a reused GUID: holding the new actor is a new switch
                 bombs.discard(guid)
@@ -706,14 +716,13 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                                not melee and (held is not None or category == "ability"))
                     gun_now[guid] = gun
                     raw.gun_actors.append(gun)
-                    for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
-                        if 0 <= t_ms - at <= EQUIP_EARLY_MS and (at, pawn, waiting) in placeholder_at:
-                            # Resolve in place: moving it to the end would reverse the source order
-                            # of switches sharing this timestamp.
-                            # (the slot is remembered per waiting actor: placeholders can be equal tuples)
-                            raw.holds[placeholder_at.pop((at, pawn, waiting))] = (at, pawn, gun)
-                    if held is None:
-                        unresolved[:] = [u for u in unresolved if u[2] != guid]
+                for at, pawn, waiting in waiting_switches:
+                    index = placeholder_at.pop((at, pawn, waiting), None)
+                    if index is not None and 0 <= t_ms - at <= EQUIP_EARLY_MS:
+                        # Every kind resolves in place, preserving same-ms source order. Only this
+                        # first spawn can resolve a switch: a later GUID reuse belongs to another life.
+                        raw.holds[index] = (at, pawn, gun_now.get(guid), archetype)
+                unresolved[:] = [u for u in unresolved if u[2] != guid]
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     carried.add(guid)
                     continue
@@ -733,9 +742,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     equip_now[guid] = equip
                     raw.equips.append(equip)
                     # a switch to this equippable sent just before it spawned (older ones named an earlier actor)
-                    for at, pawn, waiting in [u for u in unresolved if u[2] == guid]:
-                        unresolved.remove((at, pawn, waiting))
-                        if t_ms - at <= EQUIP_EARLY_MS and equip.name.startswith("X_"):
+                    for at, pawn, waiting in waiting_switches:
+                        if 0 <= t_ms - at <= EQUIP_EARLY_MS and equip.name.startswith("X_"):
                             raw.ult_equips.append((at, pawn, equip))
                     continue
                 if match is not None:
@@ -759,6 +767,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     live_trips[guid] = instance
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
+                arch_now.pop(guid, None)
                 ended_gun = gun_now.pop(guid, None)
                 if ended_gun is not None:
                     ended_gun.end_ms = t_ms
@@ -887,8 +896,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 if isinstance(held_now, dict):
                     held_now = held_now.get("net_guid")
                 if guid in pawns and isinstance(held_now, int) and holding.get(guid) != held_now:
-                    raw.holds.append((t_ms, guid, gun_now.get(held_now)))
-                    if held_now not in equip_now and held_now not in gun_now:
+                    raw.holds.append((t_ms, guid, gun_now.get(held_now), arch_now.get(held_now)))
+                    if held_now not in arch_now:
                         placeholder_at[(t_ms, guid, held_now)] = len(raw.holds) - 1
                         unresolved[:] = [u for u in unresolved if t_ms - u[0] <= EQUIP_EARLY_MS]
                         unresolved.append((t_ms, guid, held_now))   # kept even if they switch again before it spawns
@@ -2366,7 +2375,7 @@ def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Cou
         nonlocal at
         explicit_zero = set()
         while at < len(ordered) and ordered[at][0] <= limit:
-            t_ms, pawn, gun = ordered[at]
+            t_ms, pawn, gun, archetype = ordered[at]
             at += 1
             slot = players.pawn_slot.get(pawn)
             if slot is None:
@@ -2378,10 +2387,36 @@ def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Cou
                                          if gun.gen in learned else None))
                 if not gun.other and cat != "ability":
                     row.update(gun=name, cat=cat, id=gun.guid, gen=gun.gen)
+                    if archetype == "Default__Equippable_Unarmed_C":
+                        row["item"] = "unarmed"
                     before = owners.get(gun.gen)
                     if before is not None and before != slot:
                         row["from"] = before
                     owners[gun.gen] = slot
+            if row["cat"] == "other":
+                held = held_names.parts(archetype)
+                if held is not None:
+                    code, key, held_name = held
+                    row.update(cat="ability", code=code, key=key, name=held_name)
+                    # A held ability the kit-name table lacks would show unnamed: a bug, reported to Site health.
+                    if not held_names.lookup(code, key, held_name)[0]:
+                        counts["holds_ability_unnamed"] += 1
+                        out.held_unnamed.add(f"{code} {held_names.entry(key, held_name)}")
+                elif gun is not None and cat == "ability" and name is not None:
+                    row.update(cat="ability", code=None, key=None, name=name)
+                    if not held_names.lookup(None, None, name)[0]:
+                        counts["holds_ability_unnamed"] += 1
+                        out.held_unnamed.add(f"gun {name}")
+                elif archetype == BOMB_EQUIPPABLE_ARCHETYPE:
+                    row["cat"] = "spike"
+                elif archetype == "Default__Bomb_Defuser_C":
+                    row["cat"] = "defuser"
+                elif held_names.flex_name(archetype) is not None:
+                    row.update(cat="flex", name=held_names.flex_name(archetype))
+                elif archetype:
+                    # A spawned item with no name is a bug too (the owner: name whatever is out).
+                    counts["holds_item_unnamed"] += 1
+                    out.held_unnamed.add(f"item {archetype}")
             if t_ms <= start:
                 explicit_zero.add(slot)
             latest[slot] = (t_ms, pawn, gun, row)
@@ -3022,6 +3057,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["shots"].append(entry)
         counts["shots"] += 1
     out.report = dict(sorted(counts.items()))
+    if out.held_unnamed:
+        out.report["held_unnamed"] = sorted(out.held_unnamed)
     if counts_unknown:
         out.report["skipped_not_agent"] = dict(sorted(counts_unknown.items()))
     return out

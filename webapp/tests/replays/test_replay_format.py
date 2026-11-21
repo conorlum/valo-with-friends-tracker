@@ -213,3 +213,29 @@ def test_a_malformed_health_part_leaves_the_rest_of_the_round_intact(part):
     raw = gzip.compress(json.dumps(malformed).encode())
     assert fmt.decode_blob(raw) == base
     assert fmt.decode_blob(fmt.encode_blob(malformed)) == base
+
+
+def test_arena_segment_round_trip():
+    segment = fmt.encode_arena_segment(1.25, [-5000, -4999, -4998], [100, 100, 99], [359, 0, 1])
+    assert segment == {"t0": 1.25, "x": [-5000, 1, 1], "y": [100, 0, -1], "yaw": [359, 1, 1]}
+    assert fmt.decode_arena_segment(segment, 4) == [(1.25, -5000, 100, 359), (1.5, -4999, 100, 0),
+                                                   (1.75, -4998, 99, 1)]
+
+
+@pytest.mark.parametrize("x, y, yaw", [([], [], []), ([1, 2], [1], [1, 2])])
+def test_arena_segment_arrays_must_be_equal_and_nonempty(x, y, yaw):
+    with pytest.raises(fmt.FormatError):
+        fmt.encode_arena_segment(0, x, y, yaw)
+
+
+def test_arena_decode_rejects_mismatched_arrays():
+    with pytest.raises(fmt.FormatError):
+        fmt.decode_arena_segment({"t0": 0, "x": [1], "y": [], "yaw": [0]}, 4)
+
+
+def test_arena_line_has_one_source_and_keeps_the_control_value():
+    from app.control import engine
+
+    assert engine.ARENA_Z_M is fmt.ARENA_Z_M
+    assert fmt.ARENA_Z_M == -250.0
+    assert fmt.ARENA_Z_UNITS == -25000

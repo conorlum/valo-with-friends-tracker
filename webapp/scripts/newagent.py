@@ -204,7 +204,7 @@ def identity(args) -> int:
     for ability in abilities:
         print(f'ability icon: app/static/img/abilities/{slug}/{ability["slot"].lower()}.png')
     write_changed(root / f"app/static/img/agents/{slug}.png", png.getvalue())
-    print("Remaining checklist: replay.js ULT_COST; app/critutil/abilities_seed.json; behaviour: "
+    print("Remaining checklist: replay.js ULT_COST; replay.js UTIL_AGENT_COLORS; app/critutil/abilities_seed.json; behaviour: "
           f"run objects {code} <export dir> and review the behaviour tables.")
     return 0
 

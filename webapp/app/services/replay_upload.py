@@ -430,6 +430,7 @@ def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | 
                 raise ValueError("the worker parsed another file")
             result = store_replay(db, condensed, source="upload")  # committed here
             site_health.note_trip_lengths(result, condensed.report, match_uuid)
+            site_health.note_held_names(result, condensed.report, match_uuid)
         except (StoreRefused, ValueError, KeyError) as error:
             db.rollback()
             upload = db.get(ReplayUpload, upload.id)
@@ -689,6 +690,7 @@ def collect_auto(db, upload_id: str, worker: WorkerClient, now: datetime | None 
                 _before_settle(stored)
             db.commit()  # the replacement and the attempt's end, together or not at all
             site_health.note_trip_lengths(result, condensed.report, context["match_uuid"])  # only after it
+            site_health.note_held_names(result, condensed.report, context["match_uuid"])
         except StoreRefused as refused:
             db.rollback()
             stored, problem = None, str(refused)
