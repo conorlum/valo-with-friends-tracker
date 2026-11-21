@@ -2,16 +2,52 @@
 
 import json
 import math
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment, FileSystemLoader
 
 WEBAPP = Path(__file__).resolve().parents[2]
 REPLAY_JS = WEBAPP / "app" / "static" / "js" / "replay.js"
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_players_legend_explains_util_colour_and_side_ring(linked):
+    env = Environment(loader=FileSystemLoader(str(WEBAPP / "app" / "templates")))
+    html = env.get_template("replays/_player.html").render(
+        replay={"map_name": "Ascent", "round_numbers": [1, 2]}, linked=linked)
+    utility_key = ("Utility: its icon on a dark disc, in the agent's colour; "
+                   "the ring is its side (the palette's colours); grey = owner down or unknown")
+    assert (utility_key in html) is linked
+    assert ('<span class="replay-key replay-key-side">Ring: side</span>' in html) is linked
+    for label, key in (("Team 1", "t1"), ("Team 2", "t2"), ("Smoke", "smoke")):
+        assert (f'<span class="replay-key replay-key-{key}">{label}</span>' in html) is linked
+    assert "Utility (its icon, in the owner's team colour" not in html
+
+
+def test_side_legend_is_a_thin_ring_using_the_control_palette():
+    css = (WEBAPP / "app" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.replay-key-side::before\s*\{([^}]+)\}", css)
+    assert rule is not None, "missing side ring legend style"
+    assert "var(--replay-ctl-1, #5ccf8f)" in rule[1]
+    assert "var(--replay-ctl-2, #d9534f)" in rule[1]
+    assert "border: 2px solid" in rule[1]
+    assert "background: transparent" in rule[1]
+
+
+def test_smoke_legend_has_a_glassy_radial_body_and_light_rim():
+    css = (WEBAPP / "app" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.replay-key-smoke::before\s*\{([^}]+)\}", css)
+    assert rule is not None
+    assert "radial-gradient(" in rule[1]
+    assert "rgba(" in rule[1]
+    assert "border: 1px solid rgba(" in rule[1]
+    assert "var(--replay-smoke-core)" not in rule[1]
 
 
 def run_node(script: str, payload):
