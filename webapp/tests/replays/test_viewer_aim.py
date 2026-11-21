@@ -29,6 +29,7 @@ DRAW = """
     v.layers.control = true; v.controlView = 'A';
     v.controlCache = {ready: () => ({parsed: {knew_a: true}})};
   }
+  if (p.smoke) v.current.extras.abilities = [{code: 'Wraith_4', name: 'Smoke', slot: 1, t0: 0, u: p.smoke[0], v: p.smoke[1]}];
   if (p.tracer) {
     v.layers.aim = false; v.layers.tracers = true;
     v.current.extras.shots = [{slot: 1, t: 10, u: 2000, v: 2000, u1: 3500, v1: 2000}];
@@ -62,6 +63,32 @@ def test_aim_reaches_sight_wall_in_map_frame_and_passes_low_boxes(box, turns):
 
 
 @needs_node
+@pytest.mark.parametrize("turns", [0, 1])
+def test_aim_stops_at_the_near_edge_of_a_smoke_before_the_wall(turns):
+    # Omen at u=2000 looks along +u; a smoke centred at u=2800 (Dark Cover, 410 units = 307.5 uv at 0.75 uv/unit)
+    # ends the line at its near edge, 2800 - 307.5, well before the wall at u=3906 (canvas x 400).
+    got = node(DRAW, {"mask": True, "turns": turns, "smoke": [2800, 2000]})
+    assert len(got["strokes"]) == 1
+    assert got["strokes"][0]["to"] == pytest.approx([(2800 - 307.5) * 0.1024, 204.8], abs=1)
+
+
+@needs_node
+def test_aim_inside_a_smoke_stops_where_it_leaves_it_and_a_smoke_behind_does_not_cut_it():
+    inside = node(DRAW, {"mask": True, "smoke": [2100, 2000]})["strokes"][0]["to"]
+    assert inside == pytest.approx([(2100 + 307.5) * 0.1024, 204.8], abs=1)
+    behind = node(DRAW, {"mask": True, "smoke": [1000, 2000]})["strokes"][0]["to"]
+    assert behind == pytest.approx([400, 204.8], abs=1)
+    off_line = node(DRAW, {"mask": True, "smoke": [2800, 3000]})["strokes"][0]["to"]
+    assert off_line == pytest.approx([400, 204.8], abs=1)
+
+
+@needs_node
+def test_smoke_cut_without_a_mask_shortens_the_fixed_length_line():
+    got = node(DRAW, {"smoke": [2150, 2000]})
+    assert got["strokes"][0]["to"][0] < 204.8 + got["r"] * 2.4 * 3 - 1
+
+
+@needs_node
 @pytest.mark.parametrize("yaw,zoom,direction", [(0, 1, (1, 0)), (90, 1, (0, 1)), (180, 9, (-1, 0))])
 def test_without_mask_aim_is_three_cone_radii_along_yaw(yaw, zoom, direction):
     got = node(DRAW, {"yaw": yaw, "zoom": zoom})
@@ -88,8 +115,22 @@ def test_enemy_aim_uses_the_knowledge_dim():
 @needs_node
 def test_tracer_passes_low_box_and_stops_at_sight_wall():
     got = node(DRAW, {"mask": True, "box": True, "tracer": True})
-    assert len(got["strokes"]) == 1
-    assert got["strokes"][0]["to"] == pytest.approx([400, 204.8], abs=1)
+    assert len(got["strokes"]) == 2
+    for stroke in got["strokes"]:
+        assert stroke["to"] == pytest.approx([400, 204.8], abs=1)
+
+
+@needs_node
+def test_tracer_is_a_bright_core_over_a_wide_glow_unlike_an_aim_line():
+    # The aim line: one thin stroke in the player's colour. The shot: a wide glow in that colour, then a brighter,
+    # near-white core over it, both wider than the aim line.
+    shot = node(DRAW, {"mask": True, "tracer": True})
+    aim = node(DRAW, {"mask": True})["strokes"][0]
+    glow, core = shot["strokes"]
+    assert glow["style"]["strokeStyle"] == shot["color"]
+    assert glow["style"]["lineWidth"] > core["style"]["lineWidth"] > aim["style"]["lineWidth"]
+    assert core["style"]["strokeStyle"] == "#fff8dc"
+    assert core["style"]["globalAlpha"] > glow["style"]["globalAlpha"]
 
 
 @needs_node
