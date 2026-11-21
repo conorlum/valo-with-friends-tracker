@@ -370,13 +370,15 @@
     // Fault Line is 8 m wide and 8 to 56 m long over a 1 s charge, taken as even: with the row's `charge` (condenser
     // revision 19, extras.fault_line_charge) that length, solid; without it the full reach, dashed (`reach`). It fires
     // 1.1 s after the cast (its own effect). Rolling Thunder: 32 by 18 m, 8 ticks 0.255 s
-    // apart after a 0.6 s delay. Aftershock's blasts hit 2.2 and 2.8 s after it sticks: 3 s in all.
+    // apart after a 0.6 s delay. Aftershock's blasts hit at +2.2/+2.8 s (wiki); no fx recorded, checked on 88f60040.
     [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "box", len: 5600, width: 800, reach: true, pop: 0.8,
                                                 chargeLen: [800, 5600], label: "Fault Line (reach drawn at full charge)" }],
     [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "box", len: 3200, width: 1800, sweep: 2.6, pop: 3.0 }],
-    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, pop: 3.0 }],
+    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, capsule: 1000, pop: 0.6, pulses: [2.2, 2.8] }],
     // KAY/O: ZERO/point's knife pulses 1 s after it sticks; its object lingers 15 s in the replay.
     [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
+    [/^Grenadier_Q_SemtexBasic_Zone$/, { ability: "FRAG/ment", shape: "area", r: 400, pop: 0.6,
+                                      pulses: [0.5, 1.5, 2.5, 3.5], part: true, unlisted: true }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
     [/^Cashew_4_Spider_LockOn$/, { ability: "Stealth Drone", shape: "badge", life: 6.6 }],
@@ -406,7 +408,8 @@
     // M-pulse pulses at +0, +2 and +4 s (its own effects): a ring each, not a 5 s disc.
     [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8 }],
     [/^Iris_ConcussPulse$/, { ability: "M-pulse", shape: "hidden" }],
-    [/^Iris_Heal$/, { ability: "Harmonize", shape: "area", r: 500 }]
+    // Harmonize is a buff with no object; M-pulse's heal-mode object lives 5.0 s.
+    [/^Iris_Heal$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8, pulses: [0, 2, 4], label: "M-pulse (heal)" }]
   ];
 
   // A line ability's two ends in minimap uv, from its yaw (degrees on the map: 0 = +u, 90 = +v):
@@ -462,6 +465,7 @@
     [/^Wraith_Q_NearsightMissile$/, { ability: "Paranoia", width: 650 }],
     [/^Grenadier_C_Flash(_Underhand)?$/, { ability: "FLASH/drive" }],
     [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
+    [/^Grenadier_Q_SemtexBasic$/, { ability: "FRAG/ment" }],
     [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
     [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
     // Hush: Flashbulb (overhand and underhand throws, styled like Grenadier's FLASH/drive), Displacement's dice, Suspension's missile.
@@ -495,6 +499,20 @@
       return { u: last[1], v: last[2], moving: true };
     }
     return { u: a.u, v: a.v, moving: false };
+  }
+
+  // FRAG/ment's area starts at the recorded landing; it is a later part of the projectile's use.
+  function fragmentZones(abilities) {
+    var zones = [];
+    (abilities || []).forEach(function (a, i) {
+      if (a.kind !== "Projectile" || a.code !== "Grenadier" || a.name !== "Q_SemtexBasic" ||
+          !a.flight || !a.flight.length) return;
+      var last = a.flight[a.flight.length - 1];
+      zones.push({ kind: "GameObject", code: "Grenadier", name: "Q_SemtexBasic_Zone", agent: a.agent, slot: a.slot,
+                   u: last[1], v: last[2], t0: last[0], t1: typeof a.t1 === "number" ? a.t1 : last[0] + 3.5,
+                   zoneOf: i });
+    });
+    return zones;
   }
 
   // A thrown object whose throw is also a projectile row with a recorded flight: that flight is drawn, not the
@@ -544,7 +562,7 @@
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
           small: !!style.small, unlisted: !!style.unlisted, label: label,
           faint: !!style.faint, dir: style.dir, len: len, from: style.from, full: !!style.full, aim: !!style.aim,
-          pop: style.pop, burst: style.burst, part: !!style.part,
+          pop: style.pop, pulses: style.pulses, capsule: style.capsule, burst: style.burst, part: !!style.part,
           width: style.width, sweep: style.sweep, trace: style.trace, bare: !!style.bare,
           reach: !!style.reach && !(style.chargeLen && typeof ability.charge === "number"),
           angle: style.angle, untimed: !!style.untimed, tail: style.tail !== false,
@@ -584,6 +602,7 @@
   }
 
   // Abilities showing at time t: spawned by t and not yet closed (an unclosed one lasts the round).
+  // Scheduled pulses last through the final pop, even past close, but never past the round's end.
   // A brief one (Regrowth's heal pulse lives 0.3 s) stays for ABILITY_MIN_S, fading after its close.
   var ABILITY_MIN_S = 1.0;
 
@@ -599,7 +618,7 @@
       var close = closeOf(a);
       var until = close === null ? tEnd : Math.max(close, a.t0 + ABILITY_MIN_S);
       var pop = a.kind === "Projectile" || a.kind === "Bomb" || !a.name ? undefined : abilityStyle(a).pop;
-      if (pop !== undefined) until = Math.min(until, popUntil(a, pop));
+      if (pop !== undefined) until = popTimesTimed(a) ? Math.min(tEnd, popUntil(a, pop)) : Math.min(until, popUntil(a, pop));
       // Shot and destroyed before its object closed (a camera, a trip): going off never counts.
       if (typeof a.gone === "number") until = Math.min(until, a.gone + GONE_S);
       return a.t0 <= t && t <= until;
@@ -686,14 +705,27 @@
     return inArenaAt((tracks || {})[String(a.slot)], t);
   }
 
-  // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
+  // True when times come from the style's pulse schedule, even when close clips every pulse.
+  function popTimesTimed(a) {
+    return !(a.fx && a.fx.length) && !!(a.name && abilityStyle(a).pulses);
+  }
+
+  // Recorded effects take precedence; otherwise use the clipped pulse schedule, or spawn for an untimed pop.
   function popTimes(a) {
-    return a.fx && a.fx.length ? a.fx : [a.t0];
+    if (a.fx && a.fx.length) return a.fx;
+    if (popTimesTimed(a)) {
+      var close = closeOf(a);
+      return abilityStyle(a).pulses.map(function (offset) { return a.t0 + offset; })
+        .filter(function (t) { return close === null || t <= close; });
+    }
+    return [a.t0];
   }
 
   function popUntil(a, pop) {
     var pops = popTimes(a);
-    return pops[pops.length - 1] + pop;
+    if (pops.length) return pops[pops.length - 1] + pop;
+    var close = closeOf(a);
+    return close === null ? a.t0 : close;
   }
 
   // The statuses on players at t (concussed, hindered, suppressed, fragile, tethered, decayed, slowed, netted, ...).
@@ -862,10 +894,10 @@
   }
 
   // How opaque an ability is at t: fading in over its first 0.25 s, and out after its close
-  // while it lingers (see abilitiesAt).
+  // while it lingers (see abilitiesAt). Scheduled pulses stay opaque past close until their last pop ends.
   function abilityAlpha(a, t) {
     var alpha = Math.min(1, Math.max(0, (t - a.t0) / 0.25)), close = closeOf(a);
-    if (close !== null && t > close) {
+    if (close !== null && t > close && !popTimesTimed(a)) {
       alpha *= Math.max(0, 1 - (t - close) / Math.max(0.2, a.t0 + ABILITY_MIN_S - close));
     }
     return alpha;
@@ -2024,8 +2056,10 @@
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
         // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
+        var traces = traceWalls(extras.abilities), state = indexRoundState(blob, extras.abilities);
+        extras = Object.assign({}, extras, { abilities: extras.abilities.concat(fragmentZones(extras.abilities)) });
         return { blob: blob, tracks: decodeRound(blob), arena: decodeArena(blob), extras: extras,
-                 traces: traceWalls(extras.abilities), state: indexRoundState(blob, extras.abilities) };
+                 traces: traces, state: state };
       });
     }
     return this.cache[n];
@@ -4951,7 +4985,8 @@
     runLeft: runLeft, yawAt: yawAt, deviceOffAt: deviceOffAt, carriedAt: carriedAt, CLOVE_ULT_S: CLOVE_ULT_S,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
-    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
+    popTimes: popTimes, popUntil: popUntil, popTimesTimed: popTimesTimed, fragmentZones: fragmentZones,
+    statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
