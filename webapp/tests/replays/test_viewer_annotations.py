@@ -6,6 +6,7 @@ on and off), the viewer's `layout` record (bounds, collisions with stacked playe
 tooltip hits. Synthetic fixtures only. The JS checks need Node; they skip without it."""
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -74,6 +75,7 @@ DRAW = r"""
   }
   let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
     const p = JSON.parse(input);
+    if (p.css) global.getComputedStyle = () => ({getPropertyValue: name => p.css[name] || ""});
     const log = [];
     const v = Object.create(R.ReplayViewer.prototype);
     const blob = p.blob;
@@ -155,6 +157,13 @@ def spike_round(extra_util=(), **kw):
 
 def draw(blob, t, **kw):
     return run_node(DRAW, dict({"blob": blob, "t": t, "linked": LINKED}, **kw))
+
+
+def plant_rings(out):
+    return [(row, arc) for row in out["log"] if row["op"] == "stroke"
+            for arc in row["path"] if arc[0] == "A"
+            and arc[1:3] == [5000 * out["s"], 5000 * out["s"]]
+            and arc[3] == pytest.approx(out["r"] * 1.35)]
 
 
 @needs_node
@@ -579,5 +588,43 @@ def test_a_cancelled_plant_keeps_the_one_carrier_badge_and_no_hud(abilities):
         out = draw(blob, t, layers={"abilities": abilities})
         assert len(spikes(out)) == 1 and len(boxes(out, "badge", 1)) == 1, t
         assert out["hud"]["hidden"] is True
+        assert plant_rings(out) == []
     planting = draw(blob, 31.0, tip=[[5000 * 1024 / 10000, 5000 * 1024 / 10000]])
     assert "planting the spike" in planting["tips"][0]
+
+
+@needs_node
+@pytest.mark.parametrize("abilities", [True, False])
+def test_plant_attempt_ring_progress_colour_dimming_and_end(abilities):
+    ps = {"spike": [{"t": 0.0, "s": "carried", "slot": 1}], "plants": [[30.0, 34.0, 1]]}
+    blob = round_blob([(1, "A", "Phoenix", 5000, 5000)], player_state=ps)
+    css = {"--replay-team-1": "#12ab34"}
+    for t, fraction in [(31.0, 0.25), (33.0, 0.75)]:
+        out = draw(blob, t, css=css, layers={"abilities": abilities})
+        [(stroke, arc)] = plant_rings(out)
+        assert arc[4] == pytest.approx(-math.pi / 2)
+        assert arc[5] - arc[4] == pytest.approx(2 * math.pi * fraction)
+        assert stroke["stroke"] == css["--replay-team-1"] and stroke["alpha"] == 1
+        assert len(boxes(out, "badge", 1)) == 1 and out["hud"]["hidden"] is True
+        assert "spike being planted" in out["aria"].lower()
+        assert any("is planting the spike (since " in h["text"] for h in out["hits"])
+    for t in [29.0, 34.0, 34.5]:
+        assert plant_rings(draw(blob, t, layers={"abilities": abilities})) == []
+    legacy = round_blob([(1, "A", "Phoenix", 5000, 5000)], player_state={"spike": ps["spike"]})
+    assert plant_rings(draw(legacy, 31.0)) == []
+    [(stroke, _)] = plant_rings(draw(blob, 31.0, knowing="B"))
+    assert stroke["alpha"] == 0.35
+
+
+@needs_node
+@pytest.mark.parametrize("side", ["A", "B"])
+def test_unlinked_plant_ring_uses_the_marker_side_colour(side):
+    css = {"--replay-side-a": "#12ab34", "--replay-side-b": "#ab1234", "--replay-neutral": "#778899"}
+    blob = round_blob([(1, side, "Phoenix", 5000, 5000)],
+                      player_state={"plants": [[30.0, 34.0, 1]]})
+    out = draw(blob, 31.0, linked=None, css=css)
+    [(stroke, _)] = plant_rings(out)
+    [marker] = [row for row in out["log"] if row["op"] == "fill" and any(
+        arc[0] == "A" and arc[1:3] == [5000 * out["s"], 5000 * out["s"]]
+        and arc[3] == pytest.approx(out["r"]) for arc in row["path"])]
+    assert stroke["stroke"] == marker["fill"] == css["--replay-side-" + side.lower()]

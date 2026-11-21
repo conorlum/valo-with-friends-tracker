@@ -13,7 +13,7 @@
  },
  "maps": {
   "Abyss": {
-   "fingerprint": "9221c9ad2998753f",
+   "fingerprint": "184d20d682a1c6d3",
    "geometry_inputs": {
     "barrier": "06d022399053",
     "scale": 8.1e-05,
@@ -23,7 +23,7 @@
    }
   },
   "Ascent": {
-   "fingerprint": "5285807c602e286d",
+   "fingerprint": "7507e50a9cbb9f7f",
    "geometry_inputs": {
     "barrier": "77b049460968",
     "cover": "57334cb3f11b",
@@ -34,7 +34,7 @@
    }
   },
   "Bind": {
-   "fingerprint": "116cf2ce99f2c3f9",
+   "fingerprint": "2780f073cb105462",
    "geometry_inputs": {
     "barrier": "17f178122d9f",
     "scale": 5.9e-05,
@@ -44,7 +44,7 @@
    }
   },
   "Breeze": {
-   "fingerprint": "d4c1c334cab9aaf3",
+   "fingerprint": "d35590baeebe621c",
    "geometry_inputs": {
     "barrier": "72fcdd722d37",
     "scale": 7e-05,
@@ -54,7 +54,7 @@
    }
   },
   "Corrode": {
-   "fingerprint": "b77a423f63d257d6",
+   "fingerprint": "fbf7160c53b721c5",
    "geometry_inputs": {
     "barrier": "2b9ac9333692",
     "scale": 7e-05,
@@ -64,7 +64,7 @@
    }
   },
   "Fracture": {
-   "fingerprint": "8305865182120181",
+   "fingerprint": "fc35b51f5e090fa5",
    "geometry_inputs": {
     "barrier": "a2716b8b2641",
     "scale": 7.8e-05,
@@ -74,7 +74,7 @@
    }
   },
   "Haven": {
-   "fingerprint": "0fccafd36e973258",
+   "fingerprint": "4d88516c7f2f181a",
    "geometry_inputs": {
     "barrier": "531ebcdcc30b",
     "cover": "beefc9fecfec",
@@ -85,7 +85,7 @@
    }
   },
   "Icebox": {
-   "fingerprint": "a7ef2e7d39ac9d2c",
+   "fingerprint": "13bf50d9deeb66eb",
    "geometry_inputs": {
     "barrier": "1458d8224f08",
     "scale": 7.2e-05,
@@ -95,7 +95,7 @@
    }
   },
   "Lotus": {
-   "fingerprint": "0b5d82d96775c754",
+   "fingerprint": "524e8b8fb6c39249",
    "geometry_inputs": {
     "barrier": "0799f99c0abb",
     "scale": 7.2e-05,
@@ -105,7 +105,7 @@
    }
   },
   "Pearl": {
-   "fingerprint": "6ef7969d9096d763",
+   "fingerprint": "6e9a8b7dcc2e0934",
    "geometry_inputs": {
     "barrier": "5f42c32c5c72",
     "scale": 7.8e-05,
@@ -115,7 +115,7 @@
    }
   },
   "Split": {
-   "fingerprint": "0fa10961b1130640",
+   "fingerprint": "9857607cd8527cbb",
    "geometry_inputs": {
     "barrier": "22e3b2d9539a",
     "scale": 7.8e-05,
@@ -125,7 +125,7 @@
    }
   },
   "Summit": {
-   "fingerprint": "31befddbf1786405",
+   "fingerprint": "e12602721fcfe078",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
     "cover": "4ca7d497b029",
@@ -136,7 +136,7 @@
    }
   },
   "Sunset": {
-   "fingerprint": "9ef53ab8835641ae",
+   "fingerprint": "96cfa4ef8fbb376c",
    "geometry_inputs": {
     "barrier": "02adc35320f7",
     "cover": "ca4caf841b49",

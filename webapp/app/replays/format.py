@@ -126,7 +126,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 31
+CONDENSE_REVISION = 32
+# 32: every spike plant attempt, held or let go, in `player_state.plants` (2026-11-18).
 # 31: Hush (Paprika): her Flow is a `cast` row, Displacement and Suspension are `pulled` / `levitated` statuses read from
 #     force rows (`from` "force"; a levitated row names its zone in `src`), a Flashbulb's pop is its `flash_windup_ended`
 #     row (`pop.src` "flash_windup", completed), Suspension's bookkeeping object has no row (2026-11-15);

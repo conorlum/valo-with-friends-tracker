@@ -992,7 +992,7 @@
   var PLAYER_STATE = {
     version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
     t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000,
-    ult_max: 20, max_orbs: 16, orb_ends: ["taken", "plant", "round"], charge_keys: ["C", "Q", "E", "X"], charge_max: 9
+    ult_max: 20, max_orbs: 16, max_plants: 32, orb_ends: ["taken", "plant", "round"], charge_keys: ["C", "Q", "E", "X"], charge_max: 9
   };
   var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
 
@@ -1112,7 +1112,8 @@
     if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
     if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
         (psHas(obj, "spike") && !Array.isArray(obj.spike)) || (psHas(obj, "ult") && !condIsRow(obj.ult)) ||
-        (psHas(obj, "orbs") && !Array.isArray(obj.orbs)) || (psHas(obj, "charges") && !condIsRow(obj.charges))) return null;
+        (psHas(obj, "orbs") && !Array.isArray(obj.orbs)) || (psHas(obj, "plants") && !Array.isArray(obj.plants)) ||
+        (psHas(obj, "charges") && !condIsRow(obj.charges))) return null;
     var out = { version: PLAYER_STATE.version };
     if (psHas(obj, "vitals")) {
       out.vitals = {};
@@ -1150,6 +1151,9 @@
     }
     if (psHas(obj, "orbs") && obj.orbs.length <= PLAYER_STATE.max_orbs) {
       out.orbs = obj.orbs.map(psOrb).filter(function (e) { return e !== null; }).sort(function (a, b) { return a.t0 - b.t0; });
+    }
+    if (psHas(obj, "plants") && obj.plants.length <= PLAYER_STATE.max_plants) {
+      out.plants = obj.plants.map(psOrbTry).filter(function (e) { return e !== null; }).sort(function (a, b) { return a[0] - b[0]; });
     }
     if (psHas(obj, "charges")) {
       out.charges = {};
@@ -1210,12 +1214,13 @@
     }
     if (ps && ps.damage_taken) damage = ps.damage_taken;
     if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
-    var ult = null, orbs = null;
+    var ult = null, orbs = null, plants = null;
     if (ps && ps.ult) {
       ult = {};
       Object.keys(ps.ult).forEach(function (slot) { ult[slot] = psTimeline(ps.ult[slot], "t"); });
     }
     if (ps && ps.orbs) orbs = ps.orbs;
+    if (ps && ps.plants) plants = ps.plants;
     if (condIsRow(blob.alive)) {
       alive = {};
       Object.keys(blob.alive).forEach(function (slot) {
@@ -1234,7 +1239,7 @@
     return Object.freeze({
       available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
       alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs),
-      ult: psFreeze(ult), orbs: psFreeze(orbs)
+      ult: psFreeze(ult), orbs: psFreeze(orbs), plants: psFreeze(plants)
     });
   }
 
@@ -1261,6 +1266,7 @@
   // so its pickup shows.
   var ORB_TAKEN_S = 1.0;
   var ORB_CAPTURE_S = 2.0;    // capturing is a 2 s channel (wiki)
+  var PLANT_S = 4.0;          // planting takes 4 s (extras.PLANT_MS)
 
   function orbsAt(index, t) {
     return ((index && index.orbs) || []).filter(function (o) {
@@ -1496,11 +1502,13 @@
 
   // The spike at t as one explicit state: {state, slot, u, v, since, source, hud}. From the plant on, the ability
   // row decides, exactly as the planted HUD does (`hud` is spikeAt's result; source "ability"): planted, defused
-  // or detonated. Before it, player_state's proven transitions (source "player_state"): unknown, carried (slot
+  // or detonated. Before it, the latest held player_state plant attempt in the planter's same life is planting
+  // (attempt: true), even without spike transitions. An attempt with no stop lasts at most PLANT_S.
+  // Otherwise player_state's proven transitions (source "player_state"): unknown, carried (slot
   // null when the carrier isn't proven), dropped (at the carrier's death place when the drop follows one death, D5), planting, or a post-plant state the
   // ability row hasn't reached. A carrier or planter who is dead at t with no later row: dropped, no slot, no
-  // position; the same once they are revived (a later life). No player_state spike: "unknown", source "none" (an
-  // old round: only the HUD's result).
+  // position; the same once they are revived (a later life). No player_state spike or held attempt: "unknown",
+  // source "none" (an old round: only the HUD's result). Only a held attempt carries the `attempt` key.
   function spikeStateAt(index, t) {
     var bombs = index && index.bombs ? index.bombs : [];
     var hud = spikeAt(bombs, t);
@@ -1515,6 +1523,17 @@
       };
     }
     var out = { state: "unknown", slot: null, u: null, v: null, since: null, source: "none", hud: null };
+    var plants = index && index.plants ? index.plants : [];
+    for (var i = plants.length - 1; i >= 0; i--) {
+      var a = plants[i];
+      if (a[0] > t || t >= (a[1] === null ? a[0] + PLANT_S : a[1])) continue;
+      var now = lifeIndexAt(index, a[2], t), then = lifeIndexAt(index, a[2], a[0]);
+      if ((typeof now === "number" && now === then) || (now === undefined && then === undefined)) {
+        return { state: "planting", slot: a[2], u: null, v: null, since: a[0],
+                 source: "player_state", hud: null, attempt: true };
+      }
+      break;
+    }
     if (!index || !index.spike) return out;
     out.source = "player_state";
     var e = playerSpikeAt(index, t);
@@ -3359,6 +3378,21 @@
     });
   };
 
+  // A held plant attempt: a 4 s progress ring around the planter in their marker's colour.
+  ReplayViewer.prototype.drawPlantRing = function (ctx, r, marks, spike) {
+    if (spike.state !== "planting" || spike.attempt !== true || spike.slot === null) return;
+    var m = marks.filter(function (q) { return q.slot === spike.slot; })[0];
+    if (!m) return;
+    var p = this.current.blob.players.filter(function (q) { return q.slot === spike.slot; })[0];
+    var f = Math.min(1, (this.t - spike.since) / PLANT_S);
+    ctx.save();
+    ctx.globalAlpha = m.dim;
+    ctx.strokeStyle = this.slotColor(spike.slot, p && p.side);
+    ctx.lineWidth = Math.max(2.5, r / 5);
+    ctx.beginPath(); ctx.arc(m.x, m.y, r * 1.35, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * f); ctx.stroke();
+    ctx.restore();
+  };
+
   // The spike carrier's badge at the upper right of their circle: a dark disc holding the spike glyph. Shown for a
   // proven carrier or planter only (spikeStateAt), over the circles.
   ReplayViewer.prototype.drawCarrier = function (ctx, r, hits, marks, layout, spike) {
@@ -4846,6 +4880,7 @@
       ctx.setTransform(view.k, 0, 0, view.k, -view.ox * view.k, -view.oy * view.k);
     }
     this.drawStatuses(ctx, s, r, hits, marks, layout);
+    this.drawPlantRing(ctx, r, marks, spike);
     this.drawCarrier(ctx, r, hits, marks, layout, spike);
     this.drawBlocks(ctx, r, hits, marks, layout);
     if (this.turns) {
