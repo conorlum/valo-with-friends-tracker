@@ -1,7 +1,7 @@
 """Cover (<Map>.cover.png, index.json `cover_sha`) joins the control input identity like the buy-phase barrier,
 and only on a map that has cover: a map without cover keeps every key, fingerprint and envelope it had.
 
-The no-cover literals below were refreshed for W3's permanent-wall padding."""
+The no-cover literals below were recorded from W1's base, f241c31c."""
 
 import copy
 import hashlib
@@ -19,18 +19,17 @@ from app.replays.control_inputs import InvalidControlInputs, PinnedInputs, verif
 from app.replays.height_inputs import HeightSelection
 from app.services import replay_control as rcn, replay_gaps
 
-NO_COVER = "Abyss"
+NO_COVER = "Icebox"
 COVER = "Ascent"
 LINK = {"linked": False, "sides": {}, "db_deaths": []}
 
-# Abyss still has no cover; its sight identity includes permanent-wall padding.
-ABYSS_INPUTS = {"barrier": "06d022399053", "scale": 8.1e-05, "sight": "cb32e86ca94e", "specials": [],
-                "walk": "42d1d3f29a3c"}
-ABYSS_FINGERPRINT = "bc3873a7ff8518bb"          # over the envelope without control/data/summary/figures
-ABYSS_PIN = {**ABYSS_INPUTS, "features": "f" * 64}
-ABYSS_TAGS_DIGEST = "832f85faec59f2d4d6c07f4b9fb8a7d6da59255a21b8b3f5a2179d8fea3e6860"
-ABYSS_SNAPSHOT_KEYS = ["barrier", "barrier_sha", "legacy", "scale", "sight", "specials", "walk"]
-ABYSS_SNAPSHOT_SHA = "9301123536839b0f9df0dcf724c8e98a14cf0d128bbaf1eb434614586e9f38cf"
+# Recorded from f241c31c code and assets before W1; Icebox remains without cover.
+ICEBOX_INPUTS = {'sight': '6fa95e68b769', 'walk': '87ebfd069462', 'barrier': '1458d8224f08', 'specials': [], 'scale': 7.2e-05}
+ICEBOX_FINGERPRINT = 'fa0547977cc15489'
+ICEBOX_PIN = ICEBOX_INPUTS
+ICEBOX_TAGS_DIGEST = 'ae1ccebb619ba6930211b186e56ec10d77a39fe5cc0bb12832499713c98797a1'
+ICEBOX_SNAPSHOT_KEYS = ['barrier', 'barrier_sha', 'legacy', 'scale', 'sight', 'specials', 'walk']
+ICEBOX_SNAPSHOT_SHA = '7d3c979789983d516b24473ef53d95960bfdad4e8f11ded4d36e0b55ec0913e0'
 
 
 @pytest.fixture
@@ -39,6 +38,11 @@ def resolver(monkeypatch):
     monkeypatch.setattr(rcn.control_heights, "select_height", lambda db, m, d: HeightSelection("flat"))
     monkeypatch.setattr(rcn.control_feature_artifacts, "find_artifact_header",
                         lambda db, key: SimpleNamespace(digest="f" * 64))
+    # Icebox has no replay kill lines yet; enable eligibility only in this identity fixture.
+    index, tags, maps, raw = rcn._current_snapshot()
+    index = copy.deepcopy(index)
+    index[NO_COVER]["kill_lines"] = {"passes": True}
+    monkeypatch.setattr(rcn, "_current_snapshot", lambda: (index, tags, maps, raw))
     return lambda name: rcn.resolve_current_geometry(None, name)
 
 
@@ -62,27 +66,29 @@ def with_cover_sha(monkeypatch, name, sha):
 
 def test_a_map_without_cover_keeps_its_geometry_inputs_and_fingerprint():
     inputs = rcn.geometry_inputs(NO_COVER, {})
-    assert inputs == ABYSS_INPUTS and "cover" not in inputs
-    assert envelope_fingerprint(inputs) == ABYSS_FINGERPRINT
+    assert inputs == ICEBOX_INPUTS and "cover" not in inputs
+    assert envelope_fingerprint(inputs) == ICEBOX_FINGERPRINT
 
 
 def test_a_map_without_cover_keeps_its_current_geometry_identity(resolver):
     context = resolver(NO_COVER)
     assert context.state == "ready"
-    assert context.pinned.geometry == ABYSS_PIN
-    assert context.feature_input.key.tags_digest == ABYSS_TAGS_DIGEST
-    assert hashlib.sha256(context.feature_input.canonical_inputs).hexdigest() == ABYSS_TAGS_DIGEST
+    assert context.pinned.geometry == ICEBOX_PIN
+    # Icebox has no feature bundles: pin its unchanged source entry directly.
+    assert context.feature_input is None
+    entry = rcn._current_snapshot()[1][NO_COVER]
+    assert hashlib.sha256(fi.canonical_json(entry)).hexdigest() == ICEBOX_TAGS_DIGEST
 
 
 def test_a_map_without_cover_keeps_geometry_used():
-    assert task.geometry_used(cg.load_geometry(NO_COVER, height_mode="flat")) == ABYSS_INPUTS
+    assert task.geometry_used(cg.load_geometry(NO_COVER, height_mode="flat")) == ICEBOX_INPUTS
 
 
 def test_a_map_without_cover_keeps_its_archived_base():
     index, tags, maps, _ = rcn._current_snapshot()
     snap = sources.base_snapshot(NO_COVER, rcn.CONTROL_DIR, tags.get(NO_COVER, {}), maps[NO_COVER]["xMultiplier"])
-    assert sorted(snap) == ABYSS_SNAPSHOT_KEYS
-    assert hashlib.sha256(fi.canonical_json(snap)).hexdigest() == ABYSS_SNAPSHOT_SHA
+    assert sorted(snap) == ICEBOX_SNAPSHOT_KEYS
+    assert hashlib.sha256(fi.canonical_json(snap)).hexdigest() == ICEBOX_SNAPSHOT_SHA
 
 
 # --- cover: it is in the identity ----------------------------------------------------------------------------

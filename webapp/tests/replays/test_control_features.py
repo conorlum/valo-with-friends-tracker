@@ -41,6 +41,8 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
     # The preceding fixture deliberately pinned revision 9, rather than the then-current 21.
     # W3: re-record maps whose masks gained thin-wall padding or Haven review; keep revision 9,
     # jump sight off and the old utility radius so this still protects the earlier engine contract.
+    # Card #6: regenerate only the 11 reviewed maps whose tags and masks changed;
+    # Haven and Icebox retain their previous fingerprints.
     monkeypatch.setattr(control_format, "CONTROL_REVISION", 9)
     # W11's radius also enters the fingerprint: disable it when checking the older figures.
     old_utility = json.loads(control_format.UTILITY_FILE.read_text(encoding="utf-8"))
@@ -49,11 +51,11 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
     old_path.write_text(json.dumps(old_utility), encoding="utf-8")
     monkeypatch.setattr(control_format, "UTILITY_FILE", old_path)
     assert {name: row["fingerprint"] for name, row in map_feature_legacy.snapshot()["maps"].items()} == {
-        "Abyss": "ef6d8a8064248148", "Ascent": "7986258f61dacbf0", "Bind": "39271f1b0409bfa3",
-        "Breeze": "406fb974624f82bf", "Corrode": "4818a5d76dbe77d3", "Fracture": "68c12c250f89f0bf",
-        "Haven": "0ea64d7bad658d77", "Icebox": "a658cd07a960f0f4", "Lotus": "fe9dd4116078a271",
-        "Pearl": "9a3481531b1a0cb5", "Split": "babe38e725933221", "Summit": "acf73736dffcd02c",
-        "Sunset": "6c79b654ccf4284f"}
+        "Abyss": "de003e64887e1ba7", "Ascent": "a43966d979d739f9", "Bind": "f9cf07f40fcdf55c",
+        "Breeze": "f7f37cce2decdc34", "Corrode": "b46ca8be56b8efc2", "Fracture": "ed807ab3f2dc1d08",
+        "Haven": "0ea64d7bad658d77", "Icebox": "a658cd07a960f0f4", "Lotus": "abc2c77ad35f794b",
+        "Pearl": "50f44d592c34a680", "Split": "54e642afe84ffa72", "Summit": "aa688a7c6301e307",
+        "Sunset": "f5034b4c50f97ef2"}
 
 
 # ---- W17: freshness inputs and cache keys

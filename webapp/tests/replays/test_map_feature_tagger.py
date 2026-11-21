@@ -365,10 +365,10 @@ def test_catalogue_import_edit_reload_export_keeps_everything():
 
 EXPORT_REAL = """
   function run(p) {
-    const maps = {Ascent: {candidates: p.map.candidates, params: p.map.params, image_sha: p.map.image_sha}};
-    const edits = {Ascent: T.editsFrom(p.tags.maps.Ascent)};
-    edits.Ascent.touched = true;
-    return {a: T.exportTags(p.tags, maps, edits), b: F.exportCatalogue(p.tags, maps, edits, {Ascent: {dirty: false, mf: {}}})};
+    const maps = {Icebox: {candidates: p.map.candidates, params: p.map.params, image_sha: p.map.image_sha}};
+    const edits = {Icebox: T.editsFrom(p.tags.maps.Icebox)};
+    edits.Icebox.touched = true;
+    return {a: T.exportTags(p.tags, maps, edits), b: F.exportCatalogue(p.tags, maps, edits, {Icebox: {dirty: false, mf: {}}})};
   }
 """
 
@@ -380,7 +380,7 @@ def test_with_no_feature_edits_the_export_is_exactly_export_tags():
     from app.control import geometry as cg
 
     tags = json.loads((cg.ASSET_DIR / "tags.json").read_text(encoding="utf-8"))
-    got = run_node(EXPORT_REAL, {"tags": tags, "map": control_tagger.map_data("Ascent", tags["maps"]["Ascent"], [])})
+    got = run_node(EXPORT_REAL, {"tags": tags, "map": control_tagger.map_data("Icebox", tags["maps"]["Icebox"], [])})
     assert got["a"] == got["b"] == tags
 
 
