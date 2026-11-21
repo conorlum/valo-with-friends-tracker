@@ -1715,7 +1715,7 @@ table.compact-table .badge-score {
 }
 
 /* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
-/* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
+/* Smokes (and Viper's raised wall) use the agent's colour; these dark tints remain as fallbacks. */
 .replay { --replay-ctl-1: #5ccf8f; --replay-ctl-2: #d9534f; --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
   --replay-smoke-core: rgba(16, 18, 24, 0.84); }
 /* --replay-map-h: the map's height (and so its width), and the height of the coach points' box beside it. */

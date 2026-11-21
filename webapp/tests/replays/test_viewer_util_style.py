@@ -145,6 +145,27 @@ FRAGMENT_ZONE = {"kind": "GameObject", "code": "Grenadier", "name": "Q_SemtexBas
 
 
 @needs_node
+@pytest.mark.parametrize("row, offsets, pop", [
+    ({**FRAGMENT_ZONE, "t0": 12.502, "t1": 16.002}, [0.5, 1.5, 2.5, 3.5], 0.6),
+    ({"kind": "GameObject", "code": "Breach", "name": "4_FusionBlast", "t0": 10.006, "t1": 12.806},
+     [2.2, 2.8], 0.6),
+    ({"kind": "GameObject", "code": "Iris", "name": "Heal", "t0": 12.002, "t1": 16.002},
+     [0, 2, 4], 0.8),
+], ids=["fragment", "aftershock", "mpulse-heal"])
+@pytest.mark.parametrize("close_delta", [-0.001, 0, 0.001], ids=["before", "equal", "after"])
+def test_scheduled_pulses_at_millisecond_close_boundary(row, offsets, pop, close_delta):
+    row = {**row, "t1": round(row["t1"] + close_delta, 3)}
+    actual = run_node(r"""
+      const R = require(process.argv[1]);
+      const {row, pop} = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      console.log(JSON.stringify({times: R.popTimes(row), until: R.popUntil(row, pop)}));
+    """, {"row": row, "pop": pop})
+    expected = [row["t0"] + offset for offset in (offsets[:-1] if close_delta < 0 else offsets)]
+    assert actual["times"] == expected  # Preserve computed timestamps without rounding them.
+    assert actual["until"] == pytest.approx(expected[-1] + pop, rel=0, abs=1e-9)
+
+
+@needs_node
 def test_aftershock_pulses_and_empty_schedule():
     actual = run_node(r"""
       const R = require(process.argv[1]);

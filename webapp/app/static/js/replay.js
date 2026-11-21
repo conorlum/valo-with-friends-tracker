@@ -733,8 +733,9 @@
     if (a.fx && a.fx.length) return a.fx;
     if (popTimesTimed(a)) {
       var close = closeOf(a);
+      // Stored times have millisecond precision; allow only addition's rounding error at close.
       return abilityStyle(a).pulses.map(function (offset) { return a.t0 + offset; })
-        .filter(function (t) { return close === null || t <= close; });
+        .filter(function (t) { return close === null || t <= close + 1e-6; });
     }
     return [a.t0];
   }
@@ -2940,15 +2941,6 @@
     ctx.restore();
   };
 
-  // An ability's glyph alone, no disc: what marks a smoke, whose owner its tint already gives.
-  ReplayViewer.prototype.drawGlyph = function (ctx, x, y, size, glyph, alpha) {
-    if (!glyph) return;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(glyph, x - size / 2, y - size / 2, size, size);
-    ctx.restore();
-  };
-
   // The time left on a timed ability (timeLeft): a light arc from twelve o'clock, clockwise, that runs down to
   // nothing as it closes, over a dark under-stroke so it reads on any floor.
   ReplayViewer.prototype.drawTimer = function (ctx, x, y, radius, left, width, alpha) {
@@ -3876,8 +3868,8 @@
     });
   };
 
-  // Projectiles in flight (their own layer): a small team-coloured mark where the recorded flight has it, with
-  // the last 0.3 s of its flight behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
+  // Projectiles in flight (their own layer): a small util-coloured mark with a faint side ring where the recorded
+  // flight has it, with the last 0.3 s behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
   // from its cast row (`path`) and its pop (`pop`, where the export places it) are drawn here too.
   ReplayViewer.prototype.drawProjectiles = function (ctx, s, r, hits) {
     var t = this.t, self = this, uvPerUnit = (this.linked && this.linked.uvPerUnit) || 0.75;
