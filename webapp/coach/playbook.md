@@ -86,13 +86,16 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
   team take space is good.
 - Space the team hasn't cleared is held until it is shown otherwise. Enter it where a teammate can trade you,
   even when it seems safe, and respect the enemy's timings.
-- Start a dash, or any commit into a fight, from an area that is not being contested at that moment.
+- Start a dash, or any commit into a fight, from an area that is not being contested at that moment when
+  possible, so you don't get shot in the windup. When it isn't possible, judge the commit from where it had to
+  start.
 - Being stacked on a teammate's line is not a bad thing: it is about the most coordinated two players can be.
   What decides it is the swing. A slow double swing gives the enemy two 1v1s: send it faster, or have the
   Operator hold while the rifle swings.
 - Dying with utility is not always a mistake. A death a teammate traded costs little, with one exception: on
   attack, the team's only smoker dying early, before the site hit, even traded, takes the smokes away; it is
-  better that someone else is the one traded there. Cypher cages don't count as smokes. After the site hit or
+  better that someone else is the one traded there. Short smokes don't make a player the smoker: Cypher cages,
+  Jett, Neon, Phoenix and the like. After the site hit or
   in a mid-round, the smoker can be more aggressive. A Brimstone who got two of three smokes off can keep the
   last one, because there are no more that round. Smokes and cages don't win a gunfight: with an enemy on you
   at range, the gun out is right. A Jett is the exception: Cloudburst comes out fast enough to pop at her own
@@ -307,5 +310,6 @@ answers questions about any round. Write three things the player did well and th
     principle on dying with utility. Leave it out when a teammate traded the death within 3 seconds (unless
     the player was the attackers' only smoker before the site hit), or when the timeline shows the player
     dealing damage to another enemy in the 2 seconds before: their gun was out and there was no time to throw.
-42. Before faulting a dash or a swing into a fight, run `control` for the area the player started it from: a
-    commit started from an area that was being contested is the thing to improve, not the fight itself.
+42. Before faulting a dash or a swing into a fight, run `control` for the area the player started it from and
+    for the areas next to it. A commit started from a contested area, when an uncontested one was in reach, is
+    the thing to improve, not the fight itself. When every way in was contested, judge the commit from there.
