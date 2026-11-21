@@ -32,7 +32,12 @@
         <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
                 aria-label="Minimap"></canvas>
         <div class="replay-tip" data-replay-tip hidden></div>
-        <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>
+        <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>{% if linked and control %}
+        {# The control bar: each team's share of the floor now, like a chess evaluation bar (replay.js renderCtlBar). #}
+        <div class="replay-ctlbar" data-replay-ctlbar role="img" hidden>
+          <span class="replay-ctlbar-t2" data-ctlbar-t2></span><span class="replay-ctlbar-mid" data-ctlbar-mid></span><span class="replay-ctlbar-t1" data-ctlbar-t1></span>
+          <span class="replay-ctlbar-num is-top" data-ctlbar-n2></span><span class="replay-ctlbar-num is-bottom" data-ctlbar-n1></span>
+        </div>{% endif %}
       </div>{% if replay_data is defined and replay_data.match.layout is defined %}{% if replay_data.match.layout.state == "layout_pending" %}
       <p class="replay-note">The map changed in {{ replay_data.match.layout.patch }}; this replay's map control is out of date until it is redrawn</p>{% elif replay_data.match.layout.state == "layout_unknown" %}
       <p class="replay-note">This replay's patch is unknown and the map has several layouts; map control is not shown</p>{% endif %}{% endif %}
@@ -56,6 +61,14 @@
       {% if linked %}
       <fieldset class="replay-layers">
         <legend>Show</legend>
+        {# Presets of everything below (replay.js viewPreset); changing anything shows Custom. #}
+        <label class="replay-preset">View
+          <select data-replay-preset aria-label="Show bar preset">
+            <option value="team-1">Blue team</option>
+            <option value="team-2">Red team</option>
+            <option value="all">All</option>
+            <option value="custom" selected>Custom</option>
+          </select></label>
         <label><input type="checkbox" data-replay-layer="names" checked> Names</label>
         <label><input type="checkbox" data-replay-layer="abilities" checked> Abilities</label>
         <label><input type="checkbox" data-replay-layer="projectiles" checked> Projectiles</label>
@@ -79,6 +92,7 @@
             <option value="B" data-unknown-group="B">side B's</option>
             <option value="off">off</option>
           </select></label>
+        <label><input type="checkbox" data-replay-layer="bar" checked> Control bar</label>
         {% if not control.cover_reviewed %}<span class="replay-control-badge" title="This map's boxes and crates aren't tagged yet: sight passes through them, so control near them is too generous.">cover not reviewed</span>{% endif %}
         <span class="replay-control-status" data-replay-control-status aria-live="polite"></span>
         {% endif %}

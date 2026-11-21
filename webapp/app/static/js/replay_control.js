@@ -455,6 +455,20 @@
     return out;
   }
 
+  // The control bar's numbers: how many walkable cells each group holds at one tick (any level), how many are
+  // contested and how many nobody holds, out of `total` (the round's walkable cells).
+  function controlShares(codes) {
+    var out = { a: 0, b: 0, contested: 0, none: 0, total: codes ? codes.length : 0 };
+    for (var k = 0; k < out.total; k++) {
+      var name = STATE_NAMES[codes[k]] || "none";
+      if (name === "none") out.none++;
+      else if (name.charAt(0) === "a" && name.charAt(1) === "_") out.a++;
+      else if (name.charAt(0) === "b" && name.charAt(1) === "_") out.b++;
+      else out.contested++;
+    }
+    return out;
+  }
+
   // Side group -> "team-1" / "team-2", from the linked players ({slot: {side, team}}).
   function groupTeams(players) {
     var out = {};
@@ -525,7 +539,7 @@
     revisionNote: revisionNote, reasonsAt: reasonsAt, REASON_TEXT: REASON_TEXT, REASON_TEXT_BY_KIND: REASON_TEXT_BY_KIND,
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
-    groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
+    groupTeams: groupTeams, controlShares: controlShares, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
     HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
     STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA
   };
