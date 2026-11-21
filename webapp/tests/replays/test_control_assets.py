@@ -56,13 +56,17 @@ def test_committed_masks_match_a_fresh_build(name):
     assert (cg.read_mask_png(cg.ASSET_DIR / f"{name}.walk.png") == fresh.walk).all()
 
 
-# Ascent's traced A11 boxes join wall 11; the A17 boxes form one new piece, separate from wall 17.
-COVER_PIECES = {"Summit": 28, "Ascent": 18, "Sunset": 1}
+# Padded walls split Ascent's traced A11 cover into three pieces; A17 stays separate from wall 17.
+COVER_PIECES = {"Summit": 28, "Ascent": 20, "Sunset": 1}
 
 
 def test_ascent_traced_boxes():
     labels = cg.load_geometry("Ascent", height_mode="flat").cover_px
-    assert labels[538, 437] == labels[535, 441] == labels[537, 450] != 0
+    masks = cg.masks(rgba("Ascent"), TAGS["Ascent"])
+    assert masks.cover[538, 437] and masks.cover[535, 441] and masks.cover[537, 450]
+    assert labels[538, 437] != 0 and labels[537, 450] != 0
+    assert labels[538, 437] != labels[537, 450]
+    assert labels[535, 441] == 0 and masks.wall[535, 441]
     assert labels[758, 329] == labels[758, 340] != 0
     assert labels[749, 330] != 0
     assert labels[758, 329] != labels[749, 330]
@@ -88,10 +92,19 @@ def test_ascent_paint_is_exactly_the_traced_cells():
         "0b5eadb940ca459fee7f3fa84bf87d277b31294e501ab4308de7b6c0ee8ebfd3")
     del tags["maps"]["Ascent"]["cover_paint"]
     assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
+        "37ce1e49f5d1eed6acf0af7cb60927bf31f727dacc5c6efa87601110fe176d74")
+    # Disabling Haven's review recovers the pre-W3 pin for the remaining tag inputs.
+    del tags["maps"]["Haven"]["tags"]
+    del tags["maps"]["Haven"]["cover_paint"]
+    tags["maps"]["Haven"]["cover_reviewed"] = False
+    assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
         "a64e8e0d542cdedb58fbe5d6cf66d7924e336734568898fb80ce2fd9d99af0e1")
 
 
-def test_ascent_without_traced_cells_keeps_original_masks():
+@pytest.mark.parametrize("padding", [True, False])
+def test_ascent_without_traced_cells_keeps_original_masks(monkeypatch, padding):
+    if not padding:
+        monkeypatch.setattr(cg, "thin_padding", lambda wall, exempt: np.zeros_like(wall))
     entry = dict(TAGS["Ascent"])
     cells = cg.unpack_paint(entry["cover_paint"])[::4, ::4].copy()
     cells[133:137, 109] = False
@@ -101,11 +114,11 @@ def test_ascent_without_traced_cells_keeps_original_masks():
     entry["cover_paint"] = cg.pack_paint(cells)
     image = rgba("Ascent")
     original = cg.masks(image, entry)
-    # Committed asset identities before R1: switching off the trace gives the old masks.
+    # Updated trace-off pins; disabling padding also proves the pre-W1 identities.
     for mask, expected in (
-        (original.sight, "06147e83b898"),
+        (original.sight, "b55387176114" if padding else "06147e83b898"),
         (original.walk, "12861b1023d3"),
-        (cg.see_over_cover(image, entry), "48afd9eee5e9"),
+        (cg.see_over_cover(image, entry), "8f3c3e63cd16" if padding else "48afd9eee5e9"),
     ):
         assert hashlib.sha256(np.packbits(mask).tobytes()).hexdigest()[:12] == expected
 
@@ -118,10 +131,22 @@ def _paint_cells(*cells):
 
 
 @pytest.mark.parametrize("name", MAPS)
-def test_cover_is_its_own_asset_and_sight_is_wall_plus_cover(name):
+def test_sight_is_wall_plus_cover(name):
+    image, entry = rgba(name), TAGS.get(name, {})
+    m = cg.masks(image, entry)
+    base = cg._base_masks(image, cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
+    see_across = cg.tag_shapes(image, entry)["seeacross"].copy()
+    if entry.get("see_across_paint"):
+        see_across |= cg.unpack_paint(entry["see_across_paint"])
+    assert (m.sight == (m.wall | m.cover)).all()
+    assert (cg.see_over_cover(image, entry) == (m.cover & ~m.wall)).all()
+    assert m.wall[~base["opaque"] & ~see_across].all()
+
+
+@pytest.mark.parametrize("name", MAPS)
+def test_committed_cover_matches_a_fresh_build(name):
     path = cg.ASSET_DIR / f"{name}.cover.png"
     fresh = cg.see_over_cover(rgba(name), TAGS.get(name, {}))
-    m = cg.masks(rgba(name), TAGS.get(name, {}))
     geo = cg.load_geometry(name, height_mode="flat")
     row = INDEX["maps"][name]
     if not fresh.any():
@@ -130,13 +155,6 @@ def test_cover_is_its_own_asset_and_sight_is_wall_plus_cover(name):
         return
     png = cg.read_mask_png(path)
     assert (png == fresh).all()
-    entry = TAGS.get(name, {})
-    base = cg._base_masks(rgba(name), cg.GLYPH_SATURATION, cg.DETECTOR_DEFAULTS["line_lum"])
-    see_across = cg.tag_shapes(rgba(name), entry)["seeacross"].copy()
-    if entry.get("see_across_paint"):
-        see_across |= cg.unpack_paint(entry["see_across_paint"])
-    wall_without_cover = ~base["opaque"] & ~see_across
-    assert (m.sight == (wall_without_cover | png)).all()
     assert row["cover_sha"] == geo.cover_sha
     assert (geo.cover_px > 0).sum() == png.sum() and (geo.cover_px[~png] == 0).all()
     assert geo.cover_px.dtype == np.int16
@@ -178,7 +196,10 @@ def test_a_cover_outline_over_a_wall_pixel_is_not_see_over_cover():
 @pytest.mark.parametrize("name", sorted(LINES))
 def test_kill_lines_pass_risk1(name):
     m = cg.masks(rgba(name), TAGS.get(name, {}))
-    assert cg.kill_line_result(cg.load_geometry(name).sight, LINES[name], m.cover)["passes"]
+    result = cg.kill_line_result(m.gate_wall, LINES[name], m.cover)
+    assert result["passes"]
+    assert INDEX["maps"][name]["kill_lines"] == result
+    assert INDEX["maps"][name]["kill_lines_with_walls"] == cg.kill_line_result(m.wall, LINES[name], m.cover)
 
 
 def test_abyss_passes_only_with_its_see_across_tags():
@@ -189,7 +210,7 @@ def test_abyss_passes_only_with_its_see_across_tags():
 def test_the_index_lists_every_map_with_the_badge_flag():
     assert sorted(INDEX["maps"]) == MAPS
     for name, row in INDEX["maps"].items():
-        assert row["cover_reviewed"] is False   # nothing tagged as cover yet: the badge shows
+        assert row["cover_reviewed"] is (name == "Haven")
         assert row["specials"] == []
         assert (row["kill_lines"] is not None) == (name in LINES)
     assert all(INDEX["maps"][n]["kill_lines"]["passes"] for n in LINES)
