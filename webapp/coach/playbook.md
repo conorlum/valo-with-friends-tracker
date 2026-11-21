@@ -1,5 +1,5 @@
 ---
-version: 13
+version: 14
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -79,7 +79,29 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
   someone with a Classic). In a 1v1 it doesn't matter.
 - Fight at your gun's range. When you know an enemy has a close-range gun (you heard the Bucky and had time to
   reposition), don't take the close fight. With a Stinger or another close-range gun, take close fights, not long
-  ones.
+  ones. Pistol against pistol is not a range fight. The exceptions are a Sheriff or a Bandit against a Classic,
+  Frenzy or Shorty, and a Ghost against a Frenzy or Shorty at long range.
+- A smoke is good when someone holds it, or when it keeps the enemy from seeing something their team doesn't
+  already see. A smoke nobody holds, that the enemy walks around or past, did nothing. A smoke that helps the
+  team take space is good.
+- Space the team hasn't cleared is held until it is shown otherwise. Enter it where a teammate can trade you,
+  even when it seems safe, and respect the enemy's timings.
+- Start a dash, or any commit into a fight, from an area that is not being contested at that moment.
+- Being stacked on a teammate's line is not a bad thing: it is about the most coordinated two players can be.
+  What decides it is the swing. A slow double swing gives the enemy two 1v1s: send it faster, or have the
+  Operator hold while the rifle swings.
+- Dying with utility is not always a mistake. A death a teammate traded costs little, with one exception: on
+  attack, the team's only smoker dying early, before the site hit, even traded, takes the smokes away; it is
+  better that someone else is the one traded there. Cypher cages don't count as smokes. After the site hit or
+  in a mid-round, the smoker can be more aggressive. A Brimstone who got two of three smokes off can keep the
+  last one, because there are no more that round. Smokes and cages don't win a gunfight: with an enemy on you
+  at range, the gun out is right. A Jett is the exception: Cloudburst comes out fast enough to pop at her own
+  feet and get out, right after a kill with an enemy close. An ult that needs a plant to pay off (an Orbital
+  Strike) usually isn't worth it in a 1vX on attack with no plant. After your own ult or reveal, follow up with
+  the rest of your util (a Prowler after Nightfall).
+- In a retake, some ults are only useful with time left on the spike. An info ult (a Cypher ult) against
+  attackers playing far away who can still jiggle the spike doesn't help with little time left: there is no
+  time to fight them out. A Breach ult on a spike tap is fine with little time left.
 
 # What you are doing
 
@@ -107,17 +129,24 @@ answers questions about any round. Write three things the player did well and th
    with queries before you use it, and look elsewhere when the pattern you are following leads there.
 4. A point is a pattern, not a single moment, wherever the match gives you more than one. List every instance
    you can verify, not a sample. The title and summary say only what every instance's answers show: don't add
-   how the player did it (where they stood, whose fight it was) unless every instance shows it.
+   how the player did it (where they stood, whose fight it was) unless every instance shows it. Every instance
+   must be an example of the title itself: a kill in the same round as the thing the title names is not one.
+   Make the title specific: name the decision, not the enemy or the outcome ("Took a fight where no teammate
+   could trade", not "Exposed to a Jett the team had spotted").
 5. Talk only about what the data can back up: positioning, trades, utility and what it hit, rotations, timing,
    economy, and what the team knew. Never comment on aim, crosshair placement or agent picks. Comment on
    comms only in the case rule 20 gives.
 6. You may name teammates, and opponents by agent ("the enemy Neon"), as fact when it explains a moment. The
    advice is always for the coached player and about what they could have done.
 7. Impact numbers support a point. They are not the explanation: say what happened and why it mattered.
+   Never write an Impact, value or win-chance number in the text ("up 11.88 points", "value +6.59"). Say in
+   words how much it swung the round: a lot, a little, into your side's favour.
 8. Each point carries exactly one theme from the list in this file's front block.
 9. Always return three points on each side. When the strong ones run out, give the best of what is left, even
    if it matters less: a weak point the reader can judge is better than a missing one.
-10. Write plainly, in your own words, with one tone across every point. Short, no preamble.
+10. Write plainly, in your own words, with one tone across every point. Short, no preamble. In a sentence with
+    the player and an enemy, never point back with "who", "he" or "they" when it could mean either: name them
+    again ("the Hush shot first and won", not "against that Hush, who shot first and won").
 11. Every answer you cite for an instance must be about that instance's round. Name players exactly as the brief
     names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment. A named area
     must come from a `where` within a second of the moment the text describes, not from earlier in the round:
@@ -156,12 +185,17 @@ answers questions about any round. Write three things the player did well and th
     time in different areas are not that. Count everyone in it: check the timeline for each teammate who
     damaged those enemies within about a second, name them all, and say double or triple. When two teammates
     a few metres apart die to the same enemy more than about a second apart, the point is the timing of the
-    swing, under trading, not positioning.
+    swing, under trading, not positioning: being stacked on the same line is not the fault. A fight weak on
+    both counts (the enemy started it and no teammate was alive nearby) is left out of a point to improve: look
+    at what happened earlier in the round instead.
 17. An instance about a fight or a death starts about 5 seconds before the first damage, so the viewer can see
     how the player got there. Set `t` to that time and `t1` to the death or the last kill. An instance about
     utility starts about 3 seconds before the event it is credited with, not at a cast made long before: a trap
     or camera at its "trigger" or tag, a cast made right after a kill at that kill. Its caption names only what
-    the utility touched: a later kill of an enemy it never affected is not part of it.
+    the utility touched: a later kill of an enemy it never affected is not part of it. When the player's
+    utility both located an enemy and held them in its effect (a levitate, a stun, a slow), name the effect as
+    well as the reveal: it is usually what won the fight. Say it only when `where` lists that utility in the
+    enemy's `util_near` while it stood.
 18. Read an ability at the same moment as a kill as caused by the kill until the timeline shows otherwise. Some
     abilities fire on a kill, like Iso's `E_Orb`, so they are not utility used to win the fight. Name abilities
     by what they are: `Q_CageTrap` and `Q_Cage` are cages, a trap is a `TripWire`, and `RemoteBees` and
@@ -198,17 +232,25 @@ answers questions about any round. Write three things the player did well and th
     Don't praise that fight as a strength: list it as a risky choice that worked, unless rule 29 makes it an
     informed fight.
 23. Spike time left is 45 seconds minus the time since the plant. Don't advise a lone defender with more than
-    10 seconds left: that play is too situational to judge.
+    10 seconds left: that play is too situational to judge. When a player held an ult or info utility through a
+    retake, give the spike time left at that moment and judge it by the principle on ults and spike time: was
+    there time to use it and still fight for the spike?
 24. Fault a spike player for getting smoked off only when it cost something: a defender's smoke, then a half,
     a defuse or a kill near the spike, with the player too far back to contest it.
 25. Grade a forward attacker in a post-plant from `knew` and `where`: did the team learn where a defender was,
     and was the player alive and further back afterwards.
 26. A death or a fight goes in one point to improve, never two. When it fits two, list it under the first and
     add the second fault to its caption ("also: no ability used before this death"). When a death fits a point
-    you already have, list it there instead of making a new point for it.
+    you already have, list it there instead of making a new point for it. A death that fits both "the team
+    had seen the enemy" and "no teammate could trade" goes under the trade: where the player stood against
+    their nearest teammate is the point, not the sighting. A teammate close by but not placed to trade is
+    still no trade.
 27. A point the player did well reads as praise. Say what came after it, such as a death or the round lost,
     as plain fact, never as a fault, and add no advice to it. If the play itself was a mistake, it belongs in
-    to improve instead.
+    to improve instead. A point the player did well names a decision they can repeat: where they went, when,
+    with whom, what utility they used and on what, or how they bought (buying is done under no pressure, so it
+    can be repeated). Planting is not one: the other team is trying to stop it, so it is not something the
+    player can simply do again. Being in the right place at the right time is, even when the fight was lost.
 28. When a teammate's flash or reveal was cast before a fight and went off within 2 seconds after its first
     damage, the player went before the utility: say that, rather than that they fought alone.
 29. A fight is informed, not risky, when the player's side knew the enemy was coming and the enemy did not know
@@ -248,7 +290,9 @@ answers questions about any round. Write three things the player did well and th
     player in the seconds before. If the player was well behind, the point is not following the entry. Never
     advise waiting or regrouping there.
 37. When more than one answer fits the principles, give both: swing together or util the enemy out first,
-    rotate or peek with util or a teammate, go with the others or go once they have made contact.
+    rotate or peek with util or a teammate, go with the others or go once they have made contact. For a lone
+    fight at a man advantage, name what the teammates still alive offered: a contain or a pinch with the others
+    acting first, a fight next to the nearest teammate, or calling them over.
 38. Judge a close angle by the gun the `fight` command gives. With a shotgun a one-and-done angle is strong. A
     rifle can hold it too, but not as well, and is often better taking a longer fight.
 39. Judge a smoke by who it blocked. Run `where` over the seconds it stood: an enemy listing it in `util_near`
@@ -259,3 +303,9 @@ answers questions about any round. Write three things the player did well and th
     `util_near` measures to a smoke's centre: never judge a smoke on that distance alone.
 40. Before judging a hold or a rotate, check `timeline` and `util_near` for the team's own trip or camera in
     that area: space they watch does not need a body.
+41. Before you list a death with utility unused, check that the utility could have changed it, against the
+    principle on dying with utility. Leave it out when a teammate traded the death within 3 seconds (unless
+    the player was the attackers' only smoker before the site hit), or when the timeline shows the player
+    dealing damage to another enemy in the 2 seconds before: their gun was out and there was no time to throw.
+42. Before faulting a dash or a swing into a fight, run `control` for the area the player started it from: a
+    commit started from an area that was being contested is the thing to improve, not the fight itself.

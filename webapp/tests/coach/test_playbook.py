@@ -56,9 +56,9 @@ def _squash(text):
     return re.sub(r"\s+", " ", text)
 
 
-def test_the_shipped_playbook_is_version_13_with_the_gun_range_and_trade_principles():
+def test_the_shipped_playbook_is_version_14_with_the_gun_range_and_trade_principles():
     book = playbook.load()
-    assert book.version == "13"
+    assert book.version == "14"
     principles = _squash(book.text.split("# Rules", 1)[0])
     assert "# Principles" in principles
     assert _squash(
