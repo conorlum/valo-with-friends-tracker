@@ -1793,16 +1793,18 @@ table.compact-table .badge-score {
     grid-template-columns: 2.2rem minmax(0, 1fr) auto; grid-template-areas: "agent main nums" "agent kit nums";
     align-content: center; gap: 0.1rem 0.5rem; padding: 0.1rem 0;
   }
+  .replay.is-linked .replay-board .replay-pl-row.is-dead { padding-inline: 0.4rem; }
   .replay.is-linked .replay-board .replay-pl-agent { width: 2.2rem; height: 2.2rem; }
   .replay.is-linked .replay-board .replay-pl-top { margin-bottom: 0.15rem; font-size: 0.9rem; line-height: 1.25; }
   .replay.is-linked .replay-board .replay-pl-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .replay.is-linked .replay-board .replay-pl-kit { gap: 0.15rem; }
-  .replay.is-linked .replay-board .replay-pl-ability { width: 1.25rem; height: 1.25rem; }
-  .replay.is-linked .replay-board .replay-pl-ability img { width: 1rem; height: 1rem; }
-  .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.6rem; bottom: -4px; }
-  .replay.is-linked .replay-board .replay-pl-gun-icon { width: 2rem; height: 0.65rem; }
-  .replay.is-linked .replay-board .replay-pl-ult { width: 1.35rem; height: 1.35rem; margin-left: 0.1rem; }
-  .replay.is-linked .replay-board .replay-pl-ult img { width: 0.95rem; height: 0.95rem; }
+  .replay.is-linked .replay-board .replay-pl-kit { gap: 0.35rem; }
+  .replay.is-linked .replay-board .replay-pl-ability { width: 1.7rem; height: 1.7rem; }
+  .replay.is-linked .replay-board .replay-pl-ability img { width: 1.35rem; height: 1.35rem; }
+  .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.68rem; bottom: -5px; }
+  .replay.is-linked .replay-board .replay-pl-gun { margin-left: 0.5rem; font-size: 0.8rem; }
+  .replay.is-linked .replay-board .replay-pl-gun-icon { width: 2.8rem; height: 0.9rem; }
+  .replay.is-linked .replay-board .replay-pl-ult { width: 1.85rem; height: 1.85rem; margin-left: 0.15rem; }
+  .replay.is-linked .replay-board .replay-pl-ult img { width: 1.3rem; height: 1.3rem; }
   .replay.is-linked .replay-board .replay-pl-nums { font-size: 0.72rem; line-height: 1.15; gap: 0; }
   /* The tabs column ends level with the map: the tabs stay put and the open panel scrolls in what is left. */
   .replay.is-linked .replay-side { display: flex; flex-direction: column; box-sizing: border-box; }
@@ -2010,7 +2012,15 @@ table.compact-table .badge-score {
   align-items: center; gap: 0.65rem; padding: 0.45rem 0; border-top: 1px solid var(--border);
 }
 .replay-pl-head + .replay-pl-row { border-top: 0; }
-.replay-pl-row.is-dead { opacity: 0.5; }
+/* A dead row: a faded red band with a red edge (the negative margin keeps its contents in line with the live rows);
+   only the contents fade, so the red stays clear. */
+.replay-pl-row.is-dead {
+  margin-inline: -0.4rem; padding-inline: 0.4rem; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--critical) 16%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--critical) 75%, transparent);
+}
+.replay-pl-row.is-dead > * { opacity: 0.5; }
+.replay-pl-row.is-dead .replay-pl-dead { color: var(--critical); font-weight: 700; }
 .replay-pl-row.is-dead .replay-pl-agent img { filter: grayscale(1); }
 .replay-pl-agent {
   grid-area: agent; width: 2.6rem; height: 2.6rem; border: 2px solid; border-radius: var(--radius-sm);
@@ -2029,6 +2039,7 @@ table.compact-table .badge-score {
 .replay-pl-gun {
   margin-left: 0.35rem; color: var(--ink-secondary); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
 }
+.replay-pl-gun.is-util { color: var(--accent, var(--ink)); }
 .replay-pl-gun.is-unfired { color: var(--ink-muted); font-weight: 400; font-style: italic; }
 .replay-pl-gun { display: inline-flex; align-items: center; gap: 0.25rem; }
 /* The gun's kill-feed silhouette (white on transparency, 96 px tall), drawn in the text colour. */

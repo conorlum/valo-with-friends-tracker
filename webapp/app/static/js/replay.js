@@ -593,6 +593,29 @@
     return false;
   }
 
+  // Where a slot shows on the map at t: trackAt, except that inside the Kill Contract arena (whose tracked place is
+  // off the map) it is the last place they stood on the map before the duel took them, flagged `arena`. Their death
+  // X in the duel goes there too. Null when trackAt is, or when nothing on the map came before the arena.
+  function mapPlaceAt(segments, t) {
+    var at = trackAt(segments, t);
+    if (!at) return null;
+    var latest = null, before = null;      // the latest sample at or before t, and the latest on the map before it
+    (segments || []).forEach(function (seg) {
+      seg.forEach(function (p) {
+        if (p.t > t) return;
+        if (!latest || p.t >= latest.t) latest = p;
+      });
+    });
+    if (!latest || typeof latest.z !== "number" || latest.z >= ARENA_Z) return at;
+    (segments || []).forEach(function (seg) {
+      seg.forEach(function (p) {
+        if (p.t <= latest.t && !(typeof p.z === "number" && p.z < ARENA_Z) && (!before || p.t >= before.t)) before = p;
+      });
+    });
+    if (!before) return null;
+    return { u: before.u, v: before.v, yaw: before.yaw, live: at.live, arena: true };
+  }
+
   function utilInArenaAt(a, tracks, t) {
     if (a.slot === null || a.slot === undefined || !SUPPRESSIBLE.test(a.code + "_" + a.name)) return false;
     return inArenaAt((tracks || {})[String(a.slot)], t);
@@ -1356,6 +1379,15 @@
     return { dead: false, pct: null, total: null, armor: null, hpPct: null, shieldPct: null };
   }
 
+  // The players panel's shield badge for hudVitals' output: "left/bought" (e.g. 26/50; the left drops as they take
+  // damage); empty with no shield bought or none proven (`armor` and `shieldPct` are proven
+  // together).
+  function armorBadge(v) {
+    if (!v || !v.armor || v.shieldPct === null || v.shieldPct === undefined) return "";
+    var left = Math.round(v.shieldPct * FULL_SHIELD / 100);
+    return '<span class="replay-pl-armor" title="Shield left ' + left + " of " + v.armor + ' bought">' + left + "/" + v.armor + "</span>";
+  }
+
   // With hold rows, the latest switch in the current life gives {gun, held: true}; a closing row or no switch
   // gives null. The optional round state index supplies the same life boundaries as hudVitals. Without hold rows,
   // preserve the shot-based estimate: latest shot ({gun, fired: true}), else first shot ({gun, fired: false}).
@@ -1379,6 +1411,23 @@
     });
     if (last) return { gun: last.gun, fired: true };
     return first ? { gun: first.gun, fired: false } : null;
+  }
+
+  // The util a slot is looking through or flying at t, from its ability rows' `possessed` spans (a camera or drone;
+  // an open span runs to the row's t1): {label: "Watching Spycam" | "Flying Owl Drone" | ...}, or null.
+  function possessingAt(abilities, slot, t) {
+    var found = null;
+    (abilities || []).forEach(function (a) {
+      if (found || a.slot !== slot || !a.possessed) return;
+      a.possessed.forEach(function (span) {
+        var end = span[1] === null || span[1] === undefined ? a.t1 : span[1];
+        if (!found && span[0] <= t && (end === null || end === undefined || t <= end)) {
+          var name = abilityStyle(a).ability || a.name;
+          found = { label: (/Camera/.test(a.name) ? "Watching " : "Flying ") + name };
+        }
+      });
+    });
+    return found;
   }
 
   // The players panel's gun: its silhouette (static/img/weapons/, scripts/vendor_weapon_icons.py; a mask filled with
@@ -2384,16 +2433,21 @@
         : { dead: true, pct: 0, total: null, armor: null, hpPct: null, shieldPct: null };
       var fill = v.hpPct !== null && v.hpPct !== undefined ? v.hpPct : v.pct;
       // The orange line above the bar: the shield left, out of heavy shield's 50; empty with no shield left.
-      var shield = life && v.shieldPct !== null && v.shieldPct !== undefined
-        ? '<span class="replay-pl-shield" title="Shield ' + Math.round(v.shieldPct * FULL_SHIELD / 100) + " of " +
+      var shieldKnown = life && v.shieldPct !== null && v.shieldPct !== undefined;
+      var shieldLeft = shieldKnown ? Math.round(v.shieldPct * FULL_SHIELD / 100) : null;
+      var shield = shieldKnown
+        ? '<span class="replay-pl-shield" title="Shield ' + shieldLeft + " of " +
           (v.armor || 0) + ' bought"><span style="width:' + v.shieldPct.toFixed(1) + '%"></span></span>'
         : '<span class="replay-pl-shield is-unknown"></span>';
       var bar = shield + (fill === null
         ? '<span class="replay-pl-bar is-unknown" title="Health not proven since the last hit"></span>'
         : '<span class="replay-pl-bar" title="Health"><span style="width:' + fill.toFixed(1) + '%"></span></span>');
-      var armor = v.armor ? '<span class="replay-pl-armor" title="Shield bought">' + v.armor + "</span>" : "";
+      var armor = life ? armorBadge(v) : "";
       var held = life ? gunAt(self.current.extras.shots, p.slot, t, self.current.extras.holds, self.current.state) : null;
-      var gun = gunHtml(held, self.options.gunIcons);
+      // Looking through a camera or flying a drone replaces the gun (the replay records that, not other util held).
+      var using = life ? possessingAt(self.current.extras.abilities, p.slot, t) : null;
+      var gun = using ? '<span class="replay-pl-gun is-util" title="Using util now">' + escapeHtml(using.label) + "</span>"
+        : gunHtml(held, self.options.gunIcons);
       var hp = '<span class="replay-pl-hp" title="Health plus shield">' + (v.total === null ? "" : v.total) + "</span>";
       var used = uses[p.slot] || {}, kit = abilitySlots(icons, p.agent);
       var abilities = kit.filter(function (k) { return k.key !== "X"; }).map(function (k) {
@@ -4633,9 +4687,12 @@
 
     blob.kills.forEach(function (k) {
       if (k.t > t || k.u === null) return;
-      var x = k.u * s, y = k.v * s, age = t - k.t;
+      // A death in Iso's duel arena is marked where the victim was taken from, not off the map.
+      var taken = mapPlaceAt(tracks[String(k.victim)], k.t);
+      var place = taken && taken.arena ? taken : k;
+      var x = place.u * s, y = place.v * s, age = t - k.t;
       if (age <= KILL_LINE_S && k.killer !== k.victim) {
-        var from = trackAt(tracks[String(k.killer)], k.t);
+        var from = mapPlaceAt(tracks[String(k.killer)], k.t);
         if (from) {
           ctx.save();
           ctx.globalAlpha = 1 - age / KILL_LINE_S;
@@ -4661,7 +4718,7 @@
     var knowing = this.layers.control && this.controlCache ? this.knowingGroup(this.controlCache.ready(this.number)) : null;
     blob.players.forEach(function (p) {
       var slot = String(p.slot);
-      var at = trackAt(tracks[slot], t);
+      var at = mapPlaceAt(tracks[slot], t);    // in Iso's duel: where the duel took them from
       if (!at) return;
       var life = aliveAt(blob.alive[slot], t, blob.t_end);
       var x = at.u * s, y = at.v * s, color = self.slotColor(p.slot, p.side);
@@ -4840,7 +4897,7 @@
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
     lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
-    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt,
+    healthPct: healthPct, healthAt: healthAt, hudVitals: hudVitals, armorBadge: armorBadge, gunAt: gunAt, gunHtml: gunHtml, inArenaAt: inArenaAt, mapPlaceAt: mapPlaceAt, possessingAt: possessingAt,
     utilInArenaAt: utilInArenaAt, abilitySlots: abilitySlots, abilityUses: abilityUses, ultAt: ultAt, orbsAt: orbsAt, ULT_COST: ULT_COST, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,

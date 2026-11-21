@@ -637,10 +637,20 @@ def test_players_panel_kit_uses_and_health():
           none: R.abilitySlots(icons, "Omen"),
           uses: [R.abilityUses(items, 5), R.abilityUses(items, 10)],
           before: R.hudVitals(index, 1, 3), after: R.hudVitals(index, 1, 6),
-          unproven: R.hudVitals(index, 2, 6), dead: R.hudVitals(index, 2, 9)
+          unproven: R.hudVitals(index, 2, 6), dead: R.hudVitals(index, 2, 9),
+          badges: [R.armorBadge(R.hudVitals(index, 1, 3)), R.armorBadge(R.hudVitals(index, 1, 6)),
+                   R.armorBadge(R.hudVitals(index, 2, 6)),
+                   R.armorBadge({armor: 50, shieldPct: 52})]
         }));
       });"""
     got = run_node(script, {})
+    # The shield badge is the shield left, not the shield bought: it drops with damage.
+    assert got["badges"] == [
+        '<span class="replay-pl-armor" title="Shield left 50 of 50 bought">50/50</span>',
+        '<span class="replay-pl-armor" title="Shield left 0 of 50 bought">0/50</span>',
+        "",
+        '<span class="replay-pl-armor" title="Shield left 26 of 50 bought">26/50</span>',
+    ]
     assert got["kit"] == ["C:Prowler", "Q:Seize", "E:Haunt", "X:Nightfall"]
     assert got["none"] == []
     assert got["uses"] == [{"1": {"Haunt": 1, "Nightfall": 1}}, {"1": {"Haunt": 2, "Nightfall": 1}}]
@@ -829,6 +839,59 @@ def test_placed_util_is_off_while_its_owner_is_in_kill_contract():
     assert got["trip"] == [False, True, False]
     assert got["set"] == [True, True, True, True, True]
     assert got["other_owner"] is False and got["not_placed"] is False and got["no_z"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_players_panel_names_a_camera_or_drone_in_use():
+    """While a player looks through their camera or flies a drone (its row's `possessed` spans; an open span runs to
+    the row's t1), the panel names it in place of the gun."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const abilities = [
+          {kind: "GameObject", code: "Gumshoe", name: "E_PossessableCamera", slot: 2, t0: 5, t1: 90,
+           possessed: [[20, 24], [40, null]]},
+          {kind: "GameObject", code: "Hunter", name: "E_Drone", slot: 3, t0: 10, t1: 17, possessed: [[11, 16]]},
+          {kind: "GameObject", code: "Gumshoe", name: "4_TripWire", slot: 2, t0: 3, t1: 90}];
+        const at = (slot, t) => R.possessingAt(abilities, slot, t);
+        process.stdout.write(JSON.stringify({
+          cam: [at(2, 10), at(2, 22), at(2, 30), at(2, 60), at(2, 95)], drone: [at(3, 12), at(3, 16.5)],
+          other: at(4, 22)
+        }));
+      });"""
+    got = run_node(script, {})
+    watching = {"label": "Watching Spycam"}
+    assert got["cam"] == [None, watching, None, watching, None]
+    assert got["drone"] == [{"label": "Flying Owl Drone"}, None]
+    assert got["other"] is None
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_kill_contract_duellists_show_where_they_were_taken():
+    """In Kill Contract's off-map arena a duellist shows (and a duel death is marked) at the last place they stood on
+    the map before the duel took them; before and after the arena, the track is used as it is."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const p = (t, u, z) => ({t: t, u: u, v: 100, yaw: 0, z: z});
+        // Walks from u 100 to u 200 by 16.3 s, is in the arena (u 9000) from 16.38 s, back at u 300 from 22.1 s.
+        const segs = [[p(0, 100, 40), p(16.3, 200, 40)], [p(16.38, 9000, -4990), p(22, 9000, -4990)],
+                      [p(22.1, 300, 40), p(60, 300, 40)]];
+        // The duel's loser: its track ends in the arena at its death (20 s), and is last-known there briefly.
+        const loser = [[p(0, 500, 40), p(16.3, 600, 40)], [p(16.38, 9100, -4990), p(20, 9100, -4990)]];
+        const at = (s, t) => { const a = R.mapPlaceAt(s, t); return a && {u: a.u, arena: !!a.arena, live: a.live}; };
+        process.stdout.write(JSON.stringify({
+          before: at(segs, 8.15), inside: at(segs, 18), after: at(segs, 30),
+          death: at(loser, 20), lastKnown: at(loser, 20.5), none: R.mapPlaceAt([], 5)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["before"] == {"u": 150, "arena": False, "live": True}
+    assert got["inside"] == {"u": 200, "arena": True, "live": True}
+    assert got["after"] == {"u": 300, "arena": False, "live": True}
+    assert got["death"] == {"u": 600, "arena": True, "live": True}
+    assert got["lastKnown"] == {"u": 600, "arena": True, "live": False}
+    assert got["none"] is None
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
