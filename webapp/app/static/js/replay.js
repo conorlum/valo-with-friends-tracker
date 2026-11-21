@@ -426,6 +426,13 @@
     return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
   }
 
+  // A capsule extends from its stuck point along the map yaw, in the same units as boxes.
+  function capsuleEnds(a, style, uvPerUnit) {
+    if (a.yaw === null || a.yaw === undefined) return null;
+    var rad = a.yaw * Math.PI / 180, len = style.capsule * uvPerUnit;
+    return [[a.u, a.v], [a.u + Math.cos(rad) * len, a.v + Math.sin(rad) * len]];
+  }
+
   // A box ability's corners in minimap uv, from its yaw like lineEnds: `from` to `from + len` world units along
   // it and `width` across, centred. f0..f1 cut a share of that length (a sweep's front). In order: near left,
   // far left, far right, near right, so the two long sides are 0-1 and 3-2 (Fast Lane's walls). Null without a yaw.
@@ -2945,6 +2952,50 @@
     return at ? { x: at.u * s, y: at.v * s } : { x: a.u * s, y: a.v * s };
   };
 
+  // One path for circular and capsule areas. Scale about the centre, padding only the radius for side rings.
+  function utilAreaPath(ctx, x, y, rad, seg, scale, pad) {
+    scale = scale === undefined ? 1 : scale;
+    var radius = rad * scale + (pad || 0);
+    ctx.beginPath();
+    if (!seg) { ctx.arc(x, y, radius, 0, 2 * Math.PI); return; }
+    var cx = (seg[0][0] + seg[1][0]) / 2, cy = (seg[0][1] + seg[1][1]) / 2;
+    var x0 = cx + (seg[0][0] - cx) * scale, y0 = cy + (seg[0][1] - cy) * scale;
+    var x1 = cx + (seg[1][0] - cx) * scale, y1 = cy + (seg[1][1] - cy) * scale;
+    var angle = Math.atan2(seg[1][1] - seg[0][1], seg[1][0] - seg[0][0]);
+    var dx = -Math.sin(angle) * radius, dy = Math.cos(angle) * radius;
+    ctx.arc(x0, y0, radius, angle + Math.PI / 2, angle + 3 * Math.PI / 2);
+    ctx.lineTo(x1 - dx, y1 - dy);
+    ctx.arc(x1, y1, radius, angle - Math.PI / 2, angle + Math.PI / 2);
+    ctx.lineTo(x0 + dx, y0 + dy); ctx.closePath();
+  }
+
+  // Shared clipped patch: glass for smoke, grain for areas (including the dim body between pops).
+  function drawUtilAreaPatch(ctx, x, y, rad, seg, color, strength, smoke) {
+    var cx = seg ? (seg[0][0] + seg[1][0]) / 2 : x;
+    var cy = seg ? (seg[0][1] + seg[1][1]) / 2 : y;
+    var extent = rad + (seg ? Math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) / 2 : 0);
+    ctx.save(); ctx.globalAlpha = strength;
+    utilAreaPath(ctx, x, y, rad, seg); ctx.clip();
+    var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, extent);
+    grad.addColorStop(0, withAlpha(color, smoke ? 0.75 : 0.7));
+    grad.addColorStop(smoke ? 0.55 : 0.6, withAlpha(color, smoke ? 0.45 : 0.5));
+    grad.addColorStop(1, withAlpha(color, smoke ? 0.3 : 0.12));
+    ctx.fillStyle = grad; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+    if (smoke) {
+      var glow = ctx.createRadialGradient(cx - rad * 0.3, cy - rad * 0.3, 0, cx - rad * 0.3, cy - rad * 0.3, rad);
+      glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+      glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+      ctx.fillStyle = glow; ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+    } else {
+      var noise = noiseCanvas();
+      if (noise) {
+        ctx.fillStyle = ctx.createPattern(noise, "repeat");
+        ctx.fillRect(cx - extent, cy - extent, extent * 2, extent * 2);
+      }
+    }
+    ctx.restore();
+  }
+
   ReplayViewer.prototype.drawAbilities = function (ctx, s, r, hits) {
     var blob = this.current.blob, t = this.t, self = this;
     var showing = abilitiesAt(this.current.extras.abilities, t, blob.t_end);
@@ -2991,57 +3042,40 @@
         else if (left !== null) text += " · " + (left * a.full).toFixed(1) + " s of its " + a.full.toFixed(1) + " s left";
         ctx.save();
         if ((pass === "smoke" || pass === "area") && style.pop !== undefined) {
-          // A pop: a dashed outline while it is set (before its first pop), then a burst at each pop.
+          // Windup, then a dim area with a full-shape flash and an opening ring at each pop.
           var prad = self.uvRadius(style.r) * s, pops = popTimes(a);
+          var capsule = style.capsule ? capsuleEnds(a, style, upu) : null;
+          var seg = capsule && capsule.map(function (pt) { return [pt[0] * s, pt[1] * s]; });
           ctx.strokeStyle = color; ctx.fillStyle = color;
-          if (t < pops[0]) {
+          if (!pops.length || t < pops[0]) {
             ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
-            ctx.beginPath(); ctx.arc(x, y, prad, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+            utilAreaPath(ctx, x, y, prad, seg); ctx.stroke(); ctx.setLineDash([]);
+          } else {
+            drawUtilAreaPatch(ctx, x, y, prad, seg, color, 0.4 * fadeIn, false);
           }
           pops.forEach(function (p) {
             if (t < p || t > p + style.pop) return;
             var f = (t - p) / style.pop;
-            ctx.globalAlpha = 0.35 * (1 - f); ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.fill();
+            ctx.globalAlpha = 0.55 * (1 - f); utilAreaPath(ctx, x, y, prad, seg); ctx.fill();
             ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4);
-            ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.stroke();
+            utilAreaPath(ctx, x, y, prad, seg, 0.35 + 0.65 * f); ctx.stroke();
           });
+          utilAreaPath(ctx, x, y, prad, seg, 1, 1.5);
+          ctx.strokeStyle = side; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.75 * fadeIn; ctx.stroke();
           ctx.restore(); ctx.save();
           var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
           self.drawUtilBadge(ctx, side, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
           var popped = pops.filter(function (p) { return p <= t; });
-          hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), area: true, text: text + (popped.length ? " · went off at " +
-            popped.map(function (p) { return p.toFixed(1); }).join(", ") + " s" : "") });
+          var popHit = { x: x, y: y, r: seg ? prad : Math.max(prad, r * 0.6), area: true,
+            text: text + (popped.length ? " · went off at " + popped.map(function (p) { return p.toFixed(1); }).join(", ") +
+              " s" + (popTimesTimed(a) ? " (timed from the ability, not recorded)" : "") : "") };
+          if (seg) popHit.seg = seg;
+          hits.push(popHit);
         } else if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
           var body = (style.faint ? 0.45 : 1) * fadeIn;
           ctx.globalAlpha = body;
-          ctx.save();
-          ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
-          ctx.clip();
-          var grad = ctx.createRadialGradient(x, y, 0, x, y, rad);
-          if (pass === "smoke") {
-            grad.addColorStop(0, withAlpha(color, 0.75));
-            grad.addColorStop(0.55, withAlpha(color, 0.45));
-            grad.addColorStop(1, withAlpha(color, 0.3));
-          } else {
-            grad.addColorStop(0, withAlpha(color, 0.7));
-            grad.addColorStop(0.6, withAlpha(color, 0.5));
-            grad.addColorStop(1, withAlpha(color, 0.12));
-          }
-          ctx.fillStyle = grad; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-          if (pass === "smoke") {
-            var glow = ctx.createRadialGradient(x - rad * 0.3, y - rad * 0.3, 0, x - rad * 0.3, y - rad * 0.3, rad);
-            glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
-            glow.addColorStop(1, "rgba(255, 255, 255, 0)");
-            ctx.fillStyle = glow; ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-          } else {
-            var noise = noiseCanvas();
-            if (noise) {
-              ctx.fillStyle = ctx.createPattern(noise, "repeat");
-              ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-            }
-          }
-          ctx.restore();
+          drawUtilAreaPatch(ctx, x, y, rad, null, color, body, pass === "smoke");
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (style.faint) ctx.setLineDash([r / 3, r / 4]);
           if (pass === "smoke") {
@@ -3816,8 +3850,11 @@
   // from its cast row (`path`) and its pop (`pop`, where the export places it) are drawn here too.
   ReplayViewer.prototype.drawProjectiles = function (ctx, s, r, hits) {
     var t = this.t, self = this, uvPerUnit = (this.linked && this.linked.uvPerUnit) || 0.75;
-    (this.current.extras.abilities || []).forEach(function (a) {
+    var abilities = this.current.extras.abilities || [];
+    abilities.forEach(function (a, index) {
       if (a.kind !== "Projectile") return;
+      if (a.code + "_" + a.name === "Grenadier_Q_SemtexBasic" && a.flight && a.flight.length &&
+          t > a.flight[a.flight.length - 1][0] && abilities.some(function (zone) { return zone.zoneOf === index; })) return;
       var at = projectileAt(a, t);
       if (!at) return;
       var style = projectileStyle(a), color = self.utilColor(a, style);
@@ -5033,9 +5070,15 @@
     this.showTip(this.hover);
   };
 
-  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
+  // A hit holds the point: its box, capsule segment or circle, all in map pixels.
   function hitHolds(h, x, y) {
     if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
+    if (h.seg) {
+      var a = h.seg[0], b = h.seg[1], dx = b[0] - a[0], dy = b[1] - a[1];
+      var len2 = dx * dx + dy * dy;
+      var f = len2 ? Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy) / len2)) : 0;
+      return Math.hypot(x - a[0] - f * dx, y - a[1] - f * dy) <= h.r;
+    }
     return Math.hypot(h.x - x, h.y - y) <= h.r;
   }
 
@@ -5067,7 +5110,7 @@
   }
 
   var api = {
-    withAlpha: withAlpha, lighten: lighten,
+    withAlpha: withAlpha, lighten: lighten, capsuleEnds: capsuleEnds,
     utilColorOf: utilColorOf, sideColorOf: sideColorOf, UTIL_AGENT_COLORS: UTIL_AGENT_COLORS,
     decodeArena: decodeArena, placeInset: placeInset, arenaPoint: arenaPoint, ARENA_ROOM: ARENA_ROOM,
     decodeAreaCells: decodeAreaCells, areaLabelPoints: areaLabelPoints, zAt: zAt, bandName: bandName,

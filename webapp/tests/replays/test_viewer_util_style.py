@@ -1,6 +1,7 @@
 """Utility styles, pulse timing and derived zones work without map control."""
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -316,17 +317,27 @@ UTIL_DRAW = r"""
   const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const log = [], hits = [], v = Object.create(R.ReplayViewer.prototype);
   const row = p.row;
-  Object.assign(v, {root: {}, t: 12, controlPalette: p.palette || "green-red", linked: p.linked || null,
+  Object.assign(v, {root: {}, t: p.t === undefined ? 12 : p.t, controlPalette: p.palette || "green-red", linked: p.linked || null,
     current: {blob: {t_end: 40, util: [], players: [{slot: 1, side: "A"}], alive: p.alive || {"1": [[0, 40]]}},
-      tracks: p.tracks || {}, extras: {abilities: [row], statuses: p.statuses || [], reveals: []}}});
+      tracks: p.tracks || {}, extras: {abilities: p.rows || [row], statuses: p.statuses || [], reveals: []}}});
   v.abilityIcon = () => p.glyph ? {src: "glyph"} : null;
   v.abilityText = () => "utility";
   v.nameOf = () => "owner";
   if (p.ownerColor) v.ownerColor = () => p.ownerColor;
   const ctx = mockCtx(log);
-  if (p.projectile) v.drawProjectiles(ctx, 1000, 20, hits);
+  if (p.projectile && !p.both) v.drawProjectiles(ctx, 1000, 20, hits);
   else v.drawAbilities(ctx, 1000, 20, hits);
-  console.log(JSON.stringify({log, hits, radius: v.uvRadius(410) * 1000}));
+  if (p.both) v.drawProjectiles(ctx, 1000, 20, hits);
+  let tips = [];
+  if (p.probes) {
+    v.hits = p.hit ? [p.hit] : hits;
+    v.ui = {tip: {hidden: true, style: {}, offsetWidth: 10, offsetHeight: 10,
+      parentNode: {getBoundingClientRect: () => ({width: 1000, height: 1000})}}};
+    tips = p.probes.map(([x, y]) => {
+      v.showTip({x, y, px: 0, py: 0}); return !v.ui.tip.hidden;
+    });
+  }
+  console.log(JSON.stringify({log, hits, tips, radius: v.uvRadius(410) * 1000}));
 """
 
 
@@ -516,3 +527,150 @@ def test_dissipate_keeps_faint_body_and_dashed_ring():
     patch = next(c for c in log if c["op"] == "fillRect")
     assert patch["alpha"] == 0.45
     assert any(c["dash"] for c in arc_calls(log, "stroke", 475 * 0.75 * 1000))
+
+
+AFTERSHOCK = {"kind": "GameObject", "code": "Breach", "name": "4_FusionBlast", "slot": 1,
+              "u": 0.4, "v": 0.5, "t0": 35.693, "t1": 39.996, "yaw": 77}
+UTIL_SCALE = {"uvPerUnit": 0.0001, "players": {}}
+
+
+def assert_dim_area(log):
+    patches = [c for c in log if c["op"] == "fillRect" and isinstance(c["fill"], dict)]
+    assert len(patches) == 1
+    assert patches[0]["alpha"] == pytest.approx(0.4)
+    assert [stop[0] for stop in patches[0]["fill"]["stops"]] == [0, 0.6, 1]
+    assert [stop[1].rsplit(", ", 1)[1] for stop in patches[0]["fill"]["stops"]] == ["0.7)", "0.5)", "0.12)"]
+
+
+@needs_node
+def test_capsule_ends_axes_and_missing_yaw():
+    actual = run_node(r"""
+      const R = require(process.argv[1]);
+      console.log(JSON.stringify([0, 90, undefined, null].map(yaw =>
+        R.capsuleEnds({u: 0.5, v: 0.5, yaw}, {capsule: 1000}, 0.0001))));
+    """, None)
+    assert actual == [[[0.5, 0.5], [0.6, 0.5]], [[0.5, 0.5], [0.5, 0.6]], None, None]
+
+
+@needs_node
+def test_aftershock_windup_capsule_and_side_ring():
+    out = util_draw(AFTERSHOCK, t=36, linked=UTIL_SCALE)
+    dashed = [c for c in arc_calls(out["log"], "stroke", 30) if c["dash"]]
+    assert len(dashed) == 1
+    arcs = [p for p in dashed[0]["path"] if p[0] == "A"]
+    ends = [[400, 500], [400 + 100 * math.cos(math.radians(77)), 500 + 100 * math.sin(math.radians(77))]]
+    assert len(arcs) == 2
+    for arc, end in zip(arcs, ends, strict=True):
+        assert arc[1:3] == pytest.approx(end, abs=1e-6)
+        assert abs(arc[5] - arc[4]) == pytest.approx(math.pi)
+    assert sum(p[0] == "L" for p in dashed[0]["path"]) == 2
+    assert out["hits"][0]["r"] == pytest.approx(30)
+    for end, expected in zip(out["hits"][0]["seg"], ends, strict=True):
+        assert end == pytest.approx(expected, abs=1e-6)
+    assert any(c["stroke"] == "#5ccf8f" and c["alpha"] == 0.75 and c["lineWidth"] == 1.5
+               for c in arc_calls(out["log"], "stroke", 31.5))
+    assert not arc_calls(out["log"], "fill", 30)
+    assert not any(c["op"] == "fillRect" for c in out["log"])
+
+
+@needs_node
+@pytest.mark.parametrize("t,pop", [(37.893 + 0.3, 37.893), (38.6, 38.493)])
+def test_aftershock_pulse_flash_dim_area_and_opening_capsule(t, pop):
+    out = util_draw(AFTERSHOCK, t=t, linked=UTIL_SCALE)
+    log = out["log"]
+    flashes = arc_calls(log, "fill", 30)
+    assert len(flashes) == 1
+    f = (t - pop) / 0.6
+    assert flashes[0]["alpha"] == pytest.approx(0.55 * (1 - f))
+    assert_dim_area(log)
+    clips = [c for c in log if c["op"] == "clip"]
+    assert len(clips) == 1 and len([p for p in clips[0]["path"] if p[0] == "A"]) == 2
+    rings = arc_calls(log, "stroke", 30 * (0.35 + 0.65 * f))
+    assert len(rings) == 1
+    assert rings[0]["stroke"] == flashes[0]["fill"]
+    arcs = [p for p in rings[0]["path"] if p[0] == "A"]
+    ends = out["hits"][0]["seg"]
+    mid = [(ends[0][i] + ends[1][i]) / 2 for i in range(2)]
+    for arc, end in zip(arcs, ends, strict=True):
+        assert arc[1:3] == pytest.approx([mid[i] + (end[i] - mid[i]) * (0.35 + 0.65 * f) for i in range(2)])
+    assert not any(c["dash"] for c in log if c["op"] == "stroke")
+    suffix = "went off at 37.9" + (", 38.5" if t > 38.493 else "") + " s (timed from the ability, not recorded)"
+    assert out["hits"][0]["text"].endswith(suffix)
+
+
+@needs_node
+def test_pop_dim_between_pulses_and_aftershock_disappears_after_last():
+    row = {"kind": "GameObject", "code": "Iris", "name": "Concuss", "slot": 1,
+           "u": 0.4, "v": 0.5, "t0": 30, "t1": 35, "fx": [30, 32, 34]}
+    between = util_draw(row, t=31, linked=UTIL_SCALE)
+    assert_dim_area(between["log"])
+    assert not arc_calls(between["log"], "fill", 50)
+    assert not any(c["dash"] for c in between["log"] if c["op"] == "stroke")
+    out = util_draw(AFTERSHOCK, t=39.2, linked=UTIL_SCALE)
+    assert out["log"] == [] and out["hits"] == []
+
+
+@needs_node
+def test_aftershock_missing_yaw_circle_and_empty_schedule():
+    row = {k: v for k, v in AFTERSHOCK.items() if k != "yaw"}
+    circle = util_draw(row, t=36, linked=UTIL_SCALE)
+    outline = next(c for c in arc_calls(circle["log"], "stroke", 30) if c["dash"])
+    assert len([p for p in outline["path"] if p[0] == "A"]) == 1
+    assert not circle["hits"][0].get("seg")
+    empty = util_draw({**AFTERSHOCK, "t0": 10, "t1": 11}, t=10.5, linked=UTIL_SCALE)
+    assert any(c["dash"] for c in arc_calls(empty["log"], "stroke", 30))
+    assert not arc_calls(empty["log"], "fill", 30)
+    assert not any(c["op"] == "fillRect" for c in empty["log"])
+    # JSON turns non-finite JS numbers into null, so inspect all numeric draw fields.
+    for c in empty["log"]:
+        if "alpha" in c:
+            assert c["alpha"] is not None and math.isfinite(c["alpha"])
+        for point in c.get("path", []):
+            assert all(n is not None and math.isfinite(n) for n in point[1:])
+
+
+@needs_node
+def test_mpulse_recorded_second_flash_and_dim_area():
+    row = {"kind": "GameObject", "code": "Iris", "name": "Concuss", "slot": 1,
+           "u": 0.4, "v": 0.5, "t0": 30, "t1": 35, "fx": [30, 32, 34]}
+    out = util_draw(row, t=32.2, linked=UTIL_SCALE)
+    flashes = arc_calls(out["log"], "fill", 50)
+    assert len(flashes) == 1 and flashes[0]["alpha"] == pytest.approx(0.55 * 0.75)
+    assert_dim_area(out["log"])
+    assert "(timed" not in out["hits"][0]["text"]
+    assert out["hits"][0]["text"].endswith("went off at 30.0, 32.0 s")
+
+
+@needs_node
+@pytest.mark.parametrize("t,dot,zone", [(18, True, False), (19.3, False, True),
+                                      (22.5, False, True), (22.9, False, False)])
+def test_fragment_landing_hands_projectile_over_to_zone(t, dot, zone):
+    out = util_draw(SEMTEX, rows=[SEMTEX, FRAGMENT_ZONE], both=True, t=t, linked=UTIL_SCALE)
+    assert bool(arc_calls(out["log"], "fill", 4.4)) is dot
+    flashes = arc_calls(out["log"], "fill", 40)
+    assert bool(flashes) is zone
+    if zone:
+        assert len(flashes) == 1
+        assert flashes[0]["path"][0][1:3] == [3000, 4000]
+    else:
+        assert not any(h.get("area") for h in out["hits"])
+
+
+@needs_node
+@pytest.mark.parametrize("flight,zone,t", [(True, False, 19.3), (False, True, 19.3), (True, True, 18.704)])
+def test_semtex_keeps_dot_without_zone_or_flight_and_at_landing(flight, zone, t):
+    row = SEMTEX if flight else {k: v for k, v in SEMTEX.items() if k != "flight"}
+    row = {**row, "u": 0.4, "v": 0.5}
+    out = util_draw(row, rows=[row] + ([FRAGMENT_ZONE] if zone else []), projectile=True, t=t)
+    assert len(arc_calls(out["log"], "fill", 4.4)) == 1
+
+
+@needs_node
+def test_capsule_tooltip_covers_segment_and_round_caps():
+    row = {**AFTERSHOCK, "yaw": 0}
+    out = util_draw(row, t=36, linked=UTIL_SCALE,
+                    probes=[[500, 500], [450, 527], [450, 533], [530.01, 500]])
+    assert out["tips"] == [True, True, False, False]
+    circle = util_draw(row, t=36, linked=UTIL_SCALE, hit={"x": 10, "y": 20, "r": 5, "text": "circle"},
+                       probes=[[10, 20], [15, 20], [15.01, 20]])
+    assert circle["tips"] == [True, True, False]
