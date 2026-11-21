@@ -1,6 +1,7 @@
 """The condenser on synthetic exports: rounds, players, sides, tracks, alive intervals, kills."""
 
 import json
+import math
 import shutil
 import sys
 from collections import Counter
@@ -60,8 +61,9 @@ def test_blobs_hold_no_identities(tmp_path):
 def test_round_blob_shape(tmp_path):
     blob = run(tmp_path).rounds[1]
     assert set(blob) == {"v", "round", "map", "hz", "t_start", "t_decided", "t_end", "players", "tracks", "alive",
-                         "kills", "plant", "defuse", "util", "movement_casts", "map_features", "crouch"}
+                         "kills", "plant", "defuse", "util", "movement_casts", "map_features", "crouch", "arena"}
     assert blob["crouch"] == {}
+    assert blob["arena"] == {}
     assert blob['map_features']['status'] == 'unavailable'
     assert all(f['initial'] == 'unknown' for f in blob['map_features']['features'])
     # t_decided is the RoundEnding; playback runs on to the next phase (the next buy, 10 s later).
@@ -966,6 +968,76 @@ def test_health_and_the_proven_spike_land_in_the_rounds_player_state(tmp_path):
                                                                          "damage_taken": {}, "spike": []}
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_decay_and_checks_are_attached_in_every_round(tmp_path, monkeypatch, streaming):
+    from replay_synthetic import damage_notify
+    from app.replays import extras, player_state as ps
+
+    match = SyntheticMatch(shape="swiftplay")
+    for n in (1, 2):
+        amount = 40 if n == 1 else 60
+        row = damage_notify(match.round_start(n) + 10_000, match.pawn(n, 5), match.pawn(n, 0),
+                            amount, [(1075, 0 if n == 1 else 40, -amount, 0 if n == 1 else 1)],
+                            index=n, lethal=n == 1)
+        row["payload"]["DamageType"] = {"net_guid": 4000, "path": "/Game/Types.DmgType_Test_Decay_C"}
+        match.extra_events.append(row)
+    original = extras.util_entries
+
+    def with_decay(rows):
+        return original(rows) + [{"k": "status", "t": 9.5, "t1": 14.5, "target": 5, "by": 0,
+                                  "code": "Smonk", "name": "Q_DecayExplosion", "status": "decayed",
+                                  "from": "object"}]
+
+    monkeypatch.setattr(extras, "util_entries", with_decay)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    out = run(tmp_path, match, streaming=streaming, vrf_path=vrf)
+    checks = out.report["player_state"]["decay_checks"]
+    assert [c["round"] for c in checks] == [1, 2]
+    assert [c["verdict"] for c in checks] == ["consistent", "consistent"]
+    assert out.report["player_state"]["decay: consistent"] == 2
+    assert out.report["player_state"]["decay: too low"] == 0
+    assert "decay: agree" not in out.report["player_state"]
+    assert "decay: disagree" not in out.report["player_state"]
+    tightest = out.report["player_state"]["decay_tightest"]
+    assert tightest == {checks[1]["dtype"]: {k: checks[1][k] for k in
+                                           ("round", "slot", "t", "booked", "computed")}
+                       | {"gap": checks[1]["computed"] - checks[1]["booked"]}}
+    # The original five-second status is needed even when the display clips it at death.
+    for n in (1, 2):
+        state = fmt.decode_blob(out.encoded_rounds()[n])["player_state"]
+        assert ps.validate(state) == state
+        assert state["decay"]["5"][-1]["dec"] == 0
+        assert checks[n - 1]["computed"] == pytest.approx(59.88)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_decay_tightest_per_dtype_orders_by_booked_gap_round_then_time(tmp_path, monkeypatch, empty):
+    def check(dtype, round_n, t, booked, computed):
+        return {"dtype": dtype, "round": round_n, "slot": 0, "t": t,
+                "booked": booked, "computed": computed, "verdict": "consistent"}
+
+    # Later candidates arrive first, so ties must use round/time rather than encounter order.
+    rows = [] if empty else [check("DecayLargest", 3, 4, 73, 75),
+                             check("DecayLargest", 1, 2, 54, 54),
+                             check("DecayGap", 2, 2, 73, 75),
+                             check("DecayGap", 3, 4, 73, 74),
+                             check("DecayRound", 2, 1, 73, 75),
+                             check("DecayRound", 1, 4, 73, 75),
+                             check("DecayTime", 1, 4, 73, 75),
+                             check("DecayTime", 1, 2, 73, 75),
+                             check("DecayNegativeGap", 3, 4, 73, 71)]
+    batches = iter([rows[:3], rows[3:6], rows[6:]])
+    monkeypatch.setattr(cd, "attach_decay", lambda *args: next(batches))
+    out = run(tmp_path)
+    assert out.report["player_state"]["decay_checks"] == rows
+    expected = {}
+    for i in ([] if empty else [0, 3, 5, 7, 8]):
+        row = rows[i]
+        expected[row["dtype"]] = {k: row[k] for k in ("round", "slot", "t", "booked", "computed")}
+        expected[row["dtype"]]["gap"] = row["computed"] - row["booked"]
+    assert out.report["player_state"]["decay_tightest"] == expected
+
+
 def test_without_extras_the_spike_has_no_planter(tmp_path):
     from replay_synthetic import player_state_events
 
@@ -1075,3 +1147,151 @@ def test_an_export_with_no_player_state_sources_keeps_the_old_blob_shape(tmp_pat
     blob = run(tmp_path, SyntheticMatch(shape="swiftplay"), vrf_path=SyntheticMatch(shape="swiftplay").write_vrf(
         tmp_path / f"{MATCH_UUID}.vrf")).rounds[1]
     assert "player_state" not in blob
+
+
+# Frozen revision-31 reference: do not refactor with the production run splitter.
+def _legacy_build_segments(samples: list[cd.Sample], intervals: list[list], start: int, end: int,
+                   hz: int, game_map: cd.MapInfo, unobserved: list[tuple[int, int]] = ()) -> tuple[list[dict], dict]:
+    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats.
+
+    Coverage and gaps measure observed alive time: unobserved spans (P-c) don't count."""
+    runs: list[list[tuple[cd.Sample, int]]] = []
+    previous: tuple[cd.Sample, int] | None = None
+    for sample in samples:
+        if not start <= sample.t_ms <= end:
+            continue
+        interval = cd._interval_index(intervals, sample.t_ms, end)
+        if interval is None:
+            continue
+        brk = (previous is None
+               or interval != previous[1]
+               or sample.pawn != previous[0].pawn
+               or (sample.t_ms - previous[0].t_ms) / 1000.0 > cd.SEGMENT_GAP_S
+               # a missing height counts as 0 here, as before revision 11, so the runs are the same
+               or math.dist((sample.x, sample.y, sample.z or 0.0),
+                            (previous[0].x, previous[0].y, previous[0].z or 0.0)) > cd.TELEPORT_UNITS)
+        if brk:
+            runs.append([])
+        runs[-1].append((sample, interval))
+        previous = (sample, interval)
+
+    segments = []
+    covered_points = 0
+    for run in runs:
+        grid: dict[int, tuple[int, int, int, int | None]] = {}
+        for sample, _ in run:
+            k = int(round((sample.t_ms - start) / 1000.0 * hz))
+            u, v = game_map.to_uv(sample.x, sample.y)
+            # the last sample on a grid point wins; z in decimetres of world z, as the parser gave it
+            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw), None if sample.z is None else int(round(sample.z / 10.0)))
+        keys = sorted(grid)
+        # A segment has a height for every sample or for none (revision 11). A run with any sample
+        # missing one stores none: splitting it would move the positions revision 10 stored.
+        has_z = all(sample.z is not None for sample, _ in run)
+        u_list, v_list, yaw_list, z_list = [], [], [], []
+        for a, b in zip(keys, keys[1:] + [None]):
+            ua, va, ya, za = grid[a]
+            u_list.append(ua), v_list.append(va), yaw_list.append(ya), z_list.append(za)
+            if b is None:
+                continue
+            # Grid points the source skipped inside a segment (< cd.SEGMENT_GAP_S)
+            # are filled linearly, yaw along the shortest arc; never beyond the source's rate.
+            ub, vb, yb, zb = grid[b]
+            turn = (yb - ya + 180) % 360 - 180
+            for step in range(1, b - a):
+                f = step / (b - a)
+                u_list.append(int(round(ua + (ub - ua) * f)))
+                v_list.append(int(round(va + (vb - va) * f)))
+                yaw_list.append(int(round(ya + turn * f)) % 360)
+                z_list.append(int(round(za + (zb - za) * f)) if has_z else None)
+        covered_points += len(u_list)
+        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list, z_list if has_z else None))
+
+    alive_s = sum(cd._uncovered(iv[0], iv[1] if iv[1] is not None else end, unobserved) / 1000.0 for iv in intervals)
+    max_gap = 0.0
+    for interval in intervals:
+        lo, hi = interval[0], interval[1] if interval[1] is not None else end
+        bounds = [lo, *(s.t_ms for s in samples if lo <= s.t_ms <= hi), hi]
+        max_gap = max(max_gap, *(cd._uncovered(a, b, unobserved) / 1000.0 for a, b in zip(bounds, bounds[1:])))
+    coverage = min(1.0, covered_points / hz / alive_s) if alive_s > 0 else 1.0
+    return segments, {"coverage": round(coverage, 3), "max_gap_s": round(max_gap, 3)}
+
+
+
+def _arena_sample(t_ms, x=-50000, y=1000, z=-49900, yaw=90, pawn=1):
+    return cd.Sample(t_ms, x, y, z, yaw, pawn)
+
+
+def _check_legacy_tracks(samples, intervals, start, end, hz):
+    actual = cd.build_segments(samples, intervals, start, end, hz, ASCENT)
+    legacy = _legacy_build_segments(samples, intervals, start, end, hz, ASCENT)
+    assert actual == legacy
+    assert json.dumps(actual[0]).encode() == json.dumps(legacy[0]).encode()
+
+
+def test_arena_visit_keeps_legacy_tracks_and_stores_world_decimetres():
+    start, hz = 10000, 4
+    samples = [cd.Sample(start + k * 250, -50000 + k * 10, 1000 - k * 10,
+                         -49900 if 8 <= k < 20 else 100, 90, 1) for k in range(29)]
+    intervals = [[start, None, "round_end"]]
+    _check_legacy_tracks(samples, intervals, start, start + 7000, hz)
+    [arena] = cd.build_arena_segments(samples, intervals, start, start + 7000, hz)
+    points = fmt.decode_arena_segment(arena, hz)
+    assert points == [(k / hz, -5000 + k, 100 - k, 90) for k in range(8, 20)]
+    assert len(points) / hz == 3
+    assert ASCENT.yaw_to_map(90) != points[0][3]
+
+
+@pytest.mark.parametrize("samples, intervals, expected_times", [
+    ([_arena_sample(0), _arena_sample(1001)], [[0, None, "round_end"]], [[0], [1]]),
+    ([_arena_sample(0), _arena_sample(500, x=-50000 + cd.TELEPORT_UNITS + 1)],
+     [[0, None, "round_end"]], [[0], [0.5]]),
+    ([_arena_sample(0), _arena_sample(250, z=None), _arena_sample(500)],
+     [[0, None, "round_end"]], [[0], [0.5]]),
+    ([_arena_sample(0, z=-25001), _arena_sample(250, z=-25000), _arena_sample(500, z=-25001)],
+     [[0, None, "round_end"]], [[0], [0.5]]),
+    ([_arena_sample(0), _arena_sample(250, pawn=2)], [[0, None, "round_end"]], [[0], [0.25]]),
+    ([_arena_sample(0), _arena_sample(500)], [[0, 100, "kill"], [400, None, "round_end"]], [[0], [0.5]]),
+    ([_arena_sample(0, z=100), _arena_sample(250, z=None), _arena_sample(500, z=-25000)],
+     [[0, None, "round_end"]], []),
+])
+def test_arena_boundaries_preserve_legacy_tracks(samples, intervals, expected_times):
+    _check_legacy_tracks(samples, intervals, 0, 2000, 4)
+    segments = cd.build_arena_segments(samples, intervals, 0, 2000, 4)
+    assert [[p[0] for p in fmt.decode_arena_segment(seg, 4)] for seg in segments] == expected_times
+
+
+def test_arena_grid_uses_last_sample_linear_fill_and_short_world_yaw():
+    samples = [_arena_sample(0, x=-50010, yaw=180), _arena_sample(10, yaw=359),
+               _arena_sample(500, x=-49980, y=980, yaw=1)]
+    intervals = [[0, None, "round_end"]]
+    _check_legacy_tracks(samples, intervals, 0, 1000, 4)
+    [segment] = cd.build_arena_segments(samples, intervals, 0, 1000, 4)
+    assert segment["yaw"] == [359, 1, 1]
+    assert fmt.decode_arena_segment(segment, 4) == [(0, -5000, 100, 359), (0.25, -4999, 99, 0),
+                                                  (0.5, -4998, 98, 1)]
+
+
+def test_round_arena_slots_and_kill_places_use_victims_last_sample(tmp_path, monkeypatch):
+    match = SyntheticMatch(rounds=1)
+    start = match.round_start(1)
+    movement = match.movement()
+    for row in movement:
+        if row["shooter_character_net_guid"] == match.pawn(1, 5) and row["time_ms"] >= start + 7000:
+            row["position"] = {"x": -50000.0, "y": -1100.0, "z": -49900.0}
+    # Check every slot, with its actual alive intervals and coverage spans, against revision 31.
+    def checked_segments(*args, **kwargs):
+        actual = original(*args, **kwargs)
+        assert actual == _legacy_build_segments(*args, **kwargs)
+        return actual
+    original = cd.build_segments
+    monkeypatch.setattr(cd, "build_segments", checked_segments)
+    blob = run(tmp_path, match, movement=movement).rounds[1]
+    assert set(blob["arena"]) == {"5"}
+    assert "0" not in blob["arena"]
+    [segment] = blob["arena"]["5"]
+    assert all(p[1:3] == (-5000, -110) for p in fmt.decode_arena_segment(segment, blob["hz"]))
+    first, second = blob["kills"][:2]
+    assert (first["victim"], first["ax"], first["ay"]) == (5, -5000, -110)
+    assert set(first) == {"i", "t", "killer", "victim", "u", "v", "ax", "ay"}
+    assert set(second) == {"i", "t", "killer", "victim", "u", "v"}

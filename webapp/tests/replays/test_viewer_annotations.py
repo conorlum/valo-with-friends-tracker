@@ -6,6 +6,7 @@ on and off), the viewer's `layout` record (bounds, collisions with stacked playe
 tooltip hits. Synthetic fixtures only. The JS checks need Node; they skip without it."""
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,6 +34,7 @@ def run_node(script: str, payload):
 # the paint order is known. A filled four-point polygon in the spike colour is a spike glyph.
 DRAW = r"""
   global.getComputedStyle = () => ({getPropertyValue: () => ""});
+  global.Image = class { constructor() { this.complete = false; } };
   const R = require(process.argv[1]);
   function mockCtx(log) {
     const keys = ["fillStyle", "strokeStyle", "globalAlpha", "font", "lineWidth", "textAlign", "textBaseline",
@@ -41,7 +43,7 @@ DRAW = r"""
     const c = {fillStyle: "#000", strokeStyle: "#000", globalAlpha: 1, font: "10px sans-serif", lineWidth: 1,
                textAlign: "start", textBaseline: "alphabetic", lineDashOffset: 0, dash: []};
     const snap = () => ({fill: c.fillStyle, stroke: c.strokeStyle, alpha: c.globalAlpha, font: c.font,
-                        tf: tf.slice(), dash: c.dash.slice()});
+                        tf: tf.slice(), dash: c.dash.slice(), offset: c.lineDashOffset});
     const rec = (op) => {
       const pts = path.filter(p => p[0] === "M" || p[0] === "L");
       const arcs = path.filter(p => p[0] === "A");
@@ -67,27 +69,31 @@ DRAW = r"""
         const m = /(\d+(?:\.\d+)?)px/.exec(c.font); const px = m ? parseFloat(m[1]) : 10;
         return {width: String(text).length * px * 0.6};
       },
-      setLineDash(dash) { c.dash = dash.slice(); }, getLineDash() { return c.dash.slice(); }, clip() {}, clearRect() {},
-      drawImage() { log.push({op: "drawImage"}); }
+      setLineDash(dash) { c.dash = dash.slice(); }, getLineDash() { return c.dash.slice(); },
+      clip() { rec("clip"); }, clearRect() {},
+      drawImage(img, x, y, w, h) { log.push(Object.assign({op: "drawImage", src: img.src, x, y, w, h}, snap())); }
     });
     return new Proxy(c, {get: (o, k) => (k in o ? o[k] : () => {})});
   }
   let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
     const p = JSON.parse(input);
+    if (p.css) global.getComputedStyle = () => ({getPropertyValue: name => p.css[name] || ""});
     const log = [];
     const v = Object.create(R.ReplayViewer.prototype);
     const blob = p.blob;
     const extras = R.extrasFromUtil(blob.util);
     Object.assign(v, {
-      options: {}, icons: {}, linked: p.linked || null, t: p.t, hover: null, highlight: null, number: blob.round,
+      options: p.options || {}, icons: {}, linked: p.linked || null, t: p.t, hover: null, highlight: null, number: blob.round,
       layers: Object.assign({names: true, abilities: true, projectiles: true, tracers: true, cones: false,
                              control: false, gaps: false}, p.layers || {}),
       view: p.view || {k: 1, ox: 0, oy: 0}, canvas: {width: 1024, setAttribute() {}}, map: {complete: false},
       ui: {state: {}, hud: {hidden: true, innerHTML: ""}}, controlCache: null, control: null,
-      current: {blob: blob, tracks: R.decodeRound(blob), extras: extras,
+      current: {blob: blob, tracks: R.decodeRound(blob), arena: R.decodeArena(blob), extras: extras,
                 state: R.indexRoundState(blob, extras.abilities)}
     });
     v.ctx = mockCtx(log);
+    if (p.portraits) v.icon = agent => ({src: agent});
+    if (p.portraits) v.abilityIcon = () => ({src: 'duel-badge'});
     v.drawControl = function (ctx) { ctx.fillText("CONTROL-MARK", 0, 0); };
     v.drawGaps = function () {};
     v.personHtml = function (slot) { return "P" + slot; };
@@ -96,12 +102,18 @@ DRAW = r"""
     v.renderHud();
     const out = {log: log, layout: v.layout || null, hits: v.hits.map(h => ({x: h.x, y: h.y, r: h.r, slot: h.slot,
                  text: h.text, area: !!h.area})), hud: {hidden: v.ui.hud.hidden, html: v.ui.hud.innerHTML},
-                 aria: v.ui.state.textContent, r: 1024 / 48 / Math.sqrt(v.view.k), s: 1024 / 10000};
-    if (p.tip) {
+                 aria: v.ui.state.textContent, arenaBox: v.arenaBox,
+                 r: 1024 / 48 / Math.sqrt(v.view.k), s: 1024 / 10000};
+    if (p.tip || p.hover) {
       v.ui.tip = {textContent: "", hidden: true, style: {}, offsetWidth: 10, offsetHeight: 10,
                   parentNode: {getBoundingClientRect: () => ({width: 1000, height: 1000})}};
-      out.tips = p.tip.map(pt => { v.showTip({x: pt[0], y: pt[1], px: 0, py: 0});
+      out.tips = (p.tip || []).map(pt => { v.showTip({x: pt[0], y: pt[1], px: 0, py: 0});
                                    return v.ui.tip.hidden ? null : v.ui.tip.textContent; });
+      if (p.hover) {
+        v.canvas.getBoundingClientRect = () => ({left: 0, top: 0, width: 1024});
+        v.onHover({clientX: p.hover[0], clientY: p.hover[1]});
+        out.hoverTip = v.ui.tip.hidden ? null : v.ui.tip.textContent;
+      }
     }
     if (p.click) {
       v.control = {}; let picked = "no selection"; v.setHighlight = slot => { picked = slot; };
@@ -155,6 +167,165 @@ def spike_round(extra_util=(), **kw):
 
 def draw(blob, t, **kw):
     return run_node(DRAW, dict({"blob": blob, "t": t, "linked": LINKED}, **kw))
+
+
+def plant_rings(out):
+    return [(row, arc) for row in out["log"] if row["op"] == "stroke"
+            for arc in row["path"] if arc[0] == "A"
+            and arc[1:3] == [5000 * out["s"], 5000 * out["s"]]
+            and arc[3] == pytest.approx(out["r"] * 1.35)]
+
+
+def arena_round():
+    blob = round_blob([(1, "A", "Iso", 3000, 3000), (6, "B", "Sova", 7000, 7000)],
+                      alive={"1": [[0, None, "spawn", []]], "6": [[0, 12, "spawn", []]]})
+    # The real revision-32 row shape: delta-encoded world dm and yaw, no map UV in arena.
+    blob["arena"] = {}
+    for slot, y, end in [("1", 100, 14.5), ("6", -110, 12)]:
+        n = int((end - 10) * 2) + 1
+        blob["arena"][slot] = [{"t0": 10, "x": [-5000] + [0] * (n-1),
+                                 "y": [y] + [0] * (n-1), "yaw": [90] + [0] * (n-1)}]
+        blob["tracks"][slot] = [dict(still(3000 if slot == "1" else 7000, 3000, 0, 9.5)[0],
+                                      z=[0] * 20),
+                                dict(still(9999, 9999, 10, end)[0], z=[-4990] + [0] * (n-1))]
+    blob["kills"] = [{"i": 0, "t": 12, "killer": 1, "victim": 6,
+                       "u": 9999, "v": 9999, "ax": -5000, "ay": -110}]
+    return blob
+
+
+def inset_calls(out):
+    # The inset is the last pass, with identity transform and its own rectangular clip.
+    start = next((i for i, c in enumerate(out["log"])
+                  if c["op"] == "clip" and any(p[0] == "R" for p in c["path"])), None)
+    return [] if start is None else out["log"][start:]
+
+
+@needs_node
+@pytest.mark.parametrize("iso_spans,opponent_end", [
+    ([(10, 10.5), (12, 14.5)], 12),
+    ([(10, 10.5), (12, 12.5), (14, 14.5)], 14),
+])
+def test_arena_split_slot_draws_one_current_or_frozen_marker_and_hit(iso_spans, opponent_end):
+    blob = round_blob([(1, "A", "Iso", 3000, 3000), (6, "B", "Sova", 7000, 7000)])
+    # Isolate inset hits from map hits; keep the real delta-encoded arena row shape.
+    blob["tracks"] = {}
+
+    def segment(start, end, x, y):
+        n = int((end - start) * blob["hz"]) + 1
+        return {"t0": start, "x": [x] + [10] * (n - 1),
+                "y": [y] + [0] * (n - 1), "yaw": [90] + [0] * (n - 1)}
+
+    blob["arena"] = {
+        "1": [segment(start, end, -5040 + i * 40, 100 - i * 60)
+              for i, (start, end) in enumerate(iso_spans)],
+        "6": [segment(9, opponent_end, -5060, -110)],
+    }
+    closes = max(iso_spans[-1][1], opponent_end)   # the inset closes when the last duellist is back
+    for t in (9, 10, 10.25, 10.5, 11, 12, 12.25, 12.5, 13, 14, 14.25, 14.5, 16.4):
+        out = draw(blob, t, linked=None, portraits=True)
+        if t >= closes:
+            assert not inset_calls(out) and not out["hits"], t
+            continue
+        portraits = [c for c in inset_calls(out) if c["op"] == "drawImage"]
+        expected_slots = [1, 6] if t >= 10 else [6]
+        assert sorted(h["slot"] for h in out["hits"]) == expected_slots, t
+        assert sorted(c["src"] for c in portraits) == (["Iso", "Sova"] if t >= 10 else ["Sova"]), t
+        box = out["arenaBox"]
+        expected = {6: (-5060 + (min(t, opponent_end) - 9) * 20, -110)}
+        started = [(i, start, end) for i, (start, end) in enumerate(iso_spans) if start <= t]
+        if started:
+            i, start, end = started[-1]
+            expected[1] = (-5040 + i * 40 + (min(t, end) - start) * 20, 100 - i * 60)
+        for slot, (x, y) in expected.items():
+            portrait = next(c for c in portraits if c["src"] == ("Iso" if slot == 1 else "Sova"))
+            px = box["x"] + box["w"] * (0.5 + (x + 5000) / 180)
+            py = box["y"] + box["h"] * (0.5 - y / 280)
+            assert portrait["x"] + portrait["w"] / 2 == pytest.approx(px), t
+            assert portrait["y"] + portrait["h"] / 2 == pytest.approx(py), t
+            hit = next(h for h in out["hits"] if h["slot"] == slot)
+            assert hit["x"] == pytest.approx(px), t
+            assert hit["y"] == pytest.approx(py), t
+
+
+@needs_node
+def test_arena_inset_closes_when_the_survivor_is_back_and_old_blobs_draw_none():
+    blob = arena_round()
+    inside = draw(blob, 11, linked=None, portraits=True)
+    calls = inset_calls(inside)
+    assert any(c["op"] == "fillRect" for c in calls)
+    assert len([c for c in calls if c["op"] == "drawImage"]) == 2
+    box = inside["arenaBox"]
+    portraits = [c for c in calls if c["op"] == "drawImage"]
+    assert portraits[0]["x"] + portraits[0]["w"] / 2 == pytest.approx(box["x"] + box["w"] / 2)
+    assert portraits[0]["y"] + portraits[0]["h"] / 2 == pytest.approx(box["y"] + box["h"] * (0.5 - 100 / 280))
+    assert portraits[1]["y"] + portraits[1]["h"] / 2 == pytest.approx(box["y"] + box["h"] * (0.5 + 110 / 280))
+    for c in calls:
+        assert c["tf"] == [1, 0, 0, 1, 0, 0]
+        for p in c.get("path", []):
+            if p[0] in ("A", "M", "L"):
+                assert box["x"] <= p[1] <= box["x"] + box["w"]
+                assert box["y"] <= p[2] <= box["y"] + box["h"]
+    # The victim dies at 12; Iso stays in the room until the track ends at 14.5 (the return delay): the inset
+    # shows Iso alone beside the kill's cross, then closes with no grace.
+    assert len([c for c in inset_calls(draw(blob, 11.9, linked=None, portraits=True)) if c["op"] == "drawImage"]) == 2
+    for t in (12, 13, 14.4):
+        calls = inset_calls(draw(blob, t, linked=None, portraits=True))
+        assert [c["src"] for c in calls if c["op"] == "drawImage"] == ["Iso"], t
+    for t in (14.5, 16.4):
+        assert not inset_calls(draw(blob, t, linked=None, portraits=True)), t
+    # No death: Iso's track ends at 11 while the target's runs to 12; the inset stays until the last one is back.
+    early = arena_round()
+    early["kills"] = []
+    early["arena"]["1"][0] = {k: v[:3] if isinstance(v, list) else v for k, v in early["arena"]["1"][0].items()}
+    assert inset_calls(draw(early, 11.5, linked=None, portraits=True))
+    assert not inset_calls(draw(early, 12, linked=None, portraits=True))
+    del blob["arena"]
+    assert not inset_calls(draw(blob, 11, linked=None))
+
+
+@needs_node
+def test_arena_outline_and_zoomed_pointer_use_the_same_room_frame():
+    blob = arena_round()
+    plain = draw(blob, 11, linked=None, portraits=True, view={"k": 2, "ox": 90, "oy": 130})
+    hits = [h for h in plain["hits"] if "Iso's duel" in h["text"]]
+    assert len(hits) == 4  # pinned map and inset, both duellists
+    h = hits[-2]
+    portrait = next(c for c in inset_calls(plain) if c["op"] == "drawImage")
+    pointer = [portrait["x"] + portrait["w"] / 2, portrait["y"] + portrait["h"] / 2]
+    assert h["x"] == pytest.approx(pointer[0] / 2 + 90)
+    assert h["y"] == pytest.approx(pointer[1] / 2 + 130)
+    out = draw(blob, 11, linked=None, view={"k": 2, "ox": 90, "oy": 130}, hover=pointer)
+    assert "Iso" in out["hoverTip"] and "duel" in out["hoverTip"]
+    assert not [c for c in inset_calls(plain) if c["op"] == "stroke" and c["path"][-1:] == [["Z"]]]
+    room = {"centre": [-5000, 0], "size_m": [18, 28],
+            "starts": {"iso": [-5000, 100], "target": [-5000, -110]},
+            "outline": [[-5, -5], [5, -5], [5, 5], [-5, 5]]}
+    out = draw(blob, 11, linked=None, options={"arenaRoom": room})
+    polygon = [c for c in inset_calls(out) if c["op"] == "stroke" and c["path"][-1:] == [["Z"]]]
+    assert len(polygon) == 1
+    assert len(polygon[0]["path"]) == 5
+    b = out["arenaBox"]
+    assert all(b["x"] <= p[1] <= b["x"] + b["w"] and b["y"] <= p[2] <= b["y"] + b["h"]
+               for p in polygon[0]["path"][:-1])
+
+
+@needs_node
+def test_arena_pinned_live_marker_has_portrait_moving_dash_and_badge_but_dead_has_only_ring():
+    blob = arena_round()
+    # Remove the new data: duel map markers also work for older blobs.
+    del blob["arena"]
+    before = draw(blob, 9, linked=None, portraits=True)
+    assert not any(c.get("dash") for c in before["log"])
+    out = draw(blob, 11, linked=None, portraits=True)
+    assert len([c for c in out["log"] if c["op"] == "drawImage" and c["src"] == "duel-badge"]) == 2
+    rings = [c for c in out["log"] if c["op"] == "stroke" and c["dash"]]
+    assert len(rings) == 2
+    later = draw(blob, 13, linked=None, portraits=True)
+    assert len([c for c in later["log"] if c["op"] == "drawImage"]) == 2  # survivor portrait + badge
+    assert [c for c in later["log"] if c["op"] == "stroke" and c["dash"]][0]["offset"] != rings[0]["offset"]
+    tail = draw(blob, 15.5, linked=None, portraits=True)
+    assert len([c for c in tail["log"] if c["op"] == "drawImage"]) == 2
+    assert not any(c.get("dash") for c in draw(blob, 16.6, linked=None)["log"])
 
 
 @needs_node
@@ -502,6 +673,29 @@ def test_unavailable_health_is_a_neutral_marker_with_a_tooltip():
 
 
 @needs_node
+@pytest.mark.parametrize("damaged,oh,dec,unk,expected", [
+    (False, 50, 0, False, [", overheal 50"]),
+    (True, 0, 45, False, [", decayed 45"]),
+    (False, 0, 45, False, [", decayed 45"]),
+    (False, 0, 0, True, [", decayed"]),
+    (False, 20, 30, True, [", overheal 20", ", decayed 30"]),
+])
+def test_both_map_tooltips_describe_overheal_and_decay_at_full_health(damaged, oh, dec, unk, expected):
+    ps = {"vitals": {"1": [vit(0, 0, 100, 50)]}, "damage_taken": {"1": [1] if damaged else []},
+          "overheal": {"1": [{"t": 2, "life": 0, "oh": oh}]},
+          "decay": {"1": [{"t": 2, "life": 0, "dec": dec, "unk": unk}]}}
+    blob = round_blob([(1, "A", "Clove", 5000, 5000)], player_state=ps)
+    probe = draw(blob, 5, layers={"names": False})
+    [block] = boxes(probe, "block", 1)
+    centre = [block["x"] + block["w"] / 2, block["y"] + block["h"] / 2]
+    out = draw(blob, 5, layers={"names": False}, tip=[[5000 * probe["s"], 5000 * probe["s"]], centre])
+    for tip in out["tips"]:
+        assert tip is not None
+        assert all(text in tip for text in expected)
+        assert "unknown" not in tip, "undamaged health is full, rather than unproven"
+
+
+@needs_node
 def test_death_hides_the_annotations_and_a_revive_resumes_them():
     alive = {"1": [[-10.0, 20.0, "spawn", []], [30.0, None, "revive", []]], "6": [[-10.0, None, "spawn", []]]}
     ps = {"vitals": {"1": [vit(5.0, 0, 60, 20), vit(30.0, 1, 100, 0, 100, 0), vit(32.0, 1, 40, 0, 100, 0)]},
@@ -579,5 +773,43 @@ def test_a_cancelled_plant_keeps_the_one_carrier_badge_and_no_hud(abilities):
         out = draw(blob, t, layers={"abilities": abilities})
         assert len(spikes(out)) == 1 and len(boxes(out, "badge", 1)) == 1, t
         assert out["hud"]["hidden"] is True
+        assert plant_rings(out) == []
     planting = draw(blob, 31.0, tip=[[5000 * 1024 / 10000, 5000 * 1024 / 10000]])
     assert "planting the spike" in planting["tips"][0]
+
+
+@needs_node
+@pytest.mark.parametrize("abilities", [True, False])
+def test_plant_attempt_ring_progress_colour_dimming_and_end(abilities):
+    ps = {"spike": [{"t": 0.0, "s": "carried", "slot": 1}], "plants": [[30.0, 34.0, 1]]}
+    blob = round_blob([(1, "A", "Phoenix", 5000, 5000)], player_state=ps)
+    css = {"--replay-team-1": "#12ab34"}
+    for t, fraction in [(31.0, 0.25), (33.0, 0.75)]:
+        out = draw(blob, t, css=css, layers={"abilities": abilities})
+        [(stroke, arc)] = plant_rings(out)
+        assert arc[4] == pytest.approx(-math.pi / 2)
+        assert arc[5] - arc[4] == pytest.approx(2 * math.pi * fraction)
+        assert stroke["stroke"] == css["--replay-team-1"] and stroke["alpha"] == 1
+        assert len(boxes(out, "badge", 1)) == 1 and out["hud"]["hidden"] is True
+        assert "spike being planted" in out["aria"].lower()
+        assert any("is planting the spike (since " in h["text"] for h in out["hits"])
+    for t in [29.0, 34.0, 34.5]:
+        assert plant_rings(draw(blob, t, layers={"abilities": abilities})) == []
+    legacy = round_blob([(1, "A", "Phoenix", 5000, 5000)], player_state={"spike": ps["spike"]})
+    assert plant_rings(draw(legacy, 31.0)) == []
+    [(stroke, _)] = plant_rings(draw(blob, 31.0, knowing="B"))
+    assert stroke["alpha"] == 0.35
+
+
+@needs_node
+@pytest.mark.parametrize("side", ["A", "B"])
+def test_unlinked_plant_ring_uses_the_marker_side_colour(side):
+    css = {"--replay-side-a": "#12ab34", "--replay-side-b": "#ab1234", "--replay-neutral": "#778899"}
+    blob = round_blob([(1, side, "Phoenix", 5000, 5000)],
+                      player_state={"plants": [[30.0, 34.0, 1]]})
+    out = draw(blob, 31.0, linked=None, css=css)
+    [(stroke, _)] = plant_rings(out)
+    [marker] = [row for row in out["log"] if row["op"] == "fill" and any(
+        arc[0] == "A" and arc[1:3] == [5000 * out["s"], 5000 * out["s"]]
+        and arc[3] == pytest.approx(out["r"]) for arc in row["path"])]
+    assert stroke["stroke"] == marker["fill"] == css["--replay-side-" + side.lower()]

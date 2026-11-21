@@ -8,13 +8,14 @@ with every minimap, its candidate shapes (app/control/geometry.py `candidates`, 
 params), the current `app/static/data/control/tags.json` and the Risk 1 kill lines
 (`tests/fixtures/control/kill_lines.json`). On the page:
 
-- tag candidates cover, see-over, walkable, glyph or see-across (or untag them);
+- tag candidates cover, see-over, walkable, glyph or see-across (or untag them), and line candidates wall;
 - paint and erase see-across, cover, can't-walk and uncertain zones with a brush (geometry.masks: cover paint
   blocks sight and walking, can't-walk only walking, uncertain neither), and the buy-phase barrier lines
   (their own mask: the engine gives each team its side of them when they drop; drawn roughly, then
   placed from the replays' round starts by scripts/place_control_barriers.py, whose `--starts` file
   can also be passed here to draw those positions);
-- watch the kill-line test live against the 2% bar, with the blocked lines drawn, and the resulting sight and
+- watch the gate-wall kill-line test live against the 2% bar, with the result including wall tags beside it
+  for information, the blocked gate lines drawn, and the resulting sight and
   walk masks as overlays; undo; tick "cover reviewed" (which clears the map's badge);
 - export the whole `tags.json` (every map, unknown fields kept);
 - paint Open underneath, Ground only or Solid to the top, and Export height paint separately.

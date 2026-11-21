@@ -512,6 +512,86 @@ def test_the_planter_is_whoever_started_planting_four_seconds_before(tmp_path):
     assert (spike["slot"], spike["owner_by"]) == (4, "planted")
 
 
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    (36_000, 37_370, {"t": 26.0, "t1": 27.37, "slot": 4}),
+    (36_000, None, {"t": 26.0, "t1": None, "slot": 4}),
+    (59_000, 61_500, {"t": 49.0, "t1": 50.0, "slot": 4}),
+    (36_000, 36_000, {"t": 26.0, "t1": 26.0, "slot": 4}),
+])
+def test_every_plant_attempt_is_kept_even_without_a_plant(tmp_path, start, end, expected):
+    from app.replays.extras import util_entries
+
+    rows = [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0), effect(start, 104, 1, [80])]
+    if end is not None:
+        rows.append(stop(end, 104, 1))
+    extras = run6(tmp_path, rows)
+    assert extras.rounds[1]["plant_tries"] == [expected]
+    assert extras.report["plant tries"] == 1
+    assert util_entries(extras.rounds[1]) == [], "attempts belong in player_state, not util"
+
+
+def test_two_effects_at_one_plant_start_keep_the_latest_stop_and_the_planter(tmp_path):
+    from app.replays.extras import read_raw
+
+    rows = [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0),
+            effect(36_000, 104, 1, [80, 80]), stop(36_000, 104, 1),
+            effect(36_000, 104, 2, [80]), stop(40_000, 104, 2),
+            spawned(40_000, 81, "Default__TimedBomb_C", 0, 0)]
+    extras = run6(tmp_path, rows)
+    assert extras.rounds[1]["plant_tries"] == [{"t": 26.0, "t1": 30.0, "slot": 4}]
+    assert extras.report["plant tries"] == 1
+    [spike] = extras.rounds[1]["abilities"]
+    assert (spike["slot"], spike["owner_by"]) == (4, "planted")
+    raw = read_raw(tmp_path / "events.ndjson", frozenset(table6().pawn_slot))
+    assert len(raw.plant_effects) == 2, "record each effect once, even when its context repeats the spike"
+    assert raw.plant_starts == [(36_000, 104)] * 3, "legacy planter attribution stays unchanged"
+
+
+def test_a_buy_phase_plant_attempt_is_outside_the_playback_window(tmp_path):
+    extras = run6(tmp_path, [spawned(1_000, 80, "Default__BombEquippable_C", 0, 0),
+                             effect(5_000, 104, 1, [80]), stop(6_000, 104, 1)])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report["plant tries: outside a round"] == 1
+
+
+def test_an_effect_that_does_not_name_the_spike_is_not_a_plant_attempt(tmp_path):
+    extras = run6(tmp_path, [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0),
+                             effect(36_000, 104, 1, [999]), stop(37_370, 104, 1)])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report.get("plant tries", 0) == 0
+
+
+def test_plant_attempts_group_by_start_and_pawn_and_sort_by_start():
+    from app.replays.extras import _Effect, plant_attempts
+
+    effects = [_Effect(8, 104, 1, 500, (80,), stop_ms=9),
+               _Effect(3, 105, 2, 500, (80,), stop_ms=4),
+               _Effect(8, 104, 3, 500, (80,), stop_ms=12),
+               _Effect(8, 105, 4, 500, (80,), stop_ms=10),
+               _Effect(15, 104, 5, 500, (80,), stop_ms=16)]
+    assert plant_attempts(effects, {104: 4, 105: 5}) == [
+        (3, 4, 5), (8, 12, 4), (8, 10, 5), (15, 16, 4)]
+
+
+@pytest.mark.parametrize("stops", [(None, 5), (5, None)])
+def test_a_plant_attempt_with_any_unstopped_effect_has_no_stop(stops):
+    from app.replays.extras import _Effect, plant_attempts
+
+    effects = [_Effect(3, 104, i, 500, (80,), stop_ms=end) for i, end in enumerate(stops)]
+    assert plant_attempts(effects, {104: 4}) == [(3, None, 4)]
+
+
+def test_a_plant_attempt_without_a_slot_is_counted_and_dropped(tmp_path, monkeypatch):
+    from app.replays import extras as ex
+
+    assert ex.plant_attempts([ex._Effect(36_000, 999, 1, 500, (80,), stop_ms=37_000)], {}) == [
+        (36_000, 37_000, None)]
+    monkeypatch.setattr(ex, "plant_attempts", lambda effects, pawn_slot: [(36_000, 37_000, None)])
+    extras = run6(tmp_path, [])
+    assert all("plant_tries" not in data for data in extras.rounds.values())
+    assert extras.report["plant tries: no slot"] == 1
+
+
 def test_only_a_throw_gets_the_nearest_guess(tmp_path):
     rows = [spawned(20_000, 90, "Default__GameObject_Hunter_E_Drone_RevealDart_C", 0, 0),
             spawned(20_000, 91, "Default__Projectile_Hunter_Q_RevealBolt_C", 0, 0)]
@@ -747,7 +827,7 @@ def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
     rows = [spawned(20_000, pit, "Default__Patch_Pandemic_X_Circular_C", 100, 100), instigated(20_000, pit, 109),
             fragments,
             effect(25_000, 100, 7, [pit, 109], container=8263), stop(30_000, 100, 7),      # enemy (team A): decayed
-            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: friendly
+            effect(25_000, 101, 8, [pit, 109], container=8263), stop(30_000, 101, 8),      # a teammate: harmless contact
             closed(40_000, pit)]
     out = build_extras_rows(tmp_path, rows, {**AGENTS7, "Pandemic": "Viper"}).rounds[1]
     [row] = [a for a in out["abilities"] if a["name"] == "X_Circular"]
@@ -755,7 +835,7 @@ def test_vipers_pit_keeps_its_ground_and_decays_the_enemies_inside(tmp_path):
     assert row["area"][1][1] == list(GAME_MAP.to_uv(400, 0))
     decayed = [s for s in out.get("statuses", []) if s["status"] == "decayed"]
     assert [(s["slot"], s["target"], s["t0"], s["t1"], bool(s.get("friendly"))) for s in decayed] == [
-        (9, 0, 15.0, 20.0, False), (9, 1, 15.0, 20.0, True)]
+        (9, 0, 15.0, 20.0, False)]
 
 
 def _ground(t_ms, guid, updates=(), deleted=()):
@@ -955,27 +1035,107 @@ def test_melee_and_other_switches_close_gun_but_keep_ult_equips(tmp_path):
         held(17_000, 101, 903), held(18_000, 101, 904)])
     rows = holds(extras)
     assert (rows[1]["gun"], rows[1]["cat"]) == ("Knife", "melee")
-    assert rows[2:] == [{"k": "hold", "t": t, "by": 1, "gun": None, "cat": "other"}
-                        for t in (6.0, 7.0, 8.0)]
+    assert "item" not in rows[1]
+    assert rows[2:] == [
+        {"k": "hold", "t": 6.0, "by": 1, "gun": None, "cat": "ability",
+         "code": "Vampire", "key": "X", "name": "Frenzy"},
+        {"k": "hold", "t": 7.0, "by": 1, "gun": None, "cat": "spike"},
+        {"k": "hold", "t": 8.0, "by": 1, "gun": None, "cat": "ability",
+         "code": None, "key": None, "name": "Overdrive"}]
     assert len(extras.rounds[1]["equips"]) == 1
 
 
-@pytest.mark.parametrize("archetype", [
-    "Default__Equippable_Snake_Totem_C",
-    "Default__Equippable_Sequoia_X_ArenaTeleport_C",
-    "Default__Equippable_Totem_PDA_C",
-    "Default__Equippable_Skymage_Totem_C",
-    "Default__Equippable_DuosDay26_Duck_Totem_C",
-    "Default__Equippable_FutureItem_C",
-    "Default__Bomb_Defuser_C",
+def test_held_abilities_without_a_kit_name_are_reported_not_named(tmp_path):
+    # held_names: Omen's smoke is named; an archetype the table lacks is counted and listed for Site health.
+    extras = held_run(tmp_path, [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                 spawned(12_000, 902, "Default__Ability_Wraith_4_Unheard_C", 0, 0),
+                                 spawned(12_000, 903, OVERDRIVE, 0, 0),
+                                 held(14_000, 101, 901), held(15_000, 101, 902), held(16_000, 101, 903)])
+    assert [(r["code"], r["key"], r["name"]) for r in holds(extras)] == [
+        ("Wraith", "C", "Smoke"), ("Wraith", "C", "Unheard"), (None, None, "Overdrive")]
+    assert extras.report["holds_ability_unnamed"] == 1
+    assert extras.report["held_unnamed"] == ["Wraith C/Unheard"]
+    (tmp_path / "clean").mkdir()
+    clean = held_run(tmp_path / "clean", [spawned(12_000, 901, "Default__Ability_Wraith_4_Smoke_C", 0, 0),
+                                          held(14_000, 101, 901)])
+    assert "held_unnamed" not in clean.report and not clean.report.get("holds_ability_unnamed")
+
+
+@pytest.mark.parametrize("archetype,named", [
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
+    ("Default__Equippable_Sequoia_X_ArenaTeleport_C",
+     {"cat": "ability", "code": "Sequoia", "key": "X", "name": "ArenaTeleport"}),
+    ("Default__Equippable_Totem_PDA_C", {"cat": "flex", "name": "PDA"}),
+    ("Default__Equippable_Skymage_Totem_C", {"cat": "flex", "name": "Skymage"}),
+    ("Default__Equippable_DuosDay26_Duck_Totem_C", {"cat": "flex", "name": "Duck"}),
+    ("Default__Equippable_FutureItem_C", {"cat": "other"}),
+    ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
+    ("Default__BombEquippable_C", {"cat": "spike"}),
 ])
-def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype):
+def test_non_gun_equippables_close_holds_without_unnamed_guns(tmp_path, archetype, named):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
     assert holds(extras) == [
         {"k": "hold", "t": 4.0, "by": 1, "gun": "Vandal", "cat": "rifle", "id": 900, "gen": 0},
-        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "other"}]
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, **named}]
     assert extras.report["holds_unnamed"] == 0
+    # Whatever is out is named (the owner); a spawned item with no name goes to Site health.
+    unknown = named == {"cat": "other"}
+    assert extras.report.get("held_unnamed", []) == ([f"item {archetype}"] if unknown else [])
+    assert extras.report.get("holds_item_unnamed", 0) == (1 if unknown else 0)
+
+
+@pytest.mark.parametrize("archetype,code,key,name", [
+    ("Default__Ability_Gumshoe_E_Camera_C", "Gumshoe", "E", "Camera"),
+    ("Default__Ability_E_Aggrobot_DiscTurret_C", "Aggrobot", "E", "DiscTurret"),
+    ("Default__Ability_Sequoia_4_Wave_C", "Sequoia", "C", "Wave"),
+    ("Default__Ability_Terra_C_Barrier_Mesh_C", "Terra", "C", "Barrier_Mesh"),
+    ("Default__Ability_Nox_Wall_C", "Nox", None, "Wall"),
+    ("Default__Ability_Wraith_X_GlobalTeleport_C", "Wraith", "X", "GlobalTeleport"),
+])
+def test_ability_holds_parse_both_slot_orders_and_missing_slots(tmp_path, archetype, code, key, name):
+    extras = held_run(tmp_path, [spawned(12_000, 900, archetype, 0, 0), held(15_000, 101, 900)])
+    assert holds(extras) == [{"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "ability",
+                              "code": code, "key": key, "name": name}]
+    assert extras.report["holds_unnamed"] == 0
+
+
+@pytest.mark.parametrize("archetype,fields", [
+    ("Default__Ability_Gumshoe_E_Camera_C",
+     {"cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"}),
+    ("Default__BombEquippable_C", {"cat": "spike"}),
+    ("Default__Bomb_Defuser_C", {"cat": "defuser"}),
+    ("Default__Equippable_Snake_Totem_C", {"cat": "flex", "name": "Snake"}),
+])
+@pytest.mark.parametrize("lead", [1_500, 2_000, 2_001])
+def test_early_item_switch_resolves_in_place_within_equip_window(tmp_path, archetype, fields, lead):
+    # Include a different slot between this slot's simultaneous switches, and no spawn location.
+    spawn = spawned(15_000 + lead, 901, archetype, 0, 0)
+    del spawn["location"]
+    extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
+        held(15_000, 101, 901), held(15_000, 106, 900), held(15_000, 101, 900), spawn])
+    mine = [r for r in holds(extras) if r["by"] == 1]
+    assert mine == [
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None,
+         **(fields if lead <= 2_000 else {"cat": "other"})},
+        {"k": "hold", "t": 5.0, "by": 1, "gun": "Vandal", "cat": "rifle",
+         "id": 900, "gen": 0, "from": 6}]
+
+
+def test_pending_hold_uses_first_spawn_even_when_guid_is_reused(tmp_path):
+    extras = held_run(tmp_path, [held(15_000, 101, 901),
+        spawned(15_500, 901, "Default__Equippable_FutureItem_C", 0, 0),
+        spawned(16_000, 901, "Default__Bomb_Defuser_C", 0, 0), held(16_100, 101, 901)])
+    assert holds(extras) == [
+        {"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "other"},
+        {"k": "hold", "t": 6.1, "by": 1, "gun": None, "cat": "defuser"}]
+
+
+def test_closed_item_does_not_name_a_pending_hold_for_its_reused_guid(tmp_path):
+    extras = held_run(tmp_path, [spawned(12_000, 901, "Default__Bomb_Defuser_C", 0, 0),
+        closed(13_000, 901), held(15_000, 101, 901),
+        spawned(15_500, 901, "Default__BombEquippable_C", 0, 0)])
+    assert holds(extras) == [{"k": "hold", "t": 5.0, "by": 1, "gun": None, "cat": "spike"}]
 
 
 def test_unarmed_equippable_still_opens_a_melee_hold(tmp_path):
@@ -986,7 +1146,7 @@ def test_unarmed_equippable_still_opens_a_melee_hold(tmp_path):
     extras = held_run(tmp_path, [spawned(12_000, 900, VANDAL, 0, 0),
         spawned(13_000, 901, archetype, 0, 0), held(14_000, 101, 900), held(15_000, 101, 901)])
     assert holds(extras)[1] == {"k": "hold", "t": 5.0, "by": 1, "gun": "Knife", "cat": "melee",
-                                "id": 901, "gen": 1}
+                                "id": 901, "gen": 1, "item": "unarmed"}
     assert extras.report["holds_unnamed"] == 0
 
 
@@ -1024,7 +1184,9 @@ def test_ability_gun_shots_have_distinct_generations_and_close_holds(tmp_path):
         spawned(16_000, 900, OVERDRIVE, 0, 0), held(17_000, 101, 900),
         gun_shot(18_000, name="Overdrive", category="ability")])
     assert [(s["gid"], s["gen"]) for s in extras.rounds[1]["shots"]] == [(900, 0), (900, 1)]
-    assert all(r["cat"] == "other" and "gen" not in r and "id" not in r for r in holds(extras))
+    assert holds(extras) == [
+        {"k": "hold", "t": t, "by": 1, "gun": None, "cat": "ability",
+         "code": None, "key": None, "name": "Overdrive"} for t in (3.0, 7.0)]
 
 
 def test_shot_without_equippable_has_no_guid_or_generation(tmp_path):
@@ -2174,3 +2336,162 @@ def test_a_flashbulb_that_hit_nobody_is_a_proven_empty(tmp_path):
     flash, expected, _ = hush_flash(tmp_path, "hush_flashbulb_empty")
     assert flash["activation"]["state"] == "completed" and flash["activation"]["targets_complete"] is True
     assert flash["hits"] == [] and flash["targets"] == [] and flash["pop"] == expected
+
+
+# ---------------------------------------------------------------- W3: decay sources and their figures
+
+AGENTS_DECAY = {**AGENTS7, "Pandemic": "Viper", "BountyHunter": "Fade"}
+
+
+def run_decay(tmp_path, rows):
+    # Slot 9 Viper and slot 8 Fade (team B); the team-A pawns 100-107 are their enemies.
+    table = table7()
+    table.agents[8], table.agents[9] = "Fade", "Viper"
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table, WINDOWS, GAME_MAP, AGENTS_DECAY, lambda t_ms: {}, teams=TEAMS7).rounds[1]
+
+
+def _statuses(out, name, status):
+    return [(s["slot"], s["target"], s["t0"], s["t1"], bool(s.get("friendly")))
+            for s in out.get("statuses", []) if s["name"] == name and s["status"] == status]
+
+
+def test_toxic_screen_decays_the_enemy_it_touches_for_the_span_of_the_touch(tmp_path):
+    # 6f12db3e: an enemy touching the wall plays FXC_Pandemic_Ability_E_SmokeScreen_Blind naming the wall's manager, for
+    # 0.06-0.7 s, and a one-shot heavy-application effect on them in the same 50-100 ms. Viper is slot 9 (pawn 109).
+    wall = 60
+    rows = [spawned(20_000, wall, "Default__GameObject_Pandemic_E_SmokeScreenManager_C", 0, 0), instigated(20_000, wall, 109),
+            effect(25_000, 100, 7, [wall, 109], container=8263), stop(25_300, 100, 7),      # enemy: decayed
+            effect(26_000, 101, 8, [wall, 109], container=8263), stop(26_200, 101, 8),      # teammate: harmless contact
+            effect(27_000, 109, 9, [wall, 109], container=8263), stop(27_200, 109, 9),      # Viper herself: nothing
+            closed(40_000, wall)]
+    out = run_decay(tmp_path, rows)
+    assert _statuses(out, "E_SmokeScreenManager", "decayed") == [(9, 0, 15.0, 15.3, False)]
+
+
+def test_nightfall_decays_the_enemy_its_wave_hits_for_the_debuffs_eight_seconds(tmp_path):
+    # 6f12db3e: the wave (GameObject_BountyHunter_X_WaveForm) plays one one-shot FXC_BountyHunter_X_ApplyBuffVictim on each
+    # enemy it hits (5 hits, 3 casts). The debuff lasts 8 s (wiki), which the one-shot does not carry.
+    wave = 70
+    rows = [spawned(20_000, wave, "Default__GameObject_BountyHunter_X_WaveForm_C", 0, 0), instigated(20_000, wave, 108),
+            oneshot(22_000, 100, [wave, 108], 9001), oneshot(22_100, 101, [wave, 108], 9001), closed(23_000, wave)]
+    out = run_decay(tmp_path, rows)
+    assert _statuses(out, "X_WaveForm", "decayed") == [(8, 0, 12.0, 20.0, False)]
+
+
+@pytest.mark.parametrize("code,name", [("Pandemic", "E_SmokeScreenManager"), ("Pandemic", "X_Circular"),
+                                      ("BountyHunter", "X_WaveForm"), ("BountyHunter", "Q_Tether_SphereExpansion"),
+                                      ("Smonk", "Q_DecayExplosion"), ("Breach", "E_SweetSpotFissure")])
+def test_friendly_contacts_never_decay_but_keep_other_statuses(tmp_path, code, name):
+    from app.replays.status_intervals import normalize_conditions
+
+    rows = [spawned(20_000, 80, f"Default__GameObject_{code}_{name}_C", 0, 0), instigated(20_000, 80, 108),
+            effect(22_000, 101, 7, [80, 108]), stop(22_300, 101, 7), closed(30_000, 80)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    agents = {**AGENTS_DECAY, "Smonk": "Clove", "Breach": "Breach"}
+    out = build_extras(path, table7(), WINDOWS, GAME_MAP, agents, lambda t: {}, teams=TEAMS7).rounds[1]
+    statuses = out.get("statuses", [])
+    assert all(s["status"] != "decayed" for s in statuses)
+    expected = "tethered" if name == "Q_Tether_SphereExpansion" else "concussed" if code == "Breach" else None
+    assert [(s["status"], s.get("friendly")) for s in statuses] == ([(expected, True)] if expected else [])
+    util = [{**s, "k": "status", "t": s["t0"], "by": s["slot"]} for s in statuses]
+    assert all(c["c"] != "decayed" for line in normalize_conditions(util).values() for c in line)
+
+
+@pytest.mark.parametrize("one_shot", [False, True])
+@pytest.mark.parametrize("named", [False, True])
+def test_secondary_statuses_expand_on_both_attribution_paths(tmp_path, one_shot, named):
+    rows = []
+    for i, t in enumerate((20_000, 40_000)):
+        sphere = 80 + i
+        rows += [spawned(t, sphere, "Default__GameObject_Q_BountyHunter_Tether_SphereExpansion_C", 0, 0),
+                 instigated(t, sphere, 108)]
+        for target in (100, 101):  # an enemy and a teammate
+            context = [sphere, 108] if named else [108]
+            rows += ([oneshot(t + 600, target, context, 9101)] if one_shot else
+                     [effect(t + 600, target, i + target, context, 9101), stop(t + 1600, target, i + target)])
+        rows.append(closed(t + 2000, sphere))
+    out = run_decay(tmp_path, rows)
+    tether = _statuses(out, "Q_Tether_SphereExpansion", "tethered")
+    decay = _statuses(out, "Q_Tether_SphereExpansion", "decayed")
+    assert len(decay) == 2
+    assert decay == [s for s in tether if not s[-1]]
+    assert len(tether) == (4 if named else 2)
+
+
+def test_seize_gives_both_tethered_and_decayed_over_the_tether_span(tmp_path):
+    # 6f12db3e: Seize's wave decays and then tethers whoever it holds; the export names the object on the enemy in two
+    # continuous effects (TetherChain_Grenade, TetherVictimFeedback), 1.2-4.7 s, in 3 of 3 plays. A statuses table that
+    # allowed one status per object made Seize "tethered" only.
+    sphere = 80
+    rows = [spawned(20_000, sphere, "Default__GameObject_Q_BountyHunter_Tether_SphereExpansion_C", 0, 0),
+            instigated(20_000, sphere, 108),
+            effect(22_000, 100, 7, [sphere, 108], container=9101), effect(22_000, 100, 8, [sphere, 108], container=9102),
+            stop(25_000, 100, 7), stop(25_000, 100, 8), closed(30_000, sphere)]
+    out = run_decay(tmp_path, rows)
+    assert _statuses(out, "Q_Tether_SphereExpansion", "tethered") == [(8, 0, 12.0, 15.0, False)]
+    assert _statuses(out, "Q_Tether_SphereExpansion", "decayed") == [(8, 0, 12.0, 15.0, False)]
+
+
+def test_a_tether_only_source_stays_tether_only(tmp_path):
+    # The trapwire tethers but does not decay: a second status is a per-source entry, not a blanket.
+    from app.replays.extras import statuses_of, _Actor
+    wire = _Actor(1, 0, "", "Gumshoe", "4_TripWire", 0, 0, None)
+    assert statuses_of(wire) == ("tethered",)
+    seize = _Actor(2, 0, "", "BountyHunter", "Q_Tether_SphereExpansion", 0, 0, None)
+    assert statuses_of(seize) == ("tethered", "decayed")
+
+
+def _decay_figures():
+    import pathlib
+    import app.replays
+    return json.loads((pathlib.Path(app.replays.__file__).parent / "decay_figures.json").read_text(encoding="utf-8"))
+
+
+def test_every_decay_figure_names_a_decayed_source_and_carries_its_wiki_page():
+    from app.replays.extras import statuses_of, _Actor
+    figures = _decay_figures()
+    assert "_doc" in figures and isinstance(figures["_doc"], dict)
+    sources = {k: v for k, v in figures.items() if k != "_doc"}
+    assert "Smonk_Q_DecayExplosion" in sources and "Pandemic_X_Circular" in sources
+    for key, entry in sources.items():
+        code, name = key.split("_", 1)
+        assert "decayed" in statuses_of(_Actor(1, 0, "", code, name, 0, 0, None)), key
+        assert entry["wiki"].startswith("https://valorant.fandom.com/wiki/"), key
+        assert entry["fetched"].startswith("2026-11-"), key
+        assert entry["note"], key
+        # every field the entry uses is documented, and every field has a number or an explicit null
+        for field in entry:
+            if field not in ("wiki", "fetched", "note"):
+                assert field in figures["_doc"], (key, field)
+                assert entry[field] is None or isinstance(entry[field], (int, float)), (key, field)
+        assert entry["onset_hp"] is not None, key
+
+
+def test_every_decayed_source_has_figures_or_is_listed_as_unfigured():
+    # R8: a mark without an amount is the exception, and it is named here so it cannot appear unnoticed.
+    from app.replays.extras import STATUS_OBJECTS, decay_source_keys
+    figures = {k for k in _decay_figures() if k != "_doc"}
+    unfigured = set(decay_source_keys()) - figures
+    assert unfigured == set(), unfigured
+    assert any(label == "decayed" for _, label in STATUS_OBJECTS)
+
+
+def test_meddle_and_the_pit_carry_the_measured_figures():
+    figures = _decay_figures()
+    meddle = figures["Smonk_Q_DecayExplosion"]
+    assert (meddle["onset_hp"], meddle["build_s"], meddle["restore_s"], meddle["total_s"]) == (90, 0.75, 1.75, 5)
+    pit = figures["Pandemic_X_Circular"]
+    assert (pit["onset_hp"], pit["rate_hp_s"], pit["hold_s"], pit["restore_hp_s"]) == (30, 10, 1.5, 25)
+
+
+def test_nightfall_carries_the_owners_hold_and_restore_figures():
+    nightfall = _decay_figures()["BountyHunter_X_WaveForm"]
+    assert {k: nightfall[k] for k in ("onset_hp", "build_s", "rate_hp_s", "max_hp", "hold_s",
+                                     "restore_s", "restore_hp_s", "total_s")} == {
+        "onset_hp": 75, "build_s": 0, "rate_hp_s": 0, "max_hp": 75, "hold_s": 8,
+        "restore_s": 12, "restore_hp_s": 6.25, "total_s": 20}
+    assert nightfall["wiki"] == "https://valorant.fandom.com/wiki/Nightfall"
+    assert nightfall["fetched"] == "2026-11-20"

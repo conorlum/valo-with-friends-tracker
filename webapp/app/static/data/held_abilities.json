@@ -1,0 +1,211 @@
+{
+  "_about": "Held ability -> kit name: <agent code> -> '<replay slot letter, or empty>/<name>' from Default__Ability_<stem>_C (app/replays/held_names.py). null: a known item that is no ability.",
+  "AggroBot": {
+    "/Passive": null
+  },
+  "Aggrobot": {
+    "C/ExplodeyPatch": "Mosh Pit",
+    "X/RollyExplosion": "Thrash",
+    "E/DiscTurret": "Dizzy",
+    "Q/SeekerNade": "Wingman"
+  },
+  "BountyHunter": {
+    "C/WolfHoundBendable": "Prowler",
+    "/Passive": null,
+    "X/WaveForm": "Nightfall",
+    "E/ReconDivebomb": "Haunt",
+    "Q/TetherDivebomb": "Seize"
+  },
+  "Breach": {
+    "C/FusionBlast": "Aftershock",
+    "E/Fissure": "Fault Line",
+    "Q/Flash": "Flashpoint",
+    "X/Shockwave": "Rolling Thunder"
+  },
+  "Cashew": {
+    "C/Spider_Abilities_SelfDestruct": "Stealth Drone",
+    "C/Spider_LockOn": "Stealth Drone",
+    "E/Airstrike": "Guided Salvo",
+    "Q/ShellShockGrenade": "Special Delivery",
+    "X/Airstrike": "Armageddon"
+  },
+  "Clay": {
+    "C/ClusterGrenade": "Paint Shells",
+    "E/Boomba": "Boom Bot",
+    "Q/Satchel": "Blast Pack",
+    "X/RocketLauncher": "Showstopper"
+  },
+  "Deadeye": {
+    "C/Trap": "Trademark",
+    "E/Teleporter_Tethers": "Rendezvous",
+    "Q/Pistol": "Headhunter",
+    "X/Giantslayer_Prototype_DanPrototype": "Tour De Force"
+  },
+  "Grenadier": {
+    "E/EMPKnife": "ZERO/point",
+    "C/Flash": "FLASH/drive",
+    "Q/BasicSemtex": "FRAG/ment",
+    "X/OverloadPulse": "NULL/cmd"
+  },
+  "Guide": {
+    "C/Heal": "Regrowth",
+    "E/HawkFlash": "Guiding Light",
+    "Q/PossessableScout": "Trailblazer",
+    "Q/PossessableScout_ScoutAbilities": "Trailblazer",
+    "X/Pack": "Seekers"
+  },
+  "Gumshoe": {
+    "C/TripWire": "Trapwire",
+    "E/Camera": "Spycam",
+    "E/Camera_Dart": "Spycam",
+    "E/UnpossessCamera": "Spycam",
+    "Q/CageTrap": "Cyber Cage",
+    "X/InterrogateV2": "Neural Theft"
+  },
+  "Hunter": {
+    "C/BoltExplosive": "Shock Bolt",
+    "E/DeployDrone": "Owl Drone",
+    "E/Drone_Abilities": "Owl Drone",
+    "Q/RevealBolt_Signature": "Recon Bolt",
+    "X/LaserMulti": "Hunter's Fury"
+  },
+  "Iris": {
+    "E/MT_Smoke_Production": "Waveform",
+    "/Harmonize": "Harmonize",
+    "/Thumper": "M-pulse",
+    "X/SonicWave": "Bassquake"
+  },
+  "Killjoy": {
+    "C/RemoteBees_MultiDetonate": "Nanoswarm",
+    "E/Turret": "TURRET",
+    "E/TurretAttack": "TURRET",
+    "Q/Alarmbot": "ALARMBOT",
+    "X/Bomb": "Lockdown"
+  },
+  "Mage": {
+    "C/SplashGrenade": "Storm Surge",
+    "E/WorldSmoke": "Cove",
+    "Q/Wall": "High Tide",
+    "X/Wave": "Reckoning"
+  },
+  "Melee": {
+    "/Base": null
+  },
+  "Nox": {
+    "/BarbedWire": "Razorvine",
+    "/DisarmPulse": "Steel Garden",
+    "/FlashTrap": "Arc Rose",
+    "/Wall": "Shear"
+  },
+  "Pandemic": {
+    "C/SmokeGrenade": "Poison Cloud",
+    "E/SmokeScreen": "Toxic Screen",
+    "/Passive": null,
+    "Q/AcidGrenade": "Snake Bite",
+    "X/SmokeSite_New": "Viper's Pit"
+  },
+  "Paprika": {
+    "C/PullBlast": "Flow",
+    "E/RedirectPull": "Displacement",
+    "/Passive_Telekinesis": null,
+    "Q/RedirectFlash": "Flashbulb",
+    "X/FullBendPop": "Suspension"
+  },
+  "Pawn": {
+    "/Aggrobot_RollyExplodey": "Thrash"
+  },
+  "Phoenix": {
+    "C/Molotov_Production": "Hot Hands",
+    "E/FlareCurve_Production": "Curveball",
+    "/Passive": null,
+    "Q/FireballWall_Production": "Blaze",
+    "X/SelfRes_Production": "Run it Back"
+  },
+  "Pine": {
+    "C/UsableTP": "Crosscut",
+    "E/RadEater": "Interceptor",
+    "Q/SeizeTrap": "Chokehold",
+    "X/SelfBuffVers_Engineering": "Evolution"
+  },
+  "Smonk": {
+    "Q/DebuffKnife": "Meddle",
+    "/BFArmor_Reactive": "Pick-me-up",
+    "E/MapTargetSmokeV2": "Ruse",
+    "E/PostDeath": "Ruse",
+    "X/PostDeath_ReactiveResStart": "Not Dead Yet",
+    "X/ReactiveRes_Engineering": "Not Dead Yet"
+  },
+  "Rift": {
+    "C/BlackHole": "Gravity Well",
+    "C/BlackHole_WorldTargeting": "Gravity Well",
+    "E/TransformRift_Smoke": "Nebula  / Dissipate",
+    "E/TransformRift_Smoke_WorldTargeting": "Nebula  / Dissipate",
+    "/Passive_RiftCharges": null,
+    "Q/FlashBurst": "Nova Pulse",
+    "Q/FlashBurst_WorldTargeting": "Nova Pulse",
+    "X/PlaceMarkers_WorldTargeting_GlobalWall": "Astral Form / Cosmic Divide",
+    "X/WorldTargetingStart": "Astral Form / Cosmic Divide",
+    "X/WorldTargeting_EquipSlotOnSpawnedCharacter_Melee": "Astral Form / Cosmic Divide",
+    "X/WorldTargeting_EquipSlotOnSpawnedCharacter_Secondary": "Astral Form / Cosmic Divide",
+    "X/WorldTargeting_Unpossess": "Astral Form / Cosmic Divide"
+  },
+  "Sarge": {
+    "C/MapTargetSmoke_Production": "Sky Smoke",
+    "E/SpeedStim": "Stim Beacon",
+    "Q/Molotov_Production": "Incendiary",
+    "X/OrbitalStrike": "Orbital Strike"
+  },
+  "Sequoia": {
+    "C/Wave": "Contingency",
+    "E/WreckingBall": "Double Tap",
+    "/Passive": null,
+    "Q/FragileMissilePrototypeEquipped": "Undercut",
+    "X/ArenaLineCapture": "Kill Contract",
+    "X/ArenaTeleport": "Kill Contract"
+  },
+  "Sprinter": {
+    "C/Tunnel_Production": "Fast Lane",
+    "E/Sprint_Production": "High Gear",
+    "/Passive": null,
+    "Q/GroundStrike_Production": "Relay Bolt",
+    "X/LightningGun_Production": "Overdrive"
+  },
+  "Stealth": {
+    "C/Decoy": "FAKEOUT",
+    "E/Teleport": "GATECRASH",
+    "Q/BounceFlash": "BLINDSIDE",
+    "X/Cloak_Equip": "DIMENSIONAL DRIFT"
+  },
+  "Terra": {
+    "C/TimeSlowGrenade": "Saturate",
+    "E/RewindTime": "Refract",
+    "Q/DoubleDash": "Lightspeed",
+    "X/DelayedBeam": "Convergent Paths"
+  },
+  "Thorne": {
+    "C/SlowField_Production": "Slow Orb",
+    "E/Wall_Fortifying": "Barrier Orb",
+    "Q/Heal_Production_New": "Healing Orb",
+    "X/Resurrect_Production": "Resurrection"
+  },
+  "Vampire": {
+    "C/NearsightAoE": "Leer",
+    "E/Escape": "Dismiss",
+    "/Passive": null,
+    "Q/Heal": "Devour",
+    "X/Frenzy": "Empress"
+  },
+  "Wraith": {
+    "C/Smoke": "Dark Cover",
+    "E/ShortTeleport": "Shrouded Step",
+    "Q/NearsightMissile": "Paranoia",
+    "X/GlobalTeleport": "From the Shadows"
+  },
+  "Wushu": {
+    "C/Smoke": "Cloudburst",
+    "E/Dash": "Tailwind",
+    "/Passive_Glide": null,
+    "Q/CycloneBoost": "Updraft",
+    "X/Dagger_Production": "Blade Storm"
+  }
+}

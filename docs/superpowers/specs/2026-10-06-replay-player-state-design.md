@@ -133,3 +133,46 @@ Current storage replaces a complete replay on recipe change and removes its prio
 Completion requires: confirmed report match/time, tested barrier containment and propagation, replay-backed status intervals and zero blind control, verified health and spike extraction on real examples, enemy-only active-molly traversal and expiry checks, deterministic seeking, old-data compatibility, visual inspection at narrow and wide viewport/zoom, and a targeted refresh runbook. Planning review is not execution evidence. Any missing raw evidence remains explicit, with unaffected work able to proceed.
 
 Screenshots and raw identifying exports are local review evidence; do not include them in a public implementation commit. Commit anonymized focused fixtures. Validate a few local rounds before proposing production data refresh; preserve friends/demo database separation and both deployed URLs.
+
+## Amendment 2026-11-18: soaked hits, overheal, decay (CONDENSE 32)
+
+Status: built. This amends sections 3 (health percentage) and the status timeline; the earlier text stands where not contradicted. `CONDENSE_REVISION` 31 -> 32 re-parses every stored replay.
+
+### The sections rule
+
+A damage notify lists only the sections it changed, plus sections at 0 the pawn has. A section a hit does not list is therefore unchanged by it (R1).
+
+- HP after a hit without the HP section is the life's last snapshot HP. With no snapshot yet it is 100 if the life began at the round's start, otherwise there is no snapshot (R2).
+- Shield: a listed armour section gives it. An unlisted one keeps the life's last known shield and capacity. With none known, a hit listing HP but no armour proves no armour (0/0); a hit listing neither leaves both unknown (R3).
+- Measured: of 1,467 hits in one replay, 12 had no HP section (9 soaked by armour, 3 by overheal).
+
+### Overheal
+
+A new `overheal` part: `{"<slot>": [{t, life, oh}]}`, the overheal section's value after each heal tick, `MulticastNotifyOverhealDecay` row and hit on it. A pawn's overheal section is the one its decay rows change (R4).
+
+- Thinned: points less than 100 ms after the previous kept one are dropped, except each run's first and last and every hit's; at most 512 per slot per round (R5).
+- Measured: heal ticks come every ~8 ms up to 50; the drain starts 10.0 s after the last tick and takes 2.0 s.
+- Kept separate from `vitals` so Critical Util and the coach, which read `vitals` hp + sh, are unchanged (D6).
+- The panel draws it as a green segment after HP. While it is up the bar stands for 150 HP.
+
+### Decay
+
+A new `decay` part: `{"<slot>": [{t, life, dec, unk}]}`, one combined knot timeline per slot. It is right-continuous and linear between knots of one life; a jump is two knots at one `t`; it ends at a `dec` 0 / `unk` false knot.
+
+- Computed in the condenser from `app/replays/decay_figures.json` (one committed table, each entry with its wiki URL and fetch date) over each enemy `decayed` status: onset, rate while applied, hold, restore. Capped at the HP before minus 1 and cut at a death. `unk` marks a source with no figures.
+- Sources: Clove's Meddle, Viper's Pit and Toxic Screen, Fade's Seize (beside `tethered`) and Nightfall. Left out for lack of proof in the local exports: Poison Cloud, Veto's Chokehold.
+- The panel draws the decayed part purple over the right end of HP; a figure-less decay tints the HP purple.
+
+### Booked decay is a lower bound
+
+The replay books decay as damage only when a player dies with it on, and the booked figure is the life their HP and shield sections still held after the real damage (150 - 77 = 73, booked five times). Death therefore proves only decay >= booked.
+
+- The condense report checks every booked decay: "consistent" when booked <= computed + 2, "too low" otherwise (`decay_checks`, counts), and per damage type the largest booked value beside the curve's value then (`decay_tightest`). This is the only evidence against a curve that is too high.
+- Measured on 35 booked decays in 16 replays (Nightfall 17, Seize 16, Meddle 2): restoring Nightfall from the hit is contradicted (73 still booked 4.7 s after it), so its curve is 75 held for the 8 s debuff, then 6.25 HP/s (the owner's figures).
+
+### Owner's rulings (2026-11-20)
+
+- Viper's Pit uses its own wiki page's figures: 30 on contact, 10 HP/s, 1.5 s hold, 25 HP/s restore.
+- Toxic Screen uses the Toxin passive's 10 on contact.
+- Booked decay is checked as a lower bound.
+- Nightfall's curve is the owner's figures above.

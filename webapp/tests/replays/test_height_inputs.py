@@ -265,4 +265,5 @@ def test_revision_seven_manifest_keeps_pre_fall_digest(monkeypatch):
     geometry = hi.geometry_identity("Abyss")
     geometry.pop("height_paint", None)  # pins the revision-7 format, not Abyss's later hand paint
     manifest = hi.manifest("Abyss", golden.FIXED_REPLAYS, geometry, golden._must_block_sha_lf())
-    assert hi.digest(manifest) == "d9bae5b3eb533d11"
+    # Revision-7 format, with W3's padded Abyss sight and the must-block set (Haven owner line #7 dropped in R2.1).
+    assert hi.digest(manifest) == "b6a3d2bcf18d1191"

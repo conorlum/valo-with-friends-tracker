@@ -21,7 +21,7 @@
     var json = function (url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(url + " " + r.status); return r.json(); }); };
     // The page's site data for round n, merged onto its stored blob (kills by their index).
     function withSiteData(n, blob) { return Replay.withSiteData(data.rounds[String(n)], blob); }
-    var tables = ["abilities", "weapons"].map(function (name) {
+    var tables = ["abilities", "weapons", "arena", "held_abilities"].map(function (name) {
       return json("/static/data/" + name + ".json?v={{ static_version() }}").catch(function () { return {}; });
     });
     Promise.all(tables).then(function (loaded) {
@@ -37,6 +37,8 @@
         roundWinner: function (n) { var site = data.rounds[String(n)]; return site && site.db && site.db.winner; },
         abilityIcons: abilityIcons,
         gunIcons: gunIcons,
+        arenaRoom: loaded[2],
+        heldAbilities: loaded[3],
         linked: match.linked ? { players: data.players, uvPerUnit: match.uv_per_unit } : null{% if not demo_mode %},
         loadAreas: function () { return json("/replays/areas/" + match.asset + ".json"); }{% endif %}{% if control %},
         // Map control (Stage 4): the round's stored bytes; 202 not ready, 422 failed, 404 no layer.

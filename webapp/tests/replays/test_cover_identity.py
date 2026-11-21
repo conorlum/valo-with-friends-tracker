@@ -1,7 +1,7 @@
 """Cover (<Map>.cover.png, index.json `cover_sha`) joins the control input identity like the buy-phase barrier,
 and only on a map that has cover: a map without cover keeps every key, fingerprint and envelope it had.
 
-The no-cover literals below were computed from the code before this change (W5, stage 0c)."""
+The no-cover literals below were refreshed for W3's permanent-wall padding."""
 
 import copy
 import hashlib
@@ -23,14 +23,14 @@ NO_COVER = "Abyss"
 COVER = "Ascent"
 LINK = {"linked": False, "sides": {}, "db_deaths": []}
 
-# Literals from the unchanged code (Abyss has no cover).
-ABYSS_INPUTS = {"barrier": "06d022399053", "scale": 8.1e-05, "sight": "8342f6714685", "specials": [],
+# Abyss still has no cover; its sight identity includes permanent-wall padding.
+ABYSS_INPUTS = {"barrier": "06d022399053", "scale": 8.1e-05, "sight": "cb32e86ca94e", "specials": [],
                 "walk": "42d1d3f29a3c"}
-ABYSS_FINGERPRINT = "6a2ce4ec3dad1043"          # over the envelope without control/data/summary/figures
+ABYSS_FINGERPRINT = "bc3873a7ff8518bb"          # over the envelope without control/data/summary/figures
 ABYSS_PIN = {**ABYSS_INPUTS, "features": "f" * 64}
-ABYSS_TAGS_DIGEST = "909f901f1ac2f29a577ffa135029ebb05578784aba9dcdb59fa5ab0e6d87d092"
+ABYSS_TAGS_DIGEST = "832f85faec59f2d4d6c07f4b9fb8a7d6da59255a21b8b3f5a2179d8fea3e6860"
 ABYSS_SNAPSHOT_KEYS = ["barrier", "barrier_sha", "legacy", "scale", "sight", "specials", "walk"]
-ABYSS_SNAPSHOT_SHA = "de011d7c38b5c61d30c9c0d3ad1c494131107808757a4108f670b46dfb4e55ce"
+ABYSS_SNAPSHOT_SHA = "9301123536839b0f9df0dcf724c8e98a14cf0d128bbaf1eb434614586e9f38cf"
 
 
 @pytest.fixture

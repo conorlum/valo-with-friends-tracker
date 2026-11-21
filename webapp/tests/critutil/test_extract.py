@@ -833,6 +833,24 @@ def test_a_stun_on_a_teammate_flagged_friendly_is_harm():
     assert out["avail"]["friendly_status"] is True
 
 
+def test_friendly_toxic_screen_contact_produces_no_critical_util_harm():
+    from collections import Counter
+    from app.replays.condense import PlayerTable
+    from app.replays.extras import _Actor, _Effect, find_statuses
+
+    table = PlayerTable(subjects=[None] * 2, agents=["Sage", "Viper"], pawn_slot={100: 0, 101: 1},
+                        other_slot={}, pawn_changes={}, gone_ms={})
+    wall = _Actor(60, 8000, "GameObject", "Pandemic", "E_SmokeScreenManager", 0, 0, None)
+    contacts = find_statuses([_Effect(8200, 100, 7, 8263, (60, 101), 8500)], {60: wall}, {60: 1},
+                             table, Counter(), teams={0: "A", 1: "A"})
+    util = [toy_ability("Pandemic", wall.name, 200, 200, 1, t=8.0, t1=10.0, kind="GameObject")]
+    util += [{**status(s["t_ms"] / 1000, s["t1_ms"] / 1000, s["by"], s["target"],
+                      name=s["name"], status=s["status"]), "code": s["code"], "friendly": s.get("friendly", False)}
+             for s in contacts]
+    (cast,) = cast_by(run(util), 1)
+    assert cast["harm"] == []
+
+
 # --- the ability table: kinds, type, ability_id, and how long a row with no end lasts (W10)
 
 

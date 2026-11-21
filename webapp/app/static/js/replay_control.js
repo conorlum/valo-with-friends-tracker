@@ -337,7 +337,7 @@
 
   // Paints tick states into an RGBA image of size x size (a multiple of GRID) over the whole
   // minimap: colours = {a: [r, g, b], b: [r, g, b]} (side group A's and B's team colours).
-  function paintStates(rgba, size, walk, codes, colors) {
+  function paintStates(rgba, size, walk, codes, colors, borders) {
     var px = size / GRID;
     rgba.fill(0);
     for (var k = 0; k < walk.length; k++) {
@@ -353,7 +353,53 @@
         }
       }
     }
+    if (borders) {
+      var owners = Uint8Array.from(codes, function (code) {
+        var state = STATE_PAINT[code];
+        return !state ? 0 : state.contested ? 3 : state.team === "a" ? 1 : 2;
+      });
+      paintEdges(rgba, size, walk, owners, {1: colors.a, 2: colors.b}, false);
+    }
     return rgba;
+  }
+
+  // Edges belong to the painted cell and run EDGE_PX deep into it. Only compare walkable neighbours,
+  // never the map's walls. Owners are 0 (none), 1/2 (teams), 3 (contested); contested cells keep their stripes.
+  // Edges use the team colour at full brightness (same hue, brightest channel at 255) so they stand out
+  // from the fill: solid edges opaque, dashed ones at EDGE_DASH_ALPHA.
+  var EDGE_PX = 2, EDGE_ALPHA = 1, EDGE_DASH_ALPHA = 0.85;
+
+  function edgeColour(rgb) {
+    var top = Math.max(rgb[0], rgb[1], rgb[2]);
+    if (!top) return rgb;
+    return rgb.map(function (c) { return Math.round(c * 255 / top); });
+  }
+
+  function paintEdges(rgba, size, walk, owners, colors, dashed) {
+    var index = cellIndex(walk), px = size / GRID, depth = Math.min(EDGE_PX, px), bright = {};
+    var alpha = Math.round((dashed ? EDGE_DASH_ALPHA : EDGE_ALPHA) * 255);
+    for (var k = 0; k < walk.length; k++) {
+      if (!colors[owners[k]]) continue;
+      var rgb = bright[owners[k]] || (bright[owners[k]] = edgeColour(colors[owners[k]]));
+      var cell = walk[k], gx = cell % GRID, gy = Math.floor(cell / GRID), cx = gx * px, cy = gy * px;
+      var neighbours = [gy > 0 ? cell - GRID : -1, gy < GRID - 1 ? cell + GRID : -1,
+        gx > 0 ? cell - 1 : -1, gx < GRID - 1 ? cell + 1 : -1];
+      for (var edge = 0; edge < 4; edge++) {
+        var neighbour = neighbours[edge] < 0 ? -1 : index[neighbours[edge]];
+        if (neighbour < 0 || owners[neighbour] === owners[k]) continue;
+        for (var d = 0; d < depth; d++) {
+          for (var p = 0; p < px; p++) {
+            var x = edge < 2 ? cx + p : cx + (edge === 3 ? px - 1 - d : d);
+            var y = edge < 2 ? cy + (edge === 1 ? px - 1 - d : d) : cy + p;
+            // Dash gaps leave the hatch and any other team's border untouched.
+            if (dashed && (edge < 2 ? x : y) % 4 >= 2) continue;
+            var o = (y * size + x) * 4;
+            rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2];
+            rgba[o + 3] = alpha;
+          }
+        }
+      }
+    }
   }
 
   // Each side group's unknown as a hatch in the enemy's colour (docs/map-control-unknown-plan.md): A's
@@ -361,7 +407,7 @@
   // unknown is cross-hatched. `show` is "A", "B" or "both"; a or b may be null (no stream).
   var HATCH_PX = 4, HATCH_ALPHA = 0.55;
 
-  function paintUnknown(rgba, size, walk, a, b, colors, show) {
+  function paintUnknown(rgba, size, walk, a, b, colors, show, borders) {
     var px = size / GRID, alpha = Math.round(HATCH_ALPHA * 255);
     rgba.fill(0);
     for (var k = 0; k < walk.length; k++) {
@@ -378,6 +424,10 @@
           rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2]; rgba[o + 3] = alpha;
         }
       }
+    }
+    if (borders) {
+      if (a && show !== "B") paintEdges(rgba, size, walk, a, {1: colors.b}, true);
+      if (b && show !== "A") paintEdges(rgba, size, walk, b, {1: colors.a}, true);
     }
     return rgba;
   }
@@ -541,7 +591,8 @@
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, controlShares: controlShares, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
     HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
-    STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA
+    STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA,
+    edgeColour: edgeColour
   };
   global.ReplayControl = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

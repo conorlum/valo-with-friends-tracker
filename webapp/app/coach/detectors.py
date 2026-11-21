@@ -12,6 +12,8 @@ STACK_ENEMIES = 4           # this many enemies known on one site is a stack
 STACK_FRESH_S = 10.0        # a sighting older than this no longer places an enemy
 STACK_HOLD_S = 8.0          # still on another site this long after the stack was known
 FLASH_FOLLOWUP_S = 3.0      # a kill on a flashed enemy inside this is credited to the flash
+NO_GUN_DEATHS_MIN = 3
+NO_GUN_DEATHS_SHARE = 0.25
 _EPS = 0.01
 
 
@@ -127,6 +129,22 @@ def _stack(view, slot, knew, role):
                                   hold_s=STACK_HOLD_S, role=role)]
         t += 1.0
     return []
+
+
+def no_gun_deaths(rounds: list[dict]) -> dict:
+    """Match tally over citable fight deaths, with list indices preserving tied start times."""
+    deaths, total = [], 0
+    for row in rounds:
+        for index, fight in enumerate(row.get("fights") or []):
+            if fight.get("won") is not False:
+                continue
+            total += 1
+            item = (fight.get("death") or {}).get("out_at_death")
+            if item:
+                deaths.append({"round": row["round"], "fight": index, "t": fight["t"], "item": item})
+    count = len(deaths)
+    return {"deaths": deaths, "count": count, "of_deaths": total,
+            "flag": count >= NO_GUN_DEATHS_MIN and count >= total * NO_GUN_DEATHS_SHARE}
 
 
 def flags(view, slot: int, knew: dict | None, role: str | None = None, *, fights=None) -> list[dict]:

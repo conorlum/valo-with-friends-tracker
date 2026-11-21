@@ -118,8 +118,9 @@ def parse_file(vrf: Path, folder: Path, sha256: str, *, parser_cmd: list[str], t
         "round_count": replay.round_count,
         "rounds": {str(n): base64.b64encode(data).decode("ascii") for n, data in replay.encoded_rounds().items()},
         "players": replay.players, "link_inputs": replay.link_inputs,
-        # The web service stores this (app/replays/store.py): dropped_final_round goes into
-        # link_inputs, and the rest is a small summary for the job page.
-        "report": {k: replay.report.get(k) for k in ("rounds", "hz", "kills", "sizes", "lifecycle", "sides",
-                                                      "dropped_final_round", "extras")},
+        # The web service stores dropped_final_round and compact player_state diagnostics in link_inputs.
+        "report": {**{k: replay.report.get(k) for k in ("rounds", "hz", "kills", "sizes", "lifecycle", "sides",
+                                                       "dropped_final_round", "extras")},
+                   "player_state": {k: v for k, v in replay.report.get("player_state", {}).items()
+                                    if isinstance(v, (int, float)) or k in ("decay_checks", "decay_tightest")}},
     }, seconds

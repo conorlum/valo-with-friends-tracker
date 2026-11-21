@@ -54,8 +54,9 @@ from app.replays.contract import (
     map_codes_in_file,
 )
 from app.replays.causes import Archetypes, cause_key, cause_of
-from app.replays.player_state_extract import (attach_orb_tries, attribute_death_drops, attribute_planter,
-                                              read_player_state, round_player_state)
+from app.replays.player_state_extract import (attach_decay, attach_orb_tries, attach_plant_tries, attribute_death_drops,
+                                              attribute_planter, load_decay_figures, read_player_state,
+                                              round_player_state)
 
 # EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
 PHASE_IN_ROUND = 4
@@ -129,6 +130,7 @@ class CondensedReplay:
     players: list[dict]
     link_inputs: dict
     report: dict = field(default_factory=dict)
+    _booked_decay: dict[int, list[dict]] = field(default_factory=dict, repr=False)
 
     @property
     def round_count(self) -> int:
@@ -1173,11 +1175,8 @@ def _uncovered(a: int, b: int, spans: list[tuple[int, int]]) -> int:
     return (b - a) - covered
 
 
-def build_segments(samples: list[Sample], intervals: list[list], start: int, end: int,
-                   hz: int, game_map: MapInfo, unobserved: list[tuple[int, int]] = ()) -> tuple[list[dict], dict]:
-    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats.
-
-    Coverage and gaps measure observed alive time: unobserved spans (P-c) don't count."""
+def _runs(samples: list[Sample], intervals: list[list], start: int, end: int) -> list[list[tuple[Sample, int]]]:
+    """The revision-31 run boundaries shared by minimap and arena tracks."""
     runs: list[list[tuple[Sample, int]]] = []
     previous: tuple[Sample, int] | None = None
     for sample in samples:
@@ -1197,10 +1196,17 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
             runs.append([])
         runs[-1].append((sample, interval))
         previous = (sample, interval)
+    return runs
 
+
+def build_segments(samples: list[Sample], intervals: list[list], start: int, end: int,
+                   hz: int, game_map: MapInfo, unobserved: list[tuple[int, int]] = ()) -> tuple[list[dict], dict]:
+    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats.
+
+    Coverage and gaps measure observed alive time: unobserved spans (P-c) don't count."""
     segments = []
     covered_points = 0
-    for run in runs:
+    for run in _runs(samples, intervals, start, end):
         grid: dict[int, tuple[int, int, int, int | None]] = {}
         for sample, _ in run:
             k = int(round((sample.t_ms - start) / 1000.0 * hz))
@@ -1238,6 +1244,45 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
         max_gap = max(max_gap, *(_uncovered(a, b, unobserved) / 1000.0 for a, b in zip(bounds, bounds[1:])))
     coverage = min(1.0, covered_points / hz / alive_s) if alive_s > 0 else 1.0
     return segments, {"coverage": round(coverage, 3), "max_gap_s": round(max_gap, 3)}
+
+
+def build_arena_segments(samples: list[Sample], intervals: list[list], start: int, end: int,
+                         hz: int) -> list[dict]:
+    """World positions below the arena line, without bridging entry, exit or unknown heights."""
+    arena_runs: list[list[Sample]] = []
+    for run in _runs(samples, intervals, start, end):
+        current: list[Sample] = []
+        for sample, _ in run:
+            if sample.z is not None and sample.z < fmt.ARENA_Z_UNITS:
+                if not current:
+                    current = []
+                    arena_runs.append(current)
+                current.append(sample)
+            else:
+                current = []
+
+    segments = []
+    for run in arena_runs:
+        grid: dict[int, tuple[int, int, int]] = {}
+        for sample in run:
+            k = int(round((sample.t_ms - start) / 1000.0 * hz))
+            grid[k] = (int(round(sample.x / 10.0)), int(round(sample.y / 10.0)), int(round(sample.yaw)) % 360)
+        keys = sorted(grid)
+        x_list, y_list, yaw_list = [], [], []
+        for a, b in zip(keys, keys[1:] + [None]):
+            xa, ya, yawa = grid[a]
+            x_list.append(xa), y_list.append(ya), yaw_list.append(yawa)
+            if b is None:
+                continue
+            xb, yb, yawb = grid[b]
+            turn = (yawb - yawa + 180) % 360 - 180
+            for step in range(1, b - a):
+                f = step / (b - a)
+                x_list.append(int(round(xa + (xb - xa) * f)))
+                y_list.append(int(round(ya + (yb - ya) * f)))
+                yaw_list.append(int(round(yawa + turn * f)) % 360)
+        segments.append(fmt.encode_arena_segment(keys[0] / hz, x_list, y_list, yaw_list))
+    return segments
 
 
 def _util_entry(cast: UtilCast, start: int, game_map: MapInfo) -> dict:
@@ -1596,6 +1641,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     damage_runs, damage_counts = read_damage(export, players, archetypes, agents_by_code)
     # Revision 15: health and the spike's state (player_state_extract.py), from rows already in the stream.
     state_inputs = read_player_state(export, players)
+    booked_decay: dict[int, list[dict]] = {}
     heal_runs, heal_counts = read_heals(state_inputs, archetypes, agents_by_code)
     # P-a: every kill falls in one playback window, or in the dropped final round (excluded
     # with its reason); any other kill refuses.
@@ -1623,6 +1669,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     uncertain_lives = 0
     for n, (start, decided, end) in enumerate(game.windows, 1):
         tracks: dict[str, list] = {}
+        arena: dict[str, list] = {}
         alive: dict[str, list] = {}
         lives: dict[int, list[list]] = {}
         for slot in range(10):
@@ -1640,6 +1687,9 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             segments, stats = build_segments(by_slot.get(slot, []), intervals, start, end, hz, game_map, spans)
             if segments:
                 tracks[str(slot)] = segments
+            arena_segments = build_arena_segments(by_slot.get(slot, []), intervals, start, end, hz)
+            if arena_segments:
+                arena[str(slot)] = arena_segments
             if intervals:
                 coverage[slot].append({"round": n, **stats})
         kill_rows = []
@@ -1648,10 +1698,12 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             u, v = game_map.to_uv(where.x, where.y) if where else (None, None)
             kill_rows.append({"i": i, "t": _seconds(k.t_ms, start), "killer": k.killer, "victim": k.victim,
                               "u": u, "v": v})
+            if where is not None and where.z is not None and where.z < fmt.ARENA_Z_UNITS:
+                kill_rows[-1].update(ax=int(round(where.x / 10.0)), ay=int(round(where.y / 10.0)))
         rounds[n] = {
             "v": fmt.FORMAT_VERSION, "round": n, "map": game_map.name, "hz": hz,
             "t_start": 0.0, "t_decided": _seconds(decided, start), "t_end": _seconds(end, start),
-            "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
+            "players": player_rows, "tracks": tracks, "arena": arena, "alive": alive, "kills": kill_rows,
             # No plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
             # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump. Map control
@@ -1660,10 +1712,12 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
                     + [_damage_entry(r, start) for r in damage_runs if start <= r.t_ms <= end]
                     + [_heal_entry(r, start) for r in heal_runs if start <= r.t_ms <= end],
         }
+        booked_decay[n] = []
         state = round_player_state(state_inputs, start, end, game.windows[n - 2][2] if n > 1 else None,
                                    lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
                                                                                              t_ms, _end),
-                                   to_uv=game_map.to_uv)
+                                   to_uv=game_map.to_uv,
+                                   life_start=lambda slot, i, _lives=lives: _lives[slot][i][0], booked=booked_decay[n])
         if state is not None:
             # D5: a drop right after one death lies at that death's place, and that player carried it.
             attribute_death_drops(state, kill_rows, state_inputs.diagnostics)
@@ -1732,7 +1786,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     return CondensedReplay(
         match_uuid=match_uuid, map_name=game_map.name, game_branch=str(export.manifest.get("replay_build")),
         source_sha256=str(export.manifest.get("source_sha256")), recipe=recipe, hz=hz,
-        rounds=rounds, players=private_players, link_inputs=link_inputs, report=report,
+        rounds=rounds, players=private_players, link_inputs=link_inputs, report=report, _booked_decay=booked_decay,
     )
 
 
@@ -1880,16 +1934,37 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
                           alive_by_round={n: blob.get("alive", {}) for n, blob in replay.rounds.items()})
     spike_counts: dict[str, int] = {}
     joins: Counter[str] = Counter()
+    decay_counts = {"decay: consistent": 0, "decay: too low": 0}
+    decay_checks = []
+    figures = load_decay_figures()
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        decay_statuses = [e for e in blob["util"] if e.get("status") == "decayed"]
         blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
+        if any(not e.get("friendly") and e.get("from") != "friendly" for e in decay_statuses):
+            blob.setdefault("player_state", {"version": 1})
+        decay_checks.extend(attach_decay(blob.get("player_state"), decay_statuses, blob.get("alive", {}),
+                                         blob["t_end"], figures,
+                                         [{"round": n, **h} for h in replay._booked_decay.get(n, [])], decay_counts))
         join_causes(blob["util"], joins)
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
         blob["crouch"] = {str(slot): spans for slot, spans in extras.rounds.get(n, {}).get("crouch", {}).items()}
         # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
         attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
         attach_orb_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("orb_tries", []), spike_counts)
+        state = attach_plant_tries(blob.get("player_state"), extras.rounds.get(n, {}).get("plant_tries", []), spike_counts)
+        if state is not None:
+            blob["player_state"] = state
     replay.report["extras"] = extras.report
     replay.report["cause_joins"] = dict(sorted(joins.items()))
     replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))
+    replay.report["player_state"].update(decay_counts)
+    replay.report["player_state"]["decay_checks"] = decay_checks
+    tightest = {}
+    for row in sorted(decay_checks, key=lambda r: (-r["booked"], r["computed"] - r["booked"],
+                                                  r["round"], r["t"])):
+        if row["dtype"] not in tightest:
+            tightest[row["dtype"]] = {k: row[k] for k in ("round", "slot", "t", "booked", "computed")}
+            tightest[row["dtype"]]["gap"] = row["computed"] - row["booked"]
+    replay.report["player_state"]["decay_tightest"] = tightest
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())
