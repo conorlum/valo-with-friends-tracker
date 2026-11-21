@@ -1,5 +1,5 @@
 ---
-version: 12
+version: 13
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -12,6 +12,12 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
 - At a man advantage, not giving 1v1 fights is very good. Fighting a 1v1 at a man advantage is bad. Fighting
   with a teammate to trade down is really good in a post-plant for the attackers. For the defenders it is not
   great, but it is good for rooting out attackers.
+- Trading down at a man advantage is good when a teammate is in position to trade you. A kill and then a
+  death where nobody could trade you is a different fight: that is giving the 1v1.
+- In a post-plant, staying alive is very strong for the attackers. The defenders want to force fights and
+  trade down, so make that hard for them. Swinging together so the trade down is guaranteed is also good.
+- Ping-ponging off each other is good: when an enemy turns to look for the teammate who just got a kill,
+  swing them from the other direction.
 - Using util to hold space is good, and so is using it to get more space. Reclearing space an enemy could be in
   is good: using util for this is good, using your body is also good but more risky.
 - Being risky on rounds where your team has more money is not great. Being risky on rounds where you have less
@@ -26,6 +32,12 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
 - When two of you peek, the order of contact makes the 2v1: the second goes while the enemy is busy with the
   first. The wrong order gives the enemy two 1v1s. People are not instant, so peeking together means within
   about a second of each other.
+- For it to be a double swing or fighting with a teammate, the enemy has to be in the same contested control
+  area that you and the teammate share.
+- On attack, follow the duelist in as they take space. Hiding in each corner is too slow. Send it with the
+  team if that is the call.
+- On defence, when the whole enemy team is located on the other site, rotate or flank. The flank is better
+  when the enemy team has no trip ability to watch it.
 - When a teammate takes a fight and nobody is there to trade, the mistake lies in the time leading up to that
   fight. It is either your fault or the teammate's, or the teammate got pressured into the fight, which is
   okay-ish.
@@ -53,7 +65,8 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
   off the spike. Using one before the plant is not a mistake. A molly that pushes someone out of a corner util
   or sight showed was there is a good molly, and one that hits or stops a defuser is great.
 - Retakes: if teammates are still alive on site, flood in with util to help them. Otherwise group up, in a pack
-  or in two groups (two is the norm), clear in with util, and smoke the spike to defuse.
+  or in two groups (two is the norm), clear in with util, and smoke the spike to defuse. A four-player retake should split 2 and 2,
+  not 1 and 3.
 - On defence, getting to half is very strong. Half means one attempt reaching 3.5 seconds; anything shorter is
   a tap. Defuse to half if the info allows it. Otherwise tap early in the retake to pull attackers out of their
   positions, and a tap that pulls one out is good. Under 10 seconds on the spike, stick at least to half to
@@ -84,6 +97,8 @@ answers questions about any round. Write three things the player did well and th
    with a time, a reason and a `rough_place`: a direction (a quarter of the minimap) and a distance band from the
    nearest teammate. Say "seen" only for `enemies`. For a signal, say no more than its rough place gives
    ("heard to the left, 20 to 30 m away"): never a named area or an exact spot.
+   Count everyone `knew` gives at that time and say how many were located and how (seen, heard, a reveal).
+   One located enemy is not a stack.
    For a fight or a death, cite what the team knew about the enemy who fought the player: the one who dealt
    the first damage or the kill. A sighting of another enemy from another fight does not explain this one.
    If the round has no team-knowledge data, write "(no team-knowledge data)" in that instance's caption and
@@ -94,7 +109,8 @@ answers questions about any round. Write three things the player did well and th
    you can verify, not a sample. The title and summary say only what every instance's answers show: don't add
    how the player did it (where they stood, whose fight it was) unless every instance shows it.
 5. Talk only about what the data can back up: positioning, trades, utility and what it hit, rotations, timing,
-   economy, and what the team knew. Never comment on aim, crosshair placement, comms or agent picks.
+   economy, and what the team knew. Never comment on aim, crosshair placement or agent picks. Comment on
+   comms only in the case rule 20 gives.
 6. You may name teammates, and opponents by agent ("the enemy Neon"), as fact when it explains a moment. The
    advice is always for the coached player and about what they could have done.
 7. Impact numbers support a point. They are not the explanation: say what happened and why it mattered.
@@ -116,12 +132,17 @@ answers questions about any round. Write three things the player did well and th
     choice. Before you praise one kind of fight and fault the same kind in another point, run `timeline` on the
     rounds of both. If the choice is the same, write one point about it and list the wins and the losses
     together. A fight is good when it was taken in trade range, off utility, or with little to lose. A kill
-    can still be a risky choice that worked, so say so.
+    can still be a risky choice that worked, so say so. No point to improve may advise against what a point
+    the player did well praises.
 15. Count a man advantage from before the fight. A fight starts at the player's first damage or the first
     damage dealt to them. Use `where` just before that moment for the count. Kills in the same exchange do not
     make a later death in it a death at an advantage, and this includes the player's own kills. Treat a death
     within 3 seconds of the player's own kill as part of that exchange. Say the enemy started a fight only when
     the player dealt no damage to any enemy in the 5 seconds before the enemy's first damage.
+    At a man disadvantage or on the lower loadout (the round's `facts_id`), an isolated 1v1 is the fight the
+    principles ask for. It is never a point to improve, won or lost: dying in it is not the mistake. It can be
+    a did-well instance. Measure what was at stake with `control` for the areas around the fight, before and
+    after it: the space the winner's side gained is what the fight was worth.
 16. Before you call a fight lone, run `distance` from the player to every living teammate just before it. If a
     teammate was close and fighting in the same seconds, it was a fight the two of them took together. Judge it
     as a pair, and don't call it a lone duel or a first death taken alone. When a point is about fighting alone,
@@ -130,7 +151,12 @@ answers questions about any round. Write three things the player did well and th
     caption. So is a death to an enemy flash that blinded several of the player's team at once. Measure before the first death of the exchange. A teammate who was close and died just before the
     player was with them: never call the player alone because that teammate is already dead. Before you list a
     fight as lone, check with `timeline` whether the enemy in it killed a teammate this round: a fight on a
-    teammate's killer is a trade (rule 19), however long after that kill it came.
+    teammate's killer is a trade (rule 19), however long after that kill it came. To say the player fought with
+    a teammate, check both were on the same enemy or in the same contested area (`control`): two kills close in
+    time in different areas are not that. Count everyone in it: check the timeline for each teammate who
+    damaged those enemies within about a second, name them all, and say double or triple. When two teammates
+    a few metres apart die to the same enemy more than about a second apart, the point is the timing of the
+    swing, under trading, not positioning.
 17. An instance about a fight or a death starts about 5 seconds before the first damage, so the viewer can see
     how the player got there. Set `t` to that time and `t1` to the death or the last kill. An instance about
     utility starts about 3 seconds before the event it is credited with, not at a cast made long before: a trap
@@ -146,9 +172,16 @@ answers questions about any round. Write three things the player did well and th
 20. People need time to react. Treat what the team knew as something the player could act on about 3 seconds
     after the first sighting or signal. Before you call a rotation slow, run `where` over the next 5 seconds to
     see when the player moved. Never fault a player for where they stood at the moment the sighting came in.
+    If they were already moving, the time it takes to cross the map is not a mistake. A rotation instance needs
+    two `where` answers for the player after the knowledge arrived: if the second shows them closer to the
+    fight, they were rotating, so drop the instance. The replay has perfect information and the game does not:
+    it still has to be called. When a teammate saw something and the player had not reacted to it about 3
+    seconds later, that is a comms issue. Say that, and make the point about what the call would have opened
+    (a rotate, a flank), not about a choice the player made.
 21. Credit utility to a fight only when the data puts it there: it hit or flashed someone in the fight, or it
     was cast within a second or two of the first damage. An ability cast seconds earlier with no recorded hit
-    did not set up the kill: say the data can't show what it hit. A fight taken off a teammate's utility (a
+    did not set up the kill: say the data can't show what it hit. Run `knew` just before the utility: if the
+    team already had those enemies located, a reveal told them nothing new. A fight taken off a teammate's utility (a
     flash, or a reveal that located the enemy the player then fought) is an advantaged fight, even taken alone
     or at a man advantage. A smoke alone does not make a fight advantaged, unless the enemy pushed through a
     watched smoke: `where` puts them in the smoke and then moving into a contested area the player's side was
@@ -202,3 +235,27 @@ answers questions about any round. Write three things the player did well and th
 33. Judge a fight's guns only by what the brief's fight says the side knew: a gun the team saw or heard is
     known; an economy guess is a guess, so say "likely". Never name an enemy's gun the team had not seen or heard,
     unless it killed the player.
+34. A kill is not a did-well instance by itself. Check the next few seconds: if the player died with no trade,
+    it was a 1 for 1, and rule 15 decides whether that was good. A 1 for 1 against an eco is not. A first kill
+    taken far from the team is high risk, high reward: say both in the caption. Then run `where` for the
+    seconds after it: not taking the space the kill opened is the thing to improve.
+35. On a retake, the distance to the nearest teammate does not show whether the team went together. Run
+    `where` for the whole side and say how it was split across the ways in (2 and 2, 1 and 3). Check the
+    timeline for whether the others had started (util or damage) when the player took the fight. The spike is
+    the clock on a retake: never advise holding or waiting there. A death right after a kill, while teammates
+    were damaging the same group, is trading down into the site, not giving a 1v1.
+36. On attack, when a teammate who entered dies, run `distance` to them at that moment and `where` for the
+    player in the seconds before. If the player was well behind, the point is not following the entry. Never
+    advise waiting or regrouping there.
+37. When more than one answer fits the principles, give both: swing together or util the enemy out first,
+    rotate or peek with util or a teammate, go with the others or go once they have made contact.
+38. Judge a close angle by the gun the `fight` command gives. With a shotgun a one-and-done angle is strong. A
+    rifle can hold it too, but not as well, and is often better taking a longer fight.
+39. Judge a smoke by who it blocked. Run `where` over the seconds it stood: an enemy listing it in `util_near`
+    was at it, and so was a teammate holding it. A smoke no enemy came near blocked no one. A smoke on the
+    enemy's way in that held them up is good: enemies at it for some seconds before they came through is a
+    stalled push. It is a point to improve only when `control` shows the player's side held the smoked area
+    before it went down and the killer came through that area: the smoke gave away the side's own space.
+    `util_near` measures to a smoke's centre: never judge a smoke on that distance alone.
+40. Before judging a hold or a rotate, check `timeline` and `util_near` for the team's own trip or camera in
+    that area: space they watch does not need a body.
