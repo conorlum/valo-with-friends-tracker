@@ -232,7 +232,7 @@ guards = ["app/moments/**", "app/services/replay_moments.py", "app/static/js/mom
 [replay-format]
 about = "Reading a replay export: the contract, condensing, linking to a match, the stored format, player state and utility events."
 tests = [
-  "tests/replays/test_guns.py",
+  "tests/replays/test_guns.py", "tests/replays/test_held_names.py",
   "tests/replays/test_replay_activations.py", "tests/replays/test_replay_buffs.py", "tests/replays/test_replay_condense.py",
   "tests/replays/test_replay_contract.py", "tests/replays/test_replay_deadlock.py",
   "tests/replays/test_waiting_agent.py",
@@ -248,8 +248,9 @@ tests = [
 ]
 guards = [
   "app/replays/__init__.py", "app/replays/condense.py", "app/replays/contract.py", "app/replays/format.py",
-  "app/replays/guns.py", "app/replays/guns.json", "app/replays/gun_ranges.json",
+  "app/replays/guns.py", "app/replays/guns.json", "app/replays/gun_ranges.json", "app/replays/decay_figures.json",
   "app/replays/extras.py", "app/replays/header.py", "app/replays/link.py", "app/replays/causes.py",
+  "app/replays/held_names.py", "app/static/data/held_abilities.json", "tests/fixtures/held_ability_archetypes.txt",
   "app/replays/player_state*.py", "app/replays/status_intervals.py", "app/services/replay_impact.py",
   "scripts/make_replay_fixture.py", "scripts/ingest_replay.py", "scripts/reingest_replays.py","scripts/inspect_replay_utility.py",
   "tests/fixtures/replays/**", "tests/fixtures/replay/schema9_rows/**",
@@ -258,6 +259,7 @@ guards = [
 [replay-web]
 about = "Replays on the site: upload and held uploads, storage and links, routes, re-parse queue, match states, the viewer and its JS."
 tests = [
+  "tests/test_map_rotation.py",
   "tests/replays/test_areas_route.py",
   "tests/replays/test_replay_store.py", "tests/replays/test_replay_routes.py", "tests/replays/test_replay_upload.py",
   "tests/replays/test_replay_upload_held.py", "tests/replays/test_replay_progress.py",
@@ -266,7 +268,7 @@ tests = [
   "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py", "tests/test_fetch_archived_replay.py",
 ]
 guards = [
-  "app/services/replay_areas.py",
+  "app/services/replay_areas.py", "app/services/map_rotation.py",
   "app/replays/store.py", "app/replays/db.py", "app/routers/replays.py", "app/routers/replay_admin.py",
   "app/services/replays.py", "app/services/replay_upload.py", "app/services/replay_progress.py",
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
@@ -345,6 +347,7 @@ tests = [
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
   "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_areas_tagger_core.py",
+  "tests/replays/test_areas_tagger_rotation.py", "tests/replays/test_map_rotation_js.py",
   "tests/replays/test_control_pinned_inputs.py",
   "tests/replays/test_control_isolation.py", "tests/replays/test_control_reference.py",
   "tests/replays/test_preview_control_live.py", "tests/replays/test_freshness_memos.py",

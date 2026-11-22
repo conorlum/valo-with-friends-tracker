@@ -1,6 +1,8 @@
 """Writes and publishes one coaching report: snapshot, brief, headless Claude Code, checker, store.
 
-    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" ["<player>" ...] [--model <name>] [--dry-run | --prompt-only]
+    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_report.py <match uuid> "<player>" ["<player>" ...] [--dry-run | --prompt-only]
+
+Every run uses MODEL at EFFORT (Opus 5.5, medium); nothing changes them.
 
 Several players are coached one after another, never two at once, from one read of the match (the read takes
 about a minute); each keeps its own run directory, and one player's failure leaves the others' runs and reports
@@ -31,6 +33,10 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 TIMEOUT_S = 1800
+# Every coach run is Opus 5.5 at medium effort: the owner's rule, not a default. Left unnamed, the CLI picks its
+# own default, which switched to another model mid-batch on 2026-11-17. There is no option that changes these.
+MODEL = "claude-opus-5-5"
+EFFORT = "medium"
 MODEL_DIR = "model"   # the model's cwd holds only q; snapshot and log stay one level up, where reads are refused (probe 3g).
 
 # What the model's process may inherit. Everything else (database URL, API keys, any other secret) is dropped.
@@ -57,14 +63,13 @@ def write_q(run_dir: Path, python: Path) -> Path:
     return path
 
 
-def claude_command(exe: str, model: str | None, session: str | None) -> list[str]:
+def claude_command(exe: str, session: str | None) -> list[str]:
     """Headless Claude Code with one tool, Bash, one pre-approved command, ./q, and none of the owner's own
     setup: no user settings, hooks, plugins, skills, CLAUDE.md or MCP servers. `--allowedTools` alone only
-    pre-approves; `--tools` is what removes every other tool. Never add a flag that skips permission checks."""
+    pre-approves; `--tools` is what removes every other tool. Never add a flag that skips permission checks.
+    The model and effort are always MODEL and EFFORT, never the CLI's default (the owner's rule)."""
     command = [exe, "-p", "--output-format", "json", "--restricted", "--safe-mode", "--strict-mcp-config",
-               "--tools", "Bash", "--allowedTools", "Bash(./q:*)"]
-    if model:
-        command += ["--model", model]
+               "--tools", "Bash", "--allowedTools", "Bash(./q:*)", "--model", MODEL, "--effort", EFFORT]
     if session:
         command += ["--resume", session]
     return command
@@ -92,13 +97,13 @@ def failure_reason(done, usage: dict) -> str:
     return "; ".join(parts) or "no output"
 
 
-def claude_call(run_dir: Path, model: str | None):
+def claude_call(run_dir: Path):
     exe = find_claude()
     if exe is None:
         raise SystemExit("refused: the claude command is not on PATH")
 
     def call(text: str, session: str | None):
-        done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
+        done = subprocess.run(claude_command(exe, session), input=text, capture_output=True, text=True,
                               encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
             raise RuntimeError(f"claude exited {done.returncode}: {failure_reason(done, call.usage)}")
@@ -197,7 +202,6 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("match_uuid")
     parser.add_argument("players", nargs="+", metavar="player")
-    parser.add_argument("--model")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--prompt-only", action="store_true",
@@ -206,12 +210,16 @@ def main() -> int:
     from app.coach import playbook, snapshot
     from app.db import SessionLocal
     from scripts import _admin_client
-    from scripts.coach_store_report import resolve
+    from scripts.coach_store_report import on_roster, resolve
 
     try:
         uuid = str(uuid_module.UUID(args.match_uuid))
     except ValueError:
         print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
+        return 2
+    off = [name for name in args.players if not on_roster(name)]
+    if off:     # before any database, model or run-directory work: the whole batch, like a wrong name
+        print(f"refused: not on the roster (scripts/tracked_players.json): {', '.join(off)}", file=sys.stderr)
         return 2
     if not args.prompt_only and find_claude() is None:      # before any database or run-directory work
         print("refused: the claude command is not on PATH", file=sys.stderr)
@@ -304,13 +312,12 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
         path.write_text(text, encoding="utf-8")
         print(f"{path}\n{len(text)} characters")
         return 0
-    call = claude_call(run_dir, args.model)
+    call = claude_call(run_dir)
     usage_entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "match": uuid,
-                   "player_id": player_id, "player": player, "model": args.model or "default",
+                   "player_id": player_id, "player": player, "model": f"{MODEL} ({EFFORT})",
                    "outcome": "failed", "usage": call.usage}
     try:
-        payload = runner.generate(snap, slot, run_dir, book, call,
-                                  args.model or "claude-code (default model)")
+        payload = runner.generate(snap, slot, run_dir, book, call, MODEL)
         usage_entry["outcome"] = "generated"
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
@@ -323,7 +330,7 @@ def run_player(args, uuid: str, book, player: str, match_id: int, player_id: int
                 merge_usage(args.usage_total, call.usage)
     if call.denials:
         print(f"the model tried {call.denials} command(s) it is not allowed and was refused", file=sys.stderr)
-    if not args.model and call.models:
+    if call.models:
         payload["model"] = ", ".join(sorted(call.models))[:64]      # what the CLI says it actually used
     # Written before anything is stored: a report that cost a model run is never lost to a failed store.
     (run_dir / "payload.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")

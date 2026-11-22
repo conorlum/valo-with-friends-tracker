@@ -18,6 +18,34 @@ HALF_S = 3.5            # an unfinished defuse attempt this long (as displayed, 
 SPIKE_TIMER_S = 45.0    # the spike's fuse, from plant to detonation
 _UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
+_UNPLACED = ("Projectile", "Bomb")      # a throw's u/v is the thrower's own place; the spike has its own events
+_PULSES = ("ConcussPulse",)             # stored with no end though each lasts a moment: never "still standing"
+# Bookkeeping objects stored beside the util they manage, with their own span: Brimstone's smoke manager outlives
+# its smokes (a Summit round: smoke 7.26-28.0, manager to 49.1), so it is never util standing anywhere.
+_MANAGERS = ("4_SmokeManager_Production",)
+
+
+def _placed(e: dict) -> bool:
+    """An ability that came to rest somewhere: a smoke, a wall, a trip, a camera, a cage, a molly."""
+    return (e.get("k") == "ability" and e.get("kind") is not None and e["kind"] not in _UNPLACED
+            and e.get("name") not in _PULSES + _MANAGERS and e.get("u") is not None and e.get("v") is not None)
+
+
+def _placed_end(e: dict) -> float:
+    """When a placed ability stopped standing: its stored end, or earlier when it was shot (`gone`). None of
+    either means it stood to the round's end."""
+    ends = [float(x) for x in (e.get("t1"), e.get("gone")) if x is not None]
+    return min(ends) if ends else math.inf
+
+
+def _placed_at(e: dict, t: float) -> tuple[float, float, float | None]:
+    """Where a placed ability was at `t`: the last sample of its stored path (a camera, a moving pawn) at or before
+    `t`, else its own u/v."""
+    path = [p for p in e.get("path") or () if len(p) >= 3 and p[0] <= t]
+    if path:
+        p = path[-1]
+        return p[1], p[2], (p[3] if len(p) > 3 else e.get("z"))
+    return e["u"], e["v"], e.get("z")
 
 
 class RoundView:
@@ -186,6 +214,11 @@ class RoundView:
             ability = e.get("name") or e.get("code") or e.get("ability")
             if ability:
                 row["ability"] = ability
+            if _placed(e):
+                u, v, z = _placed_at(e, e["t"])
+                row["area"] = self.area(u, v, z)
+                if _placed_end(e) != math.inf:
+                    row["until"] = _placed_end(e)
             if e.get("hits") is not None:
                 proof = e.get("activation") or {}
                 row["hits"] = [{"name": self.names.get(h[0]), "seconds": h[2] if len(h) > 2 else None}
@@ -198,6 +231,17 @@ class RoundView:
         """Devices shot before anything set them off (app/replays/destroyed.py), sorted by time: t, owner slot, side,
         device, u, v, z, id. Only devices that were gone before the round was decided."""
         return destroyed_devices(self.blob.get("util") or (), self._side, self.t_decided)
+
+    def placed_util(self, t: float) -> list[dict]:
+        """The placed util standing at `t`, each `{"event", "u", "v", "until"}` with its place at `t`; `until` is None
+        when it stood to the round's end."""
+        out = []
+        for e in self.blob.get("util", []):
+            if _placed(e) and e["t"] <= t < _placed_end(e):
+                u, v, _ = _placed_at(e, t)
+                end = _placed_end(e)
+                out.append({"event": e, "u": u, "v": v, "until": None if end == math.inf else end})
+        return out
 
     def damage(self) -> list[dict]:
         return [{"t": e["t"], "kind": "damage", "by": self.names.get(e.get("by")),

@@ -32,39 +32,61 @@
         <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
                 aria-label="Minimap"></canvas>
         <div class="replay-tip" data-replay-tip hidden></div>
-        <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>
+        <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>{% if linked and control %}
+        {# The control bar: each team's share of the floor now, like a chess evaluation bar (replay.js renderCtlBar). #}
+        <div class="replay-ctlbar" data-replay-ctlbar role="img" hidden>
+          <span class="replay-ctlbar-t2" data-ctlbar-t2></span><span class="replay-ctlbar-mid" data-ctlbar-mid></span><span class="replay-ctlbar-t1" data-ctlbar-t1></span>
+          <span class="replay-ctlbar-num is-top" data-ctlbar-n2></span><span class="replay-ctlbar-num is-bottom" data-ctlbar-n1></span>
+        </div>{% endif %}
       </div>{% if replay_data is defined and replay_data.match.layout is defined %}{% if replay_data.match.layout.state == "layout_pending" %}
       <p class="replay-note">The map changed in {{ replay_data.match.layout.patch }}; this replay's map control is out of date until it is redrawn</p>{% elif replay_data.match.layout.state == "layout_unknown" %}
       <p class="replay-note">This replay's patch is unknown and the map has several layouts; map control is not shown</p>{% endif %}{% endif %}
       <div class="replay-controls">
+        <button type="button" class="replay-button" data-replay-prev>Previous round</button>
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
         <button type="button" class="replay-button" data-replay-prevkill title="Jump to 1 s before the previous kill (B)">Previous kill</button>
         <button type="button" class="replay-button" data-replay-nextkill title="Jump to 1 s before the next kill (N)">Next kill</button>
         <label class="replay-speed">Speed <select data-replay-speed></select></label>
         <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
         <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
+        <button type="button" class="replay-button" data-replay-next>Next round</button>
       </div>
       <div class="replay-scrub-wrap">
         <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
         <div class="replay-ticks" data-replay-ticks aria-hidden="true"></div>
       </div>
       <div class="replay-rounds" role="group" aria-label="Rounds">
-        <button type="button" class="replay-button" data-replay-prev aria-label="Previous round">&larr;</button>
         <div class="replay-strip" data-replay-strip></div>
-        <button type="button" class="replay-button" data-replay-next aria-label="Next round">&rarr;</button>
       </div>
       {% if linked %}
       <fieldset class="replay-layers">
         <legend>Show</legend>
+        {# Presets of everything below (replay.js viewPreset); changing anything shows Custom. #}
+        <label class="replay-preset">View
+          <select data-replay-preset aria-label="Show bar preset">
+            <option value="team-1">Blue team</option>
+            <option value="team-2">Red team</option>
+            <option value="all">All</option>
+            <option value="custom" selected>Custom</option>
+          </select></label>
         <label><input type="checkbox" data-replay-layer="names" checked> Names</label>
         <label><input type="checkbox" data-replay-layer="abilities" checked> Abilities</label>
         <label><input type="checkbox" data-replay-layer="projectiles" checked> Projectiles</label>
         <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
         <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+        <label><input type="checkbox" data-replay-layer="aim" checked> Aim lines</label>
         {% if not demo_mode %}<label><input type="checkbox" data-replay-layer="areas"> Areas</label>{% endif %}
         {% if feature_label %}<label><input type="checkbox" data-replay-layer="features" checked> {{ feature_label }}</label>{% endif %}
         {% if control %}
         <label><input type="checkbox" data-replay-layer="control"> Map control</label>
+        <label class="replay-control-view" data-replay-control-palette-wrap hidden>Palette
+          <select data-replay-control-palette aria-label="Map control colours">
+            <option value="green-red" selected>Green/Red</option>
+            <option value="blue-orange">Blue/Orange</option>
+            <option value="purple-yellow">Purple/Yellow</option>
+            <option value="teal-coral">Teal/Coral</option>
+          </select></label>
+        <label class="replay-control-view" data-replay-control-borders-wrap hidden><input type="checkbox" data-replay-control-borders checked> Borders</label>
         <label class="replay-control-view" data-replay-control-view-wrap hidden>as
           <select data-replay-control-view aria-label="Whose picture of the round">
             <option value="true" selected>the true positions</option>
@@ -78,6 +100,7 @@
             <option value="B" data-unknown-group="B">side B's</option>
             <option value="off">off</option>
           </select></label>
+        <label><input type="checkbox" data-replay-layer="bar" checked> Control bar</label>
         {% if not control.cover_reviewed %}<span class="replay-control-badge" title="This map's boxes and crates aren't tagged yet: sight passes through them, so control near them is too generous.">cover not reviewed</span>{% endif %}
         <span class="replay-control-status" data-replay-control-status aria-live="polite"></span>
         {% endif %}
@@ -93,7 +116,7 @@
         <span class="replay-key replay-key-ctl-passive">Seen (passive)</span>
         <span class="replay-key replay-key-ctl-contested">Contested (both teams)</span>
         <span class="replay-key replay-key-ctl-unknown">Unknown (an enemy could be here; hatched in the enemy's colour)</span>
-        <span class="replay-control-legend-note">Team colours as the players. Control is computed from true positions.</span>
+        <span class="replay-control-legend-note">Palette colours follow Team 1 / Team 2. Control is computed from true positions.</span>
       </p>
       {% endif %}
       {% if gaps %}
@@ -121,7 +144,8 @@
         <span class="replay-key replay-key-t2">Team 2</span>
         <span class="replay-key replay-key-smoke">Smoke</span>
         <span class="replay-key replay-key-area">Effect area</span>
-        <span class="replay-key replay-key-badge">Utility (its icon, in the owner's team colour; grey = owner unknown)</span>
+        <span class="replay-key replay-key-badge">Utility: its icon on a dark disc, in the agent's colour; the ring is its side (the palette's colours); grey = owner down or unknown</span>
+        <span class="replay-key replay-key-side">Ring: side</span>
         <span class="replay-key replay-key-spike">Spike</span>
         <span class="replay-key replay-key-status">Status on a player (named above them)</span>
         {% else %}

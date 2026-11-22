@@ -5,9 +5,129 @@ import pytest
 
 from app.coach import query, runner, snapshot
 from app.coach.playbook import Playbook
-from scripts import coach_report
+from scripts import coach_report, coach_store_report
 from tests.coach import toys
 from tests.coach.test_snapshot import CONTEXT
+
+OFF_ROSTER = "Random#0"
+_REAL_ON_ROSTER = coach_store_report.on_roster
+
+
+@pytest.fixture(autouse=True)
+def _roster(monkeypatch):
+    """Every toy player is on the roster except OFF_ROSTER: the real file holds the owner's friends."""
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name != OFF_ROSTER)
+
+
+@pytest.fixture
+def held_death_run(tmp_path, request):
+    from copy import deepcopy
+    from app.coach import checker
+    from tests.coach.test_fights import hold
+
+    context = deepcopy(CONTEXT)
+    context["players"]["0"]["agent"] = "Cypher"
+    items = {
+        3: {"gun": "Vandal", "cat": "rifle"},
+        5: {"gun": None, "cat": "ability", "code": "Gumshoe", "key": "E", "name": "Camera"},
+        6: {"gun": "Knife", "cat": "melee"},
+        7: {"gun": None, "cat": "ability", "code": None, "key": None, "name": "Overdrive"},
+        8: {"gun": "Knife", "cat": "melee", "item": "unarmed"},
+    }
+    items.update(getattr(request, "param", {}))
+    context["match"]["rounds"] = sorted(items)
+    context["rounds"] = {str(n): {"db": {}, "stats": {}, "kills": {}} for n in items}
+    blobs = {}
+    for n, item in items.items():
+        util = [hold(0, "Knife" if n == 6 else "Vandal"),
+                {"k": "hold", "by": 0, "t": 8, **item},
+                *({"k": "damage", "t": 5, "t1": 5, "by": 0, "target": enemy,
+                   "src": "gun", "n": 1} for enemy in (5, 6))]
+        blobs[n] = toys.round_blob(toys.ten(), n=n, util=util, kills=[
+            {"t": 7, "killer": 0, "victim": 5}, {"t": 9, "killer": 6, "victim": 0}])
+    snapshot.save(snapshot.assemble(context, blobs, {n: ("ok", False, SHARES) for n in items}), tmp_path / "snap")
+    snap = snapshot.load(tmp_path / "snap")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    built, logged = runner._brief_with_flag_ids(snap, 0, run_dir)
+    for n in items:
+        query.run(snap, run_dir, "knew", [str(n), "9", "A"])
+    log = checker.trusted_log(query.read_log(run_dir), snap, logged)
+    return snap, built, log
+
+
+def test_no_gun_deaths_entries_cite_each_lost_fights_id_by_index(held_death_run):
+    _, built, log = held_death_run
+    rounds = {r["round"]: r for r in built["rounds"]}
+    assert built["no_gun_deaths"]["count"] == 4
+    for entry in built["no_gun_deaths"]["deaths"]:
+        won, lost = rounds[entry["round"]]["fights"]
+        assert won["t0"] == lost["t0"] == 5
+        assert entry["fight"] == 1
+        assert entry["id"] == lost["id"] != won["id"]
+        assert log[entry["id"]]["result"]["death"]["out_at_death"] == entry["item"]
+    assert all(e["result"].get("kind") != "no_gun_deaths" for e in log.values())
+
+
+@pytest.mark.parametrize("round_n,cited_round,index,text,accepted", [
+    (5, 5, 1, "You died with your Spycam out.", True),
+    (5, 3, 1, "You died with your Spycam out.", False),
+    (3, 3, 1, "You died with your Spycam out.", False),
+    (6, 6, 1, "You died with your Spycam out.", False),
+    (5, 5, 0, "You died with your Spycam out.", False),
+    (6, 6, 1, "You died with your knife out.", True),
+    (7, 7, 1, "You died with your Overdrive out.", True),
+    (8, 8, 1, "You died unarmed.", True),
+    (8, 8, 1, "You died with nothing in your hands.", True),
+    (6, 6, 1, "You died unarmed.", False),
+    (6, 6, 1, "You died with nothing in your hands.", False),
+    (5, 5, 1, "You had the sPyCaM out.", True),
+])
+def test_held_death_claims_require_the_cited_lost_fights_item(
+        held_death_run, round_n, cited_round, index, text, accepted):
+    from app.coach import checker
+
+    snap, built, log = held_death_run
+    fight = next(r for r in built["rounds"] if r["round"] == cited_round)["fights"][index]
+    knew = next(key for key, e in log.items() if e["cmd"] == "knew" and int(e["args"][0]) == round_n)
+    point = {"polarity": "improve", "theme": "trading", "title": "Weapon choice", "body": text,
+             "instances": [{"round": round_n, "t": 9, "caption": "At the fight.",
+                            "evidence": [fight["id"], knew]}]}
+    errors = checker.check_point(point, log, snap, BOOK.themes, 0)
+    assert (errors == []) is accepted, errors
+    if cited_round != round_n:
+        assert any("not round 5" in error for error in errors)
+
+
+@pytest.mark.parametrize("held_death_run", [{3: {"gun": "Knife", "cat": "melee"}}], indirect=True)
+@pytest.mark.parametrize("section", ["title", "body"])
+def test_shared_held_death_claim_uses_all_cited_rounds_but_captions_stay_local(held_death_run, section):
+    from app.coach import checker
+
+    snap, built, log = held_death_run
+    instances = []
+    for n in (3, 5):
+        fight = next(r for r in built["rounds"] if r["round"] == n)["fights"][1]
+        knew = next(key for key, e in log.items() if e["cmd"] == "knew" and int(e["args"][0]) == n)
+        instances.append({"round": n, "t": 9, "caption": "At the fight.", "evidence": [fight["id"], knew]})
+    point = {"polarity": "improve", "theme": "trading", "title": "Weapon choice",
+             "body": "Keep a gun ready.", "instances": instances}
+    point[section] = "You died with your knife out in round 3 and with your Spycam out in round 5."
+    assert checker.check_point(point, log, snap, BOOK.themes, 0) == []
+
+    point[section] = "You died with your Spycam out."
+    assert checker.check_point(point, log, snap, BOOK.themes, 0) == []
+    point[section] = "You died with your Overdrive out and with your Overdrive out."
+    errors = checker.check_point(point, log, snap, BOOK.themes, 0)
+    assert len(errors) == 1 and "overdrive" in errors[0]
+
+    point["title"] = "Weapon choice"
+    point["body"] = "Keep a gun ready."
+    instances[0]["caption"] = "You died with your Spycam out."
+    errors = checker.check_point(point, log, snap, BOOK.themes, 0)
+    assert len(errors) == 1 and "instance 1" in errors[0] and "round 3" in errors[0]
+    instances[0]["caption"] = "You died with your knife out."
+    assert checker.check_point(point, log, snap, BOOK.themes, 0) == []
 
 
 def test_fight_facts_are_logged_with_trusted_ids(snap, tmp_path):
@@ -200,15 +320,26 @@ def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, m
 
 
 def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
-    command = coach_report.claude_command("claude", None, None)
+    command = coach_report.claude_command("claude", None)
     assert command[:4] == ["claude", "-p", "--output-format", "json"]
     for flag in ("--restricted", "--safe-mode", "--strict-mcp-config"):
         assert flag in command
     assert command[command.index("--tools") + 1] == "Bash"
     assert command[command.index("--allowedTools") + 1] == "Bash(./q:*)"
     assert not any("skip" in part or "bypass" in part.lower() for part in command)
-    resumed = coach_report.claude_command("claude", "opus", "session-1")
-    assert resumed[-4:] == ["--model", "opus", "--resume", "session-1"]
+    resumed = coach_report.claude_command("claude", "session-1")
+    assert resumed[-2:] == ["--resume", "session-1"]
+
+
+def test_every_run_is_opus_at_medium_effort_and_nothing_changes_it():
+    # The owner's rule: never the CLI's default model, which switched mid-batch on 2026-11-17.
+    assert (coach_report.MODEL, coach_report.EFFORT) == ("claude-opus-5-5", "medium")
+    for session in (None, "session-1"):
+        command = coach_report.claude_command("claude", session)
+        assert command.count("--model") == 1 and command[command.index("--model") + 1] == "claude-opus-5-5"
+        assert command.count("--effort") == 1 and command[command.index("--effort") + 1] == "medium"
+    from scripts import coach_team
+    assert "--model" not in coach_team.report_command("abc", ["A#1"], None)
 
 
 def test_the_models_environment_is_an_allow_list():
@@ -241,7 +372,7 @@ def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", fake_run)
     (tmp_path / "model").mkdir()
-    assert coach_report.claude_call(tmp_path, None)("x", None) == ("hi", "s")
+    assert coach_report.claude_call(tmp_path)("x", None) == ("hi", "s")
     assert seen["cwd"] == tmp_path / "model"
 
 
@@ -265,7 +396,7 @@ def test_usage_is_summed_over_every_call_of_a_run(tmp_path, monkeypatch):
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
     (tmp_path / "model").mkdir()
-    call = coach_report.claude_call(tmp_path, None)
+    call = coach_report.claude_call(tmp_path)
     call("first", None)
     call("repair", "s")
     usage = call.usage
@@ -290,7 +421,7 @@ def test_a_failed_call_says_why_from_stdout_and_counts_its_usage(tmp_path, monke
     monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(coach_report.subprocess, "run", lambda command, **kw: Done())
     (tmp_path / "model").mkdir()
-    call = coach_report.claude_call(tmp_path, None)
+    call = coach_report.claude_call(tmp_path)
     with pytest.raises(RuntimeError, match="api_error_status=429.*rate limited"):
         call("x", None)
     assert call.usage["calls"] == 1 and call.usage["cost_usd"] == pytest.approx(0.1)
@@ -337,7 +468,7 @@ def test_a_failed_run_still_records_its_usage(tmp_path, monkeypatch, capsys):
         coach_report.add_usage(call.usage, _cli_out(0.4, 7, 50))
         raise runner.RunError("no json")
 
-    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir: call)
     monkeypatch.setattr(runner, "generate", generate)
     monkeypatch.setattr(coach_report, "record_usage", lambda run_dir, entry, log=None: logged.append(entry))
     assert coach_report.main() == 1
@@ -551,7 +682,7 @@ def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monke
 
     call.denials, call.models, call.usage = 0, set(), coach_report.new_usage()
     monkeypatch.setattr(app.db, "SessionLocal", Db)
-    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir: call)
     monkeypatch.setattr(runner, "generate", lambda *args: payload())
     monkeypatch.setattr(coach, "store_report", lambda db, match_id, player_id, body: Report(db))
     assert coach_report.main() == 0
@@ -578,19 +709,49 @@ def _team(monkeypatch, argv, results):
 
 
 def test_the_team_command_hands_every_teammate_to_one_report_process(monkeypatch):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--dry-run"], {})
     assert coach_team.main() == 0
-    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--model", "opus",
-                                                 "--dry-run"]]
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Friend#2", "Third#3", "--dry-run"]]
     assert ran[0][1].endswith("coach_report.py")
     with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
         monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
+        coach_team.main()
+    with pytest.raises(SystemExit):                 # and no option that picks another model
+        monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--model", "sonnet"])
         coach_team.main()
 
 
 def test_the_team_command_passes_the_report_process_failure_on(monkeypatch):
     coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Owner#1": 1})
     assert coach_team.main() == 1 and len(ran) == 1
+
+
+def test_the_team_command_gives_a_teammate_off_the_roster_no_run(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
+    monkeypatch.setattr(coach_store_report, "on_roster", lambda name: name != "Friend#2")
+    assert coach_team.main() == 0
+    assert [command[2:] for command in ran] == [["abc", "Owner#1", "Third#3"]]
+    assert "not on the roster, no run: Friend#2" in capsys.readouterr().out
+
+
+def test_the_team_command_refuses_a_player_off_the_roster(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", OFF_ROSTER], {})
+    assert coach_team.main() == 2 and ran == []
+    assert "not on the roster" in capsys.readouterr().err
+
+
+def test_a_player_off_the_roster_refuses_the_batch_before_anything_is_read(tmp_path, monkeypatch, capsys):
+    _wire(monkeypatch, tmp_path, ["ABCDEF12-0000-4000-8000-000000000000", "0", OFF_ROSTER], make_data())
+    monkeypatch.setattr(snapshot, "read", lambda *a, **kw: pytest.fail("the match must not be read"))
+    assert coach_report.main() == 2
+    assert OFF_ROSTER in capsys.readouterr().err and not (tmp_path / "valo-coach").exists()
+
+
+def test_the_roster_is_the_tracked_players_file_whatever_the_case(tmp_path, monkeypatch):
+    roster = tmp_path / "tracked_players.json"
+    roster.write_text(json.dumps(["Owner#NA1", "Friend#2"]), encoding="utf-8")
+    monkeypatch.setattr(coach_store_report, "ROSTER", roster)
+    assert _REAL_ON_ROSTER(" owner#na1 ") and _REAL_ON_ROSTER("FRIEND#2") and not _REAL_ON_ROSTER("Stranger#9")
 
 
 # --- several players in one coach_report.py: one read of the match, the runs one after another ---

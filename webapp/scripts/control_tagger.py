@@ -81,6 +81,7 @@ from app.replays import choke_assets  # noqa: E402
 from app.replays import height_inputs  # noqa: E402
 from app.replays import map_feature_schema as ms  # noqa: E402
 from app.replays import map_feature_inputs as fi  # noqa: E402
+from app.services.map_rotation import quarter_turns  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "control_tagger.template.html"
@@ -249,6 +250,7 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
     maps = {name: map_data(name, (tags.get("maps") or {}).get(name) or {}, lines_by_map.get(name) or [])
             for name in names}
     for name in maps:
+        maps[name]["rotation"] = quarter_turns(name)
         maps[name]["chokes"] = choke_data(name)
     for name, rows in (starts or {}).items():
         if name in maps:   # [1 attack | 0 defense, x px, y px]

@@ -132,7 +132,7 @@ def test_identity_only_selected_agent_and_idempotent(identity_case, capsys):
     for path in before.keys() - set(TABLES):
         assert after[path] == before[path]
     output = capsys.readouterr().out
-    for item in ("ULT_COST", "abilities_seed.json", "objects", "agents.json", "constants.py"):
+    for item in ("ULT_COST", "UTIL_AGENT_COLORS", "abilities_seed.json", "objects", "agents.json", "constants.py"):
         assert item in output
     assert newagent.main(args) == 0
     assert snapshot(root) == after

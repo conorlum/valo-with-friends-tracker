@@ -10,7 +10,7 @@ def test_prompt_explains_citable_fights_and_gun_knowledge():
     text = prompt.run_prompt(BOOK, BRIEF)
     assert "./q fight <round> <seconds> <player>" in text
     for word in ('"fights"', '"id"', "held", "shots", "metres", "range", "lone", "known",
-                 "econ_guess", "likely", "death", "picked_up", "kills_with"):
+                 "econ_guess", "likely", "death", "picked_up", "kills_with", "out_at_death", "no_gun_deaths"):
         assert word in text
 
 

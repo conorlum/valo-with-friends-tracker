@@ -100,7 +100,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # only (DAMAGE_ZONE_LIFE_S). New constants only, so 24's digest stands without them.
           25: "a0c40ddf4d8213f3",
           # 26 (2026-11-15): side-wide one_of knowledge, Hush's Suspension hit feedback and radius.
-          26: "49348445456575af"}
+          26: "49348445456575af",
+          # 27 (2026-11-18): plant attempt starts reuse spike taps; constants are unchanged from 26.
+          27: "49348445456575af"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move

@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 
 COMMANDS = """\
-./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
+./q where <round> <t>                      every player's position, area, facing, role, health, whether alive, and the placed util standing near them
 ./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), signals that found or roughly placed an enemy (class and rough direction/distance), ruled_out (time, name, reason, optional pulse-device area), lost_track (time, name, reason)
 ./q distance <round> <t> <player> <player> metres between two living players, and how far each faced off the other (degrees)
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
-./q timeline <round> [<t0> <t1>]           kills, damage, utility, the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
+./q timeline <round> [<t0> <t1>]           kills, damage, utility (placed util with its area and how long it stood), the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
 ./q fight <round> <seconds> <player>       the player's fight containing that time or nearest within 3 s
 ./q impact <round> <player>                the player's stored Impact row for the round"""
 
@@ -56,6 +56,7 @@ so say "likely". The "death" facts give the dropped gun, the killer's gun at the
 the dropped gun was better. "picked_up" gives who took it and when, and "kills_with" counts their later kills
 with that gun. Each fight has an "id" to cite. Distances in improve points require sight at the fight's geometry
 time "g", including just before a one-shot kill.
+"out_at_death" says what the player had out when they died, "no_gun_deaths" tallies those deaths with each fight's id; a point about them cites those fight ids.
 
 How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
 a clock time, 0:41); each must be in an answer you cite for that instance. Ground a named area with a cited

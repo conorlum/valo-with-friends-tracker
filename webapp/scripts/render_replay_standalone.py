@@ -40,6 +40,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E40
 from app.replays import format as fmt  # noqa: E402
 from app.replays.condense import condense_export_dir  # noqa: E402
 from app.replays.contract import ContractError  # noqa: E402
+from app.services import map_rotation  # noqa: E402
 
 APP = WEBAPP_ROOT / "app"
 
@@ -98,8 +99,20 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     icons = {a: data_uri(APP / "static" / "img" / "agents" / f"{agent_icon_name(a)}.png") for a in agents}
     payload = {"rounds": {str(n): blob for n, blob in blobs.items()},
                "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons,
+               # walls for aim lines and tracers, inlined like the map (None without the asset)
+               "sight": data_uri(APP / "static" / "data" / "control" / f"{map_name}.sight.png"),
                # the tracer's obstacles, inlined like the map (None for a map without the asset)
                "bullet": data_uri(APP / "static" / "data" / "control" / f"{map_name}.bullet.png")}
+    payload["rotation"] = map_rotation.quarter_turns(map_name)
+    # Keep the original URLs: abilitySlots derives C/Q/E/X from their file names.
+    payload["abilityIcons"] = json.loads((APP / "static/data/abilities.json").read_text(encoding="utf-8"))
+    payload["gunIcons"] = json.loads((APP / "static/data/weapons.json").read_text(encoding="utf-8"))
+    payload["arenaRoom"] = json.loads((APP / "static/data/arena.json").read_text(encoding="utf-8"))
+    payload["heldAbilities"] = json.loads((APP / "static/data/held_abilities.json").read_text(encoding="utf-8"))
+    urls = set(payload["gunIcons"].values())
+    for kit in payload["abilityIcons"].values():
+        urls.update(kit.values())
+    payload["assets"] = {url: data_uri(APP / url.removeprefix("/")) for url in sorted(urls)}
     if linked:
         payload["site"] = site["context"]
         payload["control"] = site["control"] if control else {}
@@ -143,7 +156,14 @@ __SCRIPT__
     var site = data.site, match = site ? site.match : null;
     var options = {
       rounds: rounds,
+      rotation: data.rotation || 0,
       mapImage: data.map,
+      sightMask: data.sight || null,
+      abilityIcons: data.abilityIcons,
+      gunIcons: data.gunIcons,
+      arenaRoom: data.arenaRoom,
+      heldAbilities: data.heldAbilities,
+      assetUrl: function (url) { return data.assets[url] || url; },
       bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },
       loadRound: function (n) {

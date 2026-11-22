@@ -109,7 +109,7 @@ from app.control import utility
 from app.control import stance
 from app.control.stance import Stance, stance_at
 from app.control.routes import RouteLog
-from app.replays import choke_assets, destroyed
+from app.replays import choke_assets, destroyed, player_state
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
@@ -214,12 +214,11 @@ DAMAGE_ZONE_LIFE_S = {"Hunter_4_ExplosiveBolt_Explosion": 0.4}
 # Suppression turns off its target's placed devices (revision 25): Cypher's trips and camera, Killjoy's turret and
 # alarmbot, Chamber's trap. Besides KAY/O's `suppressed` statuses, these suppress (wiki, 2026-11-14): Undercut, for
 # its Fragile's 4 s (its `fragile` status row); Tejo's Stealth Drone pulse, for 8 s from its reveal row; and Iso's Kill
-# Contract, both duellists while in its arena. The arena is off the map: their tracks sit at z ~ -499 m from 1.33 s
-# after the cast (17 of 17 catching casts in four live matches), so a track below ARENA_Z_M is in it.
+# Contract, both duellists while in its arena (the shared arena line in app.replays.format).
 SUPPRESSED_DEVICE_KINDS = ("trip", "camera", "turret", "area")
 SUPPRESSING_STATUS_ROWS = ("Sequoia_Q_FragileMissile_TrajectoryWarning",)
 SUPPRESSING_REVEAL_S = {"Cashew_4_SonarPing": 8.0}
-ARENA_Z_M = -250.0
+from app.replays.format import ARENA_Z_M  # noqa: E402,F401 - keep the public control constant
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
@@ -487,8 +486,8 @@ class RoundInputs:
         # locating events (timing gaps, section 4)
         self.planter: tuple[float, int] | None = None     # (time, slot) of the plant, when its owner is known
         self.shots: list[tuple[float, int, str | None]] = []                 # (t, by, gun)
-        # Anonymous sounds of revision 18 (2026-10-18): a defuse attempt starting ("tap", from the planted spike's
-        # `defuses`) and an ult orb taken ("orb", player_state `orbs`, condenser revision 19). (t, by, kind).
+        # Anonymous sounds (t, by, kind): a defuse start or, from revision 27, a plant attempt's start ("tap",
+        # spike `defuses` or player_state `plants`), and an ult orb capture ("orb", player_state `orbs`).
         self.sounds: list[tuple[float, int, str]] = []
         # Revision 24 also gathers anonymous device destructions; their area starts at the device.
         self.destroyed_places: dict[tuple[float, int, str], tuple[int | tuple[int, ...], float, float]] = {}
@@ -719,6 +718,12 @@ class RoundInputs:
             heard += [(float(t), int(slot)) for t, _, slot in orb.get("tries") or []]
             # Only what sounds in the round: a buy-phase capture's sounds are before 0 s, and never moved to it.
             self.sounds += [(t, slot, "orb") for t, slot in heard if t >= 0.0]
+        plants = state.get("plants") if isinstance(state, dict) else None
+        for entry in plants if isinstance(plants, list) else []:
+            attempt = player_state.plant_entry(entry)
+            if attempt is not None and attempt[0] >= 0.0:
+                t, _, slot = attempt
+                self.sounds.append((float(t), int(slot), "tap"))
         self._blinds(util)
         self._mollies(util)
         if not any(e.get("k") == "damage" for e in util):
@@ -843,7 +848,8 @@ class RoundInputs:
     def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
         """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
         `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun), `tap`, `orb`,
-        `trip_destroyed` and `camera_destroyed` (None, with device places keyed by time, slot, kind)."""
+        `trip_destroyed` and `camera_destroyed` (None, with device places keyed by time, slot, kind).
+        A `tap` is a defuse start or a plant attempt's start (revision 27)."""
         if self._by_slot is None:
             rows: dict[int, list[tuple]] = defaultdict(list)
             for te, killer, victim in self.kills:

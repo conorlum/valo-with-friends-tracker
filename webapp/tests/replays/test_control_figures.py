@@ -102,7 +102,10 @@ def test_the_revisions_of_this_release():
     # Control 25: every placed device is off while its owner is suppressed (Undercut, Tejo's drone and Kill Contract's
     # arena suppress too), and a Shock Bolt contests for its blast only.
     # Control 26: side-wide one_of knowledge from Hush's Suspension hit feedback.
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (31, 26)
+    # Control 27: each spike plant attempt's start is heard as a spike tap.
+    # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
+    # CONDENSE 32 also: overheal and combined decay timelines (R9).
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (32, 27)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 6, "mixed ground gap consumers"
 
 

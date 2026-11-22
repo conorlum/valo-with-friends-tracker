@@ -43,6 +43,7 @@
   :root { --feat: #4cc9f0; --featsel: #ffffff; --trig: #f72585; --route: #b5e48c; }
   .stage { overflow: hidden; position: sticky; top: 8px; }   /* the map stays in view while the panel scrolls */
   #zoom { position: absolute; inset: 0; transform-origin: 0 0; }
+  #mapRotation { position: absolute; inset: 0; transform-origin: 50% 50%; }
   #feat { pointer-events: none; }
   .stage.features #feat { pointer-events: auto; cursor: crosshair; }
   .stage.features #overlay { pointer-events: none; }
@@ -106,12 +107,14 @@
 <main>
   <div class="stage" id="stage">
     <div id="zoom">
+      <div id="mapRotation">
       <canvas id="base" width="1024" height="1024"></canvas>
       <canvas id="heightOverlay" width="1024" height="1024" aria-hidden="true" style="pointer-events:none" hidden></canvas>
       <canvas id="tint" width="1024" height="1024"></canvas>
       <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
       <canvas id="feat" width="1024" height="1024" aria-label="Map features: draw, select and link features"></canvas>
       <canvas id="areasCanvas" width="1024" height="1024" aria-label="Map areas: paint, erase or fill walk cells"></canvas>
+      </div>
     </div>
     <canvas id="featLabels" width="1024" height="1024" style="pointer-events:none" aria-hidden="true"></canvas>
   </div>
@@ -481,8 +484,11 @@
     return maps[name];
   }
 
+  function turns() { return DATA.maps[state.map].rotation || 0; }
+
   function selectMap(name) {
     state.map = name; state.selected = 0; state.choke = 0; pending = new Uint8Array(G * G);
+    $("mapRotation").style.transform = "rotate(" + (90 * turns()) + "deg)";
     var map = ensureMap(name);
     state.byId = {};
     map.candidates.forEach(function (c) { state.byId[c.id] = c; });
@@ -601,8 +607,10 @@
         sx += cx + CELL / 2; sy += cy + CELL / 2;
       });
       sx /= c.cells.length; sy /= c.cells.length;
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeText(c.name, sx, sy - 12);
-      ctx.fillStyle = sel ? "#ffffff" : "#ffcf99"; ctx.fillText(c.name, sx, sy - 12);
+      ctx.save(); ctx.translate(sx, sy); ctx.rotate(-turns() * Math.PI / 2);
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeText(c.name, 0, -12);
+      ctx.fillStyle = sel ? "#ffffff" : "#ffcf99"; ctx.fillText(c.name, 0, -12);
+      ctx.restore();
     });
   }
 
@@ -752,8 +760,8 @@
   }
 
   function toMap(e) {
-    var r = $("overlay").getBoundingClientRect();
-    return [(e.clientX - r.left) / r.width * PX, (e.clientY - r.top) / r.height * PX];
+    var p = T.pointerToMap($("overlay").getBoundingClientRect(), e.clientX, e.clientY, PX, turns());
+    return [p.x, p.y];
   }
 
   function dab(x, y) {
@@ -893,7 +901,12 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "6": "wall", "0": "" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
+    if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) {
+      e.preventDefault();
+      var delta = T.unrotatePoint(arrows[e.key][0], arrows[e.key][1], 0, turns());
+      chokeMove(delta.x, delta.y);
+      return;
+    }
     if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
     if (CHOKE_MODES[state.mode] && (e.key in keys || e.key === "n" || e.key === "N")) return;   // shape tags need the Select tool
     if (e.key in keys) setTag(keys[e.key]);
@@ -983,7 +996,7 @@
   selectMap(first);
   window.tagger = { state: state, edits: edits, maps: maps, setMode: setMode, selectMap: selectMap, dab: dab, changed: changed,
                     chokeState: chokeState, chokeMove: chokeMove, chokeDab: chokeDab, chokeMake: chokeMake,
-                    DATA: DATA, ensureMap: ensureMap, save: save, recompute: recompute, loaded: loaded };
+                    DATA: DATA, ensureMap: ensureMap, save: save, recompute: recompute, loaded: loaded, turns: turns };
 })();
 </script>
 <script>

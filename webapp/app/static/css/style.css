@@ -1662,6 +1662,7 @@ table.compact-table .badge-score {
   gap: 0.5rem 0.75rem;
   margin-top: 0.75rem;
 }
+.replay-controls [data-replay-next] { margin-left: auto; }
 .replay-button, .replay-round, .replay-speed select {
   font: inherit;
   color: var(--ink);
@@ -1715,8 +1716,8 @@ table.compact-table .badge-score {
 }
 
 /* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
-/* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
-.replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
+/* Smokes (and Viper's raised wall) use the agent's colour; these dark tints remain as fallbacks. */
+.replay { --replay-ctl-1: #5ccf8f; --replay-ctl-2: #d9534f; --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.72);
   --replay-smoke-core: rgba(16, 18, 24, 0.84); }
 /* --replay-map-h: the map's height (and so its width), and the height of the coach points' box beside it. */
 .replay.is-linked { --replay-side-w: minmax(320px, 400px); --replay-map-h: calc(100vh - 240px); max-width: none; }
@@ -1738,17 +1739,20 @@ table.compact-table .badge-score {
 .replay.is-linked .replay-main { grid-area: main; }
 .replay.is-linked .replay-board { grid-area: board; }
 .replay.is-linked .replay-side { grid-area: side; }
-/* Wide screens: three columns from the top of the page. Left: the title, the round banner and the players panel
-   (team 1 above team 2). Middle: the map, then the playback controls and everything else under it. Right: the tabs.
+/* Wide screens: a first row above the map holds the title (left column) and the round banner (over the map).
+   Under it, three columns that start level with the map's top. Left: the players panel (team 1 above team 2),
+   exactly as tall as the map. Middle: the map, then the playback controls and everything else under it. Right:
+   the tabs, also ending level with the map's bottom.
    The map is the content: replay.js (fitMapToWindow) sets --replay-map-h to the room from the map's top to the
    window's bottom less the controls and timeline under it, so the map and its controls fit on one screen; the
    map takes that width first (--replay-map-w, less only when the two side columns at their narrowest leave less:
    46rem is those two, the gaps, the edge space and the page's padding). The side columns grow into the rest of the
-   width, up to 32rem and 30rem, and both end level with the map's bottom.
-   How: .replay-main's children join the grid (display: contents). The map spans the first three rows, the left
-   column's title, banner and players; the players row is 1fr, so it gets the map's height less the title and
-   banner. The players panel and the tabs column are size-contained, so their content never makes those rows
-   taller: they stretch to them and scroll inside. Everything else under the map takes the rows after.
+   width, up to 32rem and 30rem.
+   How: .replay-main's children join the grid (display: contents). The map is row 2; the players panel and the tabs
+   column share it and are size-contained, so their content never makes the row taller: they stretch to it and
+   scroll inside. Everything else under the map takes the rows after.
+   The players panel is a size container: its text and icons are sized in em from the panel's height and width
+   (cqh/cqw), so a taller map gives bigger rows, never empty space.
    Each player row is two lines: name, health and K/D/A on the first; health bar, utility and credits beside it (a
    long name is cut short; its title has all of it).
    The breakpoint is in em (87.5em = 1400px at the default 16px), so a larger browser text size moves to the stacked
@@ -1762,47 +1766,56 @@ table.compact-table .badge-score {
   }
   .replay.is-linked .replay-body {
     grid-template-columns: minmax(17rem, 32rem) var(--replay-map-w) var(--replay-side-w);
-    grid-template-rows: auto auto minmax(10rem, 1fr);
+    grid-template-rows: auto auto;
     grid-template-areas: none;
     gap: 0.6rem 1.25rem;
     justify-content: center;
     padding-inline: 2rem;
   }
-  .replay.is-linked .replay-body > .replay-header { grid-area: auto; grid-column: 1; grid-row: 1; margin: 0; }
-  .replay.is-linked .replay-body > .replay-banner { grid-area: auto; grid-column: 1; grid-row: 2; }
+  .replay.is-linked .replay-body > .replay-header { grid-area: auto; grid-column: 1; grid-row: 1; margin: 0; align-self: end; }
+  .replay.is-linked .replay-body > .replay-banner { grid-area: auto; grid-column: 2; grid-row: 1; align-self: end; }
   .replay.is-linked .replay-board {
-    grid-area: auto; grid-column: 1; grid-row: 3; align-self: stretch; contain: size;
+    grid-area: auto; grid-column: 1; grid-row: 2; align-self: stretch; contain: size; container-type: size;
     display: flex; flex-direction: column; gap: 0.4rem; box-sizing: border-box; margin: 0; overflow-y: auto;
   }
   /* The map starts just under the nav: the page's top padding would be height the map loses. */
   main:has(.replay.is-linked) { padding-top: 0.5rem; }
   .replay.is-linked .replay-main { display: contents; }
   .replay.is-linked .replay-main > * { grid-column: 2; min-width: 0; margin-top: 0; margin-bottom: 0; }
-  .replay.is-linked .replay-main > .replay-stage { grid-row: 1 / span 3; }
+  .replay.is-linked .replay-main > .replay-stage { grid-row: 2; }
   .replay.is-linked .replay-main .replay-canvas { width: 100%; }
-  .replay.is-linked .replay-side { grid-area: auto; grid-column: 3; grid-row: 1 / span 3; align-self: stretch; contain: size; }
+  .replay.is-linked .replay-side { grid-area: auto; grid-column: 3; grid-row: 2; align-self: stretch; contain: size; }
   .replay.is-linked .replay-header h1 { font-size: 1.5rem; margin: 0 0 0.15rem; }
   .replay.is-linked .replay-header .replay-note { margin: 0; font-size: 0.85rem; }
+  /* The panel's base size: as large as its height lets ten rows fit (about 37 em of rows, heads and padding),
+     and its width the widest row (about 25 em), between today's size and a third larger. */
   .replay.is-linked .replay-board .replay-pl-team {
-    flex: 1 1 0; min-height: min-content; display: flex; flex-direction: column; padding: 0.25rem 0.6rem;
+    flex: 1 1 0; min-height: min-content; display: flex; flex-direction: column; padding: 0.25em 0.6em;
+    font-size: clamp(0.85rem, min(2.5cqh, 4cqw), 1.35rem);
   }
-  .replay.is-linked .replay-board .replay-pl-head { margin: 0; font-size: 0.7rem; line-height: 1.3; }
+  .replay.is-linked .replay-board .replay-pl-head { margin: 0; font-size: 0.7em; line-height: 1.3; }
   .replay.is-linked .replay-board .replay-pl-row {
     flex: 1 1 0; min-height: min-content;
-    grid-template-columns: 2.2rem minmax(0, 1fr) auto; grid-template-areas: "agent main nums" "agent kit nums";
-    align-content: center; gap: 0.1rem 0.5rem; padding: 0.1rem 0;
+    grid-template-columns: 2.2em minmax(0, 1fr) auto; grid-template-areas: "agent main nums" "agent kit nums";
+    align-content: center; gap: 0.1em 0.5em; padding: 0.1em 0;
   }
-  .replay.is-linked .replay-board .replay-pl-agent { width: 2.2rem; height: 2.2rem; }
-  .replay.is-linked .replay-board .replay-pl-top { margin-bottom: 0.15rem; font-size: 0.9rem; line-height: 1.25; }
+  .replay.is-linked .replay-board .replay-pl-row.is-dead { padding-inline: 0.4em; }
+  .replay.is-linked .replay-board .replay-pl-agent { width: 2.2em; height: 2.2em; }
+  .replay.is-linked .replay-board .replay-pl-top { margin-bottom: 0.15em; font-size: 0.9em; line-height: 1.25; gap: 0.4em; }
   .replay.is-linked .replay-board .replay-pl-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .replay.is-linked .replay-board .replay-pl-kit { gap: 0.15rem; }
-  .replay.is-linked .replay-board .replay-pl-ability { width: 1.25rem; height: 1.25rem; }
-  .replay.is-linked .replay-board .replay-pl-ability img { width: 1rem; height: 1rem; }
-  .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.6rem; bottom: -4px; }
-  .replay.is-linked .replay-board .replay-pl-gun-icon { width: 2rem; height: 0.65rem; }
-  .replay.is-linked .replay-board .replay-pl-ult { width: 1.35rem; height: 1.35rem; margin-left: 0.1rem; }
-  .replay.is-linked .replay-board .replay-pl-ult img { width: 0.95rem; height: 0.95rem; }
-  .replay.is-linked .replay-board .replay-pl-nums { font-size: 0.72rem; line-height: 1.15; gap: 0; }
+  .replay.is-linked .replay-board .replay-pl-armor { font-size: 0.8em; padding: 0 0.28em; }
+  .replay.is-linked .replay-board .replay-pl-dead { font-size: 0.83em; }
+  .replay.is-linked .replay-board .replay-pl-shield { height: 0.2em; }
+  .replay.is-linked .replay-board .replay-pl-bar { height: 0.32em; }
+  .replay.is-linked .replay-board .replay-pl-kit { gap: 0.35em; }
+  .replay.is-linked .replay-board .replay-pl-ability { width: 1.7em; height: 1.7em; }
+  .replay.is-linked .replay-board .replay-pl-ability img { width: 1.35em; height: 1.35em; }
+  .replay.is-linked .replay-board .replay-pl-ability b { font-size: 0.68em; bottom: -5px; }
+  .replay.is-linked .replay-board .replay-pl-gun { font-size: 0.8em; margin-left: 0.5em; gap: 0.25em; }
+  .replay.is-linked .replay-board .replay-pl-gun-icon { width: 2.8em; height: 0.9em; }
+  .replay.is-linked .replay-board .replay-pl-ult { width: 1.85em; height: 1.85em; margin-left: 0.15em; }
+  .replay.is-linked .replay-board .replay-pl-ult img { width: 1.3em; height: 1.3em; }
+  .replay.is-linked .replay-board .replay-pl-nums { font-size: 0.72em; line-height: 1.15; gap: 0; }
   /* The tabs column ends level with the map: the tabs stay put and the open panel scrolls in what is left. */
   .replay.is-linked .replay-side { display: flex; flex-direction: column; box-sizing: border-box; }
   .replay.is-linked .replay-side > .replay-tabs { flex: none; }
@@ -1853,9 +1866,37 @@ table.compact-table .badge-score {
 }
 .replay-layers legend { padding: 0 0.3rem; color: var(--ink-muted); }
 .replay-layers input { accent-color: var(--brand); }
+/* The View preset picker leads the Show bar, set apart from the boxes it sets. */
+.replay-preset { font-weight: 600; color: var(--ink); padding-right: 0.75rem; border-right: 1px solid var(--border-strong); }
+.replay-preset select { font: inherit; font-weight: 400; }
+/* The control bar: a strip on the map's left edge, team 2 from the top and team 1 from the bottom (replay.js
+   renderCtlBar), over the map's empty margin. The dashed line marks half. */
+.replay-ctlbar {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 20px; z-index: 2;
+  display: flex; flex-direction: column; background: #2a2b31; border-right: 1px solid var(--border-strong);
+}
+.replay-ctlbar > [data-ctlbar-t2], .replay-ctlbar > [data-ctlbar-mid], .replay-ctlbar > [data-ctlbar-t1] {
+  display: block; flex: 0 1 0; transition: flex-grow 0.25s ease;
+}
+.replay-ctlbar-t2 { background: var(--replay-team-2); }
+.replay-ctlbar-mid { background: #3a3b42; }
+.replay-ctlbar-t1 { background: var(--replay-team-1); }
+.replay-ctlbar::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed rgba(255, 255, 255, 0.4); }
+.replay-ctlbar-num {
+  position: absolute; left: 0; right: 0; text-align: center; font-size: 0.62rem; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.replay-ctlbar-num.is-top { top: 4px; }
+.replay-ctlbar-num.is-bottom { bottom: 4px; }
 .replay-key-t1::before { background: var(--replay-team-1); }
 .replay-key-t2::before { background: var(--replay-team-2); }
-.replay-key-smoke::before { background: var(--replay-smoke-core); border: 2px solid var(--ink-secondary); }
+.replay-key-smoke::before { background: radial-gradient(circle at 35% 30%, rgba(220, 212, 245, 0.7), rgba(122, 90, 214, 0.18)); border: 1px solid rgba(240, 235, 255, 0.8); }
+.replay-key-side::before {
+  background: transparent;
+  border: 2px solid var(--replay-ctl-1, #5ccf8f);
+  border-right-color: var(--replay-ctl-2, #d9534f);
+  border-bottom-color: var(--replay-ctl-2, #d9534f);
+}
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
 .replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
 .replay { --replay-unknown: #77787f; }
@@ -1987,7 +2028,15 @@ table.compact-table .badge-score {
   align-items: center; gap: 0.65rem; padding: 0.45rem 0; border-top: 1px solid var(--border);
 }
 .replay-pl-head + .replay-pl-row { border-top: 0; }
-.replay-pl-row.is-dead { opacity: 0.5; }
+/* A dead row: a faded red band with a red edge (the negative margin keeps its contents in line with the live rows);
+   only the contents fade, so the red stays clear. */
+.replay-pl-row.is-dead {
+  margin-inline: -0.4rem; padding-inline: 0.4rem; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--critical) 16%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--critical) 75%, transparent);
+}
+.replay-pl-row.is-dead > * { opacity: 0.5; }
+.replay-pl-row.is-dead .replay-pl-dead { color: var(--critical); font-weight: 700; }
 .replay-pl-row.is-dead .replay-pl-agent img { filter: grayscale(1); }
 .replay-pl-agent {
   grid-area: agent; width: 2.6rem; height: 2.6rem; border: 2px solid; border-radius: var(--radius-sm);
@@ -2006,6 +2055,7 @@ table.compact-table .badge-score {
 .replay-pl-gun {
   margin-left: 0.35rem; color: var(--ink-secondary); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
 }
+.replay-pl-gun.is-util { color: var(--accent, var(--ink)); }
 .replay-pl-gun.is-unfired { color: var(--ink-muted); font-weight: 400; font-style: italic; }
 .replay-pl-gun { display: inline-flex; align-items: center; gap: 0.25rem; }
 /* The gun's kill-feed silhouette (white on transparency, 96 px tall), drawn in the text colour. */
@@ -2014,11 +2064,15 @@ table.compact-table .badge-score {
   -webkit-mask: var(--gun-icon) center / contain no-repeat; mask: var(--gun-icon) center / contain no-repeat;
 }
 /* The shield line sits on top of the health bar: orange, out of heavy shield's 50. */
-.replay { --replay-shield: #f2994a; }
+.replay { --replay-shield: #f2994a; --replay-overheal: #4ade80; --replay-decay: #b084f5; }
 .replay-pl-shield { display: block; height: 3px; margin-bottom: 1px; border-radius: 2px; overflow: hidden; }
 .replay-pl-shield > span { display: block; height: 100%; background: var(--replay-shield); }
-.replay-pl-bar { display: block; height: 5px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
-.replay-pl-bar > span { display: block; height: 100%; background: var(--ink); }
+.replay-pl-bar { position: relative; display: flex; height: 5px; border-radius: 3px; background: var(--gridline); overflow: hidden; }
+.replay-pl-bar > span { display: block; flex-shrink: 0; height: 100%; }
+.replay-pl-hp-fill { background: var(--ink); }
+.replay-pl-decay { background: var(--replay-decay); }
+.replay-pl-hp-fill.is-decayed { background: var(--replay-decay); }
+.replay-pl-overheal { background: var(--replay-overheal); }
 .replay-pl-bar.is-unknown { background: repeating-linear-gradient(45deg, var(--gridline) 0 4px, transparent 4px 8px); }
 .replay-pl-kit { grid-area: kit; display: flex; align-items: center; gap: 0.3rem; }
 .replay-pl-ability {
@@ -2142,11 +2196,11 @@ main:has(.replay.is-linked) { max-width: none; }
 .replay-control-status:empty { display: none; }
 .replay-control-legend { margin-top: 0.4rem; }
 .replay-control-legend-note { color: var(--ink-muted); font-size: 0.85rem; }
-.replay-key-ctl-active::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 55%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 55%, transparent) 50%); }
-.replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 30%, transparent) 50%); }
-.replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
-.replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-team-2) 60%, transparent) 3px 6px); }
-.replay-key-ctl-unknown::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 70%, transparent) 0 1px, transparent 1px 4px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--replay-team-2) 70%, transparent) 0 1px, transparent 1px 4px); border: 1px solid var(--border-strong); }
+.replay-key-ctl-active::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 55%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 55%, transparent) 50%); }
+.replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 30%, transparent) 50%); }
+.replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-ctl-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-ctl-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
+.replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-ctl-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-ctl-2) 60%, transparent) 3px 6px); }
+.replay-key-ctl-unknown::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-ctl-1) 70%, transparent) 0 1px, transparent 1px 4px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--replay-ctl-2) 70%, transparent) 0 1px, transparent 1px 4px); border: 1px solid var(--border-strong); }
 .replay-control-switch { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
 .replay-control-switch .replay-button.is-active { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .replay-control-team td.num.pos { color: var(--good); }

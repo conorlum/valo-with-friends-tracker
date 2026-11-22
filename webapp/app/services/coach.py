@@ -204,6 +204,28 @@ def coached_external_ids(db, external_ids) -> set[str]:
     return with_report & watchable_external_ids(db, sorted(with_report)) if with_report else set()
 
 
+def coach_feedback_share(db, external_ids) -> dict[str, tuple[int, int]]:
+    """For each lower-cased external id (already known to be coached): (points with any feedback, points), over
+    the latest version of each coached player's report. Any row on a point counts, a moment's or the point's,
+    handled or not."""
+    wanted = {str(e).lower() for e in external_ids if e}
+    if not wanted:
+        return {}
+    latest = (db.query(CoachReport.match_id, CoachReport.player_id, func.max(CoachReport.version).label("v"))
+              .join(Match, Match.id == CoachReport.match_id)
+              .filter(func.lower(Match.external_id).in_(wanted), CoachReport.kind == KIND_MATCH)
+              .group_by(CoachReport.match_id, CoachReport.player_id).subquery())
+    answered = db.query(CoachFeedback.point_id).filter(CoachFeedback.point_id == CoachPoint.id).exists()
+    rows = (db.query(Match.external_id, func.count(CoachPoint.id), func.count(case((answered, CoachPoint.id))))
+            .join(CoachReport, CoachReport.match_id == Match.id)
+            .join(latest, (latest.c.match_id == CoachReport.match_id) & (latest.c.player_id == CoachReport.player_id)
+                  & (latest.c.v == CoachReport.version))
+            .join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+            .filter(CoachReport.kind == KIND_MATCH)
+            .group_by(Match.external_id).all())
+    return {str(e).lower(): (int(done), int(total)) for e, total, done in rows}
+
+
 def add_note(db, kind: str, body: str) -> CoachNote:
     note = CoachNote(kind=_text(kind, "kind", 16), body=_text(body, "body"), active=True)
     db.add(note)

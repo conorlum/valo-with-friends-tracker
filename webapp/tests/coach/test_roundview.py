@@ -137,3 +137,35 @@ def test_r_f10_a_gap_mid_life_is_unknown_inside_the_gap():
     assert v.position(0, 9.5)["area"]["name"] == "A Site"
     assert v.position(0, 15.0) == {"alive": True, "u": None, "v": None, "area": None, "position": "unknown"}
     assert v.position(0, 20.5)["u"] == 2000
+
+
+SMOKE = {"k": "ability", "kind": "GameObject", "name": "E_Smoke", "t": 10.0, "t1": 28.0, "by": 5, "u": 2000, "v": 2280}
+THROW = {"k": "ability", "kind": "Projectile", "name": "E_Smoke", "t": 9.0, "t1": 10.0, "by": 5, "u": 8000, "v": 8000}
+TRIP = {"k": "ability", "kind": "GameObject", "name": "4_TripWire", "t": 0.0, "by": 1, "u": 8000, "v": 8070}
+CAMERA = {"k": "ability", "kind": "Pawn", "name": "E_PossessableCamera", "t": 1.0, "t1": 40.0, "by": 1, "u": 2000,
+          "v": 2000, "gone": 30.0, "path": [[1.0, 2000, 2000, 0], [2.0, 8000, 8000, 0]]}
+
+
+def test_placed_utility_carries_where_it_landed_and_until_when():
+    v = view(toys.round_blob(toys.ten(), util=[THROW, SMOKE, CAMERA]))
+    rows = {r["t"]: r for r in v.utility()}
+    throw, smoke, camera = rows[9.0], rows[10.0], rows[1.0]
+    assert smoke["area"]["name"] == "A Site" and smoke["until"] == 28.0
+    assert "area" not in throw and "until" not in throw        # a throw starts at the thrower: that is their place
+    assert camera["until"] == 30.0                              # shot before its stored end
+
+
+def test_placed_util_is_what_is_standing_at_a_time_and_where():
+    v = view(toys.round_blob(toys.ten(), util=[THROW, SMOKE, TRIP, CAMERA]))
+    names = lambda t: sorted(s["event"]["name"] for s in v.placed_util(t))
+    assert names(0.5) == ["4_TripWire"]                          # no end stored: up to the round's end
+    assert names(20.0) == ["4_TripWire", "E_PossessableCamera", "E_Smoke"]
+    assert names(30.0) == ["4_TripWire"]
+    camera = [s for s in v.placed_util(5.0) if s["event"]["name"] == "E_PossessableCamera"][0]
+    assert (camera["u"], camera["v"], camera["until"]) == (8000, 8000, 30.0)   # the path's place at t
+
+
+def test_a_smoke_manager_is_not_placed_util():
+    manager = {**SMOKE, "name": "4_SmokeManager_Production", "t1": 49.0}
+    v = view(toys.round_blob(toys.ten(), util=[manager]))
+    assert v.placed_util(20.0) == [] and "area" not in v.utility()[0]

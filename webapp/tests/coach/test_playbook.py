@@ -56,9 +56,9 @@ def _squash(text):
     return re.sub(r"\s+", " ", text)
 
 
-def test_the_shipped_playbook_is_version_12_with_the_gun_and_range_principles():
+def test_the_shipped_playbook_is_version_14_with_the_gun_range_and_trade_principles():
     book = playbook.load()
-    assert book.version == "12"
+    assert book.version == "14"
     principles = _squash(book.text.split("# Rules", 1)[0])
     assert "# Principles" in principles
     assert _squash(
@@ -68,6 +68,9 @@ def test_the_shipped_playbook_is_version_12_with_the_gun_and_range_principles():
         "- Fight at your gun's range. When you know an enemy has a close-range gun (you heard the Bucky and had time "
         "to reposition), don't take the close fight. With a Stinger or another close-range gun, take close fights, "
         "not long ones.") in principles
+    assert _squash(
+        "- Trading down at a man advantage is good when a teammate is in position to trade you.") in principles
+    assert "util_near" in book.text                 # the smoke rule reads `where`'s util_near
 
 
 def test_the_shipped_playbook_has_a_rule_judging_guns_by_what_the_side_knew():

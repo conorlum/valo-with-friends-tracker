@@ -254,6 +254,141 @@ def cf_stripe() -> int:
     return run_node("function run(p) { return C.STRIPE_PX; }", {})
 
 
+def test_borders_off_preserves_every_legacy_paint_byte():
+    got = run_node("""
+      function run() {
+        const size = 512, colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const walk = Int32Array.from(C.STATE_NAMES.map((_, i) => i));
+        const codes = Uint8Array.from(walk), a = Uint8Array.from(walk, i => i % 2);
+        const b = Uint8Array.from(walk, i => i % 3 ? 1 : 0);
+        const expected = new Uint8Array(size * size * 4), actual = expected.slice();
+        const put = (x, y, rgb, alpha) => expected.set([...rgb, alpha], (y * size + x) * 4);
+        let states = true, unknown = true;
+        for (const borders of [undefined, false]) {
+          expected.fill(0);
+          for (let k = 0; k < walk.length; k++) {
+            const name = C.STATE_NAMES[k];
+            if (name === 'none') continue;
+            const contested = name.startsWith('contested');
+            const alpha = name.endsWith('active') ? 140 : name.endsWith('passive') ? 38 : 77;
+            for (let y = 0; y < 4; y++) for (let x = k * 4; x < k * 4 + 4; x++)
+              put(x, y, contested ? (Math.floor((x + y) / 4) % 2 ? colors.b : colors.a)
+                : colors[name[0]], alpha);
+          }
+          C.paintStates(actual, size, walk, codes, colors, borders);
+          states = states && Buffer.from(actual).equals(Buffer.from(expected));
+          for (const show of ['A', 'B', 'both']) {
+            expected.fill(0);
+            for (let k = 0; k < walk.length; k++)
+              for (let y = 0; y < 4; y++) for (let x = k * 4; x < k * 4 + 4; x++) {
+                if (a[k] && show !== 'B' && (x + y) % 4 === 0) put(x, y, colors.b, 140);
+                else if (b[k] && show !== 'A' && ((x - y) % 4 + 4) % 4 === 0) put(x, y, colors.a, 140);
+              }
+            C.paintUnknown(actual, size, walk, a, b, colors, show, borders);
+            unknown = unknown && Buffer.from(actual).equals(Buffer.from(expected));
+          }
+        }
+        return {states, unknown};
+      }""", {})
+    assert got == {"states": True, "unknown": True}
+
+
+@pytest.mark.parametrize("other", ["b_active", "contested", "none", "a_safe"])
+def test_control_borders_only_shared_sides_between_different_owners(other):
+    got = run_node("""
+      function run(p) {
+        const size = 512, rgba = new Uint8Array(size * size * 4);
+        C.paintStates(rgba, size, Int32Array.from([0, 1]),
+          Uint8Array.from(['a_active', p.other].map(n => C.STATE_NAMES.indexOf(n))),
+          {a: [200, 10, 10], b: [10, 10, 200]}, true);
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        return {a: px(3, 1), a2: px(2, 1), b: px(4, 1), b2: px(5, 1), b3: px(6, 1),
+          outer: px(0, 1), top: px(1, 0), inside: px(1, 1)};
+      }""", {"other": other})
+    # Edges are two pixels deep, inside the cell that owns them, opaque, in the team colour at full brightness.
+    assert got["a"] == got["a2"] == ([200, 10, 10, 140] if other == "a_safe" else [255, 13, 13, 255])
+    assert got["b"] == got["b2"] == ([13, 13, 255, 255] if other == "b_active" else
+                                     [0, 0, 0, 0] if other == "none" else
+                                     [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
+    assert got["b3"] == ([10, 10, 200, 140] if other == "b_active" else [0, 0, 0, 0] if other == "none" else
+                         [10, 10, 200, 77] if other == "contested" else [200, 10, 10, 77])
+    assert got["outer"] == got["top"] == got["inside"] == [200, 10, 10, 140]
+
+
+@pytest.mark.parametrize("show", ["A", "B", "both"])
+def test_unknown_borders_dash_at_region_edges_in_the_hatch_colour(show):
+    got = run_node("""
+      function run(p) {
+        const size = 1024, rgba = new Uint8Array(size * size * 4);
+        // Two unknown cells vertically: the right edge must continue through their join.
+        const walk = Int32Array.from([0, 1, 128, 129, 256]);
+        const mask = Uint8Array.from([1, 0, 1, 0, 0]), blank = new Uint8Array(5);
+        C.paintUnknown(rgba, size, walk, p.show === 'B' ? blank : mask,
+          p.show === 'B' ? mask : blank, {a: [200, 10, 10], b: [10, 10, 200]}, p.show, true);
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        const col = x => Array.from({length: 16}, (_, y) => px(x, y));
+        const row = y => Array.from({length: 8}, (_, x) => px(x, y));
+        return {edge7: col(7), edge6: col(6), bottom15: row(15), bottom14: row(14),
+          inner: col(5), join: px(2, 7), outside: px(8, 1)};
+      }""", {"show": show})
+    colour = [200, 10, 10] if show == "B" else [10, 10, 200]
+
+    def hatch(x, y):
+        return (x - y) % 4 == 0 if show == "B" else (x + y) % 4 == 0
+
+    # Dashes are two pixels deep: on for two pixels, off for two, along the edge, in the hatch colour at full
+    # brightness; the hatch shows in the gaps.
+    on, hatched, blank = [13 if c == 10 else 255 for c in colour] + [217], colour + [140], [0, 0, 0, 0]
+    for x in (7, 6):
+        assert got[f"edge{x}"] == [on if y % 4 < 2 else hatched if hatch(x, y) else blank for y in range(16)]
+    for y in (15, 14):
+        assert got[f"bottom{y}"] == [on if x % 4 < 2 else hatched if hatch(x, y) else blank for x in range(8)]
+    assert got["inner"][:14] == [hatched if hatch(5, y) else blank for y in range(14)]  # 14-15: bottom edge
+    assert got["join"] == got["outside"] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("show", ["A", "B"])
+def test_unknown_border_off_pixels_preserve_underlying_hatch(show):
+    got = run_node("""
+      function run(p) {
+        // Six pixels per cell puts a hatch on the left edge at an off pixel of the dash.
+        const size = 768, rgba = new Uint8Array(size * size * 4);
+        const walk = Int32Array.from([0, 1]), mask = Uint8Array.from([0, 1]), blank = new Uint8Array(2);
+        const a = p.show === 'A' ? mask : blank, b = p.show === 'B' ? mask : blank;
+        const colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        C.paintUnknown(rgba, size, walk, a, b, colors, p.show);
+        const hatch = px(6, 2);
+        C.paintUnknown(rgba, size, walk, a, b, colors, p.show, true);
+        return {hatch, offWithHatch: px(6, 2), offWithoutHatch: px(6, 3), on: px(6, 0)};
+      }""", {"show": show})
+    colour = [10, 10, 200] if show == "A" else [200, 10, 10]
+    assert got["hatch"] == got["offWithHatch"] == colour + [140]
+    assert got["on"] == [13 if c == 10 else 255 for c in colour] + [217]
+    assert got["offWithoutHatch"] == [0, 0, 0, 0]
+
+
+def test_unknown_border_off_pixels_preserve_the_other_teams_dash():
+    got = run_node("""
+      function run() {
+        const size = 768, rgba = new Uint8Array(size * size * 4);
+        // In cell 1, A's left edge crosses B's bottom edge at (6, 5): A on, B off.
+        const walk = Int32Array.from([0, 1, 129]);
+        const a = Uint8Array.from([0, 1, 1]), b = Uint8Array.from([1, 1, 0]);
+        const colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const px = (x, y) => Array.from(rgba.slice((y * size + x) * 4, (y * size + x) * 4 + 4));
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'both');
+        const noHatch = px(6, 5);
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'A', true);
+        const aOnly = px(6, 5);
+        C.paintUnknown(rgba, size, walk, a, b, colors, 'both', true);
+        return {noHatch, aOnly, both: px(6, 5), bOn: px(8, 5)};
+      }""", {})
+    assert got["noHatch"] == [0, 0, 0, 0]
+    assert got["aOnly"] == got["both"] == [13, 13, 255, 217]
+    assert got["bOn"] == [255, 13, 13, 217]
+
+
 def test_the_highlight_fills_control_and_outlines_coverage():
     body = """
       function run(p) {
@@ -462,3 +597,170 @@ def test_side_groups_map_to_teams():
     got = run_node("function run(p) { return C.groupTeams(p.players); }",
                    {"players": {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}})
     assert got == {"A": "team-2", "B": "team-1"}
+
+
+def test_the_control_bar_counts_each_groups_cells_at_any_level():
+    names = cf.STATE_NAMES
+    codes = [names.index(n) for n in ("a_active", "a_safe", "a_passive", "b_active", "b_passive",
+                                      "contested", "contested_active", "none", "none", "none")]
+    got = run_node("function run(p) { return C.controlShares(Uint8Array.from(p.codes)); }", {"codes": codes})
+    assert got == {"a": 3, "b": 2, "contested": 2, "none": 3, "total": 10}
+    assert run_node("function run(p) { return C.controlShares(null); }", {})["total"] == 0
+
+
+def test_the_darker_map_dims_the_floor_keeps_the_sites_hue_and_the_empty_border():
+    body = "function run(p) { return Array.from(C.darkenMap(Uint8ClampedArray.from(p.px))); }"
+    floor, site, empty = [150, 150, 150, 255], [170, 160, 100, 255], [90, 90, 90, 0]
+    got = run_node(body, {"px": floor + site + empty}, js=REPLAY_JS)
+    f, s, e = got[0:4], got[4:8], got[8:12]
+    assert f == [57, 60, 71, 255]                                         # mean x 0.42, then (0.9, 0.95, 1.12)
+    assert s == [94, 88, 45, 255]                                         # site: (0.55, 0.55, 0.45), still yellow
+    assert e == empty                                                     # off the map: untouched
+
+
+def test_outlines_trace_blocking_pixels_next_to_open_floor():
+    # 12 x 12, everything blocked but one open pixel: painted within squared distance 10 of it, not beyond
+    size = 12
+    body = """
+      function run(p) {
+        const mask = new Uint8Array(p.size * p.size).fill(1);
+        mask[p.open[1] * p.size + p.open[0]] = 0;
+        const rgba = new Uint8ClampedArray(p.size * p.size * 4);
+        C.outlinePixels(mask, p.size, rgba);
+        return Array.from({length: p.size * p.size}, (_, k) => Array.from(rgba.subarray(k * 4, k * 4 + 4)));
+      }"""
+    got = run_node(body, {"size": size, "open": [6, 6]}, js=REPLAY_JS)
+    at = lambda x, y: got[y * size + x]  # noqa: E731
+    ink = [222, 232, 244, 255]                                            # the literal colour, not the constant
+    for x, y in [(7, 6), (9, 6), (9, 7), (8, 8), (6, 5)]:                 # squared distance 1, 9, 10, 8, 1
+        assert at(x, y) == ink, (x, y)
+    for x, y in [(9, 8), (10, 6), (10, 8), (0, 0), (11, 11)]:             # squared distance 13, 16, 20, far
+        assert at(x, y) == [0, 0, 0, 0], (x, y)
+    assert at(6, 6) == [0, 0, 0, 0]                                       # the open floor is never painted
+    got = run_node(body, {"size": size, "open": [1, 0]}, js=REPLAY_JS)    # a blocked pixel on the border
+    assert at(0, 0) == ink and at(11, 11) == [0, 0, 0, 0]                 # no read past the mask's edge
+
+
+def _viewer_script(body: str) -> str:
+    return ("const rec = require(" + json.dumps(_RECORDER) + "); const R = rec.environment(process.argv[1]);\n"
+            "function stubBar() {\n"
+            "  const spans = {}, attrs = {};\n"
+            "  const span = k => spans[k] || (spans[k] = {style: {}, textContent: ''});\n"
+            "  return {hidden: true, spans, attrs, setAttribute: (k, v) => { attrs[k] = v; },\n"
+            "          getAttribute: k => (k in attrs ? attrs[k] : null), querySelector: sel => span(sel)};\n"
+            "}\n" + body)
+
+
+_RECORDER = str(WEBAPP / "tests" / "replays" / "viewer_recorder.js")
+_PLAYERS = {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}
+
+
+def test_the_control_bar_puts_team_1_at_the_bottom_and_hides_without_data():
+    body = _viewer_script("""
+      function run(p) {
+        const {v} = rec.makeViewer(R);
+        v.linked = {players: p.players};
+        const out = {};
+        for (const [name, layers, shares] of p.cases) {
+          v.ui.ctlBar = stubBar();
+          Object.assign(v.layers, layers);
+          v.renderCtlBar(shares);
+          const s = v.ui.ctlBar.spans;
+          out[name] = {hidden: v.ui.ctlBar.hidden, top: s["[data-ctlbar-n2]"] && s["[data-ctlbar-n2]"].textContent,
+                       bottom: s["[data-ctlbar-n1]"] && s["[data-ctlbar-n1]"].textContent,
+                       t2: s["[data-ctlbar-t2]"] && s["[data-ctlbar-t2]"].style.flexGrow,
+                       t1: s["[data-ctlbar-t1]"] && s["[data-ctlbar-t1]"].style.flexGrow,
+                       mid: s["[data-ctlbar-mid]"] && s["[data-ctlbar-mid]"].style.flexGrow};
+        }
+        return out;
+      }""")
+    shares = {"a": 60, "b": 20, "contested": 10, "none": 10, "total": 100}
+    on = {"control": True, "bar": True}
+    cases = [["shown", on, shares], ["no_control", {"control": False, "bar": True}, shares],
+             ["no_bar", {"control": True, "bar": False}, shares], ["null", on, None],
+             ["empty", on, dict(shares, total=0)]]
+    got = run_node(body, {"recorder": _RECORDER, "players": _PLAYERS, "cases": cases}, js=REPLAY_JS)
+    # A is Team 2 (top), B is Team 1 (bottom)
+    assert got["shown"] == {"hidden": False, "top": 60, "bottom": 20, "t2": 60, "t1": 20, "mid": 20}
+    for name in ("no_control", "no_bar", "null", "empty"):
+        assert got[name]["hidden"] is True, name
+
+
+def test_the_control_bar_counts_the_picture_the_map_shows():
+    body = _viewer_script("""
+      function run(p) {
+        const names = ReplayControl.STATE_NAMES;
+        const code = n => names.indexOf(n);
+        const truth = Uint8Array.from([code("a_active"), code("a_active"), code("b_active"), code("none")]);
+        const knew = Uint8Array.from([code("b_safe"), code("b_safe"), code("b_passive"), code("contested")]);
+        const out = {};
+        for (const view of ["true", "A"]) {
+          const {v} = rec.makeViewer(R);
+          v.linked = {players: p.players};
+          v.ui.ctlBar = stubBar();
+          v.control = {}; v.layers.control = true; v.layers.bar = true; v.unknownView = "off";
+          v.controlView = view; v.controlPaint = null; v.t = 0;
+          v.controlCache = {ready: () => ({parsed: {times: [0], walk: [], knew_a: true, header: {}},
+            cursor: {states: () => truth, knew: () => knew}})};
+          v.controlColors = () => ({});
+          v.controlCanvas = () => ({canvas: {}, ctx: {putImageData() {}, createImageData: () => ({data: new Uint8ClampedArray(4)})},
+                                    data: {data: new Uint8ClampedArray(4)}});
+          ReplayControl.paintStates = () => {};
+          v.drawControl(rec.mockCtx([]), 512, []);
+          out[view] = {n1: v.ui.ctlBar.spans["[data-ctlbar-n1]"].textContent,
+                       n2: v.ui.ctlBar.spans["[data-ctlbar-n2]"].textContent};
+        }
+        return out;
+      }""")
+    got = run_node(body, {"recorder": _RECORDER, "players": _PLAYERS}, js=REPLAY_JS)
+    # true picture: A 2 of 4 (Team 2 at the top: 50), B 1 of 4 (Team 1, 25); as A knew it: B holds 3 of 4 (75), A none
+    assert got["true"] == {"n1": 25, "n2": 50}
+    assert got["A"] == {"n1": 75, "n2": 0}
+
+
+def test_a_layer_set_from_code_switches_the_view_picker_to_custom():
+    body = _viewer_script("""
+      function run(p) {
+        const out = {};
+        for (const [name, layer, on, applying, picker] of p.cases) {
+          const store = {"replay-preset": picker};
+          globalThis.localStorage = {getItem: k => (k in store ? store[k] : null), setItem: (k, x) => { store[k] = String(x); }};
+          const {v} = rec.makeViewer(R);
+          v.root = {querySelector: () => ({checked: false})};
+          v.refreshGaps = () => {}; v.refreshAreas = () => {}; v.draw = () => {};
+          v.ui.preset = {value: picker};
+          v.applyingPreset = applying;
+          v.setLayer(layer, on);
+          out[name] = {picker: v.ui.preset.value, saved: store["replay-preset"], layer: v.layers[layer],
+                       stored: store["replay-layer-" + layer]};
+        }
+        return out;
+      }""")
+    cases = [["change", "gaps", True, False, "team-1"],            # gaps starts off: this really changes it
+             ["unchanged", "gaps", False, False, "team-1"],        # already off: nothing changed
+             ["preset", "gaps", True, True, "team-1"],             # a preset is applying: never Custom
+             ["custom", "gaps", True, False, "custom"]]
+    got = run_node(body, {"recorder": _RECORDER, "cases": cases}, js=REPLAY_JS)
+    assert got["change"] == {"picker": "custom", "saved": "custom", "layer": True, "stored": "1"}
+    assert got["unchanged"]["picker"] == "team-1" and got["unchanged"]["saved"] == "team-1"
+    assert got["preset"]["picker"] == "team-1" and got["preset"]["saved"] == "team-1"
+    assert got["preset"]["layer"] is True and got["preset"]["stored"] == "1"
+    assert got["custom"]["picker"] == "custom" and got["custom"]["saved"] == "custom"
+
+
+def test_the_view_presets_are_the_owners_picks():
+    body = "function run(p) { return p.names.map(n => C.viewPreset(n, p.teams)); }"
+    teams = {"A": "team-2", "B": "team-1"}
+    blue, red, every, custom, odd = run_node(
+        body, {"names": ["team-1", "team-2", "all", "custom", "nope"], "teams": teams}, js=REPLAY_JS)
+    on = {"abilities", "projectiles", "tracers", "cones", "aim", "features", "control", "bar"}
+    for preset in (blue, red, every):
+        assert {k for k, v in preset["layers"].items() if v} - {"names"} == on
+        assert preset["layers"]["areas"] is False and preset["layers"]["gaps"] is False
+        assert preset["view"] == "true"                                   # the true positions, every preset
+    assert blue["layers"]["names"] is False and red["layers"]["names"] is False and every["layers"]["names"] is True
+    assert blue["unknown"] == "A" and red["unknown"] == "B"               # the enemy team's unknown, by group
+    assert every["unknown"] == "both"
+    assert custom is None and odd is None
+    fallback = run_node(body, {"names": ["team-1", "team-2"], "teams": {}}, js=REPLAY_JS)
+    assert [p["unknown"] for p in fallback] == ["B", "A"]
