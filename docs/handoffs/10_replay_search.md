@@ -1,31 +1,69 @@
-HANDOFF 10 — Replay search: find every round that matches a situation
+# Handoff 10: Replay search: find every round that matches a situation
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first. Short design spec in docs/superpowers/specs/ for my approval, then build. Never on the demo. Opponents never named. Low priority; keep it simple and cheap to maintain.
+Read `docs/handoffs/README.md` (ground rules, shared building blocks) and `CLAUDE.md` first. A short design spec
+for the owner's approval, then build.
 
-GOAL
-A search page over replay rounds: "3v4 retakes on B, spike planted, more than 20 s left", "rounds where Name died first on Ascent attack", "every Sova ult". Each result opens the replay viewer at that moment (round + time). Mostly a tool for coaching one player and for me checking rules, so it should be fast to use, not pretty.
+## Goal and scope
 
-WHAT EXISTS (reuse, don't rebuild)
-- Man-advantage states over time: app/services/state_replay.py, app/services/replay_view.py (alive_steps, round_annotations), replay_match_states table.
-- Fights and tags: replay_round_moments (Critical Moments). Util casts and values: replay_round_util. Gaps / back-shots: replay_gaps. Kill feed, economy, plants: DB tables.
-- Areas: app/static/data/callouts.json; layouts.py for asset keys.
-- The coach query tool (app/coach/query.py) already answers many questions over one match's snapshot; check whether its filters can be reused.
+A search page over replay rounds: "3v4 retakes on B, spike planted, more than 20 s left", "rounds where Name died
+first on Ascent attack", "every Sova ult". Each result opens the viewer at that moment.
 
-FILTERS (first version)
-- Match: map, date range, players present (friends circle, app/services/circle.py), side.
-- Round: round type (pistol/eco/force/full, ours and theirs), won/lost, score range, planted (site, if stored), round label (handoff 09, if built).
-- Moment: man-advantage state (e.g. 3v4) with optional "spike planted" and "time left >= N s"; an event kind (kill, death, first death, plant, defuse, ult cast, ability cast by agent/slot, Critical Moments tag, back-shot).
-- Player: who (friend), agent.
-Results: one row per matching moment, sorted newest first, with "open at t-3 s" links (check which URL params the viewer takes for round and time; add ?round=&t= if missing).
+The owner expects it to be used mainly when coaching one player and when checking rules for other features, not as
+a daily page. So: cheap to build, cheap to keep working, fast to use; no polish beyond that. Prefer no new
+derived table at all if direct queries are fast enough.
 
-IMPLEMENTATION
-- An index table built from stored rows: replay_moment_index (match, replay, round, t, kind, player, agent, state, planted, time_left, tags jsonb), filled when a replay's gap run / util rows become current, with a revision column; rebuilt by a script for old replays. Queried with plain SQL with indexes on (kind, map) etc.
-- Or, if the data is small enough (count replays first), query the existing tables directly with no new table. Prefer this if it's fast enough: less to keep in sync.
-- Page: /replays/search (app/routers/replays.py or a new router), a form with GET params so a search is a shareable URL. Register the route in site_health.PAGE_ROUTES (a test fails otherwise).
-- "Saved searches" later, if ever.
+## What exists to query
 
-TESTS
-Pure filter-building tests and one Postgres-lane test on a tiny fixture; add to tests/suites.toml.
+- Man-advantage states over time: `app/services/state_replay.py`, `app/services/replay_view.py` (`alive_steps`,
+  `round_annotations`).
+- Fights and their tags: `replay_round_moments.fights` (Critical Moments).
+- Casts and their effects: `replay_round_util.data` (Critical Util), with ult uses.
+- Gaps and back-shots: `replay_gaps`.
+- Kill feed, economy, plants: `kill_events`, `round_player_stats`, `rounds`.
+- Round labels from handoff 09, if built.
+- The coach query tool (`app/coach/query.py`: `where`, `knew`, `distance`, `control`, `timeline`) answers many
+  questions about one match's snapshot; check whether parts can be reused for filters.
+- The viewer opens a round at a time with `/replays/<uuid>?round=n&t=s`.
 
-FIRST STEP
-Count replays/rounds/moments in the friends DB (read-only) and time a direct query for "3v4 with the spike planted" across them. Pick the no-new-table design if it runs under ~300 ms.
+## Filters (first version)
+
+- **Match:** map, date range, friends present (from the circle, `app/services/circle.py`), our side.
+- **Round:** round type (ours and theirs), won or lost, score range, planted (and site if known), round label.
+- **Moment:** a man-advantage state (e.g. 3v4 from our side) with "spike planted" and "time left at least N s";
+  or an event: kill, death, first death, plant, defuse, ability cast (by agent and slot), ult cast, a Critical
+  Moments tag, a back-shot.
+- **Player:** who (a friend), agent.
+
+Results: one row per matching moment, newest first, with map, round, score, the moment, and a link that opens the
+viewer 3 s before it. Paged (50 per page).
+
+## Implementation choice (decide from measurements)
+
+1. **Direct queries** over existing tables, with Python filtering of JSON columns where needed. Choose this if a
+   typical search across all replays runs in under about 300 ms.
+2. **A small index table** (`replay_moment_index`: replay, round, t, kind, slot, agent, side, our alive, their
+   alive, planted, time left, tags), filled when a replay's gap run and util rows become current, with a revision
+   column and a backfill script. Choose this only if 1 is too slow.
+
+## Page
+
+- `/replays/search` with a GET form, so every search is a shareable URL. Plain HTML form; no client framework.
+- Register in `site_health.PAGE_ROUTES`; 404 on the demo; logged-in viewers only (friends' data).
+- Opponents by agent only in results.
+
+## Tests
+
+- Filter parsing and query building (pure); one Postgres-lane test on a tiny fixture with two replays. Add to
+  `tests/suites.toml`.
+
+## Phases and done criteria
+
+1. Count replays, rounds and moments in the friends DB (read-only); time a direct query for "3v4 with the spike
+   planted". Done when the choice between 1 and 2 is made with the numbers.
+2. The page with match, round and state filters. Done when a search returns correct links.
+3. Event and player filters.
+
+## Open questions for the owner
+
+- Which filters matter most for coaching sessions.
+- Whether results should export as a list for the coach (round + time pairs to paste into a prompt).

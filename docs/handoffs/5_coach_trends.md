@@ -1,37 +1,98 @@
-HANDOFF 5 — Coach trends: a report across a player's replays
+# Handoff 05: Coach trends across a player's replays
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first, especially the "AI coach" section, and docs/superpowers/specs/2026-10-12-ai-coach-design.md. Design spec in docs/superpowers/specs/ for my approval before code. Never on the demo. Opponents never named.
+Read `docs/handoffs/README.md` (ground rules), `CLAUDE.md` (especially "AI coach") and
+`docs/superpowers/specs/2026-10-12-ai-coach-design.md` first.
 
-GOAL
-A coaching report across one player's last N replays (3-5 minimum, up to ~10), finding the bigger trends that one match can't show: habits that repeat, strengths that hold up, and what changed over time. Still evidence-linked: every trend cites the moments (match, round, time) that back it.
+## Goal
 
-KEEP THE COACH'S RULES
-- Every run is Opus 5.5 at medium effort (coach_report.MODEL, EFFORT). No option changes it.
-- Only players on scripts/tracked_players.json. Refuse otherwise.
-- The playbook (webapp/coach/playbook.md) is my principles; never write principles for me. Version bumps only with my approval. Refuse at version 0 / no principles, like the existing commands.
-- The model's working dir holds only `q`; the snapshot stays one level up; child env is an allow-list (coach_report.child_env); never skip permission checks.
-- The checker (app/coach/checker.py) still holds every cited figure to the run log.
-- Enemy names hidden (snapshot.hide_enemy_names).
+A coaching report across one player's last N replays (at least 3, ideally 5, capped around 10) that finds what
+one match cannot: habits that repeat, strengths that hold up, and what changed over time. Every trend cites the
+moments (match, round, time) that back it, like a single-match point does.
 
-DESIGN SKETCH (propose better if you find it)
-1. Inputs: the player's matches with a linked replay, newest first, at least 3. Per match: the existing snapshot (app/coach/snapshot.py, one file per round via snapfile.py), plus Critical Moments, Critical Util and gap rows that are current.
-2. Two stages so the context stays small:
-   a. Per-match digests: either the existing single-match reports (coach_points), if current, or a cheap structured digest per match (counts and tagged moments from detectors.py, moments, util). Prefer structured data over earlier model text. Earlier reports can be a hint, not evidence.
-   b. A trend run over all digests, with `q` extended to query any of the N matches (q --match <uuid> ...), logged so the checker can verify.
-3. Output: 3 trends that repeat across matches (with "seen in 4 of 5 matches, 11 moments"), 3 strengths, and 1-2 "changed since earlier matches" (better or worse), each linking to every moment.
-4. Use my feedback: open coach_feedback marked Wrong on single-match points should steer the trend run away from the same mistake (include them as data, not instructions).
-5. Checker additions: a trend's "N of M matches" and moment counts must match the cited moments; each cited moment must be in the log.
+## This is the coach design's phase 2
 
-STORAGE AND PAGES
-- New tables (migration): coach_trend_reports (player, match set, version, model, playbook version) and coach_trend_points with cited moments (match uuid, round, t). Immutable; re-runs add a version, like coach_reports.
-- Page: /players/<id>/coach (or a tab on the player page): the trends, each moment a link to /replays/<uuid>/coach at that round and time. Feedback per moment the same way as today (coach_feedback-like table or a widened one).
-- Command: `coach-trends "Name#TAG" [-Matches 5] [-DryRun] [-PromptOnly]` (scripts/coach_trends.ps1 + .py), the same refusals as coach.ps1.
-- Account groups: allow `?accounts=all` later (all of a person's accounts' replays).
+The coach spec already plans it ("Later phases": **Phase 2, cross-match report**: one player across their coached
+matches, which themes recur, on which maps and sides, with links to every instance; it reads stored points and
+their themes). The schema is ready: `coach_reports.kind` allows `'cross_match'` and `match_id` is nullable
+(`app/models/coach.py`). The gate between phases is the owner's say-so: confirm with the owner that phase 2 starts
+now before building.
 
-OPEN QUESTIONS FOR ME
+## The coach's rules still apply (all of them)
+
+- Every run is Opus 5.5 at medium effort (`coach_report.MODEL`, `EFFORT`); no option changes it.
+- Only players on `scripts/tracked_players.json`; anyone else refuses the whole run.
+- `webapp/coach/playbook.md` is the owner's principles and rules. Never write principles. Any edit bumps
+  `version` and only the owner approves edits. Refuse at version 0 or with nothing under `# Principles`, like the
+  existing commands.
+- The model's working directory holds only `q`; the snapshot and log stay one level up; the child environment is
+  an allow-list (`coach_report.child_env`); never add a flag that skips permission checks.
+- The checker (`app/coach/checker.py`) holds every figure to the run log.
+- Opponent names hidden (`snapshot.hide_enemy_names`); the page swaps any left in stored text.
+- The model writes in its own plain voice; no voice samples go in the prompt.
+
+## Inputs
+
+Two sources, and the design must decide how they combine:
+
+1. **Stored single-match points** (`coach_points`: polarity, theme, title, body, instances) for the player's
+   coached matches, with their feedback (`coach_feedback`: verdict Right/Wrong/Correction per moment, notes,
+   area corrections). This is what the coach spec planned. Cheap; but limited to matches already coached, and
+   it builds on model text.
+2. **Structured per-match digests** built fresh from data: the snapshot's detector output
+   (`app/coach/detectors.py`), Critical Moments, Critical Util and gap rows that are current. More reliable as
+   evidence; costs more context.
+
+Proposal: trends must be **evidenced from data** (2), with stored points (1) used as hints of what to look for.
+A point marked Wrong by feedback is passed as "this was judged wrong" data, so the trend run does not repeat it.
+
+## Design sketch (propose better if the code suggests it)
+
+- **Snapshot:** one directory per run with every included match's snapshot (one file per round, as today,
+  `app/coach/snapfile.py`), plus a digest file per match.
+- **Query tool:** extend `q` with a match selector (`q --match <uuid> ...`, or match ids 1..N in the brief) so the
+  model can drill into any included match; every call is logged with the match id so the checker can verify.
+- **Brief:** per match: map, side, result, the player's agent and role, detector counts, the strongest moments.
+  Across matches: the same counts side by side, so recurring patterns are visible without reading every round.
+- **Output shape:** up to three recurring "to improve" trends, three recurring strengths, and one or two
+  "changed" items (better or worse between older and newer matches). Each with "seen in K of N matches, M
+  moments", and every moment as an instance (match uuid, round, time).
+- **Checker additions:** K and M must equal the cited instances; each instance must be backed by a logged answer
+  from that match; a trend needs at least 2 matches (propose 3 when N ≥ 5).
+- **Account groups:** later, a person's combined accounts (`?accounts=all`); not in the first version.
+
+## Storage and pages
+
+- `coach_reports` row with `kind='cross_match'`, `match_id` NULL, the player, version, playbook version, model.
+  A table linking the report to the matches it covered (`coach_report_matches`, migration) so the page can show
+  the set and tell when it is out of date (a newer replay exists).
+- Points in `coach_points` as today; instances gain a match uuid (check the instances JSON shape; migrate if
+  needed).
+- Page: `/players/<id>/coach` (or a tab on the player page): the trends, each instance linking to
+  `/replays/<uuid>/coach` at that round and time. Feedback per instance and per point, as today
+  (`coach_feedback`), and "Prompt out" works the same way.
+- Register the route in `site_health.PAGE_ROUTES`; 404 on the demo.
+
+## Command
+
+`coach-trends "Name#TAG" [-Matches 5] [-DryRun] [-PromptOnly]`: `scripts/coach_trends.ps1` and a Python entry
+(or a `--cross-match` mode of `coach_report.py` if that is cleaner). Same refusals as `coach.ps1`. Several
+players run one after another, never at once (the owner's rule for the coach).
+
+## Tests
+
+- Checker rules for K/M counts and cross-match instances; refusal paths (off roster, playbook version 0, fewer
+  than 3 replays); storage version numbering for `cross_match`; demo 404. Add to `tests/suites.toml`.
+
+## Phases and done criteria
+
+1. `-PromptOnly` for one player with 5 replays: write the digests, brief and prompt, report their sizes in tokens,
+   stop. Done when the owner has read them.
+2. One real run with `-DryRun`. Done when the owner has reviewed the output and the checker's results.
+3. Storage, page and feedback. Done when a stored report renders and feedback round-trips.
+
+## Open questions for the owner
+
+- Confirm phase 2 starts now (the coach spec's gate).
 - N: last 5, or every replay with a cap.
-- Whether to require current single-match reports first, or build digests directly.
-- Cost limit per run.
-
-FIRST STEP
--PromptOnly for one player with 5 replays: write the digests and the trend prompt to the run dir, report their sizes in tokens, and stop. I'll read them before any model call.
+- Whether matches must have single-match reports first.
+- Cost ceiling per run (tokens), and whether `-Team` should exist for trends.

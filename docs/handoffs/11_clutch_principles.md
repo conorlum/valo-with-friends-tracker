@@ -1,32 +1,91 @@
-HANDOFF 11 — Clutch review research: material for my coach playbook principles
+# Handoff 11: Clutch research: material for the owner's coach playbook
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first, especially "AI coach" (the playbook rules). This is a behind-the-scenes research tool for me, not a site page. Its output helps ME write principles; it never writes or edits webapp/coach/playbook.md itself (the principles are my own lines; never write stand-ins). Findings name players and matches, so they stay out of the public repo: write them to a local file I can read (the session scratchpad or a git-ignored folder), not a commit.
+Read `docs/handoffs/README.md` (ground rules), `CLAUDE.md` (especially "AI coach") and `webapp/coach/playbook.md`
+first.
 
-GOAL
-Measure what separates won and lost clutches (1vX, X >= 1, and close 2vX) in our replays, as evidence I can turn into playbook principles like "take fights one at a time" or "use the clock". Measurements, not verdicts.
+## What this is, and what it is not
 
-WHAT TO MEASURE (per clutch, from the moment the player is last alive until the round ends)
-1. Isolation: at each engagement, how many living enemies had line of sight to the player (the control engine's sight: app/control/engine.py; Critical Moments fights, app/moments/fights.py). "Fought one at a time" = share of fights with exactly one enemy able to see them.
-2. Clock: time left vs time used; did they plant/defuse with enough time; did they force fights early or late; time spent still vs moving.
-3. Unknown space: how much of the map the enemy could be in (the engine's Unknown; app/gaps) and whether the player moved into it or away; back-shots taken (replay_gaps).
-4. Info: enemies seen/heard before each fight (locating events), whether they faked (tapped defuse, made noise) — check what the replay has.
-5. Util: util left at the start, util used, holding util at death (Critical Util already flags "died holding util").
-6. Economy and state: weapon vs enemies' weapons, health, spike state, X.
-7. Outcome, and the win chance at the start from app/services/util_model.py (so a 1v3 win counts for more than a 1v1).
+A behind-the-scenes research tool for the owner. It measures what separates won and lost clutches in our replays
+and writes up candidate patterns with evidence, so the owner can decide on new principles or rules for the coach
+playbook.
 
-ANALYSIS
-- Use every clutch in our replays: friends and strangers (both teams are recorded; strangers unnamed, numbered).
-- Compare won vs lost clutches, controlling for the starting win chance (residual = outcome - expected). Small sample: report counts, medians and CIs (stats_math.py cluster bootstrap by match), never single p-values. List every measure, including those that show nothing.
-- For each candidate pattern: the effect, n, and 3-5 example moments (match uuid, round, time) I can watch in the viewer.
+It does **not** write or edit `webapp/coach/playbook.md`, its principles, or its version. The principles are the
+owner's own lines (CLAUDE.md: "Never write stand-in principles for them"). The report's suggestions are
+observations with evidence; the owner writes any principle.
 
-OUTPUT
-- A command: scripts/clutch_review.py (through scripts/with_friends_db.py --read-only) that writes a markdown findings report to a local, uncommitted path, and a CSV of every clutch with its measures.
-- The report's last section: "candidate principles to consider", each as a one-line observation with its evidence (e.g. "won clutches fought one enemy at a time in 78% of fights vs 41% in lost ones, n=..."). I decide what, if anything, goes in the playbook.
-- Optional later: the same measures as coach detectors (app/coach/detectors.py) with logged ids, if I adopt a principle.
+Findings name players and matches, so the report and CSV are written to a local, uncommitted path (the session
+scratchpad, or a git-ignored folder; check `.gitignore` and add one if needed). Code and tests can be committed.
 
-RULES
-- Read-only on the DB. No new tables unless I ask. Code and tests (tests/suites.toml) can be committed; findings cannot.
-- Don't touch playbook.md or its version.
+## Scope
 
-FIRST STEP
-Count clutches (by X, won/lost) in the replays, then compute measure 1 (isolation) alone and show me the won/lost comparison with 5 example moments of each.
+- Clutches: a player is the last alive on their side against N ≥ 1 enemies, until the round ends. Also, as a
+  separate group, close 2vN situations (two left against two or three).
+- Every clutch in our replays: friends and strangers (both teams are recorded). Strangers are numbered in the
+  output, never named.
+
+## What exists
+
+- Sight, view cones and blinding: `app/control/engine.py`; who could see whom per moment: Critical Moments' sight
+  checks (`app/moments/fights.py` `_sees_point`, `_first_sight`).
+- Unknown space and back-shots: the engine's `Unknown`, `app/gaps/` (`replay_gaps`).
+- Locating events (seen, heard): `Unknown._locating`, hearing rules in
+  `docs/superpowers/specs/2026-10-14-hearing-attribution-design.md`.
+- Util left, used, and "died holding util": Critical Util (`app/critutil/extract.py` `_unused`, `replay_round_util`).
+- Health and armour, statuses: `player_state` in the blob.
+- Plant and defuse tries (`player_state.plants`, defuse records), the spike state.
+- Starting win chance: `app/services/util_model.py`.
+- Coach detectors (`app/coach/detectors.py`) may already compute parts of this; reuse them.
+
+## Measures (per clutch, from its start to the round end)
+
+1. **Isolation:** at each engagement (first sight or damage between the player and an enemy), how many living
+   enemies had line of sight to the player. "One at a time" = share of engagements where exactly one could.
+2. **Clock:** time left at the start; time spent still vs moving; whether they planted or started a defuse with
+   enough time; when the first engagement happened relative to the time left.
+3. **Unknown space:** how much of the map the enemies could be in at the start and over time (the engine's unknown
+   for the player's side); whether the player moved into or away from it; back-shots taken.
+4. **Information:** enemies seen or heard before each engagement; whether the player faked (a defuse tap, noise
+   on one side then moved): check what the blob records.
+5. **Util:** util held at the start, used during, held at death.
+6. **State:** weapons vs the enemies' weapons, health, the spike, N, and side.
+7. **Outcome:** won or lost, and the starting win chance, so a 1v3 win counts for more than a 1v1.
+
+## Analysis
+
+- Compare won and lost clutches on each measure, controlling for the starting win chance (outcome minus
+  expected), within groups of N.
+- Small samples: counts, medians and intervals (cluster bootstrap by match), never a single p-value as a verdict.
+  Report every measure, including those that show nothing.
+- For each pattern that stands out: its size, n, and 3–5 example moments (match uuid, round, time) the owner can
+  watch in the viewer, both ones that followed the pattern and ones that did not.
+
+## Output
+
+- `scripts/clutch_review.py` (through `scripts/with_friends_db.py --read-only`) writes:
+  - a markdown report: counts by N, every measure won vs lost with intervals, examples;
+  - a CSV of every clutch with its measures (for the owner to sort and filter);
+  - a final section, "Candidate patterns for the owner", one line each with its evidence, e.g. "won clutches
+    fought one enemy at a time in 78% of engagements vs 41% in lost ones (n = ...)". No principle wording.
+- Optional later, only if the owner adopts a principle: the measure as a coach detector with logged ids the checker
+  trusts.
+
+## Rules
+
+- Read-only on the database. No new tables unless the owner asks.
+- No change to `playbook.md` or its version.
+
+## Tests
+
+Pure tests for clutch detection (start, N, end), isolation counting on a synthetic round, and the outcome-minus-
+expected comparison. Add to `tests/suites.toml`.
+
+## Phases and done criteria
+
+1. Count clutches by N, won and lost. Compute isolation alone; show the comparison with 5 examples of each. Done
+   when the owner has watched the examples.
+2. The rest of the measures and the full report. Done when the owner has the report and CSV locally.
+
+## Open questions for the owner
+
+- Whether 2vN situations are in scope.
+- Which measures matter most to check first after isolation.

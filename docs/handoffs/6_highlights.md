@@ -1,30 +1,105 @@
-HANDOFF 6 — Highlight clips: GIF/MP4 export from the replay viewer + auto-found highlights
+# Handoff 06: Clip export from the replay viewer and auto highlights
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first. Short design spec in docs/superpowers/specs/ for my approval, then build. Never on the demo (demo replays don't exist there anyway; make sure the route 404s). Opponents never named: clips label enemies by agent (app/services/enemy_names.py), including any text drawn on the clip.
+Read `docs/handoffs/README.md` (ground rules) and `CLAUDE.md` first. A short design spec for the owner's
+approval, then build. Never on the demo (no replays there; make sure every new route 404s in demo mode).
+Opponents are never named, including any text drawn into a clip: "the enemy Jett".
 
-GOAL
-Part 1 (first): in the replay viewer, select a section of a round (start/end, or "the 10 s around this moment") and download it as an animated GIF and MP4 / WebM, ready to drop into Discord.
-Part 2: find highlights automatically (clutches, aces, 3k+, fastest multikills, ninja defuses, the biggest fight swings, the biggest util plays) and list them with one-click clips.
+## Goal
 
-WHAT EXISTS
-- The viewer: app/static/js/replay.js (one ~300 KB file) draws a round on a <canvas> over the minimap: players, yaw cones, util, control layer, health bars, spike. Templates app/templates/replays/replay.html, _player.html.
-- Critical Moments (app/static/js/moments.js, /replays/<uuid>/moments): fights with times. Fight swing tags. Critical Util (critutil.js): util values. Round data: kills, clutches in round_player_stats / squad.py's clutch logic.
+1. **Export (first):** in the replay viewer, choose a section of a round and download it as an animated GIF and as
+   MP4 or WebM, ready for Discord.
+2. **Auto highlights:** find the match's best moments automatically and list them with one-click clips.
 
-PART 1 — EXPORT (client-side, no server load)
-- Add an "Export clip" control: in/out handles on the timeline (default: the current time -3 s / +7 s), speed (1x, 2x), size (e.g. 512 or 720 px), toggles for the control layer / names / health bars, and a small caption (round, score, "the enemy Jett").
-- Render frame by frame off-screen: step the viewer's draw function at fixed dt (e.g. 20 fps for GIF, 30 for video) instead of real time, so the output is smooth and deterministic. Refactor replay.js only as needed to call one "draw at time t into this canvas" function.
-- MP4/WebM: canvas.captureStream + MediaRecorder is real-time; better use WebCodecs (VideoEncoder) where available with a small muxer (webm-muxer / mp4-muxer from cdnjs/jsdelivr, pinned version), and fall back to MediaRecorder.
-- GIF: gif.js or gifenc (pinned version, worker-based). Keep GIFs under Discord's free limit: show the estimated size, and lower fps/size automatically if needed.
-- Show progress; allow cancel. No upload; the file downloads.
-- Shareable link too: /replays/<uuid>?round=N&t=12.3&until=22.0 opens the viewer at that section (check what URL params already exist).
+## What exists
 
-PART 2 — AUTO HIGHLIGHTS
-- A pure function over a match's stored data: candidates with (round, t_start, t_end, kind, player, score). Kinds: clutch won (1vN, N>=2), ace, 3k/4k within 10 s, entry 2k, defuse with enemies alive, fight swing top 3, Critical Util top 3, the biggest win-chance swing in the match (util_model).
-- A "Highlights" tab in the viewer and a per-match strip on the match page; each item jumps the viewer there and offers "Export clip".
-- Later (ask me): a weekly digest of the group's top highlights.
+- The viewer is `app/static/js/replay.js` (one large file, about 300 KB). A viewer object holds the canvas
+  (`[data-replay-canvas]`), fits the view (`fitView`), and redraws with `this.draw()`; playback advances in a
+  `requestAnimationFrame(this.tick)` loop. It draws players, yaw cones, util, the control layer and heatmaps
+  (`paintHeatmap`), health bars and the spike over the minimap.
+- The page takes `?round=n` and `?t=` (seconds into the round; `app/routers/replays.py`).
+- Data for highlights: Critical Moments fights (`/replays/<uuid>/moments`, `app/static/js/moments.js`), fight
+  swing tags, Critical Util values (`/replays/<uuid>/util.json`, `critutil.js`), the kill feed, clutch logic
+  in `app/services/squad.py`, round-win chance (`app/services/util_model.py`).
 
-TESTS
-Pure-function tests for the candidate finder (add to tests/suites.toml); a browser journey for the export (tests/browser, --require-browser) that exports a 2 s clip and checks the file's size/type.
+## Part 1: export (all in the browser, no server work)
 
-FIRST STEP
-Find where replay.js draws a frame and how the playback clock works; report whether a "draw at t into canvas" function can be pulled out cleanly, then build Part 1 behind a small UI on one branch.
+### UI
+
+- An "Export clip" button opens a small panel: in and out handles on the timeline (default: current time −3 s to
+  +7 s), speed (1x, 2x), output size (512 or 720 px wide), format (GIF, MP4/WebM), toggles for the control layer,
+  names and health bars, and an optional caption (round, score, "1v3 clutch").
+- Progress bar and Cancel. The result downloads; nothing is uploaded.
+- Share link: "Copy link to this moment" produces `/replays/<uuid>?round=n&t=<in>` (and `&until=<out>` if the
+  viewer learns to stop there; small change).
+
+### Rendering
+
+- Render frame by frame at a fixed step (20 fps for GIF, 30 fps for video), not in real time, so output is
+  deterministic and smooth regardless of machine speed.
+- That needs a function that draws the state at time t into a given canvas at a given size. Find how `draw()`
+  reads the current time and the canvas; pull out `drawAt(t, ctx, size, options)` with as small a change as
+  possible. Do not restructure the viewer beyond that.
+- Draw the caption into the frame (top bar), with enemy names replaced by agent labels.
+
+### Encoding
+
+- **Video:** WebCodecs `VideoEncoder` where available (Chrome, Edge, recent Safari), muxed with a small muxer
+  library (`mp4-muxer` or `webm-muxer`, an exact pinned version from jsdelivr or cdnjs). Fallback:
+  `canvas.captureStream()` + `MediaRecorder` to WebM (real time; show that it will take the clip's length).
+- **GIF:** a worker-based encoder (`gifenc` or `gif.js`, pinned version). Palette per clip, not per frame, to
+  keep size down.
+- **Size:** estimate size before export; Discord's free upload limit is small (check the current limit), so if
+  the estimate is over it, offer lower fps or size automatically.
+- Load encoder libraries lazily, only when the panel opens.
+
+## Part 2: auto highlights
+
+### Candidate finder (pure function, server side)
+
+Input: one match's stored data (kill feed, rounds, moments, util rows, win-chance estimator). Output: a list of
+`{round, t_start, t_end, kind, slot, score, summary}`.
+
+Kinds:
+
+- clutch won (1vN, N ≥ 2), with N in the score;
+- ace; 4k; 3k within 10 s;
+- an entry 2k (first two kills of the round within 5 s by one player);
+- defuse with enemies alive (a "ninja" defuse when no enemy saw the defuser: use sight from moments);
+- the match's top 3 fight swings (from the fight swing tag);
+- the match's top 3 util plays by Critical Util value;
+- the match's biggest single change in round-win chance (estimator before vs after an event).
+
+Score per kind so the list can be sorted; window = a few seconds before the first event to 2 s after the last.
+
+### UI
+
+- A "Highlights" tab in the viewer's side column: each item jumps to its moment and has "Export clip" prefilled.
+- A highlights strip on the match page.
+- Later, with the owner's go-ahead: a weekly digest of the group's top highlights (a page first; Discord
+  posting is a separate decision).
+
+## Tests
+
+- Pure tests for the candidate finder (clutch detection, multikill windows, scoring order).
+- A browser journey (`tests/browser`, `--require-browser`) that opens a fixture replay, exports a 2 s clip in each
+  format, and checks the file type and that it is non-empty.
+- Add to `tests/suites.toml`; register any new route in `site_health.PAGE_ROUTES`.
+
+## Phases and done criteria
+
+1. Find the draw path in `replay.js` and report whether `drawAt(t, ctx, size, options)` can be pulled out cleanly.
+2. GIF export end to end. Done when a 10 s clip exports and plays in Discord.
+3. Video export with fallback.
+4. Candidate finder and Highlights tab.
+
+## Open questions for the owner
+
+- Default clip length and size.
+- Which highlight kinds matter most.
+- Whether a digest page is wanted, and whether it should ever post to Discord.
+
+## Pitfalls
+
+- Fonts and images drawn into the canvas must be loaded before rendering frames, or frames come out blank.
+- A tainted canvas (cross-origin images) cannot be read back: minimap images must come from the same origin.
+- Keep the export code out of the main viewer bundle path so normal page loads do not get heavier.

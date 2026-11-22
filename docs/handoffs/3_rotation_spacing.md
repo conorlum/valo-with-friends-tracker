@@ -1,37 +1,129 @@
-HANDOFF 3 — Rotations and spacing (tradeable deaths)
+# Handoff 03: Tradeable deaths, spacing and rotations
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first. This is hard: start with a research note and a feasibility measurement, then a design spec in docs/superpowers/specs/ for my approval, then code. Never on the demo. Opponents never named. Measurements, not verdicts (like Critical Moments).
+Read `docs/handoffs/README.md` (ground rules, shared building blocks) and `CLAUDE.md` first.
 
-TWO PARTS. Do spacing first (easier, more concrete), then rotations.
+This is hard. Work in this order: a feasibility measurement, a short research note, a design spec for the
+owner's approval, then code. Do Part A (spacing) fully before starting Part B (rotations).
 
-PART A — SPACING / TRADEABLE DEATHS
-Question: when a friend died, could a teammate have traded?
-- For each death: every living teammate's distance to the killer and to the victim at the moment of death, and whether they had line of sight to the killer's position within T seconds (the trade window is 6 s elsewhere: CHAIN_S in fight swing; pick T, e.g. 3 s, with me).
-- "Tradeable" = a teammate could reach a sight line to the killer within T at run speed. Use the walkable grid and sight mask the control engine already uses (app/control/engine.py, geometry.py). A path distance on the walk grid beats a straight-line one.
-- Outcomes: tradeable and traded / tradeable and not traded (the teammate's miss) / untradeable (the victim's spacing, or the team's).
-- Per player: untradeable death rate, "left me untraded" counts by teammate, by map/side/phase. Per pair: average spacing when both are alive, and the trade rate (squad.py already counts trades; reuse its trade rule).
-- Also team spread over the round (mean pairwise path distance, the largest group) for won vs lost rounds.
+## Part A: tradeable deaths and spacing
 
-PART B — ROTATIONS
-Question: did a rotation help or hurt, and was it early or late?
-- Detect a rotation: a defender (or attacker lurk) leaves one site/area region for another, crossing a defined mid/rotate path, in callouts.json terms. Define the site regions per map in data, not code.
-- What triggered it: the last info before leaving (an enemy seen or heard, a teammate's death, a util reveal, a call we can't see). The control engine's locating events (Unknown._locating) and app/services/replay_moments.py give seen/heard moments.
-- Timing: seconds from the trigger to leaving; arrival vs the plant / the fight at the destination.
-- Value: compare with similar states where no one rotated, using the round-win estimator (app/services/util_model.py), like Critical Util's no-util baseline (util_values.py "lift"). Shrink toward a prior and show CIs. Sample sizes will be small. Say so.
-- Categories to show (no "good/bad" words): rotated on info / rotated with no visible info (possible fake bite) / stayed while the site fell / arrived after the plant.
+### Question
 
-DATA WE HAVE
-Condensed replay positions per tick, deaths, sight (engine), unknown space (app/gaps), map areas (callouts.json + control/<asset>.areas.json), layouts (layouts.py), the kill feed and trades in the DB.
+When a friend died, could a teammate have traded the killer? If not, whose spacing was it: the victim's
+(isolated) or the team's (nobody close)?
 
-WHERE IT GOES
-- Computed on the worker in the gap run next to Critical Moments (app/moments, app/gaps) if it needs geometry, with its own revision/fingerprint and failure status; stored per round like replay_round_moments. A new table means a migration.
-- UI: tags in the Critical Moments tab ("untradeable death", "rotation, 4.2 s after info"), and a per-player / per-pair summary on the player page and /squad.
-- The coach brief can cite these later (logged ids for app/coach/checker.py).
-- Add suites to tests/suites.toml. Run the slow lane before merging changes to gaps/control.
+### What already exists
 
-OPEN QUESTIONS FOR ME
-- The trade window T, and run speed vs shift-walk for "could reach".
-- Site/rotate region definitions per map: whether I hand-draw them in the tagger.
+- Critical Moments already records trades per fight (`app/moments/fights.py` `_trade`) with
+  `TRADE_WINDOW_S` = 6 s (pinned equal to Impact's trade window by a test) and `TRADE_RANGE_M` = 20 m, and
+  teammates fighting alongside (`_mates`, `WITH_AIM_DEG`). Read these first: part of Part A may be a new view of
+  existing data plus a "could have" check.
+- `/squad` counts trades between friends (`app/services/squad.py`).
+- Sight and walkability: the control engine's sight mask and walk grid (`app/control/engine.py`,
+  `app/control/geometry.py`), route distances on the walk grid (`app/control/route_runtime.py` `topology_for`).
 
-FIRST STEP
-Read-only: on 3-5 replays, compute Part A for every death and print a table (victim, nearest teammate path distance, sight possible within T, traded?). I'll check the labels by eye in the viewer before anything else.
+### Definitions (declare before measuring)
+
+- **Could trade:** a living teammate T could have got line of sight to the killer's position within W seconds of
+  the death, moving at run speed along the walk grid (path distance / run speed ≤ W), and was not blinded,
+  stunned or otherwise disabled at the time (status intervals in `player_state`). Propose W = 3 s, distinct from
+  the 6 s window for "was traded" (a trade within 6 s that needed 5 s of running is a slow trade, not a quick one).
+- **Sight to the killer's position:** the set of cells from which the killer's cell is visible (sight mask, with
+  that moment's smokes). The nearest such cell by path distance from T.
+- **Outcome classes per death** (one each):
+  - traded (within `TRADE_WINDOW_S`);
+  - tradeable, not traded (someone could, nobody did);
+  - untradeable, isolated (no teammate within reach, while the team was grouped elsewhere: the victim was alone);
+  - untradeable, team spread (no teammate within reach of anyone: the team was spread out);
+  - not applicable (last alive, post-round, killed by util or the spike).
+- **Isolated vs spread:** compare the victim's distance to the nearest teammate with the team's median nearest-
+  teammate distance at that moment. Declare the rule.
+
+### Measures
+
+- Per player: share of deaths in each class, by map, side and phase (pre-plant/post-plant), with n.
+- Per teammate: "could have traded and didn't" counts (who left whom), with the reason when visible (was looking
+  away, was in another fight, was disabled).
+- Per pair of friends: median path distance while both alive, share of each other's deaths that were tradeable,
+  trade rate when tradeable.
+- Team spread over a round: mean pairwise path distance and the largest group within 15 m, sampled every 2 s,
+  compared between won and lost rounds by side.
+
+### Validation
+
+Label 40 deaths with the owner in the viewer (round, time list) before trusting the classes; report agreement.
+
+## Part B: rotations
+
+### Question
+
+When a player rotated, what triggered it, when did they leave and arrive, and how did similar situations go
+without a rotation?
+
+### Definitions (declare before measuring)
+
+- **Regions per map:** site A, site B (and C), mid, attacker side, defender spawn, built from callouts' `super`
+  field plus a small per-map data file for anything the `super` field does not cover. Data, not code. The
+  owner may want to draw or adjust them in the tagger; ask.
+- **A rotation:** a defender (or an attacker lurking on the far side) whose region changes from one site region
+  to the other (possibly through mid or spawn) within the round's live time, staying in the destination for at
+  least 2 s. Also "partial rotation": leaves a site toward the other and turns back.
+- **Trigger:** the last information event the player's team had before the player started moving: an enemy seen
+  by any teammate, a sound locating an enemy (the engine's locating events, `Unknown._locating`; hearing rules in
+  `docs/superpowers/specs/2026-10-14-hearing-attribution-design.md`), a teammate's death, a reveal from util,
+  a spike seen or the plant. "No visible trigger" is a valid class (a call we cannot see, or a guess).
+- **Timing:** trigger to departure, departure to arrival, arrival relative to the plant and to the first fight at
+  the destination.
+
+### Value
+
+Compare rounds with a rotation to rounds in a similar state without one, using the round-win estimator
+(`app/services/util_model.py`) for the state, the way Critical Util's no-util baseline does (`util_values.py`,
+`lift`): the change in win chance over the next 15 s against matched moments. Shrink toward 0 with a prior and
+show CIs. Expect very small samples per map; say so on the page.
+
+### Classes to show (no good/bad wording)
+
+- rotated on info; rotated with no visible info (a possible fake); stayed while the other site fell; rotated
+  and arrived after the plant; rotated and arrived before the plant.
+
+## Output
+
+- **Critical Moments tab:** a tag on each death ("tradeable: Name 11 m away, not traded" — friend names only,
+  opponents by agent) and on each rotation ("left B 2.1 s after Mid contact, arrived at A 0:41, 3 s after plant").
+- **Player page:** death classes and rotation timing summary.
+- **/squad:** pair spacing and "left untraded" table.
+- **Coach:** later, as facts with logged ids the checker trusts (`app/coach/checker.py`); ask the owner.
+
+## Storage and pipeline
+
+- Phase 1: read-only script over stored blobs (`scripts/spacing.py measure`).
+- If kept: computed on the worker in the gap run next to Critical Moments (it needs the walk grid and sight), with
+  its own result key and failure status, stored per round like `replay_round_moments` (new table or new fields;
+  bump `GAPS_REVISION`). The worker image must ship the new module.
+
+## Tests
+
+- Synthetic map grids: a teammate behind a wall at 10 m flat but 40 m path is not tradeable; a blinded teammate is
+  not; a teammate in another fight is flagged. Rotation detection on synthetic tracks with boundary jitter.
+- Add to `tests/suites.toml`; run the slow lane before merging gap-run changes.
+
+## Phases and done criteria
+
+1. Part A feasibility on 3–5 replays: a table per death (victim, nearest teammate path distance, sight reachable
+   within W, traded). Done when the owner has checked it in the viewer.
+2. Part A full build and UI.
+3. Part B feasibility: rotation detection and trigger finding on 5 replays, checked by eye.
+4. Part B value and UI.
+
+## Open questions for the owner
+
+- W for "could trade"; run speed vs walk speed for reach.
+- How regions are defined per map (from `super`, hand-drawn in the tagger, or both).
+
+## Pitfalls
+
+- Flat distance lies across walls and floors: always use path distance on the walk grid.
+- A teammate who could see the killer's cell may still not see the killer (smoke, facing). "Could trade" is about
+  position; facing is reported separately.
+- Rotations are rare per map; resist adding thresholds until there is data.

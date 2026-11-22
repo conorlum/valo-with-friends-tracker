@@ -1,36 +1,82 @@
-HANDOFF 16 — Peek types: jiggle, wide swing, held angle, re-peek
+# Handoff 16: Peek types and win rates
 
-Repo: conorlum/valo-with-friends-tracker (public). Read CLAUDE.md first. This is hard: research and a hand-labelled check first, then a design spec in docs/superpowers/specs/ for my approval, then code. Never on the demo. Opponents never named. Every figure with n. Measurements, not verdicts.
+Read `docs/handoffs/README.md` (ground rules, shared building blocks) and `CLAUDE.md` first. This is hard:
+measure feasibility and agree labels with the owner by hand before a design spec, then code.
 
-GOAL
-Label how each fight started for each player, then show win rates per type, distance and player: "you win 61% of wide swings and 34% of re-peeks". Related to handoff 04 (crosshair/yaw); share its first-sight event if built.
+## Goal
 
-WHAT EXISTS
-- Positions, yaw (no pitch: check) and z per tick in condensed blobs (app/replays/condense.py; check the real sample rate GRID_HZ and smoothing first; a jiggle is ~0.2-0.5 s, so the data may be too coarse: find out before anything else).
-- Sight per pair from the control engine (app/control/engine.py); fights and "saw first" from Critical Moments (app/moments/fights.py), which already tags moving while firing (speed > 2.5 m/s per shot).
-- Shots and damage events; gun_ranges.json, guns.json for distance bands and weapon classes.
+Label how each fight started for the player (jiggle, wide swing, held angle, re-peek), then show win rates by type,
+distance and player: "you win 61% of wide swings and 34% of re-peeks". Related to handoff 04 (crosshair): share
+its first-sight event if built.
 
-DRAFT TYPES (agree with me; per player per fight opening)
-- Held angle: the player was still (speed < ~0.5 m/s over the last 1 s) and the enemy came into their sight.
-- Wide swing: the player moved into the enemy's sight at speed, crossing well past the corner (lateral travel > X m after first sight).
-- Jiggle / shoulder: short exposure (< ~0.4 s) and back to cover, repeated or followed by a re-expose.
-- Re-peek: the player had lost sight of this enemy (or traded damage) within the last few seconds and exposed again to the same enemy from the same spot.
-- Off-angle / jump / other: what's left. Don't force a label.
-Each needs "cover": the cell where the player had no sight to the enemy just before. Use the sight mask to find when line of sight opened and which side of the corner each player was on.
+## What exists
 
-METHOD
-1. For each fight opening: the moment line of sight opened between P and E (who moved into whom: whose movement opened it), P's speed and lateral travel before/after, exposure duration, prior sight of E in the last N s.
-2. Rule-based labels first. Hand-label 50 openings with me in the viewer; tune thresholds; freeze them in the spec. Report the agreement rate; if it's low, say so and stop.
-3. Outcome: duel won (Critical Moments' fight result), damage dealt/taken, time to first damage.
-4. Per player × type × distance band: win rate shrunk toward the type's average across all players in our replays (strangers unnamed), CI by match (stats_math.py).
-5. Peeker's advantage check: peeker vs holder win rate overall, as a sanity check against what's known.
+- Positions, yaw and z at 16 Hz in the blob (one sample every 62.5 ms).
+- Sight per pair: Critical Moments' `_first_sight` and `_sees_point` (`app/moments/fights.py`); duels per fight with
+  `you_saw_t`, `they_saw_t`, angles; the tags `saw_first`, `seen_first`, `caught_off_angle`.
+- Speed: `_speed` and `_moving` in fights.py, `MOVING_MPS` 2.5, `SPEED_MAX_SPAN_S` 0.2; movement casts are
+  excluded from speed (`DASH_EXCLUDE_S`).
+- Fight results and kills, time to kill.
+- Distance bands (`app/replays/gun_ranges.json`), weapon classes (`app/replays/guns.json`).
 
-OUTPUT
-- Critical Moments tab: a peek-type tag per fight ("wide swing, 7 m, won").
-- Player page: a table of types × win rate with n, vs everyone's average, and the most common losing type with example links into the viewer.
+## Check first
 
-WHERE IT GOES
-On the worker in the gap run beside Critical Moments (new fields, revision bump, its own failure status), after a read-only script proves it. Add suites to tests/suites.toml; run the slow lane before merging gaps/control changes.
+- Is 16 Hz enough? A jiggle exposes for about 0.2–0.5 s: 3 to 8 samples. Measure whether positions are true samples
+  or interpolated, and how much they jitter while standing still. If a jiggle cannot be told apart from noise,
+  drop the jiggle type and say so.
+- Who opened the sight line: the player moving into the enemy's sight, the enemy moving into theirs, or both.
+  This is the core of the labels.
 
-FIRST STEP
-Read-only: report the position/yaw sample rate and smoothing, then label 3 replays' fight openings with the draft rules and give me 20 (round, time, player, label) to check in the viewer.
+## Draft types (agree with the owner; per player per fight opening)
+
+- **Held angle:** the player was still (speed under ~0.5 m/s over the last 1 s) and the enemy came into their sight.
+- **Wide swing:** the player moved into the enemy's sight at speed and kept going well past the corner (sideways
+  travel more than X m after first sight; propose 1.5 m).
+- **Jiggle / shoulder:** a short exposure (under ~0.4 s) followed by a return to cover, possibly repeated.
+- **Re-peek:** the player had lost sight of this enemy within the last few seconds (or traded damage with them) and
+  exposed again from about the same spot (within 2 m).
+- **Other:** jumps, drops, off-angles, util-forced fights. Do not force a label.
+
+"Cover" is where the player had no sight to the enemy just before: from the sight mask, find when line of sight
+opened and on which side of the corner each player was.
+
+## Method
+
+1. For each fight opening: who opened the line, the player's speed and sideways travel before and after, how long
+   the exposure lasted, earlier sight of the same enemy in the last N s, distance, weapon.
+2. Rule-based labels. Label 50 openings with the owner in the viewer; tune thresholds; freeze them in the spec.
+   Report agreement. If agreement is low, stop and report rather than building on it.
+3. Outcome: duel won (Critical Moments' result), damage dealt and taken, time to first damage.
+4. Per player × type × distance band: win rate shrunk toward the type's average across all players in our replays
+   (strangers unnamed), intervals by match.
+5. Sanity check: peeker vs holder win rate overall; the known peeker's advantage should show up. If it is far off,
+   look for a labelling bug first.
+
+## Output
+
+- **Critical Moments tab:** a peek-type tag per fight ("wide swing, 7 m, won").
+- **Player page:** a table of type × win rate with n, against everyone's average; the most common losing type with
+  example links into the viewer.
+
+## Storage and pipeline
+
+On the worker in the gap run beside Critical Moments (new fields, moments `VERSION` and `GAPS_REVISION` bump, the
+same failure status), after a read-only script proves it.
+
+## Tests
+
+Synthetic tracks for each type around a synthetic corner: held, wide, jiggle, re-peek; noise robustness; who-opened
+logic. Add to `tests/suites.toml`; run the slow lane before merging gap-run changes.
+
+## Phases and done criteria
+
+1. Read-only: the sample-rate and jitter report, then the draft rules on 3 replays with 20 (round, time, player,
+   label) for checking. Done when the owner has checked them.
+2. Hand labelling session and frozen thresholds. Done when agreement is reported.
+3. Worker fields and UI.
+
+## Open questions for the owner
+
+- The type list.
+- Thresholds after the labelling session.
+- Whether "who opened the line" should also show on its own (peeker vs holder) as a simpler first feature.
