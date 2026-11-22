@@ -97,6 +97,12 @@ def test_ascent_paint_is_exactly_the_traced_cells():
     assert hashlib.sha256(cells.tobytes()).hexdigest() == (
         "c0fc187d8ec389641d7fb3f376ff9035e6bb00b50c5d9f87c125d32a3117abe8")
     del tags["maps"]["Ascent"]["cover_paint"]
+    # R1.1 permits only Abyss's qualified rope-domain subsets. The owner-review
+    # regression pins those; restore them here to retain these original broad pins.
+    from tests.replays.test_owner_map_reviews import original_rope_domain
+    for route in tags["maps"]["Abyss"]["map_features"]["routes"]:
+        if "walking_domain" in route:
+            route["walking_domain"] = original_rope_domain(route)
     assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
         "ca9b31cea8a20723fc635b05871aa98e927c1b1d0721849cd98ef4280c321d37")
     # Also pin the remaining tag inputs with Haven's review disabled.

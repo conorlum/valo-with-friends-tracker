@@ -2,6 +2,7 @@
 
 All expectations are literals: the private review input is never needed by tests.
 """
+import copy
 import hashlib
 import json
 
@@ -9,7 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.control import geometry as cg
+from app.control import geometry as cg, rope_ground
 
 TAGS = cg.load_tags()["maps"]
 INDEX = json.loads((cg.ASSET_DIR / "index.json").read_text(encoding="utf-8"))["maps"]
@@ -155,7 +156,13 @@ def test_mixed_shape_paint_composes_into_geometry(name):
 
 @pytest.mark.parametrize("name", EXPECTED)
 def test_unreviewed_fields_are_preserved(name):
-    assert digest({k: v for k, v in TAGS[name].items() if k not in MUTABLE}) == BASE_PRESERVED[name]
+    entry = copy.deepcopy(TAGS[name])
+    if name == "Abyss":
+        # R1.1 permits only pruning/re-stamping these domains; retain the original pin.
+        for route in entry["map_features"]["routes"]:
+            if route["id"] in ROPE_BASE_SHA256:
+                route["walking_domain"] = original_rope_domain(route)
+    assert digest({k: v for k, v in entry.items() if k not in MUTABLE}) == BASE_PRESERVED[name]
 
 
 @pytest.mark.parametrize("name", BASE_UNTOUCHED)
@@ -182,3 +189,143 @@ def test_base_passing_maps_still_pass_with_wall_diagnostics():
             assert row["kill_lines"]["passes"]
             assert row["kill_lines_with_walls"] is not None
     assert EXPECTED["Abyss"]["seeacross"] == [53, 59]
+# R1.1: origin/main domains before requalification; literal rows/edges removed by
+# the owner's >50% permanent-walk rule. Restoring them must reproduce the base pin.
+ROPE_COUNTS = {'route-10': (195, 1282, 195, 1282),
+ 'route-12': (127, 700, 127, 700),
+ 'route-4': (368, 2560, 350, 2474),
+ 'route-8': (276, 1688, 276, 1688)}
+ROPE_BASE_SHA256 = {'route-10': '4c06eebe11aabe854f57b6c1b8277e8e777ea5abb71cf4e23784cb3730816b69',
+ 'route-12': 'e606c4adee143d34588b42e45a4d2652d878c41d9b702c83293d318989a10805',
+ 'route-4': '19459d0cca582f4904d41bf4e17afd214b3aa71632c87b573406f0884bc0102c',
+ 'route-8': '4d959deeffc851854245ecada0768d26d7b9c64ce8f409907ce77369b0a5a9c0'}
+ROPE_REMOVED = {'route-4': {'coarse': [[1845, [130], 1], [1846, [130], 1], [1973, [130], 1], [1974, [130], 1],
+                        [1975, [130], 1], [2101, [130], 1], [2102, [130], 1], [2106, [101], 1],
+                        [2229, [130], 1], [2234, [101], 1], [2357, [130], 1], [2358, [130], 1],
+                        [2485, [130], 1], [2486, [130], 1], [2487, [130], 1], [2613, [90], 1],
+                        [2614, [90], 1], [2616, [90], 1]],
+             'edges': [[1845, 0, 1846, 0, 0], [1845, 0, 1973, 0, 0], [1845, 0, 1974, 0, 0],
+                       [1846, 0, 1845, 0, 0], [1846, 0, 1973, 0, 0], [1846, 0, 1974, 0, 0],
+                       [1846, 0, 1975, 0, 0], [1973, 0, 1845, 0, 0], [1973, 0, 1846, 0, 0],
+                       [1973, 0, 1974, 0, 0], [1973, 0, 2101, 0, 0], [1973, 0, 2102, 0, 0],
+                       [1974, 0, 1845, 0, 0], [1974, 0, 1846, 0, 0], [1974, 0, 1973, 0, 0],
+                       [1974, 0, 1975, 0, 0], [1974, 0, 2101, 0, 0], [1974, 0, 2102, 0, 0],
+                       [1975, 0, 1846, 0, 0], [1975, 0, 1974, 0, 0], [1975, 0, 2102, 0, 0],
+                       [2101, 0, 1973, 0, 0], [2101, 0, 1974, 0, 0], [2101, 0, 2102, 0, 0],
+                       [2101, 0, 2229, 0, 0], [2102, 0, 1973, 0, 0], [2102, 0, 1974, 0, 0],
+                       [2102, 0, 1975, 0, 0], [2102, 0, 2101, 0, 0], [2102, 0, 2229, 0, 0],
+                       [2106, 0, 2234, 0, 0], [2229, 0, 2101, 0, 0], [2229, 0, 2102, 0, 0],
+                       [2229, 0, 2357, 0, 0], [2229, 0, 2358, 0, 0], [2234, 0, 2106, 0, 0],
+                       [2234, 0, 2235, 0, 1], [2234, 0, 2362, 0, 1], [2235, 0, 2234, 0, 0],
+                       [2357, 0, 2229, 0, 0], [2357, 0, 2358, 0, 0], [2357, 0, 2485, 0, 0],
+                       [2357, 0, 2486, 0, 0], [2358, 0, 2229, 0, 0], [2358, 0, 2357, 0, 0],
+                       [2358, 0, 2485, 0, 0], [2358, 0, 2486, 0, 0], [2358, 0, 2487, 0, 0],
+                       [2362, 0, 2234, 0, 0], [2485, 0, 2357, 0, 0], [2485, 0, 2358, 0, 0],
+                       [2485, 0, 2486, 0, 0], [2486, 0, 2357, 0, 0], [2486, 0, 2358, 0, 0],
+                       [2486, 0, 2485, 0, 0], [2486, 0, 2487, 0, 0], [2486, 0, 2615, 1, 0],
+                       [2487, 0, 2358, 0, 0], [2487, 0, 2486, 0, 0], [2487, 0, 2615, 1, 0],
+                       [2613, 0, 2614, 0, 0], [2613, 0, 2741, 0, 0], [2613, 0, 2742, 0, 0],
+                       [2614, 0, 2613, 0, 0], [2614, 0, 2615, 0, 0], [2614, 0, 2741, 0, 0],
+                       [2614, 0, 2742, 0, 0], [2614, 0, 2743, 0, 0], [2615, 0, 2614, 0, 0],
+                       [2615, 0, 2616, 0, 0], [2615, 1, 2486, 0, 0], [2615, 1, 2487, 0, 0],
+                       [2616, 0, 2615, 0, 0], [2616, 0, 2617, 0, 0], [2616, 0, 2743, 0, 0],
+                       [2616, 0, 2744, 0, 0], [2616, 0, 2745, 0, 0], [2617, 0, 2616, 0, 0],
+                       [2741, 0, 2613, 0, 0], [2741, 0, 2614, 0, 0], [2742, 0, 2613, 0, 0],
+                       [2742, 0, 2614, 0, 0], [2743, 0, 2614, 0, 0], [2743, 0, 2616, 0, 0],
+                       [2744, 0, 2616, 0, 0], [2745, 0, 2616, 0, 0]],
+             'fine': []}}
+
+
+def original_rope_domain(route):
+    domain = copy.deepcopy(route["walking_domain"])
+    removed = ROPE_REMOVED.get(route["id"], {})
+    for key in ("coarse", "fine", "edges"):
+        rows = {json.dumps(row): row for row in domain[key] + removed.get(key, [])}
+        domain[key] = sorted(rows.values())
+    domain["walk_sha"] = "42d1d3f29a3c"
+    return domain
+
+
+ENABLED_ROPE_DOMAINS = [
+    (name, route["id"])
+    for name, entry in TAGS.items()
+    for route, _ in rope_ground.domains_for(
+        entry.get("map_features", {}))
+]
+
+
+@pytest.mark.parametrize("name,route_id", ENABLED_ROPE_DOMAINS)
+def test_committed_enabled_rope_domains_validate_permanent_walk(name, route_id):
+    from app.control import rope_ground
+
+    geo = cg.load_geometry(name, load_features=False, height_mode="flat")
+    route = next(r for r in TAGS[name]["map_features"]["routes"] if r["id"] == route_id)
+    assert rope_ground.validate_domain(geo, route["walking_domain"])
+
+
+@pytest.mark.parametrize("route_id", ROPE_COUNTS)
+def test_requalified_rope_domains_are_base_subsets(route_id):
+    assert set(ENABLED_ROPE_DOMAINS) == {("Abyss", rid) for rid in ROPE_COUNTS}
+    route = next(r for r in TAGS["Abyss"]["map_features"]["routes"] if r["id"] == route_id)
+    domain = route["walking_domain"]
+    original = original_rope_domain(route)
+    assert digest(original) == ROPE_BASE_SHA256[route_id]
+    before_rows, before_edges, after_rows, after_edges = ROPE_COUNTS[route_id]
+    assert len(original["coarse"]) + len(original["fine"]) == before_rows
+    assert len(original["edges"]) == before_edges
+    assert len(domain["coarse"]) + len(domain["fine"]) == after_rows
+    assert len(domain["edges"]) == after_edges
+    for key in ("coarse", "fine", "edges"):
+        assert {json.dumps(row) for row in domain[key]} <= {json.dumps(row) for row in original[key]}
+        assert not {json.dumps(row) for row in domain[key]} & {
+            json.dumps(row) for row in ROPE_REMOVED.get(route_id, {}).get(key, [])}
+    assert domain["source_height_sha"] == original["source_height_sha"] == "f89fd35a74da"
+    geo = cg.load_geometry("Abyss", load_features=False, height_mode="flat")
+    assert domain["walk_sha"] == hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]
+
+
+def test_committed_abyss_flat_features_compile_and_prepare(monkeypatch):
+    import base64
+    from app.control import features as cf, rope_ground, route_runtime
+    from app.control.feature_runtime import prepare_geometry
+    from app.replays import map_feature_artifacts as fa, map_feature_inputs as fi, map_feature_sources
+    from app.services import control_feature_artifacts as archive
+
+    raw = (cg.ASSET_DIR / "tags.json").read_bytes()
+    geo = cg.load_geometry("Abyss", load_features=False, height_mode="flat")
+    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))["Abyss"]["xMultiplier"]
+    base = map_feature_sources.base_snapshot("Abyss", cg.ASSET_DIR, TAGS["Abyss"], scale)
+    inputs = fi.identify_features("Abyss", "flat", fi.capture_source_snapshot("Abyss", raw), base)
+    direct = cf.compile_artifact(geo, inputs, "0" * 40)
+    quiet_bundles = {b["id"] for b in TAGS["Abyss"]["map_features"]["bundles"]
+                     if b.get("enabled") and b.get("runtime_consumer") == "quiet_rope_v1"}
+    assert inputs.key.height_digest == "flat" and geo.heights is None
+    assert quiet_bundles <= set(direct.manifest["active_bundles"])
+    assert not quiet_bundles.intersection(direct.manifest["pending"])
+
+    # Exercise the service's preparation contract without a DB or child process.
+    stored = []
+    monkeypatch.setattr(archive, "find_artifact", lambda db, key: None)
+    def compile_here(mode, payload):
+        request = fi.read_json(payload)
+        assert mode == request["mode"] == "compile" and request["height"] is None
+        child_inputs = fi.FeatureInput(fi.FeatureKey(**request["inputs"]["key"]),
+            base64.b64decode(request["inputs"]["canonical_inputs"]), b"", "")
+        child_geo = cf.geometry_from_feature_inputs(child_inputs, None)
+        return fa.encode_artifact(cf.compile_artifact(child_geo, child_inputs, "0" * 40))
+    def store(db, artifact, *, height_bytes):
+        assert height_bytes is None
+        stored.append(artifact)
+        return artifact
+    monkeypatch.setattr(archive, "run_feature_child", compile_here)
+    monkeypatch.setattr(archive, "store_artifact", store)
+    prepared = archive.prepare_artifact(None, inputs, None)
+    assert stored == [prepared] and prepared.digest == direct.digest
+    geo.features, geo.features_sha = prepared, prepared.digest
+    walking = prepare_geometry(geo)
+    assert walking.movement_only and walking.height_sha is None
+    assert geo.heights is None
+    owners = {r["owner"] for r, _ in rope_ground.domains_for(TAGS["Abyss"]["map_features"])}
+    arcs, reasons = route_runtime.readiness(walking, TAGS["Abyss"]["map_features"], owners)
+    assert not reasons
+    assert {a.route for a in arcs} == set(ROPE_COUNTS)
