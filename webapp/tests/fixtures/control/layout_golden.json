@@ -385,42 +385,42 @@
   "Summit": {
    "callouts_sha256": "3745f525b9b30ef0ef65a05d0a09cda63b2cf8b9e9992e191146c8e32eecab3a",
    "choke_asset_hash": "2934fc8174d06a42",
-   "control_fingerprint": "a8587638df0fe868",
+   "control_fingerprint": "26b59620875bde0f",
    "current_geometry": {
     "feature_key": {
      "compiler_version": 19,
      "height_digest": "flat",
      "map_name": "Summit",
-     "tags_digest": "ceebc65ac0df645e6e95ff0a8b8b8973cc5999b0576b1d48949c0b3b4446655b"
+     "tags_digest": "97912e5ee69235174284c4809925de4e1e0abbf21906a4242a429b63dd174b16"
     },
     "geometry": {
      "barrier": "6e8a726dd39b",
-     "cover": "5de4ee946acf",
+     "cover": "f2c34eb1598a",
      "features": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
      "scale": 7.5e-05,
-     "sight": "45b0213da515",
+     "sight": "758f7d20ee6e",
      "specials": [],
-     "walk": "5b3f9c006f48"
+     "walk": "c268e2b88130"
     },
     "state": "ready"
    },
    "engine_key": "208da10f15461319",
-   "gap_fingerprint": "00bcbd4282477745",
+   "gap_fingerprint": "1a583af68c21a04b",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
-    "cover": "5de4ee946acf",
+    "cover": "f2c34eb1598a",
     "scale": 7.5e-05,
-    "sight": "45b0213da515",
+    "sight": "758f7d20ee6e",
     "specials": [],
-    "walk": "5b3f9c006f48"
+    "walk": "c268e2b88130"
    },
    "height_geometry_identity": {
-    "cover": "5de4ee946acf",
+    "cover": "f2c34eb1598a",
     "scale": 7.5e-05,
-    "sight": "45b0213da515",
-    "walk": "5b3f9c006f48"
+    "sight": "758f7d20ee6e",
+    "walk": "c268e2b88130"
    },
-   "height_manifest_digest": "efb79d36355ba303",
+   "height_manifest_digest": "446f7f148e964749",
    "map_layer_sha256": "060bc3e0e0eeeffe859f27d5d9c4c26a505c7e7828a2ad781a2ed4d05baa5713"
   },
   "Sunset": {

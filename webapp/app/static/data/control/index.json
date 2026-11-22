@@ -311,10 +311,10 @@
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
-   "sight_sha": "45b0213da515",
-   "walk_sha": "5b3f9c006f48",
-   "bullet_sha": "c89cbb5da246",
-   "walkable_cells": 5870,
+   "sight_sha": "758f7d20ee6e",
+   "walk_sha": "c268e2b88130",
+   "bullet_sha": "c9ebc69322b0",
+   "walkable_cells": 5877,
    "cell_m": 1.042,
    "tags": 41,
    "see_across_paint": false,
@@ -335,7 +335,7 @@
     "passes": true
    },
    "barrier_sha": "6e8a726dd39b",
-   "cover_sha": "5de4ee946acf",
+   "cover_sha": "f2c34eb1598a",
    "paints": [
     "cover_paint",
     "barrier_paint",

@@ -54,8 +54,14 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
         "Abyss": "de003e64887e1ba7", "Ascent": "a43966d979d739f9", "Bind": "f9cf07f40fcdf55c",
         "Breeze": "f7f37cce2decdc34", "Corrode": "b46ca8be56b8efc2", "Fracture": "ed807ab3f2dc1d08",
         "Haven": "0ea64d7bad658d77", "Icebox": "a658cd07a960f0f4", "Lotus": "abc2c77ad35f794b",
-        "Pearl": "50f44d592c34a680", "Split": "54e642afe84ffa72", "Summit": "aa688a7c6301e307",
+        "Pearl": "50f44d592c34a680", "Split": "54e642afe84ffa72", "Summit": "9588ef6b75224488",
         "Sunset": "f5034b4c50f97ef2"}
+    # R2.1: switching the Heaven correction off restores the previous mask
+    # identity (also reproduced from the restored paint in owner_map_reviews).
+    previous = map_feature_legacy.snapshot()["maps"]["Summit"]["geometry_inputs"]
+    previous.update(sight="45b0213da515", walk="5b3f9c006f48", cover="5de4ee946acf")
+    assert control_format.fingerprint(map_feature_legacy.RECIPE, map_feature_legacy.SOURCE,
+                                      map_feature_legacy.LINK, previous) == "aa688a7c6301e307"
 
 
 # ---- W17: freshness inputs and cache keys

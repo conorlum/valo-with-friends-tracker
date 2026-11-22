@@ -133,14 +133,14 @@
    }
   },
   "Summit": {
-   "fingerprint": "6b6121be9c77b13d",
+   "fingerprint": "4c9b94fea74f4b1c",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
-    "cover": "5de4ee946acf",
+    "cover": "f2c34eb1598a",
     "scale": 7.5e-05,
-    "sight": "45b0213da515",
+    "sight": "758f7d20ee6e",
     "specials": [],
-    "walk": "5b3f9c006f48"
+    "walk": "c268e2b88130"
    }
   },
   "Sunset": {

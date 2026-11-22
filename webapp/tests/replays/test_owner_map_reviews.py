@@ -59,7 +59,7 @@ PAINT_SHA16 = {'Abyss': {'cover_paint': '2811cd321f59d009', 'bullet_paint': 'edb
  'Lotus': {'cover_paint': '2c5468ddaa6447ac', 'bullet_paint': '975245d250d85be3'},
  'Pearl': {'cover_paint': None, 'bullet_paint': None},
  'Split': {'cover_paint': '8fc63fcb97e25e82', 'bullet_paint': 'ffcc99f7820ce99b'},
- 'Summit': {'cover_paint': '2fac327fa82c64bd', 'bullet_paint': 'c1f97ba3da216788'},
+ 'Summit': {'cover_paint': 'cb4e545df880a2ac', 'bullet_paint': 'c1f97ba3da216788'},
  'Sunset': {'cover_paint': '089ed9aff025856e', 'bullet_paint': 'd76816512a620d31'}}
 
 MIXED_UNTAGGED = {'Abyss': [8],
@@ -329,3 +329,175 @@ def test_committed_abyss_flat_features_compile_and_prepare(monkeypatch):
     arcs, reasons = route_runtime.readiness(walking, TAGS["Abyss"]["map_features"], owners)
     assert not reasons
     assert {a.route for a in arcs} == set(ROPE_COUNTS)
+
+
+# Recorded by compiling origin/main's committed masks and sources with the same
+# supported height stand-ins below. No production height files are needed.
+BASE_ACTIVE_BUNDLES = {
+    "Abyss": ["bundle-13", "bundle-14", "bundle-15", "bundle-16", "bundle-17", "bundle-18"],
+    "Ascent": ["bundle-13", "bundle-14", "bundle-15"],
+    "Lotus": ["bundle-8", "bundle-9", "bundle-10"],
+    "Split": ["bundle-32", "bundle-33", "bundle-34", "bundle-35", "bundle-36", "bundle-37"],
+    "Summit": ["bundle-9", "bundle-10", "bundle-11", "bundle-12"],
+    "Sunset": ["bundle-5"],
+}
+# The same origin/main probe with refined heights leaves route-8.b's 4px
+# landing without a floor on Abyss. All other baseline active sets are equal.
+BASE_REFINED_ACTIVE_BUNDLES = {
+    "Abyss": ["bundle-13", "bundle-14", "bundle-15", "bundle-17", "bundle-18"],
+}
+
+
+def test_enabled_feature_maps_are_all_covered():
+    assert set(BASE_ACTIVE_BUNDLES) == {
+        name for name, entry in TAGS.items()
+        if any(b.get("enabled") for b in entry.get("map_features", {}).get("bundles", []))
+    }
+
+
+def supported_feature_heights(geo, mf, refined):
+    """Supply evidence, never ground: committed masks still decide walkability.
+
+    Landings get their declared world-z (including stacked rope ends). Refine
+    their parents to exercise exact XY binding, or one ground parent on maps
+    without ropes. Everything else has one supported floor at the origin. A
+    sparse walking witness keeps this a placement test, not a topology model.
+    """
+    from app.control import heights as hc, height_refinement as hr
+
+    floors = np.full((cg.GRID, cg.GRID, hc.MAX_FLOORS), -1, np.int16)
+    floors[geo.walk, 0] = 0
+    landings = {}
+
+    def visit(value):
+        if isinstance(value, list):
+            for part in value:
+                visit(part)
+        elif isinstance(value, dict):
+            if "uv" in value and "landing" in value:
+                x, y = np.asarray(value["uv"]) * cg.PX / 10000
+                parent = int(y // 8) * cg.GRID + int(x // 8)
+                z = round(value["landing"]["world_z"]["value"] * 10)
+                landings.setdefault(parent, set()).add(z)
+            for part in value.values():
+                visit(part)
+
+    visit(mf.get("routes", []))
+    for parent, levels in landings.items():
+        assert len(levels) <= hc.MAX_FLOORS
+        row = floors.reshape(-1, hc.MAX_FLOORS)[parent]
+        row[:] = -1
+        row[:len(levels)] = sorted(levels)
+    asset = hc.HeightAsset(floors, np.zeros_like(floors), floors[..., 0] >= 0,
+                           np.zeros_like(geo.walk), np.empty((0, 5), np.int32), {"origin_z": 0})
+    edges = []
+    for parent in np.flatnonzero(geo.walk):
+        y, x = divmod(int(parent), cg.GRID)
+        for dy, dx in ((0, 1), (1, -1), (1, 0), (1, 1)):
+            yy, xx = y + dy, x + dx
+            if not (0 <= yy < cg.GRID and 0 <= xx < cg.GRID and geo.walk[yy, xx]):
+                continue
+            other = yy * cg.GRID + xx
+            for a, za in enumerate(floors[y, x]):
+                for b, zb in enumerate(floors[yy, xx]):
+                    if za >= 0 and zb >= 0 and abs(int(za) - int(zb)) <= hc.STEP_UP_M * 10:
+                        edges.extend([(parent, a, other, b, hc.EDGE_STEP), (other, b, parent, a, hc.EDGE_STEP)])
+        if edges:
+            break
+    asset.edges = np.array(edges, np.int32).reshape(-1, 5)
+    if refined:
+        parents = sorted(landings) or [int(np.flatnonzero(geo.walk)[0])]
+        history = hr.history(geo.name, parents)
+        asset.refinement = dict(v=1, history=history, history_sha256=hr.identity(history),
+            previous_history_sha256=hr.identity(hr.history(geo.name)), evidence_sha256="a" * 64)
+        children = sorted(c for parent in parents for c in hr._child_ids(parent))
+        asset.fine_cells = np.array(children, np.int32)
+        asset.fine_floors = np.array([
+            floors[(c // 256) // 2, (c % 256) // 2].copy() for c in children])
+        fine_walk = geo.walk_px.reshape(256, 4, 256, 4).mean((1, 3)) > .5
+        for i, c in enumerate(children):
+            if not fine_walk.ravel()[c]:
+                asset.fine_floors[i] = -1
+        asset.fine_spread = np.zeros_like(asset.fine_floors)
+        asset.fine_supported = asset.fine_floors[:, 0] >= 0
+        asset.fine_unresolved = ~asset.fine_supported
+        asset.fine_kind = np.where(asset.fine_supported, hc.KIND_STANDS, hc.KIND_NONE).astype(np.int8)
+        asset.fine_edges = np.empty((0, 5), np.int32)
+        floors.reshape(-1, hc.MAX_FLOORS)[parents] = -1
+        asset.supported.ravel()[parents] = False
+        asset.edges = asset.edges[~np.isin(asset.edges[:, 0], parents) & ~np.isin(asset.edges[:, 2], parents)]
+        from app.control import adaptive as ag
+        cg.attach_heights(geo, asset)
+        edges = []
+        for a, b in ag.neighbours(geo):
+            if a < ag.BASE and b < ag.BASE:
+                continue
+            for fa, na in enumerate(geo.space_nodes[a]):
+                for fb, nb in enumerate(geo.space_nodes[b]):
+                    if na >= 0 and nb >= 0 and abs(geo.node_z[na] - geo.node_z[nb]) <= hc.STEP_UP_M:
+                        edges.extend([(a, fa, b, fb, hc.EDGE_STEP), (b, fb, a, fa, hc.EDGE_STEP)])
+        asset.fine_edges = np.array(edges, np.int32).reshape(-1, 5)
+    return cg.attach_heights(geo, asset)
+
+
+def compile_committed_features(name, refined, asset_dir=cg.ASSET_DIR):
+    from app.control import features as cf
+    from app.replays import map_feature_inputs as fi, map_feature_sources
+
+    raw = (asset_dir / "tags.json").read_bytes()
+    entry = json.loads(raw)["maps"][name]
+    geo = cg.load_geometry(name, asset_dir, load_features=False, height_mode="flat")
+    geo = supported_feature_heights(geo, entry["map_features"], refined)
+    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
+    base = map_feature_sources.base_snapshot(name, asset_dir, entry, scale)
+    inputs = fi.identify_features(name, geo.height_sha, fi.capture_source_snapshot(name, raw), base)
+    artifact = cf.compile_artifact(geo, inputs, "0" * 40)
+    cf.verify_artifact(artifact, geo)
+    assert geo.adaptive == refined
+    return artifact
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("refined", [False, True], ids=["coarse", "refined"])
+@pytest.mark.parametrize("name", BASE_ACTIVE_BUNDLES)
+def test_enabled_feature_bundles_preserve_base_placement_and_rope_bindings(name, refined):
+    artifact = compile_committed_features(name, refined)
+    expected = BASE_REFINED_ACTIVE_BUNDLES.get(name, BASE_ACTIVE_BUNDLES[name]) if refined else BASE_ACTIVE_BUNDLES[name]
+    assert set(expected) <= set(artifact.manifest["active_bundles"]), artifact.manifest["pending"]
+    assert not set(expected).intersection(artifact.manifest["pending"])
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("refined", [False, True], ids=["coarse", "refined"])
+def test_summit_heaven_door_and_rope_remain_active(refined):
+    # Keep the real committed endpoint shape that exposed the ground regression.
+    route = next(r for r in TAGS["Summit"]["map_features"]["routes"] if r["id"] == "route-8")
+    assert route["endpoints"][1]["uv"] == [1984.0, 2278.0]
+    artifact = compile_committed_features("Summit", refined)
+    assert set(artifact.manifest["active_bundles"]) == {"bundle-9", "bundle-10", "bundle-11", "bundle-12"}, artifact.manifest["pending"]
+    assert not artifact.manifest["pending"]
+
+
+def test_summit_cover_paint_is_reviewed_paint_less_heaven_height_step():
+    grid = cg.unpack_paint(TAGS["Summit"]["cover_paint"])[::4, ::4].copy()
+    cleared = [(row, 51) for row in range(46, 60)] + [(row, 41) for row in range(60, 64)]
+    assert not any(grid[row, col] for row, col in cleared)
+    assert int(grid.sum()) == 109
+    assert hashlib.sha256(grid.tobytes()).hexdigest() == "f5ae5912202f8cfdd74bc7e7b659757a0376ad5ec368d88ac10580ce2814adbb"
+    for row, col in cleared:
+        grid[row, col] = True
+    assert int(grid.sum()) == 127
+    assert hashlib.sha256(cg.pack_paint(grid).encode()).hexdigest() == "2fac327fa82c64bdd0eca2c384c8669f9fb57c1c21101cb7a9211e3b5af7600a"
+    # Switching off this correction must reproduce the old committed masks.
+    original = copy.deepcopy(TAGS["Summit"])
+    original["cover_paint"] = cg.pack_paint(grid)
+    masks = cg.masks(rgba("Summit"), original)
+    assert hashlib.sha256(np.packbits(masks.sight).tobytes()).hexdigest()[:12] == "45b0213da515"
+    assert hashlib.sha256(np.packbits(masks.walk).tobytes()).hexdigest()[:12] == "5b3f9c006f48"
+    cover = cg.see_over_cover(rgba("Summit"), original)
+    assert hashlib.sha256(np.packbits(cover).tobytes()).hexdigest()[:12] == "5de4ee946acf"
+    walk = cg.read_mask_png(cg.ASSET_DIR / "Summit.walk.png")
+    for parent in (3737, 3860, 3988):
+        row, col = divmod(parent, cg.GRID)
+        assert walk[row*8:(row+1)*8, col*8:(col+1)*8].mean() > .5
+        assert masks.walk[row*8:(row+1)*8, col*8:(col+1)*8].mean() == .5

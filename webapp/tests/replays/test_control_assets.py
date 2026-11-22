@@ -58,7 +58,7 @@ def test_committed_masks_match_a_fresh_build(name):
 
 
 # Padded walls split Ascent's traced A11 cover into three pieces; A17 stays separate from wall 17.
-COVER_PIECES = {'Abyss': 36, 'Ascent': 48, 'Bind': 25, 'Breeze': 26, 'Corrode': 29, 'Fracture': 30, 'Haven': 44, 'Lotus': 25, 'Pearl': 25, 'Split': 35, 'Summit': 29, 'Sunset': 29}
+COVER_PIECES = {'Abyss': 36, 'Ascent': 48, 'Bind': 25, 'Breeze': 26, 'Corrode': 29, 'Fracture': 30, 'Haven': 44, 'Lotus': 25, 'Pearl': 25, 'Split': 35, 'Summit': 31, 'Sunset': 29}
 
 
 def test_ascent_traced_boxes():
@@ -103,6 +103,12 @@ def test_ascent_paint_is_exactly_the_traced_cells():
     for route in tags["maps"]["Abyss"]["map_features"]["routes"]:
         if "walking_domain" in route:
             route["walking_domain"] = original_rope_domain(route)
+    # R2.1 clears only Summit's Heaven height step. Its owner-review regression
+    # pins that change; restore the original paint for these broad Ascent pins.
+    summit = cg.unpack_paint(tags["maps"]["Summit"]["cover_paint"])[::4, ::4].copy()
+    summit[46:60, 51] = True
+    summit[60:64, 41] = True
+    tags["maps"]["Summit"]["cover_paint"] = cg.pack_paint(summit)
     assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
         "ca9b31cea8a20723fc635b05871aa98e927c1b1d0721849cd98ef4280c321d37")
     # Also pin the remaining tag inputs with Haven's review disabled.
