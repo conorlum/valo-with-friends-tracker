@@ -39,6 +39,7 @@ from app.adapters.trackergg_browserstate_source import (
     DiscoveryStatus,
     discover_match_ids_paginated,
 )
+from app.adapters.tracker_verification import TrackerVerificationTimeout
 from app.db import SessionLocal
 
 CDP_URL = "http://localhost:9222"
@@ -109,13 +110,24 @@ def main(boundary_path: Path, out_path: Path, only: set[str]) -> int:
 
     started = datetime.now(timezone.utc).isoformat()
     results: list[dict] = []
+    verification_timeout = False
     db = SessionLocal()
     try:
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             page = browser.contexts[0].new_page()
             for i, riot_id in enumerate(roster):
-                rec = inventory_player(page, db, riot_id, boundary.get(riot_id))
+                try:
+                    rec = inventory_player(page, db, riot_id, boundary.get(riot_id))
+                except TrackerVerificationTimeout:
+                    print("Human verification timed out. Clear the check in the browser, "
+                          "then re-run the same command to resume; completed matches are kept.")
+                    results.append({
+                        "riot_id": riot_id, "boundary": boundary.get(riot_id), "attempts": [],
+                        "status": "INCOMPLETE", "reason": "Human verification timed out",
+                    })
+                    verification_timeout = True
+                    break
                 results.append(rec)
                 print(riot_id, rec["status"], rec["reason"],
                       "expected", len(rec.get("expected") or []),
@@ -130,11 +142,11 @@ def main(boundary_path: Path, out_path: Path, only: set[str]) -> int:
         db.close()
 
     union = sorted({x for r in results for x in (r.get("to_ingest") or [])})
-    complete = all(r["status"] == "COMPLETE" for r in results)
+    complete = not verification_timeout and all(r["status"] == "COMPLETE" for r in results)
     out_path.write_text(json.dumps({
         "started": started,
         "finished": datetime.now(timezone.utc).isoformat(),
-        "partial": False,
+        "partial": verification_timeout,
         "complete": complete,
         "incomplete_players": [r["riot_id"] for r in results if r["status"] != "COMPLETE"],
         "to_ingest_union": union,

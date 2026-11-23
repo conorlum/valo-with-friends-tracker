@@ -27,6 +27,7 @@ from playwright.sync_api import sync_playwright
 from sqlalchemy import text
 
 from app.adapters.trackergg_browserstate_source import ingest_full_history
+from app.adapters.tracker_verification import TrackerVerificationTimeout
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
 from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
@@ -65,9 +66,10 @@ def match_count(db, riot_id: str) -> int:
     ).scalar()
 
 
-def main() -> None:
+def main() -> int:
     db = SessionLocal()
     all_dirty: set[int] = set()
+    verification_timeout = False
     try:
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(CDP_URL)
@@ -101,6 +103,13 @@ def main() -> None:
                 try:
                     dirty = ingest_full_history(db, page, riot_id, max_matches=MAX_MATCHES_PER_PLAYER)
                     all_dirty |= dirty
+                except TrackerVerificationTimeout as timeout:
+                    all_dirty |= timeout.dirty  # matches added before the stop still need pre-warming
+                    print("Human verification timed out. Clear the check in the browser, "
+                          "then re-run the same command to resume; completed matches are kept.")
+                    db.rollback()
+                    verification_timeout = True
+                    break
                 except Exception as e:
                     print(f"  error backfilling {riot_id}, skipping: {e}")
                     db.rollback()
@@ -127,7 +136,8 @@ def main() -> None:
             print(f"  {riot_id}: {match_count(db, riot_id)}")
     finally:
         db.close()
+    return 2 if verification_timeout else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

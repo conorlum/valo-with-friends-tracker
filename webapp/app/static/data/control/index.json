@@ -2,158 +2,172 @@
  "maps": {
   "Abyss": {
    "image_sha": "466a3d18f78c",
-   "sight_sha": "cb32e86ca94e",
-   "walk_sha": "42d1d3f29a3c",
-   "bullet_sha": "cb32e86ca94e",
-   "walkable_cells": 6846,
+   "sight_sha": "c5605b94ff5c",
+   "walk_sha": "d1351c28ac11",
+   "bullet_sha": "9b940421aabd",
+   "walkable_cells": 6607,
    "cell_m": 0.965,
-   "tags": 2,
+   "tags": 35,
    "see_across_paint": true,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 200,
-    "on_cover": 0,
+    "qualifying": 194,
+    "on_cover": 6,
     "blocked": 0,
     "share": 0.0,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 200,
-    "on_cover": 0,
+    "qualifying": 194,
+    "on_cover": 6,
     "blocked": 0,
     "share": 0.0,
     "passes": true
    },
    "barrier_sha": "06d022399053",
+   "cover_sha": "7f03de5f7496",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Ascent": {
    "image_sha": "287357fcfce2",
-   "sight_sha": "daf148f2396f",
-   "walk_sha": "c7b8d59538e6",
-   "bullet_sha": "daf148f2396f",
-   "walkable_cells": 5211,
+   "sight_sha": "fe4ae36ecd2d",
+   "walk_sha": "d53bd9c043e2",
+   "bullet_sha": "9b38d596e733",
+   "walkable_cells": 5065,
    "cell_m": 1.116,
-   "tags": 0,
+   "tags": 38,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 475,
-    "on_cover": 1,
+    "qualifying": 456,
+    "on_cover": 20,
     "blocked": 2,
-    "share": 0.0042,
+    "share": 0.0044,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 475,
-    "on_cover": 1,
-    "blocked": 2,
-    "share": 0.0042,
-    "passes": true
+    "qualifying": 456,
+    "on_cover": 20,
+    "blocked": 11,
+    "share": 0.0241,
+    "passes": false
    },
    "barrier_sha": "77b049460968",
-   "cover_sha": "57334cb3f11b",
+   "cover_sha": "5788b535f49d",
    "paints": [
     "cover_paint",
-    "barrier_paint"
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Bind": {
    "image_sha": "84f5ff72aa58",
-   "sight_sha": "c7789e70f658",
-   "walk_sha": "59c0154fc89d",
-   "bullet_sha": "c7789e70f658",
-   "walkable_cells": 4163,
+   "sight_sha": "994813b7a083",
+   "walk_sha": "0715dd5d067f",
+   "bullet_sha": "be9437962c70",
+   "walkable_cells": 4066,
    "cell_m": 1.324,
-   "tags": 0,
+   "tags": 37,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 122,
-    "on_cover": 0,
+    "qualifying": 119,
+    "on_cover": 3,
     "blocked": 0,
     "share": 0.0,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 122,
-    "on_cover": 0,
-    "blocked": 0,
-    "share": 0.0,
-    "passes": true
+    "qualifying": 119,
+    "on_cover": 3,
+    "blocked": 5,
+    "share": 0.042,
+    "passes": false
    },
    "barrier_sha": "17f178122d9f",
+   "cover_sha": "e7989f36746c",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Breeze": {
    "image_sha": "82c6472afe6f",
-   "sight_sha": "828ae0d81163",
-   "walk_sha": "439038d9b82b",
-   "bullet_sha": "828ae0d81163",
-   "walkable_cells": 6448,
+   "sight_sha": "858c5828bf62",
+   "walk_sha": "15db3bdbc8e8",
+   "bullet_sha": "ca1a3222e695",
+   "walkable_cells": 6198,
    "cell_m": 1.116,
-   "tags": 0,
+   "tags": 38,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": null,
    "kill_lines_with_walls": null,
    "barrier_sha": "72fcdd722d37",
+   "cover_sha": "be9cc81558e2",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Corrode": {
    "image_sha": "74f13f20647d",
-   "sight_sha": "7cc2f711ada0",
-   "walk_sha": "683601dd7bf6",
-   "bullet_sha": "7cc2f711ada0",
-   "walkable_cells": 5438,
+   "sight_sha": "cdb414bad5ac",
+   "walk_sha": "7a5936babe01",
+   "bullet_sha": "801fb9e76169",
+   "walkable_cells": 5329,
    "cell_m": 1.116,
-   "tags": 0,
+   "tags": 28,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 485,
-    "on_cover": 0,
+    "qualifying": 476,
+    "on_cover": 9,
     "blocked": 1,
     "share": 0.0021,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 485,
-    "on_cover": 0,
+    "qualifying": 476,
+    "on_cover": 9,
     "blocked": 1,
     "share": 0.0021,
     "passes": true
    },
    "barrier_sha": "2b9ac9333692",
+   "cover_sha": "75168fb6b018",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Fracture": {
    "image_sha": "d41e013eca94",
-   "sight_sha": "c4d5aa47ca61",
-   "walk_sha": "61afa6aa6628",
-   "bullet_sha": "c4d5aa47ca61",
-   "walkable_cells": 5671,
+   "sight_sha": "0c942ebde063",
+   "walk_sha": "d58bc2be446d",
+   "bullet_sha": "4d3995c58af4",
+   "walkable_cells": 5525,
    "cell_m": 1.002,
-   "tags": 0,
+   "tags": 41,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": null,
    "kill_lines_with_walls": null,
    "barrier_sha": "a2716b8b2641",
+   "cover_sha": "db0f5fcf24f1",
    "paints": [
     "barrier_paint"
    ]
@@ -210,126 +224,134 @@
   },
   "Lotus": {
    "image_sha": "d533af2a6fbc",
-   "sight_sha": "20e7a911c8c2",
-   "walk_sha": "1bbf00db2ac5",
-   "bullet_sha": "20e7a911c8c2",
-   "walkable_cells": 5643,
+   "sight_sha": "b73c40256572",
+   "walk_sha": "3a53b46397b4",
+   "bullet_sha": "e4f1b81240a2",
+   "walkable_cells": 5552,
    "cell_m": 1.085,
-   "tags": 0,
+   "tags": 23,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 313,
-    "on_cover": 0,
+    "qualifying": 308,
+    "on_cover": 5,
     "blocked": 2,
-    "share": 0.0064,
+    "share": 0.0065,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 313,
-    "on_cover": 0,
+    "qualifying": 308,
+    "on_cover": 5,
     "blocked": 2,
-    "share": 0.0064,
+    "share": 0.0065,
     "passes": true
    },
    "barrier_sha": "0799f99c0abb",
+   "cover_sha": "93a69c6e2cf7",
    "paints": [
+    "cover_paint",
     "uncertain_paint",
-    "barrier_paint"
+    "barrier_paint",
+    "bullet_paint"
    ],
    "uncertain_px": 592
   },
   "Pearl": {
    "image_sha": "5e0e7d4a80d8",
-   "sight_sha": "8ffaf1159a5a",
-   "walk_sha": "21d5594157a5",
-   "bullet_sha": "8ffaf1159a5a",
-   "walkable_cells": 6664,
+   "sight_sha": "f83e99eb33d2",
+   "walk_sha": "83c2a8622b01",
+   "bullet_sha": "d3888867f817",
+   "walkable_cells": 6535,
    "cell_m": 1.002,
-   "tags": 0,
+   "tags": 38,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": null,
    "kill_lines_with_walls": null,
    "barrier_sha": "5f42c32c5c72",
+   "cover_sha": "228191fd6047",
    "paints": [
     "barrier_paint"
    ]
   },
   "Split": {
    "image_sha": "cc1022703536",
-   "sight_sha": "730c87cdbd9e",
-   "walk_sha": "87c9ddfd6702",
-   "bullet_sha": "730c87cdbd9e",
-   "walkable_cells": 5708,
+   "sight_sha": "5c406cc30e13",
+   "walk_sha": "c784e0cecae3",
+   "bullet_sha": "cf7488f2cbd2",
+   "walkable_cells": 5523,
    "cell_m": 1.002,
-   "tags": 0,
+   "tags": 39,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 275,
-    "on_cover": 0,
+    "qualifying": 258,
+    "on_cover": 17,
     "blocked": 1,
-    "share": 0.0036,
+    "share": 0.0039,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 275,
-    "on_cover": 0,
-    "blocked": 1,
-    "share": 0.0036,
-    "passes": true
+    "qualifying": 258,
+    "on_cover": 17,
+    "blocked": 7,
+    "share": 0.0271,
+    "passes": false
    },
    "barrier_sha": "22e3b2d9539a",
+   "cover_sha": "6ab3f7b783af",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
-   "sight_sha": "a8686d5a1bbd",
-   "walk_sha": "3f2a7cec58c7",
-   "bullet_sha": "a8686d5a1bbd",
-   "walkable_cells": 5931,
+   "sight_sha": "758f7d20ee6e",
+   "walk_sha": "c268e2b88130",
+   "bullet_sha": "c9ebc69322b0",
+   "walkable_cells": 5877,
    "cell_m": 1.042,
-   "tags": 22,
+   "tags": 41,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
-    "qualifying": 292,
-    "on_cover": 5,
+    "qualifying": 286,
+    "on_cover": 11,
     "blocked": 1,
-    "share": 0.0034,
+    "share": 0.0035,
     "passes": true
    },
    "kill_lines_with_walls": {
-    "qualifying": 292,
-    "on_cover": 5,
-    "blocked": 1,
-    "share": 0.0034,
+    "qualifying": 286,
+    "on_cover": 11,
+    "blocked": 2,
+    "share": 0.007,
     "passes": true
    },
    "barrier_sha": "6e8a726dd39b",
-   "cover_sha": "4ca7d497b029",
+   "cover_sha": "f2c34eb1598a",
    "paints": [
     "cover_paint",
-    "barrier_paint"
+    "barrier_paint",
+    "bullet_paint"
    ]
   },
   "Sunset": {
    "image_sha": "1188642e2f94",
-   "sight_sha": "e608a189a789",
-   "walk_sha": "ba2802b67c05",
-   "bullet_sha": "e608a189a789",
-   "walkable_cells": 6197,
+   "sight_sha": "e3a570062359",
+   "walk_sha": "2446054190bb",
+   "bullet_sha": "a9399d4ce8a8",
+   "walkable_cells": 6057,
    "cell_m": 1.002,
-   "tags": 1,
+   "tags": 29,
    "see_across_paint": false,
-   "cover_reviewed": false,
+   "cover_reviewed": true,
    "specials": [],
    "kill_lines": {
     "qualifying": 204,
@@ -346,9 +368,11 @@
     "passes": true
    },
    "barrier_sha": "02adc35320f7",
-   "cover_sha": "ca4caf841b49",
+   "cover_sha": "bfae3a22f04c",
    "paints": [
-    "barrier_paint"
+    "cover_paint",
+    "barrier_paint",
+    "bullet_paint"
    ]
   }
  },

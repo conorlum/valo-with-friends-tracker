@@ -92,6 +92,9 @@ def main(riot_id: str, count: int, no_prewarm: bool, ledger_path: Path) -> int:
         # "discovered 20" reads the same whether 20 is all they have or all we
         # could get, and a bare failure reads as though nothing was added.
         print(f"\n{outcome.summary()}")
+        if outcome.verification_timeout:
+            print("Human verification timed out. Clear the check in the browser, "
+                  "then re-run the same command to resume; completed matches are kept.")
         if not outcome.discovery.is_conclusive:
             print(
                 f"  WARNING: discovered {outcome.discovery.reached}/"

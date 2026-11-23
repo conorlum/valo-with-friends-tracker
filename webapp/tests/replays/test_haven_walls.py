@@ -26,10 +26,10 @@ TAG_IDS = {
     "seeover": {20, 21, 24, 26, 27, 31},
     "wall": set(range(41, 50)),
 }
+# Card #6 (box-door-review) reviewed the other 11 maps; their entries are pinned
+# in test_owner_map_reviews.py. Icebox alone remains unreviewed.
 UNCHANGED = {
-    "Sunset": ("e608a189a789", "ba2802b67c05"),
-    "Fracture": ("c4d5aa47ca61", "61afa6aa6628"),
-    "Summit": ("a8686d5a1bbd", "3f2a7cec58c7"),
+    "Icebox": ('6fa95e68b769', '87ebfd069462'),
 }
 
 
@@ -174,21 +174,12 @@ def test_viewer_hugging_a_padded_wall_still_sees_through_it_known_limitation(hav
         assert not cg.los(haven, (x, 465, None), (700, 465, None)), x
 
 
-# Pre-W1 committed masks: disabling padding and Haven's review must recover every old byte identity.
+# Disabling card #1 padding and Haven review recovers these pre-card-1 identities.
+# Card #6 replaced the other 11 maps' tags and paint; their pre-card-1 identities
+# are pinned at commit f241c31c, rather than here.
 OLD_MASK_HASHES = {
-    "Abyss": ("8342f6714685", "42d1d3f29a3c", None),
-    "Ascent": ("09f5f6a85c9b", "c7b8d59538e6", "03d6b7c14536"),
-    "Bind": ("8e9f1fc13fec", "59c0154fc89d", None),
-    "Breeze": ("a112074736d2", "439038d9b82b", None),
-    "Corrode": ("b25b161d4a72", "683601dd7bf6", None),
-    "Fracture": ("c4d5aa47ca61", "61afa6aa6628", None),
     "Haven": ("4b33f5f8746f", "456ddf172cf3", None),
     "Icebox": ("748966afbe52", "87ebfd069462", None),
-    "Lotus": ("39a88a11dd2f", "1bbf00db2ac5", None),
-    "Pearl": ("68e221537cb1", "21d5594157a5", None),
-    "Split": ("f6b62d344ccd", "87c9ddfd6702", None),
-    "Summit": ("a8686d5a1bbd", "3f2a7cec58c7", "4ca7d497b029"),
-    "Sunset": ("e608a189a789", "ba2802b67c05", "ca4caf841b49"),
 }
 
 
@@ -207,7 +198,3 @@ def test_disabling_new_rules_recovers_original_mask_identities(monkeypatch, name
                    for m in (masks.sight, masks.walk, cover))
     assert actual[:2] == expected[:2]
     assert actual[2] == expected[2] if expected[2] else not cover.any()
-    if name == "Ascent":
-        labels = cg.attach_cover(cg.load_base_geometry(name), cover, actual[2]).cover_px
-        assert labels.max() == 18
-        assert labels[538, 437] == labels[535, 441] == labels[537, 450] != 0

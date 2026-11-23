@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Utility look critique</title>
+<style>
+__GALLERY_STYLE__
+</style>
+<style>
+  .util-gallery { margin: auto; max-width: 1600px; padding: 24px; color: #e5e7ef; }
+  .util-gallery header { position: sticky; top: 0; z-index: 1; background: #161820; padding: 16px; border-radius: 8px; }
+  .util-gallery h1 { margin: 0 0 8px; }
+  .util-gallery .gallery-toolbar, .util-gallery .gallery-controls, .util-gallery .gallery-phases {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: start;
+  }
+  .util-gallery label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .util-gallery .gallery-check { flex-direction: row; align-items: center; }
+  .util-gallery input, .util-gallery select, .util-gallery textarea, .util-gallery button {
+    background: #222630; color: #e5e7ef; border: 1px solid #565e73; border-radius: 4px; padding: 6px;
+  }
+  .util-gallery input[type="color"] { padding: 2px; height: 32px; }
+  .util-gallery input[type="number"] { width: 110px; }
+  .util-gallery textarea { width: 240px; min-height: 64px; }
+  .util-gallery button { cursor: pointer; }
+  .util-gallery .gallery-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 16px; }
+  .util-gallery article { background: #20232c; border: 1px solid #3b4151; border-radius: 8px; padding: 16px; }
+  .util-gallery article h3 { margin: 0 0 6px; }
+  .util-gallery figure { margin: 0 0 12px; }
+  .util-gallery canvas { display: block; width: 240px; height: 240px; max-width: 100%; background: #1b1d24; }
+  .util-gallery figcaption, .util-gallery .gallery-meta { font-size: 13px; color: #b9c0cf; margin-bottom: 8px; }
+  .util-gallery .gallery-badge { display: inline-block; padding: 2px 6px; border: 1px solid #69728a; border-radius: 4px; }
+  .util-gallery .gallery-meta span, .util-gallery .gallery-meta button { margin-left: 8px; }
+  .util-gallery [data-settings-error] { color: #ffb1aa; min-height: 1.3em; margin: 4px 0; }
+  .util-gallery [data-header="status"] { min-height: 1.3em; margin-bottom: 0; }
+  .util-gallery .gallery-agent-icon { width: 32px; height: 32px; vertical-align: middle; margin-right: 8px; }
+  .util-gallery [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="util-gallery">
+  <header>
+    <h1>Utility look critique</h1>
+    <p>Local, offline preview. Changes stay in this browser until you export or copy them.</p>
+    <div class="gallery-toolbar">
+      <label>Control palette <select data-header="palette"></select></label>
+      <label>Side <select data-header="side"><option>Sample</option><option>A</option><option>B</option></select></label>
+      <label>Agent <select data-header="agent"><option value="">All agents</option></select></label>
+      <label>Find utility <input type="search" data-header="filter" placeholder="Ability, label or shape"></label>
+      <label class="gallery-check"><input type="checkbox" data-header="edited"> Edited / noted only</label>
+      <button type="button" data-header="export">Export</button>
+      <button type="button" data-header="copy">Copy prompt</button>
+      <button type="button" data-header="clear">Clear all</button>
+    </div>
+    <p data-header="status" role="status" aria-live="polite"></p>
+  </header>
+  <div data-gallery></div>
+</main>
+<script>
+__REPLAY_JS__
+</script>
+<script>
+__GALLERY_JS__
+</script>
+<script type="application/json" id="gallery-payload">__GALLERY_PAYLOAD__</script>
+<script>
+  (function () {
+    var storage = null;
+    try { storage = window.localStorage; } catch (_) {}
+    window.utilGallery = UtilGallery.mount(Replay, document,
+      JSON.parse(document.getElementById("gallery-payload").textContent), storage);
+  })();
+</script>
+</body>
+</html>

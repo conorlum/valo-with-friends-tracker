@@ -5590,6 +5590,8 @@
   }
 
   var api = {
+    ABILITY_STYLES: ABILITY_STYLES, PROJECTILE_STYLES: PROJECTILE_STYLES,
+    UTIL_ABILITY_COLORS: UTIL_ABILITY_COLORS, CONTROL_PALETTES: CONTROL_PALETTES, UV: UV,
     rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, rotateYaw: rotateYaw, viewMatrix: viewMatrix,
     UTIL_LOOKS: UTIL_LOOKS, utilLookOf: utilLookOf,
     withAlpha: withAlpha, lighten: lighten, capsuleEnds: capsuleEnds,

@@ -83,12 +83,22 @@ guards = [
 about = "tracker.gg ingestion: discovery and paging, the ledger, retries, outcome reports, write preflight, and the demo adapter."
 tests = [
   "tests/test_ingest_*.py", "tests/test_tracker_ingest_contract.py", "tests/test_trackergg_history_pagination.py",
+  "tests/test_tracker_verification.py", "tests/test_tracker_verification_crawlers.py",
   "tests/test_round_player_spend_ingest.py", "tests/test_demo_adapter_contract.py",
 ]
 guards = [
   "app/adapters/**", "app/scoring/ingest_preflight.py", "app/scoring/write_gate.py", "app/models/round_player_spend.py",
   "scripts/ingest_trackergg_player.py", "scripts/refresh_tracked_players.py", "scripts/tracked_players.json",
 ]
+
+[plants]
+about = "Plant positions, layout selection, round outcomes, replay precedence and the derived plant cache."
+tests = ["tests/test_round_plants*.py", "tests/test_plant_stats.py", "tests/test_plant_spots.py", "tests/test_plant_namer.py",
+  "tests/test_plants_page.py"]
+guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_stats.py", "scripts/round_plants.py",
+  "app/services/plant_spots.py", "app/static/data/plant_spots.json",
+  "scripts/plant_namer.py", "scripts/plant_namer.template.html", "scripts/plant_namer_core.js",
+  "app/services/plant_page.py", "app/routers/plants.py", "app/templates/plants/*.html", "app/static/js/plants.js"]
 
 [map-pool]
 about = "The Competitive map pool's history: the seed, the daily patch-notes refresh, the loader, the CLI, and migration 0023."
@@ -198,7 +208,7 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
-guards = ["app/static/js/**", "app/templates/**"]
+guards = ["app/static/js/**", "app/templates/**", "scripts/util_gallery/**", "scripts/render_util_gallery.py"]
 
 # ---------------------------------------------------------------------------------------------------- Coach and analysis tabs
 
@@ -274,7 +284,8 @@ guards = [
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
   "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
   "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
-  "scripts/fetch_archived_replay.py", "scripts/_admin_client.py",
+  "scripts/fetch_archived_replay.py", "scripts/_admin_client.py", "scripts/harvest_util_samples.py",
+  "scripts/util_gallery/**", "scripts/render_util_gallery.py",
 ]
 
 [replay-worker]
@@ -343,7 +354,7 @@ guards = [
 [control-store-web]
 about = "Map control outside the engine: committed assets and barriers, storage and freshness, the worker dispatcher, views, viewer, tagger, reference bytes."
 tests = [
-  "tests/replays/test_haven_walls.py",
+  "tests/replays/test_haven_walls.py", "tests/replays/test_owner_map_reviews.py",
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
   "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_areas_tagger_core.py",

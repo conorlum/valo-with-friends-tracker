@@ -1,0 +1,186 @@
+"""Page data for /plants: plant rows read at request time, statistics per layout and population.
+
+Rows are read through one helper that decides each plant's layout when it is read (R9): on a
+map with several layouts a tracker row counts only when its match's replay `game_branch`
+selects the layout, so a layout added later also drops rows stored earlier. Expected win
+chances are fitted once over every layout's usable rows (`plant_stats.expected_oof`) and the
+subset's values are passed on; they are never refitted on a map or on the Friends subset.
+
+The result is cached one row per (asset key, population) in `plant_stats_cache`, valid while
+`fingerprint(db)` (all plant rows, the spots file, CALCULATION_VERSION) is unchanged, so no
+ingest path needs a hook. A stale, missing or corrupt row degrades to a recompute. No player
+name is ever read or returned.
+"""
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+import hashlib
+import json
+import logging
+import zlib
+
+from sqlalchemy import func, select
+
+from app.models import Match, MatchPlayer, RoundPlant
+from app.models.replay import Replay
+from app.models.round_plant import PlantStatsCache
+from app.replays import layouts
+from app.scoring.plant_window import attacking_team
+from app.services import circle, plant_spots, plant_stats
+from app.services.round_plants import asset_key_for
+
+logger = logging.getLogger(__name__)
+
+CALCULATION_VERSION = 1
+MIN_N = 100
+EXAMPLES = 3
+
+
+def _registry_digest() -> str:
+    """SHA-256 of the layout registry's bytes: a new layout changes which rows count (R9)."""
+    return hashlib.sha256((layouts._DATA / "layouts.json").read_bytes()).hexdigest()
+
+
+def fingerprint(db) -> str:
+    count, newest = db.execute(select(func.count(), func.max(RoundPlant.updated_at))
+                               .select_from(RoundPlant)).one()
+    # Which replay is linked to which match, and its branch and clock, decide each row's
+    # layout and example link: a relink can leave the count unchanged.
+    links = hashlib.sha256()
+    for match_id, branch, offset in db.execute(
+            select(Replay.match_id, Replay.game_branch, Replay.clock_offset)
+            .where(Replay.link_status == "linked", Replay.match_id.is_not(None))
+            .order_by(Replay.match_id, Replay.game_branch, Replay.clock_offset)):
+        links.update(f"{match_id!r}|{branch!r}|{offset!r}\n".encode("utf-8"))
+    text = (f"{count}|{newest}|{links.hexdigest()}|{_registry_digest()}|"
+            f"{plant_spots.digest()}|{CALCULATION_VERSION}")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _joined(query):
+    return (query.select_from(RoundPlant)
+            .join(Match, Match.id == RoundPlant.match_id)
+            .outerjoin(Replay, (Replay.match_id == RoundPlant.match_id) & (Replay.link_status == "linked")))
+
+
+def read_rows(db) -> list[dict]:
+    """Every stored plant whose layout is known now, with `asset_key` decided from the replay."""
+    query = _joined(select(
+        RoundPlant.match_id, RoundPlant.round_number, RoundPlant.site, RoundPlant.u, RoundPlant.v,
+        RoundPlant.plant_time, RoundPlant.attackers_alive, RoundPlant.defenders_alive,
+        RoundPlant.attackers_won, RoundPlant.defused, Match.map_name, Replay.match_uuid,
+        Replay.game_branch, Replay.clock_offset,
+    )).order_by(RoundPlant.match_id, RoundPlant.round_number)
+    chosen = {}
+    rows = []
+    for (match_id, round_number, site, u, v, plant_time, attackers_alive, defenders_alive, attackers_won,
+         defused, map_name, uuid, branch, offset) in db.execute(query):
+        key = (map_name, branch)
+        if key not in chosen:
+            chosen[key] = asset_key_for(map_name, branch)
+        if chosen[key] is None:
+            continue
+        rows.append(dict(
+            match_id=match_id, round_number=round_number, asset_key=chosen[key],
+            site=site, u=u, v=v, plant_time=plant_time,
+            attackers_alive=attackers_alive, defenders_alive=defenders_alive,
+            attackers_won=attackers_won, defused=bool(defused),
+            uuid=uuid, clock_offset=offset))
+    return rows
+
+
+def counts_by_asset(db) -> Counter:
+    """Plants per layout from one grouped query; the same answer as counting `read_rows`."""
+    query = _joined(select(Match.map_name, Replay.game_branch, func.count())).group_by(
+        Match.map_name, Replay.game_branch)
+    counts = Counter()
+    for map_name, branch, n in db.execute(query):
+        key = asset_key_for(map_name, branch)
+        if key is not None:
+            counts[key] += n
+    return counts
+
+
+def _population(ids) -> str:
+    if ids is None:
+        return "all"
+    return "c" + hashlib.sha256(",".join(map(str, sorted(ids))).encode("utf-8")).hexdigest()[:16]
+
+
+def _flat_spots(asset_key):
+    sites = plant_spots.load().get(asset_key, {})
+    return [{"id": spot["id"], "name": spot["name"], "site": site, "u": spot["u"], "v": spot["v"],
+             "radius": spot["r"]} for site, spots in sites.items() for spot in spots]
+
+
+def _example_link(row):
+    if row["uuid"] is None or row["plant_time"] is None or row["clock_offset"] is None:
+        return None
+    return f"/replays/{row['uuid']}?round={row['round_number']}&t={row['plant_time'] - row['clock_offset']:.1f}"
+
+
+def _compute(db, asset_key, ids):
+    rows = read_rows(db)
+    expected = plant_stats.expected_oof(rows)          # fitted once, on every layout
+    picked = [(row, value) for row, value in zip(rows, expected) if row["asset_key"] == asset_key]
+    if ids is not None:
+        teams = defaultdict(set)
+        for match_id, team in db.execute(select(MatchPlayer.match_id, MatchPlayer.team)
+                                         .where(MatchPlayer.player_id.in_(ids))):
+            teams[match_id].add(team)
+        picked = [(row, value) for row, value in picked
+                  if attacking_team(row["round_number"]) in teams[row["match_id"]]]
+    subset = [row for row, _ in picked]
+    spots = _flat_spots(asset_key)
+    sites = plant_stats.spot_rows(subset, spots, min_n=MIN_N, expectations=[value for _, value in picked])
+    assigned = plant_stats.assign_spots(subset, spots)
+    by_spot = defaultdict(list)
+    for row, spot_id in zip(subset, assigned):
+        if spot_id != "outside":
+            by_spot[row["site"], spot_id].append(row)
+    for site, block in sites.items():
+        for spot in block["spots"]:
+            links = []
+            for row in sorted(by_spot[site, spot["id"]], key=lambda r: (-r["match_id"], r["round_number"])):
+                link = _example_link(row)
+                if link is not None:
+                    links.append(link)
+                if len(links) == EXAMPLES:
+                    break
+            spot["examples"] = links
+    data = {"asset_key": asset_key, "population": "friends" if ids is not None else "all",
+            "min_n": MIN_N, "sites": sites}
+    return json.loads(json.dumps(data))                # what a cache hit returns, tuples included
+
+
+def _read_cache(db, asset_key, population, current):
+    try:
+        row = db.get(PlantStatsCache, (asset_key, population))
+        if row is None or row.fingerprint != current:
+            return None
+        return json.loads(zlib.decompress(row.data))
+    except Exception:
+        logger.warning("plant stats cache row unreadable; recomputing", exc_info=True)
+        return None
+
+
+def _store_cache(db, asset_key, population, current, data):
+    try:
+        db.merge(PlantStatsCache(asset_key=asset_key, population=population, fingerprint=current,
+                                 data=zlib.compress(json.dumps(data).encode("utf-8")),
+                                 computed_at=datetime.now(timezone.utc)))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("plant stats cache row not stored", exc_info=True)
+
+
+def page_data(db, asset_key, viewer_id):
+    """One layout's statistics: Everyone when `viewer_id` is None, else that viewer's circle."""
+    ids = circle.circle_ids(db, viewer_id) if viewer_id is not None else None
+    population = _population(ids)
+    current = fingerprint(db)
+    data = _read_cache(db, asset_key, population, current)
+    if data is None:
+        data = _compute(db, asset_key, ids)
+        _store_cache(db, asset_key, population, current, data)
+    return data

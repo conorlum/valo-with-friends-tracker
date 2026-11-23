@@ -14,7 +14,8 @@
       <a href="/matches">Matches</a>
       <a href="/sessions">Sessions</a>
       <a href="/players">Players</a>
-      <a href="/stats">Stats</a>
+      <a href="/stats">Stats</a>{% if not demo_mode %}
+      <a href="/plants">Plants</a>{% endif %}
       {% if current_player %}
       <a href="/search">Search</a>
       <a href="/friends">Friends</a>{% if not demo_mode %}
