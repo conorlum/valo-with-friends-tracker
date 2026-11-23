@@ -58,7 +58,7 @@ def test_state_round_trip_and_due_excludes_stored(env):
     assert loaded.entry(sha) == {
         "paths": ["one.vrf", "copy.vrf"], "size": 123, "mtime": 50.0,
         "status": "uploading", "upload_id": "upload-1", "stored_at": None,
-        "first_refused_at": 10.0, "attempts": 2, "next_try": 100.0,
+        "first_refused_at": 10.0, "attempts": 2, "next_try": 100.0, "deleted_at": None,
     }
     assert loaded.due(99) == []
     assert loaded.due(100) == [sha]

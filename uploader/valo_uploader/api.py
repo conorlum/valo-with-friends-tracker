@@ -31,6 +31,10 @@ class Offline(Exception):
     pass
 
 
+class NotFound(Exception):
+    pass
+
+
 def _retry_after(headers):
     value = headers.get("Retry-After") if headers else None
     if value:
@@ -49,6 +53,10 @@ def _http_error(error):
     """All HTTP status mappings live here, including future API-specific errors."""
     if error.code in (429, 503):
         raise Refused(_retry_after(error.headers)) from None
+    if 500 <= error.code < 600:
+        raise Offline("Cannot reach the upload service") from None
+    if error.code == 404:
+        raise NotFound("Upload is no longer available with this key") from None
     if error.code == 401:
         raise BadKey("Upload key is missing, unknown or revoked") from None
     if error.code == 400:
