@@ -1,17 +1,22 @@
 """Plant extraction, round outcomes and storage; callers own the transaction."""
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import lru_cache
 import json
 import math
 from pathlib import Path
+import zlib
 
 from sqlalchemy import select
 
-from app.models import KillEvent, MatchPlayer, Round, RoundPlant
+from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout
+from app.models import KillEvent, Match, MatchPlayer, Round, RoundPlant
 from app.models.match import Team
+from app.models.replay import Replay, ReplayRound
 from app.replays import layouts
 from app.replays.condense import load_maps
+from app.replays.format import decode_blob
 from app.scoring.plant_window import attacking_team, is_phantom_plant
 from app.services import state_replay as sr
 
@@ -120,7 +125,7 @@ def outcomes_for_match(db, match_id, plant_times: dict[int, float] | None = None
         entry = before_plant.get(row.id)
         attack = attacking_team(row.round_number)
         if (entry is not None and attack is not None and not is_phantom_plant(row)
-                and (not row.planted or values["plant_time"] is not None)):
+                and row.planted and values["plant_time"] is not None):
             a_ids, d_ids = entry.team1_alive_ids, entry.team2_alive_ids
             if attack == Team.TEAM_2:
                 a_ids, d_ids = d_ids, a_ids
@@ -130,7 +135,7 @@ def outcomes_for_match(db, match_id, plant_times: dict[int, float] | None = None
     return result
 
 
-def upsert_plants(db, match, plants, source):
+def upsert_plants(db, match, plants, source, *, dry_run=False):
     """Store normalized position dictionaries keyed by ``round_number``; do not commit.
 
     Positions supply integer u/v, site, and optionally asset_key/game_branch and
@@ -138,6 +143,7 @@ def upsert_plants(db, match, plants, source):
     A stored Round.plant_time always wins. Unknown rounds and invalid positions
     are counted as skipped, as are tracker updates protected by replay precedence.
     Storage errors propagate so the caller can roll back its post-ingest transaction.
+    Dry runs count changes without issuing writes or changing ORM objects.
     """
     if source not in ("tracker", "replay"):
         raise ValueError("plant source must be tracker or replay")
@@ -187,13 +193,182 @@ def upsert_plants(db, match, plants, source):
                       asset_key=plant.get("asset_key", asset_key_for(match.map_name, plant.get("game_branch"))))
         if stored is None:
             stored = RoundPlant(round_id=rnd.id, **values)
-            db.add(stored)
+            if not dry_run:
+                db.add(stored)
             existing[rnd.id] = stored
             summary["inserted"] += 1
         elif any(getattr(stored, key) != value for key, value in values.items()):
-            for key, value in values.items():
-                setattr(stored, key, value)
-            stored.updated_at = datetime.now(timezone.utc)
+            if not dry_run:
+                for key, value in values.items():
+                    setattr(stored, key, value)
+                stored.updated_at = datetime.now(timezone.utc)
             summary["updated"] += 1
-    db.flush()
+    if not dry_run:
+        db.flush()
     return summary
+
+
+UNAVAILABLE_PATH = Path(__file__).resolve().parents[2] / "ingest_ledgers" / "round_plants_unavailable.json"
+
+
+def load_unavailable():
+    """Local external match IDs only; fail visibly rather than overwrite a bad ledger."""
+    if not UNAVAILABLE_PATH.exists():
+        return set()
+    rows = json.loads(UNAVAILABLE_PATH.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise ValueError("round plants unavailable ledger must be a list of external match IDs")
+    return set(rows)
+
+
+def _save_unavailable(rows):
+    UNAVAILABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = UNAVAILABLE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(sorted(rows)) + "\n", encoding="utf-8")
+    temporary.replace(UNAVAILABLE_PATH)
+
+
+def pending_matches(db, limit=None, skip=()):
+    """Newest matches with any planted DB round still missing its position."""
+    missing = (select(Round.id).where(
+        Round.match_id == Match.id, Round.planted.is_(True),
+        ~select(RoundPlant.round_id).where(RoundPlant.round_id == Round.id).exists(),
+    ).exists())
+    query = select(Match).where(missing)
+    if skip:
+        query = query.where(Match.external_id.not_in(skip))
+    query = query.order_by(Match.played_at.desc().nullslast(), Match.created_at.desc(), Match.id.desc())
+    if limit is not None:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        query = query.limit(limit)
+    return db.scalars(query).all()
+
+
+def sync_replays(db, dry_run=False):
+    """Sync linked replay Bombs, isolating bad rounds and committing each replay.
+
+    Dry runs execute the same validation without issuing any writes.
+    The standard blob reader handles gzip; old zlib rows have a narrow fallback.
+    """
+    result = dict(replays=0, inserted=0, updated=0, skipped=0)
+    replays = db.scalars(select(Replay).where(
+        Replay.link_status == "linked", Replay.match_id.is_not(None)).order_by(Replay.id)).all()
+    for replay in replays:
+        match = db.get(Match, replay.match_id)
+        positions = []
+        for row in db.scalars(select(ReplayRound).where(
+                ReplayRound.replay_id == replay.id).order_by(ReplayRound.round_number)).all():
+            try:
+                try:
+                    blob = decode_blob(row.data)
+                except OSError:
+                    blob = json.loads(zlib.decompress(row.data))
+                bomb = next((event for event in blob.get("util") or ()
+                             if event.get("k") == "ability" and event.get("kind") == "Bomb"), None)
+                if bomb is None:
+                    continue
+                positions.append(dict(
+                    round_number=row.round_number, u=bomb.get("u"), v=bomb.get("v"),
+                    t=bomb.get("t"), clock_offset=replay.clock_offset,
+                    game_branch=replay.game_branch,
+                ))
+            except Exception:
+                # Decode failures are counted before the batch; valid rounds still sync.
+                result["skipped"] += 1
+        if positions:
+            try:
+                with nullcontext() if dry_run else db.begin_nested():
+                    counts = upsert_plants(db, match, positions, source="replay", dry_run=dry_run)
+            except Exception:
+                # Roll back the entire batch before isolating a refused plant.
+                counts = dict(inserted=0, updated=0, skipped=0)
+                for position in positions:
+                    try:
+                        with nullcontext() if dry_run else db.begin_nested():
+                            single = upsert_plants(db, match, [position], source="replay", dry_run=dry_run)
+                    except Exception:
+                        counts["skipped"] += 1
+                    else:
+                        for key in single:
+                            counts[key] += single[key]
+            for key in counts:
+                result[key] += counts[key]
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+        result["replays"] += 1
+    return result
+
+
+def _tracker_plants(match, payload):
+    positions = []
+    if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+        return positions
+    for summary in payload["segments"]:
+        if not isinstance(summary, dict) or summary.get("type") != "round-summary":
+            continue
+        attributes = summary.get("attributes")
+        if not isinstance(attributes, dict) or type(attributes.get("round")) is not int:
+            continue
+        plant = plant_from_summary(summary)
+        if plant is None:
+            continue
+        try:
+            u, v = to_uv(match.map_name, plant["x"], plant["y"])
+        except KeyError:
+            continue
+        positions.append(dict(round_number=attributes["round"],
+                              u=u, v=v, site=plant["site"]))
+    return positions
+
+
+def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False):
+    """Commit positions alone per match; the DB and local ledger are the resume point."""
+    unavailable = load_unavailable()
+    todo = pending_matches(db, limit, skip=() if retry_unavailable else unavailable)
+    result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, stopped=None)
+    consecutive_failures = 0
+    for index, match in enumerate(todo):
+        if index:
+            sleep(uniform(5, 12))
+        external_id = match.external_id
+        try:
+            payload = fetch(page, external_id)
+            if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+                raise TrackerMatchUnavailable("match payload has no usable segments")
+            counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker")
+            db.commit()
+        except TrackerVerificationTimeout:
+            db.rollback()
+            result["stopped"] = "verification"
+            break
+        except TrackerMatchUnavailable:
+            db.rollback()
+            unavailable.add(external_id)
+            result["unavailable"] += 1
+            consecutive_failures = 0
+        except Exception:
+            db.rollback()
+            result["failed"] += 1
+            consecutive_failures += 1
+        else:
+            consecutive_failures = 0
+            result["done"] += 1
+            for key in counts:
+                result[key] += counts[key]
+            unavailable.discard(external_id)
+            # A partial response also needs a ledger entry so it cannot starve later matches.
+            if db.scalar(select(Round.id).where(
+                    Round.match_id == match.id, Round.planted.is_(True),
+                    ~select(RoundPlant.round_id).where(RoundPlant.round_id == Round.id).exists(),
+            ).limit(1)) is not None:
+                unavailable.add(external_id)
+                result["unavailable"] += 1
+        _save_unavailable(unavailable)
+        if consecutive_failures >= 5:
+            result["stopped"] = "failures"
+            break
+    result["left"] = len(pending_matches(db, skip=unavailable))
+    return result

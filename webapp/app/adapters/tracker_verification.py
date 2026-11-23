@@ -13,6 +13,10 @@ class TrackerVerificationTimeout(RuntimeError):
     """The owner did not clear human verification within the allowed wait."""
 
 
+class TrackerMatchUnavailable(RuntimeError):
+    """The match is permanently unavailable from tracker.gg (404 or 410)."""
+
+
 def is_verification_page(page):
     """Only the page title identifies verification; unavailable titles are ignored."""
     try:
