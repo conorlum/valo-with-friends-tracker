@@ -753,6 +753,22 @@ def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
     assert result["stopped"] == "paused" and result["failed"] == 0 and result["left"] == 2
 
 
+def test_each_match_prints_one_running_line(db, ledger, capsys):
+    ids = matches(db, 3)
+
+    def fetch(page, key):
+        if key == ids[1]:
+            raise plants.TrackerMatchUnavailable("gone")
+        return payload(1)
+
+    run(db, fetch)
+    lines = [line for line in capsys.readouterr().out.splitlines() if "/3]" in line]
+    assert len(lines) == 3
+    assert "[1/3]" in lines[0] and "+1 plants" in lines[0] and "(this run: 1)" in lines[0]
+    assert "[2/3]" in lines[1] and "unavailable, skip-listed" in lines[1]
+    assert "[3/3]" in lines[2] and "(this run: 2)" in lines[2]
+
+
 def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
     import signal
     from scripts import round_plants as cli

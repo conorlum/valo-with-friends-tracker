@@ -418,6 +418,11 @@ def _fetch_patiently(fetch, page, external_id, *, sleep, stop, alert):
                 raise
 
 
+def _match_line(index, total, text):
+    """One running line per match, so the owner can see the crawl moving."""
+    print(f"{datetime.now():%H:%M:%S}  [{index + 1}/{total}]  {text}", flush=True)
+
+
 def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
              should_stop=None, archive=None, alert=None):
     """Commit positions alone per match; the DB and local ledger are the resume point.
@@ -457,6 +462,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             match = db.scalar(select(Match).where(Match.external_id == external_id))
             if match is None:
                 raise LookupError(f"match {external_id} left the database")
+            map_name = match.map_name  # the commit expires it
             counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker")
             db.commit()
         except TrackerVerificationTimeout:
@@ -473,6 +479,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
                 unavailable.add(external_id)
                 result["unavailable"] += 1
                 consecutive_failures = 0
+                _match_line(index, len(external_ids), "unavailable, skip-listed")
             else:
                 result["failed"] += 1
                 consecutive_failures += 1
@@ -490,6 +497,11 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             ).limit(1)) is not None:
                 unavailable.add(external_id)
                 result["unavailable"] += 1
+                partial = ", partial: skip-listed"
+            else:
+                partial = ""
+            _match_line(index, len(external_ids),
+                        f"{map_name}  +{counts['inserted']} plants{partial}  (this run: {result['inserted']})")
         _save_unavailable(unavailable)
         if consecutive_failures >= 5:
             result["stopped"] = "failures"
