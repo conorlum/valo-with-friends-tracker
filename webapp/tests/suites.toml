@@ -198,7 +198,7 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
-guards = ["app/static/js/**", "app/templates/**"]
+guards = ["app/static/js/**", "app/templates/**", "scripts/util_gallery/**", "scripts/render_util_gallery.py"]
 
 # ---------------------------------------------------------------------------------------------------- Coach and analysis tabs
 
@@ -274,7 +274,8 @@ guards = [
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
   "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
   "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
-  "scripts/fetch_archived_replay.py", "scripts/_admin_client.py",
+  "scripts/fetch_archived_replay.py", "scripts/_admin_client.py", "scripts/harvest_util_samples.py",
+  "scripts/util_gallery/**", "scripts/render_util_gallery.py",
 ]
 
 [replay-worker]
