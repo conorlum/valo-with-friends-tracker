@@ -107,3 +107,167 @@ def is_jiggle_exposure(rnd, player, enemy, exp) -> bool:
             and rnd.alive(player, off) and rnd.alive(enemy, off)
             and opener(rnd, player, enemy, on) in ("peeker", "both")
             and closed_by_player(rnd, player, enemy, off))
+
+
+def first_gun_event(rnd, blob, slot, group) -> tuple[float | None, int | None]:
+    """Recover damage sources lost by _events; kills always qualify (D5)."""
+    gun = {(float(r["t"]), r.get("by"), r.get("target")) for r in blob.get("util") or ()
+           if r.get("k") == "damage" and r.get("src") == "gun"}
+    for t, kind, by, other, _ in sorted(group, key=lambda e: e[0]):
+        target = other if by == slot else slot
+        if kind == "kill" or (kind == "damage" and (t, by, target) in gun):
+            return t, other
+    return None, None
+
+
+def distance_band(distance) -> str | None:
+    """D10 boundaries apply to the unrounded distance."""
+    if distance is None:
+        return None
+    return "close" if distance < pc.DIST_BANDS_M[0] else "mid" if distance < pc.DIST_BANDS_M[1] else "long"
+
+
+def _airborne(rnd, a, b, t):
+    for slot in (a, b):
+        z = rnd.track_z.get(slot)
+        if z is None:
+            continue
+        values = [float(z[i]) for at in _sample_times(t - pc.AIRBORNE_LOOK_S, t + pc.AIRBORNE_LOOK_S)
+                  if (i := rnd._sample(slot, at)) is not None and np.isfinite(z[i])]
+        if values and max(values) - min(values) > pc.AIRBORNE_M:
+            return True
+    return False
+
+
+def _sideways(rnd, slot, opp, t):
+    start, enemy = rnd.pos(slot, t), rnd.pos(opp, t)
+    end = rnd.pos(slot, min(t + pc.WIDE_LOOK_S, rnd.life_end(slot, t)))
+    if start is None or enemy is None or end is None:
+        return None
+    dx, dy = enemy[0] - start[0], enemy[1] - start[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return None
+    return abs((end[1] - start[1]) * dx - (end[0] - start[0]) * dy) / length * rnd.geo.m_per_px
+
+
+def _history(rnd, blob, slot, opp, main, previous):
+    """Return jiggle count and (spot time, distance) candidates, including long damage runs."""
+    onset, lower = main["on"], main["on"] - pc.REPEEK_WINDOW_S
+    jiggles, spots = 0, []
+    for exp in previous:
+        if exp["off"] is None or exp["off"] < lower:
+            continue
+        if is_jiggle_exposure(rnd, slot, opp, exp):
+            jiggles += 1
+        else:
+            spots.append(exp["off"])
+    for r in blob.get("util") or ():
+        if r.get("k") != "damage" or {r.get("by"), r.get("target")} != {slot, opp}:
+            continue
+        end = r["t"] if r.get("t1") is None else r["t1"]
+        if r["t"] < onset and end >= lower:
+            spots.append(min(end, onset - pc.ONSET_STEP_S))
+    here = rnd.pos(slot, onset)
+    candidates = []
+    for at in spots:
+        there = rnd.pos(slot, at)
+        distance = None if here is None or there is None else math.hypot(
+            here[0] - there[0], here[1] - there[1]) * rnd.geo.m_per_px
+        candidates.append((at, distance))
+    return jiggles, candidates
+
+
+def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates):
+    """R4 precedence; unknown measurements never stand in for a negative check."""
+    t = main["on"]
+    positions = all(fights._live_pos(rnd, s, at) is not None
+                    for s in (slot, opp) for at in (t, t - pc.OPENER_DELTA_S))
+    who = opener(rnd, slot, opp, t) if positions else None
+    if _airborne(rnd, slot, opp, t):
+        return who, "other", "airborne"
+    if blob.get("movement_casts") and any(r.get("k") == "cast" and r.get("by") == slot
+            and abs(r["t"] - t) <= fights.DASH_EXCLUDE_S for r in blob.get("util") or ()):
+        return who, "other", "ability_move"
+    if speed is None or not positions:
+        return who, "other", "unmeasured"
+    if who in ("holder", "unclear"):
+        held_speed = max_speed(rnd, slot, t - pc.HELD_LOOK_S, t)
+        if held_speed is None:
+            return who, "other", "unmeasured"
+        if who == "holder":
+            return (who, "held", None) if held_speed <= pc.HELD_MAX_MPS else (who, "other", "caught_moving")
+        return who, "other", "unclear"
+    off = math.inf if main["off"] is None else main["off"]
+    for at, kind, _, other, _ in group:
+        if kind != "kill" or other != opp or not t <= at <= min(off + pc.EVENT_SLACK_S, t + pc.JIGGLE_MAX_S):
+            continue
+        velocity = windowed_velocity(rnd, slot, at)
+        before, now = rnd.pos(slot, t - pc.OPENER_DELTA_S), rnd.pos(slot, at)
+        if velocity is None or before is None or now is None:
+            return who, "other", "unmeasured"
+        if velocity[0] * (before[0] - now[0]) + velocity[1] * (before[1] - now[1]) > 0:
+            return who, "jiggle", None
+    if any(d is not None and d <= pc.REPEEK_SPOT_M for _, d in candidates):
+        return who, "re_peek", None
+    if any(d is None for _, d in candidates):
+        return who, "other", "unmeasured"
+    if speed >= pc.SWING_MPS:
+        if sideways is None:
+            return who, "other", "unmeasured"
+        return (who, "wide_swing", None) if sideways >= pc.WIDE_M else (who, "other", "fast_short")
+    return (who, "slow_peek", None) if speed > pc.HELD_MAX_MPS else (who, "other", "still_peek")
+
+
+def _opening(rnd, blob, slot, i, group):
+    t0, t1 = group[0][0], max(e[4] for e in group)
+    event, opp = first_gun_event(rnd, blob, slot, group)
+    row = dict(slot=slot, i=i, opponent=opp, t0=fights._r2(t0), t1=fights._r2(t1),
+               t_event=fights._r2(event), t_first_sight=None, t_onset=None, opener=None,
+               type="other", reason="no_gun", jiggles=0, speed_mps=None, sideways_m=None,
+               exposure_s=None, repeek_gap_s=None, repeek_spot_m=None, distance_m=None, band=None,
+               result="unresolved", gun_class=fights._moving(rnd, blob, slot, t0, t1)[0]["gun_class"])
+    if event is None:
+        return row
+    sights = [fights._first_sight(rnd, a, b, t0 - fights.SIGHT_LOOK_S, t1)[0]
+              for a, b in ((slot, opp), (opp, slot))]
+    row["t_first_sight"] = fights._r2(min((t for t in sights if t is not None), default=None))
+    kills = [e for e in group if e[1] == "kill" and e[3] == opp]
+    if kills:
+        row["result"] = "won" if min(kills, key=lambda e: e[0])[2] == slot else "lost"
+    distance = fights._dist_m(rnd, slot, opp, event)
+    row.update(distance_m=None if distance is None else round(distance, 1), band=distance_band(distance))
+
+    # One scan holds both the history and the main exposure's closing time (D5).
+    runs = exposures(rnd, slot, opp, event - pc.ONSET_LOOKBACK_S, t1 + pc.EVENT_SLACK_S)
+    main = next((exp for exp in runs if exp["on"] <= event
+                 and (exp["off"] is None or event < exp["off"])), None)
+    if main is None:
+        main = next((exp for exp in reversed(runs) if exp["off"] is not None
+                     and exp["off"] <= event <= exp["off"] + pc.EVENT_SLACK_S), None)
+    if main is None:
+        row["reason"] = "no_line"
+        return row
+    row["exposure_s"] = fights._r2(None if main["off"] is None else main["off"] - main["on"])
+    if main["at_start"]:
+        row["reason"] = "no_onset"
+        return row
+    t = main["on"]
+    speed, sideways = windowed_speed(rnd, slot, t), _sideways(rnd, slot, opp, t)
+    jiggles, candidates = _history(rnd, blob, slot, opp, main, runs[:runs.index(main)])
+    nearby = [c for c in candidates if c[1] is not None and c[1] <= pc.REPEEK_SPOT_M]
+    latest = max(nearby or candidates, key=lambda c: c[0], default=None)
+    distance = fights._dist_m(rnd, slot, opp, t)
+    row.update(t_onset=fights._r2(t), speed_mps=fights._r2(speed), sideways_m=fights._r2(sideways),
+               jiggles=jiggles, repeek_gap_s=None if latest is None else fights._r2(t - latest[0]),
+               repeek_spot_m=None if latest is None else fights._r2(latest[1]),
+               distance_m=None if distance is None else round(distance, 1), band=distance_band(distance))
+    row["opener"], row["type"], row["reason"] = _label(
+        rnd, blob, slot, opp, main, group, speed, sideways, candidates)
+    return row
+
+
+def round_openings(rnd, blob) -> list[dict]:
+    """D6: recompute fights locally, with one slot-level opening per fight."""
+    return [_opening(rnd, blob, slot, i, group) for slot in sorted(rnd.team)
+            for i, group in enumerate(fights._split(fights._events(rnd, blob, slot)))]
