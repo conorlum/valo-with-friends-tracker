@@ -15,6 +15,7 @@ SWING_MPS = 4.5  # PLAN R4: minimum swing speed.
 WIDE_M = 1.5  # PLAN R4: minimum sideways travel for a wide swing.
 WIDE_LOOK_S = 0.5  # PLAN R4: sideways travel measurement window.
 JUMP_LOOK_S = 0.25  # PLAN R4/D14: flight overlap window on either side of onset.
+JUMP_RISE_M = 0.5  # PLAN R4/D14: a jump rises this far above takeoff; falls do not.
 DIST_BANDS_M = (10.0, 25.0)  # PLAN D10: close/mid/long distance boundaries.
 SHRINK_K = 10  # PLAN D9: pooled-rate pseudo-openings for shrinkage.
 TYPES = ("held", "wide_swing", "slow_peek", "jump_peek", "ability_peek", "jiggle", "re_peek", "other")  # PLAN R4/D14.

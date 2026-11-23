@@ -128,14 +128,14 @@ def distance_band(distance) -> str | None:
 
 
 def _flights(blob, geo):
-    """D14: sample-mask runs per slot, using the stored segments' raw decimetres."""
+    """D14: (start, end, rise in metres) per slot from raw-decimetre sample runs."""
     flights = {}
     for slot, t, x, y, z in height_motion.tracks(blob):
         if z is None:
             continue
         mask = height_motion.airborne(x, y, z, blob["hz"], geo.m_per_px)
         edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
-        flights.setdefault(slot, []).extend((float(t[i]), float(t[j - 1]))
+        flights.setdefault(slot, []).extend((float(t[i]), float(t[j - 1]), float(np.max(z[i:j]) - z[i]) / 10)
                                             for i, j in edges.reshape(-1, 2))
     return flights
 
@@ -185,14 +185,14 @@ def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, fligh
     positions = all(fights._live_pos(rnd, s, at) is not None
                     for s in (slot, opp) for at in (t, t - pc.OPENER_DELTA_S))
     who = opener(rnd, slot, opp, t) if positions else None
-    nearby_flights = [(a, b) for a, b in flights.get(slot, ())
+    nearby_flights = [(a, b, rise) for a, b, rise in flights.get(slot, ())
                       if a <= t + pc.JUMP_LOOK_S and b >= t - pc.JUMP_LOOK_S]
     movement_cast = blob.get("movement_casts") and any(r.get("k") == "cast" and r.get("by") == slot
         and abs(r["t"] - t) <= fights.DASH_EXCLUDE_S for r in blob.get("util") or ())
-    if movement_cast or any(a <= d and b >= c for a, b in nearby_flights
+    if movement_cast or any(a <= d and b >= c for a, b, _ in nearby_flights
                             for c, d in abilities.get(slot, ())):
         return who, "ability_peek", None
-    if nearby_flights and who in ("peeker", "both"):
+    if any(rise >= pc.JUMP_RISE_M for _, _, rise in nearby_flights) and who in ("peeker", "both"):
         return who, "jump_peek", None
     if speed is None or not positions:
         return who, "other", "unmeasured"

@@ -180,11 +180,55 @@ def motion_round(profile=arc, *, slot=0, player=None, enemy=None, util=()):
 
 
 def test_jump_peek_real_arc():
-    rnd, blob, onset, t, mask = motion_round()
+    rnd, blob, onset, t, mask = motion_round(lambda t, onset: arc(t, onset, velocity=math.sqrt(48)))
     assert mask[np.abs(t - onset) <= .25].any()
     assert not height_motion.blackouts(blob, rnd.geo)
+    assert np.max(rnd.track_z[0]) == pytest.approx(1.2)
+    [(start, end, rise)] = peeks._flights(blob, rnd.geo)[0]
+    assert start <= onset <= end
+    assert rise == pytest.approx(1.2, abs=.1)
     r = row(rnd, blob, onset=onset)
     assert (r["opener"], r["type"], r["reason"]) == ("peeker", "jump_peek", None)
+
+
+@pytest.mark.parametrize("ability", [False, True])
+def test_falling_round_corner_is_normal_or_ability_peek(ability):
+    def fall(t, onset):
+        elapsed = np.maximum(0, t - (onset - .2))
+        return np.maximum(0, 2 - heights.GRAVITY_MPS2 / 2 * elapsed ** 2)
+
+    rnd, blob, onset, t, mask = motion_round(
+        fall, util=[cast(10, 0, code="Wushu", name="E_Dash")] if ability else [])
+    assert mask[np.abs(t - onset) <= .25].any()
+    z = rnd.track_z[0]
+    assert np.ptp(z[mask]) > 1
+    assert np.all(np.diff(z) <= 0)
+    spans = height_motion.blackouts(blob, rnd.geo).get(0, ())
+    assert bool(spans) is ability
+    if ability:
+        assert onset - 10 > fights.DASH_EXCLUDE_S
+        assert any(a <= t[mask][-1] and b >= t[mask][0] for a, b in spans)
+    flat, flat_blob, flat_onset, _, flat_mask = motion_round(lambda t, _: np.zeros_like(t))
+    assert not flat_mask.any()
+    normal = row(flat, flat_blob, onset=flat_onset)
+    assert (normal["type"], normal["reason"]) == ("wide_swing", None)
+    r = row(rnd, blob, onset=onset)
+    expected = ("ability_peek", None) if ability else (normal["type"], normal["reason"])
+    assert (r["type"], r["reason"]) == expected
+    [(start, end, rise)] = peeks._flights(blob, rnd.geo)[0]
+    assert start <= onset <= end and rise == 0
+
+
+@pytest.mark.parametrize("rise,label", [(.3, "wide_swing"), (.49, "wide_swing"),
+                                       (.5, "jump_peek"), (.6, "jump_peek")])
+def test_jump_rise_filter_on_flight_data(monkeypatch, rise, label):
+    rnd, blob, onset, _, mask = motion_round(lambda t, _: np.zeros_like(t))
+    assert not mask.any()
+    assert not height_motion.blackouts(blob, rnd.geo)
+    assert row(rnd, blob, onset=onset)["type"] == "wide_swing"
+    monkeypatch.setattr(peeks, "_flights", lambda blob, geo: {0: [(onset - .1, onset + .1, rise)]})
+    r = row(rnd, blob, onset=onset)
+    assert (r["opener"], r["type"], r["reason"]) == ("peeker", label, None)
 
 
 def test_steady_ramp_is_normal_peek():
