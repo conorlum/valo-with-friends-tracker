@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright
 
 from app.adapters.trackergg_browserstate_source import ingest_full_history
+from app.adapters.tracker_verification import TrackerVerificationTimeout
 from app.db import SessionLocal
 from app.models import Player
 
@@ -69,12 +70,13 @@ def _enqueue_new_opponents(db, state: dict) -> int:
     return len(new_names)
 
 
-def main(max_players: int | None, max_matches_per_player: int | None, max_acts: int | None, state_path: Path) -> None:
+def main(max_players: int | None, max_matches_per_player: int | None, max_acts: int | None, state_path: Path) -> int:
     state = _load_state(state_path)
     if not state["queue"] and not state["crawled"]:
         state["queue"] = json.loads(ROSTER_PATH.read_text())
 
     db = SessionLocal()
+    verification_timeout = False
     try:
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(CDP_URL)
@@ -112,6 +114,14 @@ def main(max_players: int | None, max_matches_per_player: int | None, max_acts: 
                     ingest_full_history(
                         db, page, riot_id, max_matches=max_matches_per_player, max_acts=max_acts
                     )
+                except TrackerVerificationTimeout:
+                    print("Human verification timed out. Clear the check in the browser, "
+                          "then re-run the same command to resume; completed matches are kept.")
+                    db.rollback()
+                    state["queue"].insert(0, riot_id)
+                    _save_state(state_path, state)
+                    verification_timeout = True
+                    break
                 except Exception as e:
                     print(f"  error crawling {riot_id}, skipping: {e}")
                     db.rollback()
@@ -132,6 +142,7 @@ def main(max_players: int | None, max_matches_per_player: int | None, max_acts: 
         db.close()
 
     print(f"\ndone: {len(state['crawled'])} player(s) crawled, {len(state['queue'])} still queued")
+    return 2 if verification_timeout else 0
 
 
 if __name__ == "__main__":
@@ -145,4 +156,4 @@ if __name__ == "__main__":
     )
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_PATH, help="checkpoint file path")
     args = parser.parse_args()
-    main(args.max_players, args.max_matches_per_player, args.max_acts, args.state_file)
+    sys.exit(main(args.max_players, args.max_matches_per_player, args.max_acts, args.state_file))
