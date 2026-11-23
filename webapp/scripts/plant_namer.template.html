@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plant spot namer</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111820; color: #e5edf5; font: 15px system-ui, sans-serif; }
+  header { padding: 20px 24px 12px; }
+  h1 { font-size: 23px; margin: 0 0 8px; }
+  p { line-height: 1.5; margin: 8px 0; }
+  main { display: grid; grid-template-columns: minmax(300px, 800px) minmax(280px, 370px); gap: 24px; padding: 12px 24px 24px; }
+  nav, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+  select, input, button { color: inherit; background: #202e3d; border: 1px solid #52677a; border-radius: 5px; padding: 8px; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #67e8b3; }
+  #viewport { width: 100%; aspect-ratio: 1; position: relative; touch-action: none; background: #0b1015; }
+  #rotated { position: absolute; inset: 0; transform-origin: center; }
+  #minimap, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #minimap { user-select: none; pointer-events: none; }
+  #overlay { cursor: grab; }
+  aside { padding: 16px; background: #17222d; border-radius: 8px; }
+  #spots { list-style: none; padding: 0; margin: 12px 0; }
+  #spots button { width: 100%; text-align: left; margin-bottom: 6px; }
+  #spots button[aria-pressed="true"] { border-color: #67e8b3; background: #25483e; }
+  #editor label { display: grid; grid-template-columns: 65px 1fr; gap: 8px; align-items: center; margin: 10px 0; }
+  input { min-width: 0; width: 100%; }
+  .muted { color: #a8bacb; font-size: 13px; }
+  #outside { color: #a8adb5; }
+  #message { min-height: 24px; color: #ffce7b; }
+  #exportNote { overflow-wrap: anywhere; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; padding: 12px; } header { padding: 16px 12px 4px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Plant spot namer</h1>
+  <p>Name and review the circles, then export the complete spot file. Saved sites replace proposals.</p>
+  <p class="muted">Drag a circle to move it; drag its edge to resize. Add places a circle at your next map click.
+    Merge keeps the selected spot's name and covers both circles. Undo reverses one edit, including a whole drag.
+    Edits stay in this tab until export; reloading restores this page's starting data.</p>
+</header>
+<main>
+  <section aria-label="Plant map">
+    <nav>
+      <label>Map layout <select id="map"></select></label>
+      <label>Site <select id="site"></select></label>
+      <span id="total"></span>
+    </nav>
+    <div id="viewport"><div id="rotated"><img id="minimap" alt="Selected map minimap" draggable="false"><canvas id="overlay" width="1000" height="1000" aria-label="Plant positions and editable spot circles"></canvas></div></div>
+    <p id="outside"></p>
+  </section>
+  <aside aria-label="Spot editor">
+    <div class="actions"><button id="add">Add spot</button><button id="undo">Undo</button></div>
+    <p id="limit" class="muted"></p>
+    <ul id="spots" aria-label="Spots"></ul>
+    <fieldset id="editor" disabled>
+      <legend>Selected circle</legend>
+      <label>Name <input id="name" type="text" autocomplete="off"></label>
+      <label>U <input id="u" type="number" min="0" max="10000" step="any"></label>
+      <label>V <input id="v" type="number" min="0" max="10000" step="any"></label>
+      <label>Radius <input id="r" type="number" min="0.01" max="10000" step="any"></label>
+      <div class="actions"><button id="discard">Discard</button></div>
+      <label>Merge with <select id="mergeWith"></select></label>
+      <button id="merge">Merge two</button>
+    </fieldset>
+    <p class="muted">U, V and radius use the original minimap's 0–10000 units. The displayed rotation never changes stored coordinates.</p>
+    <p id="message" role="status" aria-live="polite"></p>
+    <button id="export">Export plant_spots.json</button>
+    <p id="exportNote" class="muted"></p>
+    <p class="muted">Copy the reviewed download to app/static/data/plant_spots.json, then review the diff.</p>
+  </aside>
+</main>
+<script>
+/*CORE*/
+const DATA = /*DATA*/null;
+const model = PlantNamer.create(DATA.layouts);
+const el = id => document.getElementById(id);
+const mapPicker = el('map'), sitePicker = el('site'), canvas = el('overlay'), viewport = el('viewport');
+const ctx = canvas.getContext('2d');
+let key, site, selected = null, adding = false, gesture = null;
+const palette = ['#67e8b3', '#7db9ff', '#ffd06b', '#ef9dff', '#ff8d8d', '#87e1ed', '#d2e87c', '#d7b49e', '#b8abff', '#ffb5cf'];
+const currentSpots = () => model.spots(key, site);
+const selectedSpot = () => currentSpots().find(s => s.id === selected);
+function option(select, value, label) {
+  const opt = document.createElement('option'); opt.value = value; opt.textContent = label; select.appendChild(opt);
+}
+function message(text = '') { el('message').textContent = text; }
+function action(fn) {
+  try { fn(); message(); } catch (error) { message(error.message); }
+  render();
+}
+function chooseMap() {
+  key = mapPicker.value;
+  sitePicker.replaceChildren();
+  for (const name of Object.keys(DATA.maps[key].points)) option(sitePicker, name, name);
+  sitePicker.value = Object.hasOwn(DATA.maps[key].points, site) ? site : sitePicker.options[0].value;
+  chooseSite();
+}
+function chooseSite() {
+  site = sitePicker.value; selected = null; adding = false; gesture = null;
+  el('minimap').src = DATA.maps[key].image;
+  el('rotated').style.transform = 'rotate(' + DATA.maps[key].rotation * 90 + 'deg)';
+  message(); render();
+}
+function draw() {
+  ctx.clearRect(0, 0, 1000, 1000);
+  const spots = currentSpots().map(s => gesture?.id === s.id ? gesture.preview : s);
+  const points = DATA.maps[key].points[site], counts = new Map();
+  let outside = 0;
+  for (const [u, v] of points) {
+    let owner = -1, nearest = Infinity;
+    spots.forEach((s, i) => {
+      const distance = Math.hypot(s.u - u, s.v - v);
+      if (s.name.trim() && distance <= s.r && distance < nearest) { owner = i; nearest = distance; }
+    });
+    if (owner < 0) outside++; else counts.set(spots[owner].id, (counts.get(spots[owner].id) || 0) + 1);
+    ctx.beginPath(); ctx.arc(u / 10, v / 10, 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = owner < 0 ? '#a8adb5' : palette[owner % palette.length]; ctx.fill();
+  }
+  spots.forEach((s, i) => {
+    ctx.beginPath(); ctx.arc(s.u / 10, s.v / 10, s.r / 10, 0, Math.PI * 2);
+    ctx.strokeStyle = palette[i % palette.length]; ctx.lineWidth = s.id === selected ? 4 : 2;
+    ctx.setLineDash(s.name.trim() ? [] : [7, 5]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(s.u / 10, s.v / 10, 3, 0, Math.PI * 2); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+  });
+  el('total').textContent = points.length + ' plants';
+  el('outside').textContent = outside + ' outside named spots (grey)';
+  return counts;
+}
+function render() {
+  const counts = draw(), spots = currentSpots(), active = selectedSpot();
+  el('spots').replaceChildren();
+  for (const s of spots) {
+    const li = document.createElement('li'), button = document.createElement('button');
+    button.textContent = (s.name.trim() || 'Unnamed · ' + s.id) + ' (' + (counts.get(s.id) || 0) + ')';
+    button.setAttribute('aria-pressed', String(s.id === selected));
+    button.onclick = () => { selected = s.id; adding = false; render(); };
+    li.appendChild(button); el('spots').appendChild(li);
+  }
+  el('editor').disabled = !active;
+  for (const field of ['name', 'u', 'v', 'r']) el(field).value = active ? active[field] : '';
+  el('mergeWith').replaceChildren();
+  for (const s of spots) if (s.id !== selected) option(el('mergeWith'), s.id, s.name.trim() || s.id);
+  el('merge').disabled = !active || spots.length < 2;
+  el('add').disabled = spots.length >= 10;
+  el('add').textContent = adding ? 'Click map to place (cancel)' : 'Add spot';
+  canvas.style.cursor = adding ? 'crosshair' : 'grab';
+  el('limit').textContent = spots.length + ' / 10 spots on this site';
+  el('undo').disabled = !model.history.length;
+  try {
+    model.exportJSON(); el('export').disabled = false;
+    el('exportNote').textContent = 'All circles named. Export includes every layout and site.';
+  } catch (error) {
+    el('export').disabled = true; el('exportNote').textContent = error.message;
+  }
+}
+mapPicker.onchange = chooseMap;
+sitePicker.onchange = chooseSite;
+el('add').onclick = () => { adding = !adding; message(); render(); };
+el('undo').onclick = () => action(() => { model.undo(); gesture = null; adding = false; });
+el('discard').onclick = () => action(() => { model.discard(key, site, selected); selected = null; });
+el('merge').onclick = () => action(() => model.merge(key, site, selected, el('mergeWith').value));
+for (const field of ['name', 'u', 'v', 'r']) el(field).onchange = () => action(() => {
+  const input = el(field);
+  if (field !== 'name' && input.value.trim() === '') throw new Error('Enter a value for ' + field);
+  model.update(key, site, selected, {[field]: field === 'name' ? input.value : Number(input.value)});
+});
+function pointer(event) {
+  return PlantNamer.pointerUV(event.clientX, event.clientY, viewport.getBoundingClientRect(), DATA.maps[key].rotation);
+}
+canvas.onpointerdown = event => {
+  if (event.button !== 0 || gesture) return;
+  event.preventDefault();
+  const p = pointer(event);
+  if (adding) {
+    action(() => { selected = model.add(key, site, p.u, p.v); adding = false; });
+    return;
+  }
+  const tolerance = 10 * 10000 / viewport.getBoundingClientRect().width;
+  const candidates = currentSpots().filter(s => Math.hypot(p.u - s.u, p.v - s.v) <= s.r + tolerance);
+  const hit = candidates.find(s => s.id === selected) || candidates.sort((a, b) =>
+    Math.hypot(p.u - a.u, p.v - a.v) - Math.hypot(p.u - b.u, p.v - b.v))[0];
+  if (!hit) { selected = null; render(); return; }
+  selected = hit.id;
+  gesture = {id: hit.id, pointerId: event.pointerId, start: p, original: {...hit}, preview: {...hit},
+    resize: Math.abs(Math.hypot(p.u - hit.u, p.v - hit.v) - hit.r) <= Math.min(tolerance, hit.r * .35)};
+  canvas.setPointerCapture(event.pointerId); render();
+};
+canvas.onpointermove = event => {
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  const p = pointer(event), g = gesture, s = g.original;
+  if (g.resize) g.preview = {...s, r: Math.max(0.01, Math.min(10000, Math.hypot(p.u - s.u, p.v - s.v)))};
+  else g.preview = {...s, u: Math.max(0, Math.min(10000, s.u + p.u - g.start.u)),
+    v: Math.max(0, Math.min(10000, s.v + p.v - g.start.v))};
+  draw();
+};
+canvas.onpointerup = event => {
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  canvas.onpointermove(event);
+  const finished = gesture; gesture = null;
+  action(() => model.update(key, site, finished.id, finished.preview));
+};
+canvas.onpointercancel = canvas.onlostpointercapture = () => { if (gesture) { gesture = null; render(); } };
+el('export').onclick = () => action(() => {
+  const blob = new Blob([model.exportJSON()], {type: 'application/json'}), url = URL.createObjectURL(blob);
+  const link = document.createElement('a'); link.href = url; link.download = 'plant_spots.json';
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+for (const name of Object.keys(DATA.maps)) option(mapPicker, name, name);
+chooseMap();
+</script>
+</body>
+</html>
