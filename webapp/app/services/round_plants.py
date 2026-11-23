@@ -75,7 +75,29 @@ def plant_from_summary(round_summary):
     x, y = location.get("x"), location.get("y")
     if not (_finite_number(x) and _finite_number(y)):
         return None
-    return {"site": plant["site"], "x": x, "y": y}
+    view = _planter_view(plant)
+    if view is None:
+        return {"site": plant["site"], "x": x, "y": y}
+    return {"site": plant["site"], "x": x + SPIKE_OFFSET_UNITS * math.cos(view),
+            "y": y + SPIKE_OFFSET_UNITS * math.sin(view), "corrected": True}
+
+
+# tracker.gg's plant location is the planter's position; the spike lands this far
+# in front of them (measured against replay Bomb positions, world units = cm).
+SPIKE_OFFSET_UNITS = 70
+
+
+def _planter_view(plant):
+    """The planter's facing in radians, or None when the payload does not give it."""
+    who = plant.get("platformUserIdentifier")
+    players = plant.get("playerLocations")
+    if who is None or not isinstance(players, list):
+        return None
+    for player in players:
+        if isinstance(player, dict) and player.get("platformUserIdentifier") == who:
+            view = player.get("viewRadians")
+            return view if _finite_number(view) else None
+    return None
 
 
 def asset_key_for(map_name, game_branch):
@@ -338,8 +360,8 @@ def _tracker_plants(match, payload):
             u, v = to_uv(match.map_name, plant["x"], plant["y"])
         except KeyError:
             continue
-        positions.append(dict(round_number=attributes["round"],
-                              u=u, v=v, site=plant["site"]))
+        positions.append(dict(round_number=attributes["round"], u=u, v=v, site=plant["site"],
+                              corrected=plant.get("corrected", False)))
     return positions
 
 
@@ -418,6 +440,42 @@ def _fetch_patiently(fetch, page, external_id, *, sleep, stop, alert):
                 raise
 
 
+CORRECTED_PATH = UNAVAILABLE_PATH.parent / "round_plants_corrected.json"
+
+
+def load_corrected():
+    """External IDs this crawl has stored with the spike correction."""
+    if not CORRECTED_PATH.exists():
+        return set()
+    rows = json.loads(CORRECTED_PATH.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise ValueError("round plants corrected ledger must be a list of external match IDs")
+    return set(rows)
+
+
+def _save_corrected(rows):
+    CORRECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CORRECTED_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(sorted(rows)) + "\n", encoding="utf-8")
+    temporary.replace(CORRECTED_PATH)
+
+
+def crawl_queue(db, limit=None, skip=()):
+    """External IDs to fetch: tracker rows saved before the correction, then missing plants."""
+    if limit is not None and limit < 0:
+        raise ValueError("limit must be non-negative")
+    skip, corrected = set(skip), load_corrected()
+    stored = db.scalars(select(Match.external_id).where(
+        select(RoundPlant.round_id).where(RoundPlant.match_id == Match.id,
+                                          RoundPlant.source == "tracker").exists(),
+    ).order_by(Match.played_at.desc().nullslast(), Match.created_at.desc(), Match.id.desc())).all()
+    queue = [key for key in stored if key not in corrected and key not in skip]
+    queued = set(queue)
+    queue += [match.external_id for match in pending_matches(db, skip=skip)
+              if match.external_id not in queued]
+    return queue if limit is None else queue[:limit]
+
+
 def _match_line(index, total, text):
     """One running line per match, so the owner can see the crawl moving."""
     print(f"{datetime.now():%H:%M:%S}  [{index + 1}/{total}]  {text}", flush=True)
@@ -434,12 +492,12 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
     """
     stop = should_stop or (lambda: None)
     unavailable = load_unavailable()
-    todo = pending_matches(db, limit, skip=() if retry_unavailable else unavailable)
-    result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, stopped=None)
+    corrected = load_corrected()
+    result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, no_facing=0, stopped=None)
     consecutive_failures = 0
     # Plain strings: the loop below ends the transaction before every fetch, which
     # expires the ORM objects, and reading one would open a transaction again.
-    external_ids = [match.external_id for match in todo]
+    external_ids = crawl_queue(db, limit, skip=() if retry_unavailable else unavailable)
     for index, external_id in enumerate(external_ids):
         # The fetch can wait up to 15 minutes for the owner's verification; hold no
         # transaction across it (or the pacing sleep before it).
@@ -463,8 +521,12 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             if match is None:
                 raise LookupError(f"match {external_id} left the database")
             map_name = match.map_name  # the commit expires it
-            counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker")
+            positions = _tracker_plants(match, payload)
+            counts = upsert_plants(db, match, positions, source="tracker")
             db.commit()
+            result["no_facing"] += sum(not position["corrected"] for position in positions)
+            corrected.add(external_id)
+            _save_corrected(corrected)
         except TrackerVerificationTimeout:
             db.rollback()
             result["stopped"] = "verification"
@@ -501,10 +563,11 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             else:
                 partial = ""
             _match_line(index, len(external_ids),
-                        f"{map_name}  +{counts['inserted']} plants{partial}  (this run: {result['inserted']})")
+                        f"{map_name}  +{counts['inserted']} new, {counts['updated']} fixed{partial}  "
+                        f"(this run: {result['inserted'] + result['updated']})")
         _save_unavailable(unavailable)
         if consecutive_failures >= 5:
             result["stopped"] = "failures"
             break
-    result["left"] = len(pending_matches(db, skip=unavailable))
+    result["left"] = len(crawl_queue(db, skip=unavailable))
     return result

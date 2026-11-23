@@ -128,7 +128,9 @@ def main(argv=None):
             stored = db.scalar(select(func.count()).select_from(RoundPlant))
             planted = db.scalar(select(func.count()).select_from(Round).where(Round.planted.is_(True)))
             print(f"stored plants: {stored}; planted rounds: {planted}; skip-list: {len(unavailable)}")
-            print(f"pending matches: {len(plants.pending_matches(db, skip=unavailable))}")
+            missing = len(plants.pending_matches(db, skip=unavailable))
+            print(f"pending matches: {missing}")
+            print(f"matches to crawl: {len(plants.crawl_queue(db, skip=unavailable))} (includes position re-fetches)")
             _print_coverage(db)
             return 0
         if args.command == "sync-replays":
@@ -138,8 +140,8 @@ def main(argv=None):
             return 0
         if plants.clear_pause():
             print("removed a leftover pause file")
-        pending = plants.pending_matches(db, args.limit,
-                                         skip=() if args.retry_unavailable else plants.load_unavailable())
+        pending = plants.crawl_queue(db, args.limit,
+                                     skip=() if args.retry_unavailable else plants.load_unavailable())
         _progress(0, len(pending))
         if not pending:
             return 0
@@ -150,7 +152,7 @@ def main(argv=None):
                                     should_stop=should_stop, archive=args.archive)
         _progress(result["done"], result["left"])
         print(f"stored this run: inserted {result['inserted']}, updated {result['updated']}, "
-              f"skipped {result['skipped']}")
+              f"skipped {result['skipped']}; plants without facing data: {result['no_facing']}")
         print(f"unavailable: {result['unavailable']}; failed: {result['failed']}")
         if result["stopped"]:
             print(f"stopped: {result['stopped']}")

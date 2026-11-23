@@ -22,6 +22,7 @@ def ledger(tmp_path, monkeypatch):
     path = tmp_path / "unavailable.json"
     monkeypatch.setattr(plants, "UNAVAILABLE_PATH", path, raising=False)
     monkeypatch.setattr(plants, "PAUSE_PATH", tmp_path / "round_plants.pause", raising=False)
+    monkeypatch.setattr(plants, "CORRECTED_PATH", tmp_path / "corrected.json", raising=False)
     return path
 
 
@@ -753,6 +754,61 @@ def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
     assert result["stopped"] == "paused" and result["failed"] == 0 and result["left"] == 2
 
 
+def facing_summary(view=0.0, who="planter"):
+    return {"type": "round-summary", "attributes": {"round": 1}, "metadata": {"plant": {
+        "site": "B", "location": {"x": 1000, "y": 2000}, "platformUserIdentifier": "planter",
+        "playerLocations": [{"platformUserIdentifier": "other", "location": {"x": 0, "y": 0}, "viewRadians": 3.0},
+                            {"platformUserIdentifier": who, "location": {"x": 1000, "y": 2000},
+                             "viewRadians": view}]}}}
+
+
+@pytest.mark.parametrize("view,x,y", [(0.0, 1070, 2000), (1.5707963267948966, 1000, 2070)])
+def test_spike_is_moved_in_front_of_the_planter(view, x, y):
+    plant = plants.plant_from_summary(facing_summary(view))
+    assert plant["corrected"] is True
+    assert plant["x"] == pytest.approx(x) and plant["y"] == pytest.approx(y)
+
+
+@pytest.mark.parametrize("summary", [facing_summary(who="someone else"), facing_summary(view=None),
+                                     facing_summary(view=float("nan"))])
+def test_a_plant_without_the_planters_facing_keeps_tracker_position(summary):
+    assert plants.plant_from_summary(summary) == {"site": "B", "x": 1000, "y": 2000}
+
+
+def test_rows_saved_before_the_fix_are_refetched_once_and_updated(db, ledger):
+    ids = matches(db, 2)
+    match = db.scalar(select(Match).where(Match.external_id == ids[1]))
+    plants.upsert_plants(db, match, [dict(round_number=1, u=1, v=2, site="B")], source="tracker")
+    db.commit()
+    assert plants.crawl_queue(db) == [ids[1], ids[0]]
+    fetched = []
+    result = run(db, lambda page, key: (fetched.append(key), {"segments": [facing_summary()]})[1])
+    assert fetched == [ids[1], ids[0]]
+    assert result["updated"] == 1 and result["inserted"] == 1 and result["no_facing"] == 0 and result["left"] == 0
+    row = db.scalar(select(RoundPlant).where(RoundPlant.match_id == match.id))
+    assert (row.u, row.v) != (1, 2)
+    assert plants.crawl_queue(db) == []
+
+
+def test_a_stopped_fix_resumes_after_the_last_saved_match(db, ledger):
+    ids = matches(db, 3)
+    for key in ids:
+        match = db.scalar(select(Match).where(Match.external_id == key))
+        plants.upsert_plants(db, match, [dict(round_number=1, u=1, v=2, site="B")], source="tracker")
+    db.commit()
+    requested = []
+    run(db, lambda page, key: (requested.append(key), {"segments": [facing_summary()]})[1],
+        should_stop=lambda: "paused" if requested else None)
+    assert requested == ids[:1] and plants.crawl_queue(db) == ids[1:]
+
+
+def test_replay_position_is_never_replaced_by_the_refetch(db, ledger):
+    match = planted_match(db, external_id="synthetic-replay")
+    plants.upsert_plants(db, match, [dict(round_number=1, u=1234, v=5678, site="A")], source="replay")
+    db.commit()
+    assert plants.crawl_queue(db) == []
+
+
 def test_each_match_prints_one_running_line(db, ledger, capsys):
     ids = matches(db, 3)
 
@@ -764,7 +820,7 @@ def test_each_match_prints_one_running_line(db, ledger, capsys):
     run(db, fetch)
     lines = [line for line in capsys.readouterr().out.splitlines() if "/3]" in line]
     assert len(lines) == 3
-    assert "[1/3]" in lines[0] and "+1 plants" in lines[0] and "(this run: 1)" in lines[0]
+    assert "[1/3]" in lines[0] and "+1 new, 0 fixed" in lines[0] and "(this run: 1)" in lines[0]
     assert "[2/3]" in lines[1] and "unavailable, skip-listed" in lines[1]
     assert "[3/3]" in lines[2] and "(this run: 2)" in lines[2]
 

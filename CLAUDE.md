@@ -260,6 +260,9 @@ spot shows a win rate only from 100 plants.
   `app/models/round_plant.py`) and `plant_stats_cache`. It only creates tables, so it runs through the normal
   `alembic upgrade head` on build and `RENDER_DEPLOY.md` needs no note.
 - New tracker.gg ingests save plants (`load_match`, `_store_plants`). A failure there never fails the ingest.
+  tracker.gg's plant `location` is the planter's position; `plant_from_summary` moves it 70 units along the
+  planter's `viewRadians` to the spike (checked against replay Bomb positions). The backfill re-fetches tracker
+  rows saved before this, tracked in the gitignored `ingest_ledgers/round_plants_corrected.json`.
 - The stats cache needs no ingest hook: it is keyed by a fingerprint of the plant rows, linked replays, the layout
   registry, the spots file and `CALCULATION_VERSION`.
 - Owner commands, from `webapp`, in this order. The first two write to the friends DB through
