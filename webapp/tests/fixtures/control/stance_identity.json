@@ -4,13 +4,14 @@
     "summary": "a15e2634372efcc1"
   },
   "geometry_inputs": {
-    "fingerprint": "bc3873a7ff8518bb",
+    "fingerprint": "260239c02462d938",
     "inputs": {
       "barrier": "06d022399053",
+      "cover": "7f03de5f7496",
       "scale": 8.1e-05,
-      "sight": "cb32e86ca94e",
+      "sight": "c5605b94ff5c",
       "specials": [],
-      "walk": "42d1d3f29a3c"
+      "walk": "d1351c28ac11"
     },
     "map": "Abyss"
   },

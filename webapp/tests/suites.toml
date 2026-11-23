@@ -343,7 +343,7 @@ guards = [
 [control-store-web]
 about = "Map control outside the engine: committed assets and barriers, storage and freshness, the worker dispatcher, views, viewer, tagger, reference bytes."
 tests = [
-  "tests/replays/test_haven_walls.py",
+  "tests/replays/test_haven_walls.py", "tests/replays/test_owner_map_reviews.py",
   "tests/replays/test_control_assets.py", "tests/replays/test_control_barriers.py", "tests/replays/test_control_store.py",
   "tests/replays/test_control_remote.py", "tests/replays/test_control_views.py", "tests/replays/test_control_viewer.py",
   "tests/replays/test_control_tagger.py", "tests/replays/test_areas_draft.py", "tests/replays/test_areas_tagger_core.py",

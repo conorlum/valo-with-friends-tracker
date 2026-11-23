@@ -290,9 +290,10 @@ def _summit_stance(px, py):
     return geo, st_mod.stance_at(rnd, 0, 5.0)
 
 
-def _check_summit(px, py, label):
+def _check_summit(px, py):
     geo, st = _summit_stance(px, py)
-    assert int(geo.cover_px[py, px]) == label
+    label = int(geo.cover_px[py, px])
+    assert label > 0
     assert not geo.walk.ravel()[(py // 8) * GRID + px // 8]
     assert st is not None
     assert st.kind == "beside"
@@ -302,14 +303,15 @@ def _check_summit(px, py, label):
     assert math.hypot(ax - px, ay - py) * metres_per_px <= 2.0 + 1e-6
 
 
-def test_summit_piece_14_pixel_with_a_disabled_cell_gets_a_walkable_anchor():
-    _check_summit(982, 399, 14)
+# Pick cover pieces by position: owner-reviewed cover additions renumber the 4-connected labels.
+def test_summit_pixel_982_399_with_a_disabled_cell_gets_a_walkable_anchor():
+    _check_summit(982, 399)
 
 
-# The plan's (498, 663) is no longer in a piece; (498, 662) is the nearest in-piece pixel (piece 26) whose own
+# The plan's (498, 663) is no longer in a piece; (498, 662) is the nearest in-piece pixel whose own
 # coarse cell is disabled (found by a one-off probe).
-def test_summit_piece_26_pixel_with_a_disabled_cell_gets_a_walkable_anchor():
-    _check_summit(498, 662, 26)
+def test_summit_pixel_498_662_with_a_disabled_cell_gets_a_walkable_anchor():
+    _check_summit(498, 662)
 
 
 # ------------------------------------------------------------------ 9. controls
