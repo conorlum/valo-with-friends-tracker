@@ -18,9 +18,11 @@ Valorant is running it scans the Demos folder every 30 minutes, starting 30 minu
 (or the app starts with the game already running). After the game closes it scans once, 10 minutes later;
 reopening the game cancels that scan. There is no startup scan or other closed-game scan. Each scheduled scan
 gets at most one follow-up look, at least 5 seconds later, to confirm files have stopped changing. A scan due
-while paused runs once on resume. The app checks whether the game is running every 5 seconds, and processes
-queued uploads and unfinished deletion sweeps every 10 seconds without scanning the folder. Update checks run
-independently while the game is closed, at most every 6 hours. A replay the site could not use is tried again after 1, 2, 4
+while paused runs once within a minute of resume. The app checks whether the game is running every minute,
+including while uploading, and processes queued uploads, status polls and unfinished deletion sweeps every
+30 seconds without scanning the folder. Scan timers count from when the app detects the game opening or closing.
+Quit interrupts the wait immediately. Update checks run at closed-game process checks,
+at most every 6 hours. A replay the site could not use is tried again after 1, 2, 4
 and 8 days, then every 14 days; a match deleted on request is never sent again. When the site refuses or is down,
 the whole app waits (10 minutes to an hour) before it tries anything. A replay is deleted once the site has stored that file and the file
 is at least 14 days old (by its modified time). A recording the site did not keep (a friend's copy of the same match

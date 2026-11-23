@@ -46,6 +46,7 @@ class Engine:
         self.sleep = sleep
         self.watcher = Watcher() if watcher is None else watcher
         self.procs = procs
+        self._watcher_clock_offset = 0.0
         self.deleter = deleter
         self.needs_key = False
         self.deletion_pending = False
@@ -54,6 +55,21 @@ class Engine:
         for _, row in sorted(state.items(), key=lambda pair: pair[1].get("stored_at") or 0):
             if row["status"] == "stored":
                 self._remember(row["paths"])
+
+    def clock_rewound(self, difference):
+        """Keep scheduling waits through a wall-clock rollback; leave history unchanged."""
+        with self.lock:
+            if self.next_network:
+                self.next_network += difference
+            # Watcher observation times measure stability, not file age.
+            self._watcher_clock_offset -= difference
+            for sha, row in self.state.items():
+                changes = {field: row[field] + difference
+                           for field in ("next_try", "next_delete_check",
+                                         "first_refused_at", "last_refused_at")
+                           if row.get(field)}
+                if changes:
+                    self.state.mark(sha, **changes)
 
     def _may_send(self, now):
         """The flag is read at every step boundary: Pause lands without the lock."""
@@ -138,7 +154,7 @@ class Engine:
             self.state.mark(sha, next_try=now + STATUS_POLL_S)
 
     def _scan(self, now):
-        for path in self.watcher.poll(now):
+        for path in self.watcher.poll(now + self._watcher_clock_offset):
             if self.config.paused:
                 return
             try:

@@ -1,12 +1,12 @@
 """Timing and application defaults shared by the uploader and updater."""
 
 PROCESS_NAME = "VALORANT-Win64-Shipping.exe"
-PROCESS_POLL_S = 5
-WORK_POLL_S = 10
+PROCESS_POLL_S = 60
+WORK_POLL_S = 30
 GAME_SCAN_S = 1800
 CLOSE_SCAN_DELAY_S = 600
 HELD_POLL_S = 1800
-STATUS_POLL_S = 10
+STATUS_POLL_S = 30
 REFUSED_RETRY_S = 600
 REFUSED_WINDOW_S = 5 * 3600
 REFUSED_GAP_S = 2 * 3600

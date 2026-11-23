@@ -232,7 +232,7 @@ def test_runner_hook_exception_logs_and_next_process_poll_runs(caplog):
                              status=lambda: {"queue_length": 0})
     run(engine, stop, after_tick=hook)
     assert ticks == []
-    assert hooks == [0, 5, 10]
+    assert hooks == [0, 60, 120]
     assert len(caplog.records) == 3
 
 

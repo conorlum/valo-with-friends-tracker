@@ -135,7 +135,7 @@ def main(argv=None, *, frozen=None, env=None):
                 return 0
             save_key(key, env=env)
         engine = Engine(State(env=env), Client(config.site, key), config,
-                        watcher=Watcher(env=env))
+                        watcher=Watcher(env=env), sleep=stop.wait)
 
         try:
             # An app update that bumped RETRY_GENERATION re-sends what failed, once.
@@ -177,6 +177,7 @@ def main(argv=None, *, frozen=None, env=None):
         # Called at startup and on closed-game process polls, independently of scans.
         def after_tick(now):
             if frozen and not stop.is_set():
+                # The updater rechecks live after downloading, immediately before a swap.
                 result = maybe_update(now, engine.idle, engine.procs, config,
                                       stop_app=stop_app, release_mutex=release_guard,
                                       current_exe=executable, env=env)

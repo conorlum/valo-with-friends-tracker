@@ -614,3 +614,63 @@ def test_main_wires_tray_to_poll_callback_separately_from_updates(rig, monkeypat
     monkeypatch.setattr(app, "run", run)
     assert start(rig, frozen=True) == 0
     assert rig.tray.refresh.call_count == 2
+
+
+def test_main_passes_stop_aware_sleep_to_engine(rig, monkeypatch):
+    observed = []
+
+    def run(engine, stop, after_tick, on_poll):
+        sleep = app.Engine.call_args.kwargs.get("sleep")
+        assert sleep is not None
+        assert sleep.__self__ is stop
+        assert sleep.__func__ is threading.Event.wait
+        stop.set()
+        assert sleep(60) is True
+        observed.append(True)
+
+    monkeypatch.setattr(app, "run", run)
+    assert start(rig) == 0
+    assert observed == [True]
+
+
+def test_update_gate_rechecks_live_process_before_swap(rig, monkeypatch, tmp_path):
+    from valo_uploader import updater
+    from valo_uploader.constants import UPDATE_EVERY_S
+
+    observed = []
+    checked = threading.Event()
+    # Runner sample, pre-download check, then the game starts before the swap.
+    rig.engine.procs.side_effect = [False, False, True]
+    monkeypatch.setattr(updater, "latest_release", Mock(return_value=("99.0.0", "exe", "sha")))
+    staged = Mock(return_value=tmp_path / "verified-update")
+    monkeypatch.setattr(updater, "stage", staged)
+    swap = Mock()
+    monkeypatch.setattr(updater, "swap", swap)
+    state = updater.UpdateState()
+
+    def update(*args, **kwargs):
+        stopping = Mock(wraps=kwargs["stop_app"])
+        kwargs["stop_app"] = stopping
+        result = updater.maybe_update(*args, **kwargs, state=state)
+        stopping.assert_not_called()
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(app, "maybe_update", update)
+
+    def run(engine, stop, after_tick, on_poll):
+        try:
+            assert engine.procs() is False
+            after_tick(UPDATE_EVERY_S)
+            observed.append(stop.is_set())
+        finally:
+            checked.set()
+
+    monkeypatch.setattr(app, "run", run)
+    rig.tray.run.side_effect = lambda ready: checked.wait(2)
+    assert start(rig, frozen=True) == 0
+    assert observed == ["deferred", False]
+    assert rig.engine.procs.call_count == 3
+    staged.assert_called_once()
+    swap.assert_not_called()
+    assert state.pending is not None

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -289,13 +290,13 @@ def test_upload_status_progress_and_retention(rig, age, keep_days, deleted):
     rig.client.statuses = [{"status": value} for value in ("parsing", "parsing", "stored")]
     rig.discover()
     assert rig.state.entry(sha)["status"] == "uploading"
-    rig.tick(9)
+    rig.tick(constants.STATUS_POLL_S - 1)
     assert not any(c[0] == "status" for c in rig.client.calls)
-    for delay in (1, 10):
+    for delay in (1, constants.STATUS_POLL_S):
         rig.tick(delay)
         assert rig.state.entry(sha)["status"] == "uploading"
         assert path.exists()
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     row = rig.state.entry(sha)
     assert row["status"] == "stored"
     assert row["stored_at"] == rig.clock.now
@@ -355,7 +356,7 @@ def test_failed_or_rejected_is_kept_and_retried_daily(rig, kind):
         rig.client.statuses = [{"status": "failed"}]
     rig.discover()
     if kind == "failed":
-        rig.tick(10)
+        rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha)["status"] == kind
     assert rig.state.entry(sha)["next_try"] == rig.clock.now + DAY
     assert path.exists()
@@ -374,7 +375,7 @@ def test_one_slot_with_status_backoff_and_restart(rig, terminal):
     rig.discover()
     assert uploads(rig.client) == [("upload", "a.vrf")]
     rig.client.statuses = [api.Offline(), api.Refused()]
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha256_file(first))["next_try"] == rig.clock.now + 600
     rig.restart()
     rig.tick(5)
@@ -384,7 +385,7 @@ def test_one_slot_with_status_backoff_and_restart(rig, terminal):
     assert uploads(rig.client) == [("upload", "a.vrf")]
     rig.client.statuses = [{"status": terminal}]
     rig.tick(1)
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert uploads(rig.client) == [("upload", "a.vrf"), ("upload", "b.vrf")]
     assert rig.state.entry(sha256_file(second))["status"] == "uploading"
 
@@ -398,10 +399,10 @@ def test_bad_key_blocks_then_replacement_rechecks_uploading_and_keeps_stored(rig
     rig.state.mark(stored_sha, paths=[str(stored)], status="stored", stored_at=START)
     rig.discover()
     rig.client.error = api.BadKey()
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.engine.status()["needs_key"]
     calls = len(rig.client.calls)
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert len(rig.client.calls) == calls
     if restart:
         rig.restart()
@@ -516,12 +517,12 @@ def test_status_not_found_requeues_for_check(rig):
     sha = sha256_file(path)
     rig.discover()
     rig.client.statuses = [api.NotFound()]
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     row = rig.state.entry(sha)
     assert row["status"] == "pending"
     assert row["upload_id"] is None
     rig.client.known = True
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha)["status"] == "stored"
     assert len(uploads(rig.client)) == 1
 
@@ -532,7 +533,7 @@ def test_uploading_refusals_eventually_release_slot(rig):
     sha = sha256_file(first)
     rig.discover()
     rig.client.error = api.Offline()
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     for _ in range(30):  # an unbroken five-hour run, rather than a gap that restarts it
         rig.tick(constants.REFUSED_RETRY_S)
     assert rig.state.entry(sha)["status"] == "failed"
@@ -540,7 +541,7 @@ def test_uploading_refusals_eventually_release_slot(rig):
     assert rig.state.entry(sha)["first_refused_at"] is None
     assert uploads(rig.client) == [("upload", "a.vrf")]
     rig.client.error = None
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert uploads(rig.client) == [("upload", "a.vrf")]  # the site was just seen down: engine-wide wait
     rig.tick(constants.REFUSED_RETRY_S)
     assert uploads(rig.client)[-1] == ("upload", "b.vrf")
@@ -552,11 +553,11 @@ def test_status_poll_retains_slot_if_local_file_disappears(rig):
     rig.file("b.vrf", b"second")
     rig.discover()
     first.unlink()
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha)["status"] == "uploading"
     assert uploads(rig.client) == [("upload", "a.vrf")]
     rig.client.statuses = [{"status": "stored"}]
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha)["status"] == "stored"
     assert rig.state.entry(sha)["paths"] == []
 
@@ -601,7 +602,7 @@ def test_due_entry_revalidated_before_transmission(rig, change):
     if change == "locked":
         assert rig.state.entry(sha)["attempts"] == attempts
         rig.locked = False
-        rig.tick(10)
+        rig.tick(constants.STATUS_POLL_S)
         assert len(uploads(rig.client)) == 1
     else:
         assert rig.state.entry(sha) is None
@@ -634,7 +635,7 @@ def test_restart_resumes_upload_id_and_pause_does_nothing(rig):
     rig.restart()
     rig.config.paused = True
     calls = list(rig.client.calls)
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.client.calls == calls
     assert rig.engine.status()["paused"]
     rig.config.paused = False
@@ -930,7 +931,7 @@ def make_held(rig, name="held.vrf", content=b"held replay"):
     rig.discover()
     assert rig.state.entry(sha)["status"] == "uploading"
     rig.client.statuses = [{"status": "held"}]
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     return path, sha
 
 
@@ -1034,7 +1035,7 @@ def test_held_does_not_block_uploading_slot_polls(rig):
     rig.discover()
     assert rig.state.entry(sha256_file(other))["status"] == "uploading"
     rig.client.statuses = [{"status": "stored"}]
-    rig.tick(10)
+    rig.tick(constants.STATUS_POLL_S)
     assert rig.state.entry(sha256_file(other))["status"] == "stored"
     assert rig.state.entry(sha)["status"] == "held"
 
@@ -1164,6 +1165,7 @@ def test_unmapped_4xx_on_upload_uploads_once_rejects_and_lets_next_file_proceed(
         return "upload-ok"
 
     rig.client.upload = upload
+    retry_at = rig.clock.now + constants.STATUS_POLL_S + DAY
     for _ in range(12):
         rig.tick(constants.STATUS_POLL_S)
     names = [call[1] for call in uploads(rig.client)]
@@ -1172,7 +1174,7 @@ def test_unmapped_4xx_on_upload_uploads_once_rejects_and_lets_next_file_proceed(
     bad_path = first if bad == first.name else second
     row = rig.state.entry(sha256_file(bad_path))
     assert row["status"] == "rejected"
-    assert row["next_try"] > rig.clock.now + DAY - 200
+    assert row["next_try"] == retry_at
     assert bad_path.exists()
     other = second if bad_path == first else first
     assert rig.state.entry(sha256_file(other))["status"] in ("uploading", "stored")
@@ -1760,43 +1762,227 @@ def run_schedule(rig, duration, *, game=lambda t: False, on_poll=lambda t: None,
     return SimpleNamespace(ticks=ticks, scans=scans, polls=polls, updates=updates)
 
 
+def test_owner_poll_intervals():
+    assert constants.PROCESS_POLL_S == 60
+    assert constants.STATUS_POLL_S == constants.WORK_POLL_S == 30
+
+
+def test_idle_hour_has_exactly_sixty_process_checks_after_start(rig):
+    result = run_schedule(rig, 3600)
+    assert result.polls == list(range(0, 3601, 60))
+    assert result.updates == result.polls
+    assert result.scans == result.ticks == []
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_upload_status_every_thirty_seconds_process_checks_every_minute(rig, running):
+    path = rig.file()
+    rig.state.mark(sha256_file(path), paths=[str(path)], status="uploading",
+                   upload_id="synthetic-upload", next_try=START + 30)
+    statuses, wakes = [], []
+    status = rig.client.status
+
+    def recorded(upload_id):
+        statuses.append(rig.clock.now - START)
+        return status(upload_id)
+
+    rig.client.status = recorded
+    result = run_schedule(rig, 180, game=lambda t: running,
+                          poll_callback=lambda now: wakes.append(now - START))
+    assert statuses == [30, 60, 90, 120, 150, 180]
+    assert result.polls == [0, 60, 120, 180]
+    assert wakes == list(range(0, 181, 30))
+    assert result.updates == ([] if running else result.polls)
+    assert result.scans == []
+
+
+def test_close_detection_and_second_look_keep_independent_deadlines(rig):
+    rig.file()
+    wakes = []
+    result = run_schedule(rig, 800, game=lambda t: t < 61,
+                          poll_callback=lambda now: wakes.append(now - START))
+    detected = next(t for t in result.polls if t >= 61)
+    assert 0 <= detected - 61 <= 60
+    assert result.scans == [detected + 600, detected + 605]
+    assert detected + 605 in wakes
+    assert result.polls == list(range(0, 781, 60))
+    assert result.updates == list(range(detected, 781, 60))
+
+
+def test_runner_stop_wait_sleep_exits_promptly(rig):
+    stop, sleeping = Event(), Event()
+
+    def sleep(seconds):
+        sleeping.set()
+        stop.wait(seconds)
+
+    rig.engine.clock = time.monotonic
+    rig.engine.sleep = sleep
+    worker = Thread(target=run, args=(rig.engine, stop))
+    worker.start()
+    try:
+        assert sleeping.wait(1)
+        before = time.monotonic()
+        stop.set()
+        worker.join(0.5)
+        assert not worker.is_alive()
+        assert time.monotonic() - before < 0.5
+    finally:
+        stop.set()
+        worker.join(1)
+
+
+def run_clock_jump(rig, duration, *, jump_at, jump, running=False):
+    stop = Event()
+    elapsed = 0
+    jumped = False
+    sleeps, procs, ticks, statuses = [], [], [], []
+    tick, status = rig.engine.tick, rig.client.status
+
+    def sleep(seconds):
+        nonlocal elapsed, jumped
+        sleeps.append(seconds)
+        assert 0 <= seconds <= 60
+        assert len(sleeps) < 500, "runner must make progress after the clock jumps"
+        elapsed += seconds
+        rig.clock.sleep(seconds)
+        if not jumped and elapsed >= jump_at:
+            rig.clock.sleep(jump)
+            jumped = True
+        if elapsed > duration:
+            stop.set()
+
+    def process():
+        procs.append(elapsed)
+        return running
+
+    def recorded(now, scan=True):
+        ticks.append((elapsed, scan))
+        return tick(now, scan=scan)
+
+    def polled(upload_id):
+        statuses.append(elapsed)
+        return status(upload_id)
+
+    rig.engine.sleep = sleep
+    rig.engine.procs = process
+    rig.engine.tick = recorded
+    rig.client.status = polled
+    run(rig.engine, stop)
+    return SimpleNamespace(sleeps=sleeps, procs=procs, ticks=ticks, statuses=statuses)
+
+
+def test_clock_back_one_day_idle_checks_process_within_a_minute(rig):
+    result = run_clock_jump(rig, 200, jump_at=60, jump=-DAY)
+    assert result.procs == [0, 120, 180]
+    assert result.ticks == []
+
+
+def test_sleep_is_capped_when_clock_rewinds_during_a_tick(rig):
+    path = rig.file()
+    rig.state.mark(sha256_file(path), paths=[str(path)], status="uploading",
+                   upload_id="synthetic-upload", next_try=START)
+    tick = rig.engine.tick
+    rewound = False
+
+    def recorded(now, scan=True):
+        nonlocal rewound
+        tick(now, scan=scan)
+        if not rewound:
+            rig.clock.sleep(-DAY)
+            rewound = True
+
+    rig.engine.tick = recorded
+    result = run_clock_jump(rig, 130, jump_at=60, jump=0)
+    assert result.sleeps[0] == 60
+    assert result.procs == [0, 120]
+
+
+def test_clock_back_one_day_upload_polls_within_thirty_seconds(rig):
+    path = rig.file()
+    rig.state.mark(sha256_file(path), paths=[str(path)], status="uploading",
+                   upload_id="synthetic-upload", next_try=START + 30)
+    result = run_clock_jump(rig, 120, jump_at=30, jump=-DAY)
+    assert result.statuses == [60, 90, 120]
+    assert result.procs == [0, 90]
+
+
+def test_clock_back_one_day_game_scan_keeps_remaining_wait(rig):
+    result = run_clock_jump(rig, 2000, jump_at=300, jump=-DAY, running=True)
+    # At the previous wake (240 s), the scan still had 1560 s to wait.
+    assert result.ticks == [(300 + 1560, True)]
+
+
+def test_clock_back_one_day_second_look_keeps_remaining_wait(rig):
+    rig.file()
+    result = run_clock_jump(rig, 1820, jump_at=1805, jump=-DAY, running=True)
+    assert result.ticks == [(1800, True), (1810, True)]
+    assert len(uploads(rig.client)) == 1
+
+
+def test_clock_rewind_preserves_network_wait_and_history(rig):
+    path = rig.file()
+    sha = sha256_file(path)
+    rig.state.mark(sha, paths=[str(path)], status="uploading",
+                   upload_id="synthetic-upload", next_try=START + 600,
+                   first_refused_at=START - 60, last_refused_at=START,
+                   stored_at=START - DAY, deleted_at=START - 2 * DAY,
+                   next_delete_check=START + 60)
+    rig.engine.next_network = START + 600
+    rig.engine.clock_rewound(-DAY)
+    row = rig.state.entry(sha)
+    assert rig.engine.next_network == START - DAY + 600
+    assert row["next_try"] == START - DAY + 600
+    assert row["next_delete_check"] == START - DAY + 60
+    assert row["first_refused_at"] == START - DAY - 60
+    assert row["last_refused_at"] == START - DAY
+    assert row["stored_at"] == START - DAY
+    assert row["deleted_at"] == START - 2 * DAY
+
+
+def test_clock_forward_eight_hours_coalesces_process_check_and_scan(rig):
+    result = run_clock_jump(rig, 200, jump_at=60, jump=8 * 3600, running=True)
+    assert result.procs == [0, 60, 120, 180]
+    assert result.ticks == [(60, True)]
+
+
 def test_closed_start_has_no_scans_or_ticks_for_a_day_but_checks_updates(rig):
     rig.file()
     result = run_schedule(rig, DAY)
     assert result.scans == result.ticks == []
-    assert result.updates == result.polls == list(range(0, DAY + 1, 5))
+    assert result.updates == result.polls == list(range(0, DAY + 1, 60))
 
 
 def test_open_game_scans_each_half_hour_from_open(rig):
     result = run_schedule(rig, 4000, game=lambda t: t >= 100)
-    assert result.scans == [1900, 3700]
-    assert result.ticks == [(1900, True), (3700, True)]
-    assert result.updates == list(range(0, 100, 5))
+    assert result.scans == [1920, 3720]
+    assert result.ticks == [(1920, True), (3720, True)]
+    assert result.updates == [0, 60]
 
 
 def test_game_running_at_start_counts_from_start(rig):
     result = run_schedule(rig, 3600, game=lambda t: True)
     assert result.scans == [1800, 3600]
-    assert result.updates == [0]
+    assert result.updates == []
 
 
 def test_close_schedules_one_scan_then_no_more_for_a_day(rig):
     result = run_schedule(rig, 100 + 600 + DAY, game=lambda t: t < 100)
-    assert result.scans == [700]
-    assert result.ticks == [(700, True)]
+    assert result.scans == [720]
+    assert result.ticks == [(720, True)]
 
 
 def test_reopen_cancels_close_scan_and_restarts_open_schedule(rig):
-    result = run_schedule(rig, 4000, game=lambda t: t < 100 or t >= 400)
-    assert result.scans == [2200, 4000]
+    result = run_schedule(rig, 4100, game=lambda t: t < 100 or t >= 400)
+    assert result.scans == [2220, 4020]
 
 
 def test_close_scan_finds_finished_file_and_queue_polls_without_scanning(rig):
     rig.file()
     rig.client.statuses = [{"status": "parsing"}, {"status": "stored"}]
     result = run_schedule(rig, DAY, game=lambda t: t < 100)
-    assert result.scans == [700, 705]
-    assert result.ticks == [(700, True), (705, True), (715, False), (725, False)]
+    assert result.scans == [720, 725]
+    assert result.ticks == [(720, True), (725, True), (755, False), (785, False)]
     assert len(uploads(rig.client)) == 1
     assert [call[0] for call in rig.client.calls] == ["check", "upload", "status", "status"]
 
@@ -1824,7 +2010,7 @@ def test_restart_resumes_queue_without_folder_scan(rig, status):
     rig.restart()
     rig.client.statuses = [{"status": "parsing"}, {"status": "stored"}]
     result = run_schedule(rig, 100)
-    expected = [(0, False), (10, False), (20, False)] if status == "pending" else [(0, False), (10, False)]
+    expected = [(0, False), (30, False), (60, False)] if status == "pending" else [(0, False), (30, False)]
     assert result.ticks == expected
     assert result.scans == []
     assert rig.state.entry(sha)["status"] == "stored"
@@ -1832,11 +2018,11 @@ def test_restart_resumes_queue_without_folder_scan(rig, status):
 
 def test_sweep_continues_in_work_ticks_after_one_scan(rig):
     paths = _backlog(rig, 12, 15 * DAY)
-    result = run_schedule(rig, 750, game=lambda t: t < 100)
-    assert result.scans == [700, 705]
+    result = run_schedule(rig, 800, game=lambda t: t < 100)
+    assert result.scans == [720, 725]
     assert len(kept_calls(rig.client)) == 12
     assert not any(path.exists() for path in paths)
-    assert result.ticks == [(700, True), (705, True), (715, False)]
+    assert result.ticks == [(720, True), (725, True), (755, False)]
     assert not rig.engine.status()["deletion_pending"]
 
 
@@ -1844,14 +2030,14 @@ def test_scan_owed_while_paused_runs_once_on_resume(rig):
     rig.config.paused = True
     result = run_schedule(rig, 9100, game=lambda t: True,
                           on_poll=lambda t: setattr(rig.config, "paused", t < 8000))
-    assert result.scans == [8000, 9000]
+    assert result.scans == [8040, 9000]
 
 
 def test_closed_scan_owed_while_paused_runs_once_on_resume(rig):
     rig.config.paused = True
     result = run_schedule(rig, DAY, game=lambda t: t < 100,
                           on_poll=lambda t: setattr(rig.config, "paused", t < 2000))
-    assert result.scans == [2000]
+    assert result.scans == [2040]
 
 
 def test_work_ticks_skip_discovery_but_retry_due_failed_rejected_and_held(rig, monkeypatch):
@@ -1879,7 +2065,7 @@ def test_scan_owed_while_paused_survives_game_closing(rig, resume):
     rig.config.paused = True
     result = run_schedule(rig, 4000, game=lambda t: t < 2000,
                           on_poll=lambda t: setattr(rig.config, "paused", t < resume))
-    assert result.scans == ([2200, 2600] if resume == 2200 else [3000])
+    assert result.scans == ([2220, 2640] if resume == 2200 else [3000])
 
 
 def test_locked_stable_file_does_not_request_followup_on_later_scans(rig):
@@ -1903,14 +2089,14 @@ def test_poll_refreshes_real_tray_during_both_game_states(rig, running):
     titles = []
 
     def change(t):
-        if t == 5:
+        if t == 60:
             rig.state.mark(sha, paths=[str(path)], next_try=START)
 
     def refresh(now):
         tray.refresh()
         titles.append(tray.icon.title)
 
-    result = run_schedule(rig, 15, game=lambda t: running, on_poll=change, poll_callback=refresh)
+    result = run_schedule(rig, 180, game=lambda t: running, on_poll=change, poll_callback=refresh)
     assert titles == ["ValoUploader - Idle", "ValoUploader - Queued (1 queued)",
                       "ValoUploader - Idle", "ValoUploader - Idle"]
     assert tray.rows()[1][1] == [(path.name, None, False, None)]
@@ -1925,8 +2111,8 @@ def test_poll_callback_failure_is_guarded_in_both_game_states(rig, caplog):
         called.append(now - START)
         raise RuntimeError("synthetic refresh failure")
 
-    result = run_schedule(rig, 15, game=lambda t: t < 10, poll_callback=broken)
-    assert called == result.polls == [0, 5, 10, 15]
+    result = run_schedule(rig, 180, game=lambda t: t < 60, poll_callback=broken)
+    assert called == result.polls == [0, 60, 120, 180]
     assert result.ticks == []
     assert len(caplog.records) == 4
 
@@ -1949,22 +2135,22 @@ def test_interrupted_deletion_sweep_resumes_without_scans(rig, interrupt):
     blocked = []
 
     def poll(t):
-        if t == 5:
+        if t == 60:
             blocked.append(rig.engine.status()["deletion_pending"])
         if interrupt == "pause" and t >= 100:
             rig.config.paused = False
 
-    result = run_schedule(rig, 650, on_poll=poll)
+    result = run_schedule(rig, 700, on_poll=poll)
     assert blocked == [True]
     assert result.scans == []
     assert not any(path.exists() for path in paths)
     assert not rig.engine.status()["deletion_pending"]
     if interrupt == "outage":
         assert rig.engine.next_network == START + 600
-        assert result.ticks == [(t, False) for t in range(0, 621, 10)]
+        assert result.ticks == [(t, False) for t in range(0, 661, 30)]
         assert len(kept_calls(rig.client)) == 13
     else:
-        assert result.ticks == [(0, False), (100, False), (110, False)]
+        assert result.ticks == [(0, False), (120, False), (150, False)]
         assert len(kept_calls(rig.client)) == 12
 
 
@@ -1980,8 +2166,8 @@ def test_bad_key_stops_deletion_work_ticks_until_key_replaced(rig):
     assert all(path.exists() for path in paths)
     rig.engine.key_replaced(Client())
     assert rig.engine.deletion_pending
-    resumed = run_schedule(rig, 50)
-    assert resumed.ticks == [(0, False), (10, False), (20, False)]
+    resumed = run_schedule(rig, 100)
+    assert resumed.ticks == [(0, False), (30, False), (60, False)]
     assert resumed.scans == []
     assert not any(path.exists() for path in paths)
 
@@ -2007,7 +2193,7 @@ def test_bad_key_partway_through_sweep_stops_ticks_until_key_replaced(rig):
     assert rig.engine.deletion_pending
     resumed = run_schedule(rig, 50)
     assert resumed.scans == []
-    assert resumed.ticks == [(0, False), (10, False)]
+    assert resumed.ticks == [(0, False), (30, False)]
     assert not any(path.exists() for path in paths)
 
 
