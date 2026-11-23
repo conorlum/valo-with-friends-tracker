@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
 
-  var PREFIX = "util-gallery:v1:", MAP_UV = 10000;
+  var PREFIX = "util-gallery:v1:", MAP_UV = 10000, VIEWER_PX = 1024;
   var ZONE_PATTERN = "^Grenadier_Q_SemtexBasic_Zone$";
   var FIELDS = ["color", "r", "badge", "look"], OWN_FIELDS = ["r", "badge", "look"];
   var CRITIQUE_INSTRUCTIONS = "Apply each after to the entry with that pattern in replay.js's " +
@@ -345,17 +345,18 @@
   }
 
   function drawTile(R, viewer, canvas, phase) {
-    var ctx = canvas.getContext("2d"), size = canvas.width, round = viewer.current;
+    // Draw in the viewer's 1024 px logical units (its strokes are fixed pixels), onto a smaller backing canvas.
+    var ctx = canvas.getContext("2d"), size = VIEWER_PX, backing = canvas.width, round = viewer.current;
     var row = round && focusRow(R, round, viewer.tile.entry);
     var style = row && (row.kind === "Projectile" ? R.projectileStyle(row) : R.abilityStyle(row));
     var view = viewOf(row ? frameOf(R, row, style, round.traces,
       (viewer.linked && viewer.linked.uvPerUnit) || 0.75) : {cx: R.UV / 2, cy: R.UV / 2, half: R.UV / 2}, size);
-    viewer.canvas = canvas;
+    viewer.canvas = {width: VIEWER_PX, height: VIEWER_PX};
     viewer.view = view;
     viewer.t = phase.t;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, size, size);
-    ctx.setTransform.apply(ctx, R.viewMatrix(view, 0, size));
+    ctx.clearRect(0, 0, backing, backing);
+    ctx.setTransform.apply(ctx, R.viewMatrix(view, 0, size).map(function (v) { return v * backing / VIEWER_PX; }));
     if (viewer.map && viewer.map.complete && viewer.map.naturalWidth) ctx.drawImage(viewer.map, 0, 0, size, size);
     else { ctx.fillStyle = "#1b1d24"; ctx.fillRect(0, 0, size, size); }
     if (row) {
@@ -452,7 +453,7 @@
         var figure = node("figure", undefined, tile.phases);
         node("figcaption", phase.name + " · t = " + phase.t.toFixed(2) + " s", figure);
         var canvas = node("canvas", undefined, figure);
-        canvas.width = canvas.height = 240;
+        canvas.width = canvas.height = 480;   // backing store; CSS shows it at 240 px
         canvas.setAttribute("data-phase", phase.name);
         canvas.setAttribute("aria-label", tile.entry.ability + ", " + phase.name);
         tile.canvases.push({canvas: canvas, phase: phase});

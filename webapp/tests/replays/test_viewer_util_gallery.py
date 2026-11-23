@@ -696,7 +696,7 @@ function mockCtx(log) {
 const payload = {maps: {Ascent: 'data:image/png;base64,bWFw'}, assets: {'/smoke.png': 'data:image/png;base64,aWNvbg'},
   abilityIcons: {Omen: {'Dark Cover': '/smoke.png'}}};
 function drawing(e, s) {
-  const log = [], ctx = mockCtx(log), canvas = {width: 240, height: 240, getContext: () => ctx};
+  const log = [], ctx = mockCtx(log), canvas = {width: 480, height: 480, getContext: () => ctx};
   const tile = {entry: e, sample: s, canvases: []};
   const viewer = G.tileViewer(R, tile, payload);
   if (viewer.map) Object.assign(viewer.map, {complete: true, naturalWidth: 100});
@@ -708,6 +708,26 @@ function drawing(e, s) {
 }
 """
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_tile_draws_at_the_viewers_1024_scale_on_a_smaller_canvas():
+    run_node(GALLERY_DRAW + r"""
+const d = drawing(entry('Dark Cover'), sample('Wraith', '4_Smoke', 'Zone', {agent: 'Omen'}));
+const k = d.viewer.view.k, r = 1024 / 48 / Math.sqrt(k);
+// The map covers the logical 1024 square, under the transform scaled to the 480 px backing canvas.
+const first = d.log[0];
+assert.equal(first.op, 'drawImage'); assert.deepEqual([first.x, first.y, first.w, first.h], [0, 0, 1024, 1024]);
+const expected = R.viewMatrix(d.viewer.view, 0, 1024).map(v => v * 480 / 1024);
+first.tf.forEach((v, i) => close(v, expected[i]));
+// The smoke is 410 * 0.75 world units at the viewer's 1024 px scale, its timer ring as thin as the viewer's.
+const arcs = d.log.flatMap(x => (x.path || []).filter(p => p[0] === 'A').map(p => p[3]));
+assert.ok(arcs.some(a => Math.abs(a - 410 * 0.75 * (1024 / 10000)) < 1e-6), arcs.join());
+assert.ok(d.log.some(x => x.op === 'stroke' && Math.abs(x.lineWidth - Math.max(2.5, r / 4.5)) < 1e-8));
+// viewBounds and friends see the viewer's size during a draw.
+let seen = null;
+d.viewer.drawAbilities = function () { seen = [this.canvas.width, this.canvas.height]; };
+G.drawTile(R, d.viewer, d.canvas, d.phase);
+assert.deepEqual(seen, [1024, 1024]);
+""")
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_gallery_tile_draws_glass_and_owns_icon_redraw():
@@ -746,7 +766,7 @@ const p = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 const e = entries.find(e => e.pattern === R.ABILITY_STYLES.find(([re]) => re.test(p.code + '_' + p.name))[0].source);
 assert.equal(e.ability, p.ability);
 const d = drawing(e, sample(p.code, p.name));
-const r = 240 / 48 / Math.sqrt(d.viewer.view.k), timerRadius = r * 1.25 + Math.max(2.5, r / 4) / 2;
+const r = 1024 / 48 / Math.sqrt(d.viewer.view.k), timerRadius = r * 1.25 + Math.max(2.5, r / 4) / 2;
 assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'A' && Math.abs(p[3] - timerRadius) < 1e-8)));
 d.viewer.layers.abilities = false; d.log.length = 0; d.viewer.draw();
 assert.deepEqual(d.log.map(x => x.op), ['drawImage']);
@@ -760,8 +780,8 @@ const s = sample('Mage', 'Q_WallManager');
 s.companions = [sample('Mage', 'Q_Wall', 'Projectile', {t: 10.2,
   flight: [[10.2, 5000, 5000], [11, 5500, 6000]]}).row];
 const d = drawing(entry('High Tide'), s);
-assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'M' && p[1] === 120 && p[2] === 120) &&
-  x.path.some(p => p[0] === 'L' && p[1] === 132 && p[2] === 144)));
+assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'M' && Math.abs(p[1] - 512) < 1e-6 && Math.abs(p[2] - 512) < 1e-6) &&
+  x.path.some(p => p[0] === 'L' && Math.abs(p[1] - 563.2) < 1e-6 && Math.abs(p[2] - 614.4) < 1e-6)));
 assert.equal(d.viewer.current.extras.abilities.length, 1);
 """)
 
@@ -779,7 +799,7 @@ d.viewer.drawProjectiles = (ctx, s, r, hits) => { calls.push(['projectiles', r, 
 d.viewer.current.extras.abilities[0].flight = [[10, 5000, 5000], [11, 6500, 5000]];
 G.drawTile(R, d.viewer, d.canvas, d.phase);
 close(d.viewer.view.k, 4);
-close(calls.find(x => x[0] === 'projectiles')[1], 240 / 48 / 2);
+close(calls.find(x => x[0] === 'projectiles')[1], 1024 / 48 / 2);
 assert.notEqual(calls[0][2], calls[1][2]);
 calls.length = 0; d.viewer.layers.projectiles = false; d.log.length = 0; d.viewer.draw();
 assert.equal(calls.length, 1); // abilities still enabled
@@ -801,7 +821,7 @@ def test_gallery_tile_guards_missing_focus_and_draws_unstyled_projectile():
     run_node(GALLERY_DRAW + r"""
 const s = sample('Grenadier', 'Q_SemtexBasic', 'Projectile');
 const zone = entries.find(e => e.pattern === '^Grenadier_Q_SemtexBasic_Zone$');
-const log = [], canvas = {width: 240, height: 240, getContext: () => mockCtx(log)};
+const log = [], canvas = {width: 480, height: 480, getContext: () => mockCtx(log)};
 const tile = {entry: zone, sample: s, canvases: [{canvas, phase: {name: 'active', t: 12}}]};
 const v = G.tileViewer(R, tile, payload);
 assert.equal(G.focusRow(R, v.current, zone), undefined);

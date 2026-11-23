@@ -198,7 +198,7 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
-guards = ["app/static/js/**", "app/templates/**"]
+guards = ["app/static/js/**", "app/templates/**", "scripts/util_gallery/**", "scripts/render_util_gallery.py"]
 
 # ---------------------------------------------------------------------------------------------------- Coach and analysis tabs
 
