@@ -32,6 +32,8 @@ def test_paths_and_constants(env):
     assert constants.REFUSED_RETRY_S == 600
     assert constants.REFUSED_WINDOW_S == 5 * 3600
     assert constants.FAILED_RETRY_S == 86400
+    assert constants.FAILED_RETRY_CAP_S == 14 * 86400
+    assert constants.RETRY_GENERATION == 1
 
 
 def test_key_round_trip_is_protected_and_clear_is_idempotent(env):
@@ -61,7 +63,7 @@ def test_state_round_trip_and_due_excludes_stored(env):
         "paths": ["one.vrf", "copy.vrf"], "size": 123, "mtime": 50.0,
         "status": "uploading", "upload_id": "upload-1", "stored_at": None,
         "first_refused_at": 10.0, "attempts": 2, "next_try": 100.0, "deleted_at": None,
-        "next_delete_check": 0.0,
+        "next_delete_check": 0.0, "failures": 0,
     }
     assert loaded.due(99) == []
     assert loaded.due(100) == [sha]
@@ -76,6 +78,33 @@ def test_state_unreplaced_temp_does_not_change_committed_file(env):
     state.mark("b" * 64, paths=["demo.vrf"], status="pending")
     (app_dir(env) / "state.json.tmp").write_text('{"partial":', encoding="utf-8")
     assert State(env=env).entry("b" * 64)["status"] == "pending"
+
+
+def test_refused_is_a_state_status_that_is_never_due(env):
+    state = State(env=env)
+    state.mark("d" * 64, paths=["gone.vrf"], status="refused", next_try=0.0)
+    assert state.due(10 ** 12) == []
+    assert State(env=env).entry("d" * 64)["status"] == "refused"
+
+
+def test_items_is_one_consistent_snapshot_even_when_a_row_is_dropped_meanwhile(env, monkeypatch):
+    state = State(env=env)
+    monkeypatch.setattr(state, "_save", lambda entries: None)
+    for name in "abc":
+        state.mark(name * 64, paths=[name])
+    real_entry, calls = state.entry, []
+
+    def racing(sha):
+        calls.append(sha)
+        if len(calls) == 1:  # another thread removes a row while this one reads
+            state.drop("b" * 64)
+        return real_entry(sha)
+
+    monkeypatch.setattr(state, "entry", racing)
+    rows = state.items()
+    assert [sha[0] for sha, _ in rows] == ["a", "b", "c"]
+    assert all(isinstance(row, dict) for _, row in rows)
+    assert state.due(10 ** 9)  # also safe on a replaced dict
 
 
 def test_rejected_file_is_due_at_its_scheduled_retry(env):
@@ -103,6 +132,7 @@ def test_config_defaults_bad_json_and_persisted_update_fields(env):
     config = Config.load(env=env)
     assert config == Config(keep_days=14, paused=False, site=constants.SITE,
                             skip_versions=[], last_update_check=0.0)
+    assert config.retry_generation == 0  # a settings file from before the field loads as 0
     path = app_dir(env) / "settings.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("broken", encoding="utf-8")
@@ -426,3 +456,30 @@ def test_log_redacts_message_arguments_and_tracebacks(env):
             logger.addFilter(filter_)
         logger.setLevel(original_level)
         logger.propagate = original_propagate
+
+
+class CutBody:
+    """An error response whose body is cut off mid-read."""
+
+    def read(self, *args):
+        raise http.client.IncompleteRead(b"{", 50)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("route_call", ["check", "status", "key_info", "upload"])
+def test_truncated_400_body_is_rejected_not_an_unexpected_error(tmp_path, route_call):
+    class Opener:
+        def open(self, request, timeout):
+            if request.data is not None and not isinstance(request.data, bytes):
+                b"".join(request.data)
+            raise HTTPError(request.full_url, 400, "bad", {}, CutBody())
+
+    client = Client("https://example.invalid", "synthetic-key", opener=Opener())
+    sample = tmp_path / "a.vrf"
+    sample.write_bytes(b"replay")
+    calls = {"check": lambda: client.check("a" * 64), "status": lambda: client.status("u1"),
+             "key_info": client.key_info, "upload": lambda: client.upload(sample)}
+    with pytest.raises(Rejected):
+        calls[route_call]()

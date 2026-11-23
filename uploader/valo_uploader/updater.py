@@ -204,23 +204,56 @@ def _roll_back(process, current, old, bad, moved_old, moved_new, version, config
     return "rolled_back" if restored else "recovery_needed"
 
 
-def recover_update(current_exe, env=None, *, sleep=time.sleep):
+def _same_file(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def recover_update(current_exe, env=None, *, sleep=time.sleep, running_exe=None,
+                   launch=launch_process):
     """At startup: put .old back when a failed update left no runnable installed copy.
 
     A healthy install with an ordinary leftover .old is cleanup_stale's, not ours.
-    Never raises.
+    Windows cannot replace a running image but can rename it: when a marker says the installed
+    copy is bad and .old is good, the bad current is renamed to .bad first, then .old takes its
+    place. If this process is that bad current ("relaunched": the caller exits before the
+    instance mutex), the good copy is launched and the marker is removed only after the launch.
+    Any failed step puts current back. Never raises.
     """
     try:
         current = Path(current_exe)
         old = current.with_suffix(".old")
+        bad = current.with_suffix(".bad")
         marker = app_dir(env) / RECOVERY_MARKER
         marked = marker.exists()
         if not marked and (current.exists() or not old.exists()):
             return "healthy"
-        if old.exists():
+        if not old.exists():
+            if not current.exists():
+                return "unrecoverable"
+            marker.unlink(missing_ok=True)
+            return "restored"
+        moved_aside = False
+        if current.exists():
+            try:
+                bad.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove the previous rejected version")
+            _retry(lambda: os.replace(current, bad), sleep, tries=5)
+            moved_aside = True
+        try:
             _retry(lambda: os.replace(old, current), sleep, tries=5)
-        elif not current.exists():
-            return "unrecoverable"
+        except Exception:
+            if moved_aside:
+                try:
+                    os.replace(bad, current)  # put things back: current must exist
+                except Exception:
+                    logger.exception("Could not put the installed copy back")
+            raise
+        if running_exe is not None and moved_aside and _same_file(running_exe, current):
+            # This process is the bad image, now at .bad: start the good copy and step aside.
+            launch(current, [])
+            marker.unlink(missing_ok=True)
+            return "relaunched"
         marker.unlink(missing_ok=True)
         return "restored"
     except Exception:

@@ -565,7 +565,7 @@ def test_forward_failure_after_shutdown_is_a_rollback_not_an_error(rig, monkeypa
 
 # recover_update
 
-def recovery_rig(rig, *, current=None, old=None, marker=False):
+def recovery_rig(rig, *, current=None, old=None, marker=False, **kwargs):
     for path, data in ((rig.current, current), (rig.current.with_suffix(".old"), old)):
         path.unlink(missing_ok=True)
         if data is not None:
@@ -576,7 +576,110 @@ def recovery_rig(rig, *, current=None, old=None, marker=False):
         (folder / "update-recovery.json").write_text(json.dumps(
             {"current": str(rig.current), "old": str(rig.current.with_suffix(".old")),
              "version": "0.2.0"}))
-    return updater.recover_update(rig.current, rig.env, sleep=Mock())
+    return updater.recover_update(rig.current, rig.env, sleep=Mock(), **kwargs)
+
+
+# --- R2.1 F4: recovery from the very image that needs replacing ------------------------------
+
+MARKER = lambda rig: app_dir(rig.env) / "update-recovery.json"
+
+
+def test_recovery_from_the_running_bad_image_moves_it_aside_and_relaunches_the_old_one(rig):
+    launch = Mock()
+    result = recovery_rig(rig, current=b"bad", old=b"good", marker=True,
+                          running_exe=rig.current, launch=launch)
+    assert result == "relaunched"
+    assert rig.current.read_bytes() == b"good"
+    assert rig.current.with_suffix(".bad").read_bytes() == b"bad"
+    assert not rig.current.with_suffix(".old").exists()
+    launch.assert_called_once_with(rig.current, [])
+    assert not MARKER(rig).exists()
+
+
+def test_recovery_keeps_the_marker_until_the_launch_succeeded(rig):
+    seen = []
+    launch = Mock(side_effect=lambda *a: seen.append(MARKER(rig).exists()))
+    recovery_rig(rig, current=b"bad", old=b"good", marker=True, running_exe=rig.current, launch=launch)
+    assert seen == [True]                      # still there while launching
+    failing = Mock(side_effect=OSError("cannot start"))
+    result = recovery_rig(rig, current=b"bad", old=b"good", marker=True, running_exe=rig.current,
+                          launch=failing)
+    assert result == "failed"                  # never raises
+    assert MARKER(rig).exists()
+    assert rig.current.exists()                # a runnable copy is in place for the next start
+
+
+def test_recovery_step_failure_puts_the_running_image_back_at_current(rig, monkeypatch):
+    fail_replace(monkeypatch, TO_CURRENT)
+    launch = Mock()
+    result = recovery_rig(rig, current=b"bad", old=b"good", marker=True, running_exe=rig.current,
+                          launch=launch)
+    assert result == "failed"
+    assert rig.current.read_bytes() == b"bad"             # current exists again
+    assert not rig.current.with_suffix(".bad").exists()
+    assert rig.current.with_suffix(".old").read_bytes() == b"good"
+    assert MARKER(rig).exists()
+    launch.assert_not_called()
+
+
+def test_recovery_running_from_old_while_a_bad_process_holds_current(rig):
+    """The launched .old copy restores itself over a current that cannot be replaced."""
+    result = recovery_rig(rig, current=b"bad", old=b"good", marker=True,
+                          running_exe=rig.current.with_suffix(".old"), launch=Mock())
+    assert result == "restored"
+    assert rig.current.read_bytes() == b"good"
+    assert rig.current.with_suffix(".bad").read_bytes() == b"bad"
+    assert not MARKER(rig).exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows locks a running image")
+def test_a_running_exe_can_be_renamed_but_not_replaced(tmp_path):
+    """The premise of F4: os.replace over a running image fails, a rename of it works."""
+    import shutil as _shutil
+
+    ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "PING.EXE"
+    if not ping.exists():
+        pytest.skip("PING.EXE not available")
+    running = tmp_path / "running.exe"
+    spare = tmp_path / "spare.exe"
+    _shutil.copy2(ping, running)
+    _shutil.copy2(ping, spare)
+    process = subprocess.Popen([str(running), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL,
+                               creationflags=0x08000000)
+    try:
+        with pytest.raises(PermissionError):
+            os.replace(spare, running)
+        os.replace(running, tmp_path / "running.bad")       # renaming the running image works
+        os.replace(spare, running)                         # and then its name is free
+        assert running.exists() and (tmp_path / "running.bad").exists()
+    finally:
+        process.kill()
+        process.wait(10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows locks a running image")
+def test_real_recovery_replaces_the_running_image_by_renaming_it(rig, tmp_path):
+    ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "PING.EXE"
+    if not ping.exists():
+        pytest.skip("PING.EXE not available")
+    shutil.copy2(ping, rig.current)
+    rig.current.with_suffix(".old").write_bytes(b"good copy")
+    process = subprocess.Popen([str(rig.current), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL,
+                               creationflags=0x08000000)
+    try:
+        launch = Mock()
+        folder = app_dir(rig.env)
+        folder.mkdir(parents=True, exist_ok=True)
+        MARKER(rig).write_text(json.dumps({"version": "0.2.0"}))
+        result = updater.recover_update(rig.current, rig.env, sleep=Mock(), running_exe=rig.current,
+                                        launch=launch)
+        assert result == "relaunched"
+        assert rig.current.read_bytes() == b"good copy"
+        assert rig.current.with_suffix(".bad").stat().st_size == ping.stat().st_size
+        launch.assert_called_once_with(rig.current, [])
+    finally:
+        process.kill()
+        process.wait(10)
 
 
 def test_recover_restores_old_when_current_is_missing(rig):
@@ -700,6 +803,38 @@ def test_user_disabled_run_key_stays_off_with_a_valid_install(tmp_path):
     key.assert_not_called()
 
 
+def test_run_key_is_set_before_the_target_is_published(tmp_path):
+    folder, target, source = install_rig(tmp_path)
+    seen = []
+    key = Mock(side_effect=lambda path: seen.append(target.exists()))
+    ensure_installed(source, folder, run_key=key, launch=Mock())
+    assert seen == [False]                          # registered first, then published
+    assert target.read_bytes() == b"download"
+
+
+def test_failed_run_key_write_leaves_no_install_so_the_next_run_repeats_both(tmp_path):
+    folder, target, source = install_rig(tmp_path)
+    launch = Mock()
+    with pytest.raises(OSError):
+        ensure_installed(source, folder, run_key=Mock(side_effect=OSError("registry")), launch=launch)
+    assert not target.exists() and list(folder.iterdir()) == []
+    launch.assert_not_called()
+    key = Mock()
+    assert ensure_installed(source, folder, run_key=key, launch=launch) == "relaunched"
+    key.assert_called_once_with(target.resolve())
+    assert target.read_bytes() == b"download"
+
+
+def test_a_crash_between_publish_and_run_key_is_not_possible_to_leave_a_keyless_install(tmp_path):
+    folder, target, source = install_rig(tmp_path)
+
+    def key(path):
+        raise KeyboardInterrupt            # the process dies at the registry write
+    with pytest.raises(KeyboardInterrupt):
+        ensure_installed(source, folder, run_key=key, launch=Mock())
+    assert not target.exists()
+
+
 def test_losing_the_publish_race_launches_the_winner(tmp_path):
     folder, target, source = install_rig(tmp_path)
     key, launch = Mock(), Mock()
@@ -711,5 +846,5 @@ def test_losing_the_publish_race_launches_the_winner(tmp_path):
                             launch=launch) == "relaunched"
     assert target.read_bytes() == VALID
     assert [p.name for p in folder.iterdir()] == ["ValoUploader.exe"]
-    key.assert_not_called()
+    key.assert_called_once_with(target.resolve())  # registered before publishing; same path as the winner's
     launch.assert_called_once_with(target.resolve(), [])

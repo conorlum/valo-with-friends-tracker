@@ -15,7 +15,10 @@ do it by hand.
 
 What it does: it looks for finished replay files, uploads each one to the site, and checks the site stored it. While
 Valorant is running (and until its queue is empty) it checks every 5 seconds and scans the Demos folder every 10
-seconds; otherwise it checks every 30 minutes. A replay is deleted once the site has stored that file and the file
+seconds; otherwise it checks every 30 minutes, except that it keeps scanning every 10 seconds while a new replay
+file is still settling, and once when Valorant closes. A replay the site could not use is tried again after 1, 2, 4
+and 8 days, then every 14 days; a match deleted on request is never sent again. When the site refuses or is down,
+the whole app waits (10 minutes to an hour) before it tries anything. A replay is deleted once the site has stored that file and the file
 is at least 14 days old (by its modified time). A recording the site did not keep (a friend's copy of the same match
 got there first) stays on your PC. It never deletes a file whose contents changed since upload. Nothing else is
 touched or deleted.
@@ -43,6 +46,11 @@ Release (the exe is never committed; GitHub Actions builds it):
 3. `.github/workflows/uploader-release.yml` fails unless the tag equals `__version__`. It builds with
    `uploader/build.ps1`, runs `ValoUploader.exe --selftest`, then publishes a release with `ValoUploader.exe` and
    `ValoUploader.exe.sha256` (`<hex>  ValoUploader.exe`). Installed apps self-update from those assets.
+
+Re-sending what failed: bump `RETRY_GENERATION` in `uploader/valo_uploader/constants.py` together with `__version__`,
+then tag. Each friend's app, after it updates, gives every `failed` and `rejected` file a fresh start and sends them one
+at a time through the normal queue (`/check` first), except matches deleted on request. Updates that leave
+`RETRY_GENERATION` alone re-send nothing.
 
 Build locally: `powershell -NoProfile -ExecutionPolicy Bypass -File uploader/build.ps1` (output in `uploader/dist/`).
 

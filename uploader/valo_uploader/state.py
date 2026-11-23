@@ -7,7 +7,8 @@ import time
 
 from .paths import app_dir
 
-STATUSES = frozenset({"pending", "uploading", "held", "stored", "failed", "rejected"})
+# "refused": the site deleted this match on request; it is never uploaded again.
+STATUSES = frozenset({"pending", "uploading", "held", "stored", "failed", "rejected", "refused"})
 
 
 class State:
@@ -37,7 +38,7 @@ class State:
     def mark(self, sha, **changes):
         defaults = dict(paths=[], size=0, mtime=0.0, status="pending", upload_id=None,
                         stored_at=None, first_refused_at=None, attempts=0, next_try=0.0,
-                        deleted_at=None, next_delete_check=0.0)
+                        deleted_at=None, next_delete_check=0.0, failures=0)
         if changes.keys() - defaults.keys():
             raise ValueError("Unknown upload state field")
         row = {**defaults, **self._entries.get(sha, {}), **changes}
@@ -49,12 +50,18 @@ class State:
         self._entries = entries
 
     def due(self, now):
-        return [sha for sha, row in self._entries.items()
-                if row["status"] != "stored" and row.get("next_try", 0) <= now]
+        entries = self._entries
+        return [sha for sha, row in entries.items()
+                if row["status"] not in ("stored", "refused") and row.get("next_try", 0) <= now]
 
     def items(self):
-        """Return a snapshot; callers cannot change the durable rows in place."""
-        return [(sha, self.entry(sha)) for sha in self._entries]
+        """Return a snapshot; callers cannot change the durable rows in place.
+
+        `_entries` is replaced whole on every change, never edited, so reading the reference once
+        gives one consistent snapshot to any thread, with no lock (the tray reads it mid-upload).
+        """
+        entries = self._entries
+        return [(sha, {**row, "paths": list(row.get("paths", []))}) for sha, row in entries.items()]
 
     def drop(self, sha):
         if sha in self._entries:

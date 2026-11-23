@@ -28,9 +28,12 @@ def run(engine, stop, after_tick=None):
             break
         was_running = running
         running = engine.procs()
-        active = running or engine.status()["queue_length"] > 0
+        status = engine.status()
+        # Fast scans while the game runs, work is queued, or a .vrf still awaits its second look.
+        active = running or status["queue_length"] > 0 or status.get("scanning", False)
         interval = ACTIVE_SCAN_S if active else IDLE_SCAN_S
         now = engine.clock()
-        if (running and not was_running) or now - last_tick >= interval:
+        # The game starting or closing ticks at once: a closing game releases its last recording.
+        if running != was_running or now - last_tick >= interval:
             tick(now)
             last_tick = now

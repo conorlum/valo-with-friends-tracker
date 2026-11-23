@@ -433,6 +433,83 @@ def test_each_success_touches_at_most_once_per_minute(api, monkeypatch, route):
         assert last_used(api) == datetime(2026, 11, 22) + timedelta(seconds=expected)
 
 
+@pytest.mark.parametrize("route", [UPLOAD, CHECK])
+def test_a_client_that_disconnects_mid_body_gets_a_plain_400_and_records_nothing(api, monkeypatch, route):
+    import asyncio
+
+    from app.services import site_health, site_health_web
+
+    app = api.client.app
+    app.add_exception_handler(Exception, site_health_web.page_error_handler)  # the site's own 500 recorder
+    recorded = []
+    monkeypatch.setattr(site_health, "enqueue", lambda *args, **kwargs: recorded.append(args))
+    content_type = ("multipart/form-data; boundary=xyz" if route == UPLOAD else "application/json")
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",
+             "method": "POST", "scheme": "http", "path": route, "raw_path": route.encode(),
+             "query_string": b"", "root_path": "", "client": ("127.0.0.1", 1), "server": ("testserver", 80),
+             "headers": [(b"host", b"testserver"), (b"authorization", f"Bearer {api.key}".encode()),
+                         (b"content-type", content_type.encode()), (b"content-length", b"100000")]}
+    messages, errors = [], []
+    pending = [{"type": "http.request", "body": b'--xyz\r\nContent-Disposition: form-data; name="file"; '
+                                                b'filename="a.vrf"\r\n\r\npartial' if route == UPLOAD
+                else b'{"sha256": "', "more_body": True}]
+
+    async def receive():
+        return pending.pop(0) if pending else {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    async def call():
+        try:
+            await app(scope, receive, send)
+        except Exception as error:  # an unhandled error would be recorded; the test checks `recorded`
+            errors.append(error)
+
+    asyncio.run(call())
+    start = next((m for m in messages if m["type"] == "http.response.start"), None)
+    assert start is not None and start["status"] == 400, (messages, errors)
+    assert recorded == [] and not errors
+    assert upload_activity.receiving() == 0
+    with api.factory() as db:
+        assert db.query(ReplayUpload).count() == 0
+    assert not api.worker.submitted and last_used(api) is None
+
+
+def set_upload_error(api, error, status="failed"):
+    add_upload(api, status=status)
+    with api.factory() as db:
+        row = db.get(ReplayUpload, UPLOAD_ID)
+        row.error = error
+        db.commit()
+
+
+def test_status_flags_a_match_deleted_on_request(api):
+    from app.replays.store import DELETED_ON_REQUEST
+
+    assert DELETED_ON_REQUEST == "this match was deleted on request"
+    set_upload_error(api, f"could not store it: {DELETED_ON_REQUEST}")
+    body = send(api, "GET", STATUS).json()
+    assert body == {"status": "failed", "error": f"could not store it: {DELETED_ON_REQUEST}", "deleted": True}
+
+
+@pytest.mark.parametrize("status,error", [("failed", "could not store it: another reason"), ("failed", None),
+                                          ("stored", "this match was deleted on request"),
+                                          ("parsing", "this match was deleted on request")])
+def test_status_has_no_deleted_key_otherwise(api, status, error):
+    set_upload_error(api, error, status=status)
+    assert "deleted" not in send(api, "GET", STATUS).json()
+
+
+def test_the_browser_status_answer_is_unchanged_for_a_deleted_match(api, monkeypatch):
+    from app.replays.store import DELETED_ON_REQUEST
+    from app.routers.replays import _status_body
+
+    set_upload_error(api, f"could not store it: {DELETED_ON_REQUEST}")
+    with api.factory() as db:
+        assert "deleted" not in _status_body(db, db.get(ReplayUpload, UPLOAD_ID))
+
+
 def test_main_registers_all_api_routes():
     from app.main import app
     expected = {(method, path.replace(UPLOAD_ID, "{upload_id}")) for method, path in ROUTES}

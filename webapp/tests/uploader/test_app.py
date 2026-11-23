@@ -366,6 +366,9 @@ def test_key_window_validation_can_retry_without_revealing_key(monkeypatch, fail
 
 
 def test_change_key_and_pause_actions(rig):
+    replaced = threading.Event()
+    rig.engine.key_replaced.side_effect = lambda client: replaced.set()
+
     def tray_run(ready):
         assert threading.current_thread() is threading.main_thread()
         callbacks = app.Tray.call_args.kwargs
@@ -373,11 +376,102 @@ def test_change_key_and_pause_actions(rig):
         assert rig.config.paused
         app.ask_for_key.return_value = KEY
         callbacks["on_change_key"]()
+        assert replaced.wait(2)
         rig.engine.key_replaced.assert_called_once_with(app.Client.return_value)
     rig.tray.run.side_effect = tray_run
     assert start(rig) == 0
     app.save_key.assert_called_once_with(KEY, env=rig.env)
     assert (app_dir(rig.env) / "settings.json").exists()
+
+
+def test_pause_never_waits_for_the_engine_lock(rig):
+    """R2.1 F5: a tick holds the engine lock through an upload; the tray's Pause must not wait for it."""
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with rig.engine.lock:
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(2)
+    outcome = []
+
+    def tray_run(ready):
+        callbacks = app.Tray.call_args.kwargs
+        worker = threading.Thread(target=callbacks["on_pause"], daemon=True)
+        worker.start()
+        worker.join(1)
+        outcome.append(not worker.is_alive())     # done while the lock is still held elsewhere
+        release.set()
+        worker.join(3)
+    rig.tray.run.side_effect = tray_run
+    assert start(rig) == 0
+    holder.join(3)
+    assert outcome == [True] and rig.config.paused
+
+
+def test_change_key_replacement_runs_off_the_tray_thread_and_may_wait_for_the_lock(rig):
+    entered, release = threading.Event(), threading.Event()
+    seen = []
+
+    def key_replaced(client):
+        seen.append(threading.current_thread())
+        entered.set()
+        release.wait(5)           # as if waiting for a tick's lock
+
+    rig.engine.key_replaced.side_effect = key_replaced
+    returned = []
+
+    def tray_run(ready):
+        callbacks = app.Tray.call_args.kwargs
+        app.ask_for_key.return_value = KEY
+        callbacks["on_change_key"]()      # must return while key_replaced is still waiting
+        returned.append(entered.wait(2) and not release.is_set())
+        release.set()
+    rig.tray.run.side_effect = tray_run
+    assert start(rig) == 0
+    assert returned == [True]
+    assert seen and seen[0] is not threading.main_thread()
+
+
+def test_quit_during_an_upload_closes_the_tray_at_once_and_main_still_joins_the_runner(rig, monkeypatch):
+    uploading, finish, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def run(engine, stop, after_tick):
+        uploading.set()
+        finish.wait(5)
+        finished.set()
+
+    monkeypatch.setattr(app, "run", run)
+    order = []
+
+    def tray_run(ready):
+        assert uploading.wait(2)
+        app.Tray.call_args.kwargs["on_quit"]()
+        order.append(("tray closed", rig.closed.is_set(), finished.is_set()))
+        threading.Timer(0.2, finish.set).start()
+    rig.tray.run.side_effect = tray_run
+    assert start(rig) == 0
+    assert order == [("tray closed", True, False)]
+    assert finished.is_set()          # main returned only after the runner did
+
+
+def test_retry_generation_is_applied_at_start_and_saves_the_config(rig):
+    saved = []
+    rig.engine.apply_retry_generation.side_effect = lambda save: (save(), saved.append(True))
+    assert start(rig) == 0
+    rig.engine.apply_retry_generation.assert_called_once()
+    assert saved and (app_dir(rig.env) / "settings.json").exists()
+
+
+def test_a_relaunch_by_update_recovery_exits_before_the_instance_guard(rig, monkeypatch):
+    monkeypatch.setattr(app, "recover_update",
+                        Mock(side_effect=lambda *a, **kw: rig.calls.append("recover") or "relaunched"))
+    assert start(rig, frozen=True) == 0
+    assert rig.calls == ["recover"]
+    assert app.recover_update.call_args.kwargs["running_exe"] == app.Path(app.sys.executable)
 
 
 def test_instance_fake_allows_foreign_thread_release():

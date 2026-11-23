@@ -89,17 +89,18 @@ def ensure_installed(exe_path, install_dir, copy=shutil.copy2, run_key=set_run_k
         existing_size = target.stat().st_size
     except FileNotFoundError:
         existing_size = None
-    published = False
     if existing_size is None or existing_size < MIN_INSTALLED_BYTES:
         temp = folder / f".ValoUploader-{secrets.token_hex(8)}.tmp"
         try:
             copy(source, temp)
             if temp.stat().st_size != source.stat().st_size:
                 raise OSError("Installed copy is incomplete")
-            published = _publish(temp, target, existing_size is not None)
+            # Startup registration comes first: a failed write leaves no installed copy, so the
+            # next run repeats both. (A valid existing install never reaches here, so a friend who
+            # turned "Start with Windows" off stays off.)
+            run_key(target)
+            _publish(temp, target, existing_size is not None)
         finally:
             temp.unlink(missing_ok=True)
-        if published:
-            run_key(target)
     launch(target, [])
     return "relaunched"

@@ -78,11 +78,14 @@ def main(argv=None, *, frozen=None, env=None):
         # A failed update can leave the installed copy missing; put .old back first.
         installed = install_dir(env) / "ValoUploader.exe"
         try:
-            if recover_update(installed, env) == "restored" \
-                    and executable == installed.with_suffix(".old"):
-                executable = installed
+            recovered = recover_update(installed, env, running_exe=executable)
         except Exception:
-            pass
+            recovered = None
+        if recovered == "relaunched":
+            # A good copy was started in place of this bad image; leave before the mutex.
+            return 0
+        if recovered == "restored" and executable == installed.with_suffix(".old"):
+            executable = installed
     if frozen and ensure_installed(executable, install_dir(env)) == "relaunched":
         return 0
 
@@ -134,16 +137,26 @@ def main(argv=None, *, frozen=None, env=None):
         engine = Engine(State(env=env), Client(config.site, key), config,
                         watcher=Watcher(env=env))
 
+        try:
+            # An app update that bumped RETRY_GENERATION re-sends what failed, once.
+            engine.apply_retry_generation(lambda: config.save(env=env))
+        except Exception:
+            logger.exception("Could not apply the retry generation")
+
         def pause():
-            with engine.lock:
-                config.paused = not config.paused
-                config.save(env=env)
+            # No engine lock: a tick may hold it through a long upload, and the tray must never wait.
+            # The tick reads the flag at each step boundary.
+            config.paused = not config.paused
+            config.save(env=env)
 
         def change_key():
             replacement = ask_for_key(clipboard_key(), validate)
             if replacement is not None:
                 save_key(replacement, env=env)
-                engine.key_replaced(Client(config.site, replacement))
+                client = Client(config.site, replacement)
+                # key_replaced may wait for a tick's lock: never on the tray's thread.
+                threading.Thread(target=engine.key_replaced, args=(client,),
+                                 name="uploader-key-replaced", daemon=True).start()
 
         def startup():
             # Python invocations have no installed executable to register.

@@ -66,7 +66,8 @@ def _http_error(error):
         # keep the file and retry after a day, never hammer the site.
         try:
             message = json.load(error).get("error", "Replay rejected")
-        except (ValueError, AttributeError, OSError, UnicodeError):
+        except (ValueError, AttributeError, OSError, UnicodeError, HTTPException):
+            # HTTPException covers IncompleteRead: an error body cut off mid-read is still a rejection.
             message = "Replay rejected"
         raise Rejected(str(message)) from None
     # An unfollowed redirect or any status outside 400-599.

@@ -259,7 +259,9 @@ minted on the upload page (`POST /replays/upload/app-key`) and stored as SHA-256
 `0037`); owner script `scripts/upload_tokens.py list | issue | revoke` via `with_friends_db.py`. Release: bump
 `__version__`, push tag `uploader-vX.Y.Z`; `.github/workflows/uploader-release.yml` builds with `uploader/build.ps1`
 and attaches `ValoUploader.exe` + `.sha256` (no binary in git); self-update reads those releases. `uploader/**` is in
-`deploy.yml`'s `paths-ignore`. Tests: `webapp/tests/uploader`. See `uploader/README.md`.
+`deploy.yml`'s `paths-ignore`. Tests: `webapp/tests/uploader`. See `uploader/README.md`. A `failed` or `rejected` file
+retries after 1, 2, 4, 8, then every 14 days; a match deleted on request (the status route adds `deleted: true`) is
+never re-sent; bumping `RETRY_GENERATION` (with `__version__`, then tag) makes every app re-send what failed once.
 
 ### Plant spots
 

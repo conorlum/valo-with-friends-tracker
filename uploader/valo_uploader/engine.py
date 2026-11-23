@@ -7,21 +7,31 @@ import time
 from pathlib import Path
 
 from .api import BadKey, NotFound, Offline, Refused, Rejected
-from .constants import (DELETE_BATCH, FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S, REFUSED_WINDOW_S,
-                        STATUS_POLL_S)
+from .constants import (DELETE_BATCH, FAILED_RETRY_CAP_S, FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S,
+                        REFUSED_WINDOW_S, RETRY_GENERATION, STATUS_POLL_S)
 from .files import Watcher, sha256_file
 from .procs import valorant_running
 
 
 logger = logging.getLogger(__name__)
+MAX_NETWORK_WAIT_S = 3600  # the longest a site's Retry-After can hold the whole app back
+
+
+def retry_delay(failures):
+    """Wait after the nth failure of one file: 1, 2, 4, 8 days, then every 14."""
+    return min(FAILED_RETRY_S * 2 ** min(max(failures, 1) - 1, 30), FAILED_RETRY_CAP_S)
 
 
 class Engine:
     def __init__(self, state, client, config, clock=time.time, sleep=time.sleep,
                  watcher=None, procs=valorant_running, deleter=os.remove):
-        # Shared with tray preference changes; callbacks may read status while
-        # already inside a tick, so this must be reentrant.
+        # Serialises state changes: tick against key_replaced. Reads for the tray (status, idle) take
+        # no lock: State replaces its rows whole on every change, so a read is one consistent
+        # snapshot, and a tray click must never wait on an upload. Reentrant because callbacks may
+        # read status while already inside a tick.
         self.lock = threading.RLock()
+        # One in-memory time before which nothing talks to the site: set by a refusal or an outage.
+        self.next_network = 0.0
         self.state = state
         self.client = client
         self.config = config
@@ -37,14 +47,17 @@ class Engine:
             if row["status"] == "stored":
                 self._remember(row["paths"])
 
+    def _may_send(self, now):
+        """The flag is read at every step boundary: Pause lands without the lock."""
+        return not self.config.paused and not self.needs_key and now >= self.next_network
+
     def tick(self, now):
         with self.lock:
             if self.config.paused:
                 return
             self._scan(now)
-            if not self.needs_key:
-                self._poll_held(now)
-            if not self.needs_key:
+            self._poll_held(now)
+            if self._may_send(now):
                 rows = self.state.items()
                 if any(row["status"] == "uploading" for _, row in rows):
                     # The one transmission slot belongs to the in-flight upload.
@@ -54,8 +67,10 @@ class Engine:
                             break
                 else:
                     for sha in self.state.due(now):
+                        if not self._may_send(now):
+                            break
                         row = self.state.entry(sha)
-                        if row["status"] == "held":
+                        if row is None or row["status"] == "held":
                             continue
                         # A file that was not available did not use the slot:
                         # look at the next due entry.
@@ -66,10 +81,34 @@ class Engine:
     def _poll_held(self, now):
         """Held replays only poll the site; they never occupy the upload slot."""
         for sha, row in self.state.items():
-            if self.needs_key:
+            if not self._may_send(now):
                 return
             if row["status"] == "held" and row["next_try"] <= now:
                 self._guarded_step(sha, row, now)
+
+    def _back_off(self, error, now):
+        """A refusal or an outage holds back every call, for every file, until this time."""
+        wait = REFUSED_RETRY_S
+        if isinstance(error, Refused):
+            wait = max(REFUSED_RETRY_S, min(error.retry_after_s, MAX_NETWORK_WAIT_S))
+        self.next_network = max(self.next_network, now + wait)
+
+    def apply_retry_generation(self, save_config):
+        """Once per RETRY_GENERATION bump (an app update): send what failed again, at once.
+
+        Entries go out one at a time through the normal queue, /check first. A match the site deleted
+        on request ("refused") is never reset. State is written first, then the config, so a crash
+        in between repeats this rather than losing it.
+        """
+        if self.config.retry_generation >= RETRY_GENERATION:
+            return
+        now = self.clock()
+        with self.lock:
+            for sha, row in self.state.items():
+                if row["status"] in ("failed", "rejected"):
+                    self.state.mark(sha, failures=0, next_try=now)
+            self.config.retry_generation = RETRY_GENERATION
+            save_config()
 
     def _guarded_step(self, sha, row, now):
         """Run one entry's step; a bug for one file must never stop the app."""
@@ -90,6 +129,8 @@ class Engine:
 
     def _scan(self, now):
         for path in self.watcher.poll(now):
+            if self.config.paused:
+                return
             try:
                 info = path.stat()
                 signature = (info.st_size, info.st_mtime_ns)
@@ -153,7 +194,10 @@ class Engine:
                 if result["status"] == "stored":
                     self._stored(sha, now)
                 elif result["status"] == "failed":
-                    self._failed(sha, now)
+                    if result.get("deleted") is True:
+                        self._refused(sha)
+                    else:
+                        self._failed(sha, now)
                 elif result["status"] == "held":
                     # Held for an unsupported build or agent, possibly for weeks:
                     # keep the upload id, free the slot, poll rarely.
@@ -184,7 +228,8 @@ class Engine:
             self.state.mark(sha, status="uploading", upload_id=upload_id,
                             next_try=now + STATUS_POLL_S)
             return True
-        except (Refused, Offline):
+        except (Refused, Offline) as error:
+            self._back_off(error, now)
             current = self.state.entry(sha)
             first = current.get("first_refused_at")
             if first is None:
@@ -202,8 +247,9 @@ class Engine:
                 # Held has its own upload id and no site timeout: keep it held.
                 self.state.mark(sha, next_try=now + IDLE_SCAN_S)
                 return True
+            failures = self.state.entry(sha).get("failures", 0) + 1
             self.state.mark(sha, status="rejected", upload_id=None, first_refused_at=None,
-                            next_try=now + FAILED_RETRY_S)
+                            failures=failures, next_try=now + retry_delay(failures))
             return True
         except BadKey:
             # On restart the first due call discovers a revoked key again.
@@ -213,7 +259,7 @@ class Engine:
             if row["status"] in ("uploading", "held"):
                 self._pending(sha, now)
             else:
-                self._failed(sha, now)
+                self._failed(sha, now, count=False)  # a 404 says nothing about the file itself
             return True
         except OSError:
             logger.warning("Replay became unavailable before upload; waiting for another tick")
@@ -221,12 +267,17 @@ class Engine:
             return False
 
     def _stored(self, sha, now):
-        self.state.mark(sha, status="stored", stored_at=now, first_refused_at=None)
+        self.state.mark(sha, status="stored", stored_at=now, first_refused_at=None, failures=0)
         self._remember(self.state.entry(sha)["paths"])
 
-    def _failed(self, sha, now):
+    def _failed(self, sha, now, count=True):
+        failures = self.state.entry(sha).get("failures", 0) + (1 if count else 0)
         self.state.mark(sha, status="failed", upload_id=None, first_refused_at=None,
-                        next_try=now + FAILED_RETRY_S)
+                        failures=failures, next_try=now + retry_delay(failures))
+
+    def _refused(self, sha):
+        """The site deleted this match on request: never upload it again, but keep the file."""
+        self.state.mark(sha, status="refused", upload_id=None, first_refused_at=None, next_try=0.0)
 
     def _pending(self, sha, now):
         self.state.mark(sha, status="pending", upload_id=None, first_refused_at=None, next_try=now)
@@ -246,7 +297,7 @@ class Engine:
             return
         budget = DELETE_BATCH
         for sha, row in self.state.items():
-            if budget <= 0 or self.needs_key:
+            if budget <= 0 or not self._may_send(now):
                 return
             if row["status"] != "stored" or row.get("next_delete_check", 0.0) > now:
                 continue
@@ -290,6 +341,10 @@ class Engine:
                 except BadKey:
                     self.needs_key = True
                     kept = None
+                except (Refused, Offline) as error:
+                    logger.warning("Could not ask the site about a stored replay; keeping local file")
+                    self._back_off(error, now)
+                    kept, retry = None, REFUSED_RETRY_S
                 except Exception:
                     logger.warning("Could not ask the site about a stored replay; keeping local file")
                     kept, retry = None, REFUSED_RETRY_S
@@ -336,16 +391,19 @@ class Engine:
         return self.status()["queue_length"] == 0
 
     def status(self):
-        with self.lock:
-            rows = [row for _, row in self.state.items()]
-            queue_length = sum(row["status"] in ("pending", "uploading") for row in rows)
-            if self.config.paused:
-                activity = "paused"
-            elif self.needs_key:
-                activity = "needs_key"
-            elif any(row["status"] == "uploading" for row in rows):
-                activity = "uploading"
-            else:
-                activity = "queued" if queue_length else "idle"
-            return dict(state=activity, queue_length=queue_length, last_stored=list(self._last_stored),
-                        needs_key=self.needs_key, paused=self.config.paused)
+        """Takes no lock: the tray reads this while a tick may be deep in an upload."""
+        rows = [row for _, row in self.state.items()]
+        queue_length = sum(row["status"] in ("pending", "uploading") for row in rows)
+        paused = self.config.paused
+        if paused:
+            activity = "paused"
+        elif self.needs_key:
+            activity = "needs_key"
+        elif any(row["status"] == "uploading" for row in rows):
+            activity = "uploading"
+        else:
+            activity = "queued" if queue_length else "idle"
+        return dict(state=activity, queue_length=queue_length, last_stored=list(self._last_stored),
+                    needs_key=self.needs_key, paused=paused,
+                    # a .vrf is awaiting its second look: the runner stays on fast scans
+                    scanning=bool(getattr(self.watcher, "awaiting", False)) and not paused)

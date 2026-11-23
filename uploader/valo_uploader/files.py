@@ -53,6 +53,10 @@ class Watcher:
         self.directory = demos_dir(env) if directory is None else Path(directory)
         self.exclusive_ok = exclusive
         self._seen = {}
+        # True while some .vrf is seen but has not yet been unchanged for STABLE_GAP_S: it needs a
+        # second look soon. A file that is stable but merely locked does not count, so a locked
+        # file cannot keep the app on fast scans. One assignment per poll: safe to read from any thread.
+        self.awaiting = False
 
     def forget(self, path):
         """Changed bytes must pass the normal two-observation check again."""
@@ -63,8 +67,9 @@ class Watcher:
             paths = sorted(self.directory.iterdir())
         except OSError:
             self._seen.clear()
+            self.awaiting = False
             return []
-        observations, finished = {}, []
+        observations, finished, awaiting = {}, [], False
         for path in paths:
             if path.suffix.lower() != ".vrf":
                 continue
@@ -78,9 +83,12 @@ class Watcher:
                 if now < since:
                     since = now
                 observations[path] = (signature, since)
-                if now - since >= STABLE_GAP_S and self.exclusive_ok(path):
+                if now - since < STABLE_GAP_S:
+                    awaiting = True
+                elif self.exclusive_ok(path):
                     finished.append(path)
             except OSError:
                 continue
         self._seen = observations
+        self.awaiting = awaiting
         return finished

@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
+from starlette.requests import ClientDisconnect
 
 from app.db import get_db
 from app.models.replay import Replay, ReplayUpload
+from app.replays.store import DELETED_ON_REQUEST
 from app.routers.replays import UUID_SHAPE, _status_body
 from app.services import deploy_drain, replay_upload as uploads, upload_activity, upload_tokens
 
@@ -72,6 +74,9 @@ async def upload_file(request: Request, db: Session = Depends(get_db)):
     with upload_activity.admitted():
         try:
             form = await request.form()
+        except ClientDisconnect:
+            # The PC slept or the network dropped mid-body: not a crash, nothing to record.
+            return _error(400, "upload interrupted")
         except (HTTPException, ValueError):
             return _error(400, "invalid multipart body")
         try:
@@ -109,6 +114,9 @@ def upload_status(request: Request, upload_id: str, db: Session = Depends(get_db
         return _error(404, "not found")
     upload = uploads.refresh_job(db, upload, uploads.client())
     body = _status_body(db, upload)
+    if upload.status == "failed" and DELETED_ON_REQUEST in (upload.error or ""):
+        # For the app only (the browser's answer is unchanged): never send this match again.
+        body = {**body, "deleted": True}
     db.rollback()  # Release the upload lock before the token's short touch transaction.
     upload_tokens.touch(db, token, datetime.now(timezone.utc))
     return _answer(body)
@@ -131,6 +139,8 @@ async def check(request: Request, db: Session = Depends(get_db)):
         return token
     try:
         body = await request.json()
+    except ClientDisconnect:
+        return _error(400, "request interrupted")
     except (ValueError, UnicodeError):
         return _error(400, "invalid JSON body")
     sha = body.get("sha256") if isinstance(body, dict) else None

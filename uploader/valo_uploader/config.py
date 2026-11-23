@@ -16,6 +16,7 @@ class Config:
     site: str = SITE
     skip_versions: list[str] = field(default_factory=list)
     last_update_check: float = 0.0
+    retry_generation: int = 0  # the constants.RETRY_GENERATION this PC has already acted on
 
     @classmethod
     def load(cls, env=None):
