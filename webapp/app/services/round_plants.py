@@ -430,6 +430,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             else:
                 result["failed"] += 1
                 consecutive_failures += 1
+                print(f"failed {external_id}: {type(error).__name__}: {error}", flush=True)
         else:
             consecutive_failures = 0
             result["done"] += 1
