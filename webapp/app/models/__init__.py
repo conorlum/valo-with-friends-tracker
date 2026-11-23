@@ -2,6 +2,7 @@ from app.models.player import Player
 from app.models.match import Match, MatchPlayer
 from app.models.round import Round, RoundPlayerStat
 from app.models.round_player_spend import RoundPlayerSpend
+from app.models.round_plant import RoundPlant, PlantStatsCache
 from app.models.kill_event import KillEvent
 from app.models.impact_score import ImpactScore
 from app.models.friendship import Friendship
@@ -34,6 +35,8 @@ __all__ = [
     "Round",
     "RoundPlayerStat",
     "RoundPlayerSpend",
+    "RoundPlant",
+    "PlantStatsCache",
     "KillEvent",
     "ImpactScore",
     "Friendship",

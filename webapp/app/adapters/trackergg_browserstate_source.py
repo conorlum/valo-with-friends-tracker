@@ -20,16 +20,21 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
+from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout, wait_for_owner
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
 from app.scoring.ingest_preflight import verify_ingest_preflight
+from app.services import round_plants
 from app.services.player_view_cache import invalidate_match_players
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
+MATCH_SETTLE_SECONDS = 8        # always waited after the load, polling each second
+MATCH_BODY_WAIT_SECONDS = 15    # the most waited in all for the match response
 HISTORY_URL_TMPL = "https://tracker.gg/valorant/profile/riot/{riot_id}/matches"
 
 # The "All Acts" view of the competitive history, i.e. what the act selector
@@ -79,6 +84,7 @@ def _fetch_history_state(page: Page, riot_id: str, season_id: str | None = None)
     if season_id is not None:
         url = f"{url}?platform=pc&playlist=competitive&season={season_id}"
     page.goto(url, wait_until="load", timeout=60_000)
+    wait_for_owner(page)
     page.wait_for_timeout(5000)
 
     state = page.evaluate("() => window.__INITIAL_STATE__ ?? null")
@@ -305,6 +311,7 @@ def discover_match_ids_paginated(
     try:
         url = ALL_ACTS_HISTORY_URL_TMPL.format(riot_id=riot_id.replace("#", "%23"))
         page.goto(url, wait_until="load", timeout=60_000)
+        wait_for_owner(page)
         page.wait_for_timeout(5000)
 
         state = page.evaluate("() => window.__INITIAL_STATE__ ?? null")
@@ -380,6 +387,8 @@ def discover_match_ids_paginated(
                     and load_more.first.is_visible()
                     and load_more.first.is_enabled()
                 )
+            except TrackerVerificationTimeout:
+                raise
             except Exception as e:
                 return finish(DiscoveryStatus.INCOMPLETE, f"Load More control unreadable: {e}")
             if not clickable:
@@ -395,9 +404,13 @@ def discover_match_ids_paginated(
             try:
                 load_more.first.scroll_into_view_if_needed()
                 load_more.first.click()
+            except TrackerVerificationTimeout:
+                raise
             except Exception as e:
                 return finish(DiscoveryStatus.INCOMPLETE, f"Load More click failed: {e}")
             page.wait_for_timeout(8000)
+            if wait_for_owner(page) > 0:
+                page.wait_for_timeout(5000)
 
             new_payloads = captured[before:]
             if not new_payloads:
@@ -528,16 +541,40 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
 
     def on_response(response):
         if marker in response.url and "body" not in captured:
-            captured["body"] = response.json()
+            captured["status"] = response.status
+            captured["parsed"] = False
+            try:
+                body = response.json()
+            except Exception:
+                return
+            captured["parsed"] = True
+            if isinstance(body, dict) and body.get("data") is not None:
+                captured["body"] = body
 
     page.on("response", on_response)
     try:
         page.goto(MATCH_URL_TMPL.format(match_id=match_id), wait_until="load", timeout=60_000)
-        page.wait_for_timeout(8000)
+        wait_for_owner(page)
+        # Always settle for MATCH_SETTLE_SECONDS after the load (and any verification
+        # wait); then keep polling for the body up to MATCH_BODY_WAIT_SECONDS in all.
+        for second in range(MATCH_BODY_WAIT_SECONDS):
+            if second >= MATCH_SETTLE_SECONDS and "body" in captured:
+                break
+            page.wait_for_timeout(1000)
     finally:
         page.remove_listener("response", on_response)
 
     if "body" not in captured:
+        if "status" in captured:
+            # 404 and 410 are permanent, and so is a 200 whose JSON has no usable data.
+            # A 200 that did not parse may be a challenge page, so it stays retryable.
+            permanent = captured["status"] in (404, 410) or (
+                captured["status"] == 200 and captured["parsed"])
+            error = TrackerMatchUnavailable if permanent else RuntimeError
+            raise error(
+                f"tracker.gg match API response for {match_id} has no data "
+                f"(status {captured['status']})"
+            )
         raise RuntimeError(f"Did not observe tracker.gg's match API response for {match_id}")
     return captured["body"]["data"]
 
@@ -762,8 +799,49 @@ def load_match(db: Session, match_json: dict) -> Match:
             )
         )
 
+    # Save caller-facing scalars before commit expires them. A failed plant
+    # transaction must not force callers to reconnect just to identify the match.
+    match_values = {key: getattr(match, key) for key in ("id", "external_id", "map_name", "played_at")}
     db.commit()
+    _store_plants(db, match, round_summaries, match_values)
     return match
+
+
+def _store_plants(db: Session, match: Match, round_summaries: list[dict], match_values: dict) -> None:
+    """Save optional tracker positions separately from the committed match."""
+    try:
+        plants = []
+        for summary in round_summaries:
+            plant = round_plants.plant_from_summary(summary)
+            if plant is None:
+                continue
+            try:
+                u, v = round_plants.to_uv(match.map_name, plant["x"], plant["y"])
+            except KeyError:
+                # Maps absent from maps.json cannot supply normalized positions.
+                continue
+            plants.append(dict(round_number=summary["attributes"]["round"],
+                               u=u, v=v, site=plant["site"]))
+        if plants:
+            round_plants.upsert_plants(db, match, plants, source="tracker")
+            db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Rollback expires ORM state, including this already committed match.
+        try:
+            db.refresh(match)
+        except Exception:
+            # A failed refresh can itself leave a broken read transaction.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            for key, value in match_values.items():
+                set_committed_value(match, key, value)
+        print(f"  Plant storage failed: {' '.join(str(exc).splitlines())}")
 
 
 def _dedup_and_ingest(
@@ -792,6 +870,9 @@ def _dedup_and_ingest(
     progress = _ingest_discovered(db, page, match_ids, ledger, riot_id)
     failure = progress.error or progress.first_error
     if failure is not None:
+        if isinstance(failure, TrackerVerificationTimeout):
+            # The matches added before the timeout are already committed and invalidated.
+            failure.dirty = set(progress.dirty)
         raise failure
     return progress.dirty
 
@@ -814,6 +895,7 @@ class _IngestProgress:
     failed_ids: list[str] = field(default_factory=list)
     first_error: BaseException | None = None
     error: BaseException | None = None
+    verification_timeout: bool = False
 
 
 def _ingest_discovered(
@@ -873,10 +955,18 @@ def _ingest_discovered(
         match_json = None
         fetch_error: Exception | None = None
         for attempt in range(1, MATCH_FETCH_ATTEMPTS + 1):
+            # A page load can wait up to 15 minutes for the owner's verification, so
+            # no transaction may be open across it. Nothing between this commit and
+            # the fetch touches an ORM object.
+            round_plants.end_transaction(db)
             try:
                 match_json = fetch_match_json(page, match_id)
                 fetch_error = None
                 break
+            except TrackerVerificationTimeout as e:
+                progress.error = e
+                progress.verification_timeout = True
+                return progress
             except Exception as e:
                 fetch_error = e
                 if attempt < MATCH_FETCH_ATTEMPTS:
@@ -904,6 +994,9 @@ def _ingest_discovered(
             continue
 
         consecutive_failures = 0
+        # Read now, while it is loaded: later commits expire the object, and reading
+        # an attribute then would open a transaction that stays open through the next fetch.
+        map_name = match.map_name
 
         # Recorded here, immediately after the commit that makes this match
         # permanent and dedup-skipped forever -- not at the end of the run.
@@ -935,7 +1028,7 @@ def _ingest_discovered(
             progress.error = e
             return progress
         progress.ingested += 1
-        print(f"  ingested {match.map_name} ({match_id})")
+        print(f"  ingested {map_name} ({match_id})")
 
         if i < len(new_ids) - 1:
             delay = random.uniform(MIN_MATCH_DELAY_SECONDS, MAX_MATCH_DELAY_SECONDS)
@@ -1011,6 +1104,7 @@ class IngestOutcome:
     attempted: int = 0
     failed_ids: tuple[str, ...] = ()
     error: str = ""
+    verification_timeout: bool = False
 
     @property
     def riot_id(self) -> str:
@@ -1023,6 +1117,7 @@ class IngestOutcome:
         point of skipping is to salvage the rest, not to call it a success."""
         return (
             not self.error
+            and not self.verification_timeout
             and not self.failed_ids
             and self.discovery.is_conclusive
         )
@@ -1062,7 +1157,20 @@ def ingest_paginated_history(
     Neither discovery nor ingest failures are raised here: a batch over a
     roster keeps going past one bad profile or one dropped connection, and
     what did succeed is preserved and reported."""
-    result = discover_match_ids_paginated(page, riot_id, count)
+    try:
+        result = discover_match_ids_paginated(page, riot_id, count)
+    except TrackerVerificationTimeout as e:
+        error = f"{type(e).__name__}: {e}"
+        return set(), IngestOutcome(
+            discovery=DiscoveryResult(
+                riot_id=riot_id,
+                requested=count,
+                status=DiscoveryStatus.INCOMPLETE,
+                reason=error,
+            ),
+            error=error,
+            verification_timeout=True,
+        )
     print(f"  discovery: {result.summary()}")
     if not result.match_ids:
         return set(), IngestOutcome(discovery=result)
@@ -1074,6 +1182,7 @@ def ingest_paginated_history(
         already_present=progress.already_present,
         attempted=progress.attempted,
         failed_ids=tuple(progress.failed_ids),
+        verification_timeout=progress.verification_timeout,
         error=(
             f"{type(progress.error).__name__}: {progress.error}"
             if progress.error is not None

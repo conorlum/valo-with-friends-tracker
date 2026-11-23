@@ -41,8 +41,9 @@ def test_a_kill_line_with_an_end_on_a_cover_box_is_not_judged():
 
 def test_a_cover_tag_is_the_box_inside_its_drawn_outline():
     # Summit's tagged boxes: the minimap's outline pixels stay sight-open; only what they enclose is cover.
-    m = cg.masks(rgba("Summit"), TAGS["Summit"])
-    shapes = cg.tag_shapes(rgba("Summit"), TAGS["Summit"])["cover"]
+    entry = {k: v for k, v in TAGS["Summit"].items() if k != "cover_paint"}
+    m = cg.masks(rgba("Summit"), entry)
+    shapes = cg.tag_shapes(rgba("Summit"), entry)["cover"]
     p = {**cg.DETECTOR_DEFAULTS, **(TAGS["Summit"].get("params") or {})}
     outline = cg._base_masks(rgba("Summit"), p["glyph_saturation"], p["line_lum"])["line"]
     assert (shapes & outline).any() and not (m.cover & outline).any()
@@ -57,11 +58,14 @@ def test_committed_masks_match_a_fresh_build(name):
 
 
 # Padded walls split Ascent's traced A11 cover into three pieces; A17 stays separate from wall 17.
-COVER_PIECES = {"Summit": 28, "Ascent": 20, "Sunset": 1}
+COVER_PIECES = {'Abyss': 36, 'Ascent': 48, 'Bind': 25, 'Breeze': 26, 'Corrode': 29, 'Fracture': 30, 'Haven': 44, 'Lotus': 25, 'Pearl': 25, 'Split': 35, 'Summit': 31, 'Sunset': 29}
 
 
 def test_ascent_traced_boxes():
-    labels = cg.load_geometry("Ascent", height_mode="flat").cover_px
+    from scipy import ndimage
+
+    entry = {k: v for k, v in TAGS["Ascent"].items() if k != "tags"}
+    labels, _ = ndimage.label(cg.see_over_cover(rgba("Ascent"), entry))
     masks = cg.masks(rgba("Ascent"), TAGS["Ascent"])
     assert masks.cover[538, 437] and masks.cover[535, 441] and masks.cover[537, 450]
     assert labels[538, 437] != 0 and labels[537, 450] != 0
@@ -71,6 +75,9 @@ def test_ascent_traced_boxes():
     assert labels[749, 330] != 0
     assert labels[758, 329] != labels[749, 330]
     assert labels[550, 445] == 0
+    committed = cg.load_geometry("Ascent", height_mode="flat").cover_px
+    assert all(committed[y, x] != 0 for y, x in ((538, 437), (537, 450), (758, 329),
+                                                 (758, 340), (749, 330)))
 
 
 def test_ascent_paint_is_exactly_the_traced_cells():
@@ -86,19 +93,30 @@ def test_ascent_paint_is_exactly_the_traced_cells():
     cells[132:136, 111:115] = False
     cells[136:141, 111] = False
     cells[189:191, 81:86] = False
-    # Recorded from origin/main before W1's edit by the scratch ascent_paint.py script;
-    # recomputed with the amended rectangle (x81-85): unchanged, since x86 was unset.
+    # W1 review paint outside the traced rectangles (including the mixed-shape additions).
     assert hashlib.sha256(cells.tobytes()).hexdigest() == (
-        "0b5eadb940ca459fee7f3fa84bf87d277b31294e501ab4308de7b6c0ee8ebfd3")
+        "c0fc187d8ec389641d7fb3f376ff9035e6bb00b50c5d9f87c125d32a3117abe8")
     del tags["maps"]["Ascent"]["cover_paint"]
+    # R1.1 permits only Abyss's qualified rope-domain subsets. The owner-review
+    # regression pins those; restore them here to retain these original broad pins.
+    from tests.replays.test_owner_map_reviews import original_rope_domain
+    for route in tags["maps"]["Abyss"]["map_features"]["routes"]:
+        if "walking_domain" in route:
+            route["walking_domain"] = original_rope_domain(route)
+    # R2.1 clears only Summit's Heaven height step. Its owner-review regression
+    # pins that change; restore the original paint for these broad Ascent pins.
+    summit = cg.unpack_paint(tags["maps"]["Summit"]["cover_paint"])[::4, ::4].copy()
+    summit[46:60, 51] = True
+    summit[60:64, 41] = True
+    tags["maps"]["Summit"]["cover_paint"] = cg.pack_paint(summit)
     assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
-        "37ce1e49f5d1eed6acf0af7cb60927bf31f727dacc5c6efa87601110fe176d74")
-    # Disabling Haven's review recovers the pre-W3 pin for the remaining tag inputs.
+        "ca9b31cea8a20723fc635b05871aa98e927c1b1d0721849cd98ef4280c321d37")
+    # Also pin the remaining tag inputs with Haven's review disabled.
     del tags["maps"]["Haven"]["tags"]
     del tags["maps"]["Haven"]["cover_paint"]
     tags["maps"]["Haven"]["cover_reviewed"] = False
     assert hashlib.sha256(json.dumps(tags, sort_keys=True).encode("utf-8")).hexdigest() == (
-        "a64e8e0d542cdedb58fbe5d6cf66d7924e336734568898fb80ce2fd9d99af0e1")
+        "00d3e41503c946df23889d8b404eb42028c6ae241c419c45336e1a90181f1e77")
 
 
 @pytest.mark.parametrize("padding", [True, False])
@@ -114,11 +132,11 @@ def test_ascent_without_traced_cells_keeps_original_masks(monkeypatch, padding):
     entry["cover_paint"] = cg.pack_paint(cells)
     image = rgba("Ascent")
     original = cg.masks(image, entry)
-    # Updated trace-off pins; disabling padding also proves the pre-W1 identities.
+    # W1 review pins with the traced rectangles disabled; both padding modes are pinned.
     for mask, expected in (
-        (original.sight, "b55387176114" if padding else "06147e83b898"),
-        (original.walk, "12861b1023d3"),
-        (cg.see_over_cover(image, entry), "8f3c3e63cd16" if padding else "48afd9eee5e9"),
+        (original.sight, "3e67a7949e95" if padding else "729e3b48fd78"),
+        (original.walk, "b8397298651d"),
+        (cg.see_over_cover(image, entry), "eba279d3e56a" if padding else "901d96a71123"),
     ):
         assert hashlib.sha256(np.packbits(mask).tobytes()).hexdigest()[:12] == expected
 
@@ -177,7 +195,7 @@ def test_cover_pieces_are_four_connected():
 
 
 def test_attach_cover_with_no_mask_leaves_none():
-    geo = cg.attach_cover(cg.load_geometry("Bind", height_mode="flat"), None, None)
+    geo = cg.attach_cover(cg.load_geometry("Icebox", height_mode="flat"), None, None)
     assert geo.cover_px is None and geo.cover_sha is None
 
 
@@ -203,14 +221,16 @@ def test_kill_lines_pass_risk1(name):
 
 
 def test_abyss_passes_only_with_its_see_across_tags():
-    assert blocked_share(cg.load_geometry("Abyss").sight, LINES["Abyss"]) == 0
-    assert blocked_share(cg.masks(rgba("Abyss"), {}).sight, LINES["Abyss"]) > 0.02
+    entry = {"tags": [t for t in TAGS["Abyss"]["tags"] if t["tag"] == "seeacross"],
+             "see_across_paint": TAGS["Abyss"]["see_across_paint"]}
+    assert blocked_share(cg.masks(rgba("Abyss"), entry).gate_wall, LINES["Abyss"]) == 0
+    assert blocked_share(cg.masks(rgba("Abyss"), {}).gate_wall, LINES["Abyss"]) > 0.02
 
 
 def test_the_index_lists_every_map_with_the_badge_flag():
     assert sorted(INDEX["maps"]) == MAPS
     for name, row in INDEX["maps"].items():
-        assert row["cover_reviewed"] is (name == "Haven")
+        assert row["cover_reviewed"] is (name != "Icebox")
         assert row["specials"] == []
         assert (row["kill_lines"] is not None) == (name in LINES)
     assert all(INDEX["maps"][n]["kill_lines"]["passes"] for n in LINES)

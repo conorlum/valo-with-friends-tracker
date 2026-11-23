@@ -63,6 +63,8 @@ PAGE_ROUTES = {
     "/matches/{external_id}": "page",
     "/matches/{external_id}/replay": "page",
     "/matches/{external_id}/rounds/{round_number}": "not_page",
+    "/plants": "page",
+    "/plants/{map_name}": "page",
     "/players": "page",
     "/players/{display_name}": "page",
     "/players/{display_name}/career": "not_page",

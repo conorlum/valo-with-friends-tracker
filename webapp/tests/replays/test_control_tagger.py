@@ -162,9 +162,9 @@ EXPORT = """
     const untouched = T.exportTags(p.tags, maps, edits);
     for (const name of Object.keys(edits)) edits[name].touched = true;
     const touched = T.exportTags(p.tags, maps, edits);
-    edits.Ascent.tags[p.newId] = "cover";
-    edits.Ascent.paints.cant_walk_paint = new Uint8Array(T.P * T.P); edits.Ascent.paints.cant_walk_paint[5] = 1;
-    edits.Ascent.cover_reviewed = true;
+    edits.Icebox.tags[p.newId] = "cover";
+    edits.Icebox.paints.cant_walk_paint = new Uint8Array(T.P * T.P); edits.Icebox.paints.cant_walk_paint[5] = 1;
+    edits.Icebox.cover_reviewed = true;
     const edited = T.exportTags(p.tags, maps, edits);
     return {untouched, touched, edited};
   }
@@ -173,23 +173,23 @@ EXPORT = """
 
 def test_an_unchanged_page_exports_the_loaded_tags():
     tags = json.loads(json.dumps(TAGS))
-    tags["maps"]["Ascent"]["thin_wall_exempt"] = [[400, 600, 410, 700]]
-    names = ["Abyss", "Ascent"]
+    tags["maps"]["Icebox"]["thin_wall_exempt"] = [[400, 600, 410, 700]]
+    names = ["Abyss", "Icebox"]
     maps = {n: control_tagger.map_data(n, TAGS["maps"][n], LINES.get(n) or []) for n in names}
-    candidate = next(c for c in maps["Ascent"]["candidates"] if c["kind"] == "closed")
+    candidate = next(c for c in maps["Icebox"]["candidates"] if c["kind"] == "closed")
     got = run_node(EXPORT, {"tags": tags, "maps": maps, "newId": candidate["id"]})
     assert got["untouched"] == tags
     assert got["touched"] == tags, "re-packed paint and kept rows must round-trip"
-    ascent = got["edited"]["maps"]["Ascent"]
-    assert ascent["thin_wall_exempt"] == tags["maps"]["Ascent"]["thin_wall_exempt"]
-    assert ascent["tags"] == [{"id": candidate["id"], "tag": "cover", "kind": "closed", "bbox": candidate["bbox"],
+    icebox = got["edited"]["maps"]["Icebox"]
+    assert icebox["thin_wall_exempt"] == tags["maps"]["Icebox"]["thin_wall_exempt"]
+    assert icebox["tags"] == [{"id": candidate["id"], "tag": "cover", "kind": "closed", "bbox": candidate["bbox"],
                                "px": candidate["px"]}]
-    assert ascent["params"] == maps["Ascent"]["params"] and ascent["image_sha"] == maps["Ascent"]["image_sha"]
-    assert ascent["cover_reviewed"] is True and ascent["specials"] == TAGS["maps"]["Ascent"]["specials"]
+    assert icebox["params"] == maps["Icebox"]["params"] and icebox["image_sha"] == maps["Icebox"]["image_sha"]
+    assert icebox["cover_reviewed"] is True and icebox["specials"] == TAGS["maps"]["Icebox"]["specials"]
     assert got["edited"]["maps"]["Abyss"] == TAGS["maps"]["Abyss"]
     # the export is a valid tags.json: geometry builds from it and the new tag blocks sight
-    rgba = np.array(Image.open(cg.MINIMAP_DIR / "Ascent.png").convert("RGBA"))
-    m = cg.masks(rgba, ascent)
+    rgba = np.array(Image.open(cg.MINIMAP_DIR / "Icebox.png").convert("RGBA"))
+    m = cg.masks(rgba, icebox)
     x0, y0, x1, y1 = candidate["bbox"]
     assert m.sight[y0:y1 + 1, x0:x1 + 1].any()
 
@@ -600,7 +600,10 @@ def test_height_export_round_trips_and_python_loads_js_packing(height_page, tmp_
       }
     """, data)
     assert got["unchanged"] == data["height_paint"]
-    assert got["tags"] == data["tags"]
+    # Exporting the now-tagged Ascent entry records detector params (exportTags' contract).
+    expected_tags = json.loads(json.dumps(data["tags"]))
+    expected_tags["maps"]["Ascent"]["params"] = data["maps"]["Ascent"]["params"]
+    assert got["tags"] == expected_tags
     assert not {"open", "ground", "top", "heightPaints"}.intersection(got["legacyPaints"])
     assert got["emptied"] == {"maps": {"Ascent": {k: v for k, v in data["height_paint"]["maps"]["Ascent"].items()
                                                 if k != "top"}, "Abyss": data["height_paint"]["maps"]["Abyss"]}}

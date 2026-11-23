@@ -14,13 +14,13 @@ def _unique_on_hash(conn):
 
 
 def test_upload_tokens_migration_upgrades_downgrades_and_reupgrades(scratch_database):
-    command(scratch_database, "-m", "alembic", "upgrade", "0035")
+    command(scratch_database, "-m", "alembic", "upgrade", "0036")
     engine = create_engine(scratch_database)
     try:
         with engine.connect() as conn:
             assert "upload_tokens" not in inspect(conn).get_table_names()
 
-        command(scratch_database, "-m", "alembic", "upgrade", "0036")
+        command(scratch_database, "-m", "alembic", "upgrade", "0037")
         with engine.begin() as conn:
             assert "upload_tokens" in inspect(conn).get_table_names()
             assert _unique_on_hash(conn)
@@ -32,11 +32,11 @@ def test_upload_tokens_migration_upgrades_downgrades_and_reupgrades(scratch_data
             with engine.begin() as conn:
                 conn.execute(text("INSERT INTO upload_tokens (token_hash, label) VALUES (:h, 'dup')"), {"h": "a" * 64})
 
-        command(scratch_database, "-m", "alembic", "downgrade", "0035")
+        command(scratch_database, "-m", "alembic", "downgrade", "0036")
         with engine.connect() as conn:
             assert "upload_tokens" not in inspect(conn).get_table_names()
 
-        command(scratch_database, "-m", "alembic", "upgrade", "0036")
+        command(scratch_database, "-m", "alembic", "upgrade", "0037")
         with engine.connect() as conn:
             assert "upload_tokens" in inspect(conn).get_table_names()
             assert _unique_on_hash(conn)

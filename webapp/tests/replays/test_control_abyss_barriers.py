@@ -21,8 +21,11 @@ from app.control.geometry import GRID
 DEFENSE = {0: (583, 124), 2: (490, 148), 3: (486, 257), 4: (463, 36), 7: (581, 102)}
 ATTACK = {1: (844, 536), 5: (819, 419), 6: (801, 300), 8: (809, 316), 9: (764, 430)}
 CENTRAL, LOWER = (500, 520), (600, 900)     # the two corridors the leak reached
-DEFENSE_CELLS = 3249                        # measured on valoplant's barriers (3290 on the base paint)
-ATTACK_CELLS = 1356                         # 1358 on W8's joined strokes, 2939 with the gap
+# After the owner-reviewed cover (box-door-review W1): 167 defense cells and 30 attack cells now inside
+# cover boxes; 3249 and 1356 before, on valoplant's barriers (defense: 3290 on the base paint;
+# attack: 1358 on W8's joined strokes, 2939 with the gap).
+DEFENSE_CELLS = 3082
+ATTACK_CELLS = 1326
 
 
 def _holder(geo, slot, team, x, y):

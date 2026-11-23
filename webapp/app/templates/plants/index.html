@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Plants - {{ site_name }}{% endblock %}
+
+{% block content %}
+<h1>Plants</h1>
+<div class="tab-row" role="tablist">
+  <a class="tab-btn active" href="/plants" role="tab" aria-selected="true">Plant spots</a>
+</div>
+<p class="page-meta">Where attackers plant the spike on each map, and how often they win from each named spot. A spot shows a win rate only from {{ min_n }} plants; every figure shows its n.</p>
+
+<div class="card">
+  <table class="plants-index">
+    <thead><tr><th>Map</th><th>Named spots</th><th>Plants (n)</th></tr></thead>
+    <tbody>
+      {% for m in maps %}
+      <tr>
+        <td><a href="/plants/{{ m.map | urlencode }}{% if m.asset_key != m.map %}?layout={{ m.asset_key | urlencode }}{% endif %}">{{ m.asset_key }}</a></td>
+        <td>{{ m.spots }}</td>
+        <td>n={{ m.plants }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">No map has named plant spots yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
