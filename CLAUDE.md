@@ -281,6 +281,7 @@ spot shows a win rate only from 100 plants.
      once, and still loses nothing already committed), or `scripts/round_plants.py pause` from any shell, which
      writes `ingest_ledgers/round_plants.pause` (removed when a backfill starts). `with_friends_db.py` leaves
      Ctrl+C to its child. `--archive <dir>` also keeps each raw payload as `<external id>.json.gz`.
+     `--pace MIN MAX` (at least 2 s) and `--settle N` change this crawl's waits; other ingests keep theirs.
   3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
      `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
      on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces

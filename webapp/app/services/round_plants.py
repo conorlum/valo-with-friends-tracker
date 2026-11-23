@@ -541,7 +541,7 @@ def _match_line(index, total, text):
 
 
 def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
-             should_stop=None, archive=None, alert=None):
+             should_stop=None, archive=None, alert=None, pace=(5, 12)):
     """Commit positions alone per match; the DB and local ledger are the resume point.
 
     ``should_stop`` returns a reason ("paused", "interrupted") or None; it is checked
@@ -565,7 +565,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
             result["stopped"] = reason
             break
         if index:
-            sleep(uniform(5, 12))
+            sleep(uniform(*pace))
             if (reason := stop()) is not None:
                 result["stopped"] = reason
                 break

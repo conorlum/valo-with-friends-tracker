@@ -534,7 +534,7 @@ def discover_all_competitive_match_ids(
     return all_ids
 
 
-def fetch_match_json(page: Page, match_id: str) -> dict:
+def fetch_match_json(page: Page, match_id: str, settle_seconds: int = MATCH_SETTLE_SECONDS) -> dict:
     """Navigates to a match's tracker.gg page and returns the `data` object
     from tracker.gg's internal match-detail API response fired by that page
     load (round-by-round kills, damage, loadout, and outcome segments)."""
@@ -560,7 +560,7 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
         # Always settle for MATCH_SETTLE_SECONDS after the load (and any verification
         # wait); then keep polling for the body up to MATCH_BODY_WAIT_SECONDS in all.
         for second in range(MATCH_BODY_WAIT_SECONDS):
-            if second >= MATCH_SETTLE_SECONDS and "body" in captured:
+            if second >= settle_seconds and "body" in captured:
                 break
             page.wait_for_timeout(1000)
     finally:

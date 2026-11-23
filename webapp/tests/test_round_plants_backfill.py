@@ -809,6 +809,82 @@ def test_replay_position_is_never_replaced_by_the_refetch(db, ledger):
     assert plants.crawl_queue(db) == []
 
 
+def test_backfill_uses_the_requested_pace(db):
+    matches(db, 2)
+    ranges = []
+    plants.backfill(db, None, limit=None, fetch=lambda page, key: payload(1), sleep=lambda _: None,
+                    uniform=lambda a, b: (ranges.append((a, b)), a)[1], pace=(3, 6))
+    assert ranges == [(3, 6)]
+
+
+@pytest.mark.parametrize("settle,waits", [(0, 0), (1, 1), (8, 8)])
+def test_fetch_leaves_the_page_once_settled(monkeypatch, settle, waits):
+    from app.adapters import trackergg_browserstate_source as adapter
+
+    callbacks, waited = {}, []
+
+    def goto(*args, **kwargs):
+        callbacks["response"](SimpleNamespace(url=adapter.MATCH_API_MARKER_TMPL.format(match_id="synthetic-match"),
+                                              status=200, json=lambda: {"data": {"segments": []}}))
+
+    page = SimpleNamespace(on=lambda name, callback: callbacks.update({name: callback}), goto=goto,
+                           wait_for_timeout=waited.append, remove_listener=lambda name, callback: callbacks.pop(name))
+    monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
+    assert adapter.fetch_match_json(page, "synthetic-match", settle_seconds=settle) == {"segments": []}
+    assert len(waited) == waits
+
+
+def test_fetch_still_waits_for_a_late_response_with_no_settle(monkeypatch):
+    from app.adapters import trackergg_browserstate_source as adapter
+
+    callbacks, waited = {}, []
+
+    def wait(milliseconds):
+        waited.append(milliseconds)
+        if len(waited) == 3:
+            callbacks["response"](SimpleNamespace(url=adapter.MATCH_API_MARKER_TMPL.format(match_id="synthetic-match"),
+                                                  status=200, json=lambda: {"data": {"segments": []}}))
+
+    page = SimpleNamespace(on=lambda name, callback: callbacks.update({name: callback}), goto=lambda *a, **k: None,
+                           wait_for_timeout=wait, remove_listener=lambda name, callback: callbacks.pop(name))
+    monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
+    assert adapter.fetch_match_json(page, "synthetic-match", settle_seconds=0) == {"segments": []}
+    assert len(waited) == 3
+
+
+def test_cli_pace_and_settle_reach_the_crawl_and_the_resume_line(db, monkeypatch, capsys):
+    from scripts import round_plants as cli
+
+    matches(db, 3)
+    seen, slept = [], []
+
+    @contextmanager
+    def fake_page():
+        yield object()
+
+    def fetch(page, key, **options):
+        seen.append(options)
+        plants.request_pause()
+        return payload(1)
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "fetch_match_json", fetch)
+    assert cli.main(["backfill", "--pace", "3", "6", "--settle", "1"]) == 0
+    assert seen == [{"settle_seconds": 1}]
+    resume = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Resume:"))
+    assert "--pace 3 6 --settle 1" in resume
+
+
+@pytest.mark.parametrize("arguments", [["--pace", "1", "4"], ["--pace", "5", "3"], ["--settle", "-1"]])
+def test_cli_refuses_a_pace_below_the_floor(arguments):
+    from scripts import round_plants as cli
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["backfill", *arguments])
+    assert stopped.value.code == 2
+
+
 def test_each_match_prints_one_running_line(db, ledger, capsys):
     ids = matches(db, 3)
 
