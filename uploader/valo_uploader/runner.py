@@ -1,14 +1,24 @@
 """Single-threaded process polling and active/idle folder scan cadence."""
 
+import logging
+
 from .constants import ACTIVE_SCAN_S, IDLE_SCAN_S, PROCESS_POLL_S
 
 
-def run(engine, stop):
+def run(engine, stop, after_tick=None):
+    def tick(now):
+        engine.tick(now)
+        if after_tick is not None:
+            try:
+                after_tick(now)
+            except Exception:
+                logging.getLogger("valo_uploader.runner").exception("After-tick callback failed")
+
     if stop.is_set():
         return
     running = engine.procs()
     last_tick = engine.clock()
-    engine.tick(last_tick)
+    tick(last_tick)
     while not stop.is_set():
         engine.sleep(PROCESS_POLL_S)
         if stop.is_set():
@@ -19,5 +29,5 @@ def run(engine, stop):
         interval = ACTIVE_SCAN_S if active else IDLE_SCAN_S
         now = engine.clock()
         if (running and not was_running) or now - last_tick >= interval:
-            engine.tick(now)
+            tick(now)
             last_tick = now

@@ -238,8 +238,14 @@ def test_check_posts_json_and_status_and_key_routes():
 
 def test_log_redacts_message_arguments_and_tracebacks(env):
     key = "vwf1_" + "x" * 43
-    logger = configure_logging(env=env)
+    logger = logging.getLogger("valo_uploader")
+    original_level, original_propagate = logger.level, logger.propagate
+    original_handlers, original_filters = list(logger.handlers), list(logger.filters)
+    # Protect existing handlers from configure_logging's close-and-replace setup.
+    for handler in original_handlers:
+        logger.removeHandler(handler)
     try:
+        configure_logging(env=env)
         logger.warning("key=%s", key)
         try:
             raise ValueError(key)
@@ -259,3 +265,11 @@ def test_log_redacts_message_arguments_and_tracebacks(env):
         for handler in list(logger.handlers):
             handler.close()
             logger.removeHandler(handler)
+        for handler in original_handlers:
+            logger.addHandler(handler)
+        for filter_ in list(logger.filters):
+            logger.removeFilter(filter_)
+        for filter_ in original_filters:
+            logger.addFilter(filter_)
+        logger.setLevel(original_level)
+        logger.propagate = original_propagate
