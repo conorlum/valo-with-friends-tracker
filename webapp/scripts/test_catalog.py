@@ -67,9 +67,11 @@ def match(path: str, pattern: str) -> bool:
 
 def all_files() -> list[str]:
     """Every file the catalog can name, relative to webapp/: webapp's own (not dot folders or venvs), the repo
-    root's top-level files, ../replay_worker/ and ../replay_tasks/."""
+    root's top-level files, ../replay_worker/, ../replay_tasks/ and ../uploader/.
+    Build/dist output is excluded along with dot folders and venvs in every tree."""
     out = []
-    for root, prefix in ((".", ""), ("../replay_worker", "../replay_worker/"), ("../replay_tasks", "../replay_tasks/")):
+    for root, prefix in ((".", ""), ("../replay_worker", "../replay_worker/"),
+                         ("../replay_tasks", "../replay_tasks/"), ("../uploader", "../uploader/")):
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".") and "venv" not in d]
             rel = os.path.relpath(dirpath, root).replace(os.sep, "/")

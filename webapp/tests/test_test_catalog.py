@@ -23,6 +23,20 @@ def test_the_committed_catalog_has_no_problems():
     assert tc.check(tc.load_catalog(), tc.all_files()) == []
 
 
+def test_all_files_walks_uploader_and_skips_build_output(tmp_path, monkeypatch):
+    webapp = tmp_path / "webapp"
+    webapp.mkdir()
+    uploader = tmp_path / "uploader"
+    for relative in ("valo_uploader/__init__.py", ".venv-build/hidden.py", "build/frozen.py",
+                     "dist/app.exe", "venv-other/hidden.py", "__pycache__/hidden.py"):
+        path = uploader / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.chdir(webapp)
+    files = tc.all_files()
+    assert files == ["../uploader/valo_uploader/__init__.py"]
+
+
 def test_double_star_crosses_zero_or_more_folders():
     assert tc.match("tests/browser/test_x.py", "tests/browser/**/test_*.py")
     assert tc.match("app/scoring/a/b.py", "app/scoring/**")
