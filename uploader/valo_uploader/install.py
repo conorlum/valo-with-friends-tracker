@@ -1,17 +1,29 @@
 """First-run installation and the per-user Windows startup preference."""
 
+import os
+import secrets
 import shutil
 from pathlib import Path
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "ValoUploader"
+# A real PyInstaller one-file build is many MB; anything smaller is a leftover of an
+# interrupted copy by an older build, which wrote straight to the final path.
+MIN_INSTALLED_BYTES = 1_000_000
 
 
 def launch(executable, args):
+    """Start an independent instance.
+
+    PyInstaller one-file children reuse the parent's extraction directory unless the
+    environment is reset; the parent's own environment is never changed.
+    """
     import subprocess
 
-    return subprocess.Popen([str(executable), *args])
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return subprocess.Popen([str(executable), *args], env=env)
 
 
 def set_run_key(path):
@@ -38,6 +50,31 @@ def run_key_enabled():
         return False
 
 
+def _publish(temp, target, replace_incomplete):
+    """Move temp to target; never overwrite a target that may be a valid install.
+
+    Returns True when this call published the target, False when another install won.
+    """
+    if replace_incomplete:
+        os.replace(temp, target)
+        return True
+    try:
+        os.link(temp, target)
+    except FileExistsError:
+        return False
+    except OSError:
+        # No hard links here: rename refuses an existing target on Windows.
+        if target.exists():
+            return False
+        try:
+            os.rename(temp, target)
+        except FileExistsError:
+            return False
+        return True
+    temp.unlink(missing_ok=True)
+    return True
+
+
 def ensure_installed(exe_path, install_dir, copy=shutil.copy2, run_key=set_run_key,
                      launch=launch):
     """Call before acquiring the instance mutex; exit after 'relaunched'."""
@@ -46,9 +83,23 @@ def ensure_installed(exe_path, install_dir, copy=shutil.copy2, run_key=set_run_k
         return "installed"
     target = folder / "ValoUploader.exe"
     folder.mkdir(parents=True, exist_ok=True)
-    # Only the updater may replace an installed executable.
-    if not target.exists():
-        copy(source, target)
-        run_key(target)
+    # Only the updater may replace an installed executable; the one exception is a
+    # file too small to be a real build, left by an interrupted older install.
+    try:
+        existing_size = target.stat().st_size
+    except FileNotFoundError:
+        existing_size = None
+    published = False
+    if existing_size is None or existing_size < MIN_INSTALLED_BYTES:
+        temp = folder / f".ValoUploader-{secrets.token_hex(8)}.tmp"
+        try:
+            copy(source, temp)
+            if temp.stat().st_size != source.stat().st_size:
+                raise OSError("Installed copy is incomplete")
+            published = _publish(temp, target, existing_size is not None)
+        finally:
+            temp.unlink(missing_ok=True)
+        if published:
+            run_key(target)
     launch(target, [])
     return "relaunched"

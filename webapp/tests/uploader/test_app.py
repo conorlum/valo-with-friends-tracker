@@ -56,6 +56,7 @@ def rig(monkeypatch, tmp_path):
     released = Mock()
     monkeypatch.setattr(app.instance, "release", released)
     monkeypatch.setattr(app, "cleanup_stale", Mock())
+    monkeypatch.setattr(app, "recover_update", Mock(return_value="healthy"))
     monkeypatch.setattr(app, "load_key", lambda **kw: KEY)
     monkeypatch.setattr(app, "save_key", Mock())
     monkeypatch.setattr(app, "clipboard_key", lambda: None)
@@ -164,6 +165,27 @@ def test_install_precedes_guard_and_relaunch_exits(rig, monkeypatch):
     assert rig.calls == ["install"]
 
 
+def test_recovery_runs_before_install_and_guard_when_frozen(rig, monkeypatch):
+    monkeypatch.setattr(app, "recover_update",
+                        Mock(side_effect=lambda *a, **kw: rig.calls.append("recover") or "healthy"))
+    assert start(rig, frozen=True) == 0
+    assert rig.calls == ["recover", "install", "acquire"]
+    path = app.recover_update.call_args.args[0]
+    assert path == app.install_dir(rig.env) / "ValoUploader.exe"
+
+
+def test_recovery_is_skipped_after_update_and_when_not_frozen(rig):
+    assert start(rig, ["--after-update", ATTEMPT, "--parent-pid", "1"], frozen=True) == 0
+    assert start(rig) == 0
+    app.recover_update.assert_not_called()
+
+
+def test_recovery_failure_cannot_stop_startup(rig):
+    app.recover_update.side_effect = RuntimeError("boom")
+    assert start(rig, frozen=True) == 0
+    assert rig.calls == ["install", "acquire"]
+
+
 def test_python_run_skips_install_cleanup_and_update(rig, monkeypatch):
     monkeypatch.setattr(app, "run", lambda engine, stop, after_tick: after_tick(100))
     assert start(rig) == 0
@@ -239,7 +261,7 @@ def test_tray_failure_before_ready_never_acknowledges(rig):
     rig.released.assert_called_once()
 
 
-@pytest.mark.parametrize("result", ["updated", "rolled_back"])
+@pytest.mark.parametrize("result", ["updated", "rolled_back", "recovery_needed"])
 @pytest.mark.parametrize("quit_first", [False, True])
 def test_main_joins_runner_through_handoff(rig, monkeypatch, result, quit_first):
     swapping, finish, returned = threading.Event(), threading.Event(), threading.Event()
@@ -387,7 +409,7 @@ def test_instance_fake_allows_foreign_thread_release():
     instance.release(second)
 
 
-@pytest.mark.parametrize("result", ["updated", "rolled_back"])
+@pytest.mark.parametrize("result", ["updated", "rolled_back", "recovery_needed"])
 def test_updater_result_alone_ends_runner_and_tray(rig, monkeypatch, result):
     observed = []
     monkeypatch.setattr(app, "maybe_update", Mock(return_value=result))

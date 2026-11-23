@@ -22,7 +22,7 @@ from .paths import app_dir, install_dir
 from .runner import run
 from .state import State
 from .tray import Tray
-from .updater import after_update_cleanup, cleanup_stale, maybe_update
+from .updater import after_update_cleanup, cleanup_stale, maybe_update, recover_update
 
 
 def _wait_exit(pid, timeout):
@@ -74,6 +74,15 @@ def main(argv=None, *, frozen=None, env=None):
 
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     executable = Path(sys.executable)
+    if frozen and not args.after_update:
+        # A failed update can leave the installed copy missing; put .old back first.
+        installed = install_dir(env) / "ValoUploader.exe"
+        try:
+            if recover_update(installed, env) == "restored" \
+                    and executable == installed.with_suffix(".old"):
+                executable = installed
+        except Exception:
+            pass
     if frozen and ensure_installed(executable, install_dir(env)) == "relaunched":
         return 0
 
@@ -155,7 +164,7 @@ def main(argv=None, *, frozen=None, env=None):
                 result = maybe_update(now, engine.idle, engine.procs, config,
                                       stop_app=stop_app, release_mutex=release_guard,
                                       current_exe=executable, env=env)
-                if result in ("updated", "rolled_back"):
+                if result in ("updated", "rolled_back", "recovery_needed"):
                     stop_app()
 
         def work():

@@ -122,12 +122,120 @@ def _wait_ack(attempt, timeout, process, folder):
     return False
 
 
+RECOVERY_MARKER = "update-recovery.json"
+KILL_WAIT_S = 10
+RENAME_TRIES = 10
+RENAME_DELAY_S = 0.5
+
+
+def _retry(operation, sleep, tries=RENAME_TRIES, delay=RENAME_DELAY_S):
+    """A just-killed Windows process can hold its image for a moment."""
+    for attempt in range(tries):
+        try:
+            return operation()
+        except OSError:
+            if attempt == tries - 1:
+                raise
+            sleep(delay)
+
+
+def _kill(process):
+    """Stop the launched process and, for a one-file build, its child."""
+    pid = getattr(process, "pid", None)
+    if sys.platform == "win32" and isinstance(pid, int):
+        import subprocess
+
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True,
+                           timeout=KILL_WAIT_S, creationflags=0x08000000)
+        except Exception:
+            logger.exception("Could not stop the new version's process tree")
+    process.kill()
+
+
+def _roll_back(process, current, old, bad, moved_old, moved_new, version, config, folder,
+               env, launch, sleep):
+    """Every step is protected: nothing here may raise or stop the next step."""
+    if process is not None:
+        try:
+            if process.poll() is None:
+                _kill(process)
+        except Exception:
+            logger.exception("Could not stop the new version")
+        try:
+            process.wait(timeout=KILL_WAIT_S)
+        except Exception:
+            logger.exception("The new version did not exit")
+    if moved_new:
+        try:
+            _retry(lambda: os.replace(current, bad), sleep)
+        except Exception:
+            logger.exception("Could not move the new executable aside")
+    restored = not moved_old
+    if moved_old:
+        try:
+            _retry(lambda: os.replace(old, current), sleep)
+            restored = True
+        except Exception:
+            logger.exception("Could not restore the previous executable")
+    # The version is skipped even if the restore or the launch below failed.
+    try:
+        if version not in config.skip_versions:
+            config.skip_versions.append(version)
+        config.save(env)
+    except Exception:
+        logger.exception("Could not save the skipped version")
+    if not restored:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / RECOVERY_MARKER).write_text(json.dumps(
+                {"current": str(current), "old": str(old), "bad": str(bad),
+                 "version": version}), encoding="utf-8")
+        except Exception:
+            logger.exception("Could not write the recovery marker")
+    # After a failed restore, current is the bad new version and .old is the good copy.
+    order = (current, old) if restored else (old, current)
+    runnable = next((path for path in order if path.exists()), None)
+    if runnable is not None:
+        try:
+            launch(runnable, [])
+        except Exception:
+            logger.exception("Could not start the previous version")
+    return "rolled_back" if restored else "recovery_needed"
+
+
+def recover_update(current_exe, env=None, *, sleep=time.sleep):
+    """At startup: put .old back when a failed update left no runnable installed copy.
+
+    A healthy install with an ordinary leftover .old is cleanup_stale's, not ours.
+    Never raises.
+    """
+    try:
+        current = Path(current_exe)
+        old = current.with_suffix(".old")
+        marker = app_dir(env) / RECOVERY_MARKER
+        marked = marker.exists()
+        if not marked and (current.exists() or not old.exists()):
+            return "healthy"
+        if old.exists():
+            _retry(lambda: os.replace(old, current), sleep, tries=5)
+        elif not current.exists():
+            return "unrecoverable"
+        marker.unlink(missing_ok=True)
+        return "restored"
+    except Exception:
+        logger.exception("Update recovery failed")
+        return "failed"
+
+
 def swap(current_exe, staged, *, stop_app, release_mutex, launch=launch_process,
-         wait_ack=None, config, version=None, env=None):
+         wait_ack=None, config, version=None, env=None, sleep=time.sleep):
     """Yield the instance mutex before launching; restore on startup failure.
 
     Backups replace the .exe suffix with .old/.bad. Version can be passed
-    explicitly or recovered from the filename returned by stage().
+    explicitly or recovered from the filename returned by stage(). Anything wrong
+    before stop_app raises with nothing changed; once the app is stopped nothing
+    raises, and the result is 'updated', 'rolled_back' or 'recovery_needed'.
     """
     current, staged = Path(current_exe), Path(staged)
     if version is None:
@@ -138,7 +246,20 @@ def swap(current_exe, staged, *, stop_app, release_mutex, launch=launch_process,
     _version(version)
     old, bad = current.with_suffix(".old"), current.with_suffix(".bad")
     if old.exists():
-        raise FileExistsError("Previous update backup still exists")
+        # A leftover backup is removed only while a runnable current exists;
+        # without one, .old is recover_update's.
+        if current.exists():
+            try:
+                old.unlink()
+            except OSError:
+                logger.warning("Previous update backup is still locked")
+                raise BackupLocked("Previous update backup is locked") from None
+        else:
+            raise FileExistsError("Previous update backup still exists")
+    try:
+        bad.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove the previous rejected version")
     folder = app_dir(env)
     folder.mkdir(parents=True, exist_ok=True)
     stop_app()
@@ -163,32 +284,39 @@ def swap(current_exe, staged, *, stop_app, release_mutex, launch=launch_process,
     except Exception:
         logger.exception("Update handoff failed; restoring previous executable")
     # Wait for termination before moving the image back on Windows.
-    if process is not None and process.poll() is None:
-        process.kill()
-        process.wait()
-    if moved_new:
-        current.replace(bad)
-    if moved_old:
-        old.replace(current)
-    if version not in config.skip_versions:
-        config.skip_versions.append(version)
-    try:
-        config.save(env)
-    finally:
-        launch(current, [])
-    return "rolled_back"
+    return _roll_back(process, current, old, bad, moved_old, moved_new, version, config,
+                      folder, env, launch, sleep)
 
 
-def after_update_cleanup(attempt, parent_pid, wait_exit, *, current_exe=None, env=None):
-    """Call only after acknowledging; never delete the parent's running image."""
+CLEANUP_TRIES = 60
+CLEANUP_DELAY_S = 0.5
+
+
+def after_update_cleanup(attempt, parent_pid, wait_exit, *, current_exe=None, env=None,
+                         sleep=time.sleep):
+    """Call only after acknowledging; never delete the parent's running image.
+
+    A one-file build's bootloader parent can outlive the process we waited on, so a
+    locked file is retried for up to 30 s; each file is handled on its own.
+    """
     if not re.fullmatch(r"[0-9a-f]{16}", attempt):
         raise ValueError("Invalid update attempt id")
     if not wait_exit(parent_pid, 60):
         return
     current = Path(current_exe or sys.executable)
-    for path in (current.with_suffix(".old"), current.with_suffix(".bad"),
-                 app_dir(env) / ("ack-" + attempt)):
-        path.unlink(missing_ok=True)
+    try:
+        ack = app_dir(env) / ("ack-" + attempt)
+    except Exception:
+        logger.exception("Could not locate the update acknowledgement")
+        ack = None
+    for path in (current.with_suffix(".old"), current.with_suffix(".bad"), ack):
+        if path is None:
+            continue
+        try:
+            _retry(lambda: path.unlink(missing_ok=True), sleep, tries=CLEANUP_TRIES,
+                   delay=CLEANUP_DELAY_S)
+        except Exception:
+            logger.exception("Could not remove %s", path.name)
 
 
 def cleanup_stale(current_exe, *, now=None):
@@ -201,6 +329,12 @@ def cleanup_stale(current_exe, *, now=None):
                 path.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            logger.exception("Could not remove stale %s", path.name)
+
+
+class BackupLocked(FileExistsError):
+    """A leftover .old can't be removed yet; nothing was changed."""
 
 
 @dataclass
@@ -244,6 +378,9 @@ def maybe_update(now, engine_idle, valorant_running, config, *, stop_app, releas
                       config=config, version=version, env=env)
         state.pending = None
         return result
+    except BackupLocked:
+        # Nothing changed and the verified download is kept for the next tick.
+        return "deferred"
     except Exception:
         logger.exception("Update check failed")
         if state.pending is not None:
