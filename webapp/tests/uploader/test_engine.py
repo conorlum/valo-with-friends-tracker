@@ -4,7 +4,7 @@ import io
 import os
 import subprocess
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.error import HTTPError
@@ -408,6 +408,86 @@ def test_bad_key_blocks_then_replacement_rechecks_uploading_and_keeps_stored(rig
     assert rig.state.entry(stored_sha)["status"] == "stored"
     rig.tick()
     assert new.calls == [("check", sha), ("upload", "a.vrf")]
+
+
+@pytest.mark.parametrize("operation", ["key_replaced", "status"])
+@pytest.mark.parametrize("response", ["parsing", "stored"])
+def test_tick_serializes_key_replacement_and_status(rig, monkeypatch, operation, response):
+    path = rig.file()
+    sha = sha256_file(path)
+    rig.discover()
+    polling, finish_poll, attempted, completed = (Event() for _ in range(4))
+    order, errors, snapshots = [], [], []
+    replacement = Client()
+
+    def blocked_status(upload_id):
+        # A client callback may read status on the tick's own thread: the guard
+        # must be reentrant, while excluding callbacks on the tray thread.
+        assert rig.engine.status()["state"] == "uploading"
+        order.append("poll_entered")
+        polling.set()
+        assert finish_poll.wait(3)
+        order.append("poll_returned")
+        return {"status": response}
+
+    original_mark = rig.state.mark
+
+    def record_mark(key, **changes):
+        original_mark(key, **changes)
+        order.append("wrote_" + changes.get("status", "poll_time"))
+
+    monkeypatch.setattr(rig.client, "status", blocked_status)
+    monkeypatch.setattr(rig.state, "mark", record_mark)
+
+    def tick():
+        try:
+            rig.tick(constants.STATUS_POLL_S)
+        except BaseException as error:
+            errors.append(error)
+
+    def tray_call():
+        try:
+            order.append("tray_attempted")
+            attempted.set()
+            if operation == "key_replaced":
+                rig.engine.key_replaced(replacement)
+            else:
+                snapshots.append(rig.engine.status())
+            order.append("tray_completed")
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            completed.set()
+
+    worker = Thread(target=tick, daemon=True)
+    tray = Thread(target=tray_call, daemon=True)
+    worker.start()
+    try:
+        assert polling.wait(2)
+        tray.start()
+        assert attempted.wait(2)
+        assert not completed.wait(0.1), order
+    finally:
+        finish_poll.set()
+        worker.join(3)
+        if tray.ident is not None:
+            tray.join(3)
+    assert not worker.is_alive() and not tray.is_alive()
+    assert not errors
+    tick_write = "wrote_stored" if response == "stored" else "wrote_poll_time"
+    assert order.index("tray_attempted") < order.index("poll_returned")
+    assert order.index("poll_returned") < order.index(tick_write) < order.index("tray_completed")
+    expected = "stored" if response == "stored" else (
+        "pending" if operation == "key_replaced" else "uploading")
+    assert rig.state.entry(sha)["status"] == expected
+    assert State(env=rig.env).entry(sha)["status"] == expected
+    if operation == "key_replaced":
+        assert rig.engine.client is replacement
+        if response == "parsing":
+            assert order.index(tick_write) < order.index("wrote_pending")
+            assert rig.state.entry(sha)["upload_id"] is None
+    else:
+        assert snapshots[0]["state"] == ("idle" if response == "stored" else "uploading")
 
 
 def test_status_not_found_requeues_for_check(rig):

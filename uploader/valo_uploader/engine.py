@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 class Engine:
     def __init__(self, state, client, config, clock=time.time, sleep=time.sleep,
                  watcher=None, procs=valorant_running, deleter=os.remove):
+        # Shared with tray preference changes; callbacks may read status while
+        # already inside a tick, so this must be reentrant.
+        self.lock = threading.RLock()
         self.state = state
         self.client = client
         self.config = config
@@ -33,22 +37,23 @@ class Engine:
                 self._remember(row["paths"])
 
     def tick(self, now):
-        if self.config.paused:
-            return
-        self._scan(now)
-        if not self.needs_key:
-            active = next(((sha, row) for sha, row in self.state.items()
-                           if row["status"] == "uploading"), None)
-            if active is not None:
-                sha, row = active
-                if row["next_try"] <= now:
-                    self._step(sha, row, now)
-            else:
-                due = self.state.due(now)
-                if due:
-                    sha = due[0]
-                    self._step(sha, self.state.entry(sha), now)
-        self._delete_stored(now)
+        with self.lock:
+            if self.config.paused:
+                return
+            self._scan(now)
+            if not self.needs_key:
+                active = next(((sha, row) for sha, row in self.state.items()
+                               if row["status"] == "uploading"), None)
+                if active is not None:
+                    sha, row = active
+                    if row["next_try"] <= now:
+                        self._step(sha, row, now)
+                else:
+                    due = self.state.due(now)
+                    if due:
+                        sha = due[0]
+                        self._step(sha, self.state.entry(sha), now)
+            self._delete_stored(now)
 
     def _scan(self, now):
         for path in self.watcher.poll(now):
@@ -168,12 +173,13 @@ class Engine:
         self.state.mark(sha, status="pending", upload_id=None, first_refused_at=None, next_try=now)
 
     def key_replaced(self, client):
-        self.client = client
-        self.needs_key = False
-        now = self.clock()
-        for sha, row in self.state.items():
-            if row["status"] == "uploading":
-                self._pending(sha, now)
+        with self.lock:
+            self.client = client
+            self.needs_key = False
+            now = self.clock()
+            for sha, row in self.state.items():
+                if row["status"] == "uploading":
+                    self._pending(sha, now)
 
     def _delete_stored(self, now):
         for sha, row in self.state.items():
@@ -217,15 +223,16 @@ class Engine:
         return self.status()["queue_length"] == 0
 
     def status(self):
-        rows = [row for _, row in self.state.items()]
-        queue_length = sum(row["status"] in ("pending", "uploading") for row in rows)
-        if self.config.paused:
-            activity = "paused"
-        elif self.needs_key:
-            activity = "needs_key"
-        elif any(row["status"] == "uploading" for row in rows):
-            activity = "uploading"
-        else:
-            activity = "queued" if queue_length else "idle"
-        return dict(state=activity, queue_length=queue_length, last_stored=list(self._last_stored),
-                    needs_key=self.needs_key, paused=self.config.paused)
+        with self.lock:
+            rows = [row for _, row in self.state.items()]
+            queue_length = sum(row["status"] in ("pending", "uploading") for row in rows)
+            if self.config.paused:
+                activity = "paused"
+            elif self.needs_key:
+                activity = "needs_key"
+            elif any(row["status"] == "uploading" for row in rows):
+                activity = "uploading"
+            else:
+                activity = "queued" if queue_length else "idle"
+            return dict(state=activity, queue_length=queue_length, last_stored=list(self._last_stored),
+                        needs_key=self.needs_key, paused=self.config.paused)
