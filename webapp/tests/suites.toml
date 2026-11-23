@@ -275,7 +275,7 @@ guards = [
   "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
   "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
   "scripts/fetch_archived_replay.py", "scripts/_admin_client.py", "scripts/harvest_util_samples.py",
-  "scripts/util_gallery/**",
+  "scripts/util_gallery/**", "scripts/render_util_gallery.py",
 ]
 
 [replay-worker]

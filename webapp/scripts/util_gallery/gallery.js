@@ -1,4 +1,4 @@
-/* Pure gallery data and editing helpers. Drawing lives in the gallery page. */
+/* Offline utility gallery: data, edits and isolated replay drawing. */
 (function (global) {
   "use strict";
 
@@ -313,13 +313,319 @@
   }
   function critiquePrompt(json) { return CRITIQUE_INSTRUCTIONS + "\n\n" + JSON.stringify(json, null, 1); }
 
+  function setTileSample(R, viewer, sample, side) {
+    viewer.tile.sample = sample;
+    viewer.current = sample ? sampleRound(R, sample, side) : null;
+    var url = sample && viewer.payload.maps && viewer.payload.maps[sample.map];
+    if (url === viewer.mapUrl) return;
+    viewer.mapUrl = url;
+    viewer.map = null;
+    if (url) {
+      viewer.map = new Image();
+      viewer.map.onload = viewer.draw;
+      viewer.map.src = url;
+    }
+  }
+
+  function tileViewer(R, tile, payload) {
+    var viewer = Object.create(R.ReplayViewer.prototype);
+    Object.assign(viewer, {root: tile.root || {}, t: 0, controlPalette: "green-red", turns: 0,
+      linked: null, areas: null, highlight: null, icons: {}, tile: tile, payload: payload,
+      layers: {abilities: true, projectiles: true},
+      options: {abilityIcons: payload.abilityIcons || {},
+        assetUrl: function (url) { return (payload.assets || {})[url] || url; }},
+      nameOf: function () { return "owner"; },
+      abilityText: function (row, style) { return style.label || style.ability || row.name; }});
+    // Image.onload must redraw only this tile, without the full viewer's ctx/canvas/UI.
+    viewer.draw = function () {
+      (tile.canvases || []).forEach(function (item) { drawTile(R, viewer, item.canvas, item.phase); });
+    };
+    setTileSample(R, viewer, tile.sample);
+    return viewer;
+  }
+
+  function drawTile(R, viewer, canvas, phase) {
+    var ctx = canvas.getContext("2d"), size = canvas.width, round = viewer.current;
+    var row = round && focusRow(R, round, viewer.tile.entry);
+    var style = row && (row.kind === "Projectile" ? R.projectileStyle(row) : R.abilityStyle(row));
+    var view = viewOf(row ? frameOf(R, row, style, round.traces,
+      (viewer.linked && viewer.linked.uvPerUnit) || 0.75) : {cx: R.UV / 2, cy: R.UV / 2, half: R.UV / 2}, size);
+    viewer.canvas = canvas;
+    viewer.view = view;
+    viewer.t = phase.t;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+    ctx.setTransform.apply(ctx, R.viewMatrix(view, 0, size));
+    if (viewer.map && viewer.map.complete && viewer.map.naturalWidth) ctx.drawImage(viewer.map, 0, 0, size, size);
+    else { ctx.fillStyle = "#1b1d24"; ctx.fillRect(0, 0, size, size); }
+    if (row) {
+      var s = size / R.UV, r = size / 48 / Math.sqrt(view.k);
+      if (viewer.layers.abilities) {
+        viewer.drawAbilities(ctx, s, r, []);
+        if (style.carried) viewer.drawCarried(ctx, s, r, []);
+      }
+      if (viewer.layers.projectiles && viewer.tile.entry.list !== "ability") viewer.drawProjectiles(ctx, s, r, []);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function mount(R, document, payload, storage) {
+    var root = document.querySelector("[data-gallery]");
+    var entries = galleryEntries(R, payload.samples || {}, payload.abilityIcons || {});
+    var originals = {}, tiles = [], sections = {}, notes, header = {};
+    ["palette", "side", "agent", "filter", "edited", "export", "copy", "clear", "status"].forEach(function (key) {
+      header[key] = document.querySelector('[data-header="' + key + '"]');
+    });
+    function node(tag, text, parent) {
+      var element = document.createElement(tag);
+      if (text !== undefined) element.textContent = text;
+      if (parent) parent.appendChild(element);
+      return element;
+    }
+    function option(select, value, label) {
+      var element = node("option", label === undefined ? value : label, select);
+      element.value = value;
+    }
+    function button(parent, text, action) {
+      var element = node("button", text, parent);
+      element.type = "button";
+      element.addEventListener("click", action);
+      return element;
+    }
+    function changed(entry) {
+      var now = snapshotStyle(R, entry), before = originals[entry.id];
+      return FIELDS.some(function (key) { return !equal(now[key], before[key]); });
+    }
+    function filter() {
+      var text = header.filter.value.trim().toLowerCase();
+      tiles.forEach(function (tile) {
+        var entry = tile.entry;
+        tile.root.hidden = !!((header.agent.value && header.agent.value !== entry.agent) ||
+          (text && [entry.ability, entry.agent, entry.shape, entry.pattern, entry.style && entry.style.label]
+            .join(" ").toLowerCase().indexOf(text) < 0) ||
+          (header.edited.checked && !changed(entry) && !notes[entry.id]));
+      });
+      Object.keys(sections).forEach(function (agent) {
+        sections[agent].root.hidden = !tiles.some(function (tile) { return tile.entry.agent === agent && !tile.root.hidden; });
+      });
+    }
+    function redrawAbility(ability) {
+      tiles.forEach(function (tile) {
+        if (tile.entry.ability !== ability) return;
+        if (tile.controls.color) tile.controls.color.value = snapshotStyle(R, tile.entry).color || "#77787f";
+        tile.viewer.draw();
+      });
+      filter();
+    }
+    function persist(tile, edit) {
+      applyEdit(R, tile.entry, edit);
+      // saveEdit replaces the stored own fields, so always send the complete diff.
+      var now = snapshotStyle(R, tile.entry), before = originals[tile.entry.id], complete = {};
+      OWN_FIELDS.forEach(function (key) { if (!equal(now[key], before[key])) complete[key] = copy(now[key]); });
+      saveEdit(storage, tile.entry, complete);
+      tile.viewer.draw();
+      filter();
+    }
+    function syncControls(tile) {
+      var entry = tile.entry, controls = tile.controls, snapshot = snapshotStyle(R, entry);
+      if (controls.color) controls.color.value = snapshot.color || "#77787f";
+      if (controls.r) controls.r.value = entry.style.r;
+      if (controls.badge) controls.badge.checked = effectiveBadge(entry);
+      if (controls.look) {
+        var look = R.utilLookOf(entry.style);
+        controls.look.value = look.kind;
+        controls.settings.value = JSON.stringify(look.settings, null, 2);
+      }
+      controls.notes.value = notes[entry.id] || "";
+      tile.error.textContent = "";
+    }
+    function phases(tile) {
+      tile.phases.replaceChildren();
+      tile.canvases = [];
+      var round = tile.viewer.current, row = round && focusRow(R, round, tile.entry);
+      tile.sampleBadge.textContent = !row ? "no sample" : tile.madeUp ? "made up" : "";
+      tile.sampleBadge.hidden = !!row && !tile.madeUp;
+      tile.counter.textContent = tile.samples.length ? (tile.sampleIndex + 1) + " of " + tile.samples.length : "";
+      if (!row) return;
+      var style = row.kind === "Projectile" ? R.projectileStyle(row) : R.abilityStyle(row);
+      galleryPhases(R, row, style, tile.sample.t_end).forEach(function (phase) {
+        var figure = node("figure", undefined, tile.phases);
+        node("figcaption", phase.name + " · t = " + phase.t.toFixed(2) + " s", figure);
+        var canvas = node("canvas", undefined, figure);
+        canvas.width = canvas.height = 240;
+        canvas.setAttribute("data-phase", phase.name);
+        canvas.setAttribute("aria-label", tile.entry.ability + ", " + phase.name);
+        tile.canvases.push({canvas: canvas, phase: phase});
+      });
+      tile.viewer.draw();
+    }
+    function buildTile(entry, parent) {
+      var tile = {entry: entry, root: node("article", undefined, parent), controls: {}, sampleIndex: 0, canvases: []};
+      tile.root.setAttribute("data-entry-id", entry.id);
+      node("h3", entry.ability, tile.root);
+      var meta = node("p", [entry.style && entry.style.label || entry.ability, entry.agent, entry.shape].join(" · "), tile.root);
+      meta.className = "gallery-meta";
+      tile.sampleBadge = node("span", "", meta);
+      tile.sampleBadge.className = "gallery-badge";
+      if (entry.list === "unstyled") node("span", "no style entry", meta).className = "gallery-badge";
+      tile.samples = entrySamples(R, entry, payload.samples || {});
+      tile.sample = tile.samples[0] || madeUpSample(R, entry);
+      tile.madeUp = !tile.samples.length && !!tile.sample;
+      tile.counter = node("span", "", meta);
+      if (tile.samples.length > 1) ["prev", "next"].forEach(function (direction) {
+        var pick = button(meta, direction === "prev" ? "Previous" : "Next", function () {
+          tile.sampleIndex = (tile.sampleIndex + (direction === "prev" ? -1 : 1) + tile.samples.length) % tile.samples.length;
+          setTileSample(R, tile.viewer, tile.samples[tile.sampleIndex], header.side.value);
+          phases(tile);
+        });
+        pick.setAttribute("data-sample", direction);
+      });
+      tile.phases = node("div", undefined, tile.root);
+      tile.phases.className = "gallery-phases";
+      tile.viewer = tileViewer(R, tile, payload);
+      tile.viewer.controlPalette = header.palette.value;
+      setTileSample(R, tile.viewer, tile.sample, header.side.value);
+      var controls = node("div", undefined, tile.root);
+      controls.className = "gallery-controls";
+      function control(key, title, tag, type) {
+        var label = node("label", title, controls), input = node(tag || "input", undefined, label);
+        if (type) input.type = type;
+        if (type === "checkbox") label.className = "gallery-check";
+        input.setAttribute("data-control", key);
+        tile.controls[key] = input;
+        return input;
+      }
+      if (entry.list !== "unstyled") {
+        var color = control("color", "Colour (applies to every " + entry.ability + " piece)", "input", "color");
+        color.addEventListener("input", function () {
+          applyEdit(R, entry, {color: color.value});
+          saveColor(storage, entry.ability, color.value);
+          redrawAbility(entry.ability);
+        });
+      }
+      if (entry.list === "ability") {
+        if (own(entry.style, "r")) {
+          var radius = control("r", "Size (world units)", "input", "number");
+          radius.min = "0"; radius.step = "any";
+          radius.addEventListener("change", function () {
+            var value = Number(radius.value);
+            if (radius.value.trim() !== "" && Number.isFinite(value) && value >= 0) persist(tile, {r: value});
+          });
+        }
+        var badge = control("badge", "Icon", "input", "checkbox");
+        badge.addEventListener("change", function () { persist(tile, {badge: badge.checked}); });
+        var look = control("look", "Look", "select"), settings = control("settings", "Look settings (JSON object)", "textarea");
+        Object.keys(R.UTIL_LOOKS).forEach(function (kind) { option(look, kind); });
+        function updateLook() {
+          var result = parseSettings(settings.value);
+          tile.error.textContent = result.ok ? "" : result.error;
+          if (result.ok) persist(tile, {look: lookFrom(look.value, result.value)});
+        }
+        look.addEventListener("change", updateLook);
+        settings.addEventListener("change", updateLook);
+      }
+      var note = control("notes", "Notes", "textarea");
+      note.addEventListener("input", function () {
+        notes[entry.id] = note.value;
+        saveNote(storage, entry, note.value);
+        filter();
+      });
+      var reset = button(controls, "Reset", function () {
+        resetEntry(R, entry, originals[entry.id]);
+        saveEdit(storage, entry, {});
+        clearColor(storage, entry.ability);
+        syncControls(tile);
+        redrawAbility(entry.ability);
+      });
+      reset.setAttribute("data-control", "reset");
+      tile.error = node("p", "", tile.root);
+      tile.error.setAttribute("data-settings-error", "");
+      tile.error.setAttribute("role", "alert");
+      syncControls(tile);
+      phases(tile);
+      return tile;
+    }
+
+    // Snapshot every entry before applying anything: colours are shared across entries.
+    entries.forEach(function (entry) { originals[entry.id] = snapshotStyle(R, entry); });
+    var loaded = loadEdits(storage, entries);
+    notes = loaded.notes;
+    entries.forEach(function (entry) { applyEdit(R, entry, loaded.edits[entry.id] || {}); });
+    Object.keys(loaded.colors).forEach(function (ability) { R.UTIL_ABILITY_COLORS[ability] = loaded.colors[ability]; });
+    Object.keys(R.CONTROL_PALETTES).forEach(function (palette) { option(header.palette, palette); });
+    header.palette.value = "green-red";
+    Array.from(new Set(entries.map(function (entry) { return entry.agent; }))).sort().forEach(function (agent) {
+      option(header.agent, agent);
+      var section = node("section", undefined, root), heading = node("h2", undefined, section);
+      if (payload.icons && payload.icons[agent]) {
+        var icon = node("img", undefined, heading);
+        icon.src = payload.icons[agent]; icon.alt = ""; icon.className = "gallery-agent-icon";
+      }
+      node("span", agent, heading);
+      var grid = node("div", undefined, section); grid.className = "gallery-grid";
+      sections[agent] = {root: section, grid: grid};
+    });
+    entries.forEach(function (entry) { tiles.push(buildTile(entry, sections[entry.agent].grid)); });
+    ["palette", "side"].forEach(function (key) {
+      header[key].addEventListener("change", function () {
+        tiles.forEach(function (tile) {
+          tile.viewer.controlPalette = header.palette.value;
+          if (key === "side") setTileSample(R, tile.viewer, tile.sample, header.side.value);
+          tile.viewer.draw();
+        });
+      });
+    });
+    header.agent.addEventListener("change", filter);
+    header.filter.addEventListener("input", filter);
+    header.edited.addEventListener("change", filter);
+    function critique() {
+      return exportCritique(R, entries, originals, {}, notes,
+        {palette: header.palette.value, replay_js_sha256: payload.replay_js_sha256});
+    }
+    header.export.addEventListener("click", function () {
+      var json = critique(), blob = new Blob([JSON.stringify(json, null, 2)], {type: "application/json"});
+      var url = global.URL.createObjectURL(blob), link = node("a", undefined, document.body);
+      link.href = url;
+      link.download = "util-critique-" + json.made.slice(0, 10) + ".json";
+      link.click(); link.remove();
+      global.setTimeout(function () { global.URL.revokeObjectURL(url); }, 0);
+    });
+    header.copy.addEventListener("click", async function () {
+      var text = critiquePrompt(critique());
+      function fallback() {
+        var area = node("textarea", undefined, document.body);
+        area.value = text; area.readOnly = true;
+        area.style.position = "fixed"; area.style.left = "-10000px";
+        try {
+          area.focus(); area.select();
+          if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+        } finally { area.remove(); }
+      }
+      try {
+        try { await global.navigator.clipboard.writeText(text); } catch (_) { fallback(); }
+        header.status.textContent = "Copied prompt and critique.";
+      } catch (_) { header.status.textContent = "Could not copy. Use Export to save the critique."; }
+    });
+    header.clear.addEventListener("click", function () {
+      clearAll(storage);
+      entries.forEach(function (entry) { resetEntry(R, entry, originals[entry.id]); });
+      notes = {};
+      tiles.forEach(function (tile) { syncControls(tile); tile.viewer.draw(); });
+      header.status.textContent = "Cleared all gallery edits and notes.";
+      filter();
+    });
+    filter();
+    return {entries: entries, originals: originals, tiles: tiles, critique: critique};
+  }
+
   var api = {galleryEntries: galleryEntries, entrySamples: entrySamples, sampleRound: sampleRound,
     focusRow: focusRow, representativeKey: representativeKey, madeUpSample: madeUpSample,
     galleryPhases: galleryPhases, frameOf: frameOf, viewOf: viewOf, snapshotStyle: snapshotStyle,
     effectiveBadge: effectiveBadge, applyEdit: applyEdit, resetEntry: resetEntry, parseSettings: parseSettings,
     lookFrom: lookFrom, entryKey: entryKey, colorKey: colorKey, loadEdits: loadEdits, saveEdit: saveEdit,
     saveNote: saveNote, saveColor: saveColor, clearColor: clearColor, clearAll: clearAll,
-    exportCritique: exportCritique, critiquePrompt: critiquePrompt};
+    exportCritique: exportCritique, critiquePrompt: critiquePrompt,
+    mount: mount, tileViewer: tileViewer, drawTile: drawTile};
   global.UtilGallery = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

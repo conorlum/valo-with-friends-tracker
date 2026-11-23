@@ -587,3 +587,349 @@ for (const side of [null, undefined, 'A', 'B']) {
   }
 }
 """)
+
+
+@pytest.fixture
+def tiny_samples():
+    return {"replays": 1, "keys": {
+        "Zone|Wraith_4_Smoke": {"count": 1, "replays": 1, "samples": [
+            {"map": "Ascent", "t_end": 40, "side": "A", "companions": [], "row": ability()}]},
+        "Projectile|Grenadier_Q_SemtexBasic": {"count": 1, "replays": 1, "samples": [
+            {"map": "Ascent", "t_end": 40, "side": "B", "companions": [], "row": ability(
+                code="Grenadier", name="Q_SemtexBasic", kind="Projectile", agent="KAY/O",
+                flight=[[3, 5000, 4000, 0], [4, 5100, 4100, 0]])}]},
+    }}
+
+
+def test_render_util_gallery_is_self_contained(tiny_samples):
+    import hashlib
+    import re
+
+    renderer = importlib.import_module("scripts.render_util_gallery")
+    html = renderer.render(tiny_samples)
+    for path in ("app/static/css/style.css", "app/static/js/replay.js", "scripts/util_gallery/gallery.js"):
+        assert (WEBAPP / path).read_text(encoding="utf-8").replace("</", "<\\/") in html
+    data = json.loads(re.search(r'<script type="application/json" id="gallery-payload">(.*?)</script>',
+                                html, re.S).group(1))
+    assert data["samples"] == tiny_samples
+    assert data["maps"]["Ascent"].startswith("data:image/png;base64,")
+    assert data["icons"]["Omen"].startswith("data:image/png;base64,")
+    assert data["abilityIcons"] == json.loads((WEBAPP / "app/static/data/abilities.json").read_text())
+    assert all(value.startswith("data:image/png;base64,") for value in data["assets"].values())
+    assert data["replay_js_sha256"] == hashlib.sha256(
+        (WEBAPP / "app/static/js/replay.js").read_text(encoding="utf-8").encode()).hexdigest()
+    assert not re.search(r'(?:src|href)=[\"\']https?://', html)
+    for control in ("palette", "side", "agent", "filter", "edited", "export", "copy", "clear"):
+        assert f'data-header="{control}"' in html
+
+
+def test_render_util_gallery_preserves_literal_text_without_script_breakout(tiny_samples, monkeypatch):
+    renderer = importlib.import_module("scripts.render_util_gallery")
+    tiny_samples["keys"]["</script><script>bad()</script>{{literal}}"] = {"samples": []}
+    read_text = Path.read_text
+
+    def read(path, *args, **kwargs):
+        value = read_text(path, *args, **kwargs)
+        return value + '\n// </script>{{literal}}\n' if path.name in ("replay.js", "gallery.js") else value
+
+    monkeypatch.setattr(Path, "read_text", read)
+    html = renderer.render(tiny_samples)
+    assert "</script><script>bad()" not in html
+    assert '<\\/script><script>bad()<\\/script>{{literal}}' in html
+    assert html.count('// <\\/script>{{literal}}') == 2
+
+
+def test_render_util_gallery_main_writes_file_and_reports_missing_samples(tiny_samples, tmp_path, capsys):
+    renderer = importlib.import_module("scripts.render_util_gallery")
+    source, output = tmp_path / "samples.json", tmp_path / "nested/g.html"
+    source.write_text(json.dumps(tiny_samples), encoding="utf-8")
+    assert renderer.main(["--samples", str(source), "--out", str(output)]) == 0
+    assert output.read_text(encoding="utf-8").startswith("<!doctype html>")
+    assert capsys.readouterr().out.strip() == str(output.resolve())
+    with pytest.raises(SystemExit) as exc:
+        renderer.main(["--samples", str(tmp_path / "missing.json")])
+    assert exc.value.code != 0
+    assert "missing.json" in capsys.readouterr().err
+
+
+# Recording mockCtx copied from test_viewer_util_style.py; no DOM, browser or server.
+GALLERY_DRAW = r"""
+global.getComputedStyle = () => ({getPropertyValue: () => ""});
+global.Image = class { constructor() { this.complete = false; } };
+function mockCtx(log) {
+  function gradient(kind, args) {
+    const g = {kind, args, stops: [], addColorStop(at, color) { this.stops.push([at, color]); }};
+    log.push({op: "gradient", gradient: g}); return g;
+  }
+  const keys = ["fillStyle", "strokeStyle", "globalAlpha", "font", "lineWidth", "textAlign", "textBaseline",
+                "lineDashOffset", "globalCompositeOperation", "lineCap", "lineJoin", "dash"];
+  let path = [], stack = [], tf = [1, 0, 0, 1, 0, 0];
+  const c = {fillStyle: "#000", strokeStyle: "#000", globalAlpha: 1, font: "10px sans-serif", lineWidth: 1,
+             textAlign: "start", textBaseline: "alphabetic", lineDashOffset: 0, dash: []};
+  const snap = () => ({fill: c.fillStyle, stroke: c.strokeStyle, alpha: c.globalAlpha, font: c.font,
+                      tf: tf.slice(), dash: c.dash.slice(), offset: c.lineDashOffset, lineWidth: c.lineWidth});
+  const rec = (op) => { log.push(Object.assign({op, path: path.slice()}, snap())); };
+  Object.assign(c, {
+    save() { const o = {tf: tf.slice()}; keys.forEach(k => { o[k] = c[k]; }); stack.push(o); },
+    restore() { const o = stack.pop(); if (!o) return; tf = o.tf; keys.forEach(k => { c[k] = o[k]; }); },
+    setTransform(a, b, cc, d, e, f) { tf = [a, b, cc, d, e, f]; },
+    beginPath() { path = []; }, closePath() { path.push(["Z"]); },
+    moveTo(x, y) { path.push(["M", x, y]); }, lineTo(x, y) { path.push(["L", x, y]); },
+    arc(x, y, r, a0, a1) { path.push(["A", x, y, r, a0, a1]); }, rect(x, y, w, h) { path.push(["R", x, y, w, h]); },
+    fill() { rec("fill"); }, stroke() { rec("stroke"); },
+    fillRect(x, y, w, h) { log.push(Object.assign({op: "fillRect", x, y, w, h}, snap())); },
+    strokeRect(x, y, w, h) { log.push(Object.assign({op: "strokeRect", x, y, w, h}, snap())); },
+    fillText(text, x, y) { log.push(Object.assign({op: "fillText", text: String(text), x, y}, snap())); },
+    measureText(text) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(c.font); const px = m ? parseFloat(m[1]) : 10;
+      return {width: String(text).length * px * 0.6};
+    },
+    setLineDash(dash) { c.dash = dash.slice(); }, getLineDash() { return c.dash.slice(); },
+    clip() { rec("clip"); }, clearRect() {},
+    createRadialGradient(...args) { return gradient("radial", args); },
+    createLinearGradient(...args) { return gradient("linear", args); },
+    createPattern() { log.push({op: "createPattern"}); return "noise-pattern"; },
+    drawImage(img, x, y, w, h) { log.push(Object.assign({op: "drawImage", src: img.src, x, y, w, h}, snap())); }
+  });
+  return new Proxy(c, {get: (o, k) => (k in o ? o[k] : () => {})});
+}
+const payload = {maps: {Ascent: 'data:image/png;base64,bWFw'}, assets: {'/smoke.png': 'data:image/png;base64,aWNvbg'},
+  abilityIcons: {Omen: {'Dark Cover': '/smoke.png'}}};
+function drawing(e, s) {
+  const log = [], ctx = mockCtx(log), canvas = {width: 240, height: 240, getContext: () => ctx};
+  const tile = {entry: e, sample: s, canvases: []};
+  const viewer = G.tileViewer(R, tile, payload);
+  if (viewer.map) Object.assign(viewer.map, {complete: true, naturalWidth: 100});
+  const row = G.focusRow(R, viewer.current, e);
+  const phase = G.galleryPhases(R, row, row.kind === 'Projectile' ? R.projectileStyle(row) : R.abilityStyle(row), s.t_end)[0];
+  tile.canvases.push({canvas, phase});
+  viewer.draw();
+  return {viewer, tile, canvas, phase, log};
+}
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_tile_draws_glass_and_owns_icon_redraw():
+    run_node(GALLERY_DRAW + r"""
+const d = drawing(entry('Dark Cover'), sample('Wraith', '4_Smoke', 'Zone', {agent: 'Omen'}));
+assert.equal(Object.getPrototypeOf(d.viewer), R.ReplayViewer.prototype);
+assert.notEqual(d.viewer.draw, R.ReplayViewer.prototype.draw);
+assert.equal(d.log[0].op, 'drawImage');
+assert.ok(d.log.some(x => x.op === 'fillRect' && x.fill.kind === 'radial'));
+assert.equal(d.viewer.view.k, G.viewOf(G.frameOf(R, G.focusRow(R, d.viewer.current, d.tile.entry),
+  R.abilityStyle(G.focusRow(R, d.viewer.current, d.tile.entry)), d.viewer.current.traces, 0.75), 240).k);
+const icons = d.viewer.icons;
+d.viewer.abilityIcon('Omen', 'Dark Cover');
+const icon = icons['/smoke.png'];
+assert.equal(icon.src, payload.assets['/smoke.png']);
+Object.assign(icon, {complete: true, naturalWidth: 32});
+d.tile.entry.style.badge = true;
+delete d.viewer.canvas;
+d.log.length = 0;
+icon.onload();
+assert.equal(d.viewer.icons, icons);
+assert.ok(d.log.some(x => x.op === 'drawImage' && x.src === icon.src));
+d.viewer.layers.abilities = d.viewer.layers.projectiles = false;
+d.log.length = 0; d.viewer.draw();
+assert.deepEqual(d.log.map(x => x.op), ['drawImage']);
+""")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("code,name,ability_name", [
+    ("Grenadier", "X_UltPulseManager", "NULL/cmd"), ("Phoenix", "X_ResTarget", "Run it Back"),
+])
+def test_gallery_tile_draws_carried_timer(code, name, ability_name):
+    run_node(GALLERY_DRAW + r"""
+const p = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const e = entries.find(e => e.pattern === R.ABILITY_STYLES.find(([re]) => re.test(p.code + '_' + p.name))[0].source);
+assert.equal(e.ability, p.ability);
+const d = drawing(e, sample(p.code, p.name));
+const r = 240 / 48 / Math.sqrt(d.viewer.view.k), timerRadius = r * 1.25 + Math.max(2.5, r / 4) / 2;
+assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'A' && Math.abs(p[3] - timerRadius) < 1e-8)));
+d.viewer.layers.abilities = false; d.log.length = 0; d.viewer.draw();
+assert.deepEqual(d.log.map(x => x.op), ['drawImage']);
+""", {"code": code, "name": name, "ability": ability_name})
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_tile_draws_high_tide_companion_trace():
+    run_node(GALLERY_DRAW + r"""
+const s = sample('Mage', 'Q_WallManager');
+s.companions = [sample('Mage', 'Q_Wall', 'Projectile', {t: 10.2,
+  flight: [[10.2, 5000, 5000], [11, 5500, 6000]]}).row];
+const d = drawing(entry('High Tide'), s);
+assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'M' && p[1] === 120 && p[2] === 120) &&
+  x.path.some(p => p[0] === 'L' && p[1] === 132 && p[2] === 144)));
+assert.equal(d.viewer.current.extras.abilities.length, 1);
+""")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_tile_projectiles_background_and_zoom_radius():
+    run_node(GALLERY_DRAW + r"""
+const s = sample('Grenadier', 'Q_SemtexBasic', 'Projectile', {flight: [[10, 5000, 5000], [11, 5500, 6000]]});
+const d = drawing(entry('FRAG/ment', 'projectile'), s);
+assert.ok(d.log.some(x => x.op === 'fill' && x.path.some(p => p[0] === 'A')));
+const calls = [];
+d.viewer.drawAbilities = (ctx, s, r, hits) => { calls.push(['abilities', r, hits]); hits.push('used'); };
+d.viewer.drawProjectiles = (ctx, s, r, hits) => { calls.push(['projectiles', r, hits]); hits.push('used'); };
+// A frame of half 750 yields span 2500 and k=4 with the actual frame/view helpers.
+d.viewer.current.extras.abilities[0].flight = [[10, 5000, 5000], [11, 6500, 5000]];
+G.drawTile(R, d.viewer, d.canvas, d.phase);
+close(d.viewer.view.k, 4);
+close(calls.find(x => x[0] === 'projectiles')[1], 240 / 48 / 2);
+assert.notEqual(calls[0][2], calls[1][2]);
+calls.length = 0; d.viewer.layers.projectiles = false; d.log.length = 0; d.viewer.draw();
+assert.equal(calls.length, 1); // abilities still enabled
+assert.deepEqual(d.log.map(x => x.op), ['drawImage']);
+d.viewer.layers.abilities = false; d.viewer.map = null;
+d.log.length = 0; d.viewer.draw();
+assert.deepEqual(d.log.map(x => [x.op, x.fill]), [['fillRect', '#1b1d24']]);
+""")
+
+
+def test_gallery_renderer_is_guarded_by_replay_web():
+    from scripts import test_catalog as tc
+
+    assert "scripts/render_util_gallery.py" in tc.load_catalog()["replay-web"]["guards"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_tile_guards_missing_focus_and_draws_unstyled_projectile():
+    run_node(GALLERY_DRAW + r"""
+const s = sample('Grenadier', 'Q_SemtexBasic', 'Projectile');
+const zone = entries.find(e => e.pattern === '^Grenadier_Q_SemtexBasic_Zone$');
+const log = [], canvas = {width: 240, height: 240, getContext: () => mockCtx(log)};
+const tile = {entry: zone, sample: s, canvases: [{canvas, phase: {name: 'active', t: 12}}]};
+const v = G.tileViewer(R, tile, payload);
+assert.equal(G.focusRow(R, v.current, zone), undefined);
+Object.assign(v.map, {complete: true, naturalWidth: 100}); v.draw();
+assert.deepEqual(log.map(x => x.op), ['drawImage']);
+const unknown = sample('Unknown', 'Unstyled', 'Projectile', {agent: 'Omen'});
+const e = G.galleryEntries(R, grouped(unknown), {}).find(e => e.list === 'unstyled');
+const d = drawing(e, unknown);
+assert.ok(d.log.some(x => x.op === 'fill' && x.path.some(p => p[0] === 'A')));
+d.viewer.layers.projectiles = false; d.log.length = 0; d.viewer.draw();
+assert.deepEqual(d.log.map(x => x.op), ['drawImage']);
+""")
+
+
+GALLERY_DOM = r"""
+// Only the DOM operations used by mount; canvas recording remains offline.
+class Element {
+  constructor(tag) { this.tagName = tag; this.children = []; this.attrs = {}; this.listeners = {};
+    this.value = ''; this.checked = false; this.style = {}; this.hidden = false; this._text = ''; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return this.attrs[k]; }
+  appendChild(c) { this.children.push(c); c.parentNode = this; return c; }
+  replaceChildren(...items) { this.children = []; items.forEach(c => this.appendChild(c)); }
+  remove() { this.parentNode.children = this.parentNode.children.filter(c => c !== this); }
+  addEventListener(k, fn) { this.listeners[k] = fn; }
+  dispatch(k) { return this.listeners[k]({target: this}); }
+  click() { return this.listeners.click && this.dispatch('click'); }
+  focus() {} select() {}
+  set textContent(v) { this._text = String(v); this.children = []; }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+  querySelectorAll(selector) {
+    const m = /^\[([^=\]]+)(?:="(.*)")?\]$/.exec(selector);
+    const matches = c => m ? Object.hasOwn(c.attrs, m[1]) && (m[2] === undefined || c.attrs[m[1]] === m[2]) : c.tagName === selector;
+    return this.children.flatMap(c => (matches(c) ? [c] : []).concat(c.querySelectorAll(selector)));
+  }
+  querySelector(s) { return this.querySelectorAll(s)[0] || null; }
+  getContext() { return mockCtx([]); }
+}
+function page() {
+  const body = new Element('body'), root = new Element('main');
+  body.appendChild(root); root.setAttribute('data-gallery', '');
+  const doc = {body, createElement: tag => new Element(tag), querySelector: s => body.querySelector(s),
+    execCommand: op => { doc.copied = op; return true; }};
+  ['palette', 'side', 'agent', 'filter', 'edited', 'export', 'copy', 'clear', 'status'].forEach(k => {
+    const el = doc.createElement('input'); el.setAttribute('data-header', k); body.appendChild(el);
+    if (k === 'side') el.value = 'Sample';
+  });
+  const map = new Map(), storage = {get length() {return map.size;}, key: i => [...map.keys()][i],
+    getItem: k => map.get(k) || null, setItem: (k, v) => map.set(k, v), removeItem: k => map.delete(k)};
+  return {doc, root, storage, header: k => doc.querySelector('[data-header="' + k + '"]')};
+}
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_mount_controls_preserve_edits_share_color_reset_and_filter():
+    run_node(GALLERY_DRAW + GALLERY_DOM + r"""
+const p = page(), samples = grouped(sample('Wraith', '4_Smoke', 'Zone', {agent: 'Omen'}));
+samples['Zone|Wraith_4_Smoke'].samples.push(sample('Wraith', '4_Smoke', 'Zone', {u: 6000}));
+const e = entry('Dark Cover');
+G.saveEdit(p.storage, e, {r: 555}); G.saveNote(p.storage, e, 'review');
+G.saveColor(p.storage, e.ability, '#123456');
+const state = G.mount(R, p.doc, {...payload, samples}, p.storage);
+const cages = state.tiles.filter(t => t.entry.ability === 'Cyber Cage');
+assert.ok(cages.length >= 2);
+const redraws = new Map();
+cages.forEach(t => { t.viewer.draw = () => redraws.set(t.entry.id, (redraws.get(t.entry.id) || 0) + 1); });
+cages[0].controls.color.value = '#654321'; cages[0].controls.color.dispatch('input');
+cages.forEach(t => { assert.equal(t.controls.color.value, '#654321'); assert.equal(redraws.get(t.entry.id), 1); });
+assert.equal(p.storage.getItem(G.colorKey('Cyber Cage')), '#654321');
+assert.ok(state.tiles.filter(t => t.entry.list === 'projectile').every(t =>
+  !t.controls.r && !t.controls.badge && !t.controls.look && t.controls.color && t.controls.notes));
+const tile = p.root.querySelectorAll('[data-entry-id]').find(t => t.attrs['data-entry-id'] === e.id);
+const control = k => tile.querySelector('[data-control="' + k + '"]');
+assert.equal(e.style.r, 555); assert.equal(state.originals[e.id].r, 410);
+assert.equal(control('notes').value, 'review');
+assert.equal(control('color').value, '#123456');
+control('badge').checked = true; control('badge').dispatch('change');
+assert.deepEqual(JSON.parse(p.storage.getItem(G.entryKey(e))), {r: 555, badge: true, notes: 'review'});
+control('look').value = 'grain'; control('look').dispatch('change');
+control('settings').value = '{"strength":0.25}'; control('settings').dispatch('change');
+assert.deepEqual(e.style.look, {kind: 'grain', strength: 0.25});
+control('settings').value = '[]'; control('settings').dispatch('change');
+assert.ok(tile.querySelector('[data-settings-error]').textContent);
+assert.deepEqual(e.style.look, {kind: 'grain', strength: 0.25});
+assert.ok(tile.textContent.includes('1 of 2'));
+tile.querySelector('[data-sample="next"]').click(); assert.ok(tile.textContent.includes('2 of 2'));
+const json = state.critique();
+assert.equal(json.entries.find(x => x.pattern === e.pattern).after.r, 555);
+p.header('side').value = 'B'; p.header('side').dispatch('change');
+assert.ok(state.tiles.filter(t => t.viewer.current).every(t => t.viewer.current.blob.players[0].side === 'B'));
+p.header('palette').value = 'blue-orange'; p.header('palette').dispatch('change');
+assert.ok(state.tiles.every(t => t.viewer.controlPalette === 'blue-orange'));
+control('reset').click();
+assert.equal(e.style.r, 410); assert.equal(e.style.badge, undefined);
+assert.equal(p.storage.getItem(G.colorKey(e.ability)), null);
+assert.deepEqual(JSON.parse(p.storage.getItem(G.entryKey(e))), {notes: 'review'});
+assert.equal(control('notes').value, 'review');
+p.header('edited').checked = true; p.header('edited').dispatch('change'); assert.equal(tile.hidden, false);
+control('notes').value = ''; control('notes').dispatch('input'); assert.equal(tile.hidden, true);
+p.header('edited').checked = false; p.header('edited').dispatch('change');
+p.header('filter').value = 'dark cover'; p.header('filter').dispatch('input'); assert.equal(tile.hidden, false);
+p.header('agent').value = 'Harbor'; p.header('agent').dispatch('change'); assert.equal(tile.hidden, true);
+G.saveColor(p.storage, 'Cyber Cage', '#111111');
+p.storage.setItem('other-page', 'keep'); p.header('clear').click();
+assert.equal(p.storage.length, 1); assert.equal(p.storage.getItem('other-page'), 'keep');
+""")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_mount_export_and_copy_fallback():
+    run_node(GALLERY_DRAW + GALLERY_DOM + r"""
+const p = page();
+const state = G.mount(R, p.doc, {...payload, samples: {}, replay_js_sha256: 'digest'}, p.storage);
+const tile = p.root.querySelectorAll('[data-entry-id]')[0];
+const notes = tile.querySelector('[data-control="notes"]');
+notes.value = 'Please review'; notes.dispatch('input');
+let blob, download;
+global.URL = {createObjectURL(b) {blob = b; return 'blob:gallery';}, revokeObjectURL() {}};
+const create = p.doc.createElement;
+p.doc.createElement = tag => {const el = create(tag); if (tag === 'a') el.click = () => {download = el.download;}; return el;};
+p.header('export').click();
+assert.match(download, /^util-critique-\d{4}-\d{2}-\d{2}\.json$/);
+assert.equal(blob.type, 'application/json');
+Object.defineProperty(global, 'navigator', {value: {clipboard: {writeText: () => Promise.reject(Error('denied'))}}, configurable: true});
+const textareas = p.doc.body.querySelectorAll('textarea').length;
+Promise.resolve(p.header('copy').click()).then(() => {
+  assert.equal(p.doc.copied, 'copy'); assert.match(p.header('status').textContent, /copied/i);
+  assert.equal(p.doc.body.querySelectorAll('textarea').length, textareas);
+}).catch(e => {console.error(e); process.exitCode = 1;});
+""")
