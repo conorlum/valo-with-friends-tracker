@@ -22,7 +22,9 @@ from playwright.sync_api import Page
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
-from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout, wait_for_owner
+from app.adapters.tracker_verification import (
+    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout, wait_for_owner,
+)
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
@@ -570,7 +572,8 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
             # A 200 that did not parse may be a challenge page, so it stays retryable.
             permanent = captured["status"] in (404, 410) or (
                 captured["status"] == 200 and captured["parsed"])
-            error = TrackerMatchUnavailable if permanent else RuntimeError
+            error = (TrackerMatchUnavailable if permanent
+                     else TrackerRateLimited if captured["status"] == 429 else RuntimeError)
             raise error(
                 f"tracker.gg match API response for {match_id} has no data "
                 f"(status {captured['status']})"

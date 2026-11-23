@@ -25,6 +25,10 @@ class TrackerMatchUnavailable(RuntimeError):
     """The match is permanently unavailable from tracker.gg (404 or 410)."""
 
 
+class TrackerRateLimited(RuntimeError):
+    """tracker.gg answered 429: wait and retry the same match (a RuntimeError, as it was)."""
+
+
 def is_verification_page(page):
     """Only the page title identifies verification; unavailable titles are ignored."""
     try:

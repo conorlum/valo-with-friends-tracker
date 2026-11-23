@@ -1,7 +1,7 @@
 """Plant extraction, round outcomes and storage; callers own the transaction."""
 from collections import defaultdict
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import gzip
 import json
@@ -11,7 +11,9 @@ import zlib
 
 from sqlalchemy import select
 
-from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout
+from app.adapters.tracker_verification import (
+    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout,
+)
 from app.models import KillEvent, Match, MatchPlayer, Round, RoundPlant
 from app.models.match import Team
 from app.models.replay import Replay, ReplayRound
@@ -373,6 +375,28 @@ def archive_payload(directory, external_id, payload):
     temporary.replace(target)
 
 
+# Waits after a 429 before retrying the same match; a 429 after the last counts as a failure.
+RATE_LIMIT_COOLDOWNS_S = (600, 900, 1800, 1800)
+
+
+def _fetch_patiently(fetch, page, external_id, *, sleep, stop):
+    """Fetch, waiting out tracker.gg's 429s; a stop during a wait re-raises the 429,
+    which the caller then treats as the owner's stop, not a failure."""
+    for wait in (*RATE_LIMIT_COOLDOWNS_S, None):
+        try:
+            return fetch(page, external_id)
+        except TrackerRateLimited:
+            if wait is None:
+                raise
+            until = datetime.now().astimezone() + timedelta(seconds=wait)
+            print(f"rate limited (429): waiting {wait // 60} min, until {until:%H:%M}, "
+                  f"then retrying {external_id}", flush=True)
+            for _ in range(wait):
+                if stop() is not None:
+                    raise
+                sleep(1)
+
+
 def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
              should_stop=None, archive=None):
     """Commit positions alone per match; the DB and local ledger are the resume point.
@@ -403,7 +427,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
                 result["stopped"] = reason
                 break
         try:
-            payload = fetch(page, external_id)
+            payload = _fetch_patiently(fetch, page, external_id, sleep=sleep, stop=stop)
             if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
                 raise TrackerMatchUnavailable("match payload has no usable segments")
             if archive is not None:

@@ -304,7 +304,8 @@ def test_fetch_match_json_classifies_last_missing_response(monkeypatch, statuses
     monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
     with pytest.raises(RuntimeError) as error:
         adapter.fetch_match_json(page, "synthetic-match")
-    expected = verification.TrackerMatchUnavailable if unavailable else RuntimeError
+    expected = (verification.TrackerMatchUnavailable if unavailable
+                else verification.TrackerRateLimited if statuses[-1] == 429 else RuntimeError)
     assert type(error.value) is expected
     assert callbacks == {}
 
@@ -478,7 +479,8 @@ def test_status_200_json_without_data_is_unavailable_only_when_last(monkeypatch,
     from app.adapters import tracker_verification as verification
 
     got = _respond(monkeypatch, [(status, lambda: body) for status in statuses])
-    assert got is (verification.TrackerMatchUnavailable if unavailable else RuntimeError)
+    assert got is (verification.TrackerMatchUnavailable if unavailable
+                   else verification.TrackerRateLimited if statuses[-1] == 429 else RuntimeError)
 
 
 @pytest.mark.parametrize("responses", [
@@ -692,6 +694,62 @@ def test_resume_names_the_interpreter_with_friends_db_uses(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "WEBAPP", main)
     assert cli.resume_python() == r".\.venv313\Scripts\python.exe"
     assert with_friends_db.find_ingest_python  # the same lookup the wrapper runs with
+
+
+def test_a_429_waits_and_retries_the_same_match(db, monkeypatch, capsys):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (3, 4))
+    ids = matches(db, 2)
+    fetched, slept = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        if len(fetched) <= 2:
+            raise TrackerRateLimited("status 429")
+        return payload(1)
+
+    result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
+                             uniform=lambda a, b: 5)
+    assert fetched == [ids[0], ids[0], ids[0], ids[1]]
+    assert result["done"] == 2 and result["failed"] == 0 and result["left"] == 0
+    assert slept == [1] * 3 + [1] * 4 + [5]
+    assert "rate limited (429): waiting" in capsys.readouterr().out
+
+
+def test_a_429_after_every_wait_is_one_failure_not_skip_listed(db, ledger, monkeypatch):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (2, 2))
+    ids = matches(db, 1)
+    fetched = []
+
+    def fetch(page, key):
+        fetched.append(key)
+        raise TrackerRateLimited("status 429")
+
+    result = run(db, fetch)
+    assert fetched == ids * 3
+    assert (result["failed"], result["unavailable"], result["left"]) == (1, 0, 1)
+    assert json.loads(ledger.read_text()) == []
+
+
+def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (100,))
+    matches(db, 2)
+    fetched, slept = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        raise TrackerRateLimited("status 429")
+
+    result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
+                             uniform=lambda a, b: 5,
+                             should_stop=lambda: "paused" if len(slept) >= 10 else None)
+    assert len(fetched) == 1 and len(slept) == 10
+    assert result["stopped"] == "paused" and result["failed"] == 0 and result["left"] == 2
 
 
 def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
