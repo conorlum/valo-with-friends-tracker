@@ -12,7 +12,7 @@ from tests.replays import control_toys as toys
 
 
 M_PER_PX = .14
-KEYS = sorted("slot i opponent t0 t1 t_event t_first_sight t_onset opener type reason jiggles "
+KEYS = sorted("slot i opponent t0 t1 t_event t_first_sight t_onset t_onset_exact opener type reason jiggles "
               "speed_mps sideways_m exposure_s repeek_gap_s repeek_spot_m distance_m band result gun_class".split())
 
 
@@ -44,8 +44,10 @@ def row(rnd, blob, *, onset=12, i=0, opponent=5):
     assert found["opponent"] == opponent
     if onset is None:
         assert found["t_onset"] is None
+        assert found["t_onset_exact"] is None
     else:
         assert found["t_onset"] == pytest.approx(onset, abs=.035)
+        assert found["t_onset"] == round(found["t_onset_exact"], 2)
     assert sorted(found) == KEYS
     return found
 
@@ -445,6 +447,93 @@ def test_jiggle_velocity_is_measured_at_kill_not_previous_onset_step():
     assert peeks.windowed_velocity(rnd, 0, 12.3125)[1] < 0
     r = row(rnd, blob)
     assert r["type"] == "jiggle"
+
+
+@pytest.mark.parametrize("who,held_speed,has_kill,velocity,candidates,speed,sideways,expected", [
+    ("holder", 0.0, False, None, [], None, None, ("held", None)),
+    ("holder", 2.014, False, None, [], None, None, ("other", "caught_moving")),
+    ("holder", None, False, None, [], None, None, ("other", "unmeasured")),
+    ("unclear", None, False, None, [], None, None, ("other", "unclear")),
+    ("peeker", None, True, (0, -1), [], None, None, ("jiggle", None)),
+    ("both", None, True, (0, -1), [(11, .99)], None, None, ("jiggle", None)),
+    ("peeker", None, True, None, [(11, .99)], 5, 2, ("other", "unmeasured")),
+    ("peeker", None, False, None, [(11, .99)], None, None, ("re_peek", None)),
+    ("both", None, False, None, [(11, None), (10, .99)], None, None, ("re_peek", None)),
+    ("peeker", None, False, None, [(11, None)], 5, 2, ("other", "unmeasured")),
+    ("peeker", None, False, None, [(11, 2.01)], None, 2, ("other", "unmeasured")),
+    ("peeker", None, False, None, [], None, 2, ("other", "unmeasured")),
+    ("peeker", None, False, None, [], 5, None, ("other", "unmeasured")),
+    ("peeker", None, False, None, [], 3, None, ("slow_peek", None)),
+    ("peeker", None, False, None, [], 0, None, ("other", "still_peek")),
+])
+def test_only_reached_checks_require_measurements(
+        monkeypatch, who, held_speed, has_kill, velocity, candidates, speed, sideways, expected):
+    rnd, blob = round_of()
+    monkeypatch.setattr(peeks, "opener", lambda *args: who)
+    monkeypatch.setattr(peeks, "max_speed", lambda *args: held_speed)
+    monkeypatch.setattr(peeks, "windowed_velocity", lambda *args: velocity)
+    group = [(12.25, "kill", 0, 5, 12.25)] if has_kill else []
+    actual = peeks._label(rnd, blob, 0, 5, {"on": 12, "off": 12.4, "at_start": False},
+                          group, speed, sideways, candidates, {}, {})
+    assert actual == (who, *expected)
+
+
+@pytest.mark.parametrize("reopen,kill_at,is_jiggle", [
+    (None, 12.125, True), (None, 12.21875, True),
+    (12.15625, 12.125, True), (12.21875, 12.1875, True),
+    (12.15625, 12.15625, False), (12.15625, 12.21875, False),
+])
+@pytest.mark.parametrize("won", [False, True])
+def test_jiggle_slack_stops_at_next_exposure(monkeypatch, reopen, kill_at, is_jiggle, won):
+    rnd, blob = round_of(util=[damage(12.03125, 0, 5)],
+                         kills=[kill(kill_at, 0 if won else 5, 5 if won else 0)])
+    # Keep exposure identity explicit, including a reopening inside the 0.1 s slack.
+    runs = [{"on": 12.0, "off": 12.125, "at_start": False}]
+    if reopen is not None:
+        runs.append({"on": reopen, "off": None, "at_start": False})
+    monkeypatch.setattr(peeks, "exposures", lambda *args: runs)
+    monkeypatch.setattr(peeks, "windowed_velocity", lambda *args: (0, -1))
+    r = next(r for r in peeks.round_openings(rnd, blob) if r["slot"] == 0)
+    assert r["t_onset"] == 12
+    assert (r["type"] == "jiggle") is is_jiggle
+    assert r["result"] == ("won" if won else "lost")
+
+
+def test_onset_keeps_exact_clear_sample_as_well_as_rounded_report():
+    rnd, blob = round_of(steps((6.734, None)), util=[damage(6.984, 0, 5)])
+    r = row(rnd, blob, onset=6.734)
+    assert r["t_onset"] == 6.73
+    assert r["t_onset_exact"] == pytest.approx(6.734, abs=1e-10)
+    assert peeks.line_clear(rnd, 0, 5, r["t_onset_exact"]) is True
+    assert peeks.line_clear(rnd, 0, 5, r["t_onset"]) is False
+
+
+@pytest.mark.parametrize("kind,expected", [
+    ("held", ("held", None)), ("moving_holder", ("other", "caught_moving")),
+    ("jiggle", ("jiggle", None)), ("repeek", ("re_peek", None)),
+])
+def test_split_onset_track_keeps_measurable_earlier_rules(kind, expected):
+    if kind in ("held", "moving_holder"):
+        enemy = "B", [(0, 330, 120, 0), (11.992, 330, 120, 0), (12, 330, 280, 0)]
+        player = standing(230, 280) if kind == "held" else (
+            "A", [(0, 230, 280, 0), (10, 230, 280, 0), (14, 230, 280 - 4 * 2.014 / M_PER_PX, 0)])
+        rnd, blob = round_of(player, enemy, util=[damage(12.25, 0, 5)])
+        onset = 12
+    elif kind == "jiggle":
+        player = "A", [(0, 230, 200, 0), (11.992, 230, 200, 0), (12, 230, 280, 0),
+                       (12.2, 230, 280, 0), (12.5, 230, 200, 0)]
+        rnd, blob = round_of(player, util=[damage(12.25, 5, 0)], kills=[kill(12.3125, 0, 5)])
+        onset = 12
+    else:
+        player = steps((7, 8.5), (12.5, None), near=True)
+        rnd, blob = round_of(player, util=[damage(12.75, 0, 5)])
+        onset = 12.5
+    blob["tracks"]["0"] = (toys.track(player[1], 0, onset - .008, hz=125)
+                             + toys.track(player[1], onset, 24, hz=125))
+    rnd = engine.RoundInputs(blob, rnd.geo, engine.ControlLink(db_deaths=()))
+    r = next(r for r in peeks.round_openings(rnd, blob) if r["slot"] == 0)
+    assert r["speed_mps"] is None
+    assert (r["type"], r["reason"]) == expected
 
 
 def test_unmeasured_segment_break_at_onset():

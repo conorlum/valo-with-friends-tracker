@@ -45,7 +45,7 @@ function validPoint(point) {
 }
 
 function cropPaths(paths) {
-    const points = [...paths.player, ...paths.opponent].map(p => p.slice(1));
+    const points = [...paths.player, ...paths.opponent].map(p => p.slice(1, 3));
     points.push(...paths.at_ref);
     const good = points.filter(validPoint);
     if (!good.length) return null;
@@ -58,7 +58,21 @@ function cropPaths(paths) {
 
 function pointAt(track, time) {
     const i = Math.round((time - (track[0] || [0])[0]) * 16);
-    return track[i] ? track[i].slice(1) : null;
+    return track[i] ? track[i].slice(1, 3) : null;
+}
+
+function pathCommands(track) {
+    const commands = [];
+    let connected = false, segment;
+    for (const sample of track) {
+        const point = sample.slice(1, 3);
+        if (!validPoint(point)) { connected = false; continue; }
+        const join = connected && sample[3] === segment;
+        commands.push([join ? "lineTo" : "moveTo", ...point]);
+        connected = true;
+        segment = sample[3];
+    }
+    return commands;
 }
 
 function sketch(canvas, card, image, time) {
@@ -83,13 +97,8 @@ function sketch(canvas, card, image, time) {
         ctx.beginPath();
         ctx.strokeStyle = colors[index];
         ctx.lineWidth = 2;
-        let connected = false;
-        for (const sample of track) {
-            const point = sample.slice(1);
-            if (!validPoint(point)) { connected = false; continue; }
-            const [x, y] = xy(point);
-            if (connected) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-            connected = true;
+        for (const [command, x, y] of pathCommands(track)) {
+            ctx[command](...xy([x, y]));
         }
         ctx.stroke();
     });
@@ -201,5 +210,5 @@ function initPeekPage() {
 
 if (typeof document !== "undefined") initPeekPage();
 if (typeof module !== "undefined") module.exports = {
-    recordRight, recordCorrected, loadAnswers, saveAnswers, exportAnswers, cropPaths, pointAt
+    recordRight, recordCorrected, loadAnswers, saveAnswers, exportAnswers, cropPaths, pointAt, pathCommands
 };

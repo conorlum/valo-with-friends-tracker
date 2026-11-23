@@ -179,7 +179,8 @@ def _history(rnd, blob, slot, opp, main, previous):
     return jiggles, candidates
 
 
-def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities):
+def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities,
+           *, next_onset=math.inf):
     """R4 precedence; unknown measurements never stand in for a negative check."""
     t = main["on"]
     positions = all(fights._live_pos(rnd, s, at) is not None
@@ -194,18 +195,20 @@ def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, fligh
         return who, "ability_peek", None
     if any(rise >= pc.JUMP_RISE_M for _, _, rise in nearby_flights) and who in ("peeker", "both"):
         return who, "jump_peek", None
-    if speed is None or not positions:
+    if not positions:
         return who, "other", "unmeasured"
-    if who in ("holder", "unclear"):
+    if who == "holder":
         held_speed = max_speed(rnd, slot, t - pc.HELD_LOOK_S, t)
         if held_speed is None:
             return who, "other", "unmeasured"
-        if who == "holder":
-            return (who, "held", None) if held_speed <= pc.HELD_MAX_MPS else (who, "other", "caught_moving")
+        return (who, "held", None) if held_speed <= pc.HELD_MAX_MPS else (who, "other", "caught_moving")
+    if who == "unclear":
         return who, "other", "unclear"
     off = math.inf if main["off"] is None else main["off"]
     for at, kind, _, other, _ in group:
-        if kind != "kill" or other != opp or not t <= at <= min(off + pc.EVENT_SLACK_S, t + pc.JIGGLE_MAX_S):
+        # A reopened exposure owns its kills, even inside the previous one's slack.
+        if (kind != "kill" or other != opp or at >= next_onset
+                or not t <= at <= min(off + pc.EVENT_SLACK_S, t + pc.JIGGLE_MAX_S)):
             continue
         velocity = windowed_velocity(rnd, slot, at)
         before, now = rnd.pos(slot, t - pc.OPENER_DELTA_S), rnd.pos(slot, at)
@@ -216,6 +219,8 @@ def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, fligh
     if any(d is not None and d <= pc.REPEEK_SPOT_M for _, d in candidates):
         return who, "re_peek", None
     if any(d is None for _, d in candidates):
+        return who, "other", "unmeasured"
+    if speed is None:
         return who, "other", "unmeasured"
     if speed >= pc.SWING_MPS:
         if sideways is None:
@@ -228,7 +233,7 @@ def _opening(rnd, blob, slot, i, group, flights, abilities):
     t0, t1 = group[0][0], max(e[4] for e in group)
     event, opp = first_gun_event(rnd, blob, slot, group)
     row = dict(slot=slot, i=i, opponent=opp, t0=fights._r2(t0), t1=fights._r2(t1),
-               t_event=fights._r2(event), t_first_sight=None, t_onset=None, opener=None,
+               t_event=fights._r2(event), t_first_sight=None, t_onset=None, t_onset_exact=None, opener=None,
                type="other", reason="no_gun", jiggles=0, speed_mps=None, sideways_m=None,
                exposure_s=None, repeek_gap_s=None, repeek_spot_m=None, distance_m=None, band=None,
                result="unresolved", gun_class=fights._moving(rnd, blob, slot, t0, t1)[0]["gun_class"])
@@ -259,16 +264,19 @@ def _opening(rnd, blob, slot, i, group, flights, abilities):
         return row
     t = main["on"]
     speed, sideways = windowed_speed(rnd, slot, t), _sideways(rnd, slot, opp, t)
-    jiggles, candidates = _history(rnd, blob, slot, opp, main, runs[:runs.index(main)])
+    main_index = runs.index(main)
+    jiggles, candidates = _history(rnd, blob, slot, opp, main, runs[:main_index])
     nearby = [c for c in candidates if c[1] is not None and c[1] <= pc.REPEEK_SPOT_M]
     latest = max(nearby or candidates, key=lambda c: c[0], default=None)
     distance = fights._dist_m(rnd, slot, opp, t)
-    row.update(t_onset=fights._r2(t), speed_mps=fights._r2(speed), sideways_m=fights._r2(sideways),
+    row.update(t_onset=fights._r2(t), t_onset_exact=t,
+               speed_mps=fights._r2(speed), sideways_m=fights._r2(sideways),
                jiggles=jiggles, repeek_gap_s=None if latest is None else fights._r2(t - latest[0]),
                repeek_spot_m=None if latest is None else fights._r2(latest[1]),
                distance_m=None if distance is None else round(distance, 1), band=distance_band(distance))
     row["opener"], row["type"], row["reason"] = _label(
-        rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities)
+        rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities,
+        next_onset=runs[main_index + 1]["on"] if main_index + 1 < len(runs) else math.inf)
     return row
 
 

@@ -547,7 +547,7 @@ def test_build_page_sampling_safety_and_answer_keys(tmp_path):
     assert "Stranger#1" not in text and "stranger-id" not in parsed.payload
     assert "</script><img" not in text and "\\u003c" in parsed.payload
     assert all("src" not in script for script in parsed.scripts)
-    assert all(re.fullmatch(re.escape(probe.SITE) + r"/replays/[0-9a-f-]{36}\?round=1&t=8\.5", a["href"])
+    assert all(re.fullmatch(re.escape(probe.SITE) + r"/replays/[0-9a-f-]{36}\?round=1&t=8\.50", a["href"])
                and a["target"] == "_blank" for a in parsed.links)
     assert "after 2 jiggles" in text and "Everyone's average" in text
     assert "jiggled yes" in text and "jiggled no" not in text
@@ -622,7 +622,7 @@ def test_run_page_paths_and_offline_rebuild(monkeypatch, tmp_path):
         assert paths == sidecar[card["key"]]
         ref = 1.0 if r["reason"] == "no_gun" else 10.25 if r["reason"] == "unmeasured" else 11.5
         assert card["t_ref"] == ref
-        assert card["viewer_url"].endswith(f"&t={max(0, ref - 2):g}")
+        assert card["viewer_url"].endswith(f"&t={max(0, ref - 2):.2f}")
         assert paths["sight_line"] == (r["reason"] == "unmeasured")
         assert paths["px_to_image"] == 1 / geometry.PX
         assert paths["m_per_px"] == rnd.geo.m_per_px
@@ -632,10 +632,12 @@ def test_run_page_paths_and_offline_rebuild(monkeypatch, tmp_path):
         else:
             assert len(paths["opponent"]) == 49
         for label, slot in (("player", 0), ("opponent", r["opponent"])):
-            for t, x, y in paths[label]:
+            for t, x, y, segment in paths[label]:
                 assert (t - (ref - 2)) * 16 == pytest.approx(round((t - (ref - 2)) * 16))
                 expected = rnd.pos(slot, t) if rnd.alive(slot, t) else None
                 assert [x, y] == (list(expected[:2]) if expected else [None, None])
+                sample = rnd._sample(slot, t) if expected else None
+                assert segment == (int(rnd._segment[slot][sample]) if sample is not None else None)
     monkeypatch.setattr(probe, "_urlopen", lambda *a, **k: pytest.fail("page must never fetch"))
     assert probe.main(["page", "--out", str(out)]) == 0
     assert (out / "peeks.html").read_text(encoding="utf-8") == before
@@ -672,6 +674,82 @@ def test_page_script_guarded():
     import tomllib
     suites = tomllib.loads((Path(probe.WEBAPP_ROOT) / "tests/suites.toml").read_text(encoding="utf-8"))
     assert "scripts/peek_page.js" in suites["critical-moments"]["guards"]
+
+
+@pytest.mark.parametrize("slot,label", [(0, "player"), (5, "opponent")])
+def test_paths_preserve_short_segment_break_on_the_playback_grid(slot, label):
+    blob = toy_blob()
+    before, after = [(0, 120, 200, 0)], [(0, 800, 200, 0)]
+    blob["tracks"][str(slot)] = (toys.track(before, 0, .992, hz=125)
+                                 + toys.track(after, 1.008, 16, hz=125))
+    rnd = engine.RoundInputs(blob, toys.open_hall(), engine.ControlLink(db_deaths=()))
+    paths = probe._paths(page_row(0, t_onset=2), rnd)
+    track = paths[label]
+    assert len(track) == 49
+    assert [p[0] for p in track] == [k / 16 for k in range(49)]
+    assert all(len(p) == 4 for p in track)
+    assert track[15][1:3] == pytest.approx([120, 200], abs=.1)
+    assert track[17][1:3] == pytest.approx([800, 200], abs=.1)
+    assert track[15][3] == 0 and track[17][3] == 1
+    assert track[16][1] is not None  # No null grid point hides this segment boundary.
+
+
+@pytest.mark.parametrize("exact,rounded,event,t0,expected", [
+    (6.734, 6.73, 6.984, 6.984, 6.734),
+    (1.234, 1.23, 1.484, 1.484, 1.234),
+    (0.0, 0.0, .25, .25, 0.0),
+    (None, None, 2.345, 2, 2.345),
+    (None, None, None, 1.234, 1.234),
+    ("absent", 6.73, 6.984, 6.984, 6.73),
+])
+def test_page_and_paths_use_exact_onset_with_legacy_fallback(
+        tmp_path, exact, rounded, event, t0, expected):
+    from tests.moments.test_peek_labels import round_of, steps
+
+    rnd, _ = round_of(steps((6.734, None)))
+    r = page_row(0, t_onset=rounded, t_event=event, t0=t0)
+    if exact != "absent":
+        r["t_onset_exact"] = exact
+    paths = probe._paths(r, rnd)
+    assert probe._moment(r) == expected
+    assert paths["at_ref"][0] == list(rnd.pos(0, expected)[:2])
+    assert paths["player"][0][0] == expected - 2
+    assert paths["sight_line"] is (rounded is not None)
+    if exact == 6.734:
+        assert peeks.line_clear(rnd, 0, 5, expected) is True
+        assert peeks.line_clear(rnd, 0, 5, rounded) is False
+        assert paths["at_ref"][0] != list(rnd.pos(0, rounded)[:2])
+    (tmp_path / "paths.jsonl").write_text(
+        json.dumps({"key": answer_key(r), "paths": paths}) + "\n", encoding="utf-8")
+    text = probe.build_page([r], {"friend-id": "Invented#A"}, tmp_path).read_text(encoding="utf-8")
+    card = json.loads(PeekHTML(text).payload)["cards"][0]
+    assert card["t_ref"] == expected
+    assert card["paths"] == paths
+    assert card["viewer_url"].endswith(f"&t={max(0, expected - 2):.2f}")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_page_path_commands_break_segments_and_keep_playback_index():
+    js = Path(probe.__file__).with_name("peek_page.js")
+    script = f"""
+const p = require({json.dumps(str(js))});
+const track = [[0, 1, 2, 0], [1/16, 2, 3, 0], [2/16, 800, 4, 1],
+               [3/16, 801, 5, 1], [4/16, null, null, null], [5/16, 802, 6, 1]];
+const legacy = track.map(s => s.slice(0, 3));
+console.log(JSON.stringify({{
+    commands: p.pathCommands(track), legacy: p.pathCommands(legacy),
+    points: track.map(s => p.pointAt(track, s[0])),
+    outside: p.pointAt(track, 10), empty: p.pathCommands([])
+}}));
+"""
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    actual = json.loads(result.stdout)
+    assert actual["commands"] == [["moveTo", 1, 2], ["lineTo", 2, 3], ["moveTo", 800, 4],
+                                   ["lineTo", 801, 5], ["moveTo", 802, 6]]
+    assert actual["legacy"] == [["moveTo", 1, 2], ["lineTo", 2, 3], ["lineTo", 800, 4],
+                                 ["lineTo", 801, 5], ["moveTo", 802, 6]]
+    assert actual["points"] == [[1, 2], [2, 3], [800, 4], [801, 5], [None, None], [802, 6]]
+    assert actual["outside"] is None and actual["empty"] == []
 
 
 def test_page_types_equal_plan_types():

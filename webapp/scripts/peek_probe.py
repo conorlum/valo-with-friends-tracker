@@ -242,14 +242,15 @@ def _answer_key(row):
 
 
 def _moment(row):
-    return next(row[k] for k in ("t_onset", "t_event", "t0") if row.get(k) is not None)
+    return next(row[k] for k in ("t_onset_exact", "t_onset", "t_event", "t0") if row.get(k) is not None)
 
 
 def _paths(row, rnd):
     """Engine pixels; px_to_image multiplies the image's natural width/height.
 
-    Null samples preserve missing tracks and life boundaries rather than joining
-    across them. The exact moment is kept separately for onset dots and sight.
+    Null samples preserve missing tracks and life boundaries; the fourth value is
+    the segment ID, so drawing also breaks across short gaps between grid times.
+    The exact moment is kept separately for onset dots and sight.
     """
     ref = _moment(row)
     def point(slot, t):
@@ -257,7 +258,13 @@ def _paths(row, rnd):
         return [float(pos[0]), float(pos[1])] if pos is not None else [None, None]
     def track(slot):
         times = [ref - 2 + k / 16 for k in range(49)]
-        return [[t, *point(slot, t)] for t in times]
+        samples = []
+        for t in times:
+            xy = point(slot, t)
+            i = rnd._sample(slot, t) if xy[0] is not None else None
+            segment = int(rnd._segment[slot][i]) if i is not None else None
+            samples.append([t, *xy, segment])
+        return samples
     opponent = row["opponent"]
     return {"player": track(row["slot"]), "opponent": track(opponent) if opponent is not None else [],
             "at_ref": [point(row["slot"], ref), point(opponent, ref)],
@@ -425,7 +432,7 @@ def build_page(rows, players, out_dir, per_type=8, seed=0) -> Path:
     # Do not embed source rows wholesale: upstream/cache-only names and IDs are
     # deliberately excluded. Labels have already been made safe by the worker.
     fields = ("uuid", "round", "slot", "i", "opponent", "type", "reason", "opener", "result", "band", "jiggles",
-              "t0", "t_event", "t_onset", "speed_mps", "sideways_m", "exposure_s", "repeek_gap_s",
+              "t0", "t_event", "t_onset", "t_onset_exact", "speed_mps", "sideways_m", "exposure_s", "repeek_gap_s",
               "repeek_spot_m", "distance_m", "asset", "friend", "player_label", "opponent_label")
     def named(r):
         return bool(r["friend"] and str(r["player_id"]) in players)
@@ -439,7 +446,7 @@ def build_page(rows, players, out_dir, per_type=8, seed=0) -> Path:
                 safe["player_label"] = agent
         ref = _moment(r)
         key = _answer_key(r)
-        url = f"{SITE}/replays/{r['uuid']}?round={r['round']}&t={max(0, ref - 2):g}"
+        url = f"{SITE}/replays/{r['uuid']}?round={r['round']}&t={max(0, ref - 2):.2f}"
         asset = r.get("asset", "")
         map_path = f"maps/{asset}.png" if re.fullmatch(r"[A-Za-z0-9_-]+", asset) else None
         cards.append({"key": key, "row": safe, "paths": paths.get(key), "t_ref": ref,
