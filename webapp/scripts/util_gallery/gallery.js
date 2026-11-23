@@ -150,10 +150,28 @@
       if (!R.popTimesTimed(row)) ends.push(close);
     } else ends.push(close);
     var finiteEnds = ends.filter(Number.isFinite), end = finiteEnds.length ? Math.min.apply(null, finiteEnds) : Infinity;
-    var hi = Math.max(t0, end - 0.05), out = [];
+    var hi = Math.max(t0, end - 0.05), out = [], peak;
+    // A faint instant draws almost nothing (the viewer fades abilities in, and keeps brief ones for a
+    // moment): move it to the drawn instant with the highest alpha, found with the viewer's own rules.
+    function peakTime() {
+      if (peak !== undefined) return peak;
+      var span = Math.max(0, Math.min(2, tEnd - t0)), best = 0;
+      peak = null;
+      for (var i = 0; i <= 4000; i++) {
+        var at = t0 + i / 4000 * span;
+        if (!R.abilitiesAt([row], at, tEnd).includes(row)) continue;
+        var alpha = R.abilityAlpha(row, at);
+        if (alpha > best) { best = alpha; peak = at; }
+      }
+      return peak;
+    }
     phases.forEach(function (phase) {
       if (!Number.isFinite(phase.t)) return;
       var t = Math.max(t0, Math.min(hi, phase.t));
+      if (row.kind !== "Projectile" && R.abilityAlpha(row, t) < 0.25) {
+        var better = peakTime();
+        if (better !== null && R.abilityAlpha(row, better) > R.abilityAlpha(row, t)) t = better;
+      }
       if (!out.some(function (p) { return p.t === t; })) out.push({name: phase.name, t: t});
     });
     return out.length ? out : [{name: "active", t: t0}];
@@ -179,14 +197,23 @@
     if (style.shape === "line") geometry(R.lineEnds(row, style, unit), false);
     if (style.capsule) geometry(R.capsuleEnds(row, style, unit), false);
     if (style.shape === "box" || style.shape === "lanes") geometry(R.boxCorners(row, style, unit), false);
+    // A wedge reaches its two edges and any axis-aligned extreme of its arc between them.
+    function wedge(yaw, half, length) {
+      if (!Number.isFinite(yaw) || !Number.isFinite(half) || !Number.isFinite(length)) return;
+      var lo = yaw - half, hi = yaw + half;
+      function at(deg) {
+        point(row.u + Math.cos(deg * Math.PI / 180) * length, row.v + Math.sin(deg * Math.PI / 180) * length);
+      }
+      at(yaw); at(lo); at(hi);
+      for (var k = Math.ceil(lo / 90); k * 90 <= hi; k++) at(k * 90);
+    }
     if (Number.isFinite(style.coneLen)) {
       var facings = row.yaws && row.yaws.length ? row.yaws.map(function (p) { return p[1]; }) : [row.yaw];
-      facings.forEach(function (yaw) {
-        if (!Number.isFinite(yaw)) return;
-        var angle = yaw * Math.PI / 180;
-        point(row.u + Math.cos(angle) * style.coneLen * unit, row.v + Math.sin(angle) * style.coneLen * unit);
-      });
+      facings.forEach(function (yaw) { wedge(yaw, style.cone, style.coneLen * unit); });
     }
+    if (style.shape === "cone" && Number.isFinite(style.angle) && Number.isFinite(style.r) &&
+        row.yaw !== null && row.yaw !== undefined) wedge(row.yaw, style.angle / 2, style.r * unit);
+    if (style.activeFor && typeof row.active === "number") geometry(row.intercepts, true);
     if (!points.length) point(R.UV / 2, R.UV / 2);
     var xs = points.map(function (p) { return p[0]; }), ys = points.map(function (p) { return p[1]; });
     function clip(x) { return Math.max(0, Math.min(R.UV, x)); }
@@ -316,6 +343,10 @@
   function setTileSample(R, viewer, sample, side) {
     viewer.tile.sample = sample;
     viewer.current = sample ? sampleRound(R, sample, side) : null;
+    // The site's linked replay supplies the map's scale; a made-up sample (no map) keeps the viewer's fallback.
+    var scales = viewer.payload.mapScales || {}, scale = sample && sample.map && own(scales, sample.map) ?
+      scales[sample.map] : null;
+    viewer.linked = {players: {}, uvPerUnit: Number.isFinite(scale) && scale > 0 ? scale : null};
     var url = sample && viewer.payload.maps && viewer.payload.maps[sample.map];
     if (url === viewer.mapUrl) return;
     viewer.mapUrl = url;
@@ -330,7 +361,7 @@
   function tileViewer(R, tile, payload) {
     var viewer = Object.create(R.ReplayViewer.prototype);
     Object.assign(viewer, {root: tile.root || {}, t: 0, controlPalette: "green-red", turns: 0,
-      linked: null, areas: null, highlight: null, icons: {}, tile: tile, payload: payload,
+      linked: {players: {}, uvPerUnit: null}, areas: null, highlight: null, icons: {}, tile: tile, payload: payload,
       layers: {abilities: true, projectiles: true},
       options: {abilityIcons: payload.abilityIcons || {},
         assetUrl: function (url) { return (payload.assets || {})[url] || url; }},
@@ -626,7 +657,7 @@
     lookFrom: lookFrom, entryKey: entryKey, colorKey: colorKey, loadEdits: loadEdits, saveEdit: saveEdit,
     saveNote: saveNote, saveColor: saveColor, clearColor: clearColor, clearAll: clearAll,
     exportCritique: exportCritique, critiquePrompt: critiquePrompt,
-    mount: mount, tileViewer: tileViewer, drawTile: drawTile};
+    mount: mount, setTileSample: setTileSample, tileViewer: tileViewer, drawTile: drawTile};
   global.UtilGallery = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

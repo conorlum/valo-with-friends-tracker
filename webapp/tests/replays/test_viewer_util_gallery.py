@@ -16,6 +16,189 @@ WEBAPP = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 
 
+def test_render_inlines_site_map_scales(tiny_samples):
+    import re
+    from app.services.replays import _uv_per_unit
+
+    renderer = importlib.import_module("scripts.render_util_gallery")
+    html = renderer.render(tiny_samples)
+    data = json.loads(re.search(r'id="gallery-payload">(.*?)</script>', html, re.S).group(1))
+    assert data["mapScales"] == _uv_per_unit()
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_sample_scale_matches_linked_drawing_and_framing():
+    from app.services.replays import _uv_per_unit
+
+    run_node(GALLERY_DRAW + r"""
+payload.mapScales = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const cases = [
+  ['Wraith', '4_Smoke'], ['Guide', '4_Heal_AOE'], ['Breach', '4_FusionBlast'],
+  ['Sequoia', '4_MovingCover'], ['Thorne', 'E_Wall_Fortifying'],
+  ['Deadeye', 'E_Trap'], ['Killjoy', 'E_Turret'], ['Wraith', 'Q_NearsightMissile', 'Projectile']
+];
+assert.ok(R.projectileStyle(sample('Wraith', 'Q_NearsightMissile', 'Projectile').row).width);
+for (const [code, name, kind = 'Zone'] of cases) {
+  const s = sample(code, name, kind, {yaw: 55, flight: [[10, 5000, 5000], [14, 6500, 5100]]});
+  const e = G.galleryEntries(R, grouped(s), {}).find(e => G.entrySamples(R, e, grouped(s)).length);
+  const d = drawing(e, s), viewer = d.viewer;
+  const original = {name: viewer.nameOf(3), side: viewer.sideColor(3), owner: viewer.ownerColor(3),
+                    slot: viewer.slotColor(3, 'A')};
+  // Reuse the same tile, including a switch with no map-image URL change.
+  for (const map of ['Bind', 'Ascent', 'Haven', 'Lotus', null, 'Bind']) {
+    G.setTileSample(R, viewer, {...s, map});
+    const unit = map ? payload.mapScales[map] : 0.75;
+    assert.deepEqual(viewer.linked.players, {});
+    close(viewer.uvRadius(410), 410 * unit);
+    assert.deepEqual({name: viewer.nameOf(3), side: viewer.sideColor(3), owner: viewer.ownerColor(3),
+                      slot: viewer.slotColor(3, 'A')}, original);
+    const row = G.focusRow(R, viewer.current, e);
+    const style = kind === 'Projectile' ? R.projectileStyle(row) : R.abilityStyle(row);
+    const phase = G.galleryPhases(R, row, style, s.t_end).slice(-1)[0];
+    d.log.length = 0;
+    G.drawTile(R, viewer, d.canvas, phase);
+    const actual = JSON.parse(JSON.stringify(d.log));
+    assert.deepEqual(viewer.view, G.viewOf(G.frameOf(R, row, style, viewer.current.traces, unit), 1024));
+    // Run the site's drawing methods on a linked viewer with the same viewport.
+    const site = Object.create(R.ReplayViewer.prototype);
+    Object.assign(site, viewer, {linked: {players: {}, uvPerUnit: unit}});
+    const log = [], ctx = mockCtx(log), scale = 1024 / R.UV;
+    const radius = 1024 / 48 / Math.sqrt(site.view.k);
+    ctx.setTransform(...R.viewMatrix(site.view, 0, 1024).map(v => v * 480 / 1024));
+    ctx.fillStyle = '#1b1d24';   // the tile's background fill leaves this as its fill state
+    site.drawAbilities(ctx, scale, radius, []);
+    if (e.list !== 'ability') site.drawProjectiles(ctx, scale, radius, []);
+    assert.deepEqual(actual.filter(x => !['drawImage', 'fillRect'].includes(x.op)),
+      JSON.parse(JSON.stringify(log)).filter(x => !['drawImage', 'fillRect'].includes(x.op)), code + '/' + map);
+  }
+}
+close(410 * payload.mapScales.Bind, 241.9);
+""", _uv_per_unit())
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_faint_phases_choose_peak_drawn_alpha():
+    run_node(r"""
+for (const [code, name] of [['Guide', '4_Heal_AOE'], ['Wraith', '4_Smoke'],
+                           ['Deadeye', 'E_Trap'], ['Sequoia', '4_MovingCover']]) {
+  for (const life of [0, 0.001, 0.01, 0.049, 0.05, 0.051]) {
+    for (const limits of [{}, {gone: 10}, {end: 10.02}, {gone: 10.01, end: 10.1}]) {
+      const row = R.extrasFromUtil([sample(code, name, 'Zone', {t1: 10 + life, ...limits}).row]).abilities[0];
+      const end = limits.end || 40, phases = G.galleryPhases(R, row, R.abilityStyle(row), end);
+      let best = 0;
+      for (let i = 0; i <= 4000; i++) {
+        const t = 10 + i / 4000 * Math.min(2, end - 10);
+        if (R.abilitiesAt([row], t, end).includes(row)) best = Math.max(best, R.abilityAlpha(row, t));
+      }
+      for (const p of phases) {
+        assert.ok(Number.isFinite(p.t) && p.t <= end);
+        assert.ok(R.abilitiesAt([row], p.t, end).includes(row));
+        assert.ok(R.abilityAlpha(row, p.t) >= best - 0.005, `${code} ${life} ${JSON.stringify(limits)}: ${p.t}`);
+      }
+    }
+  }
+}
+const s = sample('Guide', '4_Heal_AOE', 'Zone', {t1: 10.01});
+const row = R.extrasFromUtil([s.row]).abilities[0];
+assert.ok(R.abilityAlpha(row, G.galleryPhases(R, row, R.abilityStyle(row), 40)[0].t) > 0.75);
+// A round with no positive-alpha instant keeps the original finite time.
+assert.deepEqual(G.galleryPhases(R, row, R.abilityStyle(row), 10), [{name: 'active', t: 10}]);
+// Projectiles keep their original timing even when their abilityAlpha is zero.
+const projectile = R.extrasFromUtil([sample('Grenadier', 'Q_SemtexBasic', 'Projectile',
+  {t1: 10, flight: [[10, 5000, 5000]]}).row]).abilities[0];
+assert.equal(G.galleryPhases(R, projectile, R.projectileStyle(projectile), 40)[0].t, 10);
+""")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_gallery_frames_include_intercepts_and_complete_cone_arcs():
+    run_node(GALLERY_DRAW + r"""
+function fits(frame, x, y) {
+  const view = G.viewOf(frame, 1024), span = R.UV / view.k;
+  const left = view.ox / 1024 * R.UV, top = view.oy / 1024 * R.UV;
+  assert.ok(x >= left - 1e-8 && x <= left + span + 1e-8, `clipped x=${x}`);
+  assert.ok(y >= top - 1e-8 && y <= top + span + 1e-8, `clipped y=${y}`);
+}
+const s = sample('Pine', 'E_RadEater', 'GameObject', {active: 11, intercepts: [[11.8, 6300, 5000, 0]]});
+const d = drawing(entry('Interceptor'), s);
+G.drawTile(R, d.viewer, d.canvas, {t: 12});
+assert.ok(d.log.some(x => x.op === 'stroke' && x.path.some(p => p[0] === 'L' && p[1] === 6300 * 1024 / R.UV)));
+for (const intercepts of [s.row.intercepts, [[11.8, 3700, 5000]], [[11.8, 5000, 6300]], [[11.8, 5000, 3700]]]) {
+  const row = {...s.row, intercepts};
+  const frame = G.frameOf(R, row, entry('Interceptor').style, {}, 0.75);
+  intercepts.forEach(hit => fits(frame, hit[1], hit[2]));
+}
+for (const unit of [0.59, 0.7, 0.75, 1]) {
+  for (const yaw of [55, -55, 145, 235, 325, 360, 415]) {
+    for (const track of [false, true]) {
+      const row = {u: 5000, v: 5000, yaw: track ? 180 : yaw, ...(track ? {yaws: [[10, yaw], [12, yaw + 25]]} : {})};
+      for (const style of [entry('TURRET').style, {shape: 'cone', angle: 160, r: 2000}]) {
+        const frame = G.frameOf(R, row, style, {}, unit);
+        const facings = style.coneLen && track ? row.yaws.map(p => p[1]) : [row.yaw];
+        for (const facing of facings) {
+          const half = style.coneLen ? style.cone : style.angle / 2;
+          const length = (style.coneLen || style.r) * unit;
+          for (let a = facing - half; a <= facing + half; a += 0.5) {
+            fits(frame, row.u + Math.cos(a * Math.PI / 180) * length,
+                        row.v + Math.sin(a * Math.PI / 180) * length);
+          }
+        }
+      }
+    }
+  }
+}
+""")
+
+
+@pytest.mark.parametrize("git_mode", ["listed", "missing", "failed", "timeout"])
+def test_harvest_refuses_primary_and_linked_checkout_outputs_before_db(
+        gallery, monkeypatch, tmp_path, capsys, git_mode):
+    primary = tmp_path / "primary checkout"
+    primary.mkdir()
+    (primary / ".git").mkdir()
+    root = primary / ".claude/worktrees/gallery"
+    root.mkdir(parents=True)
+    (root / ".git").write_text("gitdir: unused", encoding="utf-8")
+    sibling = tmp_path / "linked sibling"
+    sibling.mkdir()
+    monkeypatch.setattr(gallery, "REPO_ROOT", root)
+    monkeypatch.chdir(primary)
+
+    def worktrees(command, **kwargs):
+        assert command == ["git", "-C", str(root), "worktree", "list", "--porcelain"]
+        if git_mode == "missing":
+            raise FileNotFoundError("git")
+        if git_mode == "timeout":
+            raise subprocess.TimeoutExpired(command, 5)
+        return subprocess.CompletedProcess(command, 1 if git_mode == "failed" else 0,
+                                           f"worktree {primary.as_posix()}\n\nworktree {root.as_posix()}\n\n"
+                                           f"worktree {sibling.as_posix()}\n", "")
+
+    monkeypatch.setattr(subprocess, "run", worktrees)
+    monkeypatch.setattr(gallery, "create_engine", lambda *_: pytest.fail("database opened"))
+    monkeypatch.setenv("DATABASE_URL", "unused")
+    outputs = [Path("webapp/samples.json"), primary / "other.json", root / "samples.json"]
+    if git_mode == "listed":
+        outputs += [sibling / "samples.json", sibling / "nested/samples.json"]
+    for output in outputs:
+        with pytest.raises(SystemExit) as exc:
+            gallery.main(["--out", str(output)])
+        assert exc.value.code == 2
+        assert "repo" in capsys.readouterr().err.lower()
+        assert not output.exists()
+
+
+def test_harvest_allows_output_in_an_unrelated_git_repository(gallery, sample_db, tmp_path, monkeypatch):
+    _, db_path = sample_db
+    other = tmp_path / "unrelated"
+    other.mkdir()
+    (other / ".git").mkdir()
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///" + db_path.as_posix())
+    output = other / "samples.json"
+    assert gallery.main(["--replays", "0", "--out", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["replays"] == 0
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_viewer_exports_live_style_tables():
     script = r"""

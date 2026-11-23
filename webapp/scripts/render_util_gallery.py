@@ -14,7 +14,9 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS.parent))
 
+from app.services.replays import _uv_per_unit  # noqa: E402
 from render_replay_standalone import agent_icon_name, data_uri  # noqa: E402
 
 APP = SCRIPTS.parent / "app"
@@ -40,6 +42,7 @@ def render(samples: dict) -> str:
                   for agent in sorted(agents)},
         "abilityIcons": abilities,
         "assets": {url: data_uri(APP / url.removeprefix("/")) for url in sorted(urls)},
+        "mapScales": _uv_per_unit(),
         "replay_js_sha256": hashlib.sha256(replay.encode("utf-8")).hexdigest(),
     }
     env = Environment(loader=FileSystemLoader(str(GALLERY)), autoescape=select_autoescape(["html"]))

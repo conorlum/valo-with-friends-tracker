@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -105,6 +106,22 @@ def _nonnegative(value):
     return number
 
 
+def _checkout_roots() -> list[Path]:
+    """This checkout, every worktree git lists for it, and any ancestor holding a `.git` entry."""
+    root = REPO_ROOT.resolve()
+    roots = [root]
+    try:
+        listed = subprocess.run(["git", "-C", str(REPO_ROOT), "worktree", "list", "--porcelain"],
+                                capture_output=True, text=True, timeout=5, check=False)
+        if listed.returncode == 0:
+            roots += [Path(line[len("worktree "):].strip()).resolve()
+                      for line in listed.stdout.splitlines() if line.startswith("worktree ")]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    roots += [parent for parent in root.parents if (parent / ".git").exists()]
+    return roots
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replays", type=_nonnegative, default=120)
@@ -113,8 +130,8 @@ def main(argv=None):
                         default=Path(tempfile.gettempdir()) / "valo-util-gallery" / "samples.json")
     args = parser.parse_args(argv)
     output = args.out.resolve()
-    if output.is_relative_to(REPO_ROOT):
-        parser.error("--out must resolve outside the repo")
+    if any(output.is_relative_to(root) for root in _checkout_roots()):
+        parser.error("--out must resolve outside every checkout of the repo")
 
     engine = create_engine(os.environ["DATABASE_URL"])
     try:
