@@ -7,6 +7,7 @@ before its next match. Starting a backfill removes a leftover pause file.
 """
 import argparse
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import random
 import signal
@@ -61,6 +62,19 @@ def owner_stop():
         yield lambda: "paused" if interrupted or plants.pause_requested() else None
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+WEBAPP = Path(__file__).resolve().parents[1]
+
+
+def resume_python():
+    """The `.venv313` interpreter, relative to webapp: a worktree has none of its own,
+    and `with_friends_db.py` then uses the main checkout's."""
+    from scripts.with_friends_db import find_ingest_python
+
+    path = Path(os.path.relpath(find_ingest_python(WEBAPP), WEBAPP))
+    text = str(path).replace("/", "\\")
+    return text if text.startswith("..") else ".\\" + text
 
 
 def _progress(done, left):
@@ -140,7 +154,7 @@ def main(argv=None):
         print(f"unavailable: {result['unavailable']}; failed: {result['failed']}")
         if result["stopped"]:
             print(f"stopped: {result['stopped']}")
-            resume = [r".\.venv313\Scripts\python.exe", r"scripts\with_friends_db.py",
+            resume = [resume_python(), r"scripts\with_friends_db.py",
                       "--expect-database", "valowithfriendsdb", r"scripts\round_plants.py", "backfill"]
             if args.limit is not None:
                 resume += ["--limit", str(args.limit)]

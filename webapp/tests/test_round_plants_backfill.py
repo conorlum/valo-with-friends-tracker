@@ -247,6 +247,7 @@ def test_cli_verification_exit_resume_and_status(db, monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "SessionLocal", lambda: db)
     monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "resume_python", lambda: r".\.venv313\Scripts\python.exe")
 
     def fetch(page, key):
         raise TrackerVerificationTimeout()
@@ -675,6 +676,22 @@ def test_cli_clears_a_leftover_pause_and_a_paused_run_exits_zero(db, monkeypatch
     assert "done: 1; left: 2" in out
     assert not plants.pause_requested()
     assert (tmp_path / "a b" / f"{ids[0]}.json.gz").exists()
+
+
+def test_resume_names_the_interpreter_with_friends_db_uses(monkeypatch, tmp_path):
+    from scripts import round_plants as cli
+    from scripts import with_friends_db
+
+    main = tmp_path / "repo" / "webapp"
+    worktree = tmp_path / "repo" / ".claude" / "worktrees" / "w" / "webapp"
+    worktree.mkdir(parents=True)
+    (main / ".venv313" / "Scripts").mkdir(parents=True)
+    (main / ".venv313" / "Scripts" / "python.exe").write_text("")
+    monkeypatch.setattr(cli, "WEBAPP", worktree)
+    assert cli.resume_python() == r"..\..\..\..\webapp\.venv313\Scripts\python.exe"
+    monkeypatch.setattr(cli, "WEBAPP", main)
+    assert cli.resume_python() == r".\.venv313\Scripts\python.exe"
+    assert with_friends_db.find_ingest_python  # the same lookup the wrapper runs with
 
 
 def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
