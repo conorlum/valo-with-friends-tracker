@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 from .api import BadKey, NotFound, Offline, Refused, Rejected
-from .constants import FAILED_RETRY_S, REFUSED_RETRY_S, REFUSED_WINDOW_S, STATUS_POLL_S
+from .constants import (FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S, REFUSED_WINDOW_S,
+                        STATUS_POLL_S)
 from .files import Watcher, sha256_file
 from .procs import valorant_running
 
@@ -42,18 +43,50 @@ class Engine:
                 return
             self._scan(now)
             if not self.needs_key:
-                active = next(((sha, row) for sha, row in self.state.items()
-                               if row["status"] == "uploading"), None)
-                if active is not None:
-                    sha, row = active
-                    if row["next_try"] <= now:
-                        self._step(sha, row, now)
+                self._poll_held(now)
+            if not self.needs_key:
+                rows = self.state.items()
+                if any(row["status"] == "uploading" for _, row in rows):
+                    # The one transmission slot belongs to the in-flight upload.
+                    for sha, row in rows:
+                        if row["status"] == "uploading" and row["next_try"] <= now:
+                            self._guarded_step(sha, row, now)
+                            break
                 else:
-                    due = self.state.due(now)
-                    if due:
-                        sha = due[0]
-                        self._step(sha, self.state.entry(sha), now)
+                    for sha in self.state.due(now):
+                        row = self.state.entry(sha)
+                        if row["status"] == "held":
+                            continue
+                        # A file that was not available did not use the slot:
+                        # look at the next due entry.
+                        if self._guarded_step(sha, row, now):
+                            break
             self._delete_stored(now)
+
+    def _poll_held(self, now):
+        """Held replays only poll the site; they never occupy the upload slot."""
+        for sha, row in self.state.items():
+            if self.needs_key:
+                return
+            if row["status"] == "held" and row["next_try"] <= now:
+                self._guarded_step(sha, row, now)
+
+    def _guarded_step(self, sha, row, now):
+        """Run one entry's step; a bug for one file must never stop the app."""
+        try:
+            return self._step(sha, row, now)
+        except Exception:
+            logger.exception("Unexpected error while handling one replay; deferring it")
+            try:
+                if self.state.entry(sha) is not None:
+                    self.state.mark(sha, next_try=now + REFUSED_RETRY_S)
+            except Exception:
+                logger.exception("Could not defer the replay")
+            return True
+
+    def _defer(self, sha, now):
+        if self.state.entry(sha) is not None:
+            self.state.mark(sha, next_try=now + STATUS_POLL_S)
 
     def _scan(self, now):
         for path in self.watcher.poll(now):
@@ -113,7 +146,7 @@ class Engine:
 
     def _step(self, sha, row, now):
         try:
-            if row["status"] == "uploading":
+            if row["status"] in ("uploading", "held"):
                 # Status requests transmit no local bytes: a missing/locked file
                 # must not release an in-flight upload's slot.
                 result = self.client.status(row["upload_id"])
@@ -121,45 +154,71 @@ class Engine:
                     self._stored(sha, now)
                 elif result["status"] == "failed":
                     self._failed(sha, now)
+                elif result["status"] == "held":
+                    # Held for an unsupported build or agent, possibly for weeks:
+                    # keep the upload id, free the slot, poll rarely.
+                    self.state.mark(sha, status="held", first_refused_at=None,
+                                    next_try=now + IDLE_SCAN_S)
+                elif row["status"] == "held" and result["status"] not in ("parsing", "queued"):
+                    self.state.mark(sha, next_try=now + IDLE_SCAN_S)
+                elif row["status"] == "held":
+                    self.state.mark(sha, status="uploading", first_refused_at=None,
+                                    next_try=now + STATUS_POLL_S)
                 else:
                     self.state.mark(sha, next_try=now + STATUS_POLL_S)
-                return
+                return True
             path = self._ready_path(sha)
             if path is None:
-                return
+                self._defer(sha, now)
+                return False
             self.state.mark(sha, status="pending", attempts=row["attempts"] + 1)
             if self.client.check(sha):
                 self._stored(sha, now)
-                return
+                return True
             # /check may take time. Revalidate again before sending file bytes.
             path = self._ready_path(sha)
             if path is None:
-                return
+                self._defer(sha, now)
+                return False
             upload_id = self.client.upload(path)
             self.state.mark(sha, status="uploading", upload_id=upload_id,
                             next_try=now + STATUS_POLL_S)
+            return True
         except (Refused, Offline):
             current = self.state.entry(sha)
             first = current.get("first_refused_at")
             if first is None:
                 first = now
-            if now - first >= REFUSED_WINDOW_S:
+            if row["status"] == "held":
+                # Held has no site timeout; an outage never fails it.
+                self.state.mark(sha, next_try=now + REFUSED_RETRY_S)
+            elif now - first >= REFUSED_WINDOW_S:
                 self._failed(sha, now)
             else:
                 self.state.mark(sha, first_refused_at=first, next_try=now + REFUSED_RETRY_S)
+            return True
         except Rejected:
+            if row["status"] == "held":
+                # Held has its own upload id and no site timeout: keep it held.
+                self.state.mark(sha, next_try=now + IDLE_SCAN_S)
+                return True
             self.state.mark(sha, status="rejected", upload_id=None, first_refused_at=None,
                             next_try=now + FAILED_RETRY_S)
+            return True
         except BadKey:
             # On restart the first due call discovers a revoked key again.
             self.needs_key = True
+            return True
         except NotFound:
-            if row["status"] == "uploading":
+            if row["status"] in ("uploading", "held"):
                 self._pending(sha, now)
             else:
                 self._failed(sha, now)
+            return True
         except OSError:
             logger.warning("Replay became unavailable before upload; waiting for another tick")
+            self._defer(sha, now)
+            return False
 
     def _stored(self, sha, now):
         self.state.mark(sha, status="stored", stored_at=now, first_refused_at=None)
@@ -178,7 +237,7 @@ class Engine:
             self.needs_key = False
             now = self.clock()
             for sha, row in self.state.items():
-                if row["status"] == "uploading":
+                if row["status"] in ("uploading", "held"):
                     self._pending(sha, now)
 
     def _delete_stored(self, now):

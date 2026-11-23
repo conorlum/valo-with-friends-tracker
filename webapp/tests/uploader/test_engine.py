@@ -660,13 +660,20 @@ def test_state_drop_and_snapshot_are_durable(rig):
 
 
 @pytest.mark.parametrize("output,expected", [
-    ("VALORANT-Win64-Shipping.exe 123 Console 1 42,000 K", True),
-    ("INFO: No tasks are running which match the specified criteria.", False),
-    ("other.exe 123 Console 1 42,000 K", False),
+    ('"VALORANT-Win64-Shipping.exe","123","Console","1","42,000 K"\r\n', True),
+    ('"valorant-win64-shipping.exe","123","Console","1","42,000 K"\r\n', True),
+    ('"other.exe","1","Console","1","1 K"\r\n"VALORANT-Win64-Shipping.exe","123","Console","1","42,000 K"\r\n', True),
+    ('"VALORANT-Win64-Shipping.exe.bak","123","Console","1","42,000 K"\r\n', False),
+    ('"VALORANT-Win64-Ship","123","Console","1","42,000 K"\r\n', False),
+    ("INFO: No tasks are running which match the specified criteria.\r\n", False),
+    ('"other.exe","123","Console","1","42,000 K"\r\n', False),
+    ("", False),
+    ('"unterminated', False),
 ])
 def test_process_listing(output, expected):
     def listing(args, **kwargs):
-        assert args == ["tasklist", "/FI", "IMAGENAME eq " + constants.PROCESS_NAME, "/NH"]
+        assert args == ["tasklist", "/FI", "IMAGENAME eq " + constants.PROCESS_NAME, "/NH",
+                        "/FO", "CSV"]
         assert kwargs["timeout"] > 0
         if os.name == "nt":
             assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
@@ -838,3 +845,339 @@ def test_additional_api_error_mapping(code):
     expected = api.NotFound if code == 404 else api.Offline
     with pytest.raises(expected):
         api.Client("https://example.invalid", "synthetic-key", opener=Opener()).key_info()
+
+
+# --- R1.1: held replays, unavailable first file, unexpected exceptions ---------------------------
+
+def make_held(rig, name="held.vrf", content=b"held replay"):
+    """Discover a file and move it to held through the real status path."""
+    path = rig.file(name, content)
+    sha = sha256_file(path)
+    rig.discover()
+    assert rig.state.entry(sha)["status"] == "uploading"
+    rig.client.statuses = [{"status": "held"}]
+    rig.tick(10)
+    return path, sha
+
+
+def test_held_keeps_id_frees_slot_and_is_not_queued(rig):
+    path, sha = make_held(rig)
+    row = rig.state.entry(sha)
+    assert row["status"] == "held"
+    assert row["upload_id"]
+    assert row["next_try"] == rig.clock.now + constants.IDLE_SCAN_S
+    status = rig.engine.status()
+    assert status["queue_length"] == 0 and status["state"] == "idle"
+    assert rig.engine.idle()
+    # A supported replay behind it uploads, and the held sha is never uploaded again.
+    other = rig.file("next.vrf", b"supported replay")
+    rig.discover()
+    rig.tick(10)
+    assert [call[1] for call in uploads(rig.client)] == ["held.vrf", "next.vrf"]
+    assert rig.state.entry(sha256_file(other))["status"] == "uploading"
+    assert rig.state.entry(sha)["status"] == "held"
+    # Seeing the same bytes again (copy or rescan) adds a path but never uploads.
+    rig.file("copy.vrf", b"held replay")
+    rig.discover()
+    rig.tick(10)
+    assert [call[1] for call in uploads(rig.client)] == ["held.vrf", "next.vrf"]
+    assert rig.state.entry(sha)["status"] == "held"
+
+
+def test_held_survives_restart_and_polls_at_most_every_half_hour(rig):
+    path, sha = make_held(rig)
+    rig.restart()
+    polls = lambda: [c for c in rig.client.calls if c[0] == "status"]
+    before = len(polls())
+    rig.tick(constants.IDLE_SCAN_S - 1)
+    assert len(polls()) == before
+    rig.client.statuses = [{"status": "held"}]
+    rig.tick(1)
+    assert len(polls()) == before + 1
+    assert rig.state.entry(sha)["status"] == "held"
+    assert rig.state.entry(sha)["next_try"] == rig.clock.now + constants.IDLE_SCAN_S
+    rig.tick(constants.IDLE_SCAN_S - 1)
+    assert len(polls()) == before + 1
+
+
+@pytest.mark.parametrize("outcome,expected", [("stored", "stored"), ("failed", "failed"),
+                                              ("parsing", "uploading")])
+def test_held_outcomes(rig, outcome, expected):
+    path, sha = make_held(rig)
+    rig.client.statuses = [{"status": outcome}]
+    rig.tick(constants.IDLE_SCAN_S)
+    row = rig.state.entry(sha)
+    assert row["status"] == expected
+    if expected == "stored":
+        assert path.name in rig.engine.status()["last_stored"]
+        assert row["stored_at"] == rig.clock.now
+    if expected == "failed":
+        assert row["upload_id"] is None and row["next_try"] == rig.clock.now + DAY
+    if expected == "uploading":
+        assert row["upload_id"]
+        assert rig.engine.status()["state"] == "uploading"
+
+
+def test_stored_after_held_is_deleted_by_retention_rules(rig):
+    path, sha = make_held(rig)
+    os.utime(path, (rig.clock.now - 20 * DAY, rig.clock.now - 20 * DAY))
+    rig.client.statuses = [{"status": "stored"}]
+    rig.tick(constants.IDLE_SCAN_S)
+    assert rig.state.entry(sha)["status"] == "stored"
+    assert not path.exists()
+
+
+def test_held_notfound_and_key_replacement_behave_like_uploading(rig):
+    path, sha = make_held(rig)
+    old_id = rig.state.entry(sha)["upload_id"]
+    rig.client.statuses = [api.NotFound()]
+    rig.tick(constants.IDLE_SCAN_S)
+    # Back to pending, then sent again as a new upload in the freed slot.
+    assert rig.state.entry(sha)["upload_id"] != old_id
+    assert [call[1] for call in uploads(rig.client)] == ["held.vrf", "held.vrf"]
+    rig.client.statuses = [{"status": "stored"}]
+    rig.tick(constants.STATUS_POLL_S)
+    assert rig.state.entry(sha)["status"] == "stored"
+    path2, sha2 = make_held(rig, "h2.vrf", b"second held")
+    replacement = Client()
+    rig.engine.key_replaced(replacement)
+    assert rig.state.entry(sha2)["status"] == "pending"
+    assert rig.state.entry(sha2)["upload_id"] is None
+
+
+def test_held_poll_offline_keeps_held_and_backs_off(rig):
+    path, sha = make_held(rig)
+    rig.client.statuses = [api.Offline()]
+    rig.tick(constants.IDLE_SCAN_S)
+    row = rig.state.entry(sha)
+    assert row["status"] == "held"
+    assert row["next_try"] == rig.clock.now + constants.REFUSED_RETRY_S
+
+
+def test_held_does_not_block_uploading_slot_polls(rig):
+    path, sha = make_held(rig)
+    other = rig.file("next.vrf", b"supported replay")
+    rig.discover()
+    assert rig.state.entry(sha256_file(other))["status"] == "uploading"
+    rig.client.statuses = [{"status": "stored"}]
+    rig.tick(10)
+    assert rig.state.entry(sha256_file(other))["status"] == "stored"
+    assert rig.state.entry(sha)["status"] == "held"
+
+
+def test_held_state_round_trips_through_state_file(rig):
+    path, sha = make_held(rig)
+    assert State(env=rig.env).entry(sha)["status"] == "held"
+
+
+@pytest.mark.parametrize("failure", ["locked", "hash_error"])
+def test_unavailable_first_due_file_does_not_starve_later_files(rig, monkeypatch, failure):
+    import valo_uploader.engine as engine
+
+    first = rig.file("a.vrf", b"first replay")
+    second = rig.file("b.vrf", b"second replay")
+    sha_first, sha_second = sha256_file(first), sha256_file(second)
+    rig.client.known = True
+    rig.engine.needs_key = True          # discover only, send nothing yet
+    rig.discover()
+    rig.engine.needs_key = False
+    order = list(rig.state.due(rig.clock.now))
+    assert set(order) == {sha_first, sha_second}
+    blocked = order[0]
+    blocked_path = first if blocked == sha_first else second
+    free = sha_second if blocked == sha_first else sha_first
+    if failure == "locked":
+        rig.watcher.exclusive_ok = lambda path: path != blocked_path
+    elif failure == "hash_error":
+        real = engine.sha256_file
+
+        def flaky(path):
+            if path == blocked_path:
+                raise PermissionError("locked")
+            return real(path)
+
+        monkeypatch.setattr(engine, "sha256_file", flaky)
+    rig.tick()
+    assert ("check", free) in rig.client.calls
+    assert rig.state.entry(free)["status"] == "stored"
+    row = rig.state.entry(blocked)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0, "readiness failures are not upload attempts"
+    assert row["next_try"] > rig.clock.now
+    # Once the file is available again it is uploaded on a later tick.
+    rig.watcher.exclusive_ok = lambda path: True
+    monkeypatch.undo()
+    rig.tick(constants.STATUS_POLL_S)
+    assert rig.state.entry(blocked)["status"] == "stored"
+
+
+def test_missing_first_file_is_dropped_and_next_file_proceeds(rig):
+    first = rig.file("a.vrf", b"first replay")
+    second = rig.file("b.vrf", b"second replay")
+    rig.client.known = True
+    rig.engine.needs_key = True
+    rig.discover()
+    rig.engine.needs_key = False
+    order = list(rig.state.due(rig.clock.now))
+    gone = first if order[0] == sha256_file(first) else second
+    gone.unlink()
+    rig.tick()
+    assert rig.state.entry(order[0]) is None
+    assert rig.state.entry(order[1])["status"] == "stored"
+
+
+def test_oserror_during_upload_defers_instead_of_blocking(rig):
+    first = rig.file("a.vrf", b"first replay")
+    second = rig.file("b.vrf", b"second replay")
+    rig.engine.needs_key = True
+    rig.discover()
+    rig.engine.needs_key = False
+    order = list(rig.state.due(rig.clock.now))
+    failing = first.name if order[0] == sha256_file(first) else second.name
+    original = rig.client.upload
+
+    def upload(path):
+        if Path(path).name == failing:
+            raise PermissionError("locked")
+        return original(path)
+
+    rig.client.upload = upload
+    rig.tick()
+    assert [call[1] for call in uploads(rig.client)] == [
+        second.name if failing == first.name else first.name]
+
+
+def test_unexpected_exception_in_one_entry_is_logged_and_others_continue(rig, caplog):
+    first = rig.file("a.vrf", b"first replay")
+    second = rig.file("b.vrf", b"second replay")
+    rig.engine.needs_key = True
+    rig.discover()
+    rig.engine.needs_key = False
+    order = list(rig.state.due(rig.clock.now))
+    broken = order[0]
+    original = rig.client.check
+
+    def check(sha):
+        if sha == broken:
+            raise RuntimeError("boom")
+        return original(sha)
+
+    rig.client.check = check
+    with caplog.at_level("ERROR"):
+        rig.tick()                                   # must not raise
+    assert any("boom" in (r.exc_text or "") or "failed" in r.getMessage().lower()
+               for r in caplog.records)
+    row = rig.state.entry(broken)
+    assert row["next_try"] > rig.clock.now
+    rig.tick(constants.STATUS_POLL_S)
+    assert rig.state.entry(order[1])["status"] == "uploading"
+
+
+def test_unmapped_4xx_on_upload_uploads_once_rejects_and_lets_next_file_proceed(rig):
+    first = rig.file("a.vrf", b"first replay")
+    second = rig.file("b.vrf", b"second replay")
+    rig.engine.needs_key = True
+    rig.discover()
+    rig.engine.needs_key = False
+    order = list(rig.state.due(rig.clock.now))
+    bad = first.name if order[0] == sha256_file(first) else second.name
+    original = rig.client.upload
+
+    def upload(path):
+        rig.client.calls.append(("upload", Path(path).name))
+        if Path(path).name == bad:
+            raise api.Rejected("too big")
+        return "upload-ok"
+
+    rig.client.upload = upload
+    for _ in range(12):
+        rig.tick(constants.STATUS_POLL_S)
+    names = [call[1] for call in uploads(rig.client)]
+    assert names.count(bad) == 1
+    assert len(names) == 2
+    bad_path = first if bad == first.name else second
+    row = rig.state.entry(sha256_file(bad_path))
+    assert row["status"] == "rejected"
+    assert row["next_try"] > rig.clock.now + DAY - 200
+    assert bad_path.exists()
+    other = second if bad_path == first else first
+    assert rig.state.entry(sha256_file(other))["status"] in ("uploading", "stored")
+
+
+def test_http_413_through_real_client_uploads_once(rig):
+    path = rig.file()
+    sha = sha256_file(path)
+    seen = []
+
+    class Opener:
+        def open(self, request, timeout):
+            data = request.data
+            if data is not None and not isinstance(data, bytes):
+                b"".join(data)
+            seen.append(request.full_url)
+            if request.full_url.endswith("/check"):
+                return io.BytesIO(b'{"known": false}')
+            raise HTTPError(request.full_url, 413, "too large", {}, io.BytesIO(b"{}"))
+
+    rig.restart(api.Client("https://example.invalid", "key", opener=Opener()))
+    for _ in range(10):
+        rig.tick(constants.STATUS_POLL_S)
+    assert [u for u in seen if u.endswith("/upload")] == [seen[1]]
+    assert rig.state.entry(sha)["status"] == "rejected"
+    assert path.exists()
+
+
+def test_held_entry_poll_rejected_stays_held(rig):
+    path, sha = make_held(rig)
+    rig.client.statuses = [api.Rejected("forbidden")]
+    rig.tick(constants.IDLE_SCAN_S)
+    row = rig.state.entry(sha)
+    assert row["status"] == "held"
+    assert row["upload_id"]
+    assert row["next_try"] == rig.clock.now + constants.IDLE_SCAN_S
+
+
+def test_uploading_entry_poll_rejected_is_rejected_for_a_day(rig):
+    path = rig.file()
+    sha = sha256_file(path)
+    rig.discover()
+    rig.client.statuses = [api.Rejected("forbidden")]
+    rig.tick(constants.STATUS_POLL_S)
+    row = rig.state.entry(sha)
+    assert row["status"] == "rejected" and row["next_try"] == rig.clock.now + DAY
+
+
+def test_unexpected_exception_while_polling_status_is_contained(rig):
+    path = rig.file()
+    sha = sha256_file(path)
+    rig.discover()
+    rig.client.statuses = [{"unexpected": "shape"}]   # no "status" key
+    rig.tick(10)                                       # must not raise
+    assert rig.state.entry(sha)["status"] == "uploading"
+    assert rig.state.entry(sha)["next_try"] > rig.clock.now
+
+
+def test_runner_survives_engine_tick_exception():
+    clock = Clock()
+    stop = Event()
+    ticks = []
+
+    class FakeEngine:
+        def __init__(self):
+            self.clock = clock
+            self.sleep = clock.sleep
+
+        def procs(self):
+            return True
+
+        def tick(self, now):
+            ticks.append(now)
+            if len(ticks) == 3:
+                stop.set()
+            raise RuntimeError("bug in one tick")
+
+        def status(self):
+            return {"queue_length": 0}
+
+    run(FakeEngine(), stop)
+    assert ticks == [START, START + 10, START + 20]

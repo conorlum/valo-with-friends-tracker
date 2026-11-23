@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from http.client import HTTPException
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -51,21 +52,25 @@ def _retry_after(headers):
 
 def _http_error(error):
     """All HTTP status mappings live here, including future API-specific errors."""
-    if error.code in (429, 503):
+    code = error.code
+    if code in (408, 425, 429, 503):
         raise Refused(_retry_after(error.headers)) from None
-    if 500 <= error.code < 600:
+    if 500 <= code < 600:
         raise Offline("Cannot reach the upload service") from None
-    if error.code == 404:
+    if code == 404:
         raise NotFound("Upload is no longer available with this key") from None
-    if error.code == 401:
+    if code == 401:
         raise BadKey("Upload key is missing, unknown or revoked") from None
-    if error.code == 400:
+    if 400 <= code < 500:
+        # 400 and every other client error the site has no special meaning for:
+        # keep the file and retry after a day, never hammer the site.
         try:
             message = json.load(error).get("error", "Replay rejected")
-        except (ValueError, AttributeError, OSError):
+        except (ValueError, AttributeError, OSError, UnicodeError):
             message = "Replay rejected"
         raise Rejected(str(message)) from None
-    raise error
+    # An unfollowed redirect or any status outside 400-599.
+    raise Offline("Unexpected response from the upload service") from None
 
 
 class Client:
@@ -88,7 +93,9 @@ class Client:
                 _http_error(error)
             finally:
                 error.close()
-        except (URLError, TimeoutError, ConnectionError) as error:
+        except (URLError, HTTPException, OSError) as error:
+            # Includes IncompleteRead and other protocol failures while the
+            # response body is read, and socket/TLS errors.
             raise Offline("Cannot reach the upload service") from error
         except (ValueError, UnicodeError) as error:
             raise Offline("Invalid response from the upload service") from error

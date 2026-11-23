@@ -7,7 +7,10 @@ from .constants import ACTIVE_SCAN_S, IDLE_SCAN_S, PROCESS_POLL_S
 
 def run(engine, stop, after_tick=None):
     def tick(now):
-        engine.tick(now)
+        try:
+            engine.tick(now)
+        except Exception:
+            logging.getLogger("valo_uploader.runner").exception("Engine tick failed")
         if after_tick is not None:
             try:
                 after_tick(now)

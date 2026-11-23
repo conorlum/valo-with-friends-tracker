@@ -1,5 +1,7 @@
+import http.client
 import io
 import json
+import ssl
 import logging
 from datetime import datetime, timezone
 from email.message import Message
@@ -133,6 +135,110 @@ class FakeOpener:
         if self.error:
             raise self.error
         return io.BytesIO(json.dumps(self.response).encode())
+
+
+class BrokenBody:
+    def __init__(self, error):
+        self.error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, size=-1):
+        raise self.error
+
+
+@pytest.mark.parametrize("error", [
+    http.client.IncompleteRead(b"par", 10),
+    http.client.RemoteDisconnected("closed"),
+    http.client.BadStatusLine("junk"),
+    http.client.HTTPException("protocol"),
+    ConnectionResetError("reset"),
+    TimeoutError("slow"),
+    ssl.SSLError("tls"),
+    OSError("socket"),
+])
+@pytest.mark.parametrize("call", ["check", "upload", "status", "key_info"])
+def test_response_transport_failures_become_offline(tmp_path, error, call):
+    path = tmp_path / "sample.vrf"
+    path.write_bytes(b"bytes")
+
+    class Opener:
+        def open(self, request, timeout):
+            data = request.data
+            if data is not None and not isinstance(data, bytes):
+                b"".join(data)
+            return BrokenBody(error)
+
+    client = Client("https://example.invalid", "key", opener=Opener())
+    args = {"check": ("a" * 64,), "upload": (path,), "status": ("upload-1",), "key_info": ()}[call]
+    with pytest.raises(Offline):
+        getattr(client, call)(*args)
+
+
+def _http_opener(code, body=b"{}", headers=None):
+    class Opener:
+        def open(self, request, timeout):
+            data = request.data
+            if data is not None and not isinstance(data, bytes):
+                b"".join(data)
+            message = Message()
+            for key, value in (headers or {}).items():
+                message[key] = value
+            raise HTTPError("https://example.invalid", code, "synthetic", message, io.BytesIO(body))
+
+    return Opener()
+
+
+def _call_all(tmp_path, opener):
+    path = tmp_path / "sample.vrf"
+    path.write_bytes(b"bytes")
+    client = Client("https://example.invalid", "key", opener=opener)
+    return [lambda: client.check("a" * 64), lambda: client.upload(path),
+            lambda: client.status("upload-1"), lambda: client.key_info()]
+
+
+@pytest.mark.parametrize("code", [402, 403, 405, 409, 410, 413, 415, 422, 451])
+def test_unmapped_4xx_is_rejected_with_site_message(tmp_path, code):
+    for call in _call_all(tmp_path, _http_opener(code, b'{"error": "nope"}')):
+        with pytest.raises(Rejected, match="nope"):
+            call()
+    for call in _call_all(tmp_path, _http_opener(code, b"not json")):
+        with pytest.raises(Rejected):
+            call()
+
+
+@pytest.mark.parametrize("code", [408, 425])
+def test_timeout_like_4xx_is_refused_with_retry_after(tmp_path, code):
+    for call in _call_all(tmp_path, _http_opener(code, headers={"Retry-After": "42"})):
+        with pytest.raises(Refused) as caught:
+            call()
+        assert caught.value.retry_after_s == 42
+    for call in _call_all(tmp_path, _http_opener(code)):
+        with pytest.raises(Refused) as caught:
+            call()
+        assert caught.value.retry_after_s == constants.REFUSED_RETRY_S
+
+
+@pytest.mark.parametrize("code", [301, 302, 304, 307, 308, 100, 600])
+def test_non_error_statuses_reaching_the_handler_are_offline(tmp_path, code):
+    for call in _call_all(tmp_path, _http_opener(code)):
+        with pytest.raises(Offline):
+            call()
+
+
+@pytest.mark.parametrize("code", list(range(300, 312)) + list(range(400, 430)) + [500, 502, 599])
+def test_no_http_error_ever_escapes(tmp_path, code):
+    for call in _call_all(tmp_path, _http_opener(code)):
+        try:
+            call()
+        except HTTPError:
+            pytest.fail("HTTPError escaped the client")
+        except Exception:
+            pass
 
 
 def test_upload_streams_exact_file_bytes_with_auth_and_content_length(tmp_path, monkeypatch):

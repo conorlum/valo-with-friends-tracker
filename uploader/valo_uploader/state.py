@@ -7,7 +7,7 @@ import time
 
 from .paths import app_dir
 
-STATUSES = frozenset({"pending", "uploading", "stored", "failed", "rejected"})
+STATUSES = frozenset({"pending", "uploading", "held", "stored", "failed", "rejected"})
 
 
 class State:

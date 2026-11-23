@@ -118,6 +118,41 @@ def test_menu_model(state, label, pause):
     assert rows[4][3] is True
 
 
+@pytest.mark.parametrize("state,label", [("paused", "Paused"), ("needs_key", "Needs key"),
+                                         ("uploading", "Uploading"), ("queued", "Queued"),
+                                         ("idle", "Idle")])
+def test_update_message_sits_beside_status_never_replacing_it(state, label):
+    status = dict(state=state, paused=state == "paused", queue_length=2 if state == "queued" else 0,
+                  last_stored=[])
+    plain = menu_model(status, False)
+    shown = menu_model({**status, "message": "Updated to v9.9.9"}, False)
+    assert shown[0] == plain[0]
+    assert shown[0][0].startswith("Status: " + label)
+    assert shown[1] == ("Updated to v9.9.9", None, False, None)
+    assert shown[2:] == plain[1:]
+
+
+def test_tray_keeps_current_status_after_update_message():
+    from valo_uploader.tray import Tray
+
+    current = dict(state="uploading", paused=False, queue_length=1, last_stored=[])
+    tray = Tray(status=lambda: current, run_key_on=lambda: False, on_pause=None, on_open_log=None,
+                on_startup=None, on_change_key=None, on_quit=None)
+    tray.icon = Mock()
+    tray.set_message("Updated to v9.9.9")
+    for state in ("uploading", "paused", "needs_key"):
+        current = dict(current, state=state, paused=state == "paused")
+        tray.refresh()
+        assert tray.rows()[0][0].startswith("Status: " + {"uploading": "Uploading",
+                                                          "paused": "Paused",
+                                                          "needs_key": "Needs key"}[state])
+        assert tray.icon.title.startswith("ValoUploader - " + {"uploading": "Uploading",
+                                                               "paused": "Paused",
+                                                               "needs_key": "Needs key"}[state])
+        assert "Updated" not in tray.icon.title
+        assert tray.rows()[1][0] == "Updated to v9.9.9"
+
+
 def test_install_precedes_guard_and_relaunch_exits(rig, monkeypatch):
     monkeypatch.setattr(app.instance, "acquire", lambda **kw: rig.calls.append("acquire"))
     assert start(rig, frozen=True) == 0

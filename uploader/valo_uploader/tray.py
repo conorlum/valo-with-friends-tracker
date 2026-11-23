@@ -7,11 +7,13 @@ def menu_model(status, run_key_on) -> list[tuple]:
     """Rows are (label, action or submenu rows, enabled, checked or None)."""
     labels = {"paused": "Paused", "needs_key": "Needs key", "uploading": "Uploading",
               "queued": "Queued", "idle": "Idle"}
-    text = status.get("message") or labels[status["state"]]
-    if not status.get("message") and status["queue_length"]:
+    text = labels[status["state"]]
+    if status["queue_length"]:
         text += f" ({status['queue_length']} queued)"
     uploads = [(name, None, False, None) for name in reversed(status["last_stored"][-5:])]
+    message = [(status["message"], None, False, None)] if status.get("message") else []
     return [("Status: " + text, None, False, None),
+            *message,
             ("Last uploads", uploads or [("None yet", None, False, None)], True, None),
             ("Resume" if status["paused"] else "Pause", "pause", True, None),
             ("Open log", "open_log", True, None),
