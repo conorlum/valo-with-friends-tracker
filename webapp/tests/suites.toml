@@ -83,6 +83,7 @@ guards = [
 about = "tracker.gg ingestion: discovery and paging, the ledger, retries, outcome reports, write preflight, and the demo adapter."
 tests = [
   "tests/test_ingest_*.py", "tests/test_tracker_ingest_contract.py", "tests/test_trackergg_history_pagination.py",
+  "tests/test_tracker_verification.py",
   "tests/test_round_player_spend_ingest.py", "tests/test_demo_adapter_contract.py",
 ]
 guards = [
