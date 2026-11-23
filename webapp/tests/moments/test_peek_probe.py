@@ -3,8 +3,12 @@
 import gzip
 import io
 import json
+import re
+import shutil
+import subprocess
 import sys
 import threading
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -473,3 +477,198 @@ def test_partial_round_and_setup_failures(monkeypatch, tmp_path, capsys, failure
     if failure != "fetch":
         assert "Traceback" in capsys.readouterr().err
     assert "Stranger#1" not in (out / "coverage.json").read_text()
+
+
+class PeekHTML(HTMLParser):
+    def __init__(self, text):
+        super().__init__()
+        self.sections, self.cards, self.links, self.scripts = [], [], [], []
+        self.payload = ""
+        self.in_data = False
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "section" and "data-type" in attrs:
+            self.sections.append(attrs)
+        if tag == "article":
+            self.cards.append(attrs)
+        if tag == "a":
+            self.links.append(attrs)
+        if tag == "script":
+            self.scripts.append(attrs)
+            self.in_data = attrs.get("type") == "application/json"
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_data = False
+
+    def handle_data(self, data):
+        if self.in_data:
+            self.payload += data
+
+
+def page_row(index, **kwargs):
+    # The complete opening shape, including the nullable unclassified fields.
+    return row(index, opponent=5, t0=10.0, t1=12.0, t_event=11.5, t_first_sight=10.5,
+               t_onset=10.5, speed_mps=5.0, sideways_m=2.0, exposure_s=.4,
+               repeek_gap_s=None, repeek_spot_m=None, distance_m=15.0, gun_class="rifle",
+               agent="Jett", asset="Toy", opponent_label="the enemy Omen") | kwargs
+
+
+def answer_key(r):
+    return f"{r['uuid']}|{r['round']}|{r['slot']}|{r['i']}"
+
+
+def test_build_page_sampling_safety_and_answer_keys(tmp_path):
+    players = {"friend-id": "Invented#A", "second-id": "Fiction#B"}
+    rows = []
+    for i in range(20):
+        named = i % 4 != 3
+        pid = "friend-id" if i % 2 == 0 else "second-id"
+        rows.append(page_row(i, type=probe.pc.TYPES[i % 6], friend=named,
+                             player_id=pid if named else "stranger-id",
+                             player_label=players[pid] if named else "Sage", agent="Sage",
+                             name="Stranger#1", reason="unmeasured" if i % 6 == 5 else None,
+                             jiggles=2, result="lost" if i % 2 else "won"))
+    rows[0]["opponent_label"] = "the enemy </script><img src=x onerror=alert(1)>"
+    page = probe.build_page(rows, players, tmp_path, per_type=2, seed=19)
+    text = page.read_text(encoding="utf-8")
+    parsed = PeekHTML(text)
+    payload = json.loads(parsed.payload)
+    assert page == tmp_path / "peeks.html"
+    assert [s["data-type"] for s in parsed.sections] == list(probe.pc.TYPES)
+    assert [int(s["data-total"]) for s in parsed.sections] == [4, 4, 3, 3, 3, 3]
+    assert all(sum(c["data-type"] == t for c in parsed.cards) == 2 for t in probe.pc.TYPES)
+    cards = payload["cards"]
+    assert {c["key"] for c in cards} == {c["data-key"] for c in parsed.cards}
+    assert all(c["key"] == answer_key(c["row"]) for c in cards)
+    assert all(c["row"]["friend"] for c in cards if c["row"]["type"] in ("held", "wide_swing", "slow_peek", "re_peek"))
+    assert "Stranger#1" not in text and "stranger-id" not in parsed.payload
+    assert "</script><img" not in text and "\\u003c" in parsed.payload
+    assert all("src" not in script for script in parsed.scripts)
+    assert all(re.fullmatch(re.escape(probe.SITE) + r"/replays/[0-9a-f-]{36}\?round=1&t=8\.5", a["href"])
+               and a["target"] == "_blank" for a in parsed.links)
+    assert "after 2 jiggles" in text and "Everyone's average" in text
+    assert "jiggled yes" in text and "jiggled no" not in text
+    assert "walls and smokes only" in text and "thresholds are a draft" in text
+    assert probe.build_page(rows, players, tmp_path, per_type=2, seed=19).read_text(encoding="utf-8") == text
+    # With room for all examples, preserve safe enemy labels and strip raw names.
+    rows[-1]["player_label"] = "Stranger#1"
+    rows[3]["player_label"] = "the enemy Sage"
+    all_text = probe.build_page(rows, players, tmp_path, per_type=20).read_text(encoding="utf-8")
+    assert "Stranger#1" not in all_text
+    assert "the enemy Sage vs the enemy Omen" in all_text
+
+
+def test_build_page_samples_each_other_reason_and_preserves_card_order(tmp_path):
+    players = {"friend-id": "Invented#A"}
+    rows = [page_row(i, type="other", reason="no_line", friend=i >= 18,
+                     player_id="friend-id" if i >= 18 else "stranger-id",
+                     player_label="Invented#A" if i >= 18 else "Jett") for i in range(20)]
+    rows.append(page_row(20, type="other", reason="unmeasured"))
+    page = probe.build_page(rows, players, tmp_path, per_type=2, seed=0)
+    text = page.read_text(encoding="utf-8")
+    parsed = PeekHTML(text)
+    cards = json.loads(parsed.payload)["cards"]
+    assert [c["row"]["reason"] for c in cards] == ["no_line", "no_line", "unmeasured"]
+    assert all(c["row"]["friend"] for c in cards)
+    assert {c["row"]["i"] for c in cards[:2]} == {18, 19}
+    assert '<h3>no line (20)</h3>' in text
+    assert '<h3>unmeasured (1)</h3>' in text
+    assert text.index('<h3>no line (20)</h3>') < text.index('<h3>unmeasured (1)</h3>')
+    assert parsed.sections[-1] == {"data-type": "other", "data-total": "21"}
+    assert [c["key"] for c in cards] == [c["data-key"] for c in parsed.cards]
+    assert probe.build_page(rows, players, tmp_path, per_type=2, seed=0).read_text(encoding="utf-8") == text
+
+
+def test_build_page_omits_empty_player_types_and_splits(tmp_path):
+    players = {"friend-id": "Invented#A"}
+    page = probe.build_page([page_row(i) for i in range(3)], players, tmp_path)
+    text = page.read_text(encoding="utf-8")
+    table = text.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    assert "slow peek" not in table
+    assert "jiggled yes" not in table
+    assert "<td>0</td>" not in table
+    assert "<td>wide swing</td>" in table and "<td>wide swing / jiggled no</td>" in table
+    assert table.count("<tr>") == 2
+
+
+def test_run_page_paths_and_offline_rebuild(monkeypatch, tmp_path):
+    patch_geometry(monkeypatch)
+    uuid = UUIDS[0]
+    blob = toy_blob()
+    openings = [page_row(i, type="other", reason=reason, t_onset=None if i < 3 else 10.25,
+                         t_event=None if i == 0 else 11.5, t0=1.0 if i == 0 else 10.0,
+                         opponent=None if i == 0 else 5,
+                         speed_mps=None, sideways_m=None, exposure_s=None)
+                for i, reason in enumerate(("no_gun", "no_line", "no_onset", "unmeasured"))]
+    monkeypatch.setattr(peeks, "round_openings", lambda rnd, blob: openings)
+    serve(monkeypatch, {f"/replays/{uuid}": html(context()), f"/replays/{uuid}/moments.json": b"{}",
+                        f"/replays/{uuid}/1.json": json.dumps(blob).encode(), "/static/img/maps/Toy.png": b"png"})
+    out = tmp_path / "out"
+    assert probe.main(["run", "--uuids", uuid, "--jobs", "1", "--friends", str(roster(tmp_path)),
+                       "--out", str(out)]) == 0
+    before = (out / "peeks.html").read_text(encoding="utf-8")
+    parsed = PeekHTML(before)
+    cards = json.loads(parsed.payload)["cards"]
+    assert len(cards) == 4
+    sidecar = {p["key"]: p["paths"] for p in
+               map(json.loads, (out / "paths.jsonl").read_text().splitlines())}
+    assert set(sidecar) == {answer_key(r) for r in read_rows(out)}
+    rnd = engine.RoundInputs(blob, toys.midwall_hall(), engine.ControlLink(db_deaths=((5, 12.5),)))
+    for card in cards:
+        r, paths = card["row"], card["paths"]
+        assert paths == sidecar[card["key"]]
+        ref = 1.0 if r["reason"] == "no_gun" else 10.25 if r["reason"] == "unmeasured" else 11.5
+        assert card["t_ref"] == ref
+        assert card["viewer_url"].endswith(f"&t={max(0, ref - 2):g}")
+        assert paths["sight_line"] == (r["reason"] == "unmeasured")
+        assert paths["px_to_image"] == 1 / geometry.PX
+        assert paths["m_per_px"] == rnd.geo.m_per_px
+        assert len(paths["player"]) == 49
+        if r["opponent"] is None:
+            assert paths["opponent"] == []
+        else:
+            assert len(paths["opponent"]) == 49
+        for label, slot in (("player", 0), ("opponent", r["opponent"])):
+            for t, x, y in paths[label]:
+                assert (t - (ref - 2)) * 16 == pytest.approx(round((t - (ref - 2)) * 16))
+                expected = rnd.pos(slot, t) if rnd.alive(slot, t) else None
+                assert [x, y] == (list(expected[:2]) if expected else [None, None])
+    monkeypatch.setattr(probe, "_urlopen", lambda *a, **k: pytest.fail("page must never fetch"))
+    assert probe.main(["page", "--out", str(out)]) == 0
+    assert (out / "peeks.html").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_page_answer_state_scores_and_storage_failures():
+    js = Path(probe.__file__).with_name("peek_page.js")
+    rows = [page_row(0), page_row(1)]
+    script = f"""
+const p = require({json.dumps(str(js))});
+const state = {{}};
+p.recordRight(state, {json.dumps(answer_key(rows[0]))}, 'wide_swing');
+p.recordCorrected(state, {json.dumps(answer_key(rows[1]))}, 'held');
+const broken = {{getItem() {{ throw Error('private'); }}, setItem() {{ throw Error('full'); }}}};
+p.saveAnswers(broken, 'answers', state);
+if (Object.keys(p.loadAnswers(broken, 'answers')).length) throw Error('bad load');
+const storage = {{value: null, setItem(k,v) {{this.value=v;}}, getItem() {{return this.value;}}}};
+p.saveAnswers(storage, 'answers', state);
+const restored = p.loadAnswers(storage, 'answers');
+if (JSON.stringify(restored) !== JSON.stringify(state)) throw Error('lost answers');
+storage.value = 'not json';
+if (Object.keys(p.loadAnswers(storage, 'answers')).length) throw Error('bad JSON');
+console.log(p.exportAnswers(restored));
+"""
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    answers = json.loads(result.stdout)
+    scored = probe.score(rows, answers)
+    assert scored["overall"] == {"n": 2, "right": 1, "rate": .5}
+    assert scored["confusion"] == {"wide_swing": {"held": 1, "wide_swing": 1}}
+
+
+def test_page_script_guarded():
+    import tomllib
+    suites = tomllib.loads((Path(probe.WEBAPP_ROOT) / "tests/suites.toml").read_text(encoding="utf-8"))
+    assert "scripts/peek_page.js" in suites["critical-moments"]["guards"]

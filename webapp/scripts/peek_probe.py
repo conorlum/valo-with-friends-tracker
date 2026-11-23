@@ -4,6 +4,7 @@ From webapp, run::
 
     python scripts/peek_probe.py run --limit 10 --jobs 2 --friends friends.json
     python scripts/peek_probe.py report --out %TEMP%/valo-peeks
+    python scripts/peek_probe.py page --out %TEMP%/valo-peeks --per-type 8 --seed 0
     python scripts/peek_probe.py score %TEMP%/valo-peeks/answers.json
 
 Every subcommand accepts --out (default: <system temp>/valo-peeks), confined to
@@ -26,9 +27,11 @@ import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import gzip
+from html import escape
 import json
 import multiprocessing
 from pathlib import Path
+import random
 import re
 import sys
 import tempfile
@@ -234,10 +237,38 @@ def _display_players(ctx, friends):
     return players, named, labels
 
 
+def _answer_key(row):
+    return f"{row['uuid']}|{row['round']}|{row['slot']}|{row['i']}"
+
+
+def _moment(row):
+    return next(row[k] for k in ("t_onset", "t_event", "t0") if row.get(k) is not None)
+
+
+def _paths(row, rnd):
+    """Engine pixels; px_to_image multiplies the image's natural width/height.
+
+    Null samples preserve missing tracks and life boundaries rather than joining
+    across them. The exact moment is kept separately for onset dots and sight.
+    """
+    ref = _moment(row)
+    def point(slot, t):
+        pos = rnd.pos(slot, t) if slot is not None and rnd.alive(slot, t) else None
+        return [float(pos[0]), float(pos[1])] if pos is not None else [None, None]
+    def track(slot):
+        times = [ref - 2 + k / 16 for k in range(49)]
+        return [[t, *point(slot, t)] for t in times]
+    opponent = row["opponent"]
+    return {"player": track(row["slot"]), "opponent": track(opponent) if opponent is not None else [],
+            "at_ref": [point(row["slot"], ref), point(opponent, ref)],
+            "sight_line": row.get("t_onset") is not None,
+            "px_to_image": 1 / geometry.PX, "m_per_px": float(rnd.geo.m_per_px)}
+
+
 def compute_match(task):
     """Spawn-safe worker entry point: reads cache only, with per-process geometry."""
     uuid, out = task["uuid"], Path(task["out"])
-    result = {"uuid": uuid, "rows": [], "players": {}, "completed": [], "failed": [], "error": None}
+    result = {"uuid": uuid, "rows": [], "paths": [], "players": {}, "completed": [], "failed": [], "error": None}
     try:
         ctx = page_data(uuid, lambda url: _read_cache(url, out / "cache"))
         players, named, labels = _display_players(ctx, task["friends"])
@@ -260,14 +291,16 @@ def compute_match(task):
             control_link = engine.ControlLink(sides={int(s): side for s, side in link["sides"].items()},
                                               db_deaths=tuple((int(s), float(t)) for s, t in link["db_deaths"]))
             rnd = engine.RoundInputs(blob, _GEOMETRIES[key], control_link)
-            rows = []
+            rows, paths = [], []
             for opening in peeks.round_openings(rnd, blob):
                 slot, opponent = opening["slot"], opening["opponent"]
                 rows.append({**opening, "uuid": uuid, "round": n, "player_id": players[slot]["player_id"],
                              "agent": players[slot]["agent"], "match_id": match_id, "asset": asset,
                              "friend": slot in named, "player_label": labels[slot],
                              "opponent_label": None if opponent is None else labels[opponent]})
+                paths.append({"key": _answer_key(rows[-1]), "paths": _paths(rows[-1], rnd)})
             result["rows"].extend(rows)
+            result["paths"].extend(paths)
             result["completed"].append({"uuid": uuid, "round": n})
         except Exception as exc:
             _log_error(exc, uuid, n)
@@ -357,7 +390,7 @@ def report(rows, out):
 def score(rows, answers):
     confusion = defaultdict(Counter)
     for r in rows:
-        key = f"{r['uuid']}|{r['round']}|{r['slot']}|{r['i']}"
+        key = _answer_key(r)
         if key in answers:
             confusion[r["type"]][answers[key]] += 1
     def figures(n, right):
@@ -369,6 +402,123 @@ def score(rows, answers):
 
 def _read_rows(out):
     return [json.loads(line) for line in (out / "openings.jsonl").read_text(encoding="utf-8").splitlines() if line]
+
+
+def build_page(rows, players, out_dir, per_type=8, seed=0) -> Path:
+    """Build the local review page without fetching or rebuilding round inputs."""
+    out = Path(out_dir).resolve()
+    if not out.is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        raise ValueError("--out must be under the system temp folder")
+    if per_type < 1:
+        raise ValueError("per_type must be at least 1")
+    out.mkdir(parents=True, exist_ok=True)
+    rows = list(rows)
+    sidecar = out / "paths.jsonl"
+    paths = {}
+    if sidecar.exists():
+        for line in sidecar.read_text(encoding="utf-8").splitlines():
+            if line:
+                entry = json.loads(line)
+                paths[entry["key"]] = entry["paths"]
+    rng = random.Random(seed)
+    cards, sections = [], []
+    # Do not embed source rows wholesale: upstream/cache-only names and IDs are
+    # deliberately excluded. Labels have already been made safe by the worker.
+    fields = ("uuid", "round", "slot", "i", "opponent", "type", "reason", "opener", "result", "band", "jiggles",
+              "t0", "t_event", "t_onset", "speed_mps", "sideways_m", "exposure_s", "repeek_gap_s",
+              "repeek_spot_m", "distance_m", "asset", "friend", "player_label", "opponent_label")
+    def named(r):
+        return bool(r["friend"] and str(r["player_id"]) in players)
+    def label(t):
+        return t.replace("_", " ")
+    def card_html(r):
+        safe = {k: r.get(k) for k in fields}
+        if not named(r):
+            agent = r.get("agent", "unknown agent")
+            if safe["player_label"] not in (agent, "the enemy " + agent):
+                safe["player_label"] = agent
+        ref = _moment(r)
+        key = _answer_key(r)
+        url = f"{SITE}/replays/{r['uuid']}?round={r['round']}&t={max(0, ref - 2):g}"
+        asset = r.get("asset", "")
+        map_path = f"maps/{asset}.png" if re.fullmatch(r"[A-Za-z0-9_-]+", asset) else None
+        cards.append({"key": key, "row": safe, "paths": paths.get(key), "t_ref": ref,
+                      "viewer_url": url, "map": map_path})
+        title = f"{safe['player_label']} vs {safe['opponent_label'] or 'no opponent seen'}"
+        adjective = f" after {r['jiggles']} jiggle{'s' if r['jiggles'] != 1 else ''}" if r["jiggles"] else ""
+        details = [f"Round {r['round']}", label(r["type"]) + adjective,
+                   "opener: " + (r["opener"] or "none"), "result: " + r["result"]]
+        if r.get("reason"):
+            details.append("reason: " + label(r["reason"]))
+        for field, name, unit in (("distance_m", "distance", "m"), ("speed_mps", "speed", "m/s"),
+                                  ("sideways_m", "sideways", "m"), ("exposure_s", "exposure", "s"),
+                                  ("repeek_gap_s", "re-peek gap", "s"), ("repeek_spot_m", "re-peek spot", "m")):
+            if r.get(field) is not None:
+                details.append(f"{name}: {r[field]:g} {unit}")
+        if r.get("band") is not None:
+            details.append("band: " + r["band"])
+        options = ''.join(f'<option value="{escape(t)}">{escape(label(t))}</option>' for t in pc.TYPES)
+        return (f'<article data-type="{escape(r["type"])}" data-key="{escape(key, quote=True)}">'
+                f'<h3>{escape(title)}</h3><p>{escape(" · ".join(details))}</p>'
+                '<canvas width="240" height="240" aria-label="Minimap paths"></canvas>'
+                f'<p><a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open replay</a> '
+                '<button class="play" type="button">Play</button></p>'
+                '<button class="right" type="button">Right</button> '
+                '<label>Correct type <select class="correction"><option value="">Choose type</option>'
+                f'{options}</select></label><p class="answer" aria-live="polite"></p></article>')
+    def examples(group):
+        preferred = [r for r in group if named(r)]
+        remaining = [r for r in group if not named(r)]
+        chosen = rng.sample(preferred, min(per_type, len(preferred)))
+        chosen += rng.sample(remaining, min(per_type - len(chosen), len(remaining)))
+        return chosen
+    for t in pc.TYPES:
+        all_rows = [r for r in rows if r["type"] == t]
+        body = []
+        if t == "other":
+            for reason in sorted({r["reason"] or "unspecified" for r in all_rows}):
+                group = [r for r in all_rows if (r["reason"] or "unspecified") == reason]
+                body.append(f'<h3>{escape(label(reason))} ({len(group)})</h3><div class="cards">'
+                            + ''.join(card_html(r) for r in examples(group)) + '</div>')
+        else:
+            body.append('<div class="cards">' + ''.join(card_html(r) for r in examples(all_rows)) + '</div>')
+        sections.append(f'<section data-type="{t}" data-total="{len(all_rows)}">'
+                        f'<h2>{escape(label(t))} ({len(all_rows)})</h2>{"".join(body)}</section>')
+    summary = aggregate(rows)
+    table = []
+    for pid, player in summary["players"].items():
+        if pid not in players:
+            continue
+        for t, figures in player["types"].items():
+            splits = [(label(t), figures)]
+            splits += [(f"{label(t)} / jiggled {j}", f) for j, f in figures["jiggled"].items()]
+            for split, f in splits:
+                if not f["n"]:
+                    continue
+                cells = [players[pid], split, str(f["n"]), _percent(f["rate"]), _percent(f["shrunk"]),
+                         _interval_text(f["interval"]), _percent(summary["pooled"][t]["rate"])]
+                table.append('<tr>' + ''.join(f'<td>{escape(c)}</td>' for c in cells) + '</tr>')
+    data = json.dumps({"cards": cards, "types": pc.TYPES}, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c')
+    js = Path(__file__).with_name("peek_page.js").read_text(encoding="utf-8")
+    html = ('<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Peek examples</title>'
+            '<style>body{font:16px system-ui;background:#141c28;color:#eee;margin:24px}a{color:#8cceff}'
+            '.cards{display:flex;flex-wrap:wrap;gap:16px}article{background:#243044;padding:16px;width:280px;'
+            'border-radius:8px}canvas{background:#0a1018}button,select{padding:6px;margin:3px}'
+            'td,th{padding:8px;text-align:left;border-bottom:1px solid #567}table{border-collapse:collapse}'
+            '.table{overflow:auto}</style><body><h1>Peek examples</h1>'
+            '<p>The sight lines here use the map\'s walls and smokes only: box stances (heights) and doors '
+            '(map features) are worker assets the public site does not serve, so a peek over a box or through '
+            'a door may be labelled from the 2D line.</p><button id="export" type="button">Export answers</button>'
+            '<p id="answer-count" aria-live="polite"></p>' + ''.join(sections)
+            + '<section><h2>Per-player win rates</h2><p>The thresholds are a draft until the check.</p>'
+            '<div class="table"><table><thead><tr><th>Player</th><th>Type / split</th><th>n</th><th>Raw</th>'
+            '<th>Shrunk</th><th>Interval</th><th>Everyone\'s average</th></tr></thead><tbody>'
+            + ''.join(table) + '</tbody></table></div></section>'
+            + f'<script id="peek-data" type="application/json">{data}</script><script>{js}</script></body></html>\n')
+    page = out / "peeks.html"
+    page.write_text(html, encoding="utf-8")
+    return page
 
 
 def _run(args, out):
@@ -385,11 +535,12 @@ def _run(args, out):
             results = pool.map(compute_match, tasks, chunksize=1)
     else:
         results = []
-    rows, players = [], {}
+    rows, players, paths = [], {}, []
     for task, result in zip(tasks, results):
         uuid = result["uuid"]
         rows.extend(result["rows"])
         players.update(result["players"])
+        paths.extend(result["paths"])
         coverage["rounds"]["completed"].extend(result["completed"])
         coverage["rounds"]["failed"].extend(result["failed"])
         if task["fetch_failed"] or result["failed"] or result["error"]:
@@ -399,11 +550,13 @@ def _run(args, out):
     (out / "openings.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False, allow_nan=False) + "\n" for r in rows),
                                         encoding="utf-8")
     _write_json(out / "players.json", players)
+    (out / "paths.jsonl").write_text("".join(json.dumps(p, allow_nan=False) + "\n" for p in paths), encoding="utf-8")
     _write_json(out / "coverage.json", coverage)
     for kind, c in coverage.items():
         print(f"{kind}: discovered {c['discovered']}, completed {len(c['completed'])}, "
               f"skipped {sum(map(len, c['skipped'].values()))} {json.dumps(c['skipped'])}, failed {len(c['failed'])}")
     report(rows, out)
+    build_page(rows, players, out, args.per_type, args.seed)
     return int(any(c["failed"] for c in coverage.values()))
 
 
@@ -423,9 +576,13 @@ def main(argv=None):
     run.add_argument("--jobs", type=_positive, default=2)
     run.add_argument("--friends", type=Path, default=WEBAPP_ROOT / "scripts" / "tracked_players.json")
     report_parser = commands.add_parser("report")
+    page_parser = commands.add_parser("page")
+    for command in (run, page_parser):
+        command.add_argument("--per-type", type=_positive, default=8)
+        command.add_argument("--seed", type=int, default=0)
     score_parser = commands.add_parser("score")
     score_parser.add_argument("answers", type=Path)
-    for command in (run, report_parser, score_parser):
+    for command in (run, report_parser, page_parser, score_parser):
         command.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "valo-peeks")
     args = parser.parse_args(argv)
     out = args.out.resolve()
@@ -439,6 +596,9 @@ def main(argv=None):
     rows = _read_rows(out)
     if args.command == "report":
         report(rows, out)
+    elif args.command == "page":
+        build_page(rows, json.loads((out / "players.json").read_text(encoding="utf-8")), out,
+                   args.per_type, args.seed)
     else:
         results = score(rows, json.loads(args.answers.read_text(encoding="utf-8")))
         for label, f in [("overall", results["overall"]), *results["by_type"].items()]:
