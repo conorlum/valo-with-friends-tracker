@@ -15,7 +15,7 @@ from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
 from app.routers import (accounts, auth, coach, deploy_admin, friends, gap_patterns, matches, players, plants,
-                         replay_admin, replays, sessions, site_stats, squad, util_page)
+                         replay_admin, replay_api, replays, sessions, site_stats, squad, util_page)
 from app.services.auth import get_current_player
 from app.services.site_health_web import SlowPageMiddleware, page_error_handler
 from app.services.upload_activity import UploadActivityMiddleware
@@ -97,6 +97,7 @@ app.include_router(replay_admin.router)
 app.include_router(deploy_admin.router)
 app.include_router(coach.router)
 app.include_router(replays.router)
+app.include_router(replay_api.router)
 app.include_router(gap_patterns.router)
 app.include_router(util_page.router)
 app.include_router(sessions.router)

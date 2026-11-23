@@ -20,6 +20,11 @@ from tests.support.replays import stored_replay
     ('POST','/accounts/label',{'display_name':'Other','label':'renamed'},403),
     ('GET','/replays',None,404), ('GET','/replays/upload',None,404),
     ('POST','/replays/upload/code',{'code':'test-code'},404),
+    ('POST','/replays/upload/app-key',None,404),
+    ('POST','/api/replays/check',{'sha256':'a' * 64},404),
+    ('POST','/api/replays/upload',None,404),
+    ('GET','/api/replays/key',None,404),
+    ('GET','/api/replays/uploads/0f0e0d0c-0b0a-4908-8706-050403020100/status',None,404),
     ('GET','/admin/replays/archive',None,404),
     ('GET','/admin/replays/refused',None,404),
     ('GET','/admin/replays/archive/0f0e0d0c-0b0a-4908-8706-050403020100.vrf',None,404),
@@ -33,7 +38,10 @@ def test_demo_route_families_refuse_without_mutation(site, monkeypatch, method, 
     monkeypatch.setattr(settings,'replay_worker_url','http://must-not-contact.invalid')
     monkeypatch.setattr(settings,'replay_upload_code','test-code')
     monkeypatch.setattr(settings,'replay_admin_token','test-admin')
-    response = client.request(method,path,data=data,headers={'authorization':'Bearer test-admin'})
+    body = {'json': data} if path == '/api/replays/check' else (
+        {'files': {'file': ('synthetic.vrf', b'synthetic replay', 'application/octet-stream')}}
+        if path == '/api/replays/upload' else {'data': data})
+    response = client.request(method,path,**body,headers={'authorization':'Bearer test-admin'})
     assert response.status_code == status
     with factory() as fresh:
         assert fresh.query(Player).count() == 2

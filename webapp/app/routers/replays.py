@@ -30,7 +30,7 @@
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
   `GET /replays/upload` (the invite-code form, then the file form for up to 5 files and this session's
   uploads of the last day), `GET /replays/upload/guide/{key}` (the unlisted how-to, which shows the code),
-  `POST /replays/upload/code`,
+  `POST /replays/upload/code`, `POST /replays/upload/app-key` (a fresh app key for an invited session),
   `POST /replays/upload` (one file: size, magic and rate limits, then to the worker; JSON when asked), `GET
   /replays/uploads/{id}` (the job page) and `GET /replays/uploads/{id}/status` (polled every 3 s;
   stores the result when the worker is done), and `GET /replays/upload/progress.json` (the page's "Show
@@ -68,6 +68,7 @@ from app.services import replay_moments
 from app.services import replay_util
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
+from app.services import upload_tokens
 from app.services import replays as replay_service
 from app.services.auth import get_current_player
 from app.services.coach import coach_feedback_share, coached_external_ids
@@ -134,6 +135,7 @@ def _deploy_banner(db: Session | None) -> dict | None:
 def _upload_page(request: Request, status_code: int = 200, error: str | None = None, db: Session | None = None):
     return templates.TemplateResponse(request, "replays/upload.html", {
         "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
+        "uploader_url": upload_tokens.UPLOADER_DOWNLOAD_URL,
         "deploy_banner": _deploy_banner(db),
         "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000,
         "max_files": uploads.batch_limit(uploads.client()), "uploads": _recent_uploads(request, db),
@@ -165,6 +167,19 @@ def upload_code(request: Request, code: str = Form("")):
         return _upload_page(request, 403, "That code isn't right.")
     request.session["replay_upload_ok"] = True
     return RedirectResponse("/replays/upload", status_code=303)
+
+
+@router.post("/replays/upload/app-key")
+def upload_app_key(request: Request, db: Session = Depends(get_db)):
+    _upload_enabled_or_404()
+    if not request.session.get("replay_upload_ok"):
+        return JSONResponse({"error": "Enter the invite code first."}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+    player = get_current_player(request, db)
+    name = player.display_name if player else "unnamed"
+    label = f"{name} {datetime.now(timezone.utc).date()}"[:80]
+    _, key = upload_tokens.mint(db, label, player_id=player.id if player else None)
+    return JSONResponse({"key": key, "label": label}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/replays/upload")

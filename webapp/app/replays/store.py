@@ -33,6 +33,9 @@ DEMO_DATABASE = "valomaths_demo"
 SOURCES = ("local", "upload")
 
 
+DELETED_ON_REQUEST = "this match was deleted on request"  # the uploader app reads this in a failed upload's error
+
+
 class StoreRefused(Exception):
     pass
 
@@ -145,7 +148,7 @@ def _store(session, condensed: CondensedReplay, source: str, replace: bool,
     replay_db.advisory_lock(session, uuid)
     # A match deleted on request never comes back, whoever stores it (upload, reparse or local).
     if session.get(ReplayDeletion, uuid) is not None:
-        raise StoreRefused("this match was deleted on request")
+        raise StoreRefused(DELETED_ON_REQUEST)
     existing = session.query(Replay).filter(Replay.match_uuid == uuid).populate_existing().one_or_none()
     if expected_auto is not None:
         moved_on = _guard_auto(existing, condensed, expected_auto)

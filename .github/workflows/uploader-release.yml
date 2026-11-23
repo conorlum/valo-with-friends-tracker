@@ -1,0 +1,45 @@
+name: Uploader release
+
+on:
+  push:
+    tags: ['uploader-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Tag version must equal __version__
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ github.ref_name }}" -replace '^uploader-v', ''
+          $text = Get-Content uploader/valo_uploader/__init__.py -Raw
+          if ($text -notmatch '__version__\s*=\s*"([^"]+)"') { throw 'no __version__ found' }
+          if ($Matches[1] -ne $tagVersion) {
+            throw "tag version $tagVersion does not equal __version__ $($Matches[1])"
+          }
+      - name: Build
+        shell: pwsh
+        run: ./uploader/build.ps1
+      - name: Selftest
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:TEMP 'ValoUploader-selftest.txt'
+          Remove-Item $out -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath uploader/dist/ValoUploader.exe -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
+          $line = (Get-Content $out -Raw).Trim()
+          $tagVersion = "${{ github.ref_name }}" -replace '^uploader-v', ''
+          if ($line -ne "ValoUploader $tagVersion") { throw "unexpected selftest output: $line" }
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" uploader/dist/ValoUploader.exe uploader/dist/ValoUploader.exe.sha256 --title "${{ github.ref_name }}" --generate-notes

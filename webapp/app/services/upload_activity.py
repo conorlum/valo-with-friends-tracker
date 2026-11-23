@@ -1,10 +1,12 @@
 """The site's upload counter (deploy drain, R7): how many `POST /replays/upload` requests are streaming in right
 now, and how long ago the last one ended. In-process, in memory: a restart starts at zero, which is true (a
 restart drops every open request). An ASGI middleware, so it counts from the first byte of the request to the end
-of the response, before any route code runs."""
+of the response, before any route code runs. API uploads use `admitted()` after their enabled, key and drain
+gates, counting body receipt through worker submission and form cleanup; refused requests leave no activity."""
 
 import threading
 import time
+from contextlib import contextmanager
 
 _lock = threading.Lock()
 _receiving = 0
@@ -40,6 +42,16 @@ def _end() -> None:
     with _lock:
         _receiving = max(0, _receiving - 1)
         _last_end = time.monotonic()
+
+
+@contextmanager
+def admitted():
+    """Count an API upload only after its admission gates pass, including body receipt."""
+    _begin()
+    try:
+        yield
+    finally:
+        _end()
 
 
 class UploadActivityMiddleware:

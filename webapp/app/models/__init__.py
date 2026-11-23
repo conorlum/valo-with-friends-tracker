@@ -25,6 +25,7 @@ from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
 from app.models.map_pool import MapPoolChange, MapPoolPatchNotes
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.models.deploy_drain import DeployDrain
+from app.models.upload_token import UploadToken
 from app.models import indexes  # noqa: F401  (attaches indexes kept out of digested model files)
 
 __all__ = [
@@ -56,4 +57,5 @@ __all__ = [
     "MapPoolChange", "MapPoolPatchNotes",
     "SiteEvent", "SiteEventMark", "SiteEventResolution",
     "DeployDrain",
+    "UploadToken",
 ]

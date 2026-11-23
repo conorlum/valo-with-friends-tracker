@@ -90,6 +90,7 @@ def test_every_get_route_is_classified():
 
 def test_first_page_load_classifications():
     excluded = {
+        "/api/replays/key", "/api/replays/uploads/{upload_id}/status",
         "/players/{display_name}/career", "/players/{display_name}/recent-matches",
         "/stats/friends/career", "/stats/map-control", "/stats/all", "/health",
         "/accounts/search", "/matches/{external_id}/rounds/{round_number}", "/squad/career",

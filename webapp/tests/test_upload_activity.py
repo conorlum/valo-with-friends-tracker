@@ -3,11 +3,28 @@
 
 import asyncio
 
+import pytest
+
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from app.services import upload_activity
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_admitted_counts_and_records_end_even_on_exception(fails):
+    upload_activity.reset()
+    try:
+        with upload_activity.admitted():
+            assert upload_activity.receiving() == 1
+            assert upload_activity.last_end_age_s() is None
+            if fails:
+                raise RuntimeError("synthetic")
+    except RuntimeError:
+        assert fails
+    assert upload_activity.receiving() == 0
+    assert upload_activity.last_end_age_s() is not None
 
 
 async def call(app, method, path):

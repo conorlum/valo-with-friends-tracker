@@ -4,6 +4,7 @@ import json as jsonlib
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from urllib.parse import unquote, urlencode
+from uuid import uuid4
 
 
 @dataclass
@@ -24,12 +25,29 @@ class Client:
     def __init__(self, app, scheme="http"):
         self.app, self.scheme, self.cookies = app, scheme, {}
 
-    def request(self, method, target, *, data=None, json=None, headers=None):
+    def request(self, method, target, *, data=None, json=None, files=None, headers=None):
         assert data is None or json is None, 'choose form data or JSON'
+        assert files is None or json is None, 'choose multipart or JSON'
         path, _, query = target.partition("?")
-        body = jsonlib.dumps(json).encode() if json is not None else urlencode(data).encode() if data is not None else b""
+        body = jsonlib.dumps(json).encode() if json is not None else (
+            data if isinstance(data, bytes) else urlencode(data).encode() if data is not None else b"")
         request_headers = {"host": "testserver", **(headers or {})}
-        if data is not None:
+        if files is not None:
+            boundary = uuid4().hex
+            parts = []
+            for name, value in (data or {}).items():
+                parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+                             + str(value).encode() + b'\r\n')
+            for name, (filename, content, content_type) in files.items():
+                parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+                             f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'.encode()
+                             + content + b'\r\n')
+            body = b''.join(parts) + f'--{boundary}--\r\n'.encode()
+            request_headers.update({"content-type": f"multipart/form-data; boundary={boundary}",
+                                    "content-length": str(len(body))})
+        elif isinstance(data, bytes):
+            request_headers["content-length"] = str(len(body))
+        elif data is not None:
             request_headers.update({"content-type": "application/x-www-form-urlencoded", "content-length": str(len(body))})
         elif json is not None:
             request_headers.update({"content-type": "application/json", "content-length": str(len(body))})
