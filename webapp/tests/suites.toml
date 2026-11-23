@@ -93,8 +93,8 @@ guards = [
 
 [plants]
 about = "Plant positions, layout selection, round outcomes, replay precedence and the derived plant cache."
-tests = ["tests/test_round_plants*.py"]
-guards = ["app/models/round_plant.py", "app/services/round_plants.py", "scripts/round_plants.py"]
+tests = ["tests/test_round_plants*.py", "tests/test_plant_stats.py"]
+guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_stats.py", "scripts/round_plants.py"]
 
 [map-pool]
 about = "The Competitive map pool's history: the seed, the daily patch-notes refresh, the loader, the CLI, and migration 0023."
