@@ -42,6 +42,7 @@ def payload(*numbers):
 
 
 def run(db, fetch, **kwargs):
+    kwargs.setdefault("alert", lambda: None)
     return plants.backfill(db, object(), limit=None, fetch=fetch,
                            sleep=lambda _: None, uniform=lambda a, b: a, **kwargs)
 
@@ -699,7 +700,7 @@ def test_resume_names_the_interpreter_with_friends_db_uses(monkeypatch, tmp_path
 def test_a_429_waits_and_retries_the_same_match(db, monkeypatch, capsys):
     from app.adapters.tracker_verification import TrackerRateLimited
 
-    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (3, 4))
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 3); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 3); monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (4,))
     ids = matches(db, 2)
     fetched, slept = [], []
 
@@ -710,17 +711,17 @@ def test_a_429_waits_and_retries_the_same_match(db, monkeypatch, capsys):
         return payload(1)
 
     result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
-                             uniform=lambda a, b: 5)
+                             uniform=lambda a, b: 5, alert=lambda: None)
     assert fetched == [ids[0], ids[0], ids[0], ids[1]]
     assert result["done"] == 2 and result["failed"] == 0 and result["left"] == 0
     assert slept == [1] * 3 + [1] * 4 + [5]
-    assert "rate limited (429): waiting" in capsys.readouterr().out
+    out = capsys.readouterr().out; assert "human check" in out and "still 429: waiting" in out
 
 
 def test_a_429_after_every_wait_is_one_failure_not_skip_listed(db, ledger, monkeypatch):
     from app.adapters.tracker_verification import TrackerRateLimited
 
-    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (2, 2))
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 2); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 2); monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (2,))
     ids = matches(db, 1)
     fetched = []
 
@@ -737,7 +738,7 @@ def test_a_429_after_every_wait_is_one_failure_not_skip_listed(db, ledger, monke
 def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
     from app.adapters.tracker_verification import TrackerRateLimited
 
-    monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (100,))
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 100); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 100)
     matches(db, 2)
     fetched, slept = [], []
 
@@ -746,7 +747,7 @@ def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
         raise TrackerRateLimited("status 429")
 
     result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
-                             uniform=lambda a, b: 5,
+                             uniform=lambda a, b: 5, alert=lambda: None,
                              should_stop=lambda: "paused" if len(slept) >= 10 else None)
     assert len(fetched) == 1 and len(slept) == 10
     assert result["stopped"] == "paused" and result["failed"] == 0 and result["left"] == 2

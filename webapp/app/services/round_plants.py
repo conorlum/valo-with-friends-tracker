@@ -12,7 +12,7 @@ import zlib
 from sqlalchemy import select
 
 from app.adapters.tracker_verification import (
-    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout,
+    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout, beep,
 )
 from app.models import KillEvent, Match, MatchPlayer, Round, RoundPlant
 from app.models.match import Team
@@ -375,30 +375,51 @@ def archive_payload(directory, external_id, payload):
     temporary.replace(target)
 
 
-# Waits after a 429 before retrying the same match; a 429 after the last counts as a failure.
-RATE_LIMIT_COOLDOWNS_S = (600, 900, 1800, 1800)
+# tracker.gg's 429 has come with a human check on a page whose title is not
+# "Just a moment", so it is first treated as one: beep and retry the same match
+# every minute for up to 15 minutes (each retry reloads the page). Then quiet long
+# waits, retrying after each; a 429 after the last counts as a failure.
+RATE_LIMIT_ATTENTION_S = 900
+RATE_LIMIT_RETRY_S = 60
+RATE_LIMIT_COOLDOWNS_S = (900, 1800, 1800)
 
 
-def _fetch_patiently(fetch, page, external_id, *, sleep, stop):
+def _wait(seconds, *, sleep, stop):
+    """Sleep a second at a time; True when the owner asked to stop."""
+    for _ in range(seconds):
+        if stop() is not None:
+            return True
+        sleep(1)
+    return False
+
+
+def _fetch_patiently(fetch, page, external_id, *, sleep, stop, alert):
     """Fetch, waiting out tracker.gg's 429s; a stop during a wait re-raises the 429,
     which the caller then treats as the owner's stop, not a failure."""
-    for wait in (*RATE_LIMIT_COOLDOWNS_S, None):
+    retries = [RATE_LIMIT_RETRY_S] * (RATE_LIMIT_ATTENTION_S // RATE_LIMIT_RETRY_S)
+    waits = [(wait, True) for wait in retries] + [(wait, False) for wait in RATE_LIMIT_COOLDOWNS_S]
+    for index, (wait, attention) in enumerate((*waits, (None, False))):
         try:
             return fetch(page, external_id)
         except TrackerRateLimited:
             if wait is None:
                 raise
-            until = datetime.now().astimezone() + timedelta(seconds=wait)
-            print(f"rate limited (429): waiting {wait // 60} min, until {until:%H:%M}, "
-                  f"then retrying {external_id}", flush=True)
-            for _ in range(wait):
-                if stop() is not None:
-                    raise
-                sleep(1)
+            if attention:
+                alert()
+                if index == 0:
+                    print(f"429 on {external_id}: if the scraper Chrome shows a human check, clear it; "
+                          f"retrying every minute for up to {RATE_LIMIT_ATTENTION_S // 60} min",
+                          flush=True)
+            else:
+                until = datetime.now().astimezone() + timedelta(seconds=wait)
+                print(f"still 429: waiting {wait // 60} min, until {until:%H:%M}, "
+                      f"then retrying {external_id}", flush=True)
+            if _wait(wait, sleep=sleep, stop=stop):
+                raise
 
 
 def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
-             should_stop=None, archive=None):
+             should_stop=None, archive=None, alert=None):
     """Commit positions alone per match; the DB and local ledger are the resume point.
 
     ``should_stop`` returns a reason ("paused", "interrupted") or None; it is checked
@@ -427,7 +448,8 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
                 result["stopped"] = reason
                 break
         try:
-            payload = _fetch_patiently(fetch, page, external_id, sleep=sleep, stop=stop)
+            payload = _fetch_patiently(fetch, page, external_id, sleep=sleep, stop=stop,
+                                       alert=alert or beep)
             if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
                 raise TrackerMatchUnavailable("match payload has no usable segments")
             if archive is not None:
