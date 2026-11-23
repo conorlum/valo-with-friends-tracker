@@ -41,6 +41,8 @@ LAST_ITEMS = 5
 # Every GET APIRoute is classified explicitly. Only first full-page loads are timed.
 # tests/test_site_health_slow.py keeps this table in step with the app's routes.
 PAGE_ROUTES = {
+    "/api/replays/key": "not_page",
+    "/api/replays/uploads/{upload_id}/status": "not_page",
     "/": "page",
     "//riot.txt": "not_page",
     "/accounts": "page",
