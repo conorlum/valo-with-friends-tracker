@@ -105,6 +105,12 @@ class Client:
                                headers={"Content-Type": "application/json"})
         return result["known"]
 
+    def kept(self, sha) -> bool:
+        """True only when the site says it holds this exact file's replay right now."""
+        result = self._request("/api/replays/check", data=json.dumps({"sha256": sha}).encode("utf-8"),
+                               headers={"Content-Type": "application/json"})
+        return isinstance(result, dict) and result.get("kept") is True
+
     def upload(self, path) -> str:
         path = Path(path)
         boundary = "ValoUploader" + uuid.uuid4().hex

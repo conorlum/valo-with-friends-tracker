@@ -1,6 +1,7 @@
 """Replay uploader API: token gates precede all body parsing."""
 import re
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -26,6 +27,12 @@ def _error(status: int, message: str, headers: dict | None = None) -> JSONRespon
     return _answer({"error": message}, status, headers)
 
 
+class Caller(NamedTuple):
+    """What a route needs from its token, copied out so no ORM row is read after the transaction ends."""
+    id: int
+    label: str
+
+
 def _key_or_401(request: Request, db: Session):
     if not uploads.upload_enabled():
         return _error(404, "not found")
@@ -33,17 +40,22 @@ def _key_or_401(request: Request, db: Session):
     token = upload_tokens.verify(db, parts[1]) if len(parts) == 2 and parts[0].lower() == "bearer" else None
     if token is None:
         return _error(401, "unknown or revoked key", {"WWW-Authenticate": "Bearer"})
-    return token
+    caller = Caller(token.id, token.label)
+    # Verification began a transaction; end it so no pooled connection is held while a body is received.
+    db.rollback()
+    return caller
 
 
 def _admit_upload(request: Request, db: Session):
-    token = _key_or_401(request, db)
-    if isinstance(token, JSONResponse):
-        return token
-    if deploy_drain.paused(db, datetime.now(timezone.utc)):
+    caller = _key_or_401(request, db)
+    if isinstance(caller, JSONResponse):
+        return caller
+    paused = deploy_drain.paused(db, datetime.now(timezone.utc))
+    db.rollback()
+    if paused:
         return _answer({"error": "the site is deploying: try again later", "deploy": True},
                        503, {"Retry-After": "600"})
-    return token
+    return caller
 
 
 def _create_upload(db: Session, stream, token, client_ip: str | None) -> dict:
@@ -103,11 +115,13 @@ def upload_status(request: Request, upload_id: str, db: Session = Depends(get_db
 
 
 def _known_and_touch(db: Session, token, sha: str) -> JSONResponse:
-    known = (db.query(Replay.id).filter(Replay.source_sha256 == sha).first() is not None
-             or db.query(ReplayUpload.id).filter(ReplayUpload.source_sha256 == sha,
-                                                ReplayUpload.status == "stored").first() is not None)
+    # kept: a Replay holds exactly this file now (the only answer the app may delete on).
+    # known: also a stored upload of it, which may be a recording the site discarded for another copy.
+    kept = db.query(Replay.id).filter(Replay.source_sha256 == sha).first() is not None
+    known = kept or db.query(ReplayUpload.id).filter(ReplayUpload.source_sha256 == sha,
+                                                    ReplayUpload.status == "stored").first() is not None
     upload_tokens.touch(db, token, datetime.now(timezone.utc))
-    return _answer({"known": known})
+    return _answer({"known": known, "kept": kept})
 
 
 @router.post("/api/replays/check")

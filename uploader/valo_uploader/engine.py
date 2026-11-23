@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .api import BadKey, NotFound, Offline, Refused, Rejected
-from .constants import (FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S, REFUSED_WINDOW_S,
+from .constants import (DELETE_BATCH, FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S, REFUSED_WINDOW_S,
                         STATUS_POLL_S)
 from .files import Watcher, sha256_file
 from .procs import valorant_running
@@ -241,33 +241,87 @@ class Engine:
                     self._pending(sha, now)
 
     def _delete_stored(self, now):
+        """Delete an old local copy only when the site holds that exact file's replay."""
+        if self.needs_key:
+            return
+        budget = DELETE_BATCH
         for sha, row in self.state.items():
-            if row["status"] != "stored":
+            if budget <= 0 or self.needs_key:
+                return
+            if row["status"] != "stored" or row.get("next_delete_check", 0.0) > now:
                 continue
             paths = list(row["paths"])
-            deleted = False
+            old = []
+            retry = None
             for name in row["paths"]:
                 path = Path(name)
                 try:
-                    if now - path.stat().st_mtime < self.config.keep_days * 86400:
-                        continue
-                    if sha256_file(path) != sha:
-                        self._hashes.pop(path, None)
-                        self.watcher.forget(path)
-                        logger.warning("Stored replay changed; keeping local file")
-                        continue
-                    self.deleter(path)
-                    paths.remove(name)
-                    self._hashes.pop(path, None)
-                    deleted = True
+                    if now - path.stat().st_mtime >= self.config.keep_days * 86400:
+                        old.append(name)
                 except FileNotFoundError:
                     paths.remove(name)
                     self._hashes.pop(path, None)
                 except OSError:
-                    logger.warning("Stored replay could not be deleted; keeping local file")
+                    logger.warning("Stored replay could not be read; keeping local file")
+                    retry = REFUSED_RETRY_S
+            verified = []
+            if old:
+                budget -= 1
+            for name in old:
+                path = Path(name)
+                try:
+                    if sha256_file(path) != sha:
+                        self._hashes.pop(path, None)
+                        self.watcher.forget(path)
+                        logger.warning("Stored replay changed; keeping local file")
+                        retry = REFUSED_RETRY_S
+                    else:
+                        verified.append(name)
+                except FileNotFoundError:
+                    paths.remove(name)
+                    self._hashes.pop(path, None)
+                except OSError:
+                    logger.warning("Stored replay could not be read; keeping local file")
+                    retry = REFUSED_RETRY_S
+            deleted = False
+            if verified:
+                try:
+                    kept = self.client.kept(sha)
+                except BadKey:
+                    self.needs_key = True
+                    kept = None
+                except Exception:
+                    logger.warning("Could not ask the site about a stored replay; keeping local file")
+                    kept, retry = None, REFUSED_RETRY_S
+                if kept is None:
+                    pass
+                elif not kept:
+                    # The site did not keep this file (a friend's copy of the match got there first):
+                    # it stays on this PC for good.
+                    retry = max(retry or 0, FAILED_RETRY_S)
+                else:
+                    for name in verified:
+                        path = Path(name)
+                        try:
+                            self.deleter(path)
+                            paths.remove(name)
+                            self._hashes.pop(path, None)
+                            deleted = True
+                        except FileNotFoundError:
+                            paths.remove(name)
+                            self._hashes.pop(path, None)
+                        except OSError:
+                            logger.warning("Stored replay could not be deleted; keeping local file")
+                            retry = REFUSED_RETRY_S
+            changes = {}
             if paths != row["paths"]:
-                self.state.mark(sha, paths=paths,
-                                deleted_at=now if deleted else row.get("deleted_at"))
+                changes["paths"] = paths
+                if deleted:
+                    changes["deleted_at"] = now
+            if retry is not None:
+                changes["next_delete_check"] = now + retry
+            if changes:
+                self.state.mark(sha, **changes)
 
     def _remember(self, paths):
         for path in paths:

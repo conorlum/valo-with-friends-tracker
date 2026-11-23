@@ -37,7 +37,7 @@ class State:
     def mark(self, sha, **changes):
         defaults = dict(paths=[], size=0, mtime=0.0, status="pending", upload_id=None,
                         stored_at=None, first_refused_at=None, attempts=0, next_try=0.0,
-                        deleted_at=None)
+                        deleted_at=None, next_delete_check=0.0)
         if changes.keys() - defaults.keys():
             raise ValueError("Unknown upload state field")
         row = {**defaults, **self._entries.get(sha, {}), **changes}

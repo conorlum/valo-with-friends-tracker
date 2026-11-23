@@ -15,8 +15,9 @@ do it by hand.
 
 What it does: it looks for finished replay files, uploads each one to the site, and checks the site stored it. While
 Valorant is running (and until its queue is empty) it checks every 5 seconds and scans the Demos folder every 10
-seconds; otherwise it checks every 30 minutes. A replay is deleted once the site has stored it and the file is at
-least 14 days old (by its modified time). It never deletes a file whose contents changed since upload. Nothing else is
+seconds; otherwise it checks every 30 minutes. A replay is deleted once the site has stored that file and the file
+is at least 14 days old (by its modified time). A recording the site did not keep (a friend's copy of the same match
+got there first) stays on your PC. It never deletes a file whose contents changed since upload. Nothing else is
 touched or deleted.
 
 Controls (right-click the tray icon):

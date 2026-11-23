@@ -293,19 +293,108 @@ def test_status_releases_transaction_before_touch(api, monkeypatch):
     assert touched == [True]
 
 
-@pytest.mark.parametrize("source,known", [("replay", True), ("stored", True), ("failed", False), ("parsing", False)])
-def test_check_known_sources(api, source, known):
+def add_replay(api, sha):
+    with api.factory() as db:
+        replay = Replay(match_uuid=str(uuid4()), map_name="Ascent", round_count=1, format_version=1,
+                        recipe="synthetic", game_branch="synthetic", source_sha256=sha, source="upload",
+                        link_status="unlinked", link_inputs={})
+        db.add(replay)
+        db.commit()
+        return replay.id
+
+
+@pytest.mark.parametrize("source,known,kept", [("replay", True, True), ("stored", True, False),
+                                               ("failed", False, False), ("parsing", False, False),
+                                               ("none", False, False)])
+def test_check_known_and_kept_sources(api, source, known, kept):
+    # A stored upload with no Replay of its sha is a discarded recording (kept_existing): known, never kept.
     sha = "abcdef01" * 8
     if source == "replay":
-        with api.factory() as db:
-            db.add(Replay(match_uuid=str(uuid4()), map_name="Ascent", round_count=1, format_version=1,
-                          recipe="synthetic", game_branch="synthetic", source_sha256=sha, source="upload",
-                          link_status="unlinked", link_inputs={}))
-            db.commit()
-    else:
+        add_replay(api, sha)
+    elif source != "none":
         add_upload(api, status=source, sha=sha)
     response = send(api, "POST", CHECK, json={"sha256": sha.upper()})
-    assert response.status_code == 200 and response.json() == {"known": known}
+    assert response.status_code == 200 and response.json() == {"known": known, "kept": kept}
+
+
+def test_check_replay_and_its_stored_upload_is_kept(api):
+    sha = "abcdef01" * 8
+    replay_id = add_replay(api, sha)
+    add_upload(api, status="stored", sha=sha)
+    with api.factory() as db:
+        db.get(ReplayUpload, UPLOAD_ID).replay_id = replay_id
+        db.commit()
+    assert send(api, "POST", CHECK, json={"sha256": sha}).json() == {"known": True, "kept": True}
+
+
+def test_check_upload_whose_replay_was_replaced_is_known_but_not_kept(api):
+    sha, other = "abcdef01" * 8, "12345678" * 8
+    replay_id = add_replay(api, other)
+    add_upload(api, status="stored", sha=sha)
+    with api.factory() as db:
+        db.get(ReplayUpload, UPLOAD_ID).replay_id = replay_id
+        db.commit()
+    assert send(api, "POST", CHECK, json={"sha256": sha}).json() == {"known": True, "kept": False}
+    assert send(api, "POST", CHECK, json={"sha256": other}).json() == {"known": True, "kept": True}
+
+
+def test_check_kept_follows_replay_row_right_now(api):
+    sha = "abcdef01" * 8
+    replay_id = add_replay(api, sha)
+    assert send(api, "POST", CHECK, json={"sha256": sha}).json()["kept"] is True
+    with api.factory() as db:
+        db.get(Replay, replay_id).source_sha256 = "99999999" * 8
+        db.commit()
+    assert send(api, "POST", CHECK, json={"sha256": sha}).json() == {"known": False, "kept": False}
+
+
+def _watch_connections(api, monkeypatch):
+    """Record how many database connections are checked out whenever a request body is received."""
+    engine = api.factory.kw["bind"]
+    out = {"n": 0}
+    seen = []
+    event.listen(engine, "checkout", lambda *a: out.__setitem__("n", out["n"] + 1))
+    event.listen(engine, "checkin", lambda *a: out.__setitem__("n", out["n"] - 1))
+    original_form, original_json = replay_api.Request.form, replay_api.Request.json
+
+    def form(request, *args, **kwargs):
+        seen.append(("form", out["n"]))
+        return original_form(request, *args, **kwargs)
+
+    def json(request, *args, **kwargs):
+        seen.append(("json", out["n"]))
+        return original_json(request, *args, **kwargs)
+
+    monkeypatch.setattr(replay_api.Request, "form", form)
+    monkeypatch.setattr(replay_api.Request, "json", json)
+    return seen
+
+
+def test_upload_holds_no_database_connection_while_receiving_the_body(api, monkeypatch):
+    seen = _watch_connections(api, monkeypatch)
+    assert upload(api).status_code == 200
+    assert seen == [("form", 0)]
+    assert last_used(api) is not None
+
+
+def test_check_holds_no_database_connection_while_receiving_the_body(api, monkeypatch):
+    seen = _watch_connections(api, monkeypatch)
+    assert send(api, "POST", CHECK, json={"sha256": "b" * 64}).status_code == 200
+    assert seen == [("json", 0)]
+    assert last_used(api) is not None
+
+
+def test_upload_after_drain_check_holds_no_connection_and_refusals_still_work(api, monkeypatch):
+    seen = _watch_connections(api, monkeypatch)
+    monkeypatch.setattr(deploy_drain, "paused", lambda db, now: True)
+    assert send(api, "POST", UPLOAD).status_code == 503
+    monkeypatch.setattr(deploy_drain, "paused", lambda db, now: False)
+    assert send(api, "POST", UPLOAD, key=False).status_code == 401
+    assert send(api, "POST", CHECK, key=False, json={"sha256": "b" * 64}).status_code == 401
+    assert send(api, "POST", CHECK, json={"sha256": "zz"}).status_code == 400
+    assert send(api, "POST", UPLOAD, data=b"x", headers={"content-type": "multipart/form-data"}).status_code == 400
+    assert all(n == 0 for _, n in seen) and seen
+    assert send(api, "GET", KEY).json()["label"] == "Synthetic uploader"
 
 
 @pytest.mark.parametrize("sha", ["xyz", "a" * 63, "a" * 65, "g" * 64, "a" * 63 + "\n"])

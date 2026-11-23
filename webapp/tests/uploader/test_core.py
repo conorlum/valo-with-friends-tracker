@@ -61,6 +61,7 @@ def test_state_round_trip_and_due_excludes_stored(env):
         "paths": ["one.vrf", "copy.vrf"], "size": 123, "mtime": 50.0,
         "status": "uploading", "upload_id": "upload-1", "stored_at": None,
         "first_refused_at": 10.0, "attempts": 2, "next_try": 100.0, "deleted_at": None,
+        "next_delete_check": 0.0,
     }
     assert loaded.due(99) == []
     assert loaded.due(100) == [sha]
@@ -340,6 +341,52 @@ def test_check_posts_json_and_status_and_key_routes():
     assert client.key_info() == opener.response
     assert opener.requests[-1].get_method() == "GET"
     assert opener.requests[-1].full_url.endswith("/api/replays/key")
+
+
+@pytest.mark.parametrize("response, expected", [
+    ({"known": True, "kept": True}, True),
+    ({"known": True, "kept": False}, False),
+    ({"known": True}, False),  # an older site without the field: nothing is deleted
+    ({"known": True, "kept": "yes"}, False),
+    ({"known": True, "kept": 1}, False),
+    ({"known": False, "kept": None}, False),
+])
+def test_kept_is_true_only_for_an_explicit_true(response, expected):
+    opener = FakeOpener(response)
+    client = Client("https://example.invalid", "key", opener=opener)
+    assert client.kept("f" * 64) is expected
+    assert opener.requests[-1].full_url.endswith("/api/replays/check")
+    assert opener.requests[-1].get_method() == "POST"
+    assert json.loads(opener.bodies[-1]) == {"sha256": "f" * 64}
+
+
+@pytest.mark.parametrize("error, expected", [
+    (HTTPError("https://example.invalid", 401, "bad key", {}, io.BytesIO(b"{}")), BadKey),
+    (HTTPError("https://example.invalid", 429, "slow", {}, io.BytesIO(b"{}")), Refused),
+    (HTTPError("https://example.invalid", 503, "deploy", {}, io.BytesIO(b"{}")), Refused),
+    (HTTPError("https://example.invalid", 500, "boom", {}, io.BytesIO(b"{}")), Offline),
+    (HTTPError("https://example.invalid", 400, "bad", {}, io.BytesIO(b'{"error":"x"}')), Rejected),
+    (URLError("offline"), Offline), (TimeoutError("timeout"), Offline),
+])
+def test_kept_maps_client_errors(error, expected):
+    client = Client("https://example.invalid", "key", opener=FakeOpener(error=error))
+    with pytest.raises(expected):
+        client.kept("a" * 64)
+
+
+def test_check_still_returns_known_whatever_kept_says():
+    client = Client("https://example.invalid", "key", opener=FakeOpener({"known": True, "kept": False}))
+    assert client.check("a" * 64) is True
+
+
+def test_old_state_file_without_next_delete_check_loads_and_marks(env):
+    from valo_uploader.state import State
+    state = State(env=env)
+    state.mark("a" * 64, status="stored")
+    assert state.entry("a" * 64)["next_delete_check"] == 0.0
+    state._entries["b" * 64] = {"paths": [], "status": "stored"}
+    state.mark("b" * 64, next_delete_check=5.0)
+    assert state.entry("b" * 64)["next_delete_check"] == 5.0
 
 
 def test_log_redacts_message_arguments_and_tracebacks(env):

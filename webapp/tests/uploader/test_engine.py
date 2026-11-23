@@ -41,6 +41,7 @@ class Client:
         self.statuses = list(statuses)
         self.calls = []
         self.error = None
+        self.kept_value = True  # what the site says about a stored file: kept, or discarded.
 
     def answer(self, value):
         if self.error:
@@ -48,6 +49,10 @@ class Client:
         if isinstance(value, Exception):
             raise value
         return value
+
+    def kept(self, sha):
+        self.calls.append(("kept", sha))
+        return self.answer(self.kept_value)
 
     def check(self, sha):
         self.calls.append(("check", sha))
@@ -643,8 +648,195 @@ def test_deletion_failure_keeps_path_for_later_sweep(rig):
     assert rig.state.entry(sha)["deleted_at"] is None
     rig.engine.deleter = os.remove
     rig.tick(10)
+    assert path.exists()  # a locked file is not retried every tick
+    rig.tick(constants.REFUSED_RETRY_S)
     assert not path.exists()
     assert rig.state.entry(sha)["deleted_at"] == rig.clock.now
+
+
+# --- deletion needs the site to hold that exact file's replay (kept) -----------------------------
+
+def kept_calls(client):
+    return [call for call in client.calls if call[0] == "kept"]
+
+
+def stored(rig, name="old.vrf", content=b"old replay", age=15 * DAY, **fields):
+    path = rig.file(name, content, age=age)
+    sha = sha256_file(path)
+    rig.state.mark(sha, paths=[str(path)], status="stored", stored_at=START, **fields)
+    return path, sha
+
+
+def test_stored_old_and_kept_is_deleted_after_asking_once(rig):
+    path, sha = stored(rig)
+    rig.tick()
+    assert not path.exists()
+    assert kept_calls(rig.client) == [("kept", sha)]
+    assert rig.state.entry(sha)["deleted_at"] == rig.clock.now
+
+
+def test_not_kept_stays_forever_is_never_uploaded_and_is_asked_again_after_a_day(rig):
+    rig.client.kept_value = False
+    path, sha = stored(rig)
+    rig.tick()
+    for _ in range(20):
+        rig.tick(10)
+    assert path.exists() and rig.state.entry(sha)["status"] == "stored"
+    assert len(kept_calls(rig.client)) == 1
+    assert not uploads(rig.client) and not any(c[0] == "check" for c in rig.client.calls)
+    rig.tick(constants.FAILED_RETRY_S - 300)
+    assert len(kept_calls(rig.client)) == 1
+    rig.tick(300)
+    assert len(kept_calls(rig.client)) == 2 and path.exists()
+    rig.client.kept_value = True
+    rig.tick(constants.FAILED_RETRY_S)
+    assert not path.exists()
+    assert not uploads(rig.client)
+
+
+def test_younger_than_keep_days_makes_no_site_call(rig):
+    path, sha = stored(rig, age=13 * DAY)
+    rig.tick()
+    rig.tick(10)
+    assert path.exists() and rig.client.calls == []
+
+
+def test_keep_days_zero_still_needs_kept(rig):
+    rig.config.keep_days = 0
+    rig.client.kept_value = False
+    path, sha = stored(rig, age=0)
+    rig.tick()
+    assert path.exists() and len(kept_calls(rig.client)) == 1
+
+
+@pytest.mark.parametrize("error", [api.Offline("down"), api.Refused(5), RuntimeError("bug"),
+                                   api.Rejected("no"), api.NotFound("gone")])
+def test_site_error_keeps_the_file_and_retries_in_ten_minutes(rig, error):
+    path, sha = stored(rig)
+    rig.client.kept_value = error
+    rig.tick()
+    assert path.exists() and len(kept_calls(rig.client)) == 1
+    rig.tick(constants.REFUSED_RETRY_S - 10)
+    assert len(kept_calls(rig.client)) == 1
+    rig.client.kept_value = True
+    rig.tick(10)
+    assert len(kept_calls(rig.client)) == 2 and not path.exists()
+
+
+def test_bad_key_on_the_check_sets_needs_key_and_deletes_nothing(rig):
+    path, sha = stored(rig)
+    rig.client.kept_value = api.BadKey("revoked")
+    rig.tick()
+    assert rig.engine.needs_key and path.exists()
+    rig.client.kept_value = True
+    rig.tick(10)
+    assert path.exists() and len(kept_calls(rig.client)) == 1  # needs_key: no deletion at all
+    new = Client()
+    rig.engine.key_replaced(new)
+    rig.tick(10)
+    assert not path.exists() and len(kept_calls(new)) == 1
+
+
+def test_changed_file_is_kept_without_a_site_call_and_not_rehashed_every_tick(rig, monkeypatch):
+    import valo_uploader.engine as engine
+
+    path, sha = stored(rig, age=13 * DAY)
+    rig.discover()
+    info = path.stat()
+    path.write_bytes(b"x" * info.st_size)
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+    counted = Mock(wraps=sha256_file)
+    monkeypatch.setattr(engine, "sha256_file", counted)
+    rig.tick(2 * DAY)
+    assert counted.call_count == 1
+    rig.engine.watcher.poll = lambda now: []  # discovery re-reading the changed file is not under test
+    for _ in range(10):
+        rig.tick(10)
+    assert counted.call_count == 1
+    assert path.exists() and rig.client.calls == []
+    rig.tick(constants.REFUSED_RETRY_S)
+    assert counted.call_count == 2
+
+
+def test_locked_delete_is_not_retried_every_tick(rig):
+    path, sha = stored(rig)
+    rig.engine.deleter = Mock(side_effect=PermissionError("locked"))
+    rig.tick()
+    for _ in range(10):
+        rig.tick(10)
+    assert rig.engine.deleter.call_count == 1 and len(kept_calls(rig.client)) == 1
+    assert rig.state.entry(sha)["paths"] == [str(path)]
+
+
+def test_two_paths_of_one_sha_ask_once_and_both_are_deleted(rig):
+    first, sha = stored(rig, "a.vrf")
+    second = rig.file("b.vrf", b"old replay", age=15 * DAY)
+    rig.state.mark(sha, paths=[str(first), str(second)])
+    rig.tick()
+    assert not first.exists() and not second.exists()
+    assert kept_calls(rig.client) == [("kept", sha)]
+    assert rig.state.entry(sha)["paths"] == []
+
+
+def test_a_path_that_is_gone_is_dropped_without_a_site_call(rig):
+    path, sha = stored(rig)
+    path.unlink()
+    rig.tick()
+    assert rig.state.entry(sha)["paths"] == [] and rig.client.calls == []
+
+
+def _backlog(rig, count, age):
+    return [stored(rig, f"r{n}.vrf", f"replay {n}".encode(), age=age)[0] for n in range(count)]
+
+
+def test_a_large_backlog_is_handled_five_entries_per_tick(rig, monkeypatch):
+    import valo_uploader.engine as engine
+
+    assert constants.DELETE_BATCH == 5
+    paths = _backlog(rig, 12, 13 * DAY)
+    rig.discover()  # scan hashes are cached; no entry is old enough yet
+    counted = Mock(wraps=sha256_file)
+    monkeypatch.setattr(engine, "sha256_file", counted)
+    rig.tick(2 * DAY)
+    assert counted.call_count == 5 and len(kept_calls(rig.client)) == 5
+    rig.tick(10)
+    assert counted.call_count == 10
+    rig.tick(10)
+    assert counted.call_count == 12
+    assert not any(path.exists() for path in paths)
+
+
+def test_not_kept_backlog_entries_do_not_starve_each_other(rig):
+    rig.client.kept_value = False
+    paths = _backlog(rig, 12, 15 * DAY)
+    for _ in range(4):
+        rig.tick(10)
+    asked = [call[1] for call in kept_calls(rig.client)]
+    assert len(asked) == 12 and len(set(asked)) == 12
+    assert all(path.exists() for path in paths)
+
+
+def test_throttled_entries_do_not_use_up_the_batch(rig):
+    rig.client.kept_value = False
+    shas = [stored(rig, f"t{n}.vrf", f"throttled {n}".encode())[1] for n in range(6)]
+    for sha in shas:
+        rig.state.mark(sha, next_delete_check=START + DAY)
+    due = [stored(rig, f"d{n}.vrf", f"due {n}".encode())[1] for n in range(3)]
+    rig.tick()
+    assert sorted(call[1] for call in kept_calls(rig.client)) == sorted(due)
+
+
+def test_state_file_without_next_delete_check_still_works(rig):
+    import json
+
+    path, sha = stored(rig)
+    data = json.loads(rig.state.path.read_text(encoding="utf-8"))
+    del data[sha]["next_delete_check"]
+    rig.state.path.write_text(json.dumps(data), encoding="utf-8")
+    rig.restart()
+    assert "next_delete_check" not in rig.state.entry(sha)
+    rig.tick()
+    assert not path.exists()
 
 
 def test_state_drop_and_snapshot_are_durable(rig):
