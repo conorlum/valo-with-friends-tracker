@@ -20,12 +20,14 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.adapters.tracker_verification import TrackerVerificationTimeout, wait_for_owner
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
 from app.scoring.ingest_preflight import verify_ingest_preflight
+from app.services import round_plants
 from app.services.player_view_cache import invalidate_match_players
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
@@ -786,8 +788,49 @@ def load_match(db: Session, match_json: dict) -> Match:
             )
         )
 
+    # Save caller-facing scalars before commit expires them. A failed plant
+    # transaction must not force callers to reconnect just to identify the match.
+    match_values = {key: getattr(match, key) for key in ("id", "external_id", "map_name", "played_at")}
     db.commit()
+    _store_plants(db, match, round_summaries, match_values)
     return match
+
+
+def _store_plants(db: Session, match: Match, round_summaries: list[dict], match_values: dict) -> None:
+    """Save optional tracker positions separately from the committed match."""
+    try:
+        plants = []
+        for summary in round_summaries:
+            plant = round_plants.plant_from_summary(summary)
+            if plant is None:
+                continue
+            try:
+                u, v = round_plants.to_uv(match.map_name, plant["x"], plant["y"])
+            except KeyError:
+                # Maps absent from maps.json cannot supply normalized positions.
+                continue
+            plants.append(dict(round_number=summary["attributes"]["round"],
+                               u=u, v=v, site=plant["site"]))
+        if plants:
+            round_plants.upsert_plants(db, match, plants, source="tracker")
+            db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Rollback expires ORM state, including this already committed match.
+        try:
+            db.refresh(match)
+        except Exception:
+            # A failed refresh can itself leave a broken read transaction.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            for key, value in match_values.items():
+                set_committed_value(match, key, value)
+        print(f"  Plant storage failed: {' '.join(str(exc).splitlines())}")
 
 
 def _dedup_and_ingest(
