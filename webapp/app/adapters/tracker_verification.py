@@ -34,8 +34,12 @@ def is_verification_page(page):
 
 
 def beep():
-    """Sound an alert on Windows unless the owner's shared mute flag exists."""
-    if sys.platform != "win32" or (Path.home() / ".claude" / "sounds" / ".muted").exists():
+    """Sound an alert on Windows unless the crawl's own mute flag exists.
+
+    Its own flag (`~/.claude/sounds/.tracker-muted`), not Claude Code's shared `.muted`:
+    the owner mutes Claude's sounds during long crawls but still needs this one.
+    """
+    if sys.platform != "win32" or (Path.home() / ".claude" / "sounds" / ".tracker-muted").exists():
         return
     try:
         import winsound
