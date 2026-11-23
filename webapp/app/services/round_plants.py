@@ -330,14 +330,22 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False)
     todo = pending_matches(db, limit, skip=() if retry_unavailable else unavailable)
     result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, stopped=None)
     consecutive_failures = 0
-    for index, match in enumerate(todo):
+    # Plain strings: the loop below ends the transaction before every fetch, which
+    # expires the ORM objects, and reading one would open a transaction again.
+    external_ids = [match.external_id for match in todo]
+    for index, external_id in enumerate(external_ids):
+        # The fetch can wait up to 15 minutes for the owner's verification; hold no
+        # transaction across it (or the pacing sleep before it).
+        db.commit()
         if index:
             sleep(uniform(5, 12))
-        external_id = match.external_id
         try:
             payload = fetch(page, external_id)
             if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
                 raise TrackerMatchUnavailable("match payload has no usable segments")
+            match = db.scalar(select(Match).where(Match.external_id == external_id))
+            if match is None:
+                raise LookupError(f"match {external_id} left the database")
             counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker")
             db.commit()
         except TrackerVerificationTimeout:

@@ -33,6 +33,8 @@ from app.services.site_stats_cache import invalidate_site_stats_cache
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
+MATCH_SETTLE_SECONDS = 8        # always waited after the load, polling each second
+MATCH_BODY_WAIT_SECONDS = 15    # the most waited in all for the match response
 HISTORY_URL_TMPL = "https://tracker.gg/valorant/profile/riot/{riot_id}/matches"
 
 # The "All Acts" view of the competitive history, i.e. what the act selector
@@ -540,10 +542,12 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
     def on_response(response):
         if marker in response.url and "body" not in captured:
             captured["status"] = response.status
+            captured["parsed"] = False
             try:
                 body = response.json()
             except Exception:
                 return
+            captured["parsed"] = True
             if isinstance(body, dict) and body.get("data") is not None:
                 captured["body"] = body
 
@@ -551,8 +555,10 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
     try:
         page.goto(MATCH_URL_TMPL.format(match_id=match_id), wait_until="load", timeout=60_000)
         wait_for_owner(page)
-        for _ in range(15):
-            if "body" in captured:
+        # Always settle for MATCH_SETTLE_SECONDS after the load (and any verification
+        # wait); then keep polling for the body up to MATCH_BODY_WAIT_SECONDS in all.
+        for second in range(MATCH_BODY_WAIT_SECONDS):
+            if second >= MATCH_SETTLE_SECONDS and "body" in captured:
                 break
             page.wait_for_timeout(1000)
     finally:
@@ -560,7 +566,11 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
 
     if "body" not in captured:
         if "status" in captured:
-            error = TrackerMatchUnavailable if captured["status"] in (404, 410) else RuntimeError
+            # 404 and 410 are permanent, and so is a 200 whose JSON has no usable data.
+            # A 200 that did not parse may be a challenge page, so it stays retryable.
+            permanent = captured["status"] in (404, 410) or (
+                captured["status"] == 200 and captured["parsed"])
+            error = TrackerMatchUnavailable if permanent else RuntimeError
             raise error(
                 f"tracker.gg match API response for {match_id} has no data "
                 f"(status {captured['status']})"
@@ -860,6 +870,9 @@ def _dedup_and_ingest(
     progress = _ingest_discovered(db, page, match_ids, ledger, riot_id)
     failure = progress.error or progress.first_error
     if failure is not None:
+        if isinstance(failure, TrackerVerificationTimeout):
+            # The matches added before the timeout are already committed and invalidated.
+            failure.dirty = set(progress.dirty)
         raise failure
     return progress.dirty
 
@@ -942,6 +955,10 @@ def _ingest_discovered(
         match_json = None
         fetch_error: Exception | None = None
         for attempt in range(1, MATCH_FETCH_ATTEMPTS + 1):
+            # A page load can wait up to 15 minutes for the owner's verification, so
+            # no transaction may be open across it. Nothing between this commit and
+            # the fetch touches an ORM object.
+            db.commit()
             try:
                 match_json = fetch_match_json(page, match_id)
                 fetch_error = None
@@ -977,6 +994,9 @@ def _ingest_discovered(
             continue
 
         consecutive_failures = 0
+        # Read now, while it is loaded: later commits expire the object, and reading
+        # an attribute then would open a transaction that stays open through the next fetch.
+        map_name = match.map_name
 
         # Recorded here, immediately after the commit that makes this match
         # permanent and dedup-skipped forever -- not at the end of the run.
@@ -1008,7 +1028,7 @@ def _ingest_discovered(
             progress.error = e
             return progress
         progress.ingested += 1
-        print(f"  ingested {match.map_name} ({match_id})")
+        print(f"  ingested {map_name} ({match_id})")
 
         if i < len(new_ids) - 1:
             delay = random.uniform(MIN_MATCH_DELAY_SECONDS, MAX_MATCH_DELAY_SECONDS)

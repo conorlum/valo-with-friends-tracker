@@ -153,7 +153,7 @@ def test_reader_requires_wrapper_read_only_url_before_connecting(monkeypatch):
         plant_namer.read_points()
 
 
-def test_reader_selects_only_position_fields_in_read_only_transaction(monkeypatch):
+def _fake_database(monkeypatch, rows):
     from scripts import plant_namer
 
     calls = []
@@ -167,7 +167,7 @@ def test_reader_selects_only_position_fields_in_read_only_transaction(monkeypatc
 
         def execute(self, statement):
             calls.append(str(statement))
-            return [("Ascent", "A", 2000, 3000)]
+            return rows
 
     class Engine:
         def begin(self):
@@ -178,7 +178,36 @@ def test_reader_selects_only_position_fields_in_read_only_transaction(monkeypatc
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/valowithfriendsdb?options=-c%20default_transaction_read_only%3Don")
     monkeypatch.setattr(plant_namer, "create_engine", lambda *args, **kwargs: Engine())
+    return plant_namer, calls
+
+
+def test_reader_selects_only_position_fields_in_read_only_transaction(monkeypatch):
+    plant_namer, calls = _fake_database(monkeypatch, [("Ascent", "release-13.08", "A", 2000, 3000)])
     assert plant_namer.read_points() == [("Ascent", "A", 2000, 3000)]
     assert calls[0] == "SET TRANSACTION READ ONLY"
-    assert calls[1] == "SELECT asset_key, site, u, v FROM round_plants WHERE asset_key IS NOT NULL"
+    select = " ".join(calls[1].lower().split())
+    assert select.startswith("select m.map_name, r.game_branch, p.site, p.u, p.v from round_plants p")
+    assert "link_status = 'linked'" in select
+    for private in ("display_name", "external_id", "match_uuid", "player", "riot"):
+        assert private not in select
     assert calls[2] == "disposed"
+
+
+def test_reader_decides_the_layout_when_rows_are_read(monkeypatch):
+    from app.replays import layouts
+
+    def row(key, start):
+        return {"id": key, "key": key, "start": start, "drawn_from": "13.08", "regions": None}
+
+    registry = {"maps": {"Ascent": [row("Ascent", None), row("Ascent_14_0", "14.0")],
+                         "Bind": [row("Bind", None)]}}
+    monkeypatch.setattr(layouts, "load_registry", lambda path=None: registry)
+    plant_namer, _ = _fake_database(monkeypatch, [
+        ("Ascent", None, "A", 1, 1),                        # tracker row, no replay: layout unknown
+        ("Ascent", "release-13.08", "A", 2000, 3000),       # base layout
+        ("Ascent", "release-14.00", "B", 4000, 5000),       # the later layout
+        ("Bind", None, "A", 10, 20),                        # one layout: known without a replay
+        (None, None, "A", 7, 7),                            # no map at all
+    ])
+    assert plant_namer.read_points() == [
+        ("Ascent", "A", 2000, 3000), ("Ascent_14_0", "B", 4000, 5000), ("Bind", "A", 10, 20)]

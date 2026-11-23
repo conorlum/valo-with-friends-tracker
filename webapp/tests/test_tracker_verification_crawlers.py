@@ -149,6 +149,31 @@ def test_timeout_preserves_completed_work(crawler, monkeypatch):
         assert saved["incomplete_players"] == players[1:2]
 
 
+def test_timeout_after_ingested_matches_still_prewarms_them(crawler, monkeypatch):
+    """R1.1 F4: matches added before the timeout are invalidated, so they are pre-warmed too."""
+    if not crawler.end_steps:
+        pytest.skip("this crawler runs no pre-warm")
+    module = crawler.module
+    players = ["profile-placeholder-1", "profile-placeholder-2"]
+    prior = TrackerVerificationTimeout("owner did not clear check")
+    prior.dirty = {7, 9}
+
+    def load(*args, **kwargs):
+        raise prior
+
+    crawler.state.write_text(json.dumps({"crawled": [], "queue": players}))
+    if crawler.name == "snowball_1hour":
+        monkeypatch.setattr(module, "STATE_PATH", crawler.state)
+        monkeypatch.setattr(module, "ingest_recent_matches", load)
+        code = module.main(1)
+    else:
+        monkeypatch.setattr(module, "TARGETS", players)
+        monkeypatch.setattr(module, "ingest_full_history", load)
+        code = module.main()
+    assert code != 0
+    crawler.end_steps["prewarm_player_cache"].assert_called_once_with(crawler.db, {7, 9})
+
+
 def test_successful_run_exits_zero(crawler, monkeypatch):
     players = ["profile-placeholder-1", "profile-placeholder-2"]
     code, calls = run_crawler(crawler, monkeypatch, players)

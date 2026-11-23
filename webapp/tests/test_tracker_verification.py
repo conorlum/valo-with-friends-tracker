@@ -385,3 +385,95 @@ def test_command_timeout_stops_roster_but_finishes_run(module, monkeypatch, tmp_
     assert end["event"] == "run_end" and end["ingested"] == 1
     output = capsys.readouterr().out.lower()
     assert "verification" in output and "re-run" in output
+
+
+# --- R1.1 F6: the settle wait after a load is at least 8 s ------------------------
+
+
+@pytest.mark.parametrize("arrives_at, expected_total", [(0, 8), (3, 8), (8, 8), (12, 12), (15, 15)])
+def test_match_body_waits_at_least_eight_seconds_then_up_to_fifteen(fake_wait, arrives_at, expected_total):
+    class Arriving(MatchPage):
+        def goto(self, url, **kwargs):
+            super().goto(url, **kwargs)
+            if arrives_at == 0:
+                self.emit({"data": {"ok": True}}, 200)
+
+    page = Arriving(Clock(), {"data": {"ok": True}}, clear_at=0, response_delay=arrives_at)
+    page.emitted = arrives_at == 0
+    assert src.fetch_match_json(page, "m1") == {"ok": True}
+    assert sum(page.waits) == expected_total * 1000
+    assert set(page.waits) == {1000}
+
+
+def test_match_body_wait_starts_after_the_verification_wait(fake_wait):
+    page = MatchPage(Clock(), {"data": {"ok": True}}, clear_at=130, response_delay=0)
+    assert src.fetch_match_json(page, "m1") == {"ok": True}
+    assert page.clock() == 130 + 8
+
+
+# --- R1.1 F3: no database transaction while the ingest loop fetches ---------------
+
+
+def test_ingest_loop_holds_no_transaction_during_any_fetch_attempt(monkeypatch):
+    from app.models.match import MatchSource
+    from tests.buy_disruption_fixtures import session
+
+    db = session(all_tables=True)
+    states = []
+
+    def fetch(page, match_id):
+        states.append((match_id, db.in_transaction()))
+        if match_id == "m1" and len(states) == 1:
+            raise RuntimeError("synthetic dropped connection")
+        return {"id": match_id}
+
+    def load(db, payload):
+        match = src.Match(external_id=payload["id"], source=MatchSource.SCRAPED, map_name="Haven")
+        db.add(match)
+        db.commit()
+        return match
+
+    monkeypatch.setattr(src, "fetch_match_json", fetch)
+    monkeypatch.setattr(src, "verify_ingest_preflight", lambda db: None)
+    monkeypatch.setattr(src, "load_match", load)
+    monkeypatch.setattr(src, "invalidate_match_players", lambda db, mid: {mid})
+    monkeypatch.setattr(src, "invalidate_site_stats_cache", lambda db: None)
+    monkeypatch.setattr(src, "compute_impact_for_match", lambda db, mid: db.commit())
+    monkeypatch.setattr(src.time, "sleep", lambda seconds: None)
+    try:
+        progress = src._ingest_discovered(db, None, ["m1", "m2", "m3"])
+    finally:
+        db.close()
+        db.bind.dispose()
+    assert progress.ingested == 3 and progress.error is None
+    assert states == [("m1", False), ("m1", False), ("m2", False), ("m3", False)]
+
+
+# --- R1.1 F4: a timeout carries the players already invalidated -------------------
+
+
+def test_timeout_has_its_own_empty_dirty_set():
+    first, second = verification.TrackerVerificationTimeout(), verification.TrackerVerificationTimeout("x")
+    assert first.dirty == set() and second.dirty == set()
+    first.dirty.add(1)
+    assert second.dirty == set()
+
+
+def test_dedup_and_ingest_hands_dirty_players_to_the_timeout(monkeypatch):
+    timeout = verification.TrackerVerificationTimeout("owner did not clear check")
+    monkeypatch.setattr(src, "_ingest_discovered", lambda *a, **k: src._IngestProgress(
+        dirty={7, 9}, ingested=2, error=timeout, verification_timeout=True))
+    with pytest.raises(verification.TrackerVerificationTimeout) as raised:
+        src._dedup_and_ingest(MagicMock(), None, ["m1", "m2", "m3"])
+    assert raised.value is timeout and raised.value.dirty == {7, 9}
+
+
+def test_dedup_and_ingest_other_failures_and_success_are_unchanged(monkeypatch):
+    failure = RuntimeError("boom")
+    progress = src._IngestProgress(dirty={7}, ingested=1, first_error=failure)
+    monkeypatch.setattr(src, "_ingest_discovered", lambda *a, **k: progress)
+    with pytest.raises(RuntimeError) as raised:
+        src._dedup_and_ingest(MagicMock(), None, ["m1"])
+    assert raised.value is failure and not hasattr(failure, "dirty")
+    progress.first_error = None
+    assert src._dedup_and_ingest(MagicMock(), None, ["m1"]) == {7}

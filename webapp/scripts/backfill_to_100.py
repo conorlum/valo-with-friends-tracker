@@ -103,7 +103,8 @@ def main() -> int:
                 try:
                     dirty = ingest_full_history(db, page, riot_id, max_matches=MAX_MATCHES_PER_PLAYER)
                     all_dirty |= dirty
-                except TrackerVerificationTimeout:
+                except TrackerVerificationTimeout as timeout:
+                    all_dirty |= timeout.dirty  # matches added before the stop still need pre-warming
                     print("Human verification timed out. Clear the check in the browser, "
                           "then re-run the same command to resume; completed matches are kept.")
                     db.rollback()

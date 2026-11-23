@@ -436,3 +436,109 @@ def test_replay_bomb_on_unplanted_db_round_keeps_position_without_rates(db):
     row = db.scalar(select(RoundPlant))
     assert (row.u, row.v, row.plant_time) == (1234, 5678, 25)
     assert (row.attackers_alive, row.defenders_alive, row.attackers_won) == (None, None, None)
+
+
+# --- R1.1 F2: a 200 with no usable data is permanent -----------------------------
+
+
+def _respond(monkeypatch, responses):
+    """Run fetch_match_json against a page that answers with (status, json callable) pairs."""
+    from app.adapters import trackergg_browserstate_source as adapter
+
+    callbacks = {}
+
+    def goto(*args, **kwargs):
+        for status, body in responses:
+            callbacks["response"](SimpleNamespace(
+                url=adapter.MATCH_API_MARKER_TMPL.format(match_id="synthetic-match"),
+                status=status, json=body))
+
+    page = SimpleNamespace(on=lambda name, callback: callbacks.update({name: callback}),
+                           goto=goto, wait_for_timeout=lambda _: None,
+                           remove_listener=lambda name, callback: callbacks.pop(name))
+    monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
+    with pytest.raises(RuntimeError) as error:
+        adapter.fetch_match_json(page, "synthetic-match")
+    assert callbacks == {}
+    return type(error.value)
+
+
+def _unparseable():
+    raise ValueError("HTML challenge page")
+
+
+@pytest.mark.parametrize("body", [{}, {"data": None}, {"errors": []}, ["unexpected array"], "text"])
+@pytest.mark.parametrize("statuses,unavailable", [
+    ([200], True), ([429, 200], True), ([200, 404], True), ([200, 429], False), ([200, 403], False),
+    ([200, 500], False),
+])
+def test_status_200_json_without_data_is_unavailable_only_when_last(monkeypatch, body, statuses, unavailable):
+    from app.adapters import tracker_verification as verification
+
+    got = _respond(monkeypatch, [(status, lambda: body) for status in statuses])
+    assert got is (verification.TrackerMatchUnavailable if unavailable else RuntimeError)
+
+
+@pytest.mark.parametrize("responses", [
+    [(200, _unparseable)],
+    [(200, lambda: {}), (200, _unparseable)],
+    [(200, _unparseable), (403, lambda: {})],
+])
+def test_status_200_that_does_not_parse_stays_retryable(monkeypatch, responses):
+    assert _respond(monkeypatch, responses) is RuntimeError
+
+
+# --- R1.1 F3: no transaction is open while a page loads --------------------------
+
+
+def test_backfill_ends_its_transaction_before_every_fetch(db):
+    ids = matches(db, 4)
+    states = []
+
+    def fetch(page, key):
+        states.append(db.in_transaction())
+        if key == ids[1]:
+            raise ValueError("synthetic failure")
+        return payload(1)
+
+    result = run(db, fetch)
+    assert states == [False] * 4
+    assert result["done"] == 3 and result["failed"] == 1
+
+
+def test_backfill_ends_its_transaction_before_pacing_too(db):
+    matches(db, 2)
+    events = []
+    plants.backfill(db, None, limit=None,
+                    fetch=lambda page, key: (events.append(("fetch", db.in_transaction())), payload(1))[1],
+                    sleep=lambda s: events.append(("sleep", db.in_transaction())),
+                    uniform=lambda a, b: a)
+    assert events == [("fetch", False), ("sleep", False), ("fetch", False)]
+
+
+# --- R1.1 F8: status reports coverage per map and source -------------------------
+
+
+def test_status_reports_coverage_per_map_and_source(db, ledger, monkeypatch, capsys):
+    from scripts import round_plants as cli
+
+    def at(number):
+        return {"round_number": number, "site": "A", "u": 1234, "v": 5678}
+
+    bind = planted_match(db, upto=2, external_id="synthetic-bind")
+    ascent = planted_match(db, upto=1, external_id="synthetic-ascent")
+    ascent.map_name = "Ascent"
+    db.flush()
+    plants.upsert_plants(db, bind, [at(1)], source="tracker")
+    plants.upsert_plants(db, ascent, [at(1)], source="replay")
+    db.commit()
+    monkeypatch.setattr(cli, "SessionLocal", lambda: db)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "stored plants: 2; planted rounds: 3; skip-list: 0" in out
+    lines = {line.split(":")[0].strip(): line for line in out.splitlines()
+             if line.strip().startswith(("Bind:", "Ascent:"))}
+    assert "planted rounds 2" in lines["Bind"] and "replay 0, tracker 1" in lines["Bind"]
+    assert "coverage 50.0%" in lines["Bind"]
+    assert "planted rounds 1" in lines["Ascent"] and "replay 1, tracker 0" in lines["Ascent"]
+    assert "coverage 100.0%" in lines["Ascent"]

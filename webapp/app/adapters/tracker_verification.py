@@ -10,7 +10,15 @@ BEEP_EVERY_S = 60
 
 
 class TrackerVerificationTimeout(RuntimeError):
-    """The owner did not clear human verification within the allowed wait."""
+    """The owner did not clear human verification within the allowed wait.
+
+    `dirty` carries the player IDs whose caches an ingest invalidated before the
+    wait failed, so a caller that stops on this error can still pre-warm them.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.dirty: set[int] = set()
 
 
 class TrackerMatchUnavailable(RuntimeError):

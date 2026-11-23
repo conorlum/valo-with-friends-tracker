@@ -269,6 +269,73 @@ def test_a_changed_registry_or_a_newly_linked_replay_recomputes(db, monkeypatch)
     assert len(calls) == 3
 
 
+def _replay(db, match, uuid_tail, *, branch="release-13.08", offset=2.0):
+    row = Replay(match_uuid=f"00000000-0000-0000-0000-{uuid_tail:012d}", match_id=match.id,
+                 map_name="Ascent", round_count=1, format_version=1, recipe="r",
+                 game_branch=branch, source_sha256="x", source="upload",
+                 link_status="linked", link_inputs={}, clock_offset=offset)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _recomputes_after(db, monkeypatch, change):
+    plant_page.page_data(db, "Ascent", None)
+    calls = _counting(monkeypatch)
+    plant_page.page_data(db, "Ascent", None)
+    assert calls == []                                    # nothing changed: a cache hit
+    change()
+    db.commit()
+    plant_page.page_data(db, "Ascent", None)
+    return len(calls)
+
+
+def test_a_changed_clock_offset_recomputes(db, monkeypatch):
+    matches = _plants(db, 3, branch="release-13.08")
+    row = db.query(Replay).filter_by(match_id=matches[0].id).one()
+    assert _recomputes_after(db, monkeypatch, lambda: setattr(row, "clock_offset", 5.0)) == 1
+
+
+def test_a_changed_game_branch_recomputes(db, monkeypatch):
+    matches = _plants(db, 3, branch="release-13.08")
+    row = db.query(Replay).filter_by(match_id=matches[0].id).one()
+    assert _recomputes_after(db, monkeypatch, lambda: setattr(row, "game_branch", "release-13.09")) == 1
+
+
+def test_an_unlink_plus_a_different_link_at_the_same_count_recomputes(db, monkeypatch):
+    matches = _plants(db, 3)
+    first = _replay(db, matches[0], 1)
+
+    def swap():
+        first.link_status = "unlinked"
+        first.match_id = None
+        _replay(db, matches[1], 2)
+
+    assert _recomputes_after(db, monkeypatch, swap) == 1
+
+
+def test_an_unrelated_replay_change_is_still_a_cache_hit(db, monkeypatch):
+    matches = _plants(db, 3)
+    other = _replay(db, matches[0], 1)
+    other.link_status = "unlinked"
+    other.match_id = None
+    db.commit()
+    assert _recomputes_after(db, monkeypatch, lambda: setattr(other, "source_sha256", "y")) == 0
+
+
+def test_a_refresh_sets_computed_at_again(db):
+    _plants(db, 3)
+    plant_page.page_data(db, "Ascent", None)
+    row = db.get(PlantStatsCache, ("Ascent", "all"))
+    old = datetime(2020, 1, 1)
+    row.computed_at = old
+    row.fingerprint = "stale"
+    db.commit()
+    plant_page.page_data(db, "Ascent", None)
+    db.expire_all()
+    assert db.get(PlantStatsCache, ("Ascent", "all")).computed_at.replace(tzinfo=None) > old
+
+
 # --- index cost, image, layout echo ----------------------------------------------
 
 

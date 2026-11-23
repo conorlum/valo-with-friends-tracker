@@ -12,6 +12,7 @@ ingest path needs a hook. A stale, missing or corrupt row degrades to a recomput
 name is ever read or returned.
 """
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -40,11 +41,18 @@ def _registry_digest() -> str:
 
 
 def fingerprint(db) -> str:
-    linked = (select(func.count()).select_from(Replay)
-              .where(Replay.link_status == "linked", Replay.match_id.is_not(None)).scalar_subquery())
-    count, newest, links = db.execute(select(func.count(), func.max(RoundPlant.updated_at), linked)
-                                      .select_from(RoundPlant)).one()
-    text = f"{count}|{newest}|{links}|{_registry_digest()}|{plant_spots.digest()}|{CALCULATION_VERSION}"
+    count, newest = db.execute(select(func.count(), func.max(RoundPlant.updated_at))
+                               .select_from(RoundPlant)).one()
+    # Which replay is linked to which match, and its branch and clock, decide each row's
+    # layout and example link: a relink can leave the count unchanged.
+    links = hashlib.sha256()
+    for match_id, branch, offset in db.execute(
+            select(Replay.match_id, Replay.game_branch, Replay.clock_offset)
+            .where(Replay.link_status == "linked", Replay.match_id.is_not(None))
+            .order_by(Replay.match_id, Replay.game_branch, Replay.clock_offset)):
+        links.update(f"{match_id!r}|{branch!r}|{offset!r}\n".encode("utf-8"))
+    text = (f"{count}|{newest}|{links.hexdigest()}|{_registry_digest()}|"
+            f"{plant_spots.digest()}|{CALCULATION_VERSION}")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -158,7 +166,8 @@ def _read_cache(db, asset_key, population, current):
 def _store_cache(db, asset_key, population, current, data):
     try:
         db.merge(PlantStatsCache(asset_key=asset_key, population=population, fingerprint=current,
-                                 data=zlib.compress(json.dumps(data).encode("utf-8"))))
+                                 data=zlib.compress(json.dumps(data).encode("utf-8")),
+                                 computed_at=datetime.now(timezone.utc)))
         db.commit()
     except Exception:
         db.rollback()

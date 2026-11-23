@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import func, select
 
 from app.db import SessionLocal
-from app.models import Round, RoundPlant
+from app.models import Match, Round, RoundPlant
 from app.services import round_plants as plants
 
 
@@ -38,6 +38,28 @@ def _progress(done, left):
     print(f"done: {done}; left: {left}; estimated pacing time: {left * 5}-{left * 12} s + page loads")
 
 
+def _print_coverage(db):
+    """Per map: planted rounds, stored plants by source, and the share of planted rounds covered."""
+    planted = {name: (rounds, covered) for name, rounds, covered in db.execute(
+        select(Match.map_name, func.count(Round.id), func.count(RoundPlant.round_id))
+        .select_from(Round).join(Match, Match.id == Round.match_id)
+        .outerjoin(RoundPlant, RoundPlant.round_id == Round.id)
+        .where(Round.planted.is_(True)).group_by(Match.map_name))}
+    stored = {}
+    for name, source, count in db.execute(
+            select(Match.map_name, RoundPlant.source, func.count(RoundPlant.round_id))
+            .select_from(RoundPlant).join(Match, Match.id == RoundPlant.match_id)
+            .group_by(Match.map_name, RoundPlant.source)):
+        stored.setdefault(name, {})[source] = count
+    for name in sorted(set(planted) | set(stored), key=str):
+        rounds, covered = planted.get(name, (0, 0))
+        by_source = stored.get(name, {})
+        coverage = f"{100 * covered / rounds:.1f}%" if rounds else "n/a"
+        print(f"{name}: planted rounds {rounds}; stored plants {sum(by_source.values())} "
+              f"(replay {by_source.get('replay', 0)}, tracker {by_source.get('tracker', 0)}); "
+              f"coverage {coverage}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -57,6 +79,7 @@ def main(argv=None):
             planted = db.scalar(select(func.count()).select_from(Round).where(Round.planted.is_(True)))
             print(f"stored plants: {stored}; planted rounds: {planted}; skip-list: {len(unavailable)}")
             print(f"pending matches: {len(plants.pending_matches(db, skip=unavailable))}")
+            _print_coverage(db)
             return 0
         if args.command == "sync-replays":
             result = plants.sync_replays(db, dry_run=args.dry_run)

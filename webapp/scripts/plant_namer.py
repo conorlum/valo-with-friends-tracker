@@ -24,13 +24,23 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.services import plant_spots  # noqa: E402
 from app.services.map_rotation import quarter_turns  # noqa: E402
+from app.services.round_plants import asset_key_for  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 STATIC = WEBAPP_ROOT / "app" / "static"
 
 
+# Position fields plus what decides the layout (map and the linked replay's branch).
+# No player, match or replay identifier is selected; the join is plant_page._joined's.
+POINTS_SQL = (
+    "SELECT m.map_name, r.game_branch, p.site, p.u, p.v FROM round_plants p "
+    "JOIN matches m ON m.id = p.match_id "
+    "LEFT JOIN replays r ON r.match_id = p.match_id AND r.link_status = 'linked'"
+)
+
+
 def read_points():
-    """Read four position fields; refuse a URL without the wrapper's read-only option."""
+    """Read position fields; refuse a URL without the wrapper's read-only option."""
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise ValueError("Run through scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only")
@@ -43,11 +53,19 @@ def read_points():
     try:
         with engine.begin() as connection:
             connection.execute(text("SET TRANSACTION READ ONLY"))
-            return list(connection.execute(text(
-                "SELECT asset_key, site, u, v FROM round_plants WHERE asset_key IS NOT NULL"
-            )))
+            rows = list(connection.execute(text(POINTS_SQL)))
     finally:
         engine.dispose()
+    # The layout is decided here, from the replay's game branch, never from the stored
+    # asset_key (R9): a row whose layout is unknown now is dropped, not guessed.
+    chosen = {}
+    points = []
+    for map_name, game_branch, site, u, v in rows:
+        if (map_name, game_branch) not in chosen:
+            chosen[map_name, game_branch] = asset_key_for(map_name, game_branch)
+        if chosen[map_name, game_branch] is not None:
+            points.append((chosen[map_name, game_branch], site, u, v))
+    return points
 
 
 def build(points, saved=None):
