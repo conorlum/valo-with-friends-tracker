@@ -15,6 +15,17 @@
     <button type="submit">Continue</button>
   </form>
   {% else %}
+  <section class="card">
+    <h2>Auto-uploader (Windows)</h2>
+    <p>Uploads new replays while Valorant runs, and deletes a replay once stored and 14 days old.</p>
+    <p><a href="{{ uploader_url }}">Download ValoUploader.exe</a>
+      <button type="button" data-app-key-copy>Copy my key</button>
+      <span role="status" data-app-key-status></span></p>
+    <p class="page-meta">Each click creates a fresh key, shown once by copying it to your clipboard.
+      Paste it into the app when asked.</p>
+    <p class="page-meta">Windows may show &ldquo;Windows protected your PC&rdquo;:
+      choose More info &rarr; Run anyway.</p>
+  </section>
   <p class="page-meta">Pick or drag in a competitive match's <code>.vrf</code> file from
     <code data-demos-path>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker into the minimap
     replay. If the match is on this site, the replay links to it; if not, it plays on its own and links after the match
@@ -87,6 +98,7 @@
   <button type="button" data-errors-copy disabled>Copy prompt</button>
   <div data-errors-body hidden></div>
 </details>
+<script src="/static/js/upload_app_key.js?v={{ static_version() }}"></script>
 <script>
   // The "Show Replay Info" panel: fetches when opened, then every minute while it stays open.
   (function () {

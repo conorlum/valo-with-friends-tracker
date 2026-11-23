@@ -20,6 +20,7 @@ from tests.support.replays import stored_replay
     ('POST','/accounts/label',{'display_name':'Other','label':'renamed'},403),
     ('GET','/replays',None,404), ('GET','/replays/upload',None,404),
     ('POST','/replays/upload/code',{'code':'test-code'},404),
+    ('POST','/replays/upload/app-key',None,404),
     ('POST','/api/replays/check',{'sha256':'a' * 64},404),
     ('POST','/api/replays/upload',None,404),
     ('GET','/api/replays/key',None,404),

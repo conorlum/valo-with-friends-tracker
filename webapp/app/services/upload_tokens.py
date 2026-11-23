@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.upload_token import UploadToken
 
 PREFIX = "vwf1_"
+UPLOADER_DOWNLOAD_URL = "https://github.com/conorlum/valo-with-friends-tracker/releases/latest/download/ValoUploader.exe"
 TOUCH_INTERVAL = timedelta(seconds=60)
 _KEY_RE = re.compile(r"^vwf1_[A-Za-z0-9_-]{43}$")
 

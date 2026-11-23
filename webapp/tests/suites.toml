@@ -267,6 +267,7 @@ tests = [
   "tests/replays/test_replay_archive_web.py", "tests/replays/test_replay_view.py", "tests/replays/test_replay_viewer.py",
   "tests/replays/test_viewer_*.py", "tests/test_archive_replays.py", "tests/test_fetch_archived_replay.py",
   "tests/replays/test_upload_tokens.py", "tests/test_migration_0036.py", "tests/replays/test_replay_api.py",
+  "tests/replays/test_upload_app_page.py", "tests/replays/test_upload_app_key_js.py",
 ]
 guards = [
   "app/services/replay_areas.py", "app/services/map_rotation.py", "app/routers/replay_api.py",
@@ -277,6 +278,7 @@ guards = [
   "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
   "scripts/fetch_archived_replay.py", "scripts/_admin_client.py",
   "app/services/upload_tokens.py", "app/models/upload_token.py", "alembic/versions/0036_upload_tokens.py",
+  "app/static/js/upload_app_key.js", "scripts/upload_tokens.py",
 ]
 
 [replay-worker]
