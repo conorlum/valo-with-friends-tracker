@@ -1,6 +1,6 @@
 "use strict";
 
-const PEEK_TYPES = ["held", "wide_swing", "slow_peek", "jiggle", "re_peek", "other"];
+const PEEK_TYPES = ["held", "wide_swing", "slow_peek", "jump_peek", "ability_peek", "jiggle", "re_peek", "other"];
 
 function recordRight(state, key, ruleType) {
     return recordCorrected(state, key, ruleType);

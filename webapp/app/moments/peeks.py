@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from app.control import engine, stance
+from app.control import engine, height_motion, stance
 from app.moments import fights, peek_constants as pc
 
 
@@ -127,16 +127,17 @@ def distance_band(distance) -> str | None:
     return "close" if distance < pc.DIST_BANDS_M[0] else "mid" if distance < pc.DIST_BANDS_M[1] else "long"
 
 
-def _airborne(rnd, a, b, t):
-    for slot in (a, b):
-        z = rnd.track_z.get(slot)
+def _flights(blob, geo):
+    """D14: sample-mask runs per slot, using the stored segments' raw decimetres."""
+    flights = {}
+    for slot, t, x, y, z in height_motion.tracks(blob):
         if z is None:
             continue
-        values = [float(z[i]) for at in _sample_times(t - pc.AIRBORNE_LOOK_S, t + pc.AIRBORNE_LOOK_S)
-                  if (i := rnd._sample(slot, at)) is not None and np.isfinite(z[i])]
-        if values and max(values) - min(values) > pc.AIRBORNE_M:
-            return True
-    return False
+        mask = height_motion.airborne(x, y, z, blob["hz"], geo.m_per_px)
+        edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
+        flights.setdefault(slot, []).extend((float(t[i]), float(t[j - 1]))
+                                            for i, j in edges.reshape(-1, 2))
+    return flights
 
 
 def _sideways(rnd, slot, opp, t):
@@ -178,17 +179,21 @@ def _history(rnd, blob, slot, opp, main, previous):
     return jiggles, candidates
 
 
-def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates):
+def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities):
     """R4 precedence; unknown measurements never stand in for a negative check."""
     t = main["on"]
     positions = all(fights._live_pos(rnd, s, at) is not None
                     for s in (slot, opp) for at in (t, t - pc.OPENER_DELTA_S))
     who = opener(rnd, slot, opp, t) if positions else None
-    if _airborne(rnd, slot, opp, t):
-        return who, "other", "airborne"
-    if blob.get("movement_casts") and any(r.get("k") == "cast" and r.get("by") == slot
-            and abs(r["t"] - t) <= fights.DASH_EXCLUDE_S for r in blob.get("util") or ()):
-        return who, "other", "ability_move"
+    nearby_flights = [(a, b) for a, b in flights.get(slot, ())
+                      if a <= t + pc.JUMP_LOOK_S and b >= t - pc.JUMP_LOOK_S]
+    movement_cast = blob.get("movement_casts") and any(r.get("k") == "cast" and r.get("by") == slot
+        and abs(r["t"] - t) <= fights.DASH_EXCLUDE_S for r in blob.get("util") or ())
+    if movement_cast or any(a <= d and b >= c for a, b in nearby_flights
+                            for c, d in abilities.get(slot, ())):
+        return who, "ability_peek", None
+    if nearby_flights and who in ("peeker", "both"):
+        return who, "jump_peek", None
     if speed is None or not positions:
         return who, "other", "unmeasured"
     if who in ("holder", "unclear"):
@@ -219,7 +224,7 @@ def _label(rnd, blob, slot, opp, main, group, speed, sideways, candidates):
     return (who, "slow_peek", None) if speed > pc.HELD_MAX_MPS else (who, "other", "still_peek")
 
 
-def _opening(rnd, blob, slot, i, group):
+def _opening(rnd, blob, slot, i, group, flights, abilities):
     t0, t1 = group[0][0], max(e[4] for e in group)
     event, opp = first_gun_event(rnd, blob, slot, group)
     row = dict(slot=slot, i=i, opponent=opp, t0=fights._r2(t0), t1=fights._r2(t1),
@@ -263,11 +268,13 @@ def _opening(rnd, blob, slot, i, group):
                repeek_spot_m=None if latest is None else fights._r2(latest[1]),
                distance_m=None if distance is None else round(distance, 1), band=distance_band(distance))
     row["opener"], row["type"], row["reason"] = _label(
-        rnd, blob, slot, opp, main, group, speed, sideways, candidates)
+        rnd, blob, slot, opp, main, group, speed, sideways, candidates, flights, abilities)
     return row
 
 
 def round_openings(rnd, blob) -> list[dict]:
     """D6: recompute fights locally, with one slot-level opening per fight."""
-    return [_opening(rnd, blob, slot, i, group) for slot in sorted(rnd.team)
+    flights = _flights(blob, rnd.geo)
+    abilities = height_motion.blackouts(blob, rnd.geo)
+    return [_opening(rnd, blob, slot, i, group, flights, abilities) for slot in sorted(rnd.team)
             for i, group in enumerate(fights._split(fights._events(rnd, blob, slot)))]

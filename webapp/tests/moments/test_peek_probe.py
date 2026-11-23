@@ -352,14 +352,14 @@ def test_null_openers_have_separate_none_column(tmp_path, capsys, reason):
 def test_aggregate_pooled_shrink_other_jiggles_and_no_strangers():
     rows = [row(i, result="won" if i < 2 else "lost", jiggles=int(i == 0)) for i in range(3)]
     rows += [row(i + 3, friend=False, player_id="stranger", result="won" if i == 0 else "lost") for i in range(3)]
-    rows += [row(6, type="other", result="lost", reason="airborne"), row(7, type="other", reason="airborne"),
+    rows += [row(6, type="other", result="lost", reason="caught_moving"), row(7, type="other", reason="caught_moving"),
              row(8, type="held", opener="holder"), row(9, type="held", opener="holder", result="lost"),
              row(10, type="wide_swing", result="unresolved"), row(11, type="other", result="unresolved", reason="no_gun")]
     summary = probe.aggregate(rows)
     assert summary["counts"]["wide_swing"]["peeker"] == 7
     assert summary["pooled"]["wide_swing"]["rate"] == .5
     assert summary["pooled"]["other"]["rate"] == .5
-    assert summary["other_reasons"] == {"airborne": 2, "no_gun": 1}
+    assert summary["other_reasons"] == {"caught_moving": 2, "no_gun": 1}
     assert set(summary["players"]) == {"friend-id"}
     player = summary["players"]["friend-id"]["types"]["wide_swing"]
     assert (player["n"], player["wins"], player["rate"], player["interval"]) == (3, 2, 2/3, None)
@@ -523,13 +523,13 @@ def answer_key(r):
 def test_build_page_sampling_safety_and_answer_keys(tmp_path):
     players = {"friend-id": "Invented#A", "second-id": "Fiction#B"}
     rows = []
-    for i in range(20):
+    for i in range(3 * len(probe.pc.TYPES)):
         named = i % 4 != 3
         pid = "friend-id" if i % 2 == 0 else "second-id"
-        rows.append(page_row(i, type=probe.pc.TYPES[i % 6], friend=named,
+        rows.append(page_row(i, type=probe.pc.TYPES[i % len(probe.pc.TYPES)], friend=named,
                              player_id=pid if named else "stranger-id",
                              player_label=players[pid] if named else "Sage", agent="Sage",
-                             name="Stranger#1", reason="unmeasured" if i % 6 == 5 else None,
+                             name="Stranger#1", reason="unmeasured" if i % len(probe.pc.TYPES) == len(probe.pc.TYPES) - 1 else None,
                              jiggles=2, result="lost" if i % 2 else "won"))
     rows[0]["opponent_label"] = "the enemy </script><img src=x onerror=alert(1)>"
     page = probe.build_page(rows, players, tmp_path, per_type=2, seed=19)
@@ -538,7 +538,7 @@ def test_build_page_sampling_safety_and_answer_keys(tmp_path):
     payload = json.loads(parsed.payload)
     assert page == tmp_path / "peeks.html"
     assert [s["data-type"] for s in parsed.sections] == list(probe.pc.TYPES)
-    assert [int(s["data-total"]) for s in parsed.sections] == [4, 4, 3, 3, 3, 3]
+    assert [int(s["data-total"]) for s in parsed.sections] == [3] * len(probe.pc.TYPES)
     assert all(sum(c["data-type"] == t for c in parsed.cards) == 2 for t in probe.pc.TYPES)
     cards = payload["cards"]
     assert {c["key"] for c in cards} == {c["data-key"] for c in parsed.cards}
@@ -672,3 +672,9 @@ def test_page_script_guarded():
     import tomllib
     suites = tomllib.loads((Path(probe.WEBAPP_ROOT) / "tests/suites.toml").read_text(encoding="utf-8"))
     assert "scripts/peek_page.js" in suites["critical-moments"]["guards"]
+
+
+def test_page_types_equal_plan_types():
+    js = Path(probe.__file__).with_name("peek_page.js").read_text(encoding="utf-8")
+    types = json.loads(re.search(r"const PEEK_TYPES = (\[[^;]+\]);", js)[1])
+    assert tuple(types) == probe.pc.TYPES

@@ -258,9 +258,11 @@ def test_plan_constants_are_pinned():
         "SPEED_WINDOW_S": 0.125, "SPEED_MAX_PAIR_S": 0.25, "ONSET_STEP_S": 1 / 32,
         "ONSET_LOOKBACK_S": 10.0, "OPENER_DELTA_S": 0.25, "HELD_MAX_MPS": 1.0, "HELD_LOOK_S": 1.0,
         "JIGGLE_MAX_S": 0.4, "REPEEK_WINDOW_S": 5.0, "EVENT_SLACK_S": 0.1, "REPEEK_SPOT_M": 2.0,
-        "SWING_MPS": 4.5, "WIDE_M": 1.5, "WIDE_LOOK_S": 0.5, "AIRBORNE_M": 0.8, "AIRBORNE_LOOK_S": 0.5,
+        "SWING_MPS": 4.5, "WIDE_M": 1.5, "WIDE_LOOK_S": 0.5, "JUMP_LOOK_S": 0.25,
         "DIST_BANDS_M": (10.0, 25.0), "SHRINK_K": 10,
-        "TYPES": ("held", "wide_swing", "slow_peek", "jiggle", "re_peek", "other"),
+        "TYPES": ("held", "wide_swing", "slow_peek", "jump_peek", "ability_peek", "jiggle", "re_peek", "other"),
         "OPENERS": ("peeker", "holder", "both", "unclear"),
     }
     assert {name: getattr(pc, name) for name in expected} == expected
+    assert not hasattr(pc, "AIRBORNE_M")
+    assert not hasattr(pc, "AIRBORNE_LOOK_S")

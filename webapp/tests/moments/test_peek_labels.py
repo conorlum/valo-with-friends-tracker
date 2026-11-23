@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from app.control import engine
+from app.control import engine, height_motion, heights
 from app.moments import fights, peek_constants as pc, peeks
 from tests.moments.helpers import cast, damage, kill, shot
 from tests.replays import control_toys as toys
@@ -153,31 +153,135 @@ def test_first_event_stays_in_earlier_main_exposure():
     assert r["exposure_s"] == pytest.approx(1.5, abs=.04)
 
 
-@pytest.mark.parametrize("slot", [0, 5])
-def test_airborne_either_player_raw_z_ignores_nan(slot):
-    rnd, blob = round_of(util=[damage(12.25, 0, 5)])
-    original = blob["tracks"][str(slot)][0]
-    points = [(0, 230 if slot == 0 else 330, 200 if slot == 0 else 280, 0, 0),
-              (11.5, 230 if slot == 0 else 330, 200 if slot == 0 else 280, 0, 0),
-              (12, 230 if slot == 0 else 330, 280, 0, 1.2),
-              (12.5, 230 if slot == 0 else 330, 280, 0, 0)]
-    original["z"] = toys.z_track(points, 0, 24, hz=125)[0]["z"]
-    rnd = engine.RoundInputs(blob, rnd.geo, engine.ControlLink(db_deaths=()))
-    rnd.track_z[slot][rnd._sample(slot, 11.5)] = np.nan
-    corner_setup(rnd)
-    r = row(rnd, blob)
-    assert (r["type"], r["reason"]) == ("other", "airborne")
-    assert r["opener"] == "peeker"
-    assert r["speed_mps"] is not None
+def arc(t, onset, *, velocity=6, offset=0):
+    elapsed = t - (onset + offset - velocity / heights.GRAVITY_MPS2)
+    return np.maximum(0, velocity * elapsed - heights.GRAVITY_MPS2 / 2 * elapsed ** 2)
 
 
-def test_ability_move():
-    rnd, blob = round_of(util=[cast(12, 0), damage(12.25, 0, 5)])
+def add_height(rnd, blob, slot, profile, onset):
+    for seg in blob["tracks"][str(slot)]:
+        t = seg["t0"] + np.arange(len(seg["u"])) / blob["hz"]
+        z = np.rint(profile(t, onset) * 10).astype(int)
+        seg["z"] = np.diff(z, prepend=0).tolist()
+    return engine.RoundInputs(blob, rnd.geo, engine.ControlLink(db_deaths=()))
+
+
+def motion_round(profile=arc, *, slot=0, player=None, enemy=None, util=()):
+    event = 11.28125
+    rnd, blob = round_of(player or swing(), enemy, util=[*util, damage(event, 0, 5)])
     blob["movement_casts"] = 1
-    corner_setup(rnd)
-    r = row(rnd, blob)
-    assert (r["type"], r["reason"]) == ("other", "ability_move")
-    assert r["opener"] == "peeker"
+    corner_setup(rnd, 10, event)
+    onset = peeks.exposures(rnd, 0, 5, event - 10, event + .1)[0]["on"]
+    rnd = add_height(rnd, blob, slot, profile, onset)
+    [(s, t, x, y, z)] = [track for track in height_motion.tracks(blob) if track[0] == slot]
+    assert s == slot and blob["hz"] == 125 and z is not None
+    mask = height_motion.airborne(x, y, z, blob["hz"], rnd.geo.m_per_px)
+    return rnd, blob, onset, t, mask
+
+
+def test_jump_peek_real_arc():
+    rnd, blob, onset, t, mask = motion_round()
+    assert mask[np.abs(t - onset) <= .25].any()
+    assert not height_motion.blackouts(blob, rnd.geo)
+    r = row(rnd, blob, onset=onset)
+    assert (r["opener"], r["type"], r["reason"]) == ("peeker", "jump_peek", None)
+
+
+def test_steady_ramp_is_normal_peek():
+    rnd, blob, onset, t, mask = motion_round(lambda t, _: np.clip(t - 10, 0, 2) * 1.5)
+    z = rnd.track_z[0]
+    assert np.ptp(z[np.abs(t - onset) <= .5]) > .8
+    assert not mask.any()
+    assert not height_motion.blackouts(blob, rnd.geo)
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("wide_swing", None)
+
+
+def test_only_opponent_jumps():
+    rnd, blob, onset, t, mask = motion_round(slot=5)
+    assert mask[np.abs(t - onset) <= .25].any()
+    assert not height_motion.blackouts(blob, rnd.geo)
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("wide_swing", None)
+
+
+@pytest.mark.parametrize("flying", [False, True])
+def test_movement_cast_is_ability_peek(flying):
+    profile = arc if flying else lambda t, _: np.zeros_like(t)
+    rnd, blob, onset, t, mask = motion_round(profile, util=[cast(11.1, 0)])
+    assert bool(mask[np.abs(t - onset) <= .25].any()) is flying
+    assert abs(11.1 - onset) <= fights.DASH_EXCLUDE_S
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("ability_peek", None)
+
+
+def test_upward_burst_without_cast_is_ability_peek():
+    rnd, blob, onset, t, mask = motion_round(lambda t, onset: arc(t, onset, velocity=12))
+    assert not any(e["k"] == "cast" for e in blob["util"])
+    assert mask[np.abs(t - onset) <= .25].any()
+    assert height_motion.blackouts(blob, rnd.geo)[0]
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("ability_peek", None)
+
+
+def test_ability_span_on_flight_can_start_before_cast_window():
+    rnd, blob, onset, t, mask = motion_round(util=[cast(10, 0, code="Wushu", name="E_Dash")])
+    assert mask[np.abs(t - onset) <= .25].any()
+    assert onset - 10 > fights.DASH_EXCLUDE_S
+    assert any(a <= t[mask][-1] and b >= t[mask][0]
+               for a, b in height_motion.blackouts(blob, rnd.geo)[0])
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("ability_peek", None)
+
+
+def test_jump_as_enemy_opens_line_is_caught_moving():
+    player = "A", [(0, 230, 280, 0), (10, 230, 280, 0), (14, 110, 280, 0)]
+    enemy = "B", [(0, 330, 120, 0), (10.992, 330, 120, 0), (11, 330, 280, 0)]
+    rnd, blob, onset, t, mask = motion_round(player=player, enemy=enemy)
+    assert mask[np.abs(t - onset) <= .25].any()
+    assert not height_motion.blackouts(blob, rnd.geo)
+    r = row(rnd, blob, onset=onset)
+    assert (r["opener"], r["type"], r["reason"]) == ("holder", "other", "caught_moving")
+
+
+@pytest.mark.parametrize("offset", [-.62, .62])
+def test_jump_outside_onset_window_is_normal_peek(offset):
+    rnd, blob, onset, t, mask = motion_round(lambda t, onset: arc(t, onset, offset=offset))
+    assert mask.any()
+    assert np.min(np.abs(t[mask] - onset)) == pytest.approx(.3, abs=.04)
+    assert not mask[np.abs(t - onset) <= .25].any()
+    r = row(rnd, blob, onset=onset)
+    assert (r["type"], r["reason"]) == ("wide_swing", None)
+
+
+@pytest.mark.parametrize("ability", [False, True])
+def test_flight_with_missing_opener_position(ability, monkeypatch):
+    rnd, blob, onset, t, mask = motion_round(util=[cast(11.1, 0)] if ability else [])
+    assert mask[np.abs(t - onset) <= .25].any()
+    pos = rnd.pos
+    monkeypatch.setattr(rnd, "pos", lambda s, t: None if s == 0 and
+                        abs(t - (onset - pc.OPENER_DELTA_S)) < 1e-8 else pos(s, t))
+    r = row(rnd, blob, onset=onset)
+    assert r["opener"] is None
+    assert (r["type"], r["reason"]) == (("ability_peek", None) if ability else ("other", "unmeasured"))
+
+
+def test_flights_and_ability_spans_computed_once_per_round(monkeypatch):
+    rnd, blob, onset, _, _ = motion_round(util=[damage(17, 0, 5)])
+    rnd = add_height(rnd, blob, 5, arc, onset)
+    calls = {"airborne": 0, "blackouts": 0}
+
+    def counted(name, real):
+        def wrapper(*args, **kwargs):
+            calls[name] += 1
+            return real(*args, **kwargs)
+        return wrapper
+
+    for name in calls:
+        monkeypatch.setattr(height_motion, name, counted(name, getattr(height_motion, name)))
+    rows = peeks.round_openings(rnd, blob)
+    assert sum(r["slot"] == 0 for r in rows) == 2
+    assert calls == {"airborne": 2, "blackouts": 1}
 
 
 def test_caught_moving_as_enemy_opens_line():
