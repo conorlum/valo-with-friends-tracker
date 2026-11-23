@@ -66,12 +66,38 @@ def test_discard_and_undo_restore_exact_spot():
     assert got["restored"] == initial
 
 
-def test_unnamed_spot_anywhere_blocks_export():
+def test_export_keeps_only_named_spots_and_drops_empty_sites_and_layouts():
+    layouts = {
+        "Ascent": {"A": [spot(), spot(id="spot-2", name="   ", u=5000)], "B": [spot(name="")]},
+        "Bind": {"A": [spot(name="Saved")], "B": []},
+        "Haven": {"A": [spot(name="")]},
+    }
+    got = node("""
+      console.log(JSON.stringify({file: JSON.parse(m.exportJSON()), named: m.namedCount(),
+                                  left: m.unnamedCount()}));
+    """, layouts)
+    assert got["file"] == {"version": 1, "layouts": {
+        "Ascent": {"A": [spot()]}, "Bind": {"A": [spot(name="Saved")]}}}
+    assert got["named"] == 2 and got["left"] == 3
+
+
+def test_export_with_nothing_named_is_refused():
     got = node("""
       let error = ''; try { m.exportJSON(); } catch (e) { error = e.message; }
       console.log(JSON.stringify(error));
-    """, {"Ascent": {"B": [spot(name="   ")]}})
-    assert "name" in got.lower() and "Ascent/B" in got
+    """, {"Ascent": {"B": [spot(name="   ")], "A": []}})
+    assert "named" in got.lower()
+
+
+def test_left_out_count_follows_edits():
+    got = node("""
+      const before = m.unnamedCount();
+      m.update('Ascent', 'A', 'spot-1', {name: 'Box'});
+      const after = m.unnamedCount();
+      m.add('Ascent', 'B', 100, 100);
+      console.log(JSON.stringify([before, after, m.unnamedCount(), m.namedCount()]));
+    """, {"Ascent": {"A": [spot(name="")]}})
+    assert got == [1, 0, 1, 1]
 
 
 def test_export_passes_python_loader_and_edits_undo(tmp_path):
@@ -121,7 +147,8 @@ def test_python_builds_fake_points_page_without_external_urls():
     saved = {"Ascent": {"A": [spot(name="</script><script>throw 1</script>")], "B": []}}
     data = plant_namer.build(rows, saved)
     assert len(data["maps"]) == 13
-    assert data["layouts"]["Ascent"] == saved["Ascent"]
+    assert data["layouts"]["Ascent"]["A"] == saved["Ascent"]["A"]   # saved spots win; a saved [] site is proposed again
+    assert len(data["layouts"]["Ascent"]["B"]) == 1
     assert len(data["maps"]["Ascent"]["points"]["A"]) == 6
     assert data["maps"]["Ascent"]["rotation"] in range(4)
     assert all(row["image"].startswith("data:image/png;base64,") for row in data["maps"].values())
@@ -133,6 +160,15 @@ def test_python_builds_fake_points_page_without_external_urls():
     proposals = plant_namer.build(rows, {})["layouts"]["Ascent"]
     assert len(proposals["A"]) == len(proposals["B"]) == 1
     assert proposals["A"][0]["name"] == ""
+
+
+def test_a_site_saved_as_empty_gets_proposals_again_but_saved_spots_stay():
+    from scripts import plant_namer
+
+    rows = [("Ascent", "A", 2000, 3000)] * 6 + [("Ascent", "B", 6000, 5000)] * 6
+    layouts = plant_namer.build(rows, {"Ascent": {"A": [spot()], "B": []}})["layouts"]["Ascent"]
+    assert layouts["A"] == [spot()]
+    assert len(layouts["B"]) == 1 and layouts["B"][0]["name"] == ""
 
 
 def test_main_writes_only_temp_page(monkeypatch, tmp_path):

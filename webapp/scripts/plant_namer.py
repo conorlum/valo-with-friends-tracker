@@ -90,7 +90,7 @@ def build(points, saved=None):
         site_points = {site: sorted(grouped[asset_key][site]) for site in sorted(sites)}
         layouts.setdefault(asset_key, {})
         for site, rows in site_points.items():
-            if site not in layouts[asset_key]:
+            if not layouts[asset_key].get(site):   # no saved spots, including a site saved as []
                 layouts[asset_key][site] = plant_spots.propose(rows, plant_spots.m_per_uv(name))
         maps[asset_key] = {
             "image": "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii"),

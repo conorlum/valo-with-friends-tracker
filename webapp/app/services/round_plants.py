@@ -21,6 +21,22 @@ from app.scoring.plant_window import attacking_team, is_phantom_plant
 from app.services import state_replay as sr
 
 
+def end_transaction(db):
+    """End the session's transaction before a long page load; never raises.
+
+    The commit follows an idle delay, when the database may have dropped the connection.
+    A failed commit rolls back, and a failed rollback is swallowed too: the next use of
+    the session starts a fresh transaction on a new connection.
+    """
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 @lru_cache(maxsize=1)
 def _maps():
     return load_maps()
@@ -336,7 +352,7 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False)
     for index, external_id in enumerate(external_ids):
         # The fetch can wait up to 15 minutes for the owner's verification; hold no
         # transaction across it (or the pacing sleep before it).
-        db.commit()
+        end_transaction(db)
         if index:
             sleep(uniform(5, 12))
         try:

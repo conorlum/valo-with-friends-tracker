@@ -449,6 +449,23 @@ def test_ingest_loop_holds_no_transaction_during_any_fetch_attempt(monkeypatch):
     assert states == [("m1", False), ("m1", False), ("m2", False), ("m3", False)]
 
 
+def test_ingest_loop_carries_on_when_the_commit_before_a_fetch_fails(monkeypatch):
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.one_or_none.return_value = None
+    db.commit.side_effect = [RuntimeError("synthetic dropped connection")] + [None] * 20
+    fetch = MagicMock(side_effect=[{"match": "m1"}, {"match": "m2"}])
+    monkeypatch.setattr(src, "fetch_match_json", fetch)
+    monkeypatch.setattr(src, "verify_ingest_preflight", lambda db: None)
+    monkeypatch.setattr(src, "load_match", lambda db, payload: SimpleNamespace(id=1, map_name="Haven"))
+    monkeypatch.setattr(src, "invalidate_match_players", lambda db, mid: {7})
+    monkeypatch.setattr(src, "invalidate_site_stats_cache", lambda db: None)
+    monkeypatch.setattr(src, "compute_impact_for_match", lambda db, mid: None)
+    monkeypatch.setattr(src.time, "sleep", lambda seconds: None)
+    progress = src._ingest_discovered(db, None, ["m1", "m2"])
+    assert fetch.call_count == 2 and progress.ingested == 2 and progress.error is None
+    db.rollback.assert_called()
+
+
 # --- R1.1 F4: a timeout carries the players already invalidated -------------------
 
 

@@ -270,7 +270,8 @@ spot shows a win rate only from 100 plants.
      stops after 5 consecutive failures. Matches tracker.gg can't supply go in the gitignored skip-list
      `ingest_ledgers/round_plants_unavailable.json`. `scripts/round_plants.py status` shows progress.
   3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
-     `%TEMP%\valo-plant-namer`. Its Export downloads `plant_spots.json`, which replaces
+     `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
+     on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces
      `app/static/data/plant_spots.json`. That change is a PR, like any other.
 - Verification wait (`app/adapters/tracker_verification.py`): on a page titled "Just a moment", every tracker.gg
   crawler beeps (audio only, silenced by `~/.claude/sounds/.muted`) and waits up to 15 minutes for the owner to

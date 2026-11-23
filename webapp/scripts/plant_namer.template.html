@@ -37,7 +37,7 @@
 <body>
 <header>
   <h1>Plant spot namer</h1>
-  <p>Name and review the circles, then export the complete spot file. Saved sites replace proposals.</p>
+  <p>Name and review the circles, then export. Export saves the named spots only, so maps can be done one at a time; unnamed proposals are left out.</p>
   <p class="muted">Drag a circle to move it; drag its edge to resize. Add places a circle at your next map click.
     Merge keeps the selected spot's name and covers both circles. Undo reverses one edit, including a whole drag.
     Edits stay in this tab until export; reloading restores this page's starting data.</p>
@@ -152,9 +152,11 @@ function render() {
   el('undo').disabled = !model.history.length;
   try {
     model.exportJSON(); el('export').disabled = false;
-    el('exportNote').textContent = 'All circles named. Export includes every layout and site.';
+    el('exportNote').textContent = 'Export saves the ' + model.namedCount() + ' named spot(s) and leaves out '
+      + model.unnamedCount() + ' unnamed (whole file, all maps).';
   } catch (error) {
-    el('export').disabled = true; el('exportNote').textContent = error.message;
+    el('export').disabled = true;
+    el('exportNote').textContent = error.message + ' (' + model.unnamedCount() + ' unnamed spot(s) in the whole file.)';
   }
 }
 mapPicker.onchange = chooseMap;

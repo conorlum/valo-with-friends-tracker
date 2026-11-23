@@ -958,7 +958,7 @@ def _ingest_discovered(
             # A page load can wait up to 15 minutes for the owner's verification, so
             # no transaction may be open across it. Nothing between this commit and
             # the fetch touches an ORM object.
-            db.commit()
+            round_plants.end_transaction(db)
             try:
                 match_json = fetch_match_json(page, match_id)
                 fetch_error = None

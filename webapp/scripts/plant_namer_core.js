@@ -72,10 +72,22 @@
       this.layouts = this.history.pop();
       return true;
     }
+    /* Spots with a non-blank name, the only ones an export keeps. */
+    namedCount() { return this.countSpots(true); }
+    /* Spots the export leaves out, over the whole file, so a forgotten proposal shows. */
+    unnamedCount() { return this.countSpots(false); }
+    countSpots(named) {
+      let n = 0;
+      for (const sites of Object.values(this.layouts)) for (const spots of Object.values(sites))
+        for (const spot of spots) if ((typeof spot.name === 'string' && spot.name.trim() !== '') === named) n++;
+      return n;
+    }
     exportJSON() {
-      const layouts = copy(this.layouts);
-      for (const [key, sites] of Object.entries(layouts)) for (const [site, spots] of Object.entries(sites)) {
+      const layouts = {};
+      for (const [key, sites] of Object.entries(this.layouts)) for (const [site, all] of Object.entries(sites)) {
         const location = key + '/' + site, ids = new Set();
+        const spots = all.filter(spot => typeof spot.name === 'string' && spot.name.trim() !== '').map(copy);
+        if (!spots.length) continue;                       /* a site with nothing named is left out */
         if (spots.length > 10) throw new Error(location + ': at most 10 spots');
         for (const spot of spots) {
           validate(spot, true, location);
@@ -83,7 +95,9 @@
           ids.add(spot.id);
           spot.name = spot.name.trim();
         }
+        (layouts[key] = layouts[key] || {})[site] = spots;   /* a layout with no sites is left out */
       }
+      if (!Object.keys(layouts).length) throw new Error('No named spots to export: name at least one circle first.');
       return JSON.stringify({version: 1, layouts}, null, 2) + '\n';
     }
   }

@@ -516,6 +516,37 @@ def test_backfill_ends_its_transaction_before_pacing_too(db):
     assert events == [("fetch", False), ("sleep", False), ("fetch", False)]
 
 
+def _commit_fails_once(db, monkeypatch):
+    real, calls = db.commit, []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("synthetic dropped connection")
+        return real()
+
+    monkeypatch.setattr(db, "commit", flaky)
+
+
+def test_backfill_carries_on_when_the_commit_before_a_fetch_fails(db, monkeypatch):
+    ids = matches(db, 2)
+    _commit_fails_once(db, monkeypatch)
+    fetched = []
+    result = run(db, lambda page, key: (fetched.append(key), payload(1))[1])
+    assert fetched == ids and result["done"] == 2 and result["failed"] == 0
+
+
+def test_end_transaction_never_raises(monkeypatch):
+    class Dead:
+        def commit(self):
+            raise RuntimeError("commit")
+
+        def rollback(self):
+            raise RuntimeError("rollback")
+
+    plants.end_transaction(Dead())
+
+
 # --- R1.1 F8: status reports coverage per map and source -------------------------
 
 
