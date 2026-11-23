@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Plants on {{ map_name }} - {{ site_name }}{% endblock %}
+
+{% block content %}
+<style>
+  .plant-layer { position: relative; width: min(100%, 40rem); aspect-ratio: 1 / 1; margin: 0.5rem 0; transform: rotate({{ degrees }}deg); }
+  .plant-layer img { width: 100%; height: 100%; display: block; }
+  .plant-spot { position: absolute; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; }
+  .plant-spot.spot-grey { background: color-mix(in srgb, grey 35%, transparent); }
+  .plant-label { transform: rotate({{ -degrees }}deg); font-size: 0.7rem; font-weight: 600; text-align: center; line-height: 1.1; color: var(--ink); text-shadow: 0 0 3px var(--surface); pointer-events: none; }
+  .plants-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .plants-table th, .plants-table td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border-strong); }
+  .plant-grey { color: var(--ink-muted); }
+  .plant-detail { min-height: 1.5rem; color: var(--ink-secondary); }
+  @media (max-width: 640px) { .plants-table { display: block; overflow-x: auto; } }
+</style>
+<h1>Plants on {{ map_name }}</h1>
+<div class="tab-row" role="tablist">
+  <a class="tab-btn active" href="/plants" role="tab" aria-selected="true">Plant spots</a>
+</div>
+<p class="page-meta">{{ thin_note }}</p>
+{% if login_note %}<p class="page-meta" data-login-note>{{ login_note }}</p>{% endif %}
+
+<div class="tab-row">
+  <a class="tab-btn{% if not friends %} active{% endif %}" href="{{ view_links.everyone }}">Everyone</a>
+  <a class="tab-btn{% if friends %} active{% endif %}" href="{{ view_links.friends }}">Friends</a>
+</div>
+<div class="tab-row">
+  <a class="tab-btn{% if not site %} active{% endif %}" href="{{ site_links[''] }}">All sites</a>
+  {% for name in all_sites %}
+  <a class="tab-btn{% if site == name %} active{% endif %}" href="{{ site_links[name] }}">Site {{ name }}</a>
+  {% endfor %}
+</div>
+
+<div class="plant-layer" data-turns="{{ turns }}">
+  <img src="{{ image }}" alt="{{ map_name }} minimap">
+  {% for s in sites %}{% for spot in s.spots %}
+  <div class="plant-spot{% if spot.grey %} spot-grey{% endif %}" data-spot="{{ spot.id }}" data-site="{{ s.name }}"
+       data-detail="{{ spot.name }}: n={{ spot.n }}{% if spot.adjusted_display %}, adjusted {{ spot.adjusted_display }}{% endif %}"
+       style="left: {{ spot.left }}%; top: {{ spot.top }}%; width: {{ spot.size }}%; height: {{ spot.size }}%;{% if spot.fill %} background: {{ spot.fill }};{% endif %}">
+    <span class="plant-label">{{ spot.name }}<br>n={{ spot.n }}</span>
+  </div>
+  {% endfor %}{% endfor %}
+</div>
+<p class="plant-detail" id="plant-detail" aria-live="polite"></p>
+
+{% for s in sites %}
+<div class="card" data-site-card="{{ s.name }}" data-n-site="{{ s.n }}" data-outside="{{ s.outside }}">
+  <h2>Site {{ s.name }} <span class="plant-grey">n={{ s.n }}</span></h2>
+  <p class="page-meta">{{ s.outside }} plants (n={{ s.outside }}) outside named spots.</p>
+  <table class="plants-table">
+    <thead><tr><th>Spot</th><th>Plants (n)</th><th>Adjusted win</th><th>95% interval</th><th>Raw win</th><th>Shrunk win</th><th>Defused</th><th>Median plant time (s)</th><th>Examples</th></tr></thead>
+    <tbody>
+      {% for spot in s.spots %}
+      <tr data-spot="{{ spot.id }}" data-n="{{ spot.n }}" data-adjusted="{{ spot.adjusted_display or '' }}"{% if spot.grey %} class="plant-grey"{% endif %}>
+        <td>{{ spot.name }}</td>
+        <td>n={{ spot.n }}</td>
+        {% if spot.adjusted_display %}
+        <td>{{ spot.adjusted_display }} (n={{ spot.adjusted_n }})</td>
+        <td>{{ spot.interval }}</td>
+        {% else %}
+        <td colspan="2">n={{ spot.n }}, needs {{ min_n }}</td>
+        {% endif %}
+        <td>{% if spot.raw %}{{ spot.raw }} (n={{ spot.usable_n }}){% endif %}</td>
+        <td>{% if spot.shrunk %}{{ spot.shrunk }} (n={{ spot.usable_n }}){% endif %}</td>
+        <td>{% if spot.defused %}{{ spot.defused }} (n={{ spot.usable_n }}){% endif %}</td>
+        <td>{% if spot.median %}{{ spot.median }} (n={{ spot.plant_time_n }}){% endif %}</td>
+        <td>{% for url in spot.examples %}<a href="{{ url }}">replay {{ loop.index }}</a> {% endfor %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9">No named spots on this site yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card"><p>No plants stored for this map yet.</p></div>
+{% endfor %}
+<script src="/static/js/plants.js?v={{ static_version() }}"></script>
+{% endblock %}

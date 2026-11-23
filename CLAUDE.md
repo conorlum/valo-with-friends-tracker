@@ -250,6 +250,34 @@ A failed upload whose file is gone is retired by an entry in `app/data/retired_u
 Any new background scheduler must check `deploy_drain.paused` before admitting new work.
 See `webapp/RENDER_DEPLOY.md`, "Deploy drain (GitHub Action)", for setup and recovery.
 
+### Plant spots
+
+Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,
+`app/services/plant_page.py`, `plant_stats.py`, `plant_spots.py`). Never on the demo. Only named spots show, and a
+spot shows a win rate only from 100 plants.
+
+- Migration `0036`: `round_plants` (one row per round; a replay's position beats tracker.gg's; models in
+  `app/models/round_plant.py`) and `plant_stats_cache`. It only creates tables, so it runs through the normal
+  `alembic upgrade head` on build and `RENDER_DEPLOY.md` needs no note.
+- New tracker.gg ingests save plants (`load_match`, `_store_plants`). A failure there never fails the ingest.
+- The stats cache needs no ingest hook: it is keyed by a fingerprint of the plant rows, linked replays, the layout
+  registry, the spots file and `CALCULATION_VERSION`.
+- Owner commands, from `webapp`, in this order. The first two write to the friends DB through
+  `scripts/with_friends_db.py --expect-database valowithfriendsdb`:
+  1. `scripts/round_plants.py sync-replays [--dry-run]` takes plant positions from linked replays.
+  2. `scripts/round_plants.py backfill [--limit N] [--retry-unavailable]` re-crawls older matches from tracker.gg.
+     It needs the tracker.gg Chrome on port 9222, resumes from the database, waits 5 to 12 s between matches and
+     stops after 5 consecutive failures. Matches tracker.gg can't supply go in the gitignored skip-list
+     `ingest_ledgers/round_plants_unavailable.json`. `scripts/round_plants.py status` shows progress.
+  3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
+     `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
+     on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces
+     `app/static/data/plant_spots.json`. That change is a PR, like any other.
+- Verification wait (`app/adapters/tracker_verification.py`): on a page titled "Just a moment", every tracker.gg
+  crawler beeps (audio only, silenced by `~/.claude/sounds/.muted`) and waits up to 15 minutes for the owner to
+  clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what it added, runs its
+  end-of-run steps and exits non-zero.
+
 ### Running the webapp locally
 
 ```

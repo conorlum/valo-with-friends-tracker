@@ -35,6 +35,7 @@ import json
 from playwright.sync_api import sync_playwright
 
 from app.adapters.trackergg_browserstate_source import ingest_recent_matches
+from app.adapters.tracker_verification import TrackerVerificationTimeout
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
 from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
@@ -51,7 +52,7 @@ def total_match_count(db) -> int:
     return db.execute(text("SELECT count(*) FROM matches")).scalar()
 
 
-def main(minutes: float) -> None:
+def main(minutes: float) -> int:
     deadline = time.time() + minutes * 60
     state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     already_crawled = set(state.get("crawled", []))
@@ -61,6 +62,7 @@ def main(minutes: float) -> None:
     db = SessionLocal()
     all_dirty: set[int] = set()
     players_done = 0
+    verification_timeout = False
     before_total = total_match_count(db)
 
     try:
@@ -89,6 +91,13 @@ def main(minutes: float) -> None:
                 try:
                     dirty = ingest_recent_matches(db, page, riot_id, MATCHES_PER_PLAYER)
                     all_dirty |= dirty
+                except TrackerVerificationTimeout as timeout:
+                    all_dirty |= timeout.dirty  # matches added before the stop still need pre-warming
+                    print("Human verification timed out. Clear the check in the browser, "
+                          "then re-run the same command to resume; completed matches are kept.")
+                    db.rollback()
+                    verification_timeout = True
+                    break
                 except Exception as e:
                     print(f"  error on {riot_id}, skipping: {e}")
                     db.rollback()
@@ -116,10 +125,11 @@ def main(minutes: float) -> None:
         print(f"matches in DB: {before_total} -> {after_total} (+{after_total - before_total})")
     finally:
         db.close()
+    return 2 if verification_timeout else 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--minutes", type=float, default=55, help="time budget in minutes")
     args = parser.parse_args()
-    main(args.minutes)
+    sys.exit(main(args.minutes))

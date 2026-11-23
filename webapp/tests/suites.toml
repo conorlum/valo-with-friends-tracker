@@ -83,12 +83,22 @@ guards = [
 about = "tracker.gg ingestion: discovery and paging, the ledger, retries, outcome reports, write preflight, and the demo adapter."
 tests = [
   "tests/test_ingest_*.py", "tests/test_tracker_ingest_contract.py", "tests/test_trackergg_history_pagination.py",
+  "tests/test_tracker_verification.py", "tests/test_tracker_verification_crawlers.py",
   "tests/test_round_player_spend_ingest.py", "tests/test_demo_adapter_contract.py",
 ]
 guards = [
   "app/adapters/**", "app/scoring/ingest_preflight.py", "app/scoring/write_gate.py", "app/models/round_player_spend.py",
   "scripts/ingest_trackergg_player.py", "scripts/refresh_tracked_players.py", "scripts/tracked_players.json",
 ]
+
+[plants]
+about = "Plant positions, layout selection, round outcomes, replay precedence and the derived plant cache."
+tests = ["tests/test_round_plants*.py", "tests/test_plant_stats.py", "tests/test_plant_spots.py", "tests/test_plant_namer.py",
+  "tests/test_plants_page.py"]
+guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_stats.py", "scripts/round_plants.py",
+  "app/services/plant_spots.py", "app/static/data/plant_spots.json",
+  "scripts/plant_namer.py", "scripts/plant_namer.template.html", "scripts/plant_namer_core.js",
+  "app/services/plant_page.py", "app/routers/plants.py", "app/templates/plants/*.html", "app/static/js/plants.js"]
 
 [map-pool]
 about = "The Competitive map pool's history: the seed, the daily patch-notes refresh, the loader, the CLI, and migration 0023."
