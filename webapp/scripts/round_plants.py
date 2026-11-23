@@ -115,6 +115,9 @@ def main(argv=None):
     backfill.add_argument("--archive", type=Path,
                           help="also save each match's raw tracker.gg payload here as <id>.json.gz")
     commands.add_parser("pause", help="stop a running backfill before its next match")
+    reposition = commands.add_parser("reposition", help="recompute tracker plants from archived payloads")
+    reposition.add_argument("--archive", type=Path, required=True)
+    reposition.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "backfill" and args.limit is not None and args.limit < 0:
         parser.error("--limit must be non-negative")
@@ -138,6 +141,14 @@ def main(argv=None):
             print(("dry-run: " if args.dry_run else "") + "; ".join(
                 f"{key}: {value}" for key, value in result.items()))
             return 0
+        if args.command == "reposition":
+            if not args.archive.is_dir():
+                parser.error(f"no archive folder at {args.archive}")
+            with owner_stop() as should_stop:
+                result = plants.reposition(db, args.archive, dry_run=args.dry_run, should_stop=should_stop)
+            print(("dry-run: " if args.dry_run else "") + "; ".join(f"{k}: {v}" for k, v in result.items()))
+            plants.clear_pause()
+            return 1 if result["bad"] else 0
         if plants.clear_pause():
             print("removed a leftover pause file")
         pending = plants.crawl_queue(db, args.limit,

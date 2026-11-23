@@ -819,7 +819,7 @@ def _store_plants(db: Session, match: Match, round_summaries: list[dict], match_
             if plant is None:
                 continue
             try:
-                u, v = round_plants.to_uv(match.map_name, plant["x"], plant["y"])
+                u, v = round_plants.plant_uv(match.map_name, plant)
             except KeyError:
                 # Maps absent from maps.json cannot supply normalized positions.
                 continue

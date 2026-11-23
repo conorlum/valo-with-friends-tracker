@@ -21,6 +21,7 @@ from app.replays import layouts
 from app.replays.condense import load_maps
 from app.replays.format import decode_blob
 from app.scoring.plant_window import attacking_team, is_phantom_plant
+from app.services import plant_position
 from app.services import state_replay as sr
 
 
@@ -79,7 +80,27 @@ def plant_from_summary(round_summary):
     if view is None:
         return {"site": plant["site"], "x": x, "y": y}
     return {"site": plant["site"], "x": x + SPIKE_OFFSET_UNITS * math.cos(view),
-            "y": y + SPIKE_OFFSET_UNITS * math.sin(view), "corrected": True}
+            "y": y + SPIKE_OFFSET_UNITS * math.sin(view), "corrected": True,
+            "planter_x": x, "planter_y": y, "view": view}
+
+
+def plant_uv(map_name, plant):
+    """The spike's minimap position: the first clear step where the map's zone is known, else 0.7 m.
+
+    Tracker rows have no patch, so a map with several layouts is not covered.
+    """
+    u, v = to_uv(map_name, plant["x"], plant["y"])
+    if "view" not in plant:
+        return u, v
+    key = asset_key_for(map_name, None)
+    if not plant_position.covers(key):
+        return u, v
+    cos, sin = math.cos(plant["view"]), math.sin(plant["view"])
+
+    def point_at(metres):
+        return to_uv(map_name, plant["planter_x"] + metres * 100 * cos, plant["planter_y"] + metres * 100 * sin)
+
+    return point_at(plant_position.pick_step(key, point_at))
 
 
 # tracker.gg's plant location is the planter's position; the spike lands this far
@@ -357,7 +378,7 @@ def _tracker_plants(match, payload):
         if plant is None:
             continue
         try:
-            u, v = to_uv(match.map_name, plant["x"], plant["y"])
+            u, v = plant_uv(match.map_name, plant)
         except KeyError:
             continue
         positions.append(dict(round_number=attributes["round"], u=u, v=v, site=plant["site"],
@@ -474,6 +495,44 @@ def crawl_queue(db, limit=None, skip=()):
     queue += [match.external_id for match in pending_matches(db, skip=skip)
               if match.external_id not in queued]
     return queue if limit is None else queue[:limit]
+
+
+def reposition(db, archive, *, dry_run=False, should_stop=None, log=print):
+    """Recompute tracker plants from archived payloads, one commit per match; safe to rerun.
+
+    A replay's position is never replaced (`upsert_plants`). A bad archive file is counted and skipped.
+    """
+    stop = should_stop or (lambda: None)
+    result = dict(files=0, inserted=0, updated=0, skipped=0, bad=0, unknown=0, stopped=None)
+    paths = sorted(Path(archive).glob("*.json.gz"))
+    for index, path in enumerate(paths):
+        if (reason := stop()) is not None:
+            result["stopped"] = reason
+            break
+        external_id = path.name[:-len(".json.gz")]
+        try:
+            payload = json.loads(gzip.decompress(path.read_bytes()))
+            match = db.scalar(select(Match).where(Match.external_id == external_id))
+            if match is None:
+                result["unknown"] += 1
+                db.rollback()
+                continue
+            counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker", dry_run=dry_run)
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+        except Exception as error:
+            db.rollback()
+            result["bad"] += 1
+            log(f"bad archive file {path.name}: {type(error).__name__}: {error}")
+            continue
+        result["files"] += 1
+        for key in counts:
+            result[key] += counts[key]
+        if (index + 1) % 100 == 0:
+            log(f"{index + 1}/{len(paths)} files; updated {result['updated']}, inserted {result['inserted']}")
+    return result
 
 
 def _match_line(index, total, text):

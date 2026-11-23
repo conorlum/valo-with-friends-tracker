@@ -95,7 +95,8 @@ guards = [
 about = "Plant positions, layout selection, round outcomes, replay precedence and the derived plant cache."
 tests = ["tests/test_round_plants*.py", "tests/test_plant_stats.py", "tests/test_plant_spots.py", "tests/test_plant_namer.py",
   "tests/test_plants_page.py"]
-guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_stats.py", "scripts/round_plants.py",
+guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_position.py",
+  "app/data/plant_zones.json", "scripts/build_plant_zones.py", "app/services/plant_stats.py", "scripts/round_plants.py",
   "app/services/plant_spots.py", "app/static/data/plant_spots.json",
   "scripts/plant_namer.py", "scripts/plant_namer.template.html", "scripts/plant_namer_core.js",
   "app/services/plant_page.py", "app/routers/plants.py", "app/templates/plants/*.html", "app/static/js/plants.js"]
