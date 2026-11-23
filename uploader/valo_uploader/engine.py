@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 
 from .api import BadKey, NotFound, Offline, Refused, Rejected
-from .constants import (DELETE_BATCH, FAILED_RETRY_CAP_S, FAILED_RETRY_S, IDLE_SCAN_S, REFUSED_RETRY_S,
-                        REFUSED_WINDOW_S, RETRY_GENERATION, STATUS_POLL_S)
+from .constants import (DELETE_BATCH, FAILED_RETRY_CAP_S, FAILED_RETRY_S, IDLE_SCAN_S,
+                        REFUSED_GAP_S, REFUSED_RETRY_S, REFUSED_WINDOW_S, RETRY_GENERATION,
+                        STATUS_POLL_S)
 from .files import Watcher, sha256_file
 from .procs import valorant_running
 
@@ -201,12 +202,12 @@ class Engine:
                 elif result["status"] == "held":
                     # Held for an unsupported build or agent, possibly for weeks:
                     # keep the upload id, free the slot, poll rarely.
-                    self.state.mark(sha, status="held", first_refused_at=None,
+                    self.state.mark(sha, status="held", first_refused_at=None, last_refused_at=None,
                                     next_try=now + IDLE_SCAN_S)
                 elif row["status"] == "held" and result["status"] not in ("parsing", "queued"):
                     self.state.mark(sha, next_try=now + IDLE_SCAN_S)
                 elif row["status"] == "held":
-                    self.state.mark(sha, status="uploading", first_refused_at=None,
+                    self.state.mark(sha, status="uploading", first_refused_at=None, last_refused_at=None,
                                     next_try=now + STATUS_POLL_S)
                 else:
                     self.state.mark(sha, next_try=now + STATUS_POLL_S)
@@ -226,21 +227,27 @@ class Engine:
                 return False
             upload_id = self.client.upload(path)
             self.state.mark(sha, status="uploading", upload_id=upload_id,
+                            first_refused_at=None, last_refused_at=None,
                             next_try=now + STATUS_POLL_S)
             return True
         except (Refused, Offline) as error:
-            self._back_off(error, now)
+            failed_at = max(now, self.clock())
+            self._back_off(error, failed_at)
             current = self.state.entry(sha)
             first = current.get("first_refused_at")
-            if first is None:
-                first = now
+            last = current.get("last_refused_at")
+            # A long break (including an old state row) starts a fresh run of attempts.
+            if first is None or last is None or failed_at - last > REFUSED_GAP_S:
+                first = failed_at
             if row["status"] == "held":
                 # Held has no site timeout; an outage never fails it.
-                self.state.mark(sha, next_try=now + REFUSED_RETRY_S)
-            elif now - first >= REFUSED_WINDOW_S:
-                self._failed(sha, now)
+                self.state.mark(sha, first_refused_at=first, last_refused_at=failed_at,
+                                next_try=failed_at + REFUSED_RETRY_S)
+            elif failed_at - first >= REFUSED_WINDOW_S:
+                self._failed(sha, failed_at)
             else:
-                self.state.mark(sha, first_refused_at=first, next_try=now + REFUSED_RETRY_S)
+                self.state.mark(sha, first_refused_at=first, last_refused_at=failed_at,
+                                next_try=failed_at + REFUSED_RETRY_S)
             return True
         except Rejected:
             if row["status"] == "held":
@@ -249,6 +256,7 @@ class Engine:
                 return True
             failures = self.state.entry(sha).get("failures", 0) + 1
             self.state.mark(sha, status="rejected", upload_id=None, first_refused_at=None,
+                            last_refused_at=None,
                             failures=failures, next_try=now + retry_delay(failures))
             return True
         except BadKey:
@@ -267,20 +275,24 @@ class Engine:
             return False
 
     def _stored(self, sha, now):
-        self.state.mark(sha, status="stored", stored_at=now, first_refused_at=None, failures=0)
+        self.state.mark(sha, status="stored", stored_at=now, first_refused_at=None,
+                        last_refused_at=None, failures=0)
         self._remember(self.state.entry(sha)["paths"])
 
     def _failed(self, sha, now, count=True):
         failures = self.state.entry(sha).get("failures", 0) + (1 if count else 0)
         self.state.mark(sha, status="failed", upload_id=None, first_refused_at=None,
+                        last_refused_at=None,
                         failures=failures, next_try=now + retry_delay(failures))
 
     def _refused(self, sha):
         """The site deleted this match on request: never upload it again, but keep the file."""
-        self.state.mark(sha, status="refused", upload_id=None, first_refused_at=None, next_try=0.0)
+        self.state.mark(sha, status="refused", upload_id=None, first_refused_at=None,
+                        last_refused_at=None, next_try=0.0)
 
     def _pending(self, sha, now):
-        self.state.mark(sha, status="pending", upload_id=None, first_refused_at=None, next_try=now)
+        self.state.mark(sha, status="pending", upload_id=None, first_refused_at=None,
+                        last_refused_at=None, next_try=now)
 
     def key_replaced(self, client):
         with self.lock:
@@ -304,6 +316,7 @@ class Engine:
             paths = list(row["paths"])
             old = []
             retry = None
+            retry_at = now
             for name in row["paths"]:
                 path = Path(name)
                 try:
@@ -343,7 +356,9 @@ class Engine:
                     kept = None
                 except (Refused, Offline) as error:
                     logger.warning("Could not ask the site about a stored replay; keeping local file")
-                    self._back_off(error, now)
+                    failed_at = max(now, self.clock())
+                    self._back_off(error, failed_at)
+                    retry_at = failed_at
                     kept, retry = None, REFUSED_RETRY_S
                 except Exception:
                     logger.warning("Could not ask the site about a stored replay; keeping local file")
@@ -374,7 +389,7 @@ class Engine:
                 if deleted:
                     changes["deleted_at"] = now
             if retry is not None:
-                changes["next_delete_check"] = now + retry
+                changes["next_delete_check"] = retry_at + retry
             if changes:
                 self.state.mark(sha, **changes)
 

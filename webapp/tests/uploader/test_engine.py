@@ -1,6 +1,7 @@
 """Offline engine journeys: synthetic replay bytes, time and API only."""
 
 import io
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -337,6 +338,7 @@ def test_refusal_window_and_daily_retry(rig, error):
     assert row["failures"] == 1  # the whole window counts as one failure
     assert row["next_try"] == rig.clock.now + DAY
     assert row["first_refused_at"] is None
+    assert row["last_refused_at"] is None
     assert path.exists()
     rig.client.error = None
     rig.tick(DAY)
@@ -531,7 +533,8 @@ def test_uploading_refusals_eventually_release_slot(rig):
     rig.discover()
     rig.client.error = api.Offline()
     rig.tick(10)
-    rig.tick(5 * 3600)
+    for _ in range(30):  # an unbroken five-hour run, rather than a gap that restarts it
+        rig.tick(constants.REFUSED_RETRY_S)
     assert rig.state.entry(sha)["status"] == "failed"
     assert rig.state.entry(sha)["next_try"] == rig.clock.now + DAY
     assert rig.state.entry(sha)["first_refused_at"] is None
@@ -1808,6 +1811,136 @@ def test_an_outage_found_by_the_deletion_sweep_also_pauses_uploads(rig):
     assert not uploads(rig.client)
     rig.tick(constants.REFUSED_RETRY_S)
     assert uploads(rig.client)
+
+
+def test_refusal_window_restarts_after_overnight_restart(rig):
+    sha = sha256_file(rig.file())
+    rig.client.error = api.Offline()
+    rig.discover()
+    rig.clock.now += 8 * 3600
+    rig.restart()
+    rig.tick()
+    row = rig.state.entry(sha)
+    assert row["status"] == "pending"
+    assert row["failures"] == 0
+    assert row["first_refused_at"] == rig.clock.now
+    assert row["last_refused_at"] == rig.clock.now
+    assert row["next_try"] == rig.clock.now + 600
+
+
+@pytest.mark.parametrize("gap,restarts", [(2 * 3600 - 1, False), (2 * 3600, False),
+                                         (2 * 3600 + 1, True)])
+def test_refusal_window_gap_boundary(rig, gap, restarts):
+    sha = sha256_file(rig.file())
+    rig.client.error = api.Offline()
+    rig.discover()
+    first = rig.clock.now
+    rig.tick(gap)
+    row = rig.state.entry(sha)
+    assert row["status"] == "pending" and row["failures"] == 0
+    assert row["first_refused_at"] == (rig.clock.now if restarts else first)
+    assert row["last_refused_at"] == rig.clock.now
+    assert State(env=rig.env).entry(sha)["last_refused_at"] == rig.clock.now
+
+
+def test_old_refusal_row_without_last_timestamp_restarts_window(rig):
+    sha = sha256_file(rig.file())
+    rig.client.error = api.Offline()
+    rig.discover()
+    data = json.loads(rig.state.path.read_text(encoding="utf-8"))
+    data[sha].pop("last_refused_at", None)
+    rig.state.path.write_text(json.dumps(data), encoding="utf-8")
+    rig.clock.now += 8 * 3600
+    rig.restart()
+    assert rig.state.entry(sha)["last_refused_at"] is None
+    rig.tick()
+    row = rig.state.entry(sha)
+    assert row["status"] == "pending" and row["failures"] == 0
+    assert row["first_refused_at"] == row["last_refused_at"] == rig.clock.now
+    assert row["next_try"] == rig.clock.now + 600
+
+
+def test_successful_upload_clears_check_refusal_before_status_outage(rig):
+    sha = sha256_file(rig.file())
+    rig.client.error = api.Refused()
+    rig.discover()
+    check_failure = rig.clock.now
+    rig.client.error = None
+    rig.tick(600)
+    row = rig.state.entry(sha)
+    assert row["status"] == "uploading"
+    assert row["first_refused_at"] is None
+    assert row["last_refused_at"] is None
+    rig.client.error = api.Offline()
+    rig.tick(constants.STATUS_POLL_S)
+    first_status_failure = rig.clock.now
+    assert first_status_failure > check_failure
+    for _ in range(29):
+        rig.tick(600)
+    row = rig.state.entry(sha)
+    assert row["status"] == "uploading" and row["failures"] == 0
+    assert row["first_refused_at"] == first_status_failure
+    rig.tick(600)
+    row = rig.state.entry(sha)
+    assert row["status"] == "failed" and row["failures"] == 1
+    assert row["next_try"] == rig.clock.now + DAY
+
+
+@pytest.mark.parametrize("call", ["check", "upload", "status", "kept"])
+@pytest.mark.parametrize("error", [api.Offline(), api.Refused(120)])
+def test_slow_network_failure_waits_from_failure_time(rig, monkeypatch, call, error):
+    if call == "kept":
+        path, sha = stored(rig)
+    else:
+        path = rig.file()
+        sha = sha256_file(path)
+        if call == "status":
+            rig.discover()
+            rig.clock.now += constants.STATUS_POLL_S
+
+    def fail(*args):
+        rig.clock.now += 1200
+        raise error
+
+    monkeypatch.setattr(rig.client, call, fail)
+    if call in ("check", "upload"):
+        rig.discover()
+    else:
+        rig.tick()
+    row = rig.state.entry(sha)
+    assert rig.engine.next_network == rig.clock.now + 600
+    retry_field = "next_delete_check" if call == "kept" else "next_try"
+    assert row[retry_field] == rig.clock.now + 600
+    if call != "kept":
+        assert row["first_refused_at"] == row["last_refused_at"] == rig.clock.now
+    assert path.exists()
+
+
+@pytest.mark.parametrize("transition", ["stored", "failed", "refused", "pending", "rejected",
+                                        "held", "resume"])
+def test_clearing_refusal_window_clears_both_timestamps(rig, transition):
+    sha = sha256_file(rig.file())
+    rig.discover()
+    rig.state.mark(sha, first_refused_at=rig.clock.now - 600, last_refused_at=rig.clock.now)
+    if transition in ("stored", "failed", "refused", "pending"):
+        method = getattr(rig.engine, "_" + transition)
+        if transition == "refused":
+            method(sha)
+        else:
+            method(sha, rig.clock.now)
+    else:
+        if transition == "rejected":
+            rig.state.mark(sha, status="pending")
+            rig.client.error = api.Rejected()
+        elif transition == "held":
+            rig.client.statuses = [{"status": "held"}]
+        else:
+            rig.state.mark(sha, status="held")
+            rig.client.statuses = [{"status": "parsing"}]
+        rig.tick(constants.STATUS_POLL_S)
+    row = rig.state.entry(sha)
+    assert row["first_refused_at"] is None
+    assert row["last_refused_at"] is None
 
 
 def test_bad_key_still_blocks_and_does_not_set_the_wait(rig):

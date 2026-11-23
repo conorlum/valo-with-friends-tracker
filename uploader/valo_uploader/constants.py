@@ -7,6 +7,7 @@ IDLE_SCAN_S = 1800
 STATUS_POLL_S = 10
 REFUSED_RETRY_S = 600
 REFUSED_WINDOW_S = 5 * 3600
+REFUSED_GAP_S = 2 * 3600
 FAILED_RETRY_S = 86400  # first retry of a failed or rejected file; doubles per failure
 FAILED_RETRY_CAP_S = 14 * 86400
 # Owner's lever: bump this (and __version__, then tag) and every friend's app re-sends what

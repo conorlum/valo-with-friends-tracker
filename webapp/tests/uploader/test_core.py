@@ -31,6 +31,7 @@ def test_paths_and_constants(env):
     assert __version__ == "0.1.0"
     assert constants.REFUSED_RETRY_S == 600
     assert constants.REFUSED_WINDOW_S == 5 * 3600
+    assert constants.REFUSED_GAP_S == 2 * 3600
     assert constants.FAILED_RETRY_S == 86400
     assert constants.FAILED_RETRY_CAP_S == 14 * 86400
     assert constants.RETRY_GENERATION == 1
@@ -57,12 +58,14 @@ def test_state_round_trip_and_due_excludes_stored(env):
     assert state.entry(sha) is None
     state.mark(sha, paths=["one.vrf", "copy.vrf"], size=123, mtime=50.0,
                status="uploading", upload_id="upload-1", first_refused_at=10.0,
+               last_refused_at=20.0,
                attempts=2, next_try=100.0)
     loaded = State(env=env)
     assert loaded.entry(sha) == {
         "paths": ["one.vrf", "copy.vrf"], "size": 123, "mtime": 50.0,
         "status": "uploading", "upload_id": "upload-1", "stored_at": None,
-        "first_refused_at": 10.0, "attempts": 2, "next_try": 100.0, "deleted_at": None,
+        "first_refused_at": 10.0, "last_refused_at": 20.0,
+        "attempts": 2, "next_try": 100.0, "deleted_at": None,
         "next_delete_check": 0.0, "failures": 0,
     }
     assert loaded.due(99) == []

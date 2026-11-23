@@ -22,6 +22,8 @@ class State:
                 for row in data.values()
             ):
                 raise ValueError("Invalid upload state")
+            for row in data.values():
+                row.setdefault("last_refused_at", None)
             self._entries = data
         except FileNotFoundError:
             pass
@@ -37,7 +39,8 @@ class State:
 
     def mark(self, sha, **changes):
         defaults = dict(paths=[], size=0, mtime=0.0, status="pending", upload_id=None,
-                        stored_at=None, first_refused_at=None, attempts=0, next_try=0.0,
+                        stored_at=None, first_refused_at=None, last_refused_at=None,
+                        attempts=0, next_try=0.0,
                         deleted_at=None, next_delete_check=0.0, failures=0)
         if changes.keys() - defaults.keys():
             raise ValueError("Unknown upload state field")
