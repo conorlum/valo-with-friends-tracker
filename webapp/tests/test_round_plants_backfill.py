@@ -687,9 +687,11 @@ def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
         assert should_stop() is None
         plants.request_pause()
         assert should_stop() == "paused"
+        plants.clear_pause()
+        assert should_stop() is None
         handler(signal.SIGINT, None)
-        assert should_stop() == "interrupted"
+        assert "PAUSING" in capsys.readouterr().out
+        assert should_stop() == "paused"
         with pytest.raises(KeyboardInterrupt):
             handler(signal.SIGINT, None)
     assert signal.getsignal(signal.SIGINT) is before
-    assert "stopping after this match" in capsys.readouterr().out

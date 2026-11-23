@@ -54,11 +54,11 @@ def owner_stop():
         if interrupted:
             raise KeyboardInterrupt
         interrupted.append(True)
-        print("\nCtrl+C: stopping after this match (press again to stop now).", flush=True)
+        print("\nPAUSING: finishing this match, then stopping (Ctrl+C again to stop now).", flush=True)
 
     previous = signal.signal(signal.SIGINT, on_interrupt)
     try:
-        yield lambda: "interrupted" if interrupted else ("paused" if plants.pause_requested() else None)
+        yield lambda: "paused" if interrupted or plants.pause_requested() else None
     finally:
         signal.signal(signal.SIGINT, previous)
 
