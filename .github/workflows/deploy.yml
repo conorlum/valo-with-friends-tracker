@@ -17,6 +17,7 @@ on:
       - 'docs/**'
       - '**/*.md'
       - 'webapp/tests/**'
+      - 'uploader/**'
 
 permissions:
   contents: read

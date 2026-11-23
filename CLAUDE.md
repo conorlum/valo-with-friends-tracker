@@ -250,6 +250,17 @@ A failed upload whose file is gone is retired by an entry in `app/data/retired_u
 Any new background scheduler must check `deploy_drain.paused` before admitting new work.
 See `webapp/RENDER_DEPLOY.md`, "Deploy drain (GitHub Action)", for setup and recovery.
 
+### Auto-uploader
+
+`uploader/` is a standalone Windows tray app (`valo_uploader`, stdlib + pystray + Pillow) that uploads finished
+replay files. Never on the demo (routes 404 there or with uploads off). Routes: `POST /api/replays/upload`,
+`GET /api/replays/uploads/{id}/status`, `POST /api/replays/check`, `GET /api/replays/key`, all Bearer app key; keys are
+minted on the upload page (`POST /replays/upload/app-key`) and stored as SHA-256 only in `upload_tokens` (migration
+`0037`); owner script `scripts/upload_tokens.py list | issue | revoke` via `with_friends_db.py`. Release: bump
+`__version__`, push tag `uploader-vX.Y.Z`; `.github/workflows/uploader-release.yml` builds with `uploader/build.ps1`
+and attaches `ValoUploader.exe` + `.sha256` (no binary in git); self-update reads those releases. `uploader/**` is in
+`deploy.yml`'s `paths-ignore`. Tests: `webapp/tests/uploader`. See `uploader/README.md`.
+
 ### Plant spots
 
 Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,
