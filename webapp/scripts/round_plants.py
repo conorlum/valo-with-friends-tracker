@@ -1,8 +1,15 @@
-"""Owner maintenance: status, sync-replays [--dry-run], backfill [--limit N]."""
+"""Owner maintenance: status, sync-replays [--dry-run], backfill [--limit N] [--archive DIR], pause.
+
+Pausing a backfill: press Ctrl+C once (the current match finishes, then the run stops
+and prints its resume command; a second Ctrl+C stops at once, still losing nothing
+already committed), or run `round_plants.py pause` from any shell, which stops the run
+before its next match. Starting a backfill removes a leftover pause file.
+"""
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
 import random
+import signal
 import sys
 import time
 
@@ -32,6 +39,28 @@ def tracker_page():
             yield page
         finally:
             page.close()
+
+
+@contextmanager
+def owner_stop():
+    """Yield a ``should_stop`` for ``backfill``: the pause file or a first Ctrl+C.
+
+    The first Ctrl+C only records the request, so the match in flight can finish
+    and commit; the second restores Python's default and interrupts at once.
+    """
+    interrupted = []
+
+    def on_interrupt(signum, frame):
+        if interrupted:
+            raise KeyboardInterrupt
+        interrupted.append(True)
+        print("\nCtrl+C: stopping after this match (press again to stop now).", flush=True)
+
+    previous = signal.signal(signal.SIGINT, on_interrupt)
+    try:
+        yield lambda: "interrupted" if interrupted else ("paused" if plants.pause_requested() else None)
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def _progress(done, left):
@@ -69,9 +98,16 @@ def main(argv=None):
     backfill = commands.add_parser("backfill")
     backfill.add_argument("--limit", type=int)
     backfill.add_argument("--retry-unavailable", action="store_true")
+    backfill.add_argument("--archive", type=Path,
+                          help="also save each match's raw tracker.gg payload here as <id>.json.gz")
+    commands.add_parser("pause", help="stop a running backfill before its next match")
     args = parser.parse_args(argv)
     if args.command == "backfill" and args.limit is not None and args.limit < 0:
         parser.error("--limit must be non-negative")
+    if args.command == "pause":
+        plants.request_pause()
+        print(f"pause requested ({plants.PAUSE_PATH}); the backfill stops before its next match")
+        return 0
     with SessionLocal() as db:
         if args.command == "status":
             unavailable = plants.load_unavailable()
@@ -86,16 +122,21 @@ def main(argv=None):
             print(("dry-run: " if args.dry_run else "") + "; ".join(
                 f"{key}: {value}" for key, value in result.items()))
             return 0
+        if plants.clear_pause():
+            print("removed a leftover pause file")
         pending = plants.pending_matches(db, args.limit,
                                          skip=() if args.retry_unavailable else plants.load_unavailable())
         _progress(0, len(pending))
         if not pending:
             return 0
-        with tracker_page() as page:
+        with tracker_page() as page, owner_stop() as should_stop:
             result = plants.backfill(db, page, limit=args.limit, fetch=fetch_match_json,
                                     sleep=time.sleep, uniform=random.uniform,
-                                    retry_unavailable=args.retry_unavailable)
+                                    retry_unavailable=args.retry_unavailable,
+                                    should_stop=should_stop, archive=args.archive)
         _progress(result["done"], result["left"])
+        print(f"stored this run: inserted {result['inserted']}, updated {result['updated']}, "
+              f"skipped {result['skipped']}")
         print(f"unavailable: {result['unavailable']}; failed: {result['failed']}")
         if result["stopped"]:
             print(f"stopped: {result['stopped']}")
@@ -105,8 +146,14 @@ def main(argv=None):
                 resume += ["--limit", str(args.limit)]
             if args.retry_unavailable:
                 resume.append("--retry-unavailable")
+            if args.archive is not None:
+                resume += ["--archive", f'"{args.archive}"']
             print("Run the resume command from webapp.")
             print("Resume: " + " ".join(resume))
+            # A stop the owner asked for is not a failure.
+            if result["stopped"] in ("paused", "interrupted"):
+                plants.clear_pause()
+                return 1 if result["failed"] else 0
             return 2
         return 1 if result["failed"] else 0
 

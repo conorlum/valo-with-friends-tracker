@@ -269,6 +269,10 @@ spot shows a win rate only from 100 plants.
      It needs the tracker.gg Chrome on port 9222, resumes from the database, waits 5 to 12 s between matches and
      stops after 5 consecutive failures. Matches tracker.gg can't supply go in the gitignored skip-list
      `ingest_ledgers/round_plants_unavailable.json`. `scripts/round_plants.py status` shows progress.
+     To pause: Ctrl+C once (the match in flight finishes, then it prints the resume command; twice stops at
+     once, and still loses nothing already committed), or `scripts/round_plants.py pause` from any shell, which
+     writes `ingest_ledgers/round_plants.pause` (removed when a backfill starts). `with_friends_db.py` leaves
+     Ctrl+C to its child. `--archive <dir>` also keeps each raw payload as `<external id>.json.gz`.
   3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
      `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
      on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces

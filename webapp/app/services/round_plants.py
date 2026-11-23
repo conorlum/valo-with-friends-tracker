@@ -3,6 +3,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import lru_cache
+import gzip
 import json
 import math
 from pathlib import Path
@@ -340,8 +341,48 @@ def _tracker_plants(match, payload):
     return positions
 
 
-def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False):
-    """Commit positions alone per match; the DB and local ledger are the resume point."""
+PAUSE_PATH = UNAVAILABLE_PATH.parent / "round_plants.pause"
+
+
+def pause_requested():
+    """The owner's pause file: a run stops before its next match while it exists."""
+    return PAUSE_PATH.exists()
+
+
+def request_pause():
+    PAUSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PAUSE_PATH.write_text("pause\n", encoding="utf-8")
+
+
+def clear_pause():
+    """A run starting means the owner wants it running; return whether a pause file was left."""
+    try:
+        PAUSE_PATH.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def archive_payload(directory, external_id, payload):
+    """Keep the raw tracker.gg payload as ``<external id>.json.gz``, written atomically."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{external_id}.json.gz"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_bytes(gzip.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8")))
+    temporary.replace(target)
+
+
+def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
+             should_stop=None, archive=None):
+    """Commit positions alone per match; the DB and local ledger are the resume point.
+
+    ``should_stop`` returns a reason ("paused", "interrupted") or None; it is checked
+    before each match and again after the pacing wait. A match whose fetch or storage
+    breaks while a stop is requested is rolled back and neither failed nor skip-listed.
+    ``archive`` is a directory that receives every usable payload.
+    """
+    stop = should_stop or (lambda: None)
     unavailable = load_unavailable()
     todo = pending_matches(db, limit, skip=() if retry_unavailable else unavailable)
     result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, stopped=None)
@@ -353,12 +394,20 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False)
         # The fetch can wait up to 15 minutes for the owner's verification; hold no
         # transaction across it (or the pacing sleep before it).
         end_transaction(db)
+        if (reason := stop()) is not None:
+            result["stopped"] = reason
+            break
         if index:
             sleep(uniform(5, 12))
+            if (reason := stop()) is not None:
+                result["stopped"] = reason
+                break
         try:
             payload = fetch(page, external_id)
             if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
                 raise TrackerMatchUnavailable("match payload has no usable segments")
+            if archive is not None:
+                archive_payload(archive, external_id, payload)
             match = db.scalar(select(Match).where(Match.external_id == external_id))
             if match is None:
                 raise LookupError(f"match {external_id} left the database")
@@ -368,15 +417,19 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False)
             db.rollback()
             result["stopped"] = "verification"
             break
-        except TrackerMatchUnavailable:
+        except Exception as error:
             db.rollback()
-            unavailable.add(external_id)
-            result["unavailable"] += 1
-            consecutive_failures = 0
-        except Exception:
-            db.rollback()
-            result["failed"] += 1
-            consecutive_failures += 1
+            if (reason := stop()) is not None:
+                # The owner's stop broke this match mid-way: not tracker.gg's fault.
+                result["stopped"] = reason
+                break
+            if isinstance(error, TrackerMatchUnavailable):
+                unavailable.add(external_id)
+                result["unavailable"] += 1
+                consecutive_failures = 0
+            else:
+                result["failed"] += 1
+                consecutive_failures += 1
         else:
             consecutive_failures = 0
             result["done"] += 1

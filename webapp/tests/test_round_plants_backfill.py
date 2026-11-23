@@ -21,6 +21,7 @@ from tests.test_round_plants import db, planted_match
 def ledger(tmp_path, monkeypatch):
     path = tmp_path / "unavailable.json"
     monkeypatch.setattr(plants, "UNAVAILABLE_PATH", path, raising=False)
+    monkeypatch.setattr(plants, "PAUSE_PATH", tmp_path / "round_plants.pause", raising=False)
     return path
 
 
@@ -573,3 +574,122 @@ def test_status_reports_coverage_per_map_and_source(db, ledger, monkeypatch, cap
     assert "coverage 50.0%" in lines["Bind"]
     assert "planted rounds 1" in lines["Ascent"] and "replay 1, tracker 0" in lines["Ascent"]
     assert "coverage 100.0%" in lines["Ascent"]
+
+
+# --- Pause and resume -------------------------------------------------------------
+
+
+def test_stop_before_the_first_match_fetches_nothing(db):
+    matches(db, 2)
+    fetched = []
+    result = run(db, lambda page, key: fetched.append(key), should_stop=lambda: "paused")
+    assert fetched == [] and result["stopped"] == "paused" and result["left"] == 2
+
+
+def test_stop_requested_during_a_match_keeps_it_and_stops_before_the_next(db, ledger):
+    ids = matches(db, 3)
+    fetched, requested = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        requested.append(True)
+        return payload(1)
+
+    result = run(db, fetch, should_stop=lambda: "interrupted" if requested else None)
+    assert fetched == ids[:1]
+    assert result["done"] == 1 and result["stopped"] == "interrupted" and result["left"] == 2
+    assert len(db.scalars(select(RoundPlant)).all()) == 1
+
+
+def test_stop_after_the_pacing_wait_skips_the_fetch(db):
+    ids = matches(db, 3)
+    fetched, waited = [], []
+    result = plants.backfill(db, None, limit=None, fetch=lambda page, key: (fetched.append(key), payload(1))[1],
+                             sleep=waited.append, uniform=lambda a, b: a,
+                             should_stop=lambda: "paused" if waited else None)
+    assert fetched == ids[:1] and waited == [5] and result["stopped"] == "paused"
+
+
+@pytest.mark.parametrize("error", [ValueError("driver gone"), plants.TrackerMatchUnavailable("x")])
+def test_a_match_broken_by_the_stop_is_neither_failed_nor_skip_listed(db, ledger, error):
+    ids = matches(db, 2)
+    requested = []
+
+    def fetch(page, key):
+        requested.append(True)
+        raise error
+
+    result = run(db, fetch, should_stop=lambda: "interrupted" if requested else None)
+    assert result["failed"] == result["unavailable"] == result["done"] == 0
+    assert result["stopped"] == "interrupted" and result["left"] == 2
+    assert not ledger.exists() or json.loads(ledger.read_text()) == []
+    assert plants.pending_matches(db)[0].external_id == ids[0]
+
+
+def test_archive_keeps_each_usable_payload(db, tmp_path):
+    ids = matches(db, 2)
+    archive = tmp_path / "archive"
+    run(db, lambda page, key: payload(1) if key == ids[0] else {"no": "segments"}, archive=archive)
+    assert sorted(path.name for path in archive.iterdir()) == [f"{ids[0]}.json.gz"]
+    assert json.loads(gzip.decompress((archive / f"{ids[0]}.json.gz").read_bytes())) == payload(1)
+
+
+def test_pause_file_round_trip():
+    assert not plants.pause_requested()
+    plants.request_pause()
+    assert plants.pause_requested()
+    assert plants.clear_pause() is True
+    assert plants.clear_pause() is False and not plants.pause_requested()
+
+
+def test_cli_pause_command_needs_no_database(monkeypatch, capsys):
+    from scripts import round_plants as cli
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: pytest.fail("pause opened the database"))
+    assert cli.main(["pause"]) == 0
+    assert plants.pause_requested() and "pause requested" in capsys.readouterr().out
+
+
+def test_cli_clears_a_leftover_pause_and_a_paused_run_exits_zero(db, monkeypatch, capsys, tmp_path):
+    from scripts import round_plants as cli
+
+    ids = matches(db, 3)
+    plants.request_pause()
+
+    @contextmanager
+    def fake_page():
+        yield object()
+
+    def fetch(page, key):
+        plants.request_pause()  # the owner pauses while the first match loads
+        return payload(1)
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "fetch_match_json", fetch)
+    monkeypatch.setattr(cli.time, "sleep", lambda _: None)
+    assert cli.main(["backfill", "--archive", str(tmp_path / "a b")]) == 0
+    out = capsys.readouterr().out
+    assert "removed a leftover pause file" in out and "stopped: paused" in out
+    assert f'--archive "{tmp_path / "a b"}"' in next(line for line in out.splitlines() if line.startswith("Resume:"))
+    assert "done: 1; left: 2" in out
+    assert not plants.pause_requested()
+    assert (tmp_path / "a b" / f"{ids[0]}.json.gz").exists()
+
+
+def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
+    import signal
+    from scripts import round_plants as cli
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli.owner_stop() as should_stop:
+        handler = signal.getsignal(signal.SIGINT)
+        assert should_stop() is None
+        plants.request_pause()
+        assert should_stop() == "paused"
+        handler(signal.SIGINT, None)
+        assert should_stop() == "interrupted"
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    assert signal.getsignal(signal.SIGINT) is before
+    assert "stopping after this match" in capsys.readouterr().out
