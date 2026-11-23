@@ -54,8 +54,8 @@ class Watcher:
         self.exclusive_ok = exclusive
         self._seen = {}
         # True while some .vrf is seen but has not yet been unchanged for STABLE_GAP_S: it needs a
-        # second look soon. A file that is stable but merely locked does not count, so a locked
-        # file cannot keep the app on fast scans. One assignment per poll: safe to read from any thread.
+        # single follow-up look for this scheduled scan. A stable but locked file does not count.
+        # One assignment per poll: safe to read from any thread.
         self.awaiting = False
 
     def forget(self, path):

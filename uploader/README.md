@@ -14,9 +14,13 @@ do it by hand.
 4. The first run installs the app under your user profile and adds a tray icon. After that it runs quietly.
 
 What it does: it looks for finished replay files, uploads each one to the site, and checks the site stored it. While
-Valorant is running (and until its queue is empty) it checks every 5 seconds and scans the Demos folder every 10
-seconds; otherwise it checks every 30 minutes, except that it keeps scanning every 10 seconds while a new replay
-file is still settling, and once when Valorant closes. A replay the site could not use is tried again after 1, 2, 4
+Valorant is running it scans the Demos folder every 30 minutes, starting 30 minutes after the game opens
+(or the app starts with the game already running). After the game closes it scans once, 10 minutes later;
+reopening the game cancels that scan. There is no startup scan or other closed-game scan. Each scheduled scan
+gets at most one follow-up look, at least 5 seconds later, to confirm files have stopped changing. A scan due
+while paused runs once on resume. The app checks whether the game is running every 5 seconds, and processes
+queued uploads and unfinished deletion sweeps every 10 seconds without scanning the folder. Update checks run
+independently while the game is closed, at most every 6 hours. A replay the site could not use is tried again after 1, 2, 4
 and 8 days, then every 14 days; a match deleted on request is never sent again. When the site refuses or is down,
 the whole app waits (10 minutes to an hour) before it tries anything. A replay is deleted once the site has stored that file and the file
 is at least 14 days old (by its modified time). A recording the site did not keep (a friend's copy of the same match

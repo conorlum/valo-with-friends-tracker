@@ -386,11 +386,11 @@ def maybe_update(now, engine_idle, valorant_running, config, *, stop_app, releas
                  current_version=__version__):
     state = _state if state is None else state
     try:
+        if state.pending is None and now - config.last_update_check < UPDATE_EVERY_S:
+            return "idle"
         if not engine_idle() or valorant_running():
             return "idle"
         if state.pending is None:
-            if now - config.last_update_check < UPDATE_EVERY_S:
-                return "idle"
             config.last_update_check = now
             config.save(env)
             release = latest_release(fetch_json)

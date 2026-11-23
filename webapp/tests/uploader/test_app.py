@@ -67,7 +67,7 @@ def rig(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "Watcher", Mock())
     monkeypatch.setattr(app, "Tray", Mock(return_value=tray))
     monkeypatch.setattr(app, "Config", SimpleNamespace(load=lambda **kw: config))
-    monkeypatch.setattr(app, "run", lambda engine, stop, after_tick: None)
+    monkeypatch.setattr(app, "run", lambda engine, stop, after_tick, on_poll: None)
     monkeypatch.setattr(app, "maybe_update", Mock(return_value="idle"))
     monkeypatch.setattr(app, "after_update_cleanup", lambda *a, **kw: cleaned.set())
     return SimpleNamespace(env=env, calls=calls, config=config, engine=engine, tray=tray,
@@ -187,7 +187,7 @@ def test_recovery_failure_cannot_stop_startup(rig):
 
 
 def test_python_run_skips_install_cleanup_and_update(rig, monkeypatch):
-    monkeypatch.setattr(app, "run", lambda engine, stop, after_tick: after_tick(100))
+    monkeypatch.setattr(app, "run", lambda engine, stop, after_tick, on_poll: after_tick(100))
     assert start(rig) == 0
     assert rig.calls == ["acquire"]
     app.cleanup_stale.assert_not_called()
@@ -274,7 +274,7 @@ def test_main_joins_runner_through_handoff(rig, monkeypatch, result, quit_first)
         swapping.set()
         assert finish.wait(3)
         return result
-    def run(engine, stop, after_tick):
+    def run(engine, stop, after_tick, on_poll):
         after_tick(100)
         stop_seen.append(stop.is_set())
     monkeypatch.setattr(app, "maybe_update", update)
@@ -439,7 +439,7 @@ def test_change_key_replacement_runs_off_the_tray_thread_and_may_wait_for_the_lo
 def test_quit_during_an_upload_closes_the_tray_at_once_and_main_still_joins_the_runner(rig, monkeypatch):
     uploading, finish, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def run(engine, stop, after_tick):
+    def run(engine, stop, after_tick, on_poll):
         uploading.set()
         finish.wait(5)
         finished.set()
@@ -507,7 +507,7 @@ def test_instance_fake_allows_foreign_thread_release():
 def test_updater_result_alone_ends_runner_and_tray(rig, monkeypatch, result):
     observed = []
     monkeypatch.setattr(app, "maybe_update", Mock(return_value=result))
-    def run(engine, stop, after_tick):
+    def run(engine, stop, after_tick, on_poll):
         after_tick(100)
         observed.append(stop.is_set())
     monkeypatch.setattr(app, "run", run)
@@ -575,3 +575,42 @@ def test_real_instance_can_release_on_another_thread():
         assert handle is not None
     finally:
         instance.release(handle)
+
+
+def test_same_tray_status_only_updates_icon_once_and_menu_changes_do_not_rewrite_title():
+    from unittest.mock import PropertyMock
+    from valo_uploader.tray import Tray
+
+    current = dict(state="idle", paused=False, queue_length=0, last_stored=[])
+    tray = Tray(status=lambda: current, run_key_on=lambda: False, on_pause=None,
+                on_open_log=None, on_startup=None, on_change_key=None, on_quit=None)
+    tray.icon = Mock()
+    title = PropertyMock()
+    type(tray.icon).title = title
+    tray.refresh()
+    tray.refresh()
+    assert tray.icon.update_menu.call_count == 1
+    title.assert_called_once_with("ValoUploader - Idle")
+    current["last_stored"] = ["synthetic.vrf"]
+    tray.refresh()
+    tray.refresh()
+    assert tray.icon.update_menu.call_count == 2
+    title.assert_called_once_with("ValoUploader - Idle")
+    tray.icon = Mock()
+    tray.refresh()
+    tray.icon.update_menu.assert_called_once()
+
+
+def test_main_wires_tray_to_poll_callback_separately_from_updates(rig, monkeypatch):
+    def run(engine, stop, after_tick, on_poll):
+        on_poll(0)
+        on_poll(5)
+        assert rig.tray.refresh.call_count == 2
+        app.maybe_update.assert_not_called()
+        after_tick(10)
+        assert rig.tray.refresh.call_count == 2
+        app.maybe_update.assert_called_once()
+
+    monkeypatch.setattr(app, "run", run)
+    assert start(rig, frozen=True) == 0
+    assert rig.tray.refresh.call_count == 2

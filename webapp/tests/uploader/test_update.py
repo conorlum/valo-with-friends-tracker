@@ -215,22 +215,36 @@ def test_gates_do_no_work(rig, idle, running, last):
     assert rig.downloads == []
 
 
-def test_runner_hook_exception_logs_and_next_tick_runs(caplog):
+def test_runner_hook_exception_logs_and_next_process_poll_runs(caplog):
     stop = Event()
     ticks, hooks = [], []
-    clock = iter([0, 1800])
-    def tick(now):
-        ticks.append(now)
-        if len(ticks) == 2:
+    now = [0]
+
+    def hook(at):
+        hooks.append(at)
+        if len(hooks) == 3:
             stop.set()
-    def hook(now):
-        hooks.append(now)
         raise URLError("update failed")
-    engine = SimpleNamespace(procs=lambda: False, clock=lambda: next(clock), tick=tick,
-                             sleep=lambda seconds: None, status=lambda: {"queue_length": 0})
+
+    engine = SimpleNamespace(procs=lambda: False, clock=lambda: now[0],
+                             tick=lambda *a, **kw: ticks.append(a),
+                             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+                             status=lambda: {"queue_length": 0})
     run(engine, stop, after_tick=hook)
-    assert ticks == hooks == [0, 1800]
-    assert len(caplog.records) == 2
+    assert ticks == []
+    assert hooks == [0, 5, 10]
+    assert len(caplog.records) == 3
+
+
+def test_repeated_process_polls_before_update_due_do_no_disk_or_network_work(rig, monkeypatch):
+    rig.config.last_update_check = NOW
+    rig.config.save = Mock(side_effect=AssertionError("config write"))
+    monkeypatch.setattr(updater, "stage", Mock(side_effect=AssertionError("stage")))
+    monkeypatch.setattr(updater, "swap", Mock(side_effect=AssertionError("swap")))
+    for elapsed in range(0, 60, 5):
+        assert maybe(rig, now=NOW + elapsed) == "idle"
+    rig.args["fetch_json"].assert_not_called()
+    assert rig.downloads == []
 
 
 VALID = b"i" * (install.MIN_INSTALLED_BYTES + 1)
@@ -848,3 +862,51 @@ def test_losing_the_publish_race_launches_the_winner(tmp_path):
     assert [p.name for p in folder.iterdir()] == ["ValoUploader.exe"]
     key.assert_called_once_with(target.resolve())  # registered before publishing; same path as the winner's
     launch.assert_called_once_with(target.resolve(), [])
+
+
+def test_a_hundred_polls_inside_update_window_skip_all_gates_and_io(rig):
+    rig.config.last_update_check = NOW
+    idle = Mock(return_value=True)
+    running = Mock(return_value=False)
+    rig.config.save = Mock()
+    for elapsed in range(0, 500, 5):
+        assert updater.maybe_update(NOW + elapsed, idle, running, rig.config, **rig.args) == "idle"
+    idle.assert_not_called()
+    running.assert_not_called()
+    rig.config.save.assert_not_called()
+    rig.args["fetch_json"].assert_not_called()
+    assert rig.downloads == []
+
+
+@pytest.mark.parametrize("busy", ["queue", "game"])
+def test_due_update_checks_gates_before_recording_check(rig, busy):
+    idle = Mock(return_value=busy != "queue")
+    running = Mock(return_value=busy == "game")
+    rig.config.save = Mock()
+    assert updater.maybe_update(NOW, idle, running, rig.config, **rig.args) == "idle"
+    idle.assert_called_once()
+    if busy == "game":
+        running.assert_called_once()
+    assert rig.config.last_update_check == 0
+    rig.config.save.assert_not_called()
+    rig.args["fetch_json"].assert_not_called()
+
+
+def test_staged_update_uses_gates_inside_window_without_redownload(rig, monkeypatch):
+    staged = rig.current.parent / "verified.exe"
+    staged.write_bytes(b"synthetic update")
+    rig.args["state"].pending = ("9.9.9", staged)
+    rig.config.last_update_check = NOW
+    idle, running = Mock(return_value=True), Mock(return_value=False)
+    swap = Mock(side_effect=[updater.BackupLocked("synthetic lock"), "updated"])
+    monkeypatch.setattr(updater, "swap", swap)
+    rig.config.save = Mock()
+    assert updater.maybe_update(NOW + 5, idle, running, rig.config, **rig.args) == "deferred"
+    assert rig.args["state"].pending == ("9.9.9", staged)
+    assert updater.maybe_update(NOW + 10, idle, running, rig.config, **rig.args) == "updated"
+    assert idle.call_count == running.call_count == 4
+    assert swap.call_count == 2
+    assert rig.args["state"].pending is None
+    rig.config.save.assert_not_called()
+    rig.args["fetch_json"].assert_not_called()
+    assert rig.downloads == []

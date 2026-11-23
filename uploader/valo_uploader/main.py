@@ -171,8 +171,11 @@ def main(argv=None, *, frozen=None, env=None):
                     on_pause=pause, on_open_log=open_log, on_startup=startup,
                     on_change_key=change_key, on_quit=stop_app)
 
-        def after_tick(now):
+        def on_poll(now):
             tray.refresh()
+
+        # Called at startup and on closed-game process polls, independently of scans.
+        def after_tick(now):
             if frozen and not stop.is_set():
                 result = maybe_update(now, engine.idle, engine.procs, config,
                                       stop_app=stop_app, release_mutex=release_guard,
@@ -182,7 +185,7 @@ def main(argv=None, *, frozen=None, env=None):
 
         def work():
             try:
-                run(engine, stop, after_tick=after_tick)
+                run(engine, stop, after_tick=after_tick, on_poll=on_poll)
             except Exception:
                 logger.exception("Uploader runner failed")
                 stop_app()

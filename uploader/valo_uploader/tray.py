@@ -32,6 +32,10 @@ class Tray:
         self.message = None
         self.stopped = threading.Event()
         self.icon = None
+        self._refresh_lock = threading.Lock()
+        self._shown_icon = None
+        self._shown_rows = None
+        self._shown_title = None
 
     def rows(self):
         status = dict(self.status())
@@ -44,10 +48,18 @@ class Tray:
         self.refresh()
 
     def refresh(self):
-        icon = self.icon
-        if icon is not None and not self.stopped.is_set():
-            icon.title = "ValoUploader - " + self.rows()[0][0].removeprefix("Status: ")
-            icon.update_menu()
+        with self._refresh_lock:
+            icon = self.icon
+            if icon is None or self.stopped.is_set():
+                return
+            rows = self.rows()
+            title = "ValoUploader - " + rows[0][0].removeprefix("Status: ")
+            new_icon = icon is not self._shown_icon
+            if new_icon or title != self._shown_title:
+                icon.title = title
+            if new_icon or rows != self._shown_rows:
+                icon.update_menu()
+            self._shown_icon, self._shown_rows, self._shown_title = icon, rows, title
 
     def stop(self):
         self.stopped.set()

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .api import BadKey, NotFound, Offline, Refused, Rejected
-from .constants import (DELETE_BATCH, FAILED_RETRY_CAP_S, FAILED_RETRY_S, IDLE_SCAN_S,
+from .constants import (DELETE_BATCH, FAILED_RETRY_CAP_S, FAILED_RETRY_S, HELD_POLL_S,
                         REFUSED_GAP_S, REFUSED_RETRY_S, REFUSED_WINDOW_S, RETRY_GENERATION,
                         STATUS_POLL_S)
 from .files import Watcher, sha256_file
@@ -21,6 +21,12 @@ MAX_NETWORK_WAIT_S = 3600  # the longest a site's Retry-After can hold the whole
 def retry_delay(failures):
     """Wait after the nth failure of one file: 1, 2, 4, 8 days, then every 14."""
     return min(FAILED_RETRY_S * 2 ** min(max(failures, 1) - 1, 30), FAILED_RETRY_CAP_S)
+
+
+def _deletion_due(row, now):
+    """A candidate needs a later file-age check; no replay-file access here."""
+    return (row["status"] == "stored" and bool(row["paths"])
+            and row.get("next_delete_check", 0.0) <= now)
 
 
 class Engine:
@@ -42,6 +48,7 @@ class Engine:
         self.procs = procs
         self.deleter = deleter
         self.needs_key = False
+        self.deletion_pending = False
         self._hashes = {}
         self._last_stored = []
         for _, row in sorted(state.items(), key=lambda pair: pair[1].get("stored_at") or 0):
@@ -52,11 +59,13 @@ class Engine:
         """The flag is read at every step boundary: Pause lands without the lock."""
         return not self.config.paused and not self.needs_key and now >= self.next_network
 
-    def tick(self, now):
+    def tick(self, now, scan=True):
+        """Advance queued work and retention; discovery is optional."""
         with self.lock:
             if self.config.paused:
                 return
-            self._scan(now)
+            if scan:
+                self._scan(now)
             self._poll_held(now)
             if self._may_send(now):
                 rows = self.state.items()
@@ -203,9 +212,9 @@ class Engine:
                     # Held for an unsupported build or agent, possibly for weeks:
                     # keep the upload id, free the slot, poll rarely.
                     self.state.mark(sha, status="held", first_refused_at=None, last_refused_at=None,
-                                    next_try=now + IDLE_SCAN_S)
+                                    next_try=now + HELD_POLL_S)
                 elif row["status"] == "held" and result["status"] not in ("parsing", "queued"):
-                    self.state.mark(sha, next_try=now + IDLE_SCAN_S)
+                    self.state.mark(sha, next_try=now + HELD_POLL_S)
                 elif row["status"] == "held":
                     self.state.mark(sha, status="uploading", first_refused_at=None, last_refused_at=None,
                                     next_try=now + STATUS_POLL_S)
@@ -252,7 +261,7 @@ class Engine:
         except Rejected:
             if row["status"] == "held":
                 # Held has its own upload id and no site timeout: keep it held.
-                self.state.mark(sha, next_try=now + IDLE_SCAN_S)
+                self.state.mark(sha, next_try=now + HELD_POLL_S)
                 return True
             failures = self.state.entry(sha).get("failures", 0) + 1
             self.state.mark(sha, status="rejected", upload_id=None, first_refused_at=None,
@@ -302,17 +311,24 @@ class Engine:
             for sha, row in self.state.items():
                 if row["status"] in ("uploading", "held"):
                     self._pending(sha, now)
+            self.deletion_pending = any(_deletion_due(row, now) for _, row in self.state.items())
 
     def _delete_stored(self, now):
         """Delete an old local copy only when the site holds that exact file's replay."""
         if self.needs_key:
+            self.deletion_pending = False
             return
+        if not self._may_send(now):
+            self.deletion_pending = any(_deletion_due(row, now) for _, row in self.state.items())
+            return
+        self.deletion_pending = False
         budget = DELETE_BATCH
         for sha, row in self.state.items():
-            if budget <= 0 or not self._may_send(now):
-                return
-            if row["status"] != "stored" or row.get("next_delete_check", 0.0) > now:
+            if not _deletion_due(row, now):
                 continue
+            if budget <= 0 or not self._may_send(now):
+                self.deletion_pending = not self.needs_key
+                return
             paths = list(row["paths"])
             old = []
             retry = None
@@ -402,7 +418,7 @@ class Engine:
         self._last_stored = self._last_stored[-5:]
 
     def idle(self):
-        """Daily failures wait for idle scans; only pending/in-flight work queues."""
+        """Only pending/in-flight uploads occupy the transmission queue."""
         return self.status()["queue_length"] == 0
 
     def status(self):
@@ -420,5 +436,4 @@ class Engine:
             activity = "queued" if queue_length else "idle"
         return dict(state=activity, queue_length=queue_length, last_stored=list(self._last_stored),
                     needs_key=self.needs_key, paused=paused,
-                    # a .vrf is awaiting its second look: the runner stays on fast scans
-                    scanning=bool(getattr(self.watcher, "awaiting", False)) and not paused)
+                    deletion_pending=self.deletion_pending)
