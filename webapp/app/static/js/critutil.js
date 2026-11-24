@@ -102,7 +102,14 @@
     }
     if (p.waiting_s) bits.push("enemies waited " + p.waiting_s + " s");
     var hold = row.hold || {};
-    if (hold.front_s) bits.push("held the unknown back for " + Math.round(hold.front_s) + " s");
+    if (row.info != null) {
+      var info = row.info;
+      if (info.cleared_m2 > 0 || info.located > 0) {
+        bits.push("cleared " + Math.round(info.cleared_m2) + " m²" +
+          (info.located > 0 ? ", located " + info.located : ""));
+      }
+      if (info.hold_s > 0) bits.push("held the unknown back " + Math.round(info.hold_s) + " s");
+    } else if (hold.front_s) bits.push("held the unknown back for " + Math.round(hold.front_s) + " s");
     if (hold.held_m2s) bits.push("held " + Math.round(hold.held_m2s / Math.max(hold.up_s || 1, 1)) + " m² no teammate watched");
     if (hold.crossed_s) bits.push("the unknown got past it for " + Math.round(hold.crossed_s) + " s");
     if (typeof row.trigger === "number") bits.push("triggered at " + clock(row.trigger));

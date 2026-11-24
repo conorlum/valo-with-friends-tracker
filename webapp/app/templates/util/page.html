@@ -6,6 +6,39 @@
 {% macro tone(v) %}{% if v is none %}{% elif v > 0 %}util-good{% elif v < 0 %}util-bad{% endif %}{% endmacro %}
 {% macro jump(e) %}<a href="/replays/{{ e.uuid }}?round={{ e.round }}&t={{ '%.1f' | format([e.t - 2, 0] | max) }}">R{{ e.round }} {{ (e.t // 60) | int }}:{{ '%02d' | format((e.t % 60) | int) }}</a>{% endmacro %}
 
+{% macro info_row(r, name, unit) %}
+<tr><td>{{ name | strip_tag }}</td><td>{{ r.agent }} {{ r.ability }}</td>
+  <td>{{ '%.1f' | format(r.mean) }} {{ unit }}</td>
+  <td>{{ '%.1f' | format(r.ci[0]) }}–{{ '%.1f' | format(r.ci[1]) }} {{ unit }}</td>
+  <td>{{ '%.1f' | format(r.min) }}–{{ '%.1f' | format(r.max) }} {{ unit }}</td>
+  <td>{{ r.n }} casts, {{ r.matches }} matches</td></tr>
+{% endmacro %}
+
+{% macro info_cards(info, friends) %}
+{% for section, heading, unit, description in [('clears', 'Clears', 'm²', 'Area cleared per cast'), ('holds', 'Holds', 's', 'Time the unknown was held back per cast')] %}
+<section class="card">
+  <h2>{{ heading }}</h2>
+  {% if info is none %}
+  <p class="page-meta">Updating: the last build has no information measurements yet.</p>
+  {% else %}
+  <p class="page-meta">{{ description }}. The 95% interval for the mean resamples whole matches; the range is the minimum–maximum over casts. Friend rows need at least 10 casts across 3 matches.</p>
+  <table class="util-table">
+    <thead><tr><th>Player</th><th>Ability</th><th>Mean per cast</th><th>95% interval for mean</th><th>Min–max per cast</th><th>Sample</th></tr></thead>
+    <tbody>
+    {% for r in info.overall[section] %}
+      {{ info_row(r, 'Overall', unit) }}
+    {% else %}<tr><td colspan="6">Not enough casts yet.</td></tr>{% endfor %}
+    {% for p in friends %}
+      {% for r in p[section] %}{{ info_row(r, p.name, unit) }}{% endfor %}
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endfor %}
+{% if info and info.omitted %}<p class="page-meta">{{ info.omitted }} friend rows hidden: under 10 casts or 3 matches.</p>{% endif %}
+{% endmacro %}
+
 {% block content %}
 <h1>Critical Util</h1>
 {% if login_note %}
@@ -51,6 +84,8 @@
     </tbody>
   </table>
 </section>
+
+{{ info_cards(page.info, info_players) }}
 
 {% for p in players %}
 <section class="card">

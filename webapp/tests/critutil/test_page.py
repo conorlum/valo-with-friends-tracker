@@ -219,6 +219,31 @@ console.log(JSON.stringify({expr}));
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("measured, expected", [
+    ({"cleared_m2": 339.6, "located": 2, "hold_s": 0}, ["cleared 340 m², located 2"]),
+    ({"cleared_m2": 339.6, "located": 0, "hold_s": 0}, ["cleared 340 m²"]),
+    ({"cleared_m2": 0, "located": 2, "hold_s": 0}, ["cleared 0 m², located 2"]),
+    ({"cleared_m2": 0, "located": 0, "hold_s": 40.6}, ["held the unknown back 41 s"]),
+    ({"cleared_m2": 339.6, "located": 2, "hold_s": 40.6},
+     ["cleared 340 m², located 2", "held the unknown back 41 s"]),
+    ({"cleared_m2": 0, "located": 0, "hold_s": 0}, []),
+    (None, ["held the unknown back for 99 s"]),
+])
+def test_viewer_info_facts_replace_only_the_old_front_sentence(measured, expected):
+    assert _node("u.facts(rows[0], players)", [{"info": measured, "hold": {"front_s": 99}}]) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_old_info_facts_keep_other_hold_measurements():
+    hold = {"front_s": 99, "held_m2s": 200, "up_s": 10, "crossed_s": 3}
+    old, measured = _node("rows.map(r => u.facts(r, players))", [
+        {"hold": hold}, {"hold": hold, "info": {"cleared_m2": 0, "located": 0, "hold_s": 0}}])
+    assert old == ["held the unknown back for 99 s", "held 20 m² no teammate watched",
+                   "the unknown got past it for 3 s"]
+    assert measured == old[1:]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_viewer_lift_text_by_mode():
     both = {"lift_yours": 1.5, "yours_level": "your state", "lift_all": 0.5, "base_level": "state", "gate_all": True,
             "gate_yours": True}
