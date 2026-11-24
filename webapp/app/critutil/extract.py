@@ -251,13 +251,17 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
     one; the pieces it lands as join it: a piece whose `thrown.t0` is its throw, or one that starts while it is still up
     (a recon's pings, a smoke's zone, a drone's darts). A placed ability with no projectile starts its own. The
     spike is not a cast."""
-    util = blob.get("util") or ()
+    from app.replays.extras import join_fakeout_flashes
+
+    util = join_fakeout_flashes(blob.get("util") or [])
     casts: list[_Cast] = []
     codes = {}                              # slot -> its code, for flash rows that carry none
     for r in util:
         if r.get("k") == "ability" and r.get("code") and r.get("by") is not None:
             codes.setdefault(r["by"], r["code"])
     for r in sorted((r for r in util if r.get("k") in ("flash", "nearsight")), key=lambda r: r["t"]):
+        if r.get("ability") == "yoru_fakeout" and r.get("src") is not None:
+            continue                        # the decoy starts this cast; its flash joins by source below
         if not r.get("code") and codes.get(r.get("by")):
             r = {**r, "code": codes[r["by"]]}
         c = _Cast(len(casts), r, rnd)
@@ -372,6 +376,16 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
         host.end_unknown = not known
         if known:
             host.t_end = min(known)
+    for row in util:
+        if row.get("k") != "flash" or row.get("ability") != "yoru_fakeout" or row.get("src") is None:
+            continue
+        host = next((c for c in casts if c.by == row.get("by") and row["src"] in c.ids
+                     and any(r.get("k") == "ability" and r.get("code") == "Stealth"
+                             and r.get("name") == "4_Decoy_V2" and r["t"] == row["t"] for r in c.rows)), None)
+        if host is not None:
+            host.flash = row
+            host.add(row, rnd)
+            host.kinds.add("blind")
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
         if any(_ult_row(r) for r in c.rows):
@@ -466,6 +480,7 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
     ability-damage rows it caused. A row names its cast by `id` (revision 21) or, failing that, by caster and
     ability name inside the cast's life; with neither it is left unattributed."""
     out = {c.i: [] for c in casts}
+    from app.replays.status_intervals import flash_fallback_s
     by_id = {i: c for c in casts for i in c.ids}
     for c in casts:
         if c.flash is None:
@@ -475,7 +490,8 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
             dur = hit[2] if len(hit) > 2 else None
             if dur is not None and dur <= 0:
                 continue
-            out[c.i].append({"target": target, "t0": t_hit, "t1": t_hit + (dur if dur is not None else 1.5),
+            fallback = flash_fallback_s(c.flash.get("ability")) if c.flash["k"] == "flash" else 1.5
+            out[c.i].append({"target": target, "t0": t_hit, "t1": t_hit + (dur if dur is not None else fallback),
                              "how": "blind" if c.flash["k"] == "flash" else "nearsight", "dur_known": dur is not None})
     for r in blob.get("util") or ():
         k = r.get("k")

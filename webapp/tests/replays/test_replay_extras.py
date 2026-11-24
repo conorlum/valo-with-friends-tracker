@@ -2738,6 +2738,15 @@ def test_a_fakeout_that_flashed_has_its_blinded_enemies_and_proof_and_one_that_d
     flashed, quiet = (next(a for a in out["abilities"] if a["id"] == g) for g in (decoy, 66))
     assert flashed["hits_read"] and flashed["fired"] and flashed["flash"]["t"] == 20.0 and flashed["flash"]["hits"] == [1]
     assert quiet["hits_read"] is True and "fired" not in quiet and "flash" not in quiet
+    from app.replays.status_intervals import flash_fallback_s, normalize_conditions
+    util = util_entries(out)
+    [blind] = [e for e in util if e["k"] == "flash"]
+    assert blind["src"] == decoy and blind["by"] == 4
+    assert blind["hits"] == [[1, 20., None]]
+    [condition] = normalize_conditions(util, t_end=60.)[1]
+    assert condition["c"] == "blinded" and condition["t0"] == 20.
+    assert condition["t1"] == 20. + flash_fallback_s("yoru_fakeout")
+    assert condition["est"] is True
 
 
 def test_player_yaws_are_kept_only_for_a_fury_caster_and_other_pawns_keep_theirs():

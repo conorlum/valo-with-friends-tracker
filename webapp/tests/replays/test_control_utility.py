@@ -581,7 +581,7 @@ def test_storm_surge_two_throws_of_one_owner_each_get_their_own_hits():
     rows[1]["t"] = rows[2]["t"] = .8                # thrown at .8 s, landing at 1.3 s, while the first is still in
     rows[1]["u"] = rows[2]["u"] = first["u"] - 200   # the air (it lands at 1.0 s)
     rnd.blob["util"].extend(rows)
-    assert [(i.cast_id, i.count, i.t) for i in ut.read_storm_surges(rnd)] == [(41, 1, 1.5), (42, 2, 1.8)]
+    assert [(i.cast_id, i.count, i.t) for i in ut.read_storm_surges(rnd)] == [(41, 1, 1.5), (42, 2, 2.)]
 
 
 def test_storm_surge_zero_is_made_at_the_burst_around_the_whirlpool():
@@ -651,7 +651,8 @@ def test_storm_surge_combines_hit_rows_and_refuses_ambiguous_whirlpools():
 def test_nightfall_uses_its_oriented_wave_rectangle(yaw, inside, outside, monkeypatch):
     rnd = count_round("nightfall_counts")
     rnd.blob["util"][0]["yaw"] = yaw
-    monkeypatch.setitem(ut.FIGURES, "nightfall", {"length_m": 10, "width_m": 10})
+    # This entire small rectangle is swept in the first hit tick; rotation still sets its footprint.
+    monkeypatch.setitem(ut.FIGURES, "nightfall", {"length_m": 10, "width_m": 10, "speed_mps": 20, "delay_s": 0})
     [out] = ut.read_nightfall_counts(rnd)
     assert out.mask[rnd.geo.node_at_px(*inside)]
     assert not out.mask[rnd.geo.node_at_px(*outside)]
@@ -761,9 +762,11 @@ def test_a_zero_hit_nightfall_excludes_each_slice_when_the_wave_reaches_it():
         # each node is excluded no earlier than the wave reaches it and no more than one tick after
         assert (reached_at <= i.t + 1e-6).all() and (reached_at > i.t - ce.TICK_STEP_S - 1e-6).all()
         covered |= i.mask
-    whole = count_round("nightfall_counts")
-    [counted] = ut.read_nightfall_counts(whole)
-    np.testing.assert_array_equal(covered, counted.mask)                      # every part of the rectangle, once
+    along = (geo.centres[:, 0] - x0) * geo.m_per_px
+    across = (geo.centres[:, 1] - y0) * geo.m_per_px
+    rectangle = (geo.walk_n & (along >= 0) & (along <= figures["length_m"])
+                 & (np.abs(across) <= figures["width_m"] / 2))
+    np.testing.assert_array_equal(covered, rectangle)                         # every part of the rectangle, once
     first, last = ([i for i in infos if i.t == t][0] for t in (times[0], times[-1]))
     assert first.mask[geo.node_at_px(140, 200)] and not first.mask[geo.node_at_px(400, 200)]
     assert last.mask[geo.node_at_px(400, 200)] and not last.mask[geo.node_at_px(140, 200)]
@@ -785,6 +788,79 @@ def test_nightfall_zero_stops_at_the_end_of_the_round():
     rnd = count_round("nightfall_counts", ())
     rnd.t_end = 2.0
     assert max(i.t for i in ut.read_nightfall_counts(rnd)) <= 2.0
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS[:3])
+def test_status_count_keeps_hit_instants_separate(reader):
+    rnd = count_round(reader, (5,))
+    hit = rnd.blob["util"][1]
+    rnd.blob["util"].extend([dict(hit, target=6, t=3.), dict(hit, target=6, t=3.1),
+                             dict(hit, target=7, t=3.2)])
+    rnd.team[7] = "B"
+    out = getattr(ut, "read_" + reader)(rnd)
+    expected = [(1.5, 1)] if reader == "dizzy_counts" else [(1.5, 1), (3., 1), (3.5, 2)]
+    assert [(i.t, i.count) for i in out] == expected
+
+
+@pytest.mark.parametrize("change", ["death", "movement"])
+def test_nightfall_historical_hit_never_restricts_an_unhit_enemy(change):
+    rnd = count_round("nightfall_counts", (5,))
+    cast, hit = rnd.blob["util"]
+    cast["t"] = 0.
+    hit["t"] = 1.
+    rnd.blob["util"].append(dict(hit, t=3., target=6))
+    rnd.blob["tracks"]["7"] = copy.deepcopy(rnd.blob["tracks"]["6"])
+    rnd.blob["players"].append({"slot": 7, "agent": "Jett", "side": "B"})
+    rnd.blob["alive"]["7"] = [[0., 5., "end"]]
+    if change == "death":
+        rnd.blob["alive"]["5"] = [[0., 2., "kill"]]
+    else:
+        rnd.blob["tracks"]["5"] = blob({5: ("B", [(0., 400, 200, 0), (2., 300, 104, 0)])})["tracks"]["5"]
+    geo = rnd.geo
+    inputs = ce.RoundInputs(rnd.blob, geo)
+    assert [(i.t, i.count) for i in inputs.infos if i.reason == "nightfall_count"] == [(1., 1), (3., 1)]
+    outside = geo.node_at_px(300, 104)
+    unknown = ce.Unknown(geo)
+    for slot in (5, 6, 7):
+        unknown.reached["A"][slot] = np.where(geo.walk_n, 0., np.inf)
+    if change == "movement":
+        unknown.reached["A"][5][:] = np.inf
+        unknown.reached["A"][5][outside] = 3.
+    unknown._prev_t = 2.999
+    for side in ("A", "B"):
+        unknown.free_since[side] = np.zeros(geo.n)
+        unknown._room[side] = geo.walk_n.copy()
+    tick = ce.Tick(inputs, 3.)
+    assert not tick.view[0][outside]
+    unknown.apply(tick)
+    assert np.isfinite(unknown.reached["A"][7][outside])
+
+
+def test_nightfall_positive_count_uses_only_the_wave_slice_at_the_hit_tick():
+    rnd = count_round("nightfall_counts", (5,))
+    cast = rnd.blob["util"][0]
+    [out] = ut.read_nightfall_counts(rnd)
+    f = ut.FIGURES["nightfall"]
+    start = cast["t"] + f["delay_s"]
+    along = (rnd.geo.centres[:, 0] - cast["u"] * ce.PX / 10000) * rnd.geo.m_per_px
+    assert out.mask.any()
+    assert (along[out.mask] > max(-1., (out.t - ce.TICK_STEP_S - start) * f["speed_mps"])).all()
+    assert (along[out.mask] <= (out.t - start) * f["speed_mps"]).all()
+
+
+def test_storm_surge_status_count_keeps_hit_times_instead_of_a_cast_total():
+    rnd = count_round("storm_surges", (5,))
+    rnd.blob["util"][-1]["hits"].extend([[6, 3., 2.], [6, 3., 2.]])
+    assert [(i.t, i.count) for i in ut.read_storm_surges(rnd)] == [(1.5, 1), (3., 1)]
+
+
+def test_thrash_detain_count_uses_the_sources_position_at_each_hit():
+    rnd = count_round("thrash_detains", (5,))
+    rnd.blob["util"][0]["path"] = [[1., *uv(104, 200)], [1.5, *uv(200, 200)], [3., *uv(400, 200)]]
+    rnd.blob["util"].append(dict(rnd.blob["util"][1], target=6, t=3.))
+    out = ut.read_thrash_detains(rnd)
+    assert [(i.t, i.count) for i in out] == [(1.5, 1), (3., 1)]
+    assert [i.x for i in out] == pytest.approx([200, 400], abs=.1)
 
 
 def test_the_zero_hit_switch_is_off_exactly_where_the_probe_measured_false_clears_over_5_percent():

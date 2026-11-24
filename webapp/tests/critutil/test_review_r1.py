@@ -23,6 +23,67 @@ def blast(t=7.0, **extra):
             "u": u, "v": v, "yaw": 180, "hits": [], "hits_read": True, "fired": True, **extra}
 
 
+@pytest.mark.parametrize("native", [False, True])
+def test_f5_fakeout_blinds_reach_effects_conditions_and_kill_links(native):
+    from app.replays.extras import join_fakeout_flashes
+    from app.replays.status_intervals import flash_fallback_s, normalize_conditions
+
+    row = toy_ability("Stealth", "4_Decoy_V2", 220, 200, 0, t=1., t1=8., kind="Pawn",
+                      id=41, hits_read=True, fired=True, flash={"t": 7., "hits": [5, 6]})
+    rows = [row]
+    if native:
+        rows.append({"k": "flash", "by": 0, "t": 1., "ability": "yoru_fakeout",
+                     "pop": {"t": 7.}, "hits": [[5, 7., .75]], "targets": [5]})
+    original = __import__("copy").deepcopy(rows)
+    util = join_fakeout_flashes(rows)
+    assert rows == original
+    assert join_fakeout_flashes(util) == util
+    assert len([e for e in util if e["k"] == "flash"]) == 1
+    players = {**PLAYERS, 6: ("B", [(0., 350, 200, 0)])}
+    rnd, data = round_of(players, util=util, kills=[kill(7.5, 0, 5)], geo=open_hall())
+    [cast] = extract.round_util(rnd, data)["casts"]
+    assert cast["ability_id"] == "Yoru/Fakeout"
+    assert cast["t"] == 1. and cast["enemies"] == [5, 6]
+    duration = flash_fallback_s("yoru_fakeout")
+    assert cast["effects"] == [
+        {"target": 5, "how": "blind", "t0": 7., "t1": 7.75 if native else 7. + duration, "known": native},
+        {"target": 6, "how": "blind", "t0": 7., "t1": 7. + duration, "known": False}]
+    assert cast["kills"]
+    conditions = normalize_conditions(util, t_end=30.)
+    assert conditions[5][0]["est"] is (not native)
+    assert conditions[6][0]["t1"] == 7. + duration
+    assert any(a <= 7.25 < b for a, b in rnd.flashed[5])
+
+
+@pytest.mark.parametrize("hits", [[], [5]])
+def test_f5_fakeout_empty_and_native_zero_duration_do_not_invent_a_blind(hits):
+    from app.replays.extras import join_fakeout_flashes
+    from app.replays.status_intervals import normalize_conditions
+
+    row = toy_ability("Stealth", "4_Decoy_V2", 220, 200, 0, t=1., t1=8., kind="Pawn",
+                      id=41, flash={"t": 7., "hits": hits})
+    native = {"k": "flash", "by": 0, "t": 1., "ability": "yoru_fakeout", "pop": {"t": 7.},
+              "hits": [[5, 7., 0.]], "targets": [5]}
+    util = join_fakeout_flashes([row, native] if hits else [row])
+    assert normalize_conditions(util, t_end=30.) == {}
+    rnd, data = round_of(PLAYERS, util=util, geo=open_hall())
+    [cast] = extract.round_util(rnd, data)["casts"]
+    assert cast["effects"] == [] and cast["enemies"] == []
+
+
+def test_f5_fakeout_flash_join_keeps_casts_owners_and_other_flashes_separate():
+    from app.replays.extras import join_fakeout_flashes
+
+    rows = [toy_ability("Stealth", "4_Decoy_V2", 220, 200, by, t=t, t1=t + 8., kind="Pawn",
+                        id=source, flash={"t": t + 6., "hits": [target]})
+            for by, t, source, target in [(0, 1., 41, 5), (0, 12., 42, 6), (1, 1., 43, 7)]]
+    other = {"k": "flash", "t": 1., "by": 0, "ability": "yoru_blindside", "hits": [[5, 7., .5]]}
+    out = join_fakeout_flashes([*rows, other])
+    assert other in out
+    assert [(r["by"], r["src"], r["hits"]) for r in out if r.get("ability") == "yoru_fakeout"] == [
+        (0, 41, [[5, 7., None]]), (0, 42, [[6, 18., None]]), (1, 43, [[7, 7., None]])]
+
+
 def test_f2_fury_origin_never_holds_an_area_or_takes_shared_credit():
     molly = toy_ability("Sarge", "Q_Molotov_Production", 200, 200, 0, t=7, t1=13)
     spike = {"k": "ability", "kind": "Bomb", "t": 6, "by": 0, "u": molly["u"], "v": molly["v"],

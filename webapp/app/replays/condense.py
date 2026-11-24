@@ -1922,7 +1922,8 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     as the `ability` and `shot` kinds, after the kinds `condense()` wrote, and re-measures the
     sizes. Another pass over the events file and one over movement, both streamed (W-b). The
     planted spike's row then names the carrier before the plant in `player_state` (revision 15)."""
-    from app.replays.extras import WorldPositions, build_extras, fury_pawns, read_raw, util_entries  # imports this module
+    from app.replays.extras import (WorldPositions, build_extras, fury_pawns, join_fakeout_flashes,
+                                    read_raw, util_entries)  # imports this module
 
     players = build_players(export, agents_by_code)
     windows = read_game_state(export).windows
@@ -1939,7 +1940,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     decay_checks = []
     figures = load_decay_figures()
     for n, blob in replay.rounds.items():
-        blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        blob["util"] = join_fakeout_flashes(blob["util"] + util_entries(extras.rounds.get(n, {})))
         decay_statuses = [e for e in blob["util"] if e.get("status") == "decayed"]
         blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
         if any(not e.get("friendly") and e.get("from") != "friendly" for e in decay_statuses):

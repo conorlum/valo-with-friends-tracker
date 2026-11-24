@@ -591,11 +591,23 @@ DIZZY_SHOT_WINDOW_S = 0.1     # hits this close to a Dizzy's first are the same 
 DIZZY_FIRE_S = 0.61
 
 
-def _status_counts(rnd, code: str, name: str, status: str, *, proof=("hits_read", "fired")):
-    """Distinct enemy hits per source, with no target identity leaving this helper.
+def _hit_counts(hits):
+    """Anonymous counts per analytical tick, never a cast's historical total."""
+    from app.control import engine as ce
+
+    ticks = collections.defaultdict(set)
+    for t, target in hits:
+        at = round(math.ceil(t / ce.TICK_STEP_S - 1e-9) * ce.TICK_STEP_S, 6)
+        ticks[at].add(target)
+    return [(t, len(targets)) for t, targets in sorted(ticks.items())]
+
+
+def _status_counts(rnd, code: str, name: str, status: str, *, proof=("hits_read", "fired"), first_shot=False):
+    """Distinct enemy hits per source and tick, with no target identity leaving this helper.
 
     Positive evidence survives old/missing firing proof; only a proven cast (all of `proof` true on its row) can say
-    zero hits. The count becomes known at its last hit, or at the end of a proven cast that hit nobody.
+    zero hits. Positive counts retain their observation ticks; a proven empty cast keeps its end time.
+    Dizzy alone uses its existing first-shot window and exact first-hit time (W5.1).
     A hit with no matching source makes nearby casts of that owner/source unusable.
     """
     rows = rnd.blob.get("util") or []
@@ -614,9 +626,7 @@ def _status_counts(rnd, code: str, name: str, status: str, *, proof=("hits_read"
         if hit.get("src") is None or key not in sources:
             unmatched.append((hit.get("by"), float(hit["t"])))
             continue
-        targets, t = hits.setdefault(key, (set(), float(hit["t"])))
-        targets.add(hit["target"])
-        hits[key] = targets, max(t, float(hit["t"]))
+        hits.setdefault(key, []).append((float(hit["t"]), hit["target"]))
     for row in casts:
         side = rnd.team.get(row.get("by"))
         if side is None:
@@ -626,12 +636,17 @@ def _status_counts(rnd, code: str, name: str, status: str, *, proof=("hits_read"
         if any(by == row.get("by") and float(row["t"]) - UNMATCHED_HIT_WINDOW_S <= t
                <= float(end) + UNMATCHED_HIT_WINDOW_S for by, t in unmatched):
             continue
-        targets, t = hits.get((row.get("id"), row.get("by")), ((), None))
-        if not targets and not all(row.get(field) is True for field in proof):
-            continue
-        if t is None:
+        own = hits.get((row.get("id"), row.get("by")), ())
+        if own:
+            if first_shot:
+                t = min(t for t, _ in own)
+                yield row, side, len({target for at, target in own if at <= t + DIZZY_SHOT_WINDOW_S}), t
+            else:
+                for t, count in _hit_counts(own):
+                    yield row, side, count, t
+        elif all(row.get(field) is True for field in proof):
             t = row.get("t1") if row.get("t1") is not None else row["t"]
-        yield row, side, len(targets), float(t)
+            yield row, side, 0, float(t)
 
 
 def _count_disk(row, *, at_end=False):
@@ -653,7 +668,7 @@ def _count_disk(row, *, at_end=False):
 def read_nightfall_counts(rnd) -> list[Info]:
     """Nightfall's anonymous hit count over its forward wave rectangle, through walls.
 
-    A wave that hit someone counts them over the whole rectangle at the last hit. A proven wave that hit nobody
+    Each positive count covers only the slice swept in its observation tick. A proven wave that hit nobody
     rules the rectangle out slice by slice, each at the time the wave passes it (W5.1): the wave sweeps forward
     at `nightfall.speed_mps` after `delay_s`, so ground behind it is excluded at the tick it went by, never at the
     end of the wave's life, when an enemy may have walked into ground it had already crossed.
@@ -675,8 +690,13 @@ def read_nightfall_counts(rnd) -> list[Info]:
         if not mask.any():
             continue
         if count:
-            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "nightfall_count", count=count, mask=mask,
-                            detail={"needs": "status"}, **place))
+            start = float(row["t"]) + figures["delay_s"]
+            behind = max(-1., figures["speed_mps"] * (t - ce.TICK_STEP_S - start))
+            front = min(figures["length_m"], figures["speed_mps"] * (t - start))
+            part = mask & (along > behind) & (along <= front)
+            if part.any():
+                out.append(Info(t, side, ONE_OF_SLOT, "one_of", "nightfall_count", count=count, mask=part,
+                                detail={"needs": "status"}, **place))
         elif ZERO_HIT_EXCLUDES["nightfall"]:
             start = float(row["t"]) + figures["delay_s"]
             behind = -1.0
@@ -720,21 +740,11 @@ def read_dizzy_counts(rnd) -> list[Info]:
     from app.control import engine as ce
 
     geo, out = rnd.geo, []
-    shots = collections.defaultdict(list)
-    for hit in rnd.blob.get("util") or []:
-        if (hit.get("k") == "status" and hit.get("code") == "Aggrobot" and hit.get("name") == "E_DiscTurret_PowerWave"
-                and hit.get("status") == "concussed" and not hit.get("friendly")
-                and rnd.team.get(hit.get("target")) not in (None, rnd.team.get(hit.get("by")))):
-            shots[hit.get("src"), hit.get("by")].append((float(hit["t"]), hit["target"]))
     for row, side, count, t in _status_counts(rnd, "Aggrobot", "E_DiscTurret_PowerWave", "concussed",
-                                              proof=("fired",)):
+                                              proof=("fired",), first_shot=True):
         # The firing moment: its first shot's hits, else when it winds up and fires (`dizzy_fire_s` after the
         # cast), never the end of its life, when the enemy it saw has long moved. Later shots are other moments.
-        own = sorted(shots.get((row.get("id"), row.get("by")), ()))
-        if own:
-            t = own[0][0]
-            count = len({target for hit_t, target in own if hit_t <= t + DIZZY_SHOT_WINDOW_S})
-        else:
+        if not count:
             t = min(float(row["t"]) + DIZZY_FIRE_S, float(row["t1"]) if row.get("t1") is not None else math.inf)
         place, row_z = _flown_place(row, t)
         if place is None:
@@ -755,10 +765,12 @@ def read_dizzy_counts(rnd) -> list[Info]:
 
 
 def read_thrash_detains(rnd) -> list[Info]:
-    """Thrash's detain is an anonymous count around its final flight position."""
+    """Thrash's detain counts around its flight position at each observation tick."""
     out = []
     for row, side, count, t in _status_counts(rnd, "Aggrobot", "RollyPolly", "detained"):
-        place = _count_disk(row, at_end=True)
+        if not row.get("path"):
+            continue
+        place, _ = _flown_place(row, t)
         if place is None:
             continue
         place["radius_m"] = FIGURES["thrash_detain_radius_m"]
@@ -811,30 +823,28 @@ def read_storm_surges(rnd) -> list[Info]:
             continue
         index = matches[0]
         side = rnd.team[casts[index]["by"]]
-        targets, t = hits.setdefault(index, (set(), float(casts[index]["t"])))
+        own = hits.setdefault(index, [])
         for target, hit_t, *_ in row.get("hits") or []:
             if rnd.team.get(target) not in (None, side):
-                targets.add(target)
-                t = max(t, float(hit_t))
-        hits[index] = targets, t
+                own.append((float(hit_t), target))
     out = []
     for i, row in enumerate(casts):
         if i in ambiguous:
             continue
         burst = float(row["t1"]) if row.get("t1") is not None else float(row["t"])
-        targets, t = hits.get(i, ((), burst))
-        if not targets and not (row.get("hits_read") is True and row.get("fired") is True
+        own = hits.get(i, ())
+        if not own and not (row.get("hits_read") is True and row.get("fired") is True
                                 and ZERO_HIT_EXCLUDES["storm_surge"]):
             continue
         side, place = rnd.team[row["by"]], _count_disk(row)
-        if not heard(rnd, side, t, place["x"], place["y"], FIGURES["storm_surge_hearing_m"]):
-            continue
         place["radius_m"] = FIGURES["storm_surge_radius_m"]
-        if targets:
-            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "storm_surge_count", count=len(targets),
-                            detail={"needs": "status"}, **place))
-        else:
-            out.extend(zero_hits(rnd, t, side, "storm_surge_zero", needs="status", **place))
+        if own:
+            for t, count in _hit_counts(own):
+                if heard(rnd, side, t, place["x"], place["y"], FIGURES["storm_surge_hearing_m"]):
+                    out.append(Info(t, side, ONE_OF_SLOT, "one_of", "storm_surge_count", count=count,
+                                    detail={"needs": "status"}, **place))
+        elif heard(rnd, side, burst, place["x"], place["y"], FIGURES["storm_surge_hearing_m"]):
+            out.extend(zero_hits(rnd, burst, side, "storm_surge_zero", needs="status", **place))
     return out
 
 

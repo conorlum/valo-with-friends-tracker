@@ -3363,6 +3363,57 @@ class WorldPositions:
         return out
 
 
+def join_fakeout_flashes(util: list[dict]) -> list[dict]:
+    """Publish observed Fakeout blinds in the shared flash contract, joined to their decoy.
+
+    The named effect proves a hit time, not its duration: null durations use flash_fallback_s in the condition
+    reader and remain estimated. Prefer native flash hits (including a measured zero), and never count the
+    named effect twice. Do not change the nested flash: map control uses its facing for R13.
+    """
+    casts = [r for r in util if r.get("k") == "ability" and r.get("code") == "Stealth"
+             and r.get("name") == "4_Decoy_V2" and r.get("id") is not None
+             and isinstance(r.get("flash"), dict) and r["flash"].get("t") is not None]
+    joined = {id(c): [] for c in casts}
+    consumed = set()
+    for i, row in enumerate(util):
+        if row.get("k") != "flash" or not (row.get("ability") == "yoru_fakeout"
+                                               or row.get("name") == "4_Decoy_V2"):
+            continue
+        candidates = []
+        for c in casts:
+            if row.get("by") != c.get("by") or (row.get("src") is not None and row["src"] != c["id"]):
+                continue
+            times = [h[1] for h in row.get("hits") or []]
+            if (row.get("pop") or {}).get("t") is not None:
+                times.append(row["pop"]["t"])
+            if any(abs(float(t) - float(c["flash"]["t"])) <= FAKEOUT_BLIND_MS / 1000 + 1e-9 for t in times):
+                candidates.append(c)
+        if len(candidates) == 1:
+            joined[id(candidates[0])].append(row)
+            consumed.add(i)
+    out = [r for i, r in enumerate(util) if i not in consumed]
+    for c in casts:
+        native = joined[id(c)]
+        t = float(c["flash"]["t"])
+        hits = []
+        for row in native:
+            for hit in row.get("hits") or []:
+                twin = next((h for h in hits if h[0] == hit[0] and abs(h[1] - hit[1]) <= .04 + 1e-9), None)
+                if twin is None:
+                    hits.append(list(hit))
+                elif twin[2] is None and hit[2] is not None:
+                    twin[:] = hit
+        for target in c["flash"].get("hits") or []:
+            if not any(h[0] == target and abs(h[1] - t) <= .04 + 1e-9 for h in hits):
+                hits.append([target, t, None])
+        hits.sort(key=lambda h: (h[0], h[1]))
+        out.append({**(native[0] if native else {}), "k": "flash", "t": c["t"], "by": c.get("by"),
+                    "code": c["code"], "name": c["name"], "ability": "yoru_fakeout", "src": c["id"],
+                    "pop": {**((native[0].get("pop") or {}) if native else {}), "t": t},
+                    "hits": hits, "targets": sorted({h[0] for h in hits})})
+    return out
+
+
 def util_entries(round_extras: dict) -> list[dict]:
     """One round's abilities and shots as `util` entries: the envelope's `t` and `by` replace the
     row's `t0`/`t` and `slot`; every other field is kept as it is."""
@@ -3394,7 +3445,7 @@ def util_entries(round_extras: dict) -> list[dict]:
     for hold in round_extras.get("holds", []):
         rest = {k: v for k, v in hold.items() if k not in ("t", "slot")}
         out.append({"k": "hold", "t": hold["t"], "by": hold["slot"], **rest})
-    return out
+    return join_fakeout_flashes(out)
 
 
 def rounds_extras(util: list[dict]) -> dict:
