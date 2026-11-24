@@ -962,6 +962,22 @@ def test_a_where_path_grounds_its_names_in_the_moments_time_window(painted_snap,
         assert f"the area {area} is not in a cited answer" in found
 
 
+@pytest.mark.parametrize("also", [None, ["A Main"], [None, 17, {}, "A Main"]])
+def test_a_cited_area_grounds_its_also_names(painted_snap, tmp_path, also):
+    names = [NAMES[0], {**NAMES[1], "name": "Link", "also_parents": [3]},
+             {**NAMES[2], "name": "A Main"}]
+    write_paint(tmp_path, painted_object({}, names=names))
+    area = {"name": "Link", "super": "Mid", "path": ["Mid", "Link"], "approximate": False}
+    if also is not None:
+        area["also"] = also
+    log = {"q1": {"cmd": "where", "args": [5, 19.5],
+                  "result": {"t": 19.5, "players": [{"area": area}]}}}
+    inst = [{"round": 5, "t": 20.0, "caption": "", "evidence": ["q1"]}]
+    found = _check(painted_snap, log, "You held A Main.", inst)
+    assert found == ([] if also is not None else ["the area A Main is not in a cited answer"])
+    assert _check(painted_snap, log, "You held Mid, then Link.", inst) == []
+
+
 def test_a_where_area_matches_the_time_of_a_moment_in_its_own_round(painted_snap, tmp_path):
     query.run(painted_snap, tmp_path, "timeline", ["5"])
     query.run(painted_snap, tmp_path, "where", ["9", "19.5"])
