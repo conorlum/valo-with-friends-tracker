@@ -87,20 +87,22 @@ def plant_from_summary(round_summary):
 def plant_uv(map_name, plant):
     """The spike's minimap position: the first clear step where the map's zone is known, else 0.7 m.
 
-    Tracker rows have no patch, so a map with several layouts is not covered.
+    Where the zone is known, the result is also pulled inside it (`plant_position.snap_inside`),
+    including a plant without facing data. Tracker rows have no patch, so a map with several
+    layouts is not covered.
     """
     u, v = to_uv(map_name, plant["x"], plant["y"])
-    if "view" not in plant:
-        return u, v
     key = asset_key_for(map_name, None)
     if not plant_position.covers(key):
         return u, v
+    if "view" not in plant:
+        return plant_position.snap_inside(key, u, v)
     cos, sin = math.cos(plant["view"]), math.sin(plant["view"])
 
     def point_at(metres):
         return to_uv(map_name, plant["planter_x"] + metres * 100 * cos, plant["planter_y"] + metres * 100 * sin)
 
-    return point_at(plant_position.pick_step(key, point_at))
+    return plant_position.snap_inside(key, *point_at(plant_position.pick_step(key, point_at)))
 
 
 # tracker.gg's plant location is the planter's position; the spike lands this far

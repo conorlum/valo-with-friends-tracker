@@ -13,6 +13,7 @@ from pathlib import Path
 STEPS_M = (0.7, 0.4, 0.2)
 WALL_MARGIN_M = 0.6
 PATH_SAMPLES = 8
+SNAP_LIMIT_CELLS = 16   # about 2 m on most maps
 GRID_SIZE = 1024
 UV_SCALE = 10000
 ZONES_PATH = Path(__file__).resolve().parents[1] / "data" / "plant_zones.json"
@@ -95,3 +96,32 @@ def pick_step(asset_key, point_at):
                                 for i in range(1, PATH_SAMPLES + 1)):
             return step
     return 0.0
+
+
+def snap_inside(asset_key, u, v):
+    """(u, v) moved to the nearest plant-zone cell's centre when it lies outside the zone.
+
+    A spike is never outside its plant site, so an estimate that lands outside (a planter standing
+    just past the shading, or no facing data) is pulled in. Only up to SNAP_LIMIT_CELLS away: a point
+    further out means the zone or the data is wrong, and it is left where it is. Ties keep the first
+    cell found, scanning rows then columns.
+    """
+    grids = _grids(asset_key)
+    if grids is None:
+        raise KeyError(asset_key)
+    if _on(grids, grids[4], (u, v)):
+        return u, v
+    x0, y0, width, height, zone = grids[:5]
+    fx, fy = u / UV_SCALE * GRID_SIZE - x0, v / UV_SCALE * GRID_SIZE - y0
+    cx, cy = int(fx), int(fy)
+    best = None
+    for y in range(max(0, cy - SNAP_LIMIT_CELLS), min(height, cy + SNAP_LIMIT_CELLS + 1)):
+        for x in range(max(0, cx - SNAP_LIMIT_CELLS), min(width, cx + SNAP_LIMIT_CELLS + 1)):
+            if zone[y * width + x]:
+                distance = (x + .5 - fx) ** 2 + (y + .5 - fy) ** 2
+                if best is None or distance < best[0]:
+                    best = (distance, x, y)
+    if best is None or best[0] > SNAP_LIMIT_CELLS ** 2:
+        return u, v
+    _, x, y = best
+    return (x + x0 + .5) / GRID_SIZE * UV_SCALE, (y + y0 + .5) / GRID_SIZE * UV_SCALE

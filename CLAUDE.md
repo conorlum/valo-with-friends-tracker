@@ -263,7 +263,9 @@ degrees, clockwise on the minimap); a plant inside several goes to the nearest c
 - New tracker.gg ingests save plants (`load_match`, `_store_plants`). A failure there never fails the ingest.
   tracker.gg's plant `location` is the planter's position. The spike lands along the planter's final aim
   (`viewRadians`) at 0.7 m, or 0.4, 0.2 or 0 m when a wall or the plant site's edge is in the way
-  (`app/services/plant_position.py`, `round_plants.plant_uv`; measured on replay Bomb positions). Zones are the
+  (`app/services/plant_position.py`, `round_plants.plant_uv`; measured on replay Bomb positions). A tracker
+  position that still lands outside the zone (or has no facing data) is pulled to the nearest zone cell, up to
+  about 2 m (`snap_inside`); replay positions are never moved. Zones are the
   minimaps' shaded sites, aligned to planter positions, in the committed `app/data/plant_zones.json`
   (`scripts/build_plant_zones.py`, read-only on the DB); a map that fails its check keeps the plain 0.7 m.
   The backfill re-fetches tracker rows saved before the 0.7 m correction, tracked in the gitignored

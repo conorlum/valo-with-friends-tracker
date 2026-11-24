@@ -96,7 +96,17 @@ def test_plant_uv_uses_the_picked_step_along_the_world_aim(monkeypatch):
     plant = plants.plant_from_summary(facing())
     monkeypatch.setattr(plants.plant_position, "covers", lambda key: True)
     monkeypatch.setattr(plants.plant_position, "pick_step", lambda key, point_at: 0.2)
+    monkeypatch.setattr(plants.plant_position, "snap_inside", lambda key, u, v: (u, v))
     assert plants.plant_uv("Bind", plant) == plants.to_uv("Bind", 1020, 2000)
+
+
+def test_plant_uv_pulls_the_picked_point_inside_the_zone(monkeypatch):
+    plant = plants.plant_from_summary(facing())
+    monkeypatch.setattr(plants.plant_position, "covers", lambda key: True)
+    monkeypatch.setattr(plants.plant_position, "pick_step", lambda key, point_at: 0.0)
+    monkeypatch.setattr(plants.plant_position, "snap_inside", lambda key, u, v: (u + 1, v + 2))
+    u, v = plants.to_uv("Bind", 1000, 2000)
+    assert plants.plant_uv("Bind", plant) == (u + 1, v + 2)
 
 
 def test_plant_uv_keeps_the_full_step_on_an_uncovered_map(monkeypatch):
@@ -105,11 +115,31 @@ def test_plant_uv_keeps_the_full_step_on_an_uncovered_map(monkeypatch):
     assert plants.plant_uv("Bind", plant) == plants.to_uv("Bind", 1070, 2000)
 
 
-def test_plant_uv_without_facing_keeps_tracker_position():
+@pytest.mark.parametrize("covered", [False, True])
+def test_plant_uv_without_facing_keeps_tracker_position_pulled_inside_a_known_zone(monkeypatch, covered):
     summary = facing()
     summary["metadata"]["plant"]["playerLocations"] = []
     plant = plants.plant_from_summary(summary)
-    assert plants.plant_uv("Bind", plant) == plants.to_uv("Bind", 1000, 2000)
+    monkeypatch.setattr(plants.plant_position, "covers", lambda key: covered)
+    monkeypatch.setattr(plants.plant_position, "snap_inside", lambda key, u, v: (u + 1, v + 2))
+    u, v = plants.to_uv("Bind", 1000, 2000)
+    assert plants.plant_uv("Bind", plant) == ((u + 1, v + 2) if covered else (u, v))
+
+
+def test_a_point_inside_the_zone_stays_put(world):
+    assert position.snap_inside("Test", 5000, 5000) == (5000, 5000)
+
+
+def test_a_point_just_outside_is_pulled_to_the_nearest_edge_cell(world):
+    edge = 612 / position.GRID_SIZE * position.UV_SCALE            # the zone ends at cell 611
+    u, v = position.snap_inside("Test", edge + 30, 5003)
+    cell = position.UV_SCALE / position.GRID_SIZE
+    assert u == pytest.approx(edge - cell / 2) and v == pytest.approx((int(5003 / cell) + .5) * cell)
+
+
+def test_a_point_far_outside_is_left_alone(world):
+    far = 612 / position.GRID_SIZE * position.UV_SCALE + 30 * position.UV_SCALE / position.GRID_SIZE
+    assert position.snap_inside("Test", far, 5000) == (far, 5000)
 
 
 def test_zone_mask_keeps_the_tint_across_a_drawn_line_and_drops_specks():
