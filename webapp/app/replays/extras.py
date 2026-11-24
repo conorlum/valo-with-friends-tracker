@@ -31,7 +31,16 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from", ["friendly"],
   ["src"]}` (`from` "force" is a status read from an `NetMulticastApplyForceModule` row: Hush's pull and levitation;
-  `src`, on a levitated row only, is the id of the zone's `ability` row);
+  `src` is the id of the source object's `ability` row, on a levitated row and, from revision 33, on every row of
+  GUID_SOURCES: Prowler's and Seekers' "nearsighted", Wingman's "concussed", Thrash's "detained", Nightfall's and Seize's
+  "decayed", Seize's tether, Dizzy's blast; two casts by one owner on one target are two rows. Every other source has none);
+- `{"k": "blast", "t", "by", "code": "Hunter", "name": "X_LaserMulti", "hits": [enemy slots], "hits_read": true,
+  "fired": true, ["u", "v"], ["yaw"], ["final"]}` (revision 33): one Hunter's Fury blast, from the one-shot on Sova's
+  character; `hits` are the `DmgType_Hunter_X_Laser` notifies in that ms, `u`/`v` where Sova stood, `yaw` (map degrees) which
+  way his character faced, `final` on the last blast (`fury_blasts`). An `ability` row of HITS_READ has `"hits_read": true`
+  (revision 33: its source's hits are read, so a row with none is a miss; an older blob has no stamp and no miss), and
+  `"fired": true` only with proof the util went off (`_stamp_hits`). A Fakeout (`Stealth_4_Decoy_V2`) that flashed has
+  `"flash": {"t", "hits": [enemy slots blinded in that ms], ["yaw"]}`;
 - `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
   lifetime, so it is its own kind and not an `ability`.
 - `{"k": "buff", "t", "by": <caster>, "t1", "target": <buffed slot>, "code", "name"}`: a buff cast with no
@@ -384,6 +393,14 @@ class Raw:
     # A character switching to its ult's equippable (its inventory's `NewCurrentEquippable` naming an `X_` one):
     # (time, the character, the equippable), once per switch. Reyna's Empress has no other sign of its start.
     ult_equips: list[tuple[int, int, "_Equip"]] = field(default_factory=list)
+    # W2 (CONDENSE 33): the effect containers named in PLAY_NAMES, learnt from the path a container's first row writes
+    # (net guid -> name), every play of them on any actor (`named_plays`: (time, actor, name, one-shot, context)), and each
+    # Hunter's Fury damage notify (`fury_hits`: (time, the victim's character, the instigator's character)).
+    hit_names: dict[int, str] = field(default_factory=dict)
+    named_plays: list[tuple[int, int, str, bool, tuple[int, ...]]] = field(default_factory=list)
+    fury_hits: list[tuple[int, int, int]] = field(default_factory=list)
+    fury_types: set[int] = field(default_factory=set)
+    surge_sources: set[int] = field(default_factory=set)      # whirlpool objects a Storm Surge activation row named
     # Every raw CrouchHeld transition, including unknown pawns for the diagnostic count.
     crouch: list[tuple[int, int, bool]] = field(default_factory=list)
     # Every trapwire anchor spawn (either anchor), in file order: a guid can come back, and `actors` keeps the last.
@@ -466,6 +483,7 @@ _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
                            '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_', f'"{RPC_ORB_PICKUP}"',
                            f'"{RPC_FORCE}"', '"NewCurrentEquippable"', '"CrouchHeld"',
+                           '"valorant_nearsight_activated"',
                            '"FragmentDelta"')   # every ground delta, a delete-only one too (branch review B19)
 
 
@@ -779,6 +797,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     orb_now[guid][3] = t_ms
             elif kind == "valorant_shot_received":
                 raw.shots.append(data)
+            elif kind == "valorant_nearsight_activated":
+                # Harbor's Storm Surge going off: the parser's activation row names the whirlpool object it spawns
+                if data.get("nearsight_kind") == "harbor_storm_surge" and data.get("source_actor_net_guid"):
+                    raw.surge_sources.add(int(data["source_actor_net_guid"]))
             elif kind is not None and kind.startswith("valorant_wall_"):
                 wall = raw.typed_walls.setdefault(int(data.get("wall_actor_net_guid") or 0), {"segments": {}})
                 if kind == "valorant_wall_segment_spawned":
@@ -808,6 +830,23 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if module is not None:
                             raw.force_modules.append((t_ms, guid, source, module, length))
                     continue
+                if function in (RPC_PLAY, RPC_ONESHOT) and isinstance(payload.get("EffectContainer"), int):
+                    container = payload["EffectContainer"]
+                    if container not in raw.hit_names and any(name in line for name in PLAY_NAMES):
+                        named = _effect_container_path(line)
+                        if named is not None and module_name(named) in PLAY_NAMES:
+                            raw.hit_names[container] = module_name(named)
+                    if container in raw.hit_names:
+                        raw.named_plays.append((t_ms, guid, raw.hit_names[container], function == RPC_ONESHOT,
+                                                _context_values(payload)))
+                if function and function.startswith("MulticastNotifyDamage") and isinstance(payload.get("DamageType"), int):
+                    # the damage type's name comes with its first row only (`DamageTypeName`, contract.loads_row); its
+                    # guid is the type from then on
+                    if FURY_DAMAGE in str(payload.get("DamageTypeName")):
+                        raw.fury_types.add(payload["DamageType"])
+                    if payload["DamageType"] in raw.fury_types and payload.get("Character") \
+                            and payload.get("EventInstigatorPawn"):
+                        raw.fury_hits.append((t_ms, int(payload["Character"]), int(payload["EventInstigatorPawn"])))
                 if guid in raw.device_fx and function in _DEVICE_FX:
                     raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
                                                 payload.get("EffectContainer")))
@@ -1368,7 +1407,7 @@ STATUS_OBJECTS = (
     # 0.06-0.71 s, median 0.20 s: each is one contact, and the curve's hold and restore run on after it.
     (re.compile(r"^Pandemic_E_SmokeScreenManager$"), "decayed"),
     # Not here: Poison Cloud (`Pandemic_4_SmokeZone`): 0 enemy plays in the two exports (3 effects, all on Viper or a
-    # teammate), so it is not proven; Prowler (nearsight only, wiki); Veto's Chokehold (no Veto in the exports).
+    # teammate), so it is not proven; Veto's Chokehold (no Veto in the exports). Prowler is HIT_CONTAINERS (W2).
     # Fade's Nightfall (W3, 6f12db3e): the wave (`GameObject_BountyHunter_X_WaveForm`) plays one one-shot
     # `FXC_BountyHunter_X_ApplyBuffVictim` naming it on each enemy it hits, which lasts STATUS_SOURCE_MS (the wiki's 8 s
     # debuff; the one-shot carries no length). 5 hits on 3 casts in 6f12db3e: 5 statuses, spans 8.0 s, 4.8 s for the one
@@ -1382,6 +1421,7 @@ STATUS_OBJECTS = (
     (re.compile(r"^Cable_X_FishingHook_Cage$"), "cocooned"),      # Deadlock's Annihilation
     # Harbor's Reckoning nearsights and slows the enemies its wave touches: see DEBUFF_ONLY.
     (re.compile(r"^Mage_X_TidalWave_Chunk$"), "nearsighted"),
+    # Prowler, Wingman, Thrash and Seekers: HIT_CONTAINERS (their effects name no object the export spawns).
 )
 # A second status the same object puts on a player, over the same span as its first. Fade's Seize decays whoever its wave
 # hits and then tethers those it holds (wiki); the export names the object only on the tether's two effects (3 of 3
@@ -1395,6 +1435,64 @@ STATUS_ALSO = (
 # One-shot statuses whose length is a game value the replay doesn't carry, by source (a source's own, before
 # STATUS_KNOWN_MS's per-status one): Nightfall's debuff, 8 s (wiki, "Debuff duration").
 STATUS_SOURCE_MS = {"BountyHunter_X_WaveForm": 8000}
+# Creature hits (W2, 2026-11-23; exports 38968d35 and a5d48440). Prowler, Wingman and Thrash play their on-victim effect on
+# the victim's character naming the CASTER, not the creature, and the creature's own life is the only link, so the effect is
+# tied to the owner's creature of that kind alive when it plays (or closed within CREATURE_SLACK_MS before, Wingman's
+# concuss plays in its closing ms). Container name -> (source `<code>_<name>`, status):
+# - Prowler: `FXC_BountyHunter_4_NearsightVisuals`, Buff.Duration 2.75, 4 of 4 hits (the same ms as the owner's
+#   `FXC_BountyHunter_4_WolfEnemyBitConfirm` one-shot naming the creature); the other 17 Prowlers were shot or timed out.
+# - Wingman: `FXC_Global_ConcussedWavy_Prototype` (shared with Hush's pull, whose own path is above), 3 hits in 15 casts,
+#   0.18-2.6 s; a play naming Gekko with no Wingman near falls through to the paths below, as before.
+# - Thrash: `FXC_Aggrobot_X_DetainDebuff_Audio`, Buff.Duration 6.0 (the same ms as `FXC_Aggrobot_X_DetainDebuff`, which names
+#   an actor the export never spawns), 3 hits in 4 casts.
+# - Seekers: `FXC_Guide_X_Pack_Nearsight`, Buff.Duration 3, 2 hits in 8 seekers (a5d48440). It names a guid the export never
+#   spawns, and no caster, so the seeker is the pack pawn that locked the victim (`FXC_Guide_X_Pack_TargetVisible`, a play on the
+#   seeker naming the player's character) and was alive (the hit's ms is its `..._DelayDestroy`; it closes 0.25-0.3 s after).
+#   None of the four is ever put on a teammate (ENEMY_ONLY).
+HIT_CONTAINERS = {
+    "FXC_BountyHunter_4_NearsightVisuals": ("BountyHunter_4_WolfHound", "nearsighted"),
+    "FXC_Global_ConcussedWavy_Prototype": ("Aggrobot_SeekerNade", "concussed"),
+    "FXC_Aggrobot_X_DetainDebuff_Audio": ("Aggrobot_RollyPolly", "detained"),
+    "FXC_Guide_X_Pack_Nearsight": ("Guide_X_Pack", "nearsighted"),
+}
+SEEKER_LOCK = "FXC_Guide_X_Pack_TargetVisible"
+SEEKER_SLACK_MS = 400
+CREATURE_SLACK_MS = 100
+ENEMY_ONLY = frozenset({"BountyHunter_4_WolfHound", "Aggrobot_SeekerNade", "Aggrobot_RollyPolly", "Guide_X_Pack"})
+# Status sources a map-control or Critical Util reader tells apart by cast: their merge key and their row's `src` carry the
+# source object's guid (the `id` of its `ability` row), so two casts by one owner on one target stay two rows. Every other
+# source keeps `src` off its rows (levitated rows carry it as before).
+GUID_SOURCES = frozenset({"BountyHunter_4_WolfHound", "Aggrobot_SeekerNade", "Guide_X_Pack", "Aggrobot_RollyPolly",
+                          "BountyHunter_X_WaveForm", "BountyHunter_Q_Tether_SphereExpansion",
+                          "Aggrobot_E_DiscTurret_PowerWave"})
+# The source rows whose hits this version reads (R15): an `ability` row of one of these has `"hits_read": true`, so a row
+# with no hit may be called a miss; an old blob has no stamp and gets no miss. Boom Bot (`Clay_E_Boomba`) is NOT here: on
+# fd771bee (10 bots, 8 rows) no damage notify has a bot as its `DamageCauser` and no `damage` row names it, so there is no
+# enemy damage row to keep the bot's `id` through condense.join_causes: its rows stay hits-only (W2 notes).
+HITS_READ = frozenset({"BountyHunter_4_WolfHound", "Aggrobot_SeekerNade", "Guide_X_Pack", "Aggrobot_RollyPolly",
+                       "BountyHunter_X_WaveForm", "BountyHunter_Q_Tether_SphereExpansion", "Aggrobot_E_DiscTurret_PowerWave",
+                       "Mage_4_SplashGrenade", "Stealth_4_Decoy_V2"})
+# Sources that go off, with the proof the export has that one did (`"fired": true` on its row, only then): Nightfall's wave
+# and Dizzy's blast exist only once they go off, so their row is the proof unless it has `gone` (shot down first); Thrash needs its explosion one-shot
+# (`FXC_Aggrobot_X_MegaExplosionWindup_ExplosionSelf`, on the owner) as the creature ends; a Fakeout its
+# `FXC_Stealth_4_FlashExplosion` (one-shot on the decoy); a Hunter's Fury blast row is its own proof. Storm Surge (ae579be7,
+# 10 casts): the parser's `valorant_nearsight_activated` row (kind `harbor_storm_surge`, evidence `source_actor_spawned`) names
+# the whirlpool GameObject (`Raw.surge_sources`), which spawns in that ms with `FXC_Mage_4_SplashGrenade_PreExplosion`; its hits
+# are the parser's own `nearsight` rows (6 in 10 casts), not status rows, so it needs no `src`.
+FIRED_BY_ROW = frozenset({"BountyHunter_X_WaveForm", "Aggrobot_E_DiscTurret_PowerWave"})
+THRASH_EXPLOSION = "FXC_Aggrobot_X_MegaExplosionWindup_ExplosionSelf"
+THRASH_EXPLOSION_SLACK_MS = 250
+FAKEOUT = "Stealth_4_Decoy_V2"
+FAKEOUT_FLASH, FAKEOUT_BLIND = "FXC_Stealth_4_FlashExplosion", "FXC_Stealth_4_Blinded"
+FAKEOUT_BLIND_MS = 40          # a victim's blind plays in the flash's own ms (3 of 3 hits)
+# Hunter's Fury: each blast is a one-shot on Sova's character (`FXC_Hunter_X_Ability_LaserFireMulti`, the last one
+# `..._Final`), and a hit is the damage notify of `DmgType_Hunter_X_Laser` in the same ms naming that character.
+FURY_BLAST = ("FXC_Hunter_X_Ability_LaserFireMulti", "FXC_Hunter_X_Ability_LaserFireMulti_Final")
+FURY_DAMAGE = "DmgType_Hunter_X_Laser"
+FURY_HIT_MS = 20
+FURY_YAW_MS = 400
+# Every container name the reader keeps plays of (`Raw.named_plays`), found by the path its first row writes.
+PLAY_NAMES = frozenset({*HIT_CONTAINERS, SEEKER_LOCK, THRASH_EXPLOSION, FAKEOUT_FLASH, FAKEOUT_BLIND, *FURY_BLAST})
 # Not statuses, though their effects name enemies: Neon's Fast Lane (walking through it does nothing);
 # Harbor's High Tide (Mage_Q_WallManager), whose effect starts on every player at once as the wall goes up
 # and lasts its whole life (its slow is read from the tracks instead: condense.high_tide_slows); and Harbor's
@@ -1639,7 +1737,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
                   trip_until: dict[int, int | None] | None = None,
                   trip_owner: dict[int, int | None] | None = None,
                   force_modules: list[tuple[int, int, int, str, float | None]] = (),
-                  concuss_containers: frozenset[int] | set[int] = frozenset()) -> list[dict]:
+                  concuss_containers: frozenset[int] | set[int] = frozenset(),
+                  hit_names: dict[int, str] | None = None, plays: list = ()) -> list[dict]:
     """[{t_ms, t1_ms, by, target, code, name, status, from}]: players an enemy's ability put a status
     on, from when to when. Two shapes, both effects played on the hit player's character:
 
@@ -1648,6 +1747,10 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     - naming the caster ("caster"): the caster's character, player state or owned equippable, in a
       container that plays at least STATUS_SHARE of the time within STATUS_WINDOW_MS after one of
       that caster's status objects spawned (Iso's Fragile, Gekko's concuss). The source is that object.
+
+    A creature's hit (`hit_names`, HIT_CONTAINERS: Prowler, Wingman, Thrash's detain) is an effect of a named container
+    naming the caster, tied to that owner's creature alive then ("caster"); an object-named status from a source in
+    ENEMY_ONLY is never kept for a teammate.
 
     A third shape is a force row on the hit player's character whose module is in FORCE_STATUS and whose Source is the
     ability object (`force_modules`; "force": Hush's pull and levitation). A levitated row also carries `src`. A
@@ -1724,10 +1827,50 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
     source_times = [t for t, _, _ in sources]
     hits: list[tuple[int, int, _Actor, int, str, str]] = []   # (t, t1, source, target, status, from)
     by_container: dict[tuple, list] = defaultdict(list)
+    creatures: dict[str, list[_Actor]] = defaultdict(list)
+    for a in pool:
+        if a.code and f"{a.code}_{a.name}" in ENEMY_ONLY:
+            creatures[f"{a.code}_{a.name}"].append(a)
+
+    def creature_at(key: str, slot: int, t_ms: int) -> _Actor | None:
+        """The owner's `key` creature alive at `t_ms` (or closed within CREATURE_SLACK_MS before it): the latest spawn."""
+        live = [a for a in creatures.get(key, []) if owner(a) == slot and a.t_ms <= t_ms
+                and (a.closed_ms is None or t_ms <= a.closed_ms + CREATURE_SLACK_MS)]
+        return max(live, key=lambda a: (a.t_ms, a.guid), default=None)
+
+    locks: dict[int, list[tuple[int, int]]] = defaultdict(list)     # victim character -> [(ms, seeker guid)]
+    for t_ms, seeker, name, _, context in plays:
+        if name == SEEKER_LOCK:
+            for victim in context:
+                locks[victim].append((t_ms, seeker))
+
+    def seeker_at(victim: int, t_ms: int) -> _Actor | None:
+        """The seeker that last locked `victim` (a play of SEEKER_LOCK on it naming the player) and was alive at `t_ms`."""
+        for locked, guid in sorted(locks.get(victim, []), reverse=True):
+            seeker = at(guid, locked)
+            if locked <= t_ms and seeker is not None and f"{seeker.code}_{seeker.name}" == "Guide_X_Pack" \
+                    and (seeker.closed_ms is None or t_ms <= seeker.closed_ms + SEEKER_SLACK_MS):
+                return seeker
+        return None
+
     for effect in effects:
         target = players.pawn_slot.get(effect.actor)
         if target is None:
             continue
+        hit_kind = HIT_CONTAINERS.get((hit_names or {}).get(effect.container))
+        if hit_kind is not None:
+            if hit_kind[0] == "Guide_X_Pack":
+                source = seeker_at(effect.actor, effect.t_ms)
+                source = source if source is not None and owner(source) is not None \
+                    and enemies(owner(source), target) else None
+            else:
+                owners = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
+                source = creature_at(hit_kind[0], owners[0], effect.t_ms) if owners and enemies(owners[0], target) \
+                    else None
+            if source is not None:
+                hits.append((effect.t_ms, effect.t_ms + span(effect, hit_kind[1], source), source, target, hit_kind[1],
+                             "caster"))
+                continue
         named = [a for v in effect.context if (a := at(v, effect.t_ms)) is not None and status_of(a)]
         if named:
             source = named[0]
@@ -1742,7 +1885,8 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
                 if (debuff_only and by != target) or enemies(by, target):
                     hits.append((effect.t_ms, effect.t_ms + span(effect, label, source), source, target, label,
                                  "object"))
-                elif teams and by is not None and by != target and teams.get(by) is not None:
+                elif teams and by is not None and by != target and teams.get(by) is not None \
+                        and f"{source.code}_{source.name}" not in ENEMY_ONLY:
                     # Revision 22: a teammate the object put the status on (a Breach stun, a Sage slow on their own
                     # side), kept and flagged `friendly`; readers that count only enemies skip it. Only an effect
                     # naming the object: the caster-container path below stays enemies only.
@@ -1821,7 +1965,7 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         if label == "decayed" and not enemies(owner(actor), target):
             continue
         key = (actor.code, actor.name.replace("_SecondWire", ""), owner(actor), target, label,
-               actor.guid if label == "levitated" else None)
+               actor.guid if label == "levitated" or f"{actor.code}_{actor.name}" in GUID_SOURCES else None)
         runs = merged[key]
         if runs and t <= runs[-1][1] + STATUS_MERGE_MS:
             runs[-1][1] = max(runs[-1][1], t1)
@@ -2293,6 +2437,86 @@ def _control_inputs(entry: dict, actor: _Actor, players: PlayerTable, pawn_yaws,
     counts["pawn_yaw_points"] += len(yaws)
 
 
+def _stamp_hits(entry: dict, actor: _Actor, slot: int | None, raw: "Raw", players: PlayerTable, teams, pawns_of,
+                pawn_yaws, game_map: MapInfo, start: int, end: int, counts: Counter) -> None:
+    """R15 on an `ability` row (CONDENSE 33): `hits_read: true` when this version reads its source's hits (HITS_READ),
+    and `fired: true` only with the proof the export has that it went off (FIRED_BY_ROW, THRASH_EXPLOSION, the Fakeout's
+    flash one-shot). A Fakeout that flashed also has `flash`: {"t", "hits": [enemy slots blinded in that ms], ["yaw"]: the
+    decoy's facing then, map degrees}."""
+    key = f"{actor.code}_{actor.name}"
+    if key not in HITS_READ:
+        return
+    entry["hits_read"] = True
+    counts["hits_read_rows"] += 1
+    # A row shot down before it closed (`gone`, any path that sets it) never went off: no proof, so no "hit nobody".
+    fired = key in FIRED_BY_ROW and "gone" not in entry
+    if key == "Mage_4_SplashGrenade":
+        fired = actor.kind == "GameObject" and actor.guid in raw.surge_sources
+    if key == "Aggrobot_RollyPolly" and actor.closed_ms is not None and slot is not None:
+        fired = any(name == THRASH_EXPLOSION and one and pawn in pawns_of.get(slot, ())
+                    and abs(t_ms - actor.closed_ms) <= THRASH_EXPLOSION_SLACK_MS
+                    for t_ms, pawn, name, one, _ in raw.named_plays)
+    if key == FAKEOUT:
+        flashes = [t_ms for t_ms, pawn, name, one, _ in raw.named_plays
+                   if name == FAKEOUT_FLASH and one and pawn == actor.guid and t_ms >= actor.t_ms]
+        if flashes:
+            fired, t_ms = True, min(flashes)
+            blinded = sorted({players.pawn_slot[pawn] for at, pawn, name, one, _ in raw.named_plays
+                              if name == FAKEOUT_BLIND and pawn in players.pawn_slot and abs(at - t_ms) <= FAKEOUT_BLIND_MS
+                              and not (teams and slot is not None and teams.get(slot) is not None
+                                       and teams.get(players.pawn_slot[pawn]) == teams.get(slot))
+                              and players.pawn_slot[pawn] != slot})
+            flash = {"t": max(0.0, _seconds(min(t_ms, end), start)), "hits": blinded}
+            facing = [(abs(at - t_ms), yaw) for at, yaw in (pawn_yaws(actor.guid) if pawn_yaws else None) or []
+                      if abs(at - t_ms) <= FURY_YAW_MS]
+            if facing:
+                flash["yaw"] = game_map.yaw_to_map(float(min(facing)[1]))
+            entry["flash"] = flash
+            counts["fakeout_flashes"] += 1
+    if fired:
+        entry["fired"] = True
+        counts["fired_rows"] += 1
+
+
+def fury_pawns(raw: "Raw") -> frozenset[int]:
+    """The characters that played a FURY_BLAST one-shot: the only players whose yaw `WorldPositions` keeps."""
+    return frozenset(pawn for _, pawn, name, one, _ in raw.named_plays if name in FURY_BLAST and one)
+
+
+def fury_blasts(raw: "Raw", players: PlayerTable, teams, positions_at, pawn_yaws, windows, game_map: MapInfo,
+                counts: Counter) -> dict[int, list[dict]]:
+    """Hunter's Fury, one row per blast (round -> rows): each `FURY_BLAST` one-shot on a character that is a player's,
+    with the enemies its `DmgType_Hunter_X_Laser` notify named in the same ms (`hits`), where the player stood (`u`, `v`)
+    and which way the character faced (`yaw`, map degrees) when known. `hits_read` and `fired` are always true: the
+    row is the blast, and its hits are every notify of that damage type."""
+    out: dict[int, list[dict]] = defaultdict(list)
+    for t_ms, pawn, name, one, _ in sorted(raw.named_plays, key=lambda p: (p[0], p[1])):
+        slot = players.pawn_slot.get(pawn)
+        n = _round_of(t_ms, windows)
+        if name not in FURY_BLAST or not one or slot is None or n is None:
+            continue
+        hits = sorted({players.pawn_slot[victim] for at, victim, by in raw.fury_hits
+                       if by == pawn and abs(at - t_ms) <= FURY_HIT_MS and victim in players.pawn_slot
+                       and players.pawn_slot[victim] != slot
+                       and not (teams and teams.get(slot) is not None
+                                and teams.get(players.pawn_slot[victim]) == teams.get(slot))})
+        row = {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": "Hunter", "name": "X_LaserMulti",
+               "hits": hits, "hits_read": True, "fired": True}
+        if name == FURY_BLAST[1]:
+            row["final"] = True
+        where = positions_at(t_ms).get(slot)
+        if where is not None:
+            row["u"], row["v"] = game_map.to_uv(*where)
+        facing = [(abs(at - t_ms), yaw) for at, yaw in (pawn_yaws(pawn) if pawn_yaws else None) or []
+                  if abs(at - t_ms) <= FURY_YAW_MS]
+        if facing:
+            row["yaw"] = game_map.yaw_to_map(float(min(facing)[1]))
+        out[n].append(row)
+        counts["fury_blasts"] += 1
+        counts["fury_hits"] += len(hits)
+    return out
+
+
 LEER_NAME = "4_NearsightAOE_Source"
 DIZZY_NAME = "E_DiscTurret_PowerWave"
 # From 3 shot-down Dizzies on one Lotus export (closes 0.93-1.10 s vs 1.90-1.97 natural; rays 57-75 uu)
@@ -2460,13 +2684,15 @@ def _held_guns(raw: Raw, players: PlayerTable, windows, out: Extras, counts: Cou
 
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
                  game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None,
-                 teams: dict[int, str | None] | None = None, pawn_yaws=None, *, alive_by_round=None) -> Extras:
+                 teams: dict[int, str | None] | None = None, pawn_yaws=None, *, alive_by_round=None,
+                 raw: Raw | None = None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
     `pawn_path(guid)` -> [(t_ms, x, y[, z | None])]: a non-player pawn's movement (a drone), or None.
     `pawn_yaws(guid)` -> [(t_ms, world yaw)]: its facing, for map control's `yaws`, or None.
     `teams`: slot -> the condenser's side group (None when unresolved), so reveals count enemies only."""
-    raw = read_raw(events_path, frozenset(players.pawn_slot))
+    if raw is None:      # `condense.attach_extras` reads it first, to know whose yaw to keep, and passes it in
+        raw = read_raw(events_path, frozenset(players.pawn_slot))
     actors, raw_shots = raw.actors, raw.shots
     agent_code = {code.lower(): name for code, name in agents_by_code.items()}
     code_of_agent = {name: code for code, name in agents_by_code.items()}
@@ -2878,6 +3104,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 counts["pawn_paths"] += 1
         if actor.kind == "Pawn":
             _control_inputs(entry, actor, players, pawn_yaws, game_map, start, end, counts)
+        _stamp_hits(entry, actor, slot, raw, players, teams, pawns_of, pawn_yaws, game_map, start, end, counts)
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
         if actor.own_life:
@@ -2959,7 +3186,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams, raw.forces,
                              trips=trips, trip_until=trip_until, trip_owner=trip_owner,
-                             force_modules=raw.force_modules, concuss_containers=raw.concuss_containers)
+                             force_modules=raw.force_modules, concuss_containers=raw.concuss_containers,
+                             hit_names=raw.hit_names, plays=raw.named_plays)
     for status in statuses:
         if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed"                 and not status.get("friendly"):
             # Going off reveals the player it caught (it's also a concuss).
@@ -2980,6 +3208,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
             "status": status["status"], "from": status["from"], **({"friendly": True} if status.get("friendly") else {}),
             **({"src": status["src"]} if status.get("src") is not None else {})})
+
+    for n, blasts in fury_blasts(raw, players, teams, positions_at, pawn_yaws, windows, game_map, counts).items():
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("blasts", []).extend(blasts)
 
     for buff in find_buffs(raw.effects, players, code_of_agent, teams):
         n = _round_of(buff["t_ms"], windows)
@@ -3083,7 +3314,9 @@ class WorldPositions:
 
     STEP_MS = 100
 
-    def __init__(self, movement, players: PlayerTable):
+    def __init__(self, movement, players: PlayerTable, player_yaws=frozenset()):
+        """`player_yaws`: the player pawns whose facing is kept too (a Hunter's Fury caster's, `fury_pawns`); no other
+        player's is, on a parse that runs on a memory-limited worker."""
         self.rows: dict[int, tuple[list[int], list[tuple[float, float]]]] = {}
         by_slot: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
         self.others: dict[int, list[tuple[int, float, float, float | None]]] = defaultdict(list)
@@ -3103,7 +3336,7 @@ class WorldPositions:
                     z = position.get("z")
                     point = (*point, None if z is None else float(z))
                 target.append(point)
-                if slot is None and data.get("yaw") is not None:
+                if data.get("yaw") is not None and (slot is None or pawn in player_yaws):
                     self.other_yaws[pawn].append((row.time_ms, float(data["yaw"])))
         for slot, samples in by_slot.items():
             samples.sort()
@@ -3143,6 +3376,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for status in round_extras.get("statuses", []):
         rest = {k: v for k, v in status.items() if k not in ("t0", "slot")}
         out.append({"k": "status", "t": status["t0"], "by": status["slot"], **rest})
+    for blast in sorted(round_extras.get("blasts", []), key=lambda b: b["t"]):
+        rest = {k: v for k, v in blast.items() if k not in ("t", "slot")}
+        out.append({"k": "blast", "t": blast["t"], "by": blast["slot"], **rest})
     for buff in round_extras.get("buffs", []):
         rest = {k: v for k, v in buff.items() if k not in ("t0", "slot")}
         out.append({"k": "buff", "t": buff["t0"], "by": buff["slot"], **rest})
@@ -3164,7 +3400,7 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses, casts, buffs, equips, holds = [], [], [], [], [], [], [], []
+    abilities, shots, reveals, statuses, casts, buffs, equips, holds, blasts = [], [], [], [], [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -3183,7 +3419,11 @@ def rounds_extras(util: list[dict]) -> dict:
             equips.append({"t": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "hold":
             holds.append({"t": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "blast":
+            blasts.append({"t": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
+    if blasts:
+        out["blasts"] = blasts
     if reveals:
         out["reveals"] = reveals
     if statuses:

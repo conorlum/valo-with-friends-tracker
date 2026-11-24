@@ -1143,6 +1143,24 @@ def test_mikss_thumper_objects_are_named_as_miks(tmp_path):
                    "code": "Iris", "name": "Heal", "from": "causer", "id": 7600}
 
 
+def test_the_condenser_stamps_the_sources_whose_hits_it_reads_and_not_boom_bot(tmp_path):
+    """Revision 33 (R15): `hits_read` on a Prowler, a Nightfall wave and the rest of extras.HITS_READ, `fired` on the wave
+    (its row is its own proof), nothing on a molly or on Boom Bot (no damage row of any bot's is in the export that
+    proves its hits join: fd771bee), and the blob's recipe names the revision."""
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    match.extra_events += [_spawn(start + 11_000, 7700, "Default__Pawn_BountyHunter_4_WolfHound_C"),
+                           _spawn(start + 11_000, 7701, "Default__Pawn_Clay_E_Boomba_C"),
+                           _spawn(start + 11_000, 7702, "Default__GameObject_BountyHunter_X_WaveForm_C"),
+                           _spawn(start + 11_000, 7703, "Default__Patch_Phoenix_MolotovFire_C")]
+    out = run(tmp_path, match, vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    rows = {u["name"]: u for u in out.rounds[1]["util"] if u["k"] == "ability"}
+    assert rows["4_WolfHound"]["hits_read"] is True and "fired" not in rows["4_WolfHound"]
+    assert rows["X_WaveForm"]["hits_read"] is True and rows["X_WaveForm"]["fired"] is True
+    assert "hits_read" not in rows["E_Boomba"] and "hits_read" not in rows["MolotovFire"]
+    assert fmt.CONDENSE_REVISION == 33 and f".c{fmt.CONDENSE_REVISION}." in out.recipe
+
+
 def test_an_export_with_no_player_state_sources_keeps_the_old_blob_shape(tmp_path):
     blob = run(tmp_path, SyntheticMatch(shape="swiftplay"), vrf_path=SyntheticMatch(shape="swiftplay").write_vrf(
         tmp_path / f"{MATCH_UUID}.vrf")).rounds[1]

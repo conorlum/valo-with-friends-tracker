@@ -105,7 +105,9 @@ def test_the_revisions_of_this_release():
     # Control 27: each spike plant attempt's start is heard as a spike tap.
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
     # CONDENSE 32 also: overheal and combined decay timelines (R9).
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (32, 27)
+    # CONDENSE 33: the parser's missing hit rows (Prowler, Wingman, Seekers, Thrash, Hunter's Fury, Fakeout), `src` on the
+    # status sources readers tell apart by cast, `hits_read` / `fired` on their source rows (W2).
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (33, 27)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 6, "mixed ground gap consumers"
 
 

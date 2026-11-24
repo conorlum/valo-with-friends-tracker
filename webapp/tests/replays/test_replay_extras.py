@@ -922,6 +922,19 @@ def test_a_dizzy_shot_down_is_gone_when_an_orb_dropped_under_a_shot_ray(tmp_path
     assert "gone" not in _dizzy(tmp_path, spawner=False)
 
 
+def test_a_shot_down_dizzy_has_hits_read_but_did_not_go_off(tmp_path):
+    # R15: a Dizzy gone early (an orb under a shot's ray, or a lethal hit on it) never fired, so it is no proof that its
+    # blast hit nobody; a natural one is.
+    shot_down = _dizzy(tmp_path)
+    assert shot_down["gone"] == 11.0 and shot_down["hits_read"] is True and "fired" not in shot_down
+    natural = _dizzy(tmp_path, close_ms=21_900)
+    assert natural["hits_read"] is True and natural["fired"] is True
+    rows = [r for r in _dizzy_rows(close_ms=21_900) if r.get("actor_net_guid") != 91]
+    rows.append(damage(21_900, 90, 999, lethal=True))
+    [killed] = [a for a in run14(tmp_path, rows).rounds[1]["abilities"] if a["id"] == 90]
+    assert "gone" in killed and killed["hits_read"] is True and "fired" not in killed
+
+
 def test_a_poison_cloud_takes_the_zones_of_its_own_owner_while_alive(tmp_path):
     # The export gives neither emitter nor zone an Instigator: owners come by nearest / the landing.
     em = "Default__Projectile_Pandemic_4_SmokeGrenade_C"
@@ -2495,3 +2508,261 @@ def test_nightfall_carries_the_owners_hold_and_restore_figures():
         "restore_s": 12, "restore_hp_s": 6.25, "total_s": 20}
     assert nightfall["wiki"] == "https://valorant.fandom.com/wiki/Nightfall"
     assert nightfall["fetched"] == "2026-11-20"
+
+
+# ---------------------------------------------------------------- W2: the parser's missing hit rows (CONDENSE 33)
+
+AGENTS_W2 = {**AGENTS14, "BountyHunter": "Fade", "Guide": "Skye", "Stealth": "Yoru", "Hunter": "Sova", "Mage": "Harbor",
+             "Clay": "Raze", "Breach": "Breach"}
+
+
+def run_w2(tmp_path, rows):
+    # Team A (slots 0, 4, 5, 6, 7; pawns 100, 104-107) and team B (1, 2, 3, 8, 9; pawns 101-103, 108, 109); round 1 starts at 10 s.
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS_W2, lambda t_ms: {}, teams=TEAMS7).rounds[1]
+
+
+def named(row, guid, name):
+    """The row as the export writes a container the first time: its guid with its class path."""
+    row["payload"]["EffectContainer"] = {"net_guid": guid, "path": f"/Game/Fx/{name}.{name}_C"}
+    return row
+
+
+def with_buff(row, seconds):
+    row["payload"]["FunctionFloatValues"] = [{"Name": {"TagName": "FXC.Buff.Duration"}, "Value": seconds}]
+    return row
+
+
+def hit_rows(out, name, status):
+    return [(s["target"], s["t0"], s["t1"], s["slot"], s.get("src"), s["from"], bool(s.get("friendly")))
+            for s in out.get("statuses", []) if s["name"] == name and s["status"] == status]
+
+
+def test_a_prowler_nearsights_the_enemy_it_reaches_and_not_a_teammate(tmp_path):
+    # 38968d35: a Prowler's hit is FXC_BountyHunter_4_NearsightVisuals (Buff.Duration 2.75) on the enemy, naming Fade's
+    # character; the creature closes in the same breath. A teammate with the same effect gets nothing.
+    prowler = 60
+    rows = [spawned(20_000, prowler, "Default__Pawn_BountyHunter_4_WolfHound_C", 0, 0), instigated(20_000, prowler, 108),
+            with_buff(named(effect(21_000, 100, 7, [108], container=6331), 6331, "FXC_BountyHunter_4_NearsightVisuals"), 2.75),
+            stop(23_750, 100, 7),
+            effect(21_000, 101, 8, [108], container=6331), stop(23_750, 101, 8),
+            closed(21_050, prowler)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "4_WolfHound", "nearsighted") == [(0, 11.0, 13.75, 8, prowler, "caster", False)]
+    [row] = [a for a in out["abilities"] if a["name"] == "4_WolfHound"]
+    assert row["hits_read"] is True and row["id"] == prowler and "fired" not in row
+
+
+def test_two_prowlers_of_one_owner_on_one_target_are_two_rows_with_their_own_src(tmp_path):
+    rows = [spawned(20_000, 60, "Default__Pawn_BountyHunter_4_WolfHound_C", 0, 0), instigated(20_000, 60, 108),
+            closed(21_050, 60),
+            spawned(21_500, 61, "Default__Pawn_BountyHunter_4_WolfHound_C", 0, 0), instigated(21_500, 61, 108),
+            closed(22_500, 61),
+            named(effect(21_000, 100, 7, [108], container=6331), 6331, "FXC_BountyHunter_4_NearsightVisuals"),
+            effect(21_900, 100, 8, [108], container=6331), stop(23_700, 100, 8), stop(23_750, 100, 7)]
+    out = run_w2(tmp_path, rows)
+    assert [(r[1], r[4]) for r in hit_rows(out, "4_WolfHound", "nearsighted")] == [(11.0, 60), (11.9, 61)]
+
+
+def test_a_prowler_effect_with_no_prowler_alive_is_no_hit(tmp_path):
+    rows = [spawned(20_000, 60, "Default__Pawn_BountyHunter_4_WolfHound_C", 0, 0), instigated(20_000, 60, 108),
+            closed(21_000, 60),
+            named(effect(25_000, 100, 7, [108], container=6331), 6331, "FXC_BountyHunter_4_NearsightVisuals"),
+            stop(27_000, 100, 7)]
+    assert hit_rows(run_w2(tmp_path, rows), "4_WolfHound", "nearsighted") == []
+
+
+def test_a_wingman_concusses_in_its_closing_ms_and_a_teammate_is_not_concussed(tmp_path):
+    # 38968d35: FXC_Global_ConcussedWavy_Prototype (the container Hush's pull shares) naming Gekko, in the ms the Wingman
+    # closes (3 of 3). Slot 1 plays Gekko here (pawn 101, team B); pawn 100 is an enemy, 108 a teammate.
+    wingman = 62
+    rows = [spawned(20_000, wingman, "Default__Pawn_Aggrobot_SeekerNade_C", 0, 0), instigated(20_000, wingman, 101),
+            named(effect(24_000, 100, 7, [101], container=4771), 4771, "FXC_Global_ConcussedWavy_Prototype"),
+            stop(24_822, 100, 7),
+            effect(24_000, 108, 8, [101], container=4771), stop(24_822, 108, 8),
+            closed(24_000, wingman)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "SeekerNade", "concussed") == [(0, 14.0, 14.822, 1, wingman, "caster", False)]
+    [row] = [a for a in out["abilities"] if a["name"] == "SeekerNade"]
+    assert row["hits_read"] is True and "fired" not in row
+
+
+def test_a_concuss_naming_gekko_with_no_wingman_near_is_no_wingman_hit(tmp_path):
+    rows = [spawned(20_000, 62, "Default__Pawn_Aggrobot_SeekerNade_C", 0, 0), instigated(20_000, 62, 101),
+            closed(21_000, 62),
+            named(effect(30_000, 100, 7, [101], container=4771), 4771, "FXC_Global_ConcussedWavy_Prototype"),
+            stop(31_000, 100, 7)]
+    assert hit_rows(run_w2(tmp_path, rows), "SeekerNade", "concussed") == []
+
+
+def test_thrash_detains_for_the_span_of_the_debuff_and_is_fired_only_with_its_explosion(tmp_path):
+    # 38968d35: FXC_Aggrobot_X_DetainDebuff_Audio (Buff.Duration 6.0) on the enemy, naming Gekko, 3 hits in 4 Thrashes; the
+    # explosion is a one-shot on Gekko's character (FXC_Aggrobot_X_MegaExplosionWindup_ExplosionSelf) as the creature
+    # closes. The Thrash that closed without one went off nowhere.
+    explode = oneshot(25_000, 101, [101], 7747)
+    rows = [spawned(20_000, 63, "Default__Pawn_Aggrobot_RollyPolly_C", 0, 0), instigated(20_000, 63, 101),
+            named(explode, 7747, "FXC_Aggrobot_X_MegaExplosionWindup_ExplosionSelf"), closed(25_010, 63),
+            with_buff(named(effect(25_000, 100, 7, [101], container=7755), 7755, "FXC_Aggrobot_X_DetainDebuff_Audio"), 6.0),
+            stop(31_000, 100, 7),
+            effect(25_000, 108, 9, [101], container=7755), stop(31_000, 108, 9),
+            spawned(40_000, 64, "Default__Pawn_Aggrobot_RollyPolly_C", 0, 0), instigated(40_000, 64, 101),
+            closed(40_022, 64)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "RollyPolly", "detained") == [(0, 15.0, 21.0, 1, 63, "caster", False)]
+    rolly = {a["id"]: a for a in out["abilities"] if a["name"] == "RollyPolly"}
+    assert (rolly[63]["hits_read"], rolly[63]["fired"]) == (True, True)
+    assert rolly[64]["hits_read"] is True and "fired" not in rolly[64]
+
+
+def test_seekers_nearsight_the_enemy_the_seeker_locked_and_a_teammate_gets_none(tmp_path):
+    # a5d48440: FXC_Guide_X_Pack_Nearsight (Buff.Duration 3) names a guid the export never spawns; the seeker is the pack
+    # pawn that played FXC_Guide_X_Pack_TargetVisible naming that player, and it closes 0.25 s after the hit.
+    seeker = 64
+    lock = named(effect(21_000, seeker, 5, [101], container=8013), 8013, "FXC_Guide_X_Pack_TargetVisible")
+    rows = [spawned(20_000, seeker, "Default__Pawn_Guide_X_Pack_C", 0, 0), instigated(20_000, seeker, 105), lock,
+            with_buff(named(effect(22_000, 101, 7, [27182], container=8817), 8817, "FXC_Guide_X_Pack_Nearsight"), 3.0),
+            stop(25_000, 101, 7),
+            effect(22_000, 104, 8, [27182], container=8817), stop(25_000, 104, 8),
+            closed(22_250, seeker)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "X_Pack", "nearsighted") == [(1, 12.0, 15.0, 5, seeker, "caster", False)]
+    [row] = [a for a in out["abilities"] if a["name"] == "X_Pack"]
+    assert row["hits_read"] is True
+
+
+def test_seekers_that_were_shot_have_the_stamp_and_no_hit(tmp_path):
+    rows = [spawned(20_000, 64, "Default__Pawn_Guide_X_Pack_C", 0, 0), instigated(20_000, 64, 105), closed(22_000, 64)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "X_Pack", "nearsighted") == []
+    assert [a["hits_read"] for a in out["abilities"] if a["name"] == "X_Pack"] == [True]
+
+
+def test_a_source_outside_the_list_has_no_src_and_no_stamp(tmp_path):
+    # Breach's Fault Line is a status source no W5-W7 reader tells apart by cast: its row is what it was before.
+    rows = [spawned(20_000, 80, "Default__GameObject_Breach_E_SweetSpotFissure_C", 0, 0), instigated(20_000, 80, 108),
+            effect(22_000, 100, 7, [80, 108]), stop(22_300, 100, 7), closed(30_000, 80)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "E_SweetSpotFissure", "concussed") == [(0, 12.0, 12.3, 8, None, "object", False)]
+    assert all("src" not in s for s in out["statuses"])
+    assert all("hits_read" not in a and "fired" not in a for a in out["abilities"])
+
+
+@pytest.mark.parametrize("archetype, name, fired", [
+    ("Default__GameObject_BountyHunter_X_WaveForm_C", "X_WaveForm", True),
+    ("Default__Projectile_E_Aggrobot_DiscTurret_PowerWave_C", "E_DiscTurret_PowerWave", True),
+    ("Default__GameObject_Q_BountyHunter_Tether_SphereExpansion_C", "Q_Tether_SphereExpansion", False),
+    ("Default__GameObject_Mage_4_SplashGrenade_C", "4_SplashGrenade", False)])
+def test_sources_whose_hits_are_read_are_stamped_and_those_that_exist_only_once_fired_say_so(tmp_path, archetype, name, fired):
+    # Storm Surge is `fired` only with the parser's activation row (test below), never from the row alone.
+    rows = [spawned(20_000, 70, archetype, 0, 0), instigated(20_000, 70, 108), closed(30_000, 70)]
+    [row] = [a for a in run_w2(tmp_path, rows)["abilities"] if a["name"] == name]
+    assert row["hits_read"] is True
+    assert row.get("fired", False) is fired
+
+
+def test_storm_surge_is_fired_only_when_the_parser_saw_its_whirlpool_activate(tmp_path):
+    # ae579be7 (10 Storm Surges): each cast has a `valorant_nearsight_activated` row (evidence `source_actor_spawned`) naming
+    # the whirlpool GameObject that spawns in the same ms. A thrown grenade (Projectile) is never itself the proof.
+    def activated(guid):
+        return {"type": "valorant_nearsight_activated", "time_ms": 22_000, "nearsight_actor_net_guid": 69,
+                "nearsight_kind": "harbor_storm_surge", "source_actor_net_guid": guid, "evidence": "source_actor_spawned"}
+
+    rows = [spawned(20_000, 69, "Default__Projectile_Mage_4_SplashGrenade_C", 0, 0), closed(22_000, 69),
+            spawned(22_000, 70, "Default__GameObject_Mage_4_SplashGrenade_C", 0, 0), instigated(22_000, 70, 108),
+            activated(70),
+            spawned(40_000, 72, "Default__GameObject_Mage_4_SplashGrenade_C", 0, 0), instigated(40_000, 72, 108)]
+    abilities = {a["id"]: a for a in run_w2(tmp_path, rows)["abilities"]}
+    assert abilities[70]["hits_read"] is True and abilities[70]["fired"] is True
+    assert abilities[72]["hits_read"] is True and "fired" not in abilities[72]
+    assert abilities[69]["hits_read"] is True and "fired" not in abilities[69]
+
+
+def test_boom_bot_stays_hits_only_until_its_damage_rows_are_proven_to_join(tmp_path):
+    rows = [spawned(20_000, 70, "Default__Pawn_Clay_E_Boomba_C", 0, 0), instigated(20_000, 70, 108), closed(30_000, 70)]
+    [row] = [a for a in run_w2(tmp_path, rows)["abilities"] if a["name"] == "E_Boomba"]
+    assert "hits_read" not in row and "fired" not in row
+
+
+def test_nightfalls_decay_and_dizzys_concuss_carry_src_but_other_decay_sources_do_not(tmp_path):
+    wave = 70
+    rows = [spawned(20_000, wave, "Default__GameObject_BountyHunter_X_WaveForm_C", 0, 0), instigated(20_000, wave, 108),
+            oneshot(22_000, 100, [wave, 108], 9001), closed(23_000, wave),
+            spawned(30_000, 80, "Default__GameObject_Pandemic_E_SmokeScreenManager_C", 0, 0), instigated(30_000, 80, 109),
+            effect(35_000, 100, 7, [80, 109], container=8263), stop(35_300, 100, 7), closed(40_000, 80),
+            spawned(50_000, 81, "Default__Projectile_E_Aggrobot_DiscTurret_PowerWave_C", 0, 0), instigated(50_000, 81, 101),
+            effect(50_500, 100, 9, [81, 101], container=7001), stop(51_000, 100, 9), closed(52_000, 81)]
+    out = run_w2(tmp_path, rows)
+    assert hit_rows(out, "X_WaveForm", "decayed")[0][4] == wave
+    assert hit_rows(out, "E_DiscTurret_PowerWave", "concussed")[0][4] == 81
+    assert hit_rows(out, "E_SmokeScreenManager", "decayed")[0][4] is None
+
+
+def fury_damage(t_ms, victim, shooter, type_guid=8941, path=True):
+    dtype = {"net_guid": type_guid, "path": "/Game/Characters/Hunter/S0/Ability_X/DmgType_Hunter_X_Laser.DmgType_Hunter_X_Laser_C"
+             if path else None}
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": victim, "function_name": "MulticastNotifyDamage_Base",
+            "payload": {"DamageType": dtype, "Character": {"net_guid": victim, "path": None},
+                        "EventInstigatorPawn": {"net_guid": shooter, "path": None}, "DamageDealt": 80,
+                        "DamageOrigin": {"x": 0, "y": 0, "z": 0}}}
+
+
+def test_hunters_fury_blasts_have_their_hits_and_are_proven_fired(tmp_path):
+    # a5d48440: each blast is FXC_Hunter_X_Ability_LaserFireMulti on Sova's character (the last `_Final`), a hit is the
+    # DmgType_Hunter_X_Laser notify in the same ms (its class path only on the first row; later ones carry the guid).
+    # Sova is slot 2 (pawn 102, team B); pawn 100 is an enemy, 101 a teammate.
+    final = oneshot(34_000, 102, [], 10185)
+    final["payload"]["EffectContainer"] = {"net_guid": 10185, "path": "/Game/Fx/FXC_Hunter_X_Ability_LaserFireMulti_Final."
+                                                                      "FXC_Hunter_X_Ability_LaserFireMulti_Final_C"}
+    rows = [named(oneshot(30_000, 102, [], 8949), 8949, "FXC_Hunter_X_Ability_LaserFireMulti"),
+            fury_damage(30_000, 100, 102), fury_damage(30_000, 101, 102, path=False),
+            oneshot(32_000, 102, [], 8949),
+            final, fury_damage(34_000, 104, 102, path=False)]
+    out = run_w2(tmp_path, rows)
+    assert [(b["t"], b["slot"], b["hits"], b.get("final", False)) for b in out["blasts"]] == [
+        (20.0, 2, [0], False), (22.0, 2, [], False), (24.0, 2, [4], True)]
+    assert all(b["hits_read"] and b["fired"] and (b["code"], b["name"]) == ("Hunter", "X_LaserMulti") for b in out["blasts"])
+
+
+def test_a_fakeout_that_flashed_has_its_blinded_enemies_and_proof_and_one_that_did_not_has_neither(tmp_path):
+    # 38968d35: FXC_Stealth_4_FlashExplosion is a one-shot on the decoy; FXC_Stealth_4_Blinded plays on each victim in the same
+    # ms (5 flashes, 3 with a victim). Yoru is slot 4 (team A): pawn 101 is an enemy, 105 a teammate.
+    decoy = 65
+    rows = [spawned(20_000, decoy, "Default__Pawn_Stealth_4_Decoy_V2_C", 0, 0), instigated(20_000, decoy, 104),
+            named(oneshot(30_000, decoy, [], 8403), 8403, "FXC_Stealth_4_FlashExplosion"),
+            named(effect(30_000, 101, 7, [], container=8407), 8407, "FXC_Stealth_4_Blinded"),
+            effect(30_000, 105, 8, [], container=8407),
+            closed(31_000, decoy),
+            spawned(40_000, 66, "Default__Pawn_Stealth_4_Decoy_V2_C", 0, 0), instigated(40_000, 66, 104), closed(50_000, 66)]
+    out = run_w2(tmp_path, rows)
+    flashed, quiet = (next(a for a in out["abilities"] if a["id"] == g) for g in (decoy, 66))
+    assert flashed["hits_read"] and flashed["fired"] and flashed["flash"]["t"] == 20.0 and flashed["flash"]["hits"] == [1]
+    assert quiet["hits_read"] is True and "fired" not in quiet and "flash" not in quiet
+
+
+def test_player_yaws_are_kept_only_for_a_fury_caster_and_other_pawns_keep_theirs():
+    from types import SimpleNamespace
+
+    from app.replays.extras import WorldPositions, fury_pawns, read_raw
+
+    def move(t_ms, pawn, yaw):
+        return SimpleNamespace(time_ms=t_ms, data={"actor_net_guid": pawn, "position": {"x": 1.0, "y": 2.0}, "yaw": yaw})
+
+    # pawns 102 (a player with a blast) and 101 (a player without) and 900 (a drone, no player)
+    movement = [move(t, pawn, 10.0 * pawn % 360) for t in (0, 100, 200) for pawn in (101, 102, 900)]
+    both = WorldPositions(movement, players(), player_yaws=frozenset({102}))
+    assert len(both.yaws(102)) == 3 and both.yaws(101) == [] and len(both.yaws(900)) == 3
+    assert WorldPositions(movement, players()).yaws(102) == [], "no blast, no player yaw"
+    assert fury_pawns(SimpleNamespace(named_plays=[(1, 102, "FXC_Hunter_X_Ability_LaserFireMulti", True, ()),
+                                                   (1, 101, "FXC_Hunter_X_Ability_LaserFireMulti", False, ()),
+                                                   (1, 101, "FXC_Other", True, ())])) == {102}
+
+
+def test_blast_rows_survive_the_util_round_trip():
+    from app.replays.extras import rounds_extras, util_entries
+
+    blast = {"t": 5.0, "slot": 2, "code": "Hunter", "name": "X_LaserMulti", "hits": [0], "hits_read": True, "fired": True}
+    util = util_entries({"abilities": [], "shots": [], "blasts": [blast]})
+    assert util == [{"k": "blast", "t": 5.0, "by": 2, "code": "Hunter", "name": "X_LaserMulti", "hits": [0],
+                     "hits_read": True, "fired": True}]
+    assert rounds_extras(util)["blasts"] == [blast]
