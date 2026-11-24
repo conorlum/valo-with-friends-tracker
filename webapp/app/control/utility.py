@@ -754,7 +754,10 @@ def read_storm_surges(rnd) -> list[Info]:
 
 
 # R14: each source's misses can be disabled independently after the false-clear probe; hits stay enabled.
-CREATURE_MISSES = {"prowler": True, "wingman": True, "boom_bot": True, "seekers": True}
+# W9's probe (4 real replays): exclude footprints that held a real live enemy at that moment were Prowler 32 of 129
+# (24.8%), Wingman 11 of 129 (8.5%), Seekers 41 of 235 (17.4%), all above the declared 5%, so their misses are off.
+# Boom Bot has no stamped cast (its hits can't be joined to a damage row), so it excludes nothing and stays on.
+CREATURE_MISSES = {"prowler": False, "wingman": False, "boom_bot": True, "seekers": False}
 
 
 def read_creatures(rnd) -> list[Info]:

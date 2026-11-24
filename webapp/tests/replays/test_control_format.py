@@ -108,7 +108,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # Re-pinned in place for the four anonymous count readers and their unmatched-hit window (W5).
           # Re-pinned for creature hits/misses, per-source switches and Hunter's Fury blasts (W6).
           # Re-pinned for Seize/Fakeout evidence conditional on a living teammate's view (W7).
-          28: "e882a20e56b99683"}
+          # Re-pinned for W9's measured creature switches (Prowler, Wingman and Seekers misses off, R14).
+          28: "a9e5b4d3f5ea1c69"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -247,6 +248,8 @@ def _without_seen_util_readers(monkeypatch):
     monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
                                                           "read_thrash_detains", "read_storm_surges",
                                                           "read_creatures", "read_hunters_fury"))
+    # W9: the digest before the false-clear probe had every creature's misses on
+    monkeypatch.setattr(ut, "CREATURE_MISSES", dict.fromkeys(ut.CREATURE_MISSES, True))
 
 
 def test_without_seen_util_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):

@@ -193,6 +193,16 @@ CREATURES = {
 }
 
 
+SHIPPED_CREATURE_MISSES = dict(ut.CREATURE_MISSES)    # as shipped, before any test switches them
+
+
+@pytest.fixture(autouse=True)
+def creature_misses_on_for_the_mechanism_tests(monkeypatch):
+    """The rules below test how a miss works; which sources ship with it on is the W9 test at the end."""
+    for source in ut.CREATURE_MISSES:
+        monkeypatch.setitem(ut.CREATURE_MISSES, source, True)
+
+
 def creature_round(source="prowler", target=None, geo=None, *, hit_t=1.25):
     code, name, status = CREATURES[source]
     cast = toy_ability(code, name, 128, 200, 0, t=.2, t1=2.2, kind="Pawn", id=41,
@@ -1403,3 +1413,17 @@ def test_the_drone_table_is_built_from_the_figures():
     assert ce.DRONES["Aggrobot_RollyPolly"] == (fig["thrash"]["half_deg"], fig["thrash"]["range_m"])
     assert ce.DRONES["Cashew_4_Spider_LockOn"] == (fig["tejo"]["half_deg"], fig["tejo"]["range_m"])
     assert ce.DRONES["Guide_Q_PossessableScout"] == (45.0, 22.5)
+
+
+# W9 (R14): the false-clear probe on 4 real replays (3 maps, local parser 04dcbd92). Exclude footprints that held a real
+# live enemy at the Info time, per creature source: (footprints with an enemy inside, footprints). Boom Bot had no stamped
+# cast, so no footprint and no measurement: its misses cannot fire and stay as they were.
+W9_CREATURE_FALSE_CLEARS = {"prowler": (32, 129), "wingman": (11, 129), "seekers": (41, 235), "boom_bot": (0, 0)}
+W9_THRESHOLD = 0.05
+
+
+def test_creature_misses_are_off_exactly_where_the_probe_measured_over_5_percent():
+    assert set(SHIPPED_CREATURE_MISSES) == set(W9_CREATURE_FALSE_CLEARS)
+    for source, (false, total) in W9_CREATURE_FALSE_CLEARS.items():
+        assert SHIPPED_CREATURE_MISSES[source] is (not total or false / total <= W9_THRESHOLD), source
+    assert SHIPPED_CREATURE_MISSES == {"prowler": False, "wingman": False, "seekers": False, "boom_bot": True}
