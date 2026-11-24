@@ -148,6 +148,8 @@ names each). **None is switched to features in this build.**
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
 | `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye; extended 2026-10-29, box-climb run: a plain point on a top node's leaf sees over its piece in 2D; heights are the engine's) |
 | `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |
+| `control/utility:read_creatures` | cast | `bounded_sight` (added 2026-11-23: what a creature sees along its path) |
+| `control/utility:read_dizzy_counts` | cast | `bounded_sight` (added 2026-11-23: the ground visible from a Dizzy firing position) |
 | `control/utility:read_skye_flashes` | cast | `bounded_sight` (added 2026-10-05: what an empty Skye flash rules out) |
 | `gaps/detect:GapDetector._sight` | cast | `bounded_sight` |
 

@@ -9,6 +9,32 @@ from app.gaps import cache
 from tests.replays.control_toys import blob, door_hall, height_blob, standing, toy_heights
 
 
+def test_record_without_applied_uses_empty_operations():
+    from types import SimpleNamespace
+    from app.control.observe import record
+
+    tick = SimpleNamespace(t=0.0, holders={}, smokes=[])
+    unknown = SimpleNamespace(entry={"A": {}, "B": {}}, events={"A": [], "B": []})
+    first = record(tick, unknown)
+    second = record(tick, unknown)
+    assert first.applied == second.applied == {"A": [], "B": []}
+    first.applied["A"].append("changed")
+    assert second.applied == {"A": [], "B": []}
+
+
+def test_cache_without_applied_replays_empty_operations(tmp_path):
+    from types import SimpleNamespace
+
+    rec = SimpleNamespace(t=0.0, players={}, unknown={"A": {}, "B": {}},
+                          events={"A": [], "B": []}, smokes=[])
+    unknown = SimpleNamespace(geo=SimpleNamespace(n=3), log={"A": {}, "B": {}})
+    writer = cache.Writer(tmp_path / "missing-applied.pkl.gz")
+    writer(rec, unknown)
+    writer.close()
+    [(restored, _)] = cache.replay(writer.path)
+    assert restored.applied == {"A": [], "B": []}
+
+
 @pytest.mark.parametrize('rejected', ['bounds', 'digest', 'missing_digest', 'missing_bounds'])
 def test_rejected_tick_cache_panel_keeps_unculled_visibility(tmp_path, rejected):
     from dataclasses import replace

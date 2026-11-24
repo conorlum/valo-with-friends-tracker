@@ -56,5 +56,6 @@ def record(tick, unknown) -> TickRecord:
 
             pv.floor = _floor_at(tick.geo, tick.rnd, s, tick.t, int(h.cell), st)
         players[s] = pv
+    applied = getattr(unknown, "applied", {"A": [], "B": []})
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
-                      list(tick.smokes), {side: list(ops) for side, ops in unknown.applied.items()})
+                      list(tick.smokes), {side: list(ops) for side, ops in applied.items()})

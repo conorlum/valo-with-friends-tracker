@@ -78,7 +78,7 @@ class Writer:
                    + (p.own,)
                    for s, p in rec.players.items()}
         events = {side: list(ev) for side, ev in rec.events.items()}
-        applied = {side: list(ops) for side, ops in rec.applied.items()}
+        applied = {side: list(ops) for side, ops in getattr(rec, "applied", {"A": [], "B": []}).items()}
         self.ticks.append((rec.t, players, diff, gone, events, list(rec.smokes), unknown.geo.n, applied))
         self.logs = unknown.log          # route logs only grow: the last tick's holds every entry any tick used
 
