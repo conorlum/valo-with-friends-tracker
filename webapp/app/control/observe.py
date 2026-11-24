@@ -4,7 +4,7 @@ observer must use or copy them before returning, and must not change them."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -36,6 +36,8 @@ class TickRecord:
     unknown: dict           # side -> enemy slot -> entry id per node (-1 outside); Unknown.entry
     events: dict            # side -> [(enemy, time, kind)]; Unknown.events of this tick
     smokes: list
+    # side -> [(cast_id, row_key, kind, enemy slot, footprint node ids)] for region-changing operations
+    applied: dict = field(default_factory=lambda: {"A": [], "B": []})
 
 
 def record(tick, unknown) -> TickRecord:
@@ -55,4 +57,4 @@ def record(tick, unknown) -> TickRecord:
             pv.floor = _floor_at(tick.geo, tick.rnd, s, tick.t, int(h.cell), st)
         players[s] = pv
     return TickRecord(float(tick.t), players, unknown.entry, {k: list(v) for k, v in unknown.events.items()},
-                      list(tick.smokes))
+                      list(tick.smokes), {side: list(ops) for side, ops in unknown.applied.items()})

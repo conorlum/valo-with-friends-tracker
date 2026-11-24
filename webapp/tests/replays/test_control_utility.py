@@ -89,7 +89,7 @@ def one_of(t=1.2, **kw):
     return info(t, "one_of", 400, 200, r=7.0, slot=-1, reason="hush_suspension", source="zone", **kw)
 
 
-def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(), seed_t=0.0, t=1.2):
+def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(), seed_t=0.0, t=1.2, holders=None):
     """No hidden position pushes: seed regions, then exercise the real Unknown.apply ordering and spread."""
     geo = open_hall()
     unknown = ce.Unknown(geo)
@@ -105,7 +105,7 @@ def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(),
         unknown._room[side] = geo.walk_n.copy()
     rnd = SimpleNamespace(team={0: "A", 5: "B", 6: "B"}, alive=lambda s, t: s not in dead,
                           watchers=[], infos=ut.ordered(infos), evolution={s: [(0, 9)] for s in immune})
-    unknown.apply(SimpleNamespace(t=t, holders={}, rnd=rnd))
+    unknown.apply(SimpleNamespace(t=t, holders=holders or {}, rnd=rnd))
     return geo, unknown
 
 
@@ -436,3 +436,146 @@ def test_the_engines_own_events_keep_the_r7_rule():
     for kind in ("kill", "gunfire", "damage", "footsteps", "seen", "plant", "revived",
                  "trip_destroyed", "camera_destroyed"):
         assert judged_against_before(record(6.25, [(5, 6.2, kind)]))["A"] == {5}, kind
+
+
+# ---------------------------------------------------------------- cast provenance and applied operations (R1/D9)
+
+@pytest.mark.parametrize("reader", ut.READERS)
+def test_each_reader_preserves_the_util_row_identity(reader, monkeypatch):
+    b = hall_round()
+    row = toy_ability("Hunter", "Q_SonarPing", 400, 200, 0, t=1.0, id=41)
+    if reader == "read_reveals":
+        row = {"k": "reveal", "t": 1.0, "t1": 2.0, "by": 0, "target": 5,
+               "code": "Hunter", "name": "Q_SonarPing"}
+    elif reader == "read_knives":
+        row.update(code="Grenadier", name="E_SuppressionPulse",
+                   activation={"state": "completed", "targets_complete": True},
+                   pulse={"t": 1.2, "r": 1000, "hits": []})
+    elif reader == "read_skye_flashes":
+        row.update(k="flash", ability="skye_guiding_light", hits=[],
+                   activation={"state": "completed", "targets_complete": True},
+                   pop={"t": 1.2, "u": row["u"], "v": row["v"]})
+    elif reader == "read_leers":
+        row.update(code="Vampire", name="4_NearsightAOE_Source", by=5)
+    elif reader == "read_omen_ults":
+        row.update(code="Wraith", name="X_GlobalTeleport_Intention", by=5, t1=2.0)
+    elif reader == "read_waylay_recalls":
+        row.update(code="Terra", name="E_RewindTime_RewindTarget", by=5,
+                   recall={"t": 1.2, "t1": 1.5, "u": row["u"], "v": row["v"]})
+    elif reader == "read_hush_suspensions":
+        row, hit = suspension_rows(source=41)
+        b["util"] = [hit]
+    b["util"].append(row)
+    rnd = ce.RoundInputs(b, open_hall())
+    monkeypatch.setattr(ut, "heard", lambda *a: reader == "read_waylay_recalls")
+    monkeypatch.setattr(ut, "_sees_point", lambda rnd, s, t, *a: reader != "read_omen_ults" or t >= 1.5)
+    out = getattr(ut, reader)(rnd)
+    assert out, reader
+    for operation in out:
+        assert operation.cast_id == row.get("id")
+        assert operation.row_key == (row["by"], row["code"], row["name"], row["t"])
+
+
+def test_applied_excludes_report_changes_but_omit_noops_and_ignored_operations():
+    key = (0, "Hunter", "Q_SonarPing", 1.0)
+    operations = [info(1.2, "exclude", 400, 200, r=1, cast_id=41, row_key=key),
+                  info(1.2, "exclude", 400, 200, r=1, cast_id=42, row_key=key),
+                  info(1.2, "exclude", 400, 200, r=1000, cast_id=43, row_key=key)]
+    geo, unknown = suspension_unknown(operations)
+    assert unknown.applied["B"] == []
+    assert unknown.applied["A"] == [(41, key, "exclude", 5,
+                                      tuple(np.flatnonzero(ut.footprint(operations[0], geo))))]
+    assert unknown.ignored["exclude that would leave the enemy nowhere"] == 1
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_applied_locate_uses_the_region_on_the_previous_record(late):
+    key = (0, "Hunter", "Q_SonarPing", 1.0)
+    operations = [info(1.2, "exclude", 400, 200, r=1, cast_id=40, row_key=key)]
+    if late:
+        operations.append(info(1.2, "one_of", 100, 100, r=1, slot=-1))
+    operations.append(info(1.2, "locate", 400, 200, cast_id=41, row_key=key))
+    geo, unknown = suspension_unknown(operations)
+    previous = ut.footprint(info(0, "restrict", 400, 200, r=5), geo)
+    assert unknown.applied["A"][-1] == (41, key, "locate", 5, tuple(np.flatnonzero(previous)))
+
+
+def test_late_derived_restriction_preserves_cast_and_reports_ruled_out_ground():
+    key = (0, "Paprika", "X_LevitateZone", 1.0)
+    hit = one_of(cast_id=41, row_key=key)
+    geo, unknown = suspension_unknown([hit])
+    _, baseline = suspension_unknown([])
+    assert unknown.applied["A"] == [(41, key, "restrict", 5,
+                                      tuple(np.flatnonzero(np.isfinite(baseline.reached["A"][5])
+                                                           & ~ut.footprint(hit, geo))))]
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_a_locate_on_an_enemy_in_view_is_not_applied(late):
+    b = blob({0: ("A", [(0.0, 104, 200, 0)]), 5: ("B", [(0.0, 200, 200, 180)])}, t_end=2)
+    records = []
+    operations = [info(1.2, "one_of", 100, 100, r=1, slot=-1)] if late else []
+    operations.append(info(1.2, "locate", 400, 200, cast_id=41))
+    ce.compute_round(b, open_hall(), knowledge=False, observer=lambda rec, unk: records.append(rec),
+                     infos=operations)
+    assert all(not rec.applied["A"] for rec in records)
+
+
+def test_a_reveal_reports_its_original_row_key_and_resets_on_the_next_tick():
+    b = hall_round(t_end=2)
+    row = {"k": "reveal", "t": 1.2, "t1": 1.2, "by": 0, "target": 5,
+           "code": "Hunter", "name": "Q_SonarPing"}
+    b["util"] = [row]
+    records = []
+    ce.compute_round(b, open_hall(), knowledge=False, observer=lambda rec, unk: records.append(rec))
+    [(at, entry)] = [(rec.t, entry) for rec in records for entry in rec.applied["A"]]
+    assert at == 1.2
+    assert entry[:4] == (None, (0, "Hunter", "Q_SonarPing", 1.2), "locate", 5)
+    assert entry[4]
+
+
+@pytest.mark.parametrize("kind", ["exclude", "restrict", "hypothesis"])
+def test_early_operations_overwritten_by_sight_are_not_applied(kind, monkeypatch):
+    geo = open_hall()
+    empty = np.zeros(geo.n, bool)
+    sight = empty.copy()
+    sight[geo.node_at_px(400, 200)] = True
+    holders = {0: SimpleNamespace(slot=0, team="A", cell=geo.node_at_px(104, 200),
+                                  active=sight, passive=empty, watch=empty),
+               5: SimpleNamespace(slot=5, team="B", cell=geo.node_at_px(400, 200),
+                                  active=empty, passive=empty, watch=empty)}
+    operation = info(1.2, kind, 300 if kind == "hypothesis" else 400, 200, r=1, cast_id=41)
+    _, actual = suspension_unknown([operation], holders=holders)
+    operate = ce.Unknown._operate
+
+    def without_report(self, *args, **kwargs):
+        result = operate(self, *args, **kwargs)
+        self.applied = {"A": [], "B": []}
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ce.Unknown, "_operate", without_report)
+        _, baseline = suspension_unknown([operation], holders=holders)
+    for side in ("A", "B"):
+        assert actual.cells[side].tobytes() == baseline.cells[side].tobytes()
+        for slot, region in actual.reached[side].items():
+            assert region.tobytes() == baseline.reached[side][slot].tobytes()
+    assert not [entry for entry in actual.applied["A"] if entry[3] == 5]
+
+
+@pytest.mark.parametrize("kind", ["restrict", "exclude"])
+@pytest.mark.parametrize("spotted", [False, True])
+def test_applied_footprint_contains_only_nodes_removed_from_a_small_region(kind, spotted):
+    geo = open_hall()
+    unknown = ce.Unknown(geo)
+    region = ut.footprint(info(0, "restrict", 400, 200, r=5), geo)
+    reached = np.where(region, 0.0, np.inf)
+    operation = info(1.2, kind, 400 if kind == "restrict" else 380, 200,
+                     r=1 if kind == "restrict" else 5, cast_id=41)
+    fp = ut.footprint(operation, geo)
+    ruled_out = ~fp if kind == "restrict" else fp
+    removed = region & ruled_out
+    assert removed.any() and (ruled_out & geo.walk_n & ~region).any()
+    unknown._operate("A", 5, [operation], reached.copy(), reached.copy(), {}, None, None,
+                     1.0, 1.2, SimpleNamespace(t_start=0.0), spotted={5} if spotted else set())
+    assert unknown.applied["A"] == [(41, None, kind, 5, tuple(np.flatnonzero(removed)))]

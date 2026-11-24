@@ -276,7 +276,7 @@ def test_a_whole_team_blinded_is_credited_nothing_and_still_holds_ground():
 
 
 def test_cached_and_live_gaps_agree_on_a_blinded_round(tmp_path):
-    assert cache.FORMAT == 1, "no gaps cache shape change for the blind rule"
+    assert cache.FORMAT == 2, "cast-operation reporting uses tick cache v2"
     geo, rnd = _close_round(True)
     data = rnd.blob
     live = gd.GapDetector(geo, ce.RoundInputs(data, geo))

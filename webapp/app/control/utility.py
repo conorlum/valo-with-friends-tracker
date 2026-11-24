@@ -80,12 +80,19 @@ class Info:
     seq: int = 0                  # the reader's order, for equal times
     z: float | None = None        # the place's height (m above the map's origin), for the node of a point
     detail: dict = field(default_factory=dict)
+    cast_id: int | None = None    # the util row's id; reveals have no id
+    row_key: tuple | None = None  # (by, code, name, t) of the original util row
 
     def __post_init__(self):
         if self.kind not in KINDS:
             raise ValueError(f"unknown knowledge operation {self.kind!r}")
         if (self.kind in SIDE_KINDS) != (self.slot == ONE_OF_SLOT):
             raise ValueError("side-wide knowledge requires ONE_OF_SLOT; per-slot knowledge forbids it")
+
+
+def _identity(row: dict) -> dict:
+    """Keep cast identity separate from the source used by hypothesis protection/retraction."""
+    return {"cast_id": row.get("id"), "row_key": tuple(row.get(k) for k in ("by", "code", "name", "t"))}
 
 
 # ---------------------------------------------------------------- Veto's Evolution (W10)
@@ -167,7 +174,7 @@ def read_reveals(rnd) -> list[Info]:
                 rnd.miss("reveal without a position (locates nothing)", target)
                 continue
             out.append(Info(t, side, target, "locate", reason, x=p[0], y=p[1], z=rnd.height(target, t),
-                            source=f"{e.get('code')}_{e.get('name')}@{e['t']}", detail={"needs": needs}))
+                            source=f"{e.get('code')}_{e.get('name')}@{e['t']}", detail={"needs": needs}, **_identity(e)))
     return out
 
 
@@ -203,7 +210,7 @@ def read_pulses(rnd) -> list[Info]:
             if team == side or slot in revealed or not rnd.alive(slot, t):
                 continue
             out.append(Info(t, side, slot, "exclude", figure, mask=seen, source=f"{e.get('code')}_{e.get('name')}@{t}",
-                            detail={"needs": "reveal"}))
+                            detail={"needs": "reveal"}, **_identity(e)))
     return out
 
 
@@ -259,7 +266,7 @@ def read_knives(rnd) -> list[Info]:
             kind, reason = plan[slot]
             r_op = radius_m + rim if kind == "restrict" else max(0.0, radius_m - rim)
             out.append(Info(t, side, slot, kind, reason, x=x, y=y, radius_m=r_op, source=f"{KNIFE}@{e['t']}",
-                            detail={"needs": "suppress", "hits": sorted(hit), "living": living, "r_m": radius_m}))
+                            detail={"needs": "suppress", "hits": sorted(hit), "living": living, "r_m": radius_m}, **_identity(e)))
     return out
 
 
@@ -299,7 +306,7 @@ def read_skye_flashes(rnd) -> list[Info]:
             continue
         for slot in living:
             out.append(Info(t, side, slot, "exclude", "skye_no_cue", mask=seen, source=f"flash@{e.get('id', e['t'])}",
-                            detail={"needs": "blind"}))
+                            detail={"needs": "blind"}, **_identity(e)))
     return out
 
 
@@ -387,7 +394,7 @@ def read_leers(rnd) -> list[Info]:
         side = next(rnd.team[s] for s in enemies)
         out.append(Info(seen_at, side, reyna, "restrict", "leer_seen", x=x, y=y,
                         radius_m=FIGURES["leer_cast_range_m"] + ce.UNKNOWN_MPS * max(0.0, seen_at - t0),
-                        source=f"{LEER_EYE}@{t0}", detail={"needs": "sight"}))
+                        source=f"{LEER_EYE}@{t0}", detail={"needs": "sight"}, **_identity(e)))
     return out
 
 
@@ -453,19 +460,19 @@ def read_omen_ults(rnd) -> list[Info]:
         if side is None:
             continue
         source = f"{OMEN_ULT}@{t0}"
-        out.append(Info(t0, side, omen, "pause", "omen_channel", source=source))
-        out.append(Info(t1, side, omen, "resume", "omen_channel", source=source))
+        out.append(Info(t0, side, omen, "pause", "omen_channel", source=source, **_identity(e)))
+        out.append(Info(t1, side, omen, "resume", "omen_channel", source=source, **_identity(e)))
         enemies = [s for s, team in rnd.team.items() if team == side]
         range_m = FIGURES["hearing_m"]["omen_ult"]
         # decided on what they know when it appears; a look later in the channel is its own, later, Info
         if heard(rnd, side, t0, x, y, range_m) or any(_sees_point(rnd, s, t0, x, y) for s in enemies):
             continue
         out.append(Info(t0, side, omen, "broaden", "omen_unheard", mask=outside_hearing(rnd, side, t0, range_m),
-                        source=source, detail={"outcome": e.get("outcome")}))
+                        source=source, detail={"outcome": e.get("outcome")}, **_identity(e)))
         t = t0 + LEER_LOOK_STEP_S
         while t <= t1:
             if any(_sees_point(rnd, s, t, x, y) for s in enemies):
-                out.append(Info(t, side, omen, "retract", "omen_seen", source=source))
+                out.append(Info(t, side, omen, "retract", "omen_seen", source=source, **_identity(e)))
                 break
             t += LEER_LOOK_STEP_S
     return out
@@ -519,7 +526,7 @@ def read_waylay_recalls(rnd) -> list[Info]:
         if not (heard(rnd, side, float(rc_["t"]), fx, fy, range_m) or heard(rnd, side, t_arrive, x, y, range_m)):
             continue
         out.append(Info(t_arrive, side, int(waylay), "locate", "waylay_recall", x=x, y=y, z=rnd._device_z(e.get("z")),
-                        source=f"{WAYLAY_ANCHOR}@{e['t']}"))
+                        source=f"{WAYLAY_ANCHOR}@{e['t']}", **_identity(e)))
     return out
 
 
@@ -550,7 +557,7 @@ def read_hush_suspensions(rnd) -> list[Info]:
         out.append(Info(t, rnd.team[e["by"]], ONE_OF_SLOT, "one_of", "hush_suspension",
                         x=e["u"] * ce.PX / 10000, y=e["v"] * ce.PX / 10000,
                         radius_m=FIGURES["hush_suspension_radius_m"], source=f"Paprika_X_LevitateZone@{t}",
-                        detail={"needs": "status"}))
+                        detail={"needs": "status"}, **_identity(e)))
     return out
 
 

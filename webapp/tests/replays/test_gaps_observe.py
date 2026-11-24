@@ -224,7 +224,8 @@ def test_the_cache_stores_the_missing_inputs(tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_a_cache_of_another_format_is_refused(tmp_path):
+@pytest.mark.parametrize("old_format", [0, 1])
+def test_a_cache_of_another_format_is_refused(tmp_path, old_format):
     import gzip
     import pickle
 
@@ -232,8 +233,28 @@ def test_a_cache_of_another_format_is_refused(tmp_path):
 
     path = tmp_path / "old.ticks.pkl.gz"
     with gzip.open(path, "wb") as f:
-        pickle.dump({"format": 0}, f)
+        pickle.dump({"format": old_format}, f)
     with pytest.raises(ValueError):
         list(cache.replay(path))
     with pytest.raises(ValueError):
         cache.read_missing(path)
+
+
+def test_cache_replays_applied_cast_operations(tmp_path):
+    from app.control.utility import Info
+
+    geo = door_hall()
+    data = blob({0: ("A", [(0.0, 104, 200, 180)]), 5: ("B", [(0.0, 400, 200, 0)])}, t_end=3)
+    path = tmp_path / "applied.ticks.pkl.gz"
+    writer, live = cache.Writer(path), []
+
+    def both(rec, unknown):
+        live.append(rec.applied)
+        writer(rec, unknown)
+
+    ce.compute_round(data, geo, knowledge=False, observer=both,
+                     infos=[Info(1.2, "A", 5, "locate", "recon", x=400, y=200,
+                                 cast_id=41, row_key=(0, "Hunter", "Q_SonarPing", 1.0))])
+    writer.close()
+    assert any(rec["A"] for rec in live)
+    assert [rec.applied for rec, _ in cache.replay(path)] == live
