@@ -2812,7 +2812,14 @@ class Unknown:
             self.applied[side] = []
             self._fresh[side] = set()
             enemies = self._enemies(tick, side)
-            side_infos = [i for i in infos if i.side == side]
+            # Conditional utility is learned only through a living teammate's own view now.
+            # tick.view predates Memory and excludes watchers; neither can witness a tether/decoy.
+            views = getattr(tick, "view", {})
+            side_infos = [i for i in infos if i.side == side and
+                          (i.detail.get("needs_view") is None or any(
+                              h.team == side and (rnd is None or rnd.alive(s, t))
+                              and s in views and views[s][i.detail["needs_view"]]
+                              for s, h in tick.holders.items()))]
             # A locate's footprint is its enemy's region on the record before this tick, even if
             # earlier operations or a locating event replace it before the locate is applied.
             previous = {s: np.isfinite(r) for s, r in self.reached[side].items()} if side_infos else {}

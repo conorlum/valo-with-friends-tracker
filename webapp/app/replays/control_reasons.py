@@ -46,6 +46,8 @@ CLASSES = {
     "boom_bot_hit": "found",
     "seekers_hit": "found",
     "hunters_fury_hit": "found",
+    "seize_hit": "found",
+    "fakeout_direction": "roughly_placed",
     "prowler_miss": "ruled_out",
     "wingman_miss": "ruled_out",
     "boom_bot_miss": "ruled_out",

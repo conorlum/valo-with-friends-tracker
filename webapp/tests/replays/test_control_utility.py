@@ -20,6 +20,145 @@ from tests.replays.control_toys import toy_ability, uv
 A_HIDDEN = ("A", [(0.0, 104, 200, 180)])
 
 
+def seen_util_round(source, *, spot=190, hits=(5,), viewer_dead=False, yaw=0):
+    """Condensed Seize statuses / Fakeout flash, with a separate teammate watching the spot."""
+    if source == "seize":
+        row = toy_ability("BountyHunter", "Q_Tether_SphereExpansion", spot, 200, 0,
+                          t=.2, t1=2., id=41, hits_read=True)
+        rows = [row, *({"k": "status", "t": 1.25, "t1": 2., "by": 0, "target": target,
+                       "code": row["code"], "name": row["name"], "status": status,
+                       "from": "force", "src": 41}
+                      for target in hits for status in ("tethered", "decayed"))]
+    else:
+        row = toy_ability("Stealth", "4_Decoy_V2", spot, 200, 0, kind="Pawn",
+                          t=.2, t1=2., id=41, hits_read=True, fired=True,
+                          path=[[.2, *uv(300, 200)], [1.25, *uv(spot, 200)]],
+                          flash={"t": 1.25, "hits": list(hits), "yaw": 0})
+        rows = [row]
+    return blob({0: A_HIDDEN, 1: ("A", [(0., 120, 200, yaw)]),
+                 5: ("B", [(0., 300, 200, 0)]), 6: ("B", [(0., 390, 200, 0)])},
+                util=rows, t_end=2., deaths={1: 1.} if viewer_dead else {})
+
+
+def seen_util_unknown(b, *, drop=False, alter_tick=None):
+    """Real tick sight behind a wall; seed unknown everywhere to make restrictions observable."""
+    geo = door_hall()
+    rnd = ce.RoundInputs(b, geo)
+    if drop:
+        rnd.infos = []
+    tick = ce.Tick(rnd, 1.25)
+    if alter_tick is not None:
+        alter_tick(tick)
+    unknown = ce.Unknown(geo)
+    for slot in (5, 6):
+        unknown.reached["A"][slot] = np.where(geo.walk_n, 0., np.inf)
+    unknown._prev_t = 1.
+    for side in ("A", "B"):
+        unknown.free_since[side] = np.zeros(geo.n)
+        unknown._room[side] = geo.walk_n.copy()
+    unknown.apply(tick)
+    return geo, rnd, tick, unknown
+
+
+def test_seize_seen_centre_locates_distinct_caught_enemies_at_hit_time():
+    b = seen_util_round("seize", hits=(5, 6))
+    geo, rnd, tick, unknown = seen_util_unknown(b)
+    assert tick.view[1][geo.node_at_px(190, 200)]
+    assert not tick.view[0][geo.node_at_px(190, 200)]
+    assert [(i.t, i.slot, i.kind) for i in rnd.infos] == [(1.25, 5, "locate"), (1.25, 6, "locate")]
+    row = b["util"][0]
+    node = geo.node_at_px(row["u"] * ce.PX / 10000, row["v"] * ce.PX / 10000)
+    for operation in rnd.infos:
+        assert (operation.x, operation.y) == rnd.pos(operation.slot, operation.t)[:2]
+        assert operation.detail == {"needs": "status", "needs_view": node}
+    assert unknown.events["A"] == [(5, 1.25, "seize_hit"), (6, 1.25, "seize_hit")]
+    assert [(a[0], a[2], a[3]) for a in unknown.applied["A"]] == [(41, "locate", 5), (41, "locate", 6)]
+
+
+@pytest.mark.parametrize("source", ["seize", "fakeout"])
+@pytest.mark.parametrize("hidden", ["wall", "dead", "turned"])
+def test_seen_util_requires_a_live_teammates_own_view(source, hidden):
+    b = seen_util_round(source, spot=232 if hidden == "wall" else 190,
+                        viewer_dead=hidden == "dead", yaw=180 if hidden == "turned" else 0)
+    geo, rnd, tick, unknown = seen_util_unknown(b)
+    assert rnd.infos  # Reader emits conditional evidence even when nobody can see it.
+    _, _, _, baseline = seen_util_unknown(b, drop=True)
+    for slot in (5, 6):
+        np.testing.assert_array_equal(unknown.reached["A"][slot], baseline.reached["A"][slot])
+    assert unknown.applied == baseline.applied
+    assert unknown.events == baseline.events
+    assert unknown.reasons == baseline.reasons
+
+
+@pytest.mark.parametrize("hits", [(), (5,), (5, 6)])
+def test_fakeout_seen_counts_one_over_direction_wedge_independent_of_blinds(hits):
+    b = seen_util_round("fakeout", hits=hits)
+    b["alive"]["6"] = [[0., 1., "kill"]]
+    geo, rnd, tick, unknown = seen_util_unknown(b)
+    [operation] = rnd.infos
+    assert (operation.t, operation.kind, operation.slot, operation.count) == (1.25, "one_of", -1, 1)
+    _, u, v = b["util"][0]["path"][-1]
+    x, y = u * ce.PX / 10000, v * ce.PX / 10000
+    assert operation.detail == {"needs": "status", "needs_view": geo.node_at_px(x, y)}
+    params = ut.FIGURES["fakeout"]
+    delta = (geo.centres - (x, y)) * geo.m_per_px
+    angles = np.abs(np.degrees(np.arctan2(delta[:, 1], delta[:, 0])))
+    expected = geo.walk_n & (angles <= params["half_deg"]) & (np.linalg.norm(delta, axis=1) <= params["range_m"])
+    np.testing.assert_array_equal(operation.mask, expected)
+    assert operation.mask[geo.node_at_px(300, 200)]  # wedge goes beyond the wall
+    assert not operation.mask[geo.node_at_px(390, 200)]  # range capped
+    assert [(a[0], a[1], a[2], a[3]) for a in unknown.applied["A"]] == [
+        (41, operation.row_key, "restrict", 5)]
+    assert unknown.events["A"] == []
+
+
+@pytest.mark.parametrize("missing", ["flash", "yaw", "fired"])
+def test_fakeout_without_flash_direction_or_firing_proof_emits_nothing(missing):
+    b = seen_util_round("fakeout")
+    row = b["util"][0]
+    (row["flash"] if missing == "yaw" else row).pop(missing)
+    assert ce.RoundInputs(b, door_hall()).infos == []
+
+
+def test_seize_old_blob_retains_positive_hits_but_never_clears_a_miss():
+    b = seen_util_round("seize")
+    b["util"][0].pop("hits_read")
+    assert [i.kind for i in ce.RoundInputs(b, door_hall()).infos] == ["locate"]
+    b["util"] = b["util"][:1]
+    assert ce.RoundInputs(b, door_hall()).infos == []
+
+
+def test_seize_does_not_locate_an_ulting_veto():
+    b = seen_util_round("seize")
+    b["players"][2]["agent"] = "Veto"
+    b["util"].append({"k": "buff", "code": "Pine", "name": "X_Evolution", "by": 5, "t": 0., "t1": 2.})
+    assert ce.RoundInputs(b, door_hall()).infos == []
+
+
+@pytest.mark.parametrize("source", ["seize", "fakeout"])
+@pytest.mark.parametrize("evidence", ["memory", "watcher", "dead_view", "enemy_view"])
+def test_seen_util_ignores_memory_watchers_and_other_players_views(source, evidence):
+    b = seen_util_round(source, yaw=180, viewer_dead=evidence == "dead_view")
+
+    def other_sight(tick):
+        # Even a stale/dead view in the dict must not count as a living teammate.
+        if evidence in ("dead_view", "enemy_view"):
+            tick.view[1 if evidence == "dead_view" else 5] = tick.geo.walk_n.copy()
+        elif evidence == "memory":
+            tick.holders[1].memory = tick.geo.walk_n.copy()
+            tick.holders[1].passive |= tick.holders[1].memory
+        else:
+            tick.holders[1].watch = tick.geo.walk_n.copy()
+
+    _, rnd, _, actual = seen_util_unknown(b, alter_tick=other_sight)
+    assert rnd.infos
+    _, _, _, baseline = seen_util_unknown(b, drop=True, alter_tick=other_sight)
+    assert actual.applied == baseline.applied
+    assert actual.events == baseline.events
+    for slot in (5, 6):
+        np.testing.assert_array_equal(actual.reached["A"][slot], baseline.reached["A"][slot])
+
+
 def snapshots(b, geo, infos=(), ticks=None, **kw):
     """(RoundControl, {t: {side: {enemy: finite reached mask}}}, {t: (events, reasons, protect, cleared)})"""
     regions, extra = {}, {}
@@ -1089,6 +1228,9 @@ def test_each_reader_preserves_the_util_row_identity(reader, monkeypatch):
         b["util"] = hits
     elif reader == "read_hunters_fury":
         [row] = fury_round().blob["util"]
+    elif reader in ("read_seize", "read_fakeout"):
+        row, *hits = seen_util_round(reader.removeprefix("read_"))["util"]
+        b["util"] = hits
     b["util"].append(row)
     rnd = ce.RoundInputs(b, open_hall())
     monkeypatch.setattr(ut, "heard", lambda *a: reader in ("read_waylay_recalls", "read_storm_surges"))

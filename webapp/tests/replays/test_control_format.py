@@ -107,7 +107,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # for the util-info-value readers (provisional, wiki-sourced where the wiki has one).
           # Re-pinned in place for the four anonymous count readers and their unmatched-hit window (W5).
           # Re-pinned for creature hits/misses, per-source switches and Hunter's Fury blasts (W6).
-          28: "ceeeff67b91a7099"}
+          # Re-pinned for Seize/Fakeout evidence conditional on a living teammate's view (W7).
+          28: "e882a20e56b99683"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -236,9 +237,21 @@ def _without_the_info_figures(monkeypatch):
 
 
 def _without_creature_and_fury_readers(monkeypatch):
+    _without_seen_util_readers(monkeypatch)
     monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
                                                           "read_thrash_detains", "read_storm_surges"))
     monkeypatch.delattr(ut, "CREATURE_MISSES")
+
+
+def _without_seen_util_readers(monkeypatch):
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
+                                                          "read_thrash_detains", "read_storm_surges",
+                                                          "read_creatures", "read_hunters_fury"))
+
+
+def test_without_seen_util_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_seen_util_readers(monkeypatch)
+    assert _constants_digest() == "ceeeff67b91a7099"
 
 
 def test_without_creature_and_fury_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
@@ -288,7 +301,7 @@ def test_control_suspension_readers_are_pinned():
     assert ut.READERS == ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers",
                           "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions",
                           "read_nightfall_counts", "read_dizzy_counts", "read_thrash_detains", "read_storm_surges",
-                          "read_creatures", "read_hunters_fury")
+                          "read_creatures", "read_hunters_fury", "read_seize", "read_fakeout")
 
 
 def _without_the_suppression_sources(monkeypatch):

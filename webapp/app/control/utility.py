@@ -878,11 +878,75 @@ def read_hunters_fury(rnd) -> list[Info]:
     return out
 
 
+def read_seize(rnd) -> list[Info]:
+    """Visible Seize tethers locate caught enemies at each hit, conditional on the tick's sight."""
+    rows, out = rnd.blob.get("util") or [], []
+    casts = {(r["id"], r.get("by")): r for r in rows
+             if r.get("k") == "ability" and r.get("code") == "BountyHunter"
+             and r.get("name") == "Q_Tether_SphereExpansion" and r.get("id") is not None}
+    seen = set()
+    for hit in rows:
+        if (hit.get("k") != "status" or hit.get("status") != "tethered" or hit.get("friendly")
+                or hit.get("code") != "BountyHunter" or hit.get("name") != "Q_Tether_SphereExpansion"):
+            continue
+        row = casts.get((hit.get("src"), hit.get("by")))
+        side, target, t = rnd.team.get(hit.get("by")), hit.get("target"), float(hit["t"])
+        key = (hit.get("src"), hit.get("by"), target, t)
+        if (row is None or side is None or rnd.team.get(target) in (None, side)
+                or not rnd.alive(target, t) or key in seen):
+            continue
+        seen.add(key)
+        centre, p = _count_disk(row), rnd.pos(target, t)
+        if centre is None or p is None:
+            continue
+        node = rnd.geo.node_at_px(centre["x"], centre["y"], rnd._device_z(row.get("z")))
+        out.append(Info(t, side, target, "locate", "seize_hit", x=p[0], y=p[1], z=rnd.height(target, t),
+                        source=centre["source"], detail={"needs": "status", "needs_view": node}, **_identity(row)))
+    return out
+
+
+def read_fakeout(rnd) -> list[Info]:
+    """A seen decoy flash gives one anonymous shooter in its forward wedge, regardless of blinds."""
+    from app.control import engine as ce
+
+    geo, out = rnd.geo, []
+    for row in rnd.blob.get("util") or []:
+        if (row.get("k") != "ability" or row.get("code") != "Stealth" or row.get("name") != "4_Decoy_V2"
+                or row.get("fired") is not True):
+            continue
+        flash, side = row.get("flash") or {}, rnd.team.get(row.get("by"))
+        if side is None or flash.get("t") is None or flash.get("yaw") is None:
+            continue
+        t = float(flash["t"])
+        place = _count_disk(row)
+        z = rnd._device_z(row.get("z"))
+        if row.get("path"):
+            at = ce.path_at(row["path"], t)
+            if at is None:
+                continue
+            place = {"x": at[0], "y": at[1], "source": f"Stealth_4_Decoy_V2@{row.get('id', row['t'])}"}
+            z = rnd._device_z(ce.path_z(row["path"], t))
+        if place is None:
+            continue
+        x, y = place["x"], place["y"]
+        delta = (geo.centres - (x, y)) * geo.m_per_px
+        heading = np.degrees(np.arctan2(delta[:, 1], delta[:, 0]))
+        offset = np.abs((heading - float(flash["yaw"]) + 180) % 360 - 180)
+        params = FIGURES["fakeout"]
+        mask = geo.walk_n & (offset <= params["half_deg"]) & (np.linalg.norm(delta, axis=1) <= params["range_m"])
+        if mask.any():
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "fakeout_direction", mask=mask, count=1,
+                            source=place["source"], detail={"needs": "status", "needs_view": geo.node_at_px(x, y, z)},
+                            **_identity(row)))
+    return out
+
+
 # The readers that run, by name and in order (names, so the list is one of the constants CONTROL_REVISION pins:
 # tests/replays/test_control_format.py).
 READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers", "read_omen_ults",
            "read_waylay_recalls", "read_hush_suspensions", "read_nightfall_counts", "read_dizzy_counts",
-           "read_thrash_detains", "read_storm_surges", "read_creatures", "read_hunters_fury")
+           "read_thrash_detains", "read_storm_surges", "read_creatures", "read_hunters_fury",
+           "read_seize", "read_fakeout")
 
 
 def read_all(rnd) -> list[Info]:
