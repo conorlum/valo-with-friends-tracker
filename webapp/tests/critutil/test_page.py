@@ -60,6 +60,58 @@ def corpus(rows, personal=None):
             "estimator": {}, "personal": personal or {}}
 
 
+@pytest.mark.parametrize("n, matches, included", [(9, 3, False), (10, 2, False), (10, 3, True)])
+def test_info_friend_rows_need_ten_casts_and_three_matches_after_json(n, matches, included):
+    from app.critutil import info
+    from app.services.stats_math import cluster_bootstrap_ci
+
+    casts = [{"player_id": pid, "match": 1 + i % matches, "ability_id": ability,
+              "info": {"cleared_m2": float(i), "located": 0, "hold_s": float(i)}}
+             for pid in (1, 2) for ability in ("Sova/Recon Bolt", "Cypher/Trapwire", "Cypher/Spycam")
+             for i in range(n)]
+    summary = info.summarise(casts, ci=cluster_bootstrap_ci)
+    assert summary["below_bar"] == ({} if included else {"1": 4, "2": 4})
+    if not included:
+        assert summary["players"] == {}
+    stored = json.loads(json.dumps({"rows": [], "info": summary}))
+    page = replay_util.page_for(stored, {1})["info"]
+    assert page["overall"] == stored["info"]["overall"]
+    assert all(r["n"] == 2 * n and r["matches"] == matches
+               for rows in page["overall"].values() for r in rows)
+    assert page["omitted"] == (0 if included else 4)
+    assert set(page["players"]) == ({1} if included else set())
+    if included:
+        assert {r["ability_id"] for r in page["players"][1]["clears"]} == {"Sova/Recon Bolt", "Cypher/Spycam"}
+        assert {r["ability_id"] for r in page["players"][1]["holds"]} == {"Cypher/Trapwire", "Cypher/Spycam"}
+    assert summary == stored["info"], "page shaping must not mutate the cached build"
+    assert replay_util.page_for(stored, set())["info"]["players"] == {}
+    assert replay_util.page_for(stored, set())["info"]["omitted"] == 0
+
+
+def test_old_build_has_no_info_tables():
+    assert replay_util.page_for(corpus([]), {1})["info"] is None
+
+
+def test_info_omitted_sums_only_the_circle_counts_including_players_without_rows():
+    summary = {"overall": {"clears": [], "holds": []}, "players": {}, "percentiles": {},
+               "below_bar": {"1": 1, "2": 3, "3": 7}}
+    stored = json.loads(json.dumps({"rows": [], "info": summary}))
+    page = replay_util.page_for(stored, {1, 2})["info"]
+    assert page["omitted"] == 4
+    assert page["players"] == {}
+    assert replay_util.page_for(stored, {3})["info"]["omitted"] == 7
+    assert replay_util.page_for(stored, {4})["info"]["omitted"] == 0
+
+
+@pytest.mark.parametrize("n, matches", [(9, 3), (10, 2)])
+def test_info_page_still_guards_below_d5_stored_rows(n, matches):
+    summary = {"overall": {"clears": [], "holds": []}, "percentiles": {},
+               "players": {"1": {"clears": [{"n": n, "matches": matches}], "holds": []}}}
+    page = replay_util.page_for({"rows": [], "info": summary}, {1})["info"]
+    assert page["players"] == {}
+    assert page["omitted"] == 1
+
+
 def test_page_is_friends_only_and_lineups_need_five_casts():
     rows = [row(1, 0.03, i, match=1 + i % 3, rnd=i) for i in range(6)] + [row(2, 0.05, i, rnd=i) for i in range(6)]
     page = replay_util.page_for(corpus(rows), {1})

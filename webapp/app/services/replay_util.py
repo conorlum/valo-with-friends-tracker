@@ -19,7 +19,7 @@ from collections import defaultdict
 
 from app.config import settings
 from app.coach import areas
-from app.critutil import abilities, constants
+from app.critutil import abilities, constants, info
 from app.critutil.corpus import (  # re-export the portable build and its helpers
     COMBO_S, COMBO_UV, EXAMPLES_KEPT, FULL_BUY_THRESHOLD, LABELS, MIN_CASTS, NO_LIFT,
     PAGE_VERSION, PISTOL_ROUNDS, SHRINK_K,
@@ -291,6 +291,25 @@ def page_for(corpus: dict, circle: set[int], mode: str = "yours") -> dict:
     out: dict = {"n": len(rows), "fit": corpus.get("fit"), "estimator": corpus.get("estimator"),
                  "overlap": corpus.get("overlap") or {}, "mode": mode,
                  "failing": [L for L in range(1, util_values.MAX_L + 1) if not gate[L - 1]["pass"]] if gate else []}
+    stored_info = corpus.get("info")
+    out["info"] = None
+    if stored_info is not None:
+        friends = {}
+        omitted = sum(n for key, n in stored_info.get("below_bar", {}).items() if int(key) in circle)
+        for key, tables in stored_info["players"].items():
+            pid = int(key)  # JSON object keys are strings in the stored build.
+            if pid not in circle:
+                continue
+            kept = {"clears": [], "holds": []}
+            for section in kept:
+                for row in tables[section]:
+                    if info.friend_row_eligible(row["n"], row["matches"]):
+                        kept[section].append(row)
+                    else:
+                        omitted += 1
+            if any(kept.values()):
+                friends[pid] = kept
+        out["info"] = {"overall": stored_info["overall"], "players": friends, "omitted": omitted}
 
     def compared(r):
         return r[lk] if r.get(lk) is not None and r.get(gk) else None

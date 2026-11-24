@@ -19,6 +19,7 @@ SOURCES = tuple(sorted(
         "app/critutil/abilities.json",
         "app/services/util_values.py",
         "app/services/util_model.py",
+        "app/services/stats_math.py",
         "app/static/js/replay.js",
         "app/static/data/callouts.json",
         "app/coach/__init__.py",

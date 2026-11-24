@@ -16,18 +16,22 @@ from tests.critutil.test_build import FRIEND, MODEL, fake_gate, toy_corpus
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("passing, expected", [
-    (False, "db7a7e70be884e33de37d8a5a4038f6d0e64965ea39ec96c0f215cb44f9f16cd"),
-    (True, "f8ecf96a2cd7e1e3d1baf089bc69610892b9efe38c48213c45aa23383163070d"),
+@pytest.mark.parametrize("passing, expected, legacy", [
+    (False, "99b50428aac540484d3e1768694782bb7c0a7d5fd1fa3e82a5782f720507ded9",
+     "db7a7e70be884e33de37d8a5a4038f6d0e64965ea39ec96c0f215cb44f9f16cd"),
+    (True, "b162ab05705f68cdf2d29d846757cb8422ae2bd9dc336cf0977a9e556c594bec",
+     "f8ecf96a2cd7e1e3d1baf089bc69610892b9efe38c48213c45aa23383163070d"),
 ])
-def test_build_matches_before_extraction(monkeypatch, passing, expected):
-    """Pin the unchanged builder's complete output with both passing and failing gates (R4)."""
+def test_build_matches_before_extraction(monkeypatch, passing, expected, legacy):
+    """Pin the extended build and prove removing the new info tables preserves the original output (R4)."""
     from app.critutil import corpus
 
     monkeypatch.setattr(corpus.util_values, "gate_all_modes", fake_gate(passing))
     stored, ctx = toy_corpus()
     out = corpus.build_from_rounds(stored, ctx, MODEL, {FRIEND})
     assert hashlib.sha256(json.dumps(out, sort_keys=True).encode()).hexdigest() == expected
+    assert out.pop("info") == {"overall": {"clears": [], "holds": []}, "players": {}, "percentiles": {}, "below_bar": {}}
+    assert hashlib.sha256(json.dumps(out, sort_keys=True).encode()).hexdigest() == legacy
 
 
 def test_corpus_build_without_sqlalchemy():
@@ -107,6 +111,7 @@ def test_digest_covers_all_build_sources():
     expected = {p.relative_to(WEBAPP_ROOT).as_posix() for p in (WEBAPP_ROOT / "app" / "critutil").rglob("*.py")}
     expected.update({
         "app/critutil/abilities.json", "app/services/util_values.py", "app/services/util_model.py",
+        "app/services/stats_math.py",
         "app/static/js/replay.js", "app/static/data/callouts.json", "app/coach/__init__.py", "app/coach/areas.py",
         "app/replays/__init__.py", "app/replays/control_format.py", "app/replays/format.py",
         "app/replays/player_state.py",
@@ -141,6 +146,32 @@ def test_digest_covers_every_webapp_module_the_build_imports():
     imported = set(__import__("json").loads(out.stdout))
     assert "app/critutil/corpus.py" in imported
     assert imported - _UNDIGESTED <= set(build_digest.SOURCES), imported - _UNDIGESTED - set(build_digest.SOURCES)
+    dockerfile = (WEBAPP_ROOT.parent / "replay_worker" / "Dockerfile").read_text()
+    for path in imported:
+        if path.startswith("app/services/"):
+            assert f"COPY webapp/{path} /srv/webapp/{path}" in dockerfile
+
+
+def test_every_build_service_has_a_worker_copy():
+    import ast
+
+    from app.critutil import build_digest
+
+    dockerfile = (WEBAPP_ROOT.parent / "replay_worker" / "Dockerfile").read_text()
+    services = {"stats_math"}
+    for path in (WEBAPP_ROOT / "app" / "critutil").glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module == "app.services":
+                services.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.services."):
+                services.add(node.module.split(".")[2])
+            elif isinstance(node, ast.Import):
+                services.update(alias.name.split(".")[2] for alias in node.names
+                                if alias.name.startswith("app.services."))
+    for service in services:
+        path = f"app/services/{service}.py"
+        assert f"COPY webapp/{path} /srv/webapp/{path}" in dockerfile
+        assert path in build_digest.SOURCES
 
 
 def test_digest_uses_sorted_posix_paths_and_bytes(digest_tree):
