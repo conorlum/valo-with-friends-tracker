@@ -471,6 +471,19 @@ def _ult_table(rows):
 # --- the replay viewer's tab
 
 
+def _info_percentiles(summary: dict | None) -> dict:
+    """Only ability-level ranks and sample sizes, shared once by the payload's rounds."""
+    summary = summary or {}
+    out = {}
+    for section, metric in (("clears", "cleared_m2"), ("holds", "hold_s")):
+        for row in (summary.get("overall") or {}).get(section) or ():
+            ability = row["ability_id"]
+            points = ((summary.get("percentiles") or {}).get(ability) or {}).get(metric)
+            if row["n"] >= 10 and points is not None and len(points) == 101:
+                out.setdefault(ability, {})[metric] = {"n": row["n"], "points": points}
+    return out
+
+
 def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) -> dict:
     """The tab's body for one linked replay: each player's casts with values, best and worst, unused util, harm.
     Opponents named by agent.
@@ -593,6 +606,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
                               "worst": [pick(r) for r in ranked[:3] if r["value"] < 0],
                               "value": round(100 * sum(r["value"] for r in mine), 2)}
     return {"players": players, "rounds": rounds_out, "summary": summary, "stale": stale,
+            "info": _info_percentiles(corpus.get("info")),
             "failed": sorted(failed), "estimator": bool(model and model.get("n")),
             "weights_fitted": weights != util_values.DEFAULT_WEIGHTS,
             "baseline": bool(corpus.get("rows")), "updating": updating}

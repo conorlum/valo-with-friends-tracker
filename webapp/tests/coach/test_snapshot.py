@@ -40,6 +40,22 @@ def test_a_snapshot_is_saved_one_file_per_round_and_reads_only_the_round_asked_f
     assert snap.round_numbers == [1, 2] and snap.gaps(1) == [] and snap.view(1).number == 1
 
 
+def test_util_percentiles_are_saved_once_outside_round_files(tmp_path):
+    table = {"Sova/Owl Drone": {"cleared_m2": {"n": 11, "points": [float(p) for p in range(101)]}}}
+    data = built()
+    data["context"] = {**data["context"], "util_info": table}
+    snapshot.save(data, tmp_path)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    assert head["context"]["util_info"] == table
+    rounds_dir = tmp_path / head["rounds_dir"]
+    for n in (1, 2):
+        assert "points" not in (rounds_dir / f"{n}.json").read_text(encoding="utf-8")
+    (rounds_dir / "2.json").unlink()
+    snap = snapshot.load(tmp_path)
+    assert snap.context["util_info"] == table
+    assert snap.view(1).number == 1
+
+
 @pytest.mark.parametrize("split", [False, True])
 def test_an_older_snapshot_still_loads(tmp_path, split):
     data = built()

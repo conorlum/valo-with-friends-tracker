@@ -46,12 +46,13 @@ _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining",
     "spike_left_s", "value", "enemies_affected", "teammates_hit", "teammate_died_affected", "sight_line_s",
-    "sight_lines", "life_s", "radius_m", "waiting_s", "points", "before_s", "kills_with"})
+    "sight_lines", "life_s", "radius_m", "waiting_s", "points", "before_s", "kills_with",
+    "cleared_m2", "located", "held_back_s", "ability_pct", "ability_n"})
 # A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
 # round that happens to be 20 (PR 132 review, finding 1).
 _METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max", "radius_m"})
 _SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s", "spike_left_s", "sight_line_s", "life_s",
-                                       "waiting_s", "before_s"})
+                                       "waiting_s", "before_s", "held_back_s"})
 # A util fact's landing area names where that cast landed, so it grounds the name like a timely `where`.
 _AREA_KEYS = frozenset({"area", "landed_area"})
 SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
@@ -62,7 +63,7 @@ _ROUND = re.compile(r"(?<!\w)round\s+#?(\d+)(?!\.?\d)", re.IGNORECASE)
 _ROUNDS = re.compile(r"(?<!\w)rounds\s+(\d+(?:\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)\d+)*)(?!\.?\d)", re.IGNORECASE)
 _TALLY = re.compile(r"(?<![\w.#])(\d+)\s+(?:times?|instances?|moments?|rounds?)(?!\w)", re.IGNORECASE)
 _FIGURE = r"(\d+(?:\.\d+)?)"
-_UNIT = r"(m|metres?|meters?|s|secs?|seconds?)(?!\w)"
+_UNIT = r"(m²|m|metres?|meters?|s|secs?|seconds?)(?!\w)"
 _UNIT_RANGE = re.compile(r"(?<![\w.#])" + _FIGURE + r"\s?(?:to|and|-|–)\s?" + _FIGURE + r"\s?" + _UNIT, re.IGNORECASE)
 _UNIT_ONE = re.compile(r"(?<![\w.#])" + _FIGURE + r"\s?" + _UNIT, re.IGNORECASE)
 # P4 review F1: a unit written against the digits ("5m", "3s", "2vs1") must not hide the number from the check.
@@ -231,6 +232,7 @@ class _Cited:
         self.shares: list[float] = []
         self.times: list[float] = []
         self.metres: list[float] = []
+        self.square_metres: list[float] = []
         self.seconds: list[float] = []
         self.pairs: set[tuple[int, int]] = set()
         self.areas: set[tuple[tuple[str, ...], str, int, float | None, int]] = set()
@@ -252,12 +254,19 @@ def _collect(value, key, cited: _Cited, source: tuple[str, int, float | None, in
             cited.times.append(float(value))
         if key in _METRE_KEYS:
             cited.metres.append(float(value))
+        if key == "cleared_m2":
+            cited.square_metres.append(float(value))
         if key in _SECOND_KEYS:
             cited.seconds.append(float(value))
     elif isinstance(value, str):
         if key == "area":
             cited.areas.add(((value,), *source))
     elif isinstance(value, dict):
+        if key in {"ability_pct", "ability_n"}:
+            # Metric names label ranks and counts here, not areas or durations.
+            for item in value.values():
+                _collect(item, key, cited, source, hidden)
+            return
         if key in _AREA_KEYS and isinstance(value.get("name"), str):
             path = value.get("path")
             names = tuple(name for name in path if isinstance(name, str)) if isinstance(path, list) else ()
@@ -550,10 +559,14 @@ def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = Fa
     text = _TALLY.sub(lambda m: " " if int(m.group(1)) in cited.tallies else m.group(0), text)
 
     def unit_problem(figure: str, unit: str) -> None:
-        metres = unit.lower().startswith("m")
-        if not _near(float(figure), cited.metres if metres else cited.seconds):
-            problems.append(f"the number {figure} {unit} is not a {'distance' if metres else 'time or duration'} "
-                            "in a cited answer")
+        if unit.lower() == "m²":
+            values, kind = cited.square_metres, "cleared area"
+        elif unit.lower().startswith("m"):
+            values, kind = cited.metres, "distance"
+        else:
+            values, kind = cited.seconds, "time or duration"
+        if not _near(float(figure), values):
+            problems.append(f"the number {figure} {unit} is not a {kind} in a cited answer")
 
     for match in _UNIT_RANGE.finditer(text):
         unit_problem(match.group(1), match.group(3))

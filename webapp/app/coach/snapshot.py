@@ -82,7 +82,7 @@ def _wait_util(db, match_uuid, *, session_factory, deadline, poll_s, ask):
             if current:
                 payload = replay_util.match_payload(db, replay, read_only=True)
                 if not payload["updating"]:
-                    return identity, payload["rounds"]
+                    return identity, payload
                 reason += "; read-only payload is updating"
         except Exception as error:
             db.rollback()
@@ -197,7 +197,9 @@ def _read_rounds(db, replay, context, util):
         shares = (control_areas.area_shares(answer.row.data, asset_key)
                   if answer.status == "ok" and asset_key is not None else None)
         controls[n] = (answer.status, bool(answer.stale), shares)
-    return assemble(context, blobs, controls, links, util)
+    # Context is stored once in snapshot.json; each round file keeps only that round's casts.
+    context = {**context, "util_info": util.get("info") or {}}
+    return assemble(context, blobs, controls, links, util.get("rounds"))
 
 
 def hide_enemy_names(data: dict, player_id: int) -> dict:
