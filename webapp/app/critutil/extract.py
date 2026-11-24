@@ -17,7 +17,7 @@ import re
 
 from app.control import engine
 from app.control.stance import line_ends
-from app.critutil import abilities, windows
+from app.critutil import abilities, info, windows
 from app.critutil.constants import (AGENT_KEYS, ALARMBOT_YAW_WINDOW_S, ARC_ROSE, ROSE_REPOP_S, TRADEMARK_FIRE_LEAD_S, TRADEMARK_PIECE_LEAD_S, BUFF_MATCH_S, BUY_PLACED_S, DEVICE_PATTERNS, SAME_PLACE_M, ENGAGE_LOOKBACK_S, FITS_ANY_FIGHT, FITS_SPIKE,
                                     DASH_ANCHOR_S, FLASH_ROW_MATCH_S, FLASH_TAIL_S, FOLLOW_S, GRACE_S, HEAL_FOLLOW_S, HOLD_MATCH_S, MOBILITY_KEYS,
                                     MERGE_S, NEAR_TRIGGER_M, PRESENCE_KINDS, REPEAT_PARTS, REPEAT_S, PRESENCE_STEP_S, SAVE_WINDOW_S,
@@ -384,6 +384,37 @@ def _phase(t, contact, plant) -> str:
 # --- evidence
 
 
+def _cast_of_row(r, casts: list[_Cast], by_id: dict) -> _Cast | None:
+    """The existing effect-row join, shared with information measures. Never match on source text."""
+    k = r.get("k")
+    cast = by_id.get(r.get("id")) if r.get("id") is not None else None
+    if cast is None and k == "status" and r.get("src") is not None:
+        cast = by_id.get(r["src"])          # a levitated row names its zone (CONDENSE 31): that zone's cast
+    if cast is None:
+        name = r.get("name")
+        t = float(r["t"])
+        cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
+                 and (not name or name in c.names or not c.names)]
+        if k == "damage" and not cands:
+            cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
+                     and "damaging" in c.kinds]
+        if not cands and r.get("code"):
+            # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
+            # and of the same ability slot (a Jett's ult knives are never her dash's), never a movement cast (a
+            # dash touches nobody; branch review B11)
+            key = _key_of(name)
+            cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
+                     and r["code"] in {x.get("code") for x in c.rows}
+                     and (key is None or c.key is None or c.key == key)
+                     and any(x.get("k") != "cast" for x in c.rows)]
+        if len({c.i for c in cands}) != 1:
+            cands = [c for c in cands if name and name in c.names] or cands
+        if not cands:
+            return None
+        cast = max(cands, key=lambda c: c.t)
+    return cast
+
+
 def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
     """Each cast's effects on players: (target, t0, t1, how) from its flash hits, and the reveal, status and
     ability-damage rows it caused. A row names its cast by `id` (revision 21) or, failing that, by caster and
@@ -406,31 +437,9 @@ def _effects(rnd, blob, casts: list[_Cast]) -> dict[int, list[dict]]:
             continue
         if k == "damage" and r.get("src") != "ability" and not r.get("code"):
             continue             # a gun hit
-        cast = by_id.get(r.get("id")) if r.get("id") is not None else None
-        if cast is None and k == "status" and r.get("src") is not None:
-            cast = by_id.get(r["src"])          # a levitated row names its zone (CONDENSE 31): that zone's cast
+        cast = _cast_of_row(r, casts, by_id)
         if cast is None:
-            name = r.get("name")
-            t = float(r["t"])
-            cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
-                     and (not name or name in c.names or not c.names)]
-            if k == "damage" and not cands:
-                cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
-                         and "damaging" in c.kinds]
-            if not cands and r.get("code"):
-                # an effect named differently from its object (a dart's reveal): the caster's live cast of that agent
-                # and of the same ability slot (a Jett's ult knives are never her dash's), never a movement cast (a
-                # dash touches nobody; branch review B11)
-                key = _key_of(name)
-                cands = [c for c in casts if c.by == r.get("by") and c.t - _EPS <= t <= c.t_end + 1.0
-                         and r["code"] in {x.get("code") for x in c.rows}
-                         and (key is None or c.key is None or c.key == key)
-                         and any(x.get("k") != "cast" for x in c.rows)]
-            if len({c.i for c in cands}) != 1:
-                cands = [c for c in cands if name and name in c.names] or cands
-            if not cands:
-                continue
-            cast = max(cands, key=lambda c: c.t)
+            continue
         t0 = float(r["t"])
         t1 = float(r["t1"]) if r.get("t1") is not None else t0
         how = {"reveal": "reveal", "damage": "damage"}.get(k) or r.get("status") or "status"
@@ -1402,15 +1411,16 @@ def _probe_kind(c: _Cast) -> str | None:
     return None
 
 
-def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
+def _hold_items_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, int]:
     """Each probe item (app/critutil/unknown.py) to one cast: the cast holding the device's own row (`id`, the
     actor); else its owner's cast of the same kind whose landing is nearest its start (a buy-phase placement
     starts at the round's 0), within HOLD_MATCH_S, and for a molly nearest its place. One cast, one item."""
-    out: dict[int, dict] = {}
+    out: dict[int, int] = {}
     if not holds:
         return out
     taken = set()
-    for item in sorted(holds.get("items") or (), key=lambda i: (i["t0"], i.get("id") is None)):
+    for index, item in sorted(enumerate(holds.get("items") or ()),
+                              key=lambda pair: (pair[1]["t0"], pair[1].get("id") is None)):
         best = None
         if item.get("id") is not None:
             best = next(((0.0, c) for c in casts if c.i not in taken and item["id"] in c.ids), None)
@@ -1427,7 +1437,42 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
                 best = (gap, c)
         if best is not None:
             taken.add(best[1].i)
-            out[best[1].i] = {k: item[k] for k in ("up_s", "front_s", "held_m2s", "crossed_s")}
+            out[best[1].i] = index
+    return out
+
+
+def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
+    """The unchanged legacy measures, using the shared item-to-cast match."""
+    return {i: {k: holds["items"][index][k] for k in ("up_s", "front_s", "held_m2s", "crossed_s")}
+            for i, index in _hold_items_by_cast(rnd, casts, holds).items()}
+
+
+def _info_by_cast(rnd, blob, casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
+    """Join the probe's info entries without changing the legacy hold figures or cast grouping."""
+    if not holds or holds.get("error") or holds.get("info") is None:
+        return {}
+    by_id = {actor: c for c in casts for actor in c.ids}
+    by_item = {index: casts[i] for i, index in _hold_items_by_cast(rnd, casts, holds).items()}
+    rows = {tuple(r.get(k) for k in ("by", "code", "name", "t")): r for r in blob.get("util") or ()}
+    out = {}
+    for measure in holds["info"]:
+        cast = by_item.get(measure.get("item"))
+        if cast is None:
+            cast = by_id.get(measure.get("id")) or by_id.get(measure.get("cast_id"))
+        if cast is None and measure.get("row_key") is not None:
+            row = rows.get(tuple(measure["row_key"]))
+            if row is not None:
+                cast = _cast_of_row(row, casts, by_id)
+        if cast is not None and (cast.entry or {}).get("ability") == "Spycam dart":
+            # Keep the legacy dart cast, but its information belongs to the owner's live camera.
+            cast = _cast_of_row({"by": cast.by, "t": measure["t0"], "code": "Gumshoe",
+                                 "name": "E_PossessableCamera"},
+                                [c for c in casts if (c.entry or {}).get("ability") == "Spycam"], by_id)
+        if cast is None or cast.t > rnd.t_decided:
+            continue
+        figures = out.setdefault(cast.i, info.empty())
+        for key in figures:
+            figures[key] += measure[key]
     return out
 
 
@@ -1514,6 +1559,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
     defuse = next((float(a[1]) for a in (spike or {}).get("defuses") or ()
                    if isinstance(a, list) and len(a) > 3 and a[3] and a[1] is not None), None)
     held = _holds_by_cast(rnd, casts, holds)
+    measured_info = _info_by_cast(rnd, blob, casts, holds)
     # outcomes two casts can share (a sight line, an enemy at an edge, a stopped defuse) are measured for every
     # cast first and then given out once
     cover = _cover_all(rnd, sides, casts)
@@ -1572,7 +1618,12 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             out_casts.append(x)
         else:
             kept["signals"].update(x["signals"])
+    # `info`'s presence marks the new probe contract; legacy payloads cannot claim measured zeros.
+    current_info = holds is not None and holds.get("info") is not None and not holds.get("error")
     for i, c in enumerate(out_casts):
+        eligible = c.get("ability_id") in info.CLEAR_ABILITIES | info.HOLD_ABILITIES
+        c["info"] = (measured_info.get(c["i"], info.empty())
+                     if current_info and eligible and not c["after_decided"] else None)
         c["i"] = i
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
