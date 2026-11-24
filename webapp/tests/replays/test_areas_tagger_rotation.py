@@ -1,4 +1,5 @@
 """Drive the Areas panel's actual map and reference pointer handlers (R12)."""
+import base64
 import copy
 import json
 import re
@@ -26,6 +27,62 @@ function paint(page) {
 
 def run_areas(body, data, **payload):
     return run_page(PANEL_HELPERS + body, {"data": data, **payload})
+
+
+@pytest.fixture
+def height_data(data):
+    seeded = copy.deepcopy(data)
+    packed = bytearray(256 * 256 // 8)
+    for cell in (17, 500):
+        packed[cell // 8] |= 1 << (cell % 8)
+    seeded["height_paint"] = {"maps": {"Ascent": {"ground": base64.b64encode(packed).decode("ascii")}}}
+    return seeded
+
+
+@pytest.mark.parametrize("action", ["paste", "place", "shrink", "delete", "parent", "extra parents", "undo"])
+def test_areas_actions_preserve_control_and_seeded_heights(height_data, action):
+    got = run_areas("""function run(p) {
+      const page=enter(p), T=page.T, TG=page.TG;
+      // openPage does not load height paint: use the real template's loading path.
+      for(const name of Object.keys(p.data.maps)) {
+        const heightEntry=(p.data.height_paint.maps||{})[name];
+        TG.edits[name]=T.editsFrom((p.data.tags.maps||{})[name],heightEntry);
+        TG.loaded[name]=T.editsFrom((p.data.tags.maps||{})[name],heightEntry);
+      }
+      if(p.action==='place') paste(page,'Alcove');
+      if(p.action==='extra parents') {
+        page.el('areasNewName').value='Bridge'; page.el('areasAddChild').checked=true; page.click('areasAdd');
+      }
+      if(p.action==='undo') {page.el('areasTree').children[1].click(); paintPoint('brush');}
+      function paintPoint(tool) {
+        page.click('areaTool-'+tool); point(page,'pointerdown',128,384); point(page,'pointerup',128,384);
+      }
+      function snapshot() {
+        return {tags:JSON.stringify(T.exportTags(p.data.tags,TG.maps,TG.edits)),
+                heights:JSON.stringify(T.heightPaintExport({edits:TG.edits,height_paint:p.data.height_paint})),
+                areas:exported(page)+'|'+page.el('areasQueue').textContent};
+      }
+      const before=snapshot();
+      if(p.action==='paste') paste(page,'Alcove');
+      if(p.action==='place') {page.click('areaTool-place'); point(page,'pointerdown',128,384);}
+      if(p.action==='shrink') paintPoint('shrink');
+      if(p.action==='delete') page.click('areasDelete');
+      if(p.action==='parent') {
+        page.el('areasTree').children[1].click(); page.el('areasParent').value='1';
+        page.el('areasParent').dispatch('change');
+      }
+      if(p.action==='extra parents') {
+        for(const option of page.el('areasAlsoParents').children) option.selected=+option.value===2;
+        page.el('areasAlsoParents').dispatch('change');
+      }
+      if(p.action==='undo') page.click('areasUndo');
+      return {before,after:snapshot(),seed:p.data.height_paint,loaded:T.packPaint(TG.edits.Ascent.heightPaints.ground)};
+    }""", height_data, action=action)
+    assert got["before"]["areas"] != got["after"]["areas"], action
+    assert got["before"]["tags"] == got["after"]["tags"]
+    assert got["before"]["heights"] == got["after"]["heights"]
+    assert json.loads(got["before"]["heights"]) == got["seed"]
+    assert got["loaded"] == got["seed"]["maps"]["Ascent"]["ground"]
 
 
 @pytest.fixture(scope="module")

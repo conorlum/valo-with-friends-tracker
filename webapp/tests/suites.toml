@@ -219,7 +219,7 @@ guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
   "scripts/coach*", "app/replays/control_reasons.py", "app/replays/destroyed.py",
-  "scripts/area_pins.py", "tests/coach/data/area_cases.json", "alembic/versions/0033_coach_feedback_area.py",
+  "scripts/area_pins.py", "scripts/areas_files.py", "tests/coach/data/area_cases.json", "alembic/versions/0033_coach_feedback_area.py",
 ]
 
 [critical-util]
