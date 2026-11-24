@@ -2979,20 +2979,25 @@ class Unknown:
             for info in late_infos:
                 if info.kind == "one_of":
                     fp = utility.footprint(info, self.geo)
-                    # D9: the sound says at least one enemy is in the zone. One already seen there
-                    # explains it, so it says nothing about any other enemy's uncertainty region.
+                    # R11: enemies already seen in the footprint explain that many of the count.
                     # A point locate ordered earlier at this instant counts too; old sightings and
                     # locating areas do not establish that an enemy is still inside the footprint.
-                    if any(fp[node] for node in known.values()):
+                    left = info.count - sum(bool(fp[node]) for node in known.values())
+                    if left <= 0:
                         self.ignored["one_of explained by a seen enemy"] += 1
                         continue
                     candidates = [s for s, state in prepared.items()
-                                  if utility.affects("status", rnd.evolution, s, info.t)
+                                  if not (s in known and fp[known[s]])
+                                  and utility.affects("status", rnd.evolution, s, info.t)
                                   and (np.isfinite(state[0]) & (state[0] <= info.t) & fp).any()]
                     if not candidates:
                         self.ignored["one_of with no candidate"] += 1
+                    if len(candidates) > left and info.mask is not None:
+                        # A mask has no single true point from which to seed a hypothesis.
+                        self.ignored["one_of mask with too many candidates"] += 1
+                        continue
                     derived = [utility.Info(info.t, side, s,
-                                            "restrict" if len(candidates) == 1 else "hypothesis", info.reason,
+                                            "restrict" if len(candidates) <= left else "hypothesis", info.reason,
                                             x=info.x, y=info.y, radius_m=info.radius_m, mask=info.mask,
                                             source=info.source, seq=info.seq, z=info.z, detail=info.detail,
                                             cast_id=info.cast_id, row_key=info.row_key)

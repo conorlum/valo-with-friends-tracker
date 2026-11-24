@@ -93,7 +93,8 @@ def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(),
     """No hidden position pushes: seed regions, then exercise the real Unknown.apply ordering and spread."""
     geo = open_hall()
     unknown = ce.Unknown(geo)
-    for slot, x in zip((5, 6), places):
+    slots = range(5, 5 + len(places))
+    for slot, x in zip(slots, places):
         reached = np.full(geo.n, np.inf)
         reached[ut.footprint(info(0, "restrict", x, 200, r=5), geo)] = seed_t
         unknown.reached["A"][slot] = reached
@@ -103,10 +104,144 @@ def suspension_unknown(infos, places=(400, 200), *, dead=(), immune=(), seen=(),
     for side in ("A", "B"):
         unknown.free_since[side] = np.zeros(geo.n)
         unknown._room[side] = geo.walk_n.copy()
-    rnd = SimpleNamespace(team={0: "A", 5: "B", 6: "B"}, alive=lambda s, t: s not in dead,
+    rnd = SimpleNamespace(team={0: "A", **dict.fromkeys(slots, "B")}, alive=lambda s, t: s not in dead,
                           watchers=[], infos=ut.ordered(infos), evolution={s: [(0, 9)] for s in immune})
     unknown.apply(SimpleNamespace(t=t, holders=holders or {}, rnd=rnd))
     return geo, unknown
+
+
+@pytest.mark.parametrize("places", [(400, 200), (400, 400)])
+def test_anonymous_count_one_matches_default_one_of_array_for_array(places):
+    _, old = suspension_unknown([one_of()], places)
+    _, actual = suspension_unknown([one_of(count=1)], places)
+    for slot in (5, 6):
+        np.testing.assert_array_equal(actual.reached["A"][slot], old.reached["A"][slot])
+    assert actual.reasons == old.reasons
+    assert actual.protect == old.protect
+    assert actual.applied == old.applied
+    assert actual.ignored == old.ignored
+
+
+@pytest.mark.parametrize("places", [(400, 200), (400, 400)])
+@pytest.mark.parametrize("masked", [False, True])
+def test_anonymous_count_two_restricts_each_candidate_and_reports_cast(places, masked):
+    key = (0, "Paprika", "X_LevitateZone", 1.0)
+    hit = one_of(count=2, cast_id=41, row_key=key)
+    if masked:
+        hit.mask = ut.footprint(hit, open_hall())
+    geo, actual = suspension_unknown([hit], places)
+    _, baseline = suspension_unknown([], places)
+    fp = ut.footprint(hit, geo)
+    candidates = [5] if places[1] == 200 else [5, 6]
+    assert [r[1:3] for r in actual.reasons["A"]] == [(s, "restrict") for s in candidates]
+    for slot in candidates:
+        assert not np.isfinite(actual.reached["A"][slot][~fp]).any()
+    assert actual.applied["A"] == [
+        (41, key, "restrict", s, tuple(np.flatnonzero(np.isfinite(baseline.reached["A"][s]) & ~fp)))
+        for s in candidates]
+    assert not actual.protect["A"]
+    assert actual.events["A"] == []
+
+
+@pytest.mark.parametrize("count,inside", [(1, False), (2, False), (2, True)])
+def test_anonymous_count_keeps_known_outside_enemies_whose_regions_reach_footprint(count, inside):
+    # A locate followed by a broaden keeps a known point while adding possible ground in F.
+    # Start the late pass before these operations so the reference uses identical ordering.
+    prefix = [info(1.2, "one_of", 100, 100, r=1, slot=-1, source="miss"),
+              info(1.2, "locate", 400 if inside else 200, 200, slot=5),
+              info(1.2, "broaden", 400, 200, r=5, slot=5)]
+    hit = one_of(count=count)
+    geo, baseline = suspension_unknown(prefix, (400, 400))
+    fp = ut.footprint(hit, geo)
+    known_node = geo.node_at_px(400 if inside else 200, 200)
+    assert bool(fp[known_node]) == inside
+    assert np.isfinite(baseline.reached["A"][5][known_node])
+    assert (np.isfinite(baseline.reached["A"][5]) & fp).any()
+
+    candidates = [6] if inside else [5, 6]
+    kind = "hypothesis" if count == 1 else "restrict"
+    # The old count-one rule selects every region reaching F, even if its known point is outside.
+    reference_ops = [info(hit.t, kind, hit.x, hit.y, r=hit.radius_m, slot=s,
+                          reason=hit.reason, source=hit.source) for s in candidates]
+    _, expected = suspension_unknown([*prefix, *reference_ops], (400, 400))
+    _, actual = suspension_unknown([*prefix, hit], (400, 400))
+    assert [r[1:3] for r in actual.reasons["A"] if r[3] == hit.reason] == [
+        (s, kind) for s in candidates]
+    for slot in (5, 6):
+        np.testing.assert_array_equal(actual.reached["A"][slot], expected.reached["A"][slot])
+    assert actual.protect == expected.protect
+    assert actual.applied == expected.applied
+
+
+def test_anonymous_count_subtracts_seen_enemies_before_selecting_candidates():
+    locate = info(1.2, "locate", 400, 200, slot=5)
+    hit = one_of(count=2, cast_id=41)
+    _, actual = suspension_unknown([locate, hit], (400, 400, 400))
+    _, baseline = suspension_unknown([locate], (400, 400, 400))
+    assert [r[1:3] for r in actual.reasons["A"] if r[3] == hit.reason] == [
+        (6, "hypothesis"), (7, "hypothesis")]
+    np.testing.assert_array_equal(actual.reached["A"][5], baseline.reached["A"][5])
+    for slot in (6, 7):
+        assert (np.isfinite(baseline.reached["A"][slot]) <= np.isfinite(actual.reached["A"][slot])).all()
+    assert not any(row[0] == 41 for row in actual.applied["A"])
+
+
+def test_anonymous_count_fully_explained_by_seen_enemies_changes_nothing():
+    locates = [info(1.2, "locate", 400, 200, slot=s) for s in (5, 6)]
+    _, actual = suspension_unknown([*locates, one_of(count=2)], (400, 400, 400))
+    _, baseline = suspension_unknown(locates, (400, 400, 400))
+    assert actual.ignored["one_of explained by a seen enemy"] == 1
+    assert actual.reasons == baseline.reasons
+    for slot in (5, 6, 7):
+        np.testing.assert_array_equal(actual.reached["A"][slot], baseline.reached["A"][slot])
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_ambiguous_anonymous_mask_keeps_all_regions_unchanged(count):
+    hit = one_of(count=count)
+    hit.mask = ut.footprint(hit, open_hall())
+    _, actual = suspension_unknown([hit], (400, 400, 400))
+    _, baseline = suspension_unknown([], (400, 400, 400))
+    for slot in (5, 6, 7):
+        np.testing.assert_array_equal(actual.reached["A"][slot], baseline.reached["A"][slot])
+    assert sum(actual.ignored.values()) == 1
+    assert not actual.reasons["A"] and not actual.protect["A"] and not actual.applied["A"]
+
+
+@pytest.mark.parametrize("needs", ["status", "reveal"])
+@pytest.mark.parametrize("masked", [False, True])
+def test_zero_hits_excludes_footprint_for_every_live_enemy(needs, masked):
+    rnd = SimpleNamespace(team={0: "A", 1: "A", 5: "B", 6: "B", 7: "B"},
+                          alive=lambda s, t: s != 7)
+    footprint = {"x": 400, "y": 200, "radius_m": 1}
+    if masked:
+        footprint = {"mask": ut.footprint(info(0, "exclude", 400, 200, r=1), open_hall())}
+    key = (0, "Paprika", "X_LevitateZone", 1.0)
+    operations = ut.zero_hits(rnd, 1.2, "A", "anonymous_zero", needs=needs,
+                              source="zone", cast_id=41, row_key=key, **footprint)
+    assert [(i.slot, i.kind, i.detail["needs"]) for i in operations] == [
+        (5, "exclude", needs), (6, "exclude", needs)]
+    assert all((i.cast_id, i.row_key) == (41, key) for i in operations)
+    geo, actual = suspension_unknown(operations, (400, 400, 400), dead=(7,))
+    fp = ut.footprint(operations[0], geo)
+    for slot in (5, 6):
+        assert not np.isfinite(actual.reached["A"][slot][fp]).any()
+        assert np.isfinite(actual.reached["A"][slot][~fp]).any()
+    assert 7 not in actual.reached["A"]
+
+
+@pytest.mark.parametrize("needs", ["status", "reveal"])
+def test_zero_hits_keeps_immune_enemy_out_of_admitted_exclusions(needs):
+    b = hall_round(more={6: ("B", [(0.0, 400, 200, 0)])})
+    next(p for p in b["players"] if p["slot"] == 6)["agent"] = "Veto"
+    b["util"] = [{"k": "buff", "t": 0.0, "t1": 3.0, "by": 6, "target": 6,
+                  "code": "Pine", "name": "X_Evolution"}]
+    geo = open_hall()
+    rnd = ce.RoundInputs(b, geo)
+    operations = ut.zero_hits(rnd, 1.2, "A", "anonymous_zero", needs=needs,
+                              x=400, y=200, radius_m=1)
+    assert [i.slot for i in operations] == [5, 6]
+    assert [i.slot for i in ce.RoundInputs(b, geo, infos=operations).infos] == [5]
 
 
 @pytest.mark.parametrize("places,count", [((400, 200), 1), ((400, 400), 2), ((200, 200), 0)])

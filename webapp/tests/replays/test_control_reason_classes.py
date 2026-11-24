@@ -103,12 +103,23 @@ def _utility_emissions(source):
     globals_ = _bindings(tree.body)
     emissions = []
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-             and isinstance(n.func, ast.Name) and n.func.id == "Info"]
+             and isinstance(n.func, ast.Name) and n.func.id in ("Info", "zero_hits")]
     for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
         bindings = globals_ | _bindings(ast.walk(fn))
         for call in (n for n in ast.walk(fn) if n in calls):
-            args = dict(zip(("t", "side", "slot", "kind", "reason"), call.args))
+            parameters = (("rnd", "t", "side", "reason") if call.func.id == "zero_hits"
+                          else ("t", "side", "slot", "kind", "reason"))
+            args = dict(zip(parameters, call.args))
             args.update({kw.arg: kw.value for kw in call.keywords})
+            if fn.name == "zero_hits" and call.func.id == "Info":
+                # This factory forwards the caller's reason. Check its fixed operation here;
+                # every concrete reason is swept at the zero_hits call, including future readers.
+                assert isinstance(args["kind"], ast.Constant) and args["kind"].value == "exclude"
+                assert isinstance(args["reason"], ast.Name) and args["reason"].id == "reason"
+                calls.remove(call)
+                continue
+            if call.func.id == "zero_hits":
+                args["kind"] = ast.Constant("exclude")
             reasons = _values(args["reason"], bindings)
             kinds = _values(args["kind"], bindings)
             assert reasons and kinds, f"empty emission at {fn.name}:{call.lineno}"
@@ -163,6 +174,24 @@ def test_only_haunt_and_recon_depend_on_kind():
     assert {k for r, k, _ in emissions if r == "omen_channel"} == {"pause", "resume"}
     for reason in {r for r, _, _ in emissions} - TWO_KIND:
         assert len({classify(reason, k) for r, k, _ in emissions if r == reason}) == 1
+
+
+@pytest.mark.parametrize("called", [False, True])
+def test_sweep_resolves_zero_hits_reasons_at_its_callers(called):
+    source = '''
+def zero_hits(rnd, t, side, reason, *, needs, **kwargs):
+    return [Info(t, side, slot, "exclude", reason, **kwargs) for slot in living]
+'''
+    if called:
+        source += '''
+def reader():
+    reason = "new_zero"
+    zero_hits(rnd, t, side, reason, needs="status")
+    zero_hits(rnd, t, side, reason="another_zero", needs="reveal")
+'''
+    emissions = _utility_emissions(source)
+    assert {(r, k) for r, k, _ in emissions} == (
+        {("new_zero", "exclude"), ("another_zero", "exclude")} if called else set())
 
 
 def test_sweep_resolves_indirect_mapping_and_conditional_reasons():

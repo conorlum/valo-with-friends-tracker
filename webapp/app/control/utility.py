@@ -8,7 +8,7 @@ An `Info` says, at its own exact time `t`, something `side` learns about enemy `
 - `restrict`: the enemy is somewhere in the footprint: everything outside it is dropped. Disconnected parts that
   survive stay apart; nothing is re-centred. Not locating evidence.
 - `exclude`: the enemy is not in the footprint: it is dropped. Not locating evidence.
-- `one_of`: at least one live enemy of `side` is in the footprint. Uses ONE_OF_SLOT, not an enemy slot;
+- `one_of`: an anonymous `count` of live enemies is in the footprint (one by default). Uses ONE_OF_SLOT;
   derived per-enemy restrict/hypothesis operations are selected from their regions at this exact time.
 - `hypothesis`: the enemy may also be at (x, y) (a beacon heard, a recall): a second origin, spreading like the
   rest, joined to the region without replacing it. Its source node is protected from the size-only sliver
@@ -82,6 +82,7 @@ class Info:
     detail: dict = field(default_factory=dict)
     cast_id: int | None = None    # the util row's id; reveals have no id
     row_key: tuple | None = None  # (by, code, name, t) of the original util row
+    count: int = 1                # anonymous enemies in a side-wide footprint; zero uses zero_hits
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -222,6 +223,17 @@ SKYE_FLASH = "skye_guiding_light"
 
 def _living_enemies(rnd, side: str, t: float) -> list[int]:
     return sorted(s for s, team in rnd.team.items() if team != side and rnd.alive(s, t))
+
+
+def zero_hits(rnd, t: float, side: str, reason: str, *, needs: str, **kwargs) -> list[Info]:
+    """An anonymous zero excludes the footprint for every live enemy.
+
+    The caller supplies the footprint and cast identity as Info keywords, and must name the capability
+    (status or reveal) so RoundInputs drops exclusions for enemies immune to that utility.
+    """
+    detail = {**kwargs.pop("detail", {}), "needs": needs}
+    return [Info(t, side, slot, "exclude", reason, detail=detail.copy(), **kwargs)
+            for slot in _living_enemies(rnd, side, t)]
 
 
 KNIFE_REASONS = ("knife_zero", "knife_all", "knife_hit", "knife_missed")
