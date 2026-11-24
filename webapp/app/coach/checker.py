@@ -72,6 +72,8 @@ _COUNT = r"(\d|one|two|three|four|five)"
 _VERSUS = re.compile(r"(?<!\w)" + _COUNT + r"\s?-?\s?(?:versus|against|vs|v|on)\.?\s?-?\s?" + _COUNT + r"(?!\w)",
                      re.IGNORECASE)
 _ORDINAL = re.compile(r"(?<![\w.#])\d+(?:st|nd|rd|th)(?!\w)", re.IGNORECASE)
+_PERCENTILE = re.compile(r"(?<![\w.#])(?:(\d+(?:\.\d+)?)(?:st|nd|rd|th)?\s+percentile\b|"
+                         r"percentile\s+(\d+(?:\.\d+)?)(?!\w))", re.IGNORECASE)
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 _NUMBER = re.compile(r"(?<![\w.#])\d+(?:\.\d+)?(?!\.?\d|#)")
 # A sign counts only where it is clearly a signed figure: at the start, after ( = : or "of/was/is/at/by/gained/lost".
@@ -233,6 +235,7 @@ class _Cited:
         self.times: list[float] = []
         self.metres: list[float] = []
         self.square_metres: list[float] = []
+        self.percentiles: list[float] = []
         self.seconds: list[float] = []
         self.pairs: set[tuple[int, int]] = set()
         self.areas: set[tuple[tuple[str, ...], str, int, float | None, int]] = set()
@@ -248,6 +251,8 @@ def _collect(value, key, cited: _Cited, source: tuple[str, int, float | None, in
     if isinstance(value, (int, float)):
         if key in _MEASURED:
             cited.numbers.append(float(value))
+        if key == "ability_pct":
+            cited.percentiles.append(float(value))
         if key in _SHARE_KEYS:
             cited.shares.append(float(value))
         if key in _TIME_KEYS:
@@ -549,6 +554,11 @@ def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = Fa
         if counts != (1, 1) and counts not in pairs:
             problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
     text = _VERSUS.sub(" ", text)
+    for match in _PERCENTILE.finditer(text):
+        figure = next(g for g in match.groups() if g is not None)
+        if not _near(float(figure), cited.percentiles):
+            problems.append(f"the percentile {figure} is not an ability_pct in a cited answer")
+    text = _PERCENTILE.sub(" ", text)
     text = _THOUSANDS.sub("", _ORDINAL.sub(" ", text))      # "2nd" is not a measurement; "12,000" is 12000
     # The point's own figures, each only in its own form: "round 7", "rounds 4, 9 and 15", "3 times".
     for match in list(_ROUND.finditer(text)) + list(_ROUNDS.finditer(text)):

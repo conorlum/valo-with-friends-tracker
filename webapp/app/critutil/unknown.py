@@ -176,15 +176,14 @@ class InfoMeasure:
     """
 
     def __init__(self, probe):
-        from app.critutil.extract import _hold_items_by_cast, build_casts
+        from app.critutil.extract import _info_items_by_cast, build_casts
 
         self.probe, self.rnd = probe, probe.rnd
         self.casts = build_casts(self.rnd, self.rnd.blob)
         self.by_id = {actor: cast for cast in self.casts for actor in cast.ids}
         self.rows = {tuple(row.get(k) for k in ("by", "code", "name", "t")): row
                      for row in self.rnd.blob.get("util") or ()}
-        self.by_item = {index: self.casts[i] for i, index in
-                        _hold_items_by_cast(self.rnd, self.casts, {"items": probe.items}).items()}
+        self.by_item = _info_items_by_cast(self.rnd, self.casts, {"items": probe.items})
         self.previous: dict = {}
         self.prev_t = None
         self.measures: dict = {}
@@ -294,6 +293,16 @@ class InfoMeasure:
                     footprints.setdefault(key, np.zeros(self.probe.n, bool))[:] |= mask
                 self.started.add(index)
                 watchers.append((key, mask, self.probe.topo.dilate(mask) & ~mask, dynamic))
+            # One cast holds its combined live footprint. Unknown in any piece means it was crossed;
+            # several pieces holding at once are still one tick, and expired pieces contribute nothing.
+            combined = {}
+            for key, mask, _, dynamic in watchers:
+                if key not in combined:
+                    combined[key] = (mask.copy(), dynamic)
+                else:
+                    combined[key][0][:] |= mask
+            watchers = [(key, mask, self.probe.topo.dilate(mask) & ~mask, dynamic)
+                        for key, (mask, dynamic) in combined.items()]
             clears = {key: mask & removed for key, mask in footprints.items()}
             count = np.zeros(self.probe.n, np.int32)
             for mask in clears.values():

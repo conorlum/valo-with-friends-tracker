@@ -8,6 +8,20 @@ from tests.coach.test_snapshot import CONTEXT
 THEMES = ("trading", "rotation")
 
 
+@pytest.mark.parametrize("metric", ["cleared_m2", "hold_s"])
+@pytest.mark.parametrize("field", ["title", "body", "caption"])
+@pytest.mark.parametrize("claim, valid", [("34th percentile", True), ("99th percentile", False),
+                                         ("percentile 34", True), ("percentile 99", False),
+                                         ("11th percentile", False), ("2nd cast", True)])
+def test_percentile_claims_need_cited_ability_ranks(snap, metric, field, claim, valid):
+    fact = {"round": 1, "t": 10, "ability_pct": {metric: 34}, "ability_n": {metric: 11}, "located": 99}
+    log = {"u": flag_entry([1, 10, "util_fact"], fact)}
+    fields = {"title": "Utility use", "body": "Utility used.", "caption": "Utility used."}
+    fields[field] = f"This was the {claim}."
+    instances = [{"round": 1, "t": 10, "caption": fields.pop("caption"), "evidence": ["u"]}]
+    assert bool(problems(snap, log, polarity="good", instances=instances, **fields)) is (not valid)
+
+
 @pytest.mark.parametrize("body", [
     "You cleared 340 m².", "You cleared 340m².", "You located 2 enemies.",
     "You held them back for 6.5 s.", "That was at percentile 34 among 11 casts.",

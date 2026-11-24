@@ -119,7 +119,7 @@ def test_reveal_row_key_uses_the_same_join_as_effects_after_json_transport():
 
 def test_fury_blast_without_an_actor_joins_the_ult_cast():
     blast = {"k": "blast", "t": 7.0, "by": 0, "code": "Hunter", "name": "X_LaserMulti",
-             "u": 2000, "v": 2000, "yaw": 0, "hits": []}
+             "u": 2000, "v": 2000, "yaw": 0, "hits": [], "hits_read": True, "fired": True}
     key = [blast[k] for k in ("by", "code", "name", "t")]
     out = run([blast], payload(entry(row_key=key)))
     fury = next(c for c in out["casts"] if c["ability_id"] == "Sova/Hunter's Fury")
@@ -133,7 +133,7 @@ def test_fury_blast_without_an_actor_joins_the_ult_cast():
 ])
 def test_fury_blasts_group_by_owner_and_the_original_use_window(uses):
     blasts = [{"k": "blast", "t": t, "by": by, "code": "Hunter", "name": "X_LaserMulti",
-               "u": 2000, "v": 2000, "yaw": 0, "hits": []} for by, t in uses]
+               "u": 2000, "v": 2000, "yaw": 0, "hits": [], "hits_read": True, "fired": True} for by, t in uses]
     measures = [entry(row_key=[r[k] for k in ("by", "code", "name", "t")]) for r in blasts]
     casts = run(blasts, payload(*measures))["casts"]
     expected = {

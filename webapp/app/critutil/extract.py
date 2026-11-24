@@ -27,6 +27,22 @@ from app.moments.constants import ABILITY_KIND
 
 _EPS = 0.01
 
+# Only these abilities need revision-33 source-hit coverage. Keep this small worker-side
+# table aligned with extras.HITS_READ (plus Fury blasts); a contract test checks both keys
+# and their ability-table parents without importing the condenser into the replay worker.
+INFO_HIT_SOURCES = {
+    "Fade/Prowler": "BountyHunter_4_WolfHound",
+    "Gekko/Wingman": "Aggrobot_SeekerNade",
+    "Skye/Seekers": "Guide_X_Pack",
+    "Gekko/Thrash": "Aggrobot_RollyPolly",
+    "Fade/Nightfall": "BountyHunter_X_WaveForm",
+    "Fade/Seize": "BountyHunter_Q_Tether_SphereExpansion",
+    "Gekko/Dizzy": "Aggrobot_E_DiscTurret_PowerWave",
+    "Harbor/Storm Surge": "Mage_4_SplashGrenade",
+    "Yoru/Fakeout": "Stealth_4_Decoy_V2",
+    "Sova/Hunter's Fury": "Hunter_X_LaserMulti",
+}
+
 
 def _r2(x):
     return None if x is None else round(float(x), 2)
@@ -147,7 +163,7 @@ class _Cast:
         if row.get("id") is not None:
             self.ids.add(row["id"])
         landed = row.get("k") != "ability" or row.get("kind") != "Projectile"
-        if row.get("u") is not None and (self.u is None or (landed and self.landed_t is None)):
+        if row.get("k") != "blast" and row.get("u") is not None and (self.u is None or (landed and self.landed_t is None)):
             self.u, self.v = row["u"], row["v"]     # where it landed, not where the projectile left the hand
         if landed and row.get("k") == "ability":
             if self.landed_t is None:
@@ -338,10 +354,24 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
             c = _Cast(len(casts), row, rnd)
             c.kinds = set()
             casts.append(c)
+            host = c
         else:
             # A shot doesn't extend the use's lifetime.
             host.rows.append(row)
             host.names.append(row["name"])
+        # A blast's coordinates are its origin, never a persistent damaging area. Its use ends on
+        # the final blast, a recorded close, owner death, or a switch back to a gun.
+        ends = [float(r["t"]) for r in host.rows if r.get("final") is True]
+        ends += [float(r[k]) for r in host.rows for k in ("t1", "gone") if r.get(k) is not None]
+        death = _death_after(rnd, host.by, host.t)
+        if death is not None:
+            ends.append(death)
+        ends += [float(r["t"]) for r in util if r.get("k") == "hold" and r.get("by") == host.by
+                 and r.get("gun") and r.get("cat") not in (None, "ability") and float(r["t"]) > host.t + _EPS]
+        known = [t for t in ends if host.t <= t <= host.t_end]
+        host.end_unknown = not known
+        if known:
+            host.t_end = min(known)
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
         if any(_ult_row(r) for r in c.rows):
@@ -1354,6 +1384,14 @@ def _signals(rnd, blob, sides, c: _Cast, enemy_eff: list[dict], cast_type: str) 
         elif e:
             to_end = True     # up when the round ended: no seen_end, but not missing either (branch review B3)
     pop = ((c.flash or {}).get("pop") or {}).get("t")
+    if any(r.get("k") == "blast" for r in c.rows) and not c.end_unknown:
+        # Unlike placed pieces, the first proven ending terminates the whole channel.
+        ends = []
+        to_end = False
+        if c.t_end < rnd.t_end - _EPS:
+            ends.append(c.t_end)
+        else:
+            to_end = True
     on = sorted(([a, b] for r in c.rows for a, b in (r.get("on") or ())), key=lambda x: x[0])
     off = sorted(([a, b] for r in c.rows for a, b in (r.get("off") or ())), key=lambda x: x[0])
     ult_line = ((blob.get("player_state") or {}).get("ult") or {}).get(str(c.by)) or []
@@ -1417,6 +1455,8 @@ WATCHER_OF = (("TripWire", "trip"), ("PossessableCamera", "camera"), ("E_Turret"
 def _probe_kind(c: _Cast) -> str | None:
     """Which unknown-probe item kind this cast is: a molly, a trip, camera or turret, or another fixed watcher
     ("area": an alarmbot, a sensor). None for anything the engine doesn't treat as holding ground."""
+    if any(r.get("k") == "blast" for r in c.rows):
+        return None                    # a blast origin cannot join a placed molly's measurements
     if "device" in c.kinds:
         for part, kind in WATCHER_OF:
             if any(part in n for n in c.names):
@@ -1463,12 +1503,57 @@ def _holds_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, dic
             for i, index in _hold_items_by_cast(rnd, casts, holds).items()}
 
 
+def _info_items_by_cast(rnd, casts: list[_Cast], holds: dict | None) -> dict[int, _Cast]:
+    """Information's many-to-one join: every source piece may belong to the same cast.
+
+    Molly items have no actor identity. Compare their start and place against every landed piece,
+    including later Armageddon segments and Salvo missiles, rather than only the cast's first piece.
+    The legacy one-item matcher above remains independent.
+    """
+    from app.control.mollies import MOLLY_KEYS
+
+    out = {}
+    for index, item in enumerate((holds or {}).get("items") or ()):
+        actor = item.get("id")
+        cast = next((c for c in casts if actor is not None and actor in c.ids), None)
+        best = None
+        if cast is None:
+            for c in casts:
+                if c.by != item["by"] or _probe_kind(c) != item["kind"]:
+                    continue
+                pieces = [r for r in c.rows if _code_name(r) in MOLLY_KEYS] if item["kind"] == "molly" else c.rows
+                for r in pieces:
+                    gap = min(abs(max(float(r["t"]), 0.0) - item["t0"]),
+                              abs(max(c.landed_t if c.landed_t is not None else c.t, 0.0) - item["t0"]))
+                    if gap > HOLD_MATCH_S:
+                        continue
+                    if item.get("uv") is not None and r.get("u") is not None:
+                        gap += _dist_m(rnd, _px(*item["uv"]), _px(r["u"], r["v"]))
+                    if best is None or gap < best[0]:
+                        best = (gap, c)
+            cast = best[1] if best is not None else None
+        if cast is not None:
+            out[index] = cast
+    return out
+
+
+def _info_covered(c: _Cast) -> bool:
+    """Unchanged engine sources remain measured; new hit readers need this cast's own stamps."""
+    entry = c.entry or {}
+    source = INFO_HIT_SOURCES.get(f"{entry.get('agent')}/{entry.get('ability')}")
+    if source is None:
+        return True
+    kind = "blast" if source == "Hunter_X_LaserMulti" else "ability"
+    rows = [r for r in c.rows if r.get("k") == kind and _code_name(r) == source]
+    return bool(rows) and all(r.get("hits_read") is True for r in rows)
+
+
 def _info_by_cast(rnd, blob, casts: list[_Cast], holds: dict | None) -> dict[int, dict]:
     """Join the probe's info entries without changing the legacy hold figures or cast grouping."""
     if not holds or holds.get("error") or holds.get("info") is None:
         return {}
     by_id = {actor: c for c in casts for actor in c.ids}
-    by_item = {index: casts[i] for i, index in _hold_items_by_cast(rnd, casts, holds).items()}
+    by_item = _info_items_by_cast(rnd, casts, holds)
     rows = {tuple(r.get(k) for k in ("by", "code", "name", "t")): r for r in blob.get("util") or ()}
     out = {}
     for measure in holds["info"]:
@@ -1634,12 +1719,15 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
             out_casts.append(x)
         else:
             kept["signals"].update(x["signals"])
-    # `info`'s presence marks the new probe contract; legacy payloads cannot claim measured zeros.
+    # Probe success and source coverage are independent. Unchanged sources keep measured zeros,
+    # while a new hit reader cannot borrow another cast's stamp or recover unread old evidence.
+    coverage = {c.i: _info_covered(c) for c in casts}
     current_info = holds is not None and holds.get("info") is not None and not holds.get("error")
     for i, c in enumerate(out_casts):
         eligible = c.get("ability_id") in info.CLEAR_ABILITIES | info.HOLD_ABILITIES
+        covered = coverage.get(c["i"], c.get("ability_id") not in INFO_HIT_SOURCES)
         c["info"] = (measured_info.get(c["i"], info.empty())
-                     if current_info and eligible and not c["after_decided"] else None)
+                     if current_info and covered and eligible and not c["after_decided"] else None)
         c["i"] = i
     has_causes = any(r.get("k") == "damage" and r.get("code") for r in blob.get("util") or ())
     return {
