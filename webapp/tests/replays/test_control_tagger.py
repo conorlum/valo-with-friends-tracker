@@ -312,7 +312,9 @@ def test_the_page_includes_areas_data_panel_and_distinct_mode_keys(tmp_path):
     page = out.read_text(encoding="utf-8")
     assert "/*AREAS_UI*/" not in page and "window.taggerAreas" in page
     for element in ("areasCard", "areasCanvas", "areasFloor", "areasPinsFile", "areasReferenceFile", "areasExport",
-                    "areasExportFixture"):
+                    "areasExportFixture", "areasPaste", "areasPasteAdd", "areasQueue", "areasPlaceNew",
+                    "areasPlaceChild", "areasDelete", "areasUndo", "areasAlsoParents", "areasRestoreRow",
+                    "areasRestore", "areasDiscard"):
         assert f'id="{element}"' in page
     data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])["maps"]["Sunset"]["areas"]
     assert data["map"] == "Sunset" and len(data["labels"]) == 17 and data["draft"]["cells"]

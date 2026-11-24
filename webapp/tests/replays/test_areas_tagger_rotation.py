@@ -1,10 +1,31 @@
 """Drive the Areas panel's actual map and reference pointer handlers (R12)."""
 import copy
 import json
+import re
+from pathlib import Path
 
 import pytest
 
 from tests.replays.test_map_feature_tagger import page_data, run_page
+
+
+PANEL_HELPERS = """
+const key='control-tagger-areas-draft-v1:Ascent';
+function enter(p, opts) {const page=openPage(p.data,opts); page.TG.setMode('areas'); return page;}
+function exported(page) {page.click('areasExport'); return page.downloads.at(-1).text;}
+function paste(page,text) {page.el('areasPaste').value=text; page.click('areasPasteAdd');}
+function point(page,kind,x,y) {
+  page.el('areasCanvas').dispatch(kind,{button:0,pointerId:1,clientX:x/1024*800,clientY:y/1024*800});
+}
+function paint(page) {
+  page.el('areasTree').children[1].click(); page.click('areaTool-brush');
+  point(page,'pointerdown',128,384); point(page,'pointerup',128,384);
+}
+"""
+
+
+def run_areas(body, data, **payload):
+    return run_page(PANEL_HELPERS + body, {"data": data, **payload})
 
 
 @pytest.fixture(scope="module")
@@ -79,3 +100,224 @@ def test_reference_preview_keeps_image_coordinates_during_rotated_alignment(data
       return [align(0),align(1)];
     }""", {"data": copy.deepcopy(data)})
     assert got == [[[1, 0, 50], [0, 1, 30]]] * 2
+
+
+@pytest.mark.parametrize("turns", [1, 3])
+def test_place_rotated_queue_and_parent_modes(data, turns):
+    got = run_areas("""function run(p) {
+      function act(turns) {
+        const page=enter(p,{turns});
+        // Pick is the default; a click selects Court without changing cells.
+        const original=exported(page);
+        point(page,'pointerdown',...[[384,128],[896,384],[640,896],[128,640]][turns]);
+        const picked=page.el('areasName').value, unchanged=exported(page)===original;
+        paste(page,'Alcove\\nBalcony'); const unlisted=page.el('areasMessage').textContent;
+        const queued=page.el('areasQueue').textContent, before=exported(page);
+        page.el('areasPlaceChild').checked=true; page.el('areasPlaceNew').checked=false;
+        page.click('areaTool-place');
+        const coords=[[128,384],[640,128],[896,640],[384,896]][turns];
+        point(page,'pointerdown',...coords);
+        const first=JSON.parse(exported(page)), advanced=page.el('areasQueue').textContent;
+        page.el('areasPlaceChild').checked=false; page.el('areasPlaceNew').checked=true;
+        const next=[[896,896],[128,896],[128,128],[896,128]][turns];
+        point(page,'pointerdown',...next);
+        const last=exported(page), empty=page.el('areasQueue').textContent;
+        point(page,'pointerdown',...next);
+        return {picked,unchanged,unlisted,queued,before,first,advanced,last,empty,
+                message:page.el('areasMessage').textContent};
+      }
+      return {plain:act(0),rotated:act(p.turns)};
+    }""", data, turns=turns)
+    a, b = got["plain"], got["rotated"]
+    assert a["picked"] == b["picked"] == "Court" and a["unchanged"] and b["unchanged"]
+    assert a["unlisted"] and "Gate" in a["unlisted"] and "Court" in a["unlisted"]
+    assert "Alcove" in a["queued"] and "Balcony" in a["queued"]
+    assert len(json.loads(a["before"])["names"]) == 2
+    assert a["first"]["names"][-1]["parent"] == 2
+    assert "Alcove" not in a["advanced"] and "Balcony" in a["advanced"]
+    assert json.loads(a["last"])["names"][-1]["parent"] is None
+    assert "queue" in a["message"].lower()
+    assert a["first"] == b["first"] and a["last"] == b["last"]
+
+
+@pytest.mark.parametrize("action", ["delete", "shrink", "brush", "fill"])
+def test_resize_delete_and_multimove_stroke_undo_exactly(data, action):
+    got = run_areas("""function run(p) {
+      const page=enter(p), original=exported(page);
+      if(p.action==='delete') page.click('areasDelete');
+      else {
+        page.click('areaTool-'+p.action);
+        if(p.action==='brush'||p.action==='fill') page.el('areasTree').children[1].click();
+        point(page,'pointerdown',128,128);
+        point(page,'pointermove',128,384); point(page,'pointermove',128,640);
+        point(page,'pointerup',128,640);
+      }
+      const edited=exported(page); page.click('areasUndo');
+      const undone=exported(page), saved=page.storage.getItem(key);
+      page.window.taggerAreas.undo();
+      return {original,edited,undone,saved,empty:exported(page)};
+    }""", data, action=action)
+    assert got["edited"] != got["original"]
+    assert got["undone"] == got["original"] == got["empty"]
+    assert json.loads(got["saved"])["cells"] == json.loads(got["original"])["cells"]
+
+
+def test_restore_is_explicit_and_discard_removes_draft(data):
+    got = run_areas("""function run(p) {
+      let page=enter(p); const original=exported(page); paint(page);
+      const edited=exported(page), saved=page.storage.getItem(key);
+      page=page.reopen(); page.TG.setMode('areas');
+      const pending=!page.el('areasRestoreRow').hidden, before=exported(page);
+      page.click('areasRestore'); const restored=exported(page), hidden=page.el('areasRestoreRow').hidden;
+      const restoredSaved=page.storage.getItem(key);
+      page=page.reopen(); page.TG.setMode('areas'); page.click('areasDiscard');
+      return {original,edited,saved,pending,before,restored,restoredSaved,hidden,removed:page.storage.getItem(key)};
+    }""", data)
+    assert got["pending"] and got["before"] == got["original"]
+    assert got["restored"] == got["edited"] != got["original"] and got["hidden"]
+    assert got["restoredSaved"] == got["saved"]
+    assert got["removed"] is None
+
+
+@pytest.mark.parametrize("choice", ["areasRestore", "areasDiscard"])
+def test_pending_draft_survives_edits_and_reopen(data, choice):
+    got = run_areas("""function run(p) {
+      let page=enter(p); paint(page); const first=page.storage.getItem(key), firstText=exported(page);
+      page=page.reopen(); page.TG.setMode('areas'); paste(page,'Alcove');
+      const newer=page.storage.getItem(key+':newer'), preserved=page.storage.getItem(key);
+      page=page.reopen(); page.TG.setMode('areas');
+      const pending=!page.el('areasRestoreRow').hidden; page.click(p.choice);
+      return {first,firstText,newer,preserved,pending,stored:page.storage.getItem(key),
+              second:page.storage.getItem(key+':newer'),text:exported(page)};
+    }""", data, choice=choice)
+    assert got["pending"] and got["preserved"] == got["first"] and got["newer"]
+    assert got["second"] is None
+    if choice == "areasRestore":
+        assert got["text"] == got["firstText"]
+    else:
+        assert got["stored"] == got["newer"]
+
+
+@pytest.mark.parametrize("failure", ["failWrites", "failReads", "badJSON", "incompatible"])
+def test_storage_failure_does_not_interrupt_painting(data, failure):
+    got = run_areas("""function run(p) {
+      const storage=memoryStorage();
+      if(p.failure==='badJSON') storage.setItem(key,'{broken');
+      if(p.failure==='incompatible') storage.setItem(key,JSON.stringify({v:1,map:'Other',grid:99}));
+      storage.opts[p.failure]=true;
+      const page=enter(p,{storage}), initial=page.el('areasMessage').textContent;
+      const pending=!page.el('areasRestoreRow').hidden, original=exported(page);
+      if(p.failure==='incompatible') page.click('areasRestore');
+      const refusal=page.el('areasMessage').textContent;
+      paint(page);
+      return {initial,pending,refusal,original,edited:exported(page),message:page.el('areasMessage').textContent,
+              first:storage.m.get(key),newer:storage.m.get(key+':newer')};
+    }""", data, failure=failure)
+    assert got["edited"] != got["original"]
+    if failure == "failWrites":
+        assert "storage" in got["message"].lower()
+    elif failure == "failReads":
+        assert got["initial"] and got["pending"] and got["newer"]
+    elif failure == "badJSON":
+        assert got["initial"] and got["pending"] and got["first"] == "{broken"
+    else:
+        assert got["pending"] and "restore" in got["refusal"].lower()
+        assert "grid" in got["refusal"].lower() and json.loads(got["first"])["map"] == "Other"
+
+
+def test_failed_reads_preserve_saved_bytes_and_failed_promotion_preserves_newer(data):
+    got = run_areas("""function run(p) {
+      let page=enter(p); paste(page,'Alcove'); const storage=page.storage, first=storage.getItem(key);
+      storage.opts.failReads=true; page=page.reopen(); page.TG.setMode('areas'); paint(page);
+      const preserved=storage.m.get(key), newer=storage.m.get(key+':newer');
+      page.click('areasDiscard'); const unread=storage.m.get(key);
+      storage.opts.failReads=false; storage.opts.failWrites=true; page.click('areasDiscard');
+      const failed={first:storage.m.get(key),newer:storage.m.get(key+':newer'),pending:!page.el('areasRestoreRow').hidden};
+      storage.opts.failWrites=false; page.click('areasDiscard');
+      return {first,preserved,newer,unread,failed,promoted:storage.getItem(key),second:storage.getItem(key+':newer')};
+    }""", data)
+    assert got["first"] == got["preserved"] == got["unread"] == got["failed"]["first"]
+    assert got["newer"] and got["failed"]["newer"] == got["newer"] and got["failed"]["pending"]
+    assert got["promoted"] == got["newer"] and got["second"] is None
+
+
+def test_export_queue_extra_parent_set_and_refusal(data):
+    got = run_areas("""function run(p) {
+      const page=enter(p); paste(page,'Alcove'); exported(page);
+      const queueMessage=page.el('areasMessage').textContent;
+      page.el('areasNewName').value='Bridge'; page.el('areasAddChild').checked=true; page.click('areasAdd');
+      const select=page.el('areasAlsoParents');
+      for(const opt of select.children) opt.selected=+opt.value===2;
+      select.dispatch('change'); const linked=exported(page);
+      for(const opt of select.children) opt.selected=+opt.value===1;
+      select.dispatch('change');
+      const refused=page.el('areasMessage').textContent, rerendered=select.children.map(o=>[+o.value,!!o.selected]);
+      page.click('areasUndo');
+      return {queueMessage,linked,refused,rerendered,undone:exported(page)};
+    }""", data)
+    assert "Alcove" in got["queueMessage"]
+    assert json.loads(got["linked"])["names"][-1]["also_parents"] == [2]
+    assert got["refused"] and got["rerendered"] == [[1, False], [2, True]]
+    assert "also_parents" not in json.loads(got["undone"])["names"][-1]
+
+
+def test_refused_place_keeps_queue_and_cells(data):
+    got = run_areas("""function run(p) {
+      const page=enter(p); paint(page); paste(page,'Alcove');
+      const before=exported(page); page.click('areaTool-place'); point(page,'pointerdown',128,384);
+      const refused=page.el('areasMessage').textContent;
+      return {before,after:exported(page),refused,queue:page.el('areasQueue').textContent};
+    }""", data)
+    assert got["before"] == got["after"]
+    assert "hand-painted" in got["refused"] and "Alcove" in got["queue"]
+
+
+@pytest.mark.parametrize("mismatch", ["grid", "walk_hash"])
+def test_incompatible_restore_keeps_both_slots_and_current_model(data, mismatch):
+    got = run_areas("""function run(p) {
+      let page=enter(p); paint(page); const storage=page.storage, saved=JSON.parse(storage.getItem(key));
+      saved[p.mismatch]=p.mismatch==='grid'?8:'changed-mask'; storage.setItem(key,JSON.stringify(saved));
+      const first=storage.getItem(key);
+      page=page.reopen(); page.TG.setMode('areas'); paste(page,'Alcove');
+      const second=storage.getItem(key+':newer'), before=exported(page);
+      page.click('areasRestore'); const refusal=page.el('areasMessage').textContent;
+      return {first,second,before,after:exported(page),refusal,
+              keptFirst:storage.getItem(key),keptSecond:storage.getItem(key+':newer'),
+              pending:!page.el('areasRestoreRow').hidden};
+    }""", data, mismatch=mismatch)
+    assert got["first"] == got["keptFirst"] and got["second"] == got["keptSecond"]
+    assert got["before"] == got["after"] and got["pending"] and "incompatible" in got["refusal"]
+
+
+def test_empty_draft_is_not_pending_and_autosave_is_per_map(data):
+    got = run_areas("""function run(p) {
+      const storage=memoryStorage(); storage.setItem(key,''); const page=enter(p,{storage});
+      const pending=!page.el('areasRestoreRow').hidden; paste(page,'Alcove'); const first=storage.getItem(key);
+      page.TG.selectMap('Bind'); const otherPending=!page.el('areasRestoreRow').hidden;
+      paste(page,'Tunnel'); const other=storage.getItem('control-tagger-areas-draft-v1:Bind');
+      return {pending,otherPending,first,other,kept:storage.getItem(key),second:storage.getItem(key+':newer')};
+    }""", data)
+    assert not got["pending"] and not got["otherPending"]
+    assert got["first"] == got["kept"] and got["second"] is None
+    assert json.loads(got["first"])["queue"] == ["Alcove"]
+    assert json.loads(got["other"])["queue"] == ["Tunnel"]
+
+
+@pytest.mark.parametrize("modifier", ["ctrlKey", "metaKey"])
+def test_template_keyboard_undo_in_areas_keeps_mode(data, modifier):
+    template = (Path(__file__).resolve().parents[2] / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    match = re.search(r'  document.addEventListener\("keydown", function \(e\) \{(.*?)^  \}\);', template, re.M | re.S)
+    assert match
+    got = run_areas("""function run(p) {
+      const page=enter(p); paint(page); let calls=0, prevented=0;
+      const originalUndo=page.window.taggerAreas.undo;
+      const window={taggerAreas:{undo(){calls++; originalUndo();}}};
+      const state={mode:'areas'}, DATA=p.data, setMode=m=>state.mode=m;
+      const handler=new Function('e','window','state','DATA','setMode',p.branch);
+      const e={key:'z',ctrlKey:false,metaKey:false,preventDefault(){prevented++;}}; e[p.modifier]=true;
+      handler(e,window,state,DATA,setMode);
+      return {calls,prevented,mode:state.mode,text:exported(page),saved:page.storage.getItem(key)};
+    }""", data, branch=match.group(1), modifier=modifier)
+    assert got["calls"] == got["prevented"] == 1 and got["mode"] == "areas"
+    assert json.loads(got["text"])["cells"] == data["maps"]["Ascent"]["areas"]["draft"]["cells"]
+    assert json.loads(got["saved"])["cells"] == json.loads(got["text"])["cells"]

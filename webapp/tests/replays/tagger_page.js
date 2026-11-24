@@ -19,13 +19,16 @@ const CORE = fs.readFileSync(path.join(SCRIPTS, "control_tagger_core.js"), "utf8
 const PANEL = fs.readFileSync(path.join(SCRIPTS, "control_tagger_features.js"), "utf8");
 const AREAS = fs.readFileSync(path.join(SCRIPTS, "control_tagger_areas.js"), "utf8");
 
-// A localStorage stand-in. `failWrites`: every write throws as a full or denied store does.
+// A localStorage stand-in. Reads/writes can throw as a full or denied store does.
 function memoryStorage(opts) {
   const m = new Map();
   return {
     m: m,
     opts: opts || {},
-    getItem(k) { return m.has(k) ? m.get(k) : null; },
+    getItem(k) {
+      if (this.opts.failReads) throw new Error("storage read denied");
+      return m.has(k) ? m.get(k) : null;
+    },
     setItem(k, v) {
       if (this.opts.failWrites) { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; }
       m.set(k, String(v));
@@ -130,7 +133,7 @@ function openPage(data, opts) {
     addEventListener() {},
   };
   document.body = element(document, "body");
-  const areaTools = ["brush", "erase", "fill", "pick"].map(tool => {
+  const areaTools = ["brush", "erase", "fill", "pick", "place", "shrink"].map(tool => {
     const el = element(document, "areaTool-" + tool, "button");
     el.dataset.areaTool = tool; els[el.id] = el; return el;
   });
