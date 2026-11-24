@@ -109,7 +109,9 @@ def _population(ids) -> str:
 def _flat_spots(asset_key):
     sites = plant_spots.load().get(asset_key, {})
     return [{"id": spot["id"], "name": spot["name"], "site": site, "u": spot["u"], "v": spot["v"],
-             "radius": spot["r"]} for site, spots in sites.items() for spot in spots]
+             **({"w": spot["w"], "h": spot["h"], "angle": spot["angle"]} if "w" in spot
+                else {"radius": spot["r"]})}
+            for site, spots in sites.items() for spot in spots]
 
 
 def _example_link(row):

@@ -1,6 +1,6 @@
-"""Reviewed plant circles and local proposals, without database access.
+"""Reviewed plant spots (circles or rotated rectangles) and local proposals, without database access.
 
-Centres and radii are in the minimap's 0..10000 UV coordinates. Clustering
+Centres, radii and rectangle sizes are in the minimap's 0..10000 UV coordinates. Clustering
 thresholds are in metres, converted with the map's affine scale. Proposal
 names are empty: the owner must name them before saving a reviewed file.
 """
@@ -16,6 +16,7 @@ import numpy as np
 _DATA = Path(__file__).resolve().parents[1] / "static" / "data"
 _PATH = _DATA / "plant_spots.json"
 _FIELDS = ("id", "name", "u", "v", "r")
+_RECT_FIELDS = ("id", "name", "u", "v", "w", "h", "angle")  # angle in degrees, clockwise on the minimap
 
 
 def _number(value, lower, upper, *, positive=False):
@@ -53,8 +54,9 @@ def load(path=None):
             ids = set()
             validated = []
             for spot in spots:
-                if not isinstance(spot, dict) or any(key not in spot for key in _FIELDS):
-                    raise ValueError(f"{location}: spot requires id, name, u, v, r")
+                required = _RECT_FIELDS if isinstance(spot, dict) and "w" in spot else _FIELDS
+                if not isinstance(spot, dict) or any(key not in spot for key in required):
+                    raise ValueError(f"{location}: spot requires id, name, u, v, and r or w, h, angle")
                 spot_id = spot["id"]
                 if not isinstance(spot_id, str) or not spot_id.strip():
                     raise ValueError(f"{location}: spot id must be nonempty text")
@@ -65,6 +67,13 @@ def load(path=None):
                     raise ValueError(f"{location}/{spot_id}: name must be nonempty text")
                 if not all(_number(spot[key], 0, 10000) for key in ("u", "v")):
                     raise ValueError(f"{location}/{spot_id}: centre must be within 0..10000")
+                if "w" in spot:
+                    if not all(_number(spot.get(key), 0, 10000, positive=True) for key in ("w", "h")):
+                        raise ValueError(f"{location}/{spot_id}: width and height must be within (0, 10000]")
+                    if not _number(spot.get("angle"), -180, 180):
+                        raise ValueError(f"{location}/{spot_id}: angle must be within -180..180")
+                    validated.append({key: spot[key] for key in _RECT_FIELDS})
+                    continue
                 if not _number(spot["r"], 0, 10000, positive=True):
                     raise ValueError(f"{location}/{spot_id}: radius must be within (0, 10000]")
                 validated.append({key: spot[key] for key in _FIELDS})

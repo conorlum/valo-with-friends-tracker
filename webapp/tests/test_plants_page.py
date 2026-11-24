@@ -146,6 +146,16 @@ def test_only_named_spots_render_and_the_outside_count_shows(db):
     assert 'data-outside="2"' in page
 
 
+def test_a_rotated_rectangle_spot_renders_and_counts_its_plants(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 500, "v": 500, "w": 400, "h": 200, "angle": 30}]}})
+    _plants(db, 3)                             # inside the rectangle
+    _plants(db, 2, start=10, u=500, v=690)     # past its short side
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    assert "width: 4.0%; height: 2.0%; border-radius: 0; transform: translate(-50%, -50%) rotate(30deg);" in page
+    assert 'data-outside="2"' in page and "n=3" in page
+
+
 def test_99_is_grey_without_a_percentage_and_100_has_a_signed_adjusted_value(db):
     _plants(db, 99)
     small = _spot(db)

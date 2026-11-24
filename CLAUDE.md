@@ -254,7 +254,8 @@ See `webapp/RENDER_DEPLOY.md`, "Deploy drain (GitHub Action)", for setup and rec
 
 Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,
 `app/services/plant_page.py`, `plant_stats.py`, `plant_spots.py`). Never on the demo. Only named spots show, and a
-spot shows a win rate only from 100 plants.
+spot shows a win rate only from 100 plants. A spot is a circle (`r`) or a rotated rectangle (`w`, `h`, `angle` in
+degrees, clockwise on the minimap); a plant inside several goes to the nearest centre.
 
 - Migration `0036`: `round_plants` (one row per round; a replay's position beats tracker.gg's; models in
   `app/models/round_plant.py`) and `plant_stats_cache`. It only creates tables, so it runs through the normal
