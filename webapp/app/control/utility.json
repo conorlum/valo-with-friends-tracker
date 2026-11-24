@@ -25,7 +25,7 @@
     "seekers": {"half_deg": 45.0, "range_m": 22.5}
   },
   "hunters_fury": {"width_m": 3.52, "range_m": 66.0},
-  "nightfall": {"length_m": 40.0, "width_m": 20.0},
+  "nightfall": {"length_m": 40.0, "width_m": 20.0, "speed_mps": 12.0, "delay_s": 0.33},
   "dizzy_range_m": 45.0,
   "thrash_detain_radius_m": 5.0,
   "storm_surge_radius_m": 6.0,
@@ -52,7 +52,7 @@
     "drone": "PROVISIONAL (util-info-value W3, D13). Flown drones' vision cone (`half_deg`, either side of the heading) and range. Thrash: max vision radius 20 m, https://valorant.fandom.com/wiki/Thrash; the wiki gives no cone, so 45 degrees is ASSUMED (the dog's). Tejo's Stealth Drone: vision radius 18 m, cone 60 degrees either side, https://valorant.fandom.com/wiki/Stealth_Drone.",
     "creature": "PROVISIONAL (W3, D13). Creatures' sight cones, read by later items. Prowler: detection range 15 m (agent), https://valorant.fandom.com/wiki/Prowler, no cone angle on the wiki: 45 degrees ASSUMED. Boom Bot: max detection cone distance 15 m, https://valorant.fandom.com/wiki/Boom_Bot, 'large frontal cone' with no angle: 45 degrees ASSUMED. Wingman: max detection cone distance 15 m and cone angle 90 degrees either side, https://valorant.fandom.com/wiki/Wingman (the angle row is commented out in the page source: the page notes bots have been seen detecting at larger angles). Seekers: the wiki gives neither a detection cone nor a range, so the dog's 45 degrees and 22.5 m are ASSUMED.",
     "hunters_fury": "PROVISIONAL (W3, D13). Sova's Hunter's Fury blast: 66 m length, 1.76 m radius (a strip 3.52 m wide), pierces terrain, https://valorant.fandom.com/wiki/Hunter%27s_Fury.",
-    "nightfall": "PROVISIONAL (W3, D13). Fade's Nightfall wave: 40 m length, 20 m width (nerfed from 24 m), https://valorant.fandom.com/wiki/Nightfall.",
+    "nightfall": "PROVISIONAL (W3, D13). Fade's Nightfall wave: 40 m length, 20 m width (nerfed from 24 m), https://valorant.fandom.com/wiki/Nightfall. W5.1 (ASSUMPTION fitted to 3 real hits, no wave path in the export): the wave's front reaches ground `along` metres ahead of the cast at cast_t + `delay_s` + along / `speed_mps`; used to rule a zero-hit wave's rectangle out slice by slice at the time the wave passes each slice. The three hit rows (replays on 13.08, 13.08 and 13.08; hit time after the cast, caught enemy's distance ahead of the cast at that moment) were 1.077 s at 9.1 m, 1.399 s at 12.8 m and 2.697 s at 28.7 m, which a line of 12.1 m/s after 0.33 s fits to 0.01 s; rounded to 12.0 m/s and 0.33 s. Re-measure when more hits are available.",
     "dizzy_range_m": "PROVISIONAL (W3, D13). Gekko's Dizzy fires at enemies in line of sight within 45 m, https://valorant.fandom.com/wiki/Dizzy (its 2.5 m plasma radius is not used here).",
     "thrash_detain_radius_m": "PROVISIONAL (W3, D13). Thrash's lunge radius 5 m (the detain explosion), https://valorant.fandom.com/wiki/Thrash.",
     "storm_surge_radius_m": "PROVISIONAL (W3, D13). Harbor's Storm Surge radius 6 m, https://valorant.fandom.com/wiki/Storm_Surge.",

@@ -109,7 +109,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # Re-pinned for creature hits/misses, per-source switches and Hunter's Fury blasts (W6).
           # Re-pinned for Seize/Fakeout evidence conditional on a living teammate's view (W7).
           # Re-pinned for W9's measured creature switches (Prowler, Wingman and Seekers misses off, R14).
-          28: "a9e5b4d3f5ea1c69"}
+          # Re-pinned for W5.1: Dizzy's firing counts and never excludes, Nightfall's wave speed and delay,
+          # the per-source zero-hit switch (ZERO_HIT_EXCLUDES) and Dizzy's firing moment.
+          28: "6a8765e864d1162a"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -250,6 +252,11 @@ def _without_seen_util_readers(monkeypatch):
                                                           "read_creatures", "read_hunters_fury"))
     # W9: the digest before the false-clear probe had every creature's misses on
     monkeypatch.setattr(ut, "CREATURE_MISSES", dict.fromkeys(ut.CREATURE_MISSES, True))
+    # W5.1: the digest before the per-source zero-hit switch and Nightfall's wave timing (utility.json)
+    monkeypatch.delattr(ut, "ZERO_HIT_EXCLUDES")
+    monkeypatch.delattr(ut, "DIZZY_SHOT_WINDOW_S")
+    monkeypatch.delattr(ut, "DIZZY_FIRE_S")
+    monkeypatch.setitem(ut.FIGURES, "nightfall", {"length_m": 40.0, "width_m": 20.0})
 
 
 def test_without_seen_util_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):

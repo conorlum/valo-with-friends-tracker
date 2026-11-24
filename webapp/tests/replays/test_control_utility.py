@@ -427,10 +427,16 @@ def count_rows(reader, targets=(5, 6), *, source=41, t=1.0):
     if reader == "thrash_detains":
         cast.update(u=uv(104, 200)[0], path=[[t, *uv(104, 200)], [t + .5, *uv(400, 200)]])
     if reader == "storm_surges":
-        # The parser's actual condensed nearsight shape: no src, code, name or target field.
-        hits = [{"k": "nearsight", "t": t, "by": 0, "ability": "harbor_storm_surge",
-                 "targets": list(targets), "hits": [[s, t + .5, 2.0] for s in targets],
-                 "u": cast["u"], "v": cast["v"]}] if targets else []
+        # The parser's actual condensed shape (W5.1): the nearsight rows carry the time and place of the thrown
+        # PROJECTILE, which lands (t1) where the whirlpool GameObject spawns, a few metres away; the hits fall at
+        # the whirlpool's burst (its t1). No src, code, name or target field on the nearsight row.
+        thrown = uv(150, 200)
+        projectile = dict(cast, kind="Projectile", id=source + 500, t=t - .4, t1=t, u=thrown[0], v=thrown[1])
+        projectile.pop("fired")
+        hit = [{"k": "nearsight", "t": t - .4, "by": 0, "ability": "harbor_storm_surge",
+                "targets": list(targets), "hits": [[s, t + .5, 2.0] for s in targets],
+                "u": thrown[0], "v": thrown[1]}] if targets else []
+        return [cast, projectile, *hit]
     else:
         status = {"nightfall_counts": "decayed", "dizzy_counts": "concussed",
                   "thrash_detains": "detained"}[reader]
@@ -471,7 +477,10 @@ def test_count_reader_groups_distinct_enemy_hits_without_naming_them(reader, mon
     assert any(i.cast_id == 41 and i.kind == "one_of" and i.count == 2 for i in admitted)
 
 
-@pytest.mark.parametrize("reader", COUNT_READERS)
+ZERO_READERS = ("nightfall_counts", "thrash_detains", "storm_surges")     # Dizzy has no zero (W5.1)
+
+
+@pytest.mark.parametrize("reader", ZERO_READERS)
 @pytest.mark.parametrize("proof", ["complete", "old", "unfired", "false_stamp"])
 def test_count_reader_zero_requires_complete_fired_source(reader, proof):
     rnd = count_round(reader, ())
@@ -486,7 +495,9 @@ def test_count_reader_zero_requires_complete_fired_source(reader, proof):
     if proof != "complete":
         assert hits == []
         return
-    assert [i.slot for i in hits] == [5, 6]
+    assert {i.slot for i in hits} == {5, 6}
+    if reader != "nightfall_counts":        # the wave passes its rectangle slice by slice
+        assert [i.slot for i in hits] == [5, 6]
     assert all(i.kind == "exclude" and i.detail == {"needs": "status"} for i in hits)
     assert all(i.cast_id == 41 and i.row_key == ut._identity(cast)["row_key"] for i in hits)
 
@@ -540,19 +551,55 @@ def test_storm_surge_requires_a_live_listening_teammate(targets, unheard, monkey
 
 def test_storm_surge_reads_whirlpool_only_and_matches_owner_time_place():
     rnd = count_round("storm_surges")
-    cast, hit = rnd.blob["util"]
-    rnd.blob["util"].insert(0, dict(cast, kind="Projectile", id=40, fired=False))
+    cast, projectile, hit = rnd.blob["util"]
     rnd.blob["util"].extend([dict(hit, by=5), dict(hit, t=6, hits=[[5, 6, 2]]),
                              dict(hit, t=6, u=uv(100, 200)[0])])
     [out] = ut.read_storm_surges(rnd)
     assert (out.cast_id, out.count) == (41, 2)
 
 
+def test_storm_surge_hit_row_on_the_projectile_reaches_its_whirlpool():
+    """The real shape: the nearsight row sits on the thrown Projectile (its time and place), the whirlpool spawns
+    where the projectile lands, and the hits fall at the burst. The count is the whirlpool's, at its own place."""
+    rnd = count_round("storm_surges", (5, 6))
+    cast, projectile, hit = rnd.blob["util"]
+    assert (hit["t"], hit["u"], hit["v"]) == (projectile["t"], projectile["u"], projectile["v"])
+    assert (hit["u"], hit["v"]) != (cast["u"], cast["v"]) and hit["t"] != cast["t"]
+    [out] = ut.read_storm_surges(rnd)
+    assert (out.kind, out.cast_id, out.count, out.t) == ("one_of", 41, 2, 1.5)
+    assert (out.x, out.y, out.radius_m) == pytest.approx((400, 200, 6.0), abs=.1)
+    admitted = ce.RoundInputs(rnd.blob, rnd.geo).infos
+    assert any(i.cast_id == 41 and i.kind == "one_of" and i.count == 2 for i in admitted)
+
+
+def test_storm_surge_two_throws_of_one_owner_each_get_their_own_hits():
+    """The second projectile leaves before the first whirlpool has spawned: each whirlpool is its own
+    projectile's landing, never the owner's next whirlpool in the list."""
+    rnd = count_round("storm_surges", (5,))
+    first = rnd.blob["util"][0]
+    rows = count_rows("storm_surges", (5, 6), source=42, t=1.3)
+    rows[1]["t"] = rows[2]["t"] = .8                # thrown at .8 s, landing at 1.3 s, while the first is still in
+    rows[1]["u"] = rows[2]["u"] = first["u"] - 200   # the air (it lands at 1.0 s)
+    rnd.blob["util"].extend(rows)
+    assert [(i.cast_id, i.count, i.t) for i in ut.read_storm_surges(rnd)] == [(41, 1, 1.5), (42, 2, 1.8)]
+
+
+def test_storm_surge_zero_is_made_at_the_burst_around_the_whirlpool():
+    """Hits fall at the whirlpool's burst (its end), 0.5 s after it spawns: an enemy who died in between is not
+    excluded, and the footprint is the whirlpool's own place."""
+    rnd = count_round("storm_surges", ())
+    assert rnd.blob["util"][0]["t"] == 1.0 and rnd.blob["util"][0]["t1"] == 1.5
+    rnd.alive = lambda slot, t: not (slot == 6 and t >= 1.2)
+    [only] = ut.read_storm_surges(rnd)
+    assert (only.t, only.slot, only.kind, only.reason) == (1.5, 5, "exclude", "storm_surge_zero")
+    assert (only.x, only.y, only.radius_m) == pytest.approx((400, 200, 6.0), abs=.1)
+
+
 @pytest.mark.parametrize("offset", ["time", "place"])
 @pytest.mark.parametrize("matched_targets", [(), (5,)])
 def test_storm_surge_unmatched_hit_blocks_nearby_count_and_zero(offset, matched_targets):
     rnd = count_round("storm_surges", matched_targets)
-    _, hit = count_rows("storm_surges", (6,))
+    *_, hit = count_rows("storm_surges", (6,))
     if offset == "time":
         hit["t"] += .5
     else:
@@ -563,7 +610,7 @@ def test_storm_surge_unmatched_hit_blocks_nearby_count_and_zero(offset, matched_
 
 def test_storm_surge_unmatched_hit_blocks_only_nearby_casts_of_the_same_owner():
     rnd = count_round("storm_surges", ())
-    _, orphan = count_rows("storm_surges", (5,))
+    *_, orphan = count_rows("storm_surges", (5,))
     orphan["t"] += .5
     other_owner = dict(rnd.blob["util"][0], by=6, id=43)
     rnd.blob["util"].extend([orphan, other_owner, *count_rows("storm_surges", (5,), source=44, t=2),
@@ -575,7 +622,7 @@ def test_storm_surge_unmatched_hit_blocks_only_nearby_casts_of_the_same_owner():
 @pytest.mark.parametrize("offset", ["time", "place", "ambiguous"])
 def test_storm_surge_unmatched_row_without_hits_does_not_block_zero(offset):
     rnd = count_round("storm_surges", ())
-    _, row = count_rows("storm_surges", (5,))
+    *_, row = count_rows("storm_surges", (5,))
     row.update(targets=[], hits=[])
     if offset == "time":
         row["t"] += .5
@@ -591,7 +638,7 @@ def test_storm_surge_unmatched_row_without_hits_does_not_block_zero(offset):
 
 def test_storm_surge_combines_hit_rows_and_refuses_ambiguous_whirlpools():
     rnd = count_round("storm_surges", (5,))
-    cast, hit = rnd.blob["util"]
+    cast, projectile, hit = rnd.blob["util"]
     rnd.blob["util"].append(dict(hit, targets=[6], hits=[[6, 1.5, 2]]))
     [out] = ut.read_storm_surges(rnd)
     assert out.count == 2
@@ -623,6 +670,146 @@ def test_dizzy_count_is_limited_by_sight_and_range(monkeypatch):
     assert not out.mask[rnd.geo.node_at_px(280, 200)]
 
 
+def test_a_fired_dizzy_that_hit_nobody_still_counts_one_enemy_and_excludes_nothing():
+    """Dizzy only fires at an enemy it sees, hit or not: its sight holds at least one. Its hits are a status effect
+    (the `concussed` rows map control reads), so a miss rules nothing out, ever (the owner, 2026-11-23)."""
+    rnd = count_round("dizzy_counts", ())
+    [out] = ut.read_dizzy_counts(rnd)
+    assert (out.kind, out.slot, out.count, out.reason) == ("one_of", ut.ONE_OF_SLOT, 1, "dizzy_count")
+    assert out.mask is not None and out.detail == {"needs": "status"}
+    assert out.cast_id == 41 and out.row_key == ut._identity(rnd.blob["util"][0])["row_key"]
+    assert not any(i.kind == "exclude" for i in ce.RoundInputs(rnd.blob, rnd.geo).infos)
+
+
+def test_a_dizzy_that_hit_nobody_fires_when_it_winds_up_not_when_it_ends():
+    """Its row only says it fired: 0.61 s after the cast (measured), not at the end of its flight."""
+    rnd = count_round("dizzy_counts", ())
+    rnd.blob["util"][0]["t1"] = 4.0
+    [out] = ut.read_dizzy_counts(rnd)
+    assert out.t == pytest.approx(1.0 + ut.DIZZY_FIRE_S)
+
+
+def test_a_dizzy_counts_the_enemies_of_its_first_shot_not_every_later_shot():
+    """Enemies hit by a later shot may not have been where the first sight was: the count is the first moment's."""
+    rnd = count_round("dizzy_counts", (5,))
+    rnd.blob["util"].append(dict(rnd.blob["util"][1], target=6, t=2.5))
+    [out] = ut.read_dizzy_counts(rnd)
+    assert (out.t, out.count) == (1.5, 1)
+
+
+@pytest.mark.parametrize("hit_by,count", [((5,), 1), ((5, 6), 2), ((5, 6, 5), 2)])
+def test_a_fired_dizzy_counts_the_distinct_enemies_it_hit(hit_by, count):
+    [out] = ut.read_dizzy_counts(count_round("dizzy_counts", hit_by))
+    assert (out.kind, out.count, out.t) == ("one_of", count, 1.5)
+
+
+@pytest.mark.parametrize("state", ["not_fired", "shot_down", "never_wound_up"])
+def test_a_dizzy_that_did_not_fire_says_nothing(state):
+    rnd = count_round("dizzy_counts", ())
+    cast = rnd.blob["util"][0]
+    cast.pop("fired")
+    if state == "shot_down":
+        cast["gone"] = 1.2
+    elif state == "never_wound_up":
+        rnd.blob["util"].remove(cast)
+    assert ut.read_dizzy_counts(rnd) == []
+
+
+def test_a_dizzy_row_without_the_stamps_still_counts_its_hits():
+    rnd = count_round("dizzy_counts")
+    for field in ("fired", "hits_read"):
+        rnd.blob["util"][0].pop(field)
+    [out] = ut.read_dizzy_counts(rnd)
+    assert (out.kind, out.count) == ("one_of", 2)
+
+
+def test_a_dizzy_fired_without_the_hits_stamp_counts_one():
+    rnd = count_round("dizzy_counts", ())
+    rnd.blob["util"][0].pop("hits_read")
+    [out] = ut.read_dizzy_counts(rnd)
+    assert (out.kind, out.count) == ("one_of", 1)
+
+
+def test_a_dizzy_looks_from_where_it_flew_to_at_the_firing_moment(monkeypatch):
+    """Its row's place is where it was thrown from; the sight that saw the enemy is from its flight position."""
+    rnd = count_round("dizzy_counts")
+    monkeypatch.setitem(ut.FIGURES, "dizzy_range_m", 10)
+    rnd.blob["util"][0]["flight"] = [[1.0, *uv(400, 200), 60], [1.5, *uv(200, 200), 60]]
+    [out] = ut.read_dizzy_counts(rnd)
+    assert out.mask[rnd.geo.node_at_px(200, 200)]
+    assert not out.mask[rnd.geo.node_at_px(400, 200)]
+    assert (out.x, out.y) == pytest.approx((200, 200), abs=.5)
+
+
+def test_a_zero_hit_nightfall_excludes_each_slice_when_the_wave_reaches_it():
+    rnd = count_round("nightfall_counts", ())
+    cast = rnd.blob["util"][0]
+    figures = ut.FIGURES["nightfall"]
+    speed, delay = figures["speed_mps"], figures["delay_s"]
+    infos = ut.read_nightfall_counts(rnd)
+    assert infos and {i.kind for i in infos} == {"exclude"} and {i.slot for i in infos} == {5, 6}
+    times = sorted({i.t for i in infos})
+    assert len(times) > 3 and times[0] >= cast["t"] + delay
+    assert all(round(t / ce.TICK_STEP_S, 6) % 1 == 0 for t in times)     # on the round's own clock
+    geo = rnd.geo
+    x0, y0 = cast["u"] * ce.PX / 10000, cast["v"] * ce.PX / 10000
+    covered = np.zeros(geo.n, bool)
+    for i in infos:
+        nodes = np.flatnonzero(i.mask)
+        along = (geo.centres[nodes, 0] - x0) * geo.m_per_px                   # yaw 0: along is x
+        reached_at = cast["t"] + delay + along / speed
+        # each node is excluded no earlier than the wave reaches it and no more than one tick after
+        assert (reached_at <= i.t + 1e-6).all() and (reached_at > i.t - ce.TICK_STEP_S - 1e-6).all()
+        covered |= i.mask
+    whole = count_round("nightfall_counts")
+    [counted] = ut.read_nightfall_counts(whole)
+    np.testing.assert_array_equal(covered, counted.mask)                      # every part of the rectangle, once
+    first, last = ([i for i in infos if i.t == t][0] for t in (times[0], times[-1]))
+    assert first.mask[geo.node_at_px(140, 200)] and not first.mask[geo.node_at_px(400, 200)]
+    assert last.mask[geo.node_at_px(400, 200)] and not last.mask[geo.node_at_px(140, 200)]
+
+
+def test_an_enemy_who_walks_into_ground_the_wave_has_passed_is_not_excluded_by_it():
+    """Enemy 5 reaches the near end at 4 s, after the wave has gone by it: no exclusion made then touches that
+    ground, so it stays possible for him. Excluding the whole rectangle at the end (the false clears the real
+    replays showed) would have ruled him out."""
+    rnd = count_round("nightfall_counts", ())
+    infos = ut.read_nightfall_counts(rnd)
+    near = rnd.geo.node_at_px(140, 200)
+    assert [i.t for i in infos if i.mask[near]] and max(i.t for i in infos if i.mask[near]) < 2.0
+    assert not [i for i in infos if i.t >= 3.0 and i.mask[near]]
+    assert [i for i in infos if i.t >= 3.0]          # the far end is still being excluded then
+
+
+def test_nightfall_zero_stops_at_the_end_of_the_round():
+    rnd = count_round("nightfall_counts", ())
+    rnd.t_end = 2.0
+    assert max(i.t for i in ut.read_nightfall_counts(rnd)) <= 2.0
+
+
+def test_the_zero_hit_switch_is_off_exactly_where_the_probe_measured_false_clears_over_5_percent():
+    """R14, extended to Nightfall and Storm Surge by the owner: after W5.1's fix the probe re-measured
+    the zero-hit footprints that held a real live enemy (docs in the build folder, W5.1-notes.md)."""
+    assert ut.ZERO_HIT_EXCLUDES == {"nightfall": True, "storm_surge": True, "thrash": True}
+
+
+@pytest.mark.parametrize("reader,key", [("nightfall_counts", "nightfall"), ("storm_surges", "storm_surge"),
+                                        ("thrash_detains", "thrash")])
+def test_a_switched_off_zero_makes_no_exclude_but_counts_with_hits_stay(reader, key, monkeypatch):
+    monkeypatch.setitem(ut.ZERO_HIT_EXCLUDES, key, False)
+    assert getattr(ut, "read_" + reader)(count_round(reader, ())) == []
+    [counted] = getattr(ut, "read_" + reader)(count_round(reader, (5, 6)))
+    assert (counted.kind, counted.count) == ("one_of", 2)
+    monkeypatch.setitem(ut.ZERO_HIT_EXCLUDES, key, True)
+    assert getattr(ut, "read_" + reader)(count_round(reader, ()))
+
+
+def test_the_other_sources_zero_switch_is_independent(monkeypatch):
+    monkeypatch.setitem(ut.ZERO_HIT_EXCLUDES, "nightfall", False)
+    assert ut.read_storm_surges(count_round("storm_surges", ()))
+    assert ut.read_thrash_detains(count_round("thrash_detains", ()))
+
+
 def test_count_reader_does_not_invent_missing_direction_or_detain_place():
     rnd = count_round("nightfall_counts")
     rnd.blob["util"][0].pop("yaw")
@@ -639,7 +826,9 @@ def test_status_count_reader_ignores_unrelated_and_friendly_rows(reader):
     rnd.blob["util"].extend([dict(hit, friendly=True),
                              dict(hit, by=6), dict(hit, status="unrelated")])
     out = getattr(ut, "read_" + reader)(rnd)
-    assert [i.kind for i in out] == ["exclude", "exclude"]
+    # Dizzy's fired cast counts one enemy and excludes nothing; the others rule their area out for both enemies.
+    assert {i.kind for i in out} == ({"one_of"} if reader == "dizzy_counts" else {"exclude"})
+    assert {i.slot for i in out} == ({ut.ONE_OF_SLOT} if reader == "dizzy_counts" else {5, 6})
 
 
 @pytest.mark.parametrize("reader", COUNT_READERS[:3])
@@ -662,7 +851,9 @@ def test_orphaned_status_hit_leaves_other_owner_and_distant_cast_usable(reader):
     other_owner = dict(rnd.blob["util"][0], by=6, id=43)
     rnd.blob["util"].extend([orphan, other_owner, *count_rows(reader, (5, 6), source=42, t=6)])
     out = getattr(ut, "read_" + reader)(rnd)
-    assert [(i.cast_id, i.kind, i.count) for i in out] == [(43, "exclude", 1), (42, "one_of", 2)]
+    unhit = "one_of" if reader == "dizzy_counts" else "exclude"     # a fired Dizzy that hit nobody counts one
+    assert {(i.cast_id, i.kind, i.count) for i in out} == {(43, unhit, 1), (42, "one_of", 2)}
+    assert [i.cast_id for i in out][0] == 43 and [i.cast_id for i in out][-1] == 42
 
 
 @pytest.mark.parametrize("reader", COUNT_READERS[:3])

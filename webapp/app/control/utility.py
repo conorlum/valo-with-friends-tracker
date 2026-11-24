@@ -31,6 +31,7 @@ within a phase, the order the readers gave."""
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import re
@@ -577,11 +578,24 @@ def read_hush_suspensions(rnd) -> list[Info]:
 UNMATCHED_HIT_WINDOW_S = 3.0
 
 
-def _status_counts(rnd, code: str, name: str, status: str):
+# W5.1 (R14, extended to these sources by the owner, 2026-11-23): whether a source's "it hit nobody" rules its area
+# out. After the fix to when and where the check is made, the probe re-measured the zero-hit footprints that held a
+# real live enemy (W5.1-notes.md); a source still over 5% is switched off here, and its hits and counts stay.
+# Dizzy has no entry: it only fires at an enemy it sees, so a miss says nothing about the ground (the owner).
+ZERO_HIT_EXCLUDES = {"nightfall": True, "storm_surge": True, "thrash": True}
+DIZZY_SHOT_WINDOW_S = 0.1     # hits this close to a Dizzy's first are the same shot
+# MEASURED (W5.1), not from the wiki: how long after a Dizzy's cast row it fires its first shot (the wind-up and the
+# first sight). The first `concussed` hit came 0.608-0.616 s after the cast in 12 of 15 hit casts on 4 real replays
+# (the others 1.31-1.52 s, a later sight). It is the firing moment of a fired Dizzy that hit nobody, whose row only
+# says that it fired; never the end of its life (about 1.9 s), when the enemy it saw has moved on.
+DIZZY_FIRE_S = 0.61
+
+
+def _status_counts(rnd, code: str, name: str, status: str, *, proof=("hits_read", "fired")):
     """Distinct enemy hits per source, with no target identity leaving this helper.
 
-    Positive evidence survives old/missing firing proof; only a proven, fully read cast can say zero.
-    The count becomes known at its last hit, or at the end of a fired cast that hit nobody.
+    Positive evidence survives old/missing firing proof; only a proven cast (all of `proof` true on its row) can say
+    zero hits. The count becomes known at its last hit, or at the end of a proven cast that hit nobody.
     A hit with no matching source makes nearby casts of that owner/source unusable.
     """
     rows = rnd.blob.get("util") or []
@@ -613,7 +627,7 @@ def _status_counts(rnd, code: str, name: str, status: str):
                <= float(end) + UNMATCHED_HIT_WINDOW_S for by, t in unmatched):
             continue
         targets, t = hits.get((row.get("id"), row.get("by")), ((), None))
-        if not targets and not (row.get("hits_read") is True and row.get("fired") is True):
+        if not targets and not all(row.get(field) is True for field in proof):
             continue
         if t is None:
             t = row.get("t1") if row.get("t1") is not None else row["t"]
@@ -637,8 +651,17 @@ def _count_disk(row, *, at_end=False):
 
 
 def read_nightfall_counts(rnd) -> list[Info]:
-    """Nightfall's anonymous hit count over its forward wave rectangle, through walls."""
+    """Nightfall's anonymous hit count over its forward wave rectangle, through walls.
+
+    A wave that hit someone counts them over the whole rectangle at the last hit. A proven wave that hit nobody
+    rules the rectangle out slice by slice, each at the time the wave passes it (W5.1): the wave sweeps forward
+    at `nightfall.speed_mps` after `delay_s`, so ground behind it is excluded at the tick it went by, never at the
+    end of the wave's life, when an enemy may have walked into ground it had already crossed.
+    """
+    from app.control import engine as ce
+
     out = []
+    figures = FIGURES["nightfall"]
     for row, side, count, t in _status_counts(rnd, "BountyHunter", "X_WaveForm", "decayed"):
         place = _count_disk(row)
         if place is None or row.get("yaw") is None:
@@ -647,29 +670,77 @@ def read_nightfall_counts(rnd) -> list[Info]:
         a = math.radians(row["yaw"])
         along = d[:, 0] * math.cos(a) + d[:, 1] * math.sin(a)
         across = -d[:, 0] * math.sin(a) + d[:, 1] * math.cos(a)
-        mask = (rnd.geo.walk_n & (along >= 0) & (along <= FIGURES["nightfall"]["length_m"])
-                & (np.abs(across) <= FIGURES["nightfall"]["width_m"] / 2))
+        mask = (rnd.geo.walk_n & (along >= 0) & (along <= figures["length_m"])
+                & (np.abs(across) <= figures["width_m"] / 2))
         if not mask.any():
             continue
         if count:
             out.append(Info(t, side, ONE_OF_SLOT, "one_of", "nightfall_count", count=count, mask=mask,
                             detail={"needs": "status"}, **place))
-        else:
-            out.extend(zero_hits(rnd, t, side, "nightfall_zero", needs="status", mask=mask, **place))
+        elif ZERO_HIT_EXCLUDES["nightfall"]:
+            start = float(row["t"]) + figures["delay_s"]
+            behind = -1.0
+            for k in range(math.ceil(start / ce.TICK_STEP_S - 1e-9),
+                           math.ceil((start + figures["length_m"] / figures["speed_mps"]) / ce.TICK_STEP_S - 1e-9) + 1):
+                t_k = round(k * ce.TICK_STEP_S, 6)
+                if t_k > rnd.t_end:
+                    break
+                front = min(figures["length_m"], figures["speed_mps"] * (t_k - start))
+                part = mask & (along > behind) & (along <= front)
+                behind = front
+                if part.any():
+                    out.extend(zero_hits(rnd, t_k, side, "nightfall_zero", needs="status", mask=part, **place))
     return out
 
 
+def _flown_place(row, t: float):
+    """Where a thrown device was at `t`: its flight (held at its last sample after it ends), else its row's place."""
+    from app.control import engine as ce
+
+    place, z = _count_disk(row), row.get("z")
+    flight = row.get("flight") or row.get("path")
+    if place is None or not flight:
+        return place, z
+    held = min(max(t, flight[0][0]), flight[-1][0])
+    at = ce.path_at(flight, held)
+    if at is not None:
+        place["x"], place["y"] = at[0], at[1]
+        flown_z = ce.path_z(flight, held)
+        z = z if flown_z is None else flown_z
+    return place, z
+
+
 def read_dizzy_counts(rnd) -> list[Info]:
-    """Dizzy's count covers only ground visible from the source where it fired, within range."""
+    """A fired Dizzy counts at least one enemy over the ground visible from where it fired, within range.
+
+    It only fires at an enemy it sees, hit or not, so firing alone proves one in its sight; its hits (the
+    `concussed` rows map control already reads) are the status effect and make the count larger. It never rules
+    ground out (the owner, 2026-11-23): one that was shot down (`gone`, no `fired`) or never wound up says nothing.
+    """
     from app.control import engine as ce
 
     geo, out = rnd.geo, []
-    for row, side, count, t in _status_counts(rnd, "Aggrobot", "E_DiscTurret_PowerWave", "concussed"):
-        place = _count_disk(row)
+    shots = collections.defaultdict(list)
+    for hit in rnd.blob.get("util") or []:
+        if (hit.get("k") == "status" and hit.get("code") == "Aggrobot" and hit.get("name") == "E_DiscTurret_PowerWave"
+                and hit.get("status") == "concussed" and not hit.get("friendly")
+                and rnd.team.get(hit.get("target")) not in (None, rnd.team.get(hit.get("by")))):
+            shots[hit.get("src"), hit.get("by")].append((float(hit["t"]), hit["target"]))
+    for row, side, count, t in _status_counts(rnd, "Aggrobot", "E_DiscTurret_PowerWave", "concussed",
+                                              proof=("fired",)):
+        # The firing moment: its first shot's hits, else when it winds up and fires (`dizzy_fire_s` after the
+        # cast), never the end of its life, when the enemy it saw has long moved. Later shots are other moments.
+        own = sorted(shots.get((row.get("id"), row.get("by")), ()))
+        if own:
+            t = own[0][0]
+            count = len({target for hit_t, target in own if hit_t <= t + DIZZY_SHOT_WINDOW_S})
+        else:
+            t = min(float(row["t"]) + DIZZY_FIRE_S, float(row["t1"]) if row.get("t1") is not None else math.inf)
+        place, row_z = _flown_place(row, t)
         if place is None:
             continue
         x, y = place["x"], place["y"]
-        z = rnd._device_z(row.get("z"))
+        z = rnd._device_z(row_z)
         own = eye = None
         if geo.heights is not None:
             own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
@@ -677,13 +748,9 @@ def read_dizzy_counts(rnd) -> list[Info]:
         mask = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(t), eye_z=eye, own=own)
         mask &= geo.walk_n & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2)
                              <= (FIGURES["dizzy_range_m"] / geo.m_per_px) ** 2)
-        if not mask.any():
-            continue
-        if count:
-            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "dizzy_count", count=count, mask=mask,
+        if mask.any():
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "dizzy_count", count=max(1, count), mask=mask,
                             detail={"needs": "status"}, **place))
-        else:
-            out.extend(zero_hits(rnd, t, side, "dizzy_zero", needs="status", mask=mask, **place))
     return out
 
 
@@ -698,30 +765,46 @@ def read_thrash_detains(rnd) -> list[Info]:
         if count:
             out.append(Info(t, side, ONE_OF_SLOT, "one_of", "thrash_count", count=count,
                             detail={"needs": "status"}, **place))
-        else:
+        elif ZERO_HIT_EXCLUDES["thrash"]:
             out.extend(zero_hits(rnd, t, side, "thrash_zero", needs="status", **place))
     return out
 
 
 def read_storm_surges(rnd) -> list[Info]:
-    """A heard whirlpool counts the parser's nearsight hits, joined by owner, spawn time and place.
+    """A heard whirlpool counts the parser's nearsight hits, joined through the thrown projectile (W5.1).
 
-    The projectile is the same cast's flight, never a second count. Unjoined hits invalidate nearby casts
+    The parser's `nearsight` rows carry the time and place of the thrown Projectile row, not the whirlpool's: each
+    joins strictly (same owner, same ms, same place) to its Projectile, then to that throw's whirlpool, the owner's
+    next whirlpool spawn at the projectile's end (one per throw, within `UNMATCHED_HIT_WINDOW_S`). The projectile
+    is the same cast's flight, never a second count. Hits that join to no single whirlpool invalidate nearby casts
     of the same owner: neither a partial count nor a zero is proven. Empty hit lists say nothing here.
+    The hits fall at the whirlpool's burst (its end), so a zero is made there, around the whirlpool.
     """
     rows = rnd.blob.get("util") or []
-    casts = [row for row in rows if row.get("k") == "ability" and row.get("code") == "Mage"
-             and row.get("name") == "4_SplashGrenade" and row.get("kind") == "GameObject"
-             and row.get("u") is not None and row.get("v") is not None and row.get("by") in rnd.team]
+
+    def whirlpool(kind):
+        return [row for row in rows if row.get("k") == "ability" and row.get("code") == "Mage"
+                and row.get("name") == "4_SplashGrenade" and row.get("kind") == kind
+                and row.get("u") is not None and row.get("v") is not None and row.get("by") in rnd.team]
+
+    casts, projectiles = whirlpool("GameObject"), whirlpool("Projectile")
     hits, ambiguous = {}, set()
     for row in rows:
         if (row.get("k") != "nearsight" or row.get("ability") != "harbor_storm_surge"
                 or not row.get("hits")):
             continue
-        matches = [i for i, cast in enumerate(casts) if row.get("by") == cast["by"]
-                   and abs(float(row["t"]) - float(cast["t"])) <= .001
-                   and row.get("u") is not None and row.get("v") is not None
-                   and abs(row["u"] - cast["u"]) <= 1 and abs(row["v"] - cast["v"]) <= 1]
+        thrown = [p for p in projectiles if row.get("by") == p["by"]
+                  and abs(float(row["t"]) - float(p["t"])) <= .001
+                  and row.get("u") is not None and row.get("v") is not None
+                  and abs(row["u"] - p["u"]) <= 1 and abs(row["v"] - p["v"]) <= 1]
+        matches = []
+        if len(thrown) == 1:
+            landed = float(thrown[0]["t1"] if thrown[0].get("t1") is not None else thrown[0]["t"])
+            later = [(float(cast["t"]), i) for i, cast in enumerate(casts) if cast["by"] == thrown[0]["by"]
+                     and landed - .001 <= float(cast["t"]) <= landed + UNMATCHED_HIT_WINDOW_S]
+            if later:
+                first = min(t for t, _ in later)
+                matches = [i for t, i in later if t - first <= .001]
         if len(matches) != 1:
             ambiguous.update(i for i, cast in enumerate(casts) if row.get("by") == cast["by"]
                              and abs(float(row["t"]) - float(cast["t"])) <= UNMATCHED_HIT_WINDOW_S)
@@ -738,8 +821,10 @@ def read_storm_surges(rnd) -> list[Info]:
     for i, row in enumerate(casts):
         if i in ambiguous:
             continue
-        targets, t = hits.get(i, ((), float(row["t"])))
-        if not targets and not (row.get("hits_read") is True and row.get("fired") is True):
+        burst = float(row["t1"]) if row.get("t1") is not None else float(row["t"])
+        targets, t = hits.get(i, ((), burst))
+        if not targets and not (row.get("hits_read") is True and row.get("fired") is True
+                                and ZERO_HIT_EXCLUDES["storm_surge"]):
             continue
         side, place = rnd.team[row["by"]], _count_disk(row)
         if not heard(rnd, side, t, place["x"], place["y"], FIGURES["storm_surge_hearing_m"]):

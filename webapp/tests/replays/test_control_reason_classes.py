@@ -17,7 +17,7 @@ TABLE = {
              "prowler_hit wingman_hit boom_bot_hit seekers_hit hunters_fury_hit seize_hit",
     "roughly_placed": "knife_hit knife_all leer_seen nightfall_count dizzy_count thrash_count storm_surge_count fakeout_direction",
     "ruled_out": "knife_zero knife_missed skye_no_cue hypothesis_cleared omen_seen "
-                 "nightfall_zero dizzy_zero thrash_zero storm_surge_zero "
+                 "nightfall_zero thrash_zero storm_surge_zero "
                  "prowler_miss wingman_miss boom_bot_miss seekers_miss hunters_fury_miss",
     "lost_track": "omen_unheard yoru_drift_unheard yoru_beacon",
     "other": "died omen_channel",
@@ -37,6 +37,12 @@ def test_two_kind_reasons_and_old_rows(reason):
     assert classify(reason, "exclude") == "ruled_out"
     assert classify(reason) == "ruled_out"
     assert classify(reason, None) == "ruled_out"
+
+
+def test_a_fired_dizzy_never_rules_ground_out():
+    """W5.1: Dizzy fires only at an enemy it sees, so there is no `dizzy_zero` reason any more."""
+    assert "dizzy_zero" not in CLASSES and classify("dizzy_zero") == "other"
+    assert CLASSES["dizzy_count"] == "roughly_placed"
 
 
 def test_vocabulary_and_unknown():
