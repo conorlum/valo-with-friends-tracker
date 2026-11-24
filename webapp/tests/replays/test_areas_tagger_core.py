@@ -572,3 +572,141 @@ def test_undo_exact_state_and_single_checkpoint_after_spatial_action(action):
     }''', {"data": placement_data(3, {0, 1, 2}, [1, 1, 3] + [0] * 6,
                                   bands={"1": [[0, 10, 1], [20, 30, 2]]}), "action": action})
     assert got == {"changed": True, "undo": True, "restored": True, "exhausted": False}
+
+
+def test_paste_names_matches_queues_and_undoes_once():
+    got = run_node(r'''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a);
+      const result = a.pasteNames("  MID \r\n\nArch\narch\n top mid \nMID\nNook\n");
+      const names = a.names.map(r => [r.id, r.name]), queue = a.unplaced();
+      queue.push("Copy only");
+      const unplaced = a.unplaced(), undo = a.undo(), restored = before === JSON.stringify(a);
+      const first = a.pasteNames("Arch"), second = a.pasteNames("ARCH\nMid");
+      return {result, names, unplaced, undo, restored, first, second, queue: a.unplaced()};
+    }''', map_data(2, {0}))
+    assert got == {
+        "result": {"matched": ["MID", "top mid"], "queued": ["Arch", "Nook"], "unlisted": ["A Site"]},
+        "names": [[1, "MID"], [2, "top mid"], [3, "A Site"]], "unplaced": ["Arch", "Nook"],
+        "undo": True, "restored": True,
+        "first": {"matched": [], "queued": ["Arch"], "unlisted": ["Mid", "Top Mid", "A Site"]},
+        "second": {"matched": ["Mid"], "queued": [], "unlisted": ["Top Mid", "A Site"]},
+        "queue": ["Arch"],
+    }
+
+
+def test_paste_noop_checkpoint_and_export_ignores_queue():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      a.pasteNames("Mid");
+      const undo = a.undo(), exhausted = a.undo();
+      a.pasteNames("Arch\\nNook");
+      return {undo, exhausted, text: a.exportText(), unplaced: a.unplaced()};
+    }''', map_data(128, {0}))
+    assert got["undo"] and got["exhausted"] is False
+    assert got["unplaced"] == ["Arch", "Nook"]
+    assert all(name not in got["text"] for name in got["unplaced"])
+    assert areas.validate(json.loads(got["text"])) == []
+
+
+def test_pasted_name_stays_unplaced_until_placed_with_any_case():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      a.pasteNames("Arch");
+      const before = a.names.length, placed = a.place(0, "ARCH");
+      return {before, placed, names: a.names.map(r => r.name), queue: a.unplaced()};
+    }''', map_data(2, {0}))
+    assert got == {"before": 3, "placed": {"id": 4, "count": 1},
+                   "names": ["Mid", "Top Mid", "A Site", "ARCH"], "queue": []}
+
+
+def test_paste_preserves_ambiguous_legacy_names_without_choosing_an_id():
+    names = [*NAMES, {**NAMES[0], "id": 4, "name": "MID"}]
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a.names);
+      const result = a.pasteNames("mid");
+      return {result, unchanged: before === JSON.stringify(a.names)};
+    }''', map_data(2, {0}, draft={"names": names, "cells": [[0, 4]]}))
+    assert got == {"result": {"matched": [], "queued": [], "unlisted": ["Mid", "Top Mid", "A Site", "MID"]},
+                   "unchanged": True}
+
+
+def test_draft_roundtrip_copies_full_state_and_success_can_be_undone():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), b = T.Areas.fromData(p);
+      a.setAlsoParents(2, [3]); a.paint([1], 2); a.pasteNames("Arch\\nNook");
+      a._nextId = 12;
+      const draft = a.draftState(), saved = JSON.stringify(draft), before = JSON.stringify(b);
+      const input = JSON.parse(saved), restored = b.restoreDraft(input);
+      const same = a.exportText() === b.exportText();
+      const state = b.draftState();
+      input.names[1].also_parents.push(99); input.cells[0][0] = 99;
+      input.bands[0][0][0] = -999; input.hand.push(2); input.queue.push("Changed");
+      const isolated = JSON.stringify(state) === JSON.stringify(b.draftState());
+      draft.names[0].name = "Changed"; draft.cells[0][0] = 99;
+      draft.bands[0][0][0] = -999; draft.hand.push(2); draft.queue.push("Changed");
+      const detached = saved === JSON.stringify(a.draftState());
+      const undo = b.undo(), undone = before === JSON.stringify(b);
+      const c = T.Areas.fromData(p);
+      // Equivalent walk runs must identify the same walk mask.
+      p.walk = [[1, 1], [1, 2], [0, 6]];
+      const split = T.Areas.fromData(p).draftState().walk_hash === c.draftState().walk_hash;
+      return {restored, same, state, isolated, detached, undo, undone, split};
+    }''', map_data(3, {0, 1, 2}, draft={"names": NAMES, "cells": [[1, 1], [0, 8]],
+                                                   "bands": {"0": [[-10, 0, 1], [10, 20, 2]]}}))
+    assert all(got[key] for key in ("restored", "same", "isolated", "detached", "undo", "undone", "split"))
+    state = got["state"]
+    assert set(state) == {"v", "map", "grid", "walk_hash", "names", "cells", "bands", "hand", "queue", "next_id"}
+    assert (state["v"], state["map"], state["grid"], state["next_id"]) == (1, "Toy", 3, 12)
+    assert isinstance(state["walk_hash"], str) and state["walk_hash"]
+    assert state["hand"] == [1] and state["queue"] == ["Arch", "Nook"]
+    assert state["cells"] == [[1, 1], [2, 1], [0, 7]]
+    assert state["bands"] == {"0": [[-10, 0, 1], [10, 20, 2]]}
+    assert state["names"][1]["also_parents"] == [3]
+
+
+@pytest.mark.parametrize("change", [
+    "d = null", "d = []", "d.v = true", "d.v = 2", 'd.map = "Other"', "d.grid = 4",
+    'd.walk_hash = "old"', "a.walk[2] = 1", "a.grid = 4", 'a.map = "Other"',
+    "d.cells = [[99, 9]]", "d.cells = [[0, 8]]", "d.cells = [[0, 10]]",
+    "d.cells = [[0, 0], [0, 9]]", "d.cells = [[0, -1], [0, 10]]",
+    "d.cells = [[false, 9]]", "d.cells = [[0, 9, 1]]", "d.cells = null",
+    'd.bands = {"0": [[0, 10, 0], [10, 20, 1]]}',
+    'd.bands = {"0": [[0, 10, 1]]}', 'd.bands = {"0": [[0, 10, 99]]}',
+    'd.bands = {"0": [[10, 0, 0]]}', 'd.bands = {"0": [[0.5, 10, 0]]}',
+    'd.bands = {"0": []}', 'd.bands = {"00": [[0, 10, 0]]}',
+    'd.bands = {"9": [[0, 10, 0]]}', 'd.bands = {"-1": [[0, 10, 0]]}',
+    'd.bands = {"1e0": [[0, 10, 0]]}', "d.bands = []", "d.bands = null",
+    "d.names = null", "d.names[0] = null", "d.names[1].id = 1",
+    'd.names[1].name = "MID"', 'd.names[1].name = "  "', "d.names[0].name = 1",
+    "delete d.names[0].parent", "d.names[0].parent = 2", "d.names[1].parent = 99",
+    "d.names[1].also_parents = [3, 3]", "d.names[1].also_parents = [2]",
+    'd.names[1].super = "B"', 'd.names[0].super = ""', 'd.names[0].super_source = "other"',
+    "d.hand = [8]", "d.hand = [0, 0]", "d.hand = [0.5]", "d.hand = null",
+    'd.queue = ["mID"]', 'd.queue = ["Arch", "ARCH"]', 'd.queue = [" "]',
+    "d.queue = [1]", "d.queue = null", "d.next_id = 3", "d.next_id = true", "d.next_id = 4.5",
+])
+def test_restore_draft_rejects_malformed_json_atomically(change):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      a.rename(3, "Site"); a.hand.add(0); a.queue = ["Later"];
+      let d = a.draftState();
+      eval(p.change);
+      d = JSON.parse(JSON.stringify(d));
+      const before = JSON.stringify(a), input = JSON.stringify(d);
+      const restored = a.restoreDraft(d);
+      return {restored, unchanged: before === JSON.stringify(a), kept: input === JSON.stringify(d)};
+    }''', {"data": map_data(3, {0, 1}), "change": change})
+    assert got == {"restored": False, "unchanged": True, "kept": True}
+
+
+def test_restore_draft_band_rules_match_python():
+    bands = {"0": [[20, 30, 2], [0, 10, 1], [5, 15, 1]], "1": [[0, 0, 0]]}
+    obj = painted_object({0: 1}, bands=bands)
+    assert areas.validate(obj) == []
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), d = a.draftState();
+      const restored = a.restoreDraft(d);
+      return {restored, text: a.exportText()};
+    }''', map_data(128, {0, 1}, existing=obj))
+    assert got["restored"]
+    assert areas.validate(json.loads(got["text"])) == []

@@ -2012,6 +2012,12 @@
     return out;
   }
 
+  function areaWalkHash(walk) {
+    var text = JSON.stringify(areaEncode(walk)), hash = 2166136261;
+    for (var i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+    return "fnv1a:" + (hash >>> 0).toString(16);
+  }
+
   function areaBandOrder(a, b) { return a[0] - b[0] || a[1] - b[1] || (a[2] || 0) - (b[2] || 0); }
 
   function areaRoots(names) {
@@ -2092,6 +2098,111 @@
     this._nextId = saved._nextId;
     this.hand = new Set(saved.hand);
     this.queue = saved.queue;
+    return true;
+  };
+
+  AreasModel.prototype.pasteNames = function (text) {
+    var seen = new Set(), matched = [], queued = [], matchedIds = new Set();
+    var names = clone(this.names), queue = this.queue.slice();
+    var queuedKeys = new Set(queue.map(function (name) { return name.toLowerCase(); }));
+    text.split(/\r?\n/).forEach(function (line) {
+      var name = line.trim(), key = name.toLowerCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      var rows = names.filter(function (row) { return row.name.toLowerCase() === key; });
+      if (rows.length) {
+        // Leave an ambiguous legacy spelling alone rather than choose an id or create a collision.
+        if (rows.length !== 1) return;
+        rows[0].name = name;
+        matchedIds.add(rows[0].id);
+        matched.push(name);
+      } else if (!queuedKeys.has(key)) {
+        queue.push(name);
+        queuedKeys.add(key);
+        queued.push(name);
+      }
+    });
+    this.checkpoint();
+    this.names = names;
+    this.queue = queue;
+    return {matched: matched, queued: queued, unlisted: names.filter(function (row) {
+      return !matchedIds.has(row.id);
+    }).map(function (row) { return row.name; })};
+  };
+
+  AreasModel.prototype.unplaced = function () { return this.queue.slice(); };
+
+  AreasModel.prototype.draftState = function () {
+    return clone({v: 1, map: this.map, grid: this.grid, walk_hash: areaWalkHash(this.walk),
+                  names: this.names, cells: areaEncode(this.cells), bands: this.bands,
+                  hand: Array.from(this.hand), queue: this.queue, next_id: this._nextId});
+  };
+
+  AreasModel.prototype.restoreDraft = function (obj) {
+    function object(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+    function text(value) { return typeof value === "string" && value.trim().length > 0; }
+    function key(value) { return value.trim().toLowerCase(); }
+    if (!object(obj) || obj.v !== 1 || obj.map !== this.map || obj.grid !== this.grid ||
+        obj.walk_hash !== areaWalkHash(this.walk)) return false;
+    // Validation and normalization touch only copies. A refused stored draft remains available.
+    var saved = clone(obj), names = saved.names, labels = new Set(), ids = new Set([0]);
+    if (!Array.isArray(names)) return false;
+    for (var row of names) {
+      if (!object(row) || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) ||
+          !text(row.name) || labels.has(key(row.name)) || !text(row.super) ||
+          (row.super_source !== "auto" && row.super_source !== "set")) return false;
+      ids.add(row.id);
+      labels.add(key(row.name));
+    }
+    if (!areaLinksValid(names)) return false;
+    var roots = areaRoots(names);
+    if (names.some(function (row) { return row.super !== roots.get(row.id).super; })) return false;
+    var size = this.grid * this.grid, count = 0;
+    if (!Array.isArray(saved.cells)) return false;
+    for (var run of saved.cells) {
+      if (!Array.isArray(run) || run.length !== 2 || !ids.has(run[0]) ||
+          !Number.isSafeInteger(run[1]) || run[1] <= 0) return false;
+      count += run[1];
+      if (count > size) return false;
+    }
+    if (count !== size) return false;
+    var cells = areaDecode(saved.cells, size), bands = saved.bands;
+    if (!object(bands)) return false;
+    for (var cellKey of Object.keys(bands)) {
+      var cell = Number(cellKey), at = bands[cellKey];
+      if (!/^(0|[1-9][0-9]*)$/.test(cellKey) || !Number.isSafeInteger(cell) || cell >= size ||
+          String(cell) !== cellKey || !Array.isArray(at) || !at.length) return false;
+      for (var band of at) {
+        if (!Array.isArray(band) || band.length !== 3 || !band.every(Number.isSafeInteger) ||
+            band[0] > band[1] || !ids.has(band[2])) return false;
+      }
+      for (var i = 0; i < at.length; i++) {
+        for (var j = i + 1; j < at.length; j++) {
+          if (at[i][2] !== at[j][2] && Math.max(at[i][0], at[j][0]) <= Math.min(at[i][1], at[j][1])) return false;
+        }
+      }
+      at.sort(areaBandOrder);
+      if (at[0][2] !== cells[cell]) return false;
+    }
+    if (!Array.isArray(saved.hand) || new Set(saved.hand).size !== saved.hand.length ||
+        saved.hand.some(function (cell) {
+          return !Number.isInteger(cell) || cell < 0 || cell >= size || !this.walk[cell];
+        }, this)) return false;
+    if (!Array.isArray(saved.queue)) return false;
+    var queued = new Set();
+    for (var name of saved.queue) {
+      if (!text(name) || labels.has(key(name)) || queued.has(key(name))) return false;
+      queued.add(key(name));
+    }
+    if (!Number.isSafeInteger(saved.next_id) || saved.next_id < 1 ||
+        names.some(function (row) { return row.id >= saved.next_id; })) return false;
+    this.checkpoint();
+    this.names = names.sort(function (a, b) { return a.id - b.id; });
+    this.cells = cells;
+    this.bands = bands;
+    this.hand = new Set(saved.hand);
+    this.queue = saved.queue;
+    this._nextId = saved.next_id;
     return true;
   };
 
@@ -2249,7 +2360,7 @@
     this.names = names;
     this._nextId++;
     placed.forEach(function (target) { this.cells[target] = id; delete this.bands[target]; }, this);
-    this.queue = this.queue.filter(function (queued) { return queued !== name.trim(); });
+    this.queue = this.queue.filter(function (queued) { return queued.toLowerCase() !== name.trim().toLowerCase(); });
     this.autoSupers();
     return {id: id, count: placed.length};
   };
